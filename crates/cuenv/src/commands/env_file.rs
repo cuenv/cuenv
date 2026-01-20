@@ -4,6 +4,7 @@
 //! within a CUE module hierarchy.
 
 use cuenv_core::{Error, Result};
+use ignore::WalkBuilder;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -194,6 +195,64 @@ fn strip_comments(source: &str) -> String {
     }
 
     result
+}
+
+/// Discover all directories containing env.cue files with matching package.
+///
+/// Uses the `ignore` crate to walk the filesystem while respecting `.gitignore`.
+/// Returns directories (not file paths) that contain env.cue files with the
+/// expected package declaration.
+///
+/// # Arguments
+/// * `module_root` - The CUE module root directory (must contain cue.mod/)
+/// * `expected_package` - The CUE package name to filter for
+///
+/// # Returns
+/// A vector of directory paths (relative to module_root) containing matching env.cue files.
+/// The paths are suitable for use with `cuengine::evaluate_module` with `TargetDir` option.
+#[must_use]
+pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+
+    // Build a walker that respects gitignore
+    let walker = WalkBuilder::new(module_root)
+        .follow_links(true)
+        .standard_filters(true) // Enable .gitignore, .ignore, hidden file filtering
+        .build();
+
+    for result in walker {
+        let Ok(entry) = result else {
+            continue;
+        };
+
+        let path = entry.path();
+
+        // Only process env.cue files
+        if path.file_name() != Some("env.cue".as_ref()) {
+            continue;
+        }
+
+        // Check package matches
+        let Ok(package_name) = detect_package_name(path) else {
+            continue;
+        };
+
+        if package_name.as_deref() != Some(expected_package) {
+            continue;
+        }
+
+        // Get the parent directory (where env.cue lives)
+        let Some(dir) = path.parent() else {
+            continue;
+        };
+
+        // Store as absolute path for later use with TargetDir
+        if let Ok(canonical) = dir.canonicalize() {
+            directories.push(canonical);
+        }
+    }
+
+    directories
 }
 
 #[cfg(test)]

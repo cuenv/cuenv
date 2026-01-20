@@ -361,7 +361,7 @@ impl CommandHandler for ExecHandler {
             &self.command,
             &self.args,
             self.environment.as_deref(),
-            Some(executor),
+            executor,
         )
         .await?;
 

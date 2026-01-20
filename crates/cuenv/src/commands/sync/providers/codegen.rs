@@ -53,7 +53,7 @@ impl SyncProvider for CodegenSyncProvider {
             dry_run,
             check,
             options.show_diff,
-            Some(executor),
+            executor,
         )
         .await?;
 
@@ -102,7 +102,7 @@ impl SyncProvider for CodegenSyncProvider {
                 dry_run,
                 check,
                 options.show_diff,
-                Some(executor),
+                executor,
             )
             .await;
 

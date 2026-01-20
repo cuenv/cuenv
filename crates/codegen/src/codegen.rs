@@ -159,9 +159,10 @@ impl Codegen {
             ))
         })?;
 
-        // Use module-wide evaluation
+        // Use targeted evaluation (non-recursive) for the specific directory
         let options = ModuleEvalOptions {
-            recursive: true,
+            recursive: false,
+            target_dir: Some(dir_path.to_string_lossy().to_string()),
             ..Default::default()
         };
         let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(&options))

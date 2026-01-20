@@ -106,7 +106,7 @@ impl SyncCapability for CodegenProvider {
             dry_run,
             check,
             options.show_diff,
-            Some(executor),
+            executor,
         )
         .await?;
 
@@ -162,7 +162,7 @@ impl SyncCapability for CodegenProvider {
                 dry_run,
                 check,
                 options.show_diff,
-                Some(executor),
+                executor,
             )
             .await;
 

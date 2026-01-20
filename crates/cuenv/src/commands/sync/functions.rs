@@ -7,9 +7,7 @@
 //! Note: Ignore files and CODEOWNERS are now handled via .rules.cue files.
 //! Use `cuenv sync rules` for those.
 
-use super::super::env_file::find_cue_module_root;
-use super::super::{CommandExecutor, convert_engine_error, relative_path_from_root};
-use cuengine::ModuleEvalOptions;
+use super::super::{CommandExecutor, relative_path_from_root};
 use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_github::GitHubConfigExt;
@@ -54,24 +52,18 @@ impl ProjectInfo {
 }
 
 /// Load Project configuration from CUE using module-wide evaluation.
-fn load_project_config(
-    path: &Path,
-    package: &str,
-    executor: Option<&CommandExecutor>,
-) -> Result<Project> {
-    let (instance, _module_root) = load_instance_at_path(path, package, executor)?;
+fn load_project_config(path: &Path, executor: &CommandExecutor) -> Result<Project> {
+    let (instance, _module_root) = load_instance_at_path(path, executor)?;
     instance.deserialize()
 }
 
 /// Load a CUE instance at the given path using module-wide evaluation.
 /// Returns the instance and the module root path.
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Uses the executor's cached module evaluation.
 fn load_instance_at_path(
     path: &Path,
-    package: &str,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<(cuenv_core::module::Instance, PathBuf)> {
     let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
         source: e,
@@ -79,48 +71,10 @@ fn load_instance_at_path(
         operation: "canonicalize path".to_string(),
     })?;
 
-    // Use executor's cached module if available
-    if let Some(exec) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        let module = exec.get_module(&target_path)?;
-        let relative_path = relative_path_from_root(&module.root, &target_path);
+    tracing::debug!("Using cached module evaluation from executor");
+    let module = executor.get_module(&target_path)?;
+    let relative_path = relative_path_from_root(&module.root, &target_path);
 
-        let instance = module.get(&relative_path).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!(
-                "No CUE instance found at path: {} (relative: {})",
-                target_path.display(),
-                relative_path.display()
-            ))
-        })?;
-
-        return Ok((instance.clone(), module.root.clone()));
-    }
-
-    // Legacy path: fresh evaluation
-    tracing::debug!("Using fresh module evaluation (no executor)");
-
-    let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE module found (looking for cue.mod/) starting from: {}",
-            target_path.display()
-        ))
-    })?;
-
-    let options = ModuleEvalOptions {
-        recursive: true,
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
-
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
-
-    let relative_path = relative_path_from_root(&module_root, &target_path);
     let instance = module.get(&relative_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
             "No CUE instance found at path: {} (relative: {})",
@@ -129,7 +83,7 @@ fn load_instance_at_path(
         ))
     })?;
 
-    Ok((instance.clone(), module_root))
+    Ok((instance.clone(), module.root.clone()))
 }
 
 /// Execute the sync codegen command for a single project.
@@ -137,8 +91,7 @@ fn load_instance_at_path(
 /// Syncs codegen-generated files for the project at the specified path.
 /// Use `execute_sync_codegen_workspace` for workspace-wide syncing.
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Uses the executor's cached module evaluation.
 ///
 /// # Errors
 ///
@@ -150,7 +103,7 @@ pub async fn execute_sync_codegen(
     dry_run: bool,
     check: bool,
     diff: bool,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting sync codegen command");
 
@@ -161,21 +114,14 @@ pub async fn execute_sync_codegen(
 /// Sync codegen for the local project only
 fn execute_sync_codegen_local(
     dir_path: &Path,
-    package: &str,
+    _package: &str,
     dry_run: bool,
     check: bool,
     diff: bool,
-    executor: Option<&CommandExecutor>,
+    executor: &CommandExecutor,
 ) -> Result<String> {
-    // Auto-detect package name from env.cue if using default
-    let effective_package = if package == "cuenv" {
-        detect_package_name(dir_path)?
-    } else {
-        package.to_string()
-    };
-
-    // Use module-wide evaluation (cached if executor provided)
-    let manifest: Project = load_project_config(dir_path, &effective_package, executor)?;
+    // Use module-wide evaluation (cached via executor)
+    let manifest: Project = load_project_config(dir_path, executor)?;
 
     let Some(codegen_config) = &manifest.codegen else {
         return Ok("No codegen configuration found in this project.".to_string());
@@ -436,29 +382,6 @@ fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
     let to = format!("b/{path}");
     diff.unified_diff().header(&from, &to).to_string()
 }
-
-/// Detect the CUE package name from env.cue
-fn detect_package_name(project_path: &Path) -> Result<String> {
-    let env_cue = project_path.join("env.cue");
-    if !env_cue.exists() {
-        return Ok("cuenv".to_string());
-    }
-
-    let content = std::fs::read_to_string(&env_cue)?;
-    for line in content.lines().take(10) {
-        let trimmed = line.trim();
-        if trimmed.starts_with("package ") {
-            return Ok(trimmed
-                .strip_prefix("package ")
-                .unwrap_or("cuenv")
-                .trim()
-                .to_string());
-        }
-    }
-
-    Ok("cuenv".to_string())
-}
-
 // ============================================================================
 // CI Workflow Sync
 // ============================================================================

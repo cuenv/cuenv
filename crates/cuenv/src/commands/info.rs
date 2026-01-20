@@ -2,12 +2,17 @@
 //!
 //! Displays information about a CUE module including
 //! the number of Base and Project instances.
+//!
+//! Uses discovery-based evaluation when showing all projects: finds all env.cue files
+//! and evaluates each directory individually with `recursive: false`, avoiding CUE's
+//! `./...:package` pattern which can hang when directories contain mixed packages.
 
 use crate::commands::convert_engine_error;
-use crate::commands::env_file::find_cue_module_root;
+use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -49,14 +54,15 @@ struct ProjectInfo {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation fails or path canonicalization fails.
+#[allow(clippy::too_many_lines)]
 pub fn execute_info(
     path: Option<&str>,
     package: &str,
     json_output: bool,
     with_meta: bool,
 ) -> Result<String> {
-    // Determine if we should recurse based on whether a path was explicitly provided
-    let recursive = path.is_none();
+    // Determine if we should scan all directories based on whether a path was explicitly provided
+    let scan_all = path.is_none();
     let effective_path = path.unwrap_or(".");
 
     let start_path =
@@ -76,16 +82,87 @@ pub fn execute_info(
         ))
     })?;
 
-    // Build evaluation options
-    let options = ModuleEvalOptions {
-        with_meta,
-        recursive,
-        ..Default::default()
-    };
+    // Evaluate using discovery-based approach
+    let raw_result = if scan_all {
+        // Discover all directories with env.cue files matching our package
+        let env_cue_dirs = discover_env_cue_directories(&module_root, package);
 
-    // Evaluate the entire module
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-        .map_err(convert_engine_error)?;
+        if env_cue_dirs.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No env.cue files with package '{}' found in module: {}",
+                package,
+                module_root.display()
+            )));
+        }
+
+        // Evaluate each directory individually (non-recursive)
+        let mut all_instances = HashMap::new();
+        let mut all_projects = Vec::new();
+        let mut all_meta = HashMap::new();
+
+        for dir in env_cue_dirs {
+            let dir_rel_path = compute_relative_path(&dir, &module_root);
+            let options = ModuleEvalOptions {
+                recursive: false,
+                with_meta,
+                target_dir: Some(dir.to_string_lossy().to_string()),
+                ..Default::default()
+            };
+
+            let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options))
+                .map_err(convert_engine_error)
+            else {
+                continue;
+            };
+
+            // Merge instances (key by relative path from module_root)
+            for (path_str, value) in raw.instances {
+                let rel_path = if path_str == "." {
+                    dir_rel_path.clone()
+                } else {
+                    path_str
+                };
+                all_instances.insert(rel_path.clone(), value);
+
+                if raw.projects.contains(&".".to_string()) {
+                    all_projects.push(rel_path);
+                }
+            }
+
+            // Merge meta with adjusted paths
+            for (meta_key, meta_value) in raw.meta {
+                let adjusted_key = if meta_key.starts_with("./") {
+                    meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
+                } else {
+                    meta_key
+                };
+                all_meta.insert(adjusted_key, meta_value);
+            }
+        }
+
+        if all_instances.is_empty() {
+            return Err(cuenv_core::Error::configuration(
+                "No instances could be evaluated. All directories failed.",
+            ));
+        }
+
+        cuengine::ModuleResult {
+            instances: all_instances,
+            projects: all_projects,
+            meta: all_meta,
+        }
+    } else {
+        // Evaluate specific path only (non-recursive)
+        let options = ModuleEvalOptions {
+            with_meta,
+            recursive: false,
+            target_dir: Some(start_path.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        cuengine::evaluate_module(&module_root, package, Some(&options))
+            .map_err(convert_engine_error)?
+    };
 
     // If --meta is requested, dump the full JSON with separate meta map
     if with_meta {
@@ -162,6 +239,20 @@ pub fn execute_info(
 
         Ok(output)
     }
+}
+
+/// Compute relative path from module_root to target directory.
+fn compute_relative_path(target: &std::path::Path, module_root: &std::path::Path) -> String {
+    target.strip_prefix(module_root).map_or_else(
+        |_| ".".to_string(),
+        |p| {
+            if p.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                p.to_string_lossy().to_string()
+            }
+        },
+    )
 }
 
 #[cfg(test)]

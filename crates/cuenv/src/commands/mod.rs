@@ -351,6 +351,22 @@ pub enum Command {
     ToolsList,
 }
 
+/// Compute relative path from module_root to target directory.
+///
+/// Returns "." if the paths are equal or if stripping fails.
+fn compute_relative_path(target: &Path, module_root: &Path) -> String {
+    target.strip_prefix(module_root).map_or_else(
+        |_| ".".to_string(),
+        |p| {
+            if p.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                p.to_string_lossy().to_string()
+            }
+        },
+    )
+}
+
 /// Executes CLI commands with centralized module evaluation and event handling.
 ///
 /// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
@@ -391,6 +407,10 @@ impl CommandExecutor {
     /// for subsequent calls. Commands that don't need CUE evaluation
     /// (version, completions, etc.) never trigger this load.
     ///
+    /// Uses filesystem discovery to find all env.cue files and evaluates each
+    /// directory individually with `recursive: false`. This avoids CUE's
+    /// `./...:package` pattern which hangs when directories contain mixed packages.
+    ///
     /// # Arguments
     /// * `path` - Directory to start searching for module root
     ///
@@ -402,7 +422,7 @@ impl CommandExecutor {
     /// Returns an error if:
     /// - The module lock cannot be acquired (poisoned mutex)
     /// - No CUE module root (cue.mod/) is found starting from the given path
-    /// - The CUE module evaluation fails
+    /// - No instances could be evaluated (all directories failed)
     pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
         let mut guard = self
             .module
@@ -417,21 +437,93 @@ impl CommandExecutor {
                 ))
             })?;
 
-            // Evaluate the entire module recursively with reference extraction
-            let options = ModuleEvalOptions {
-                recursive: true,
-                with_references: true,
-                ..Default::default()
-            };
-            let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
-                .map_err(convert_engine_error)?;
+            // Discover all directories with env.cue files matching our package
+            let env_cue_dirs = env_file::discover_env_cue_directories(&module_root, &self.package);
+
+            if env_cue_dirs.is_empty() {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "No env.cue files with package '{}' found in module: {}",
+                    self.package,
+                    module_root.display()
+                )));
+            }
+
+            // Evaluate each directory individually (non-recursive)
+            let mut all_instances = std::collections::HashMap::new();
+            let mut all_projects = Vec::new();
+            let mut all_meta = std::collections::HashMap::new();
+            let mut eval_errors = Vec::new();
+
+            for dir in env_cue_dirs {
+                let options = ModuleEvalOptions {
+                    recursive: false,
+                    with_references: true,
+                    target_dir: Some(dir.to_string_lossy().to_string()),
+                    ..Default::default()
+                };
+
+                // Compute relative path once for this directory
+                let dir_rel_path = compute_relative_path(&dir, &module_root);
+
+                match cuengine::evaluate_module(&module_root, &self.package, Some(&options)) {
+                    Ok(raw) => {
+                        // Merge instances (key by relative path from module_root)
+                        for (path_str, value) in raw.instances {
+                            // Convert to relative path for consistent keying
+                            let rel_path = if path_str == "." {
+                                dir_rel_path.clone()
+                            } else {
+                                path_str
+                            };
+                            all_instances.insert(rel_path.clone(), value);
+
+                            // Check if this path is a project
+                            if raw.projects.contains(&".".to_string()) {
+                                all_projects.push(rel_path);
+                            }
+                        }
+
+                        // Merge meta with adjusted paths
+                        for (meta_key, meta_value) in raw.meta {
+                            // Meta keys are "instance_path/field_path" - adjust instance_path
+                            let adjusted_key = if meta_key.starts_with("./") {
+                                meta_key.replacen("./", &format!("{}/", dir_rel_path), 1)
+                            } else {
+                                meta_key
+                            };
+                            all_meta.insert(adjusted_key, meta_value);
+                        }
+                    }
+                    Err(e) => {
+                        // Log warning but continue - some directories may fail
+                        tracing::warn!(
+                            dir = %dir.display(),
+                            error = %e,
+                            "Failed to evaluate env.cue - skipping directory"
+                        );
+                        eval_errors.push((dir, e));
+                    }
+                }
+            }
+
+            if all_instances.is_empty() {
+                let error_summary = eval_errors
+                    .iter()
+                    .map(|(dir, e)| format!("  {}: {}", dir.display(), e))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Err(cuenv_core::Error::configuration(format!(
+                    "No instances could be evaluated. All directories failed:\n{}",
+                    error_summary
+                )));
+            }
 
             // Convert meta to reference map for dependsOn resolution
-            let references = if raw.meta.is_empty() {
+            let references = if all_meta.is_empty() {
                 None
             } else {
                 Some(
-                    raw.meta
+                    all_meta
                         .into_iter()
                         .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
                         .collect(),
@@ -440,8 +532,8 @@ impl CommandExecutor {
 
             *guard = Some(ModuleEvaluation::from_raw(
                 module_root,
-                raw.instances,
-                raw.projects,
+                all_instances,
+                all_projects,
                 references,
             ));
         }
