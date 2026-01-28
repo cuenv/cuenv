@@ -100,15 +100,17 @@ impl SyncCapability for CodegenProvider {
             ))
         })?;
 
-        let output = functions::execute_sync_codegen(
-            path_str,
-            package,
+        let codegen_options = functions::CodegenSyncOptions {
             dry_run,
             check,
-            options.show_diff,
-            executor,
-        )
-        .await?;
+            diff: options.show_diff,
+        };
+        let request = functions::CodegenSyncRequest {
+            path: path_str,
+            package,
+            options: codegen_options,
+        };
+        let output = functions::execute_sync_codegen(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }
@@ -156,15 +158,17 @@ impl SyncCapability for CodegenProvider {
                 continue;
             };
 
-            let result = functions::execute_sync_codegen(
-                path_str,
-                package,
+            let codegen_options = functions::CodegenSyncOptions {
                 dry_run,
                 check,
-                options.show_diff,
-                executor,
-            )
-            .await;
+                diff: options.show_diff,
+            };
+            let request = functions::CodegenSyncRequest {
+                path: path_str,
+                package,
+                options: codegen_options,
+            };
+            let result = functions::execute_sync_codegen(request, executor).await;
 
             match result {
                 Ok(output) if !output.is_empty() => {

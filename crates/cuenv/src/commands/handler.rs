@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
+use cuenv_events::{emit_stderr, emit_stdout};
 
 use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
@@ -49,7 +50,7 @@ impl CommandRunner for CommandExecutor {
         match cmd.execute(self).await {
             Ok(output) => {
                 if cmd.should_print_output() && !output.is_empty() {
-                    cuenv_events::println_redacted(&output);
+                    emit_stdout!(&output);
                 }
                 self.send_event(Event::CommandComplete {
                     command: name.to_string(),
@@ -59,6 +60,7 @@ impl CommandRunner for CommandExecutor {
                 Ok(())
             }
             Err(e) => {
+                emit_stderr!(format!("Error: {e}"));
                 self.send_event(Event::CommandComplete {
                     command: name.to_string(),
                     success: false,
@@ -355,15 +357,14 @@ impl CommandHandler for ExecHandler {
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        let exit_code = exec::execute_exec(
-            &self.path,
-            &self.package,
-            &self.command,
-            &self.args,
-            self.environment.as_deref(),
-            executor,
-        )
-        .await?;
+        let request = exec::ExecRequest {
+            path: &self.path,
+            package: &self.package,
+            command: &self.command,
+            args: &self.args,
+            environment_override: self.environment.as_deref(),
+        };
+        let exit_code = exec::execute_exec(request, executor).await?;
 
         if exit_code == 0 {
             Ok(format!("Command exited with code {exit_code}"))

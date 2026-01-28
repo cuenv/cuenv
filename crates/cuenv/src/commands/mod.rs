@@ -476,10 +476,16 @@ impl CommandExecutor {
                                 path_str
                             };
                             all_instances.insert(rel_path.clone(), value);
+                        }
 
-                            // Check if this path is a project
-                            if raw.projects.contains(&".".to_string()) {
-                                all_projects.push(rel_path);
+                        for project_path in raw.projects {
+                            let rel_project_path = if project_path == "." {
+                                dir_rel_path.clone()
+                            } else {
+                                project_path
+                            };
+                            if !all_projects.contains(&rel_project_path) {
+                                all_projects.push(rel_project_path);
                             }
                         }
 

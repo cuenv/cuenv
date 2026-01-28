@@ -106,15 +106,17 @@ impl SyncCapability for CiProvider {
             ))
         })?;
 
-        let output = functions::execute_sync_ci(
-            path_str,
-            package,
+        let ci_options = functions::CiSyncOptions {
             dry_run,
             check,
-            options.ci_provider.as_deref(),
-            executor,
-        )
-        .await?;
+            provider: options.ci_provider.as_deref(),
+        };
+        let request = functions::CiSyncRequest {
+            path: path_str,
+            package,
+            options: ci_options,
+        };
+        let output = functions::execute_sync_ci(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }
@@ -128,14 +130,16 @@ impl SyncCapability for CiProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_ci_workspace(
-            package,
+        let ci_options = functions::CiSyncOptions {
             dry_run,
             check,
-            options.ci_provider.as_deref(),
-            executor,
-        )
-        .await?;
+            provider: options.ci_provider.as_deref(),
+        };
+        let request = functions::CiWorkspaceSyncRequest {
+            package,
+            options: ci_options,
+        };
+        let output = functions::execute_sync_ci_workspace(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }

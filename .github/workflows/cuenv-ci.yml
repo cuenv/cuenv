@@ -61,8 +61,8 @@ jobs:
     - name: Setup Go
       uses: actions/setup-go@v5
       with:
-        cache-dependency-path: crates/cuengine/go.sum
         go-version: '1.24'
+        cache-dependency-path: crates/cuengine/go.sum
     - name: Export sccache environment
       run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
     - name: Build cuenv

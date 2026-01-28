@@ -47,15 +47,17 @@ impl SyncProvider for CodegenSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_codegen(
-            path.to_str().unwrap_or("."),
-            package,
+        let codegen_options = functions::CodegenSyncOptions {
             dry_run,
             check,
-            options.show_diff,
-            executor,
-        )
-        .await?;
+            diff: options.show_diff,
+        };
+        let request = functions::CodegenSyncRequest {
+            path: path.to_str().unwrap_or("."),
+            package,
+            options: codegen_options,
+        };
+        let output = functions::execute_sync_codegen(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }
@@ -96,15 +98,17 @@ impl SyncProvider for CodegenSyncProvider {
 
         // Iterate through projects with codegen config
         for (full_path, display_path) in project_paths {
-            let result = functions::execute_sync_codegen(
-                full_path.to_str().unwrap_or("."),
-                package,
+            let codegen_options = functions::CodegenSyncOptions {
                 dry_run,
                 check,
-                options.show_diff,
-                executor,
-            )
-            .await;
+                diff: options.show_diff,
+            };
+            let request = functions::CodegenSyncRequest {
+                path: full_path.to_str().unwrap_or("."),
+                package,
+                options: codegen_options,
+            };
+            let result = functions::execute_sync_codegen(request, executor).await;
 
             match result {
                 Ok(output) if !output.is_empty() => {

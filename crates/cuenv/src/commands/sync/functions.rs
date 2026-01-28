@@ -51,6 +51,101 @@ impl ProjectInfo {
     }
 }
 
+/// Options controlling codegen sync behavior.
+#[derive(Clone, Copy, Debug)]
+pub struct CodegenSyncOptions {
+    /// Show what would be generated without writing files.
+    pub dry_run: bool,
+    /// Check if files are in sync without making changes.
+    pub check: bool,
+    /// Show diff for files that would change.
+    pub diff: bool,
+}
+
+impl CodegenSyncOptions {
+    fn should_check(self) -> bool {
+        self.check || self.diff
+    }
+}
+
+/// Request for syncing codegen for a single path.
+#[derive(Debug)]
+pub struct CodegenSyncRequest<'a> {
+    /// Path to the CUE module or project directory.
+    pub path: &'a str,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Sync options.
+    pub options: CodegenSyncOptions,
+}
+
+struct CodegenSyncContext<'a> {
+    dir_path: &'a Path,
+    options: CodegenSyncOptions,
+    executor: &'a CommandExecutor,
+}
+
+struct CodegenSyncFilesRequest<'a> {
+    project_root: &'a Path,
+    project_name: &'a str,
+    codegen_config: &'a cuenv_core::manifest::CodegenConfig,
+    options: CodegenSyncOptions,
+}
+
+struct CodegenFileSyncRequest<'a> {
+    output_lines: &'a mut Vec<String>,
+    output_path: &'a Path,
+    file_path: &'a str,
+    content: &'a str,
+}
+
+struct CodegenWriteRequest<'a> {
+    output_path: &'a Path,
+    file_path: &'a str,
+    content: &'a str,
+    mode: &'a str,
+}
+
+/// Options controlling CI sync behavior.
+#[derive(Clone, Copy, Debug)]
+pub struct CiSyncOptions<'a> {
+    /// Show what would be generated without writing files.
+    pub dry_run: bool,
+    /// Check if files are in sync without making changes.
+    pub check: bool,
+    /// Optional provider override.
+    pub provider: Option<&'a str>,
+}
+
+/// Request for syncing CI for a single path.
+pub struct CiSyncRequest<'a> {
+    /// Path to the CUE module or project directory.
+    pub path: &'a str,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Sync options.
+    pub options: CiSyncOptions<'a>,
+}
+
+/// Request for syncing CI across the workspace.
+pub struct CiWorkspaceSyncRequest<'a> {
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Sync options.
+    pub options: CiSyncOptions<'a>,
+}
+
+struct GithubSyncRequest<'a> {
+    repo_root: &'a Path,
+    options: CiSyncOptions<'a>,
+    projects: &'a [ProjectInfo],
+}
+
+struct BuildkiteSyncRequest<'a> {
+    repo_root: &'a Path,
+    options: CiSyncOptions<'a>,
+}
+
 /// Load Project configuration from CUE using module-wide evaluation.
 fn load_project_config(path: &Path, executor: &CommandExecutor) -> Result<Project> {
     let (instance, _module_root) = load_instance_at_path(path, executor)?;
@@ -98,50 +193,45 @@ fn load_instance_at_path(
 /// Returns an error if CUE evaluation fails or file operations fail.
 #[instrument(name = "sync_codegen", skip(executor))]
 pub async fn execute_sync_codegen(
-    path: &str,
-    package: &str,
-    dry_run: bool,
-    check: bool,
-    diff: bool,
+    request: CodegenSyncRequest<'_>,
     executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting sync codegen command");
 
-    let dir_path = Path::new(path);
-    execute_sync_codegen_local(dir_path, package, dry_run, check, diff, executor)
+    let dir_path = Path::new(request.path);
+    let context = CodegenSyncContext {
+        dir_path,
+        options: request.options,
+        executor,
+    };
+    execute_sync_codegen_local(&context)
 }
 
 /// Sync codegen for the local project only
-fn execute_sync_codegen_local(
-    dir_path: &Path,
-    _package: &str,
-    dry_run: bool,
-    check: bool,
-    diff: bool,
-    executor: &CommandExecutor,
-) -> Result<String> {
-    // Use module-wide evaluation (cached via executor)
+fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String> {
+    let dir_path = context.dir_path;
+    let options = context.options;
+    let executor = context.executor;
     let manifest: Project = load_project_config(dir_path, executor)?;
 
     let Some(codegen_config) = &manifest.codegen else {
         return Ok("No codegen configuration found in this project.".to_string());
     };
 
-    let sync_result = sync_codegen_files(
-        dir_path,
-        &manifest.name,
+    let sync_request = CodegenSyncFilesRequest {
+        project_root: dir_path,
+        project_name: &manifest.name,
         codegen_config,
-        dry_run,
-        check,
-        diff,
-    )?;
+        options,
+    };
+    let sync_result = sync_codegen_files(&sync_request)?;
 
     // Run formatters only on files that were actually written
     let format_result = if let Some(ref formatters) = manifest.formatters {
-        if sync_result.written_files.is_empty() && !dry_run {
+        if sync_result.written_files.is_empty() && !options.dry_run {
             // No files were written, skip formatting
             String::new()
-        } else if dry_run {
+        } else if options.dry_run {
             // In dry-run mode, show what would be formatted based on all configured files
             let file_paths: Vec<std::path::PathBuf> = codegen_config
                 .files
@@ -150,7 +240,11 @@ fn execute_sync_codegen_local(
                 .collect();
             let file_refs: Vec<&Path> = file_paths.iter().map(|p| p.as_path()).collect();
             super::formatters::format_generated_files(
-                &file_refs, formatters, dir_path, dry_run, check,
+                &file_refs,
+                formatters,
+                dir_path,
+                options.dry_run,
+                options.check,
             )?
         } else {
             // Format only the files that were actually written
@@ -160,7 +254,11 @@ fn execute_sync_codegen_local(
                 .map(|p| p.as_path())
                 .collect();
             super::formatters::format_generated_files(
-                &file_refs, formatters, dir_path, dry_run, check,
+                &file_refs,
+                formatters,
+                dir_path,
+                options.dry_run,
+                options.check,
             )?
         }
     } else {
@@ -184,47 +282,35 @@ struct SyncResult {
 }
 
 /// Sync codegen files for a single project
-fn sync_codegen_files(
-    project_root: &Path,
-    project_name: &str,
-    codegen_config: &cuenv_core::manifest::CodegenConfig,
-    dry_run: bool,
-    check: bool,
-    diff: bool,
-) -> Result<SyncResult> {
+fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResult> {
     use cuenv_core::manifest::FileMode;
+
+    let project_root = request.project_root;
+    let project_name = request.project_name;
+    let codegen_config = request.codegen_config;
+    let options = request.options;
 
     let mut output_lines = Vec::new();
     let mut written_files = Vec::new();
 
     for (file_path, file_def) in &codegen_config.files {
         let output_path = project_root.join(file_path);
+        let mut file_request = CodegenFileSyncRequest {
+            output_lines: &mut output_lines,
+            output_path: &output_path,
+            file_path,
+            content: &file_def.content,
+        };
 
         match file_def.mode {
             FileMode::Managed => {
-                let was_written = sync_managed_file(
-                    &mut output_lines,
-                    &output_path,
-                    file_path,
-                    &file_def.content,
-                    dry_run,
-                    check,
-                    diff,
-                )?;
+                let was_written = sync_managed_file(&mut file_request, options)?;
                 if was_written {
                     written_files.push(output_path);
                 }
             }
             FileMode::Scaffold => {
-                let was_written = sync_scaffold_file(
-                    &mut output_lines,
-                    &output_path,
-                    file_path,
-                    &file_def.content,
-                    dry_run,
-                    check,
-                    diff,
-                )?;
+                let was_written = sync_scaffold_file(&mut file_request, options)?;
                 if was_written {
                     written_files.push(output_path);
                 }
@@ -249,38 +335,51 @@ fn sync_codegen_files(
 ///
 /// Returns `true` if the file was actually written to disk.
 fn sync_managed_file(
-    output_lines: &mut Vec<String>,
-    output_path: &Path,
-    file_path: &str,
-    content: &str,
-    dry_run: bool,
-    check: bool,
-    diff: bool,
+    request: &mut CodegenFileSyncRequest<'_>,
+    options: CodegenSyncOptions,
 ) -> Result<bool> {
-    if check || diff {
-        if output_path.exists() {
-            let contents = std::fs::read_to_string(output_path).unwrap_or_default();
-            if contents == content {
-                output_lines.push(format!("  OK: {file_path}"));
+    if options.should_check() {
+        if request.output_path.exists() {
+            let contents = std::fs::read_to_string(request.output_path).unwrap_or_default();
+            if contents == request.content {
+                request
+                    .output_lines
+                    .push(format!("  OK: {}", request.file_path));
             } else {
-                output_lines.push(format!("  Out of sync: {file_path}"));
-                maybe_push_diff(output_lines, diff, file_path, Some(&contents), content);
+                request
+                    .output_lines
+                    .push(format!("  Out of sync: {}", request.file_path));
+                maybe_push_diff(request, Some(&contents), options);
             }
         } else {
-            output_lines.push(format!("  Missing: {file_path}"));
-            maybe_push_diff(output_lines, diff, file_path, None, content);
+            request
+                .output_lines
+                .push(format!("  Missing: {}", request.file_path));
+            maybe_push_diff(request, None, options);
         }
         Ok(false)
-    } else if dry_run {
-        if output_path.exists() {
-            output_lines.push(format!("  Would update: {file_path}"));
+    } else if options.dry_run {
+        if request.output_path.exists() {
+            request
+                .output_lines
+                .push(format!("  Would update: {}", request.file_path));
         } else {
-            output_lines.push(format!("  Would create: {file_path}"));
+            request
+                .output_lines
+                .push(format!("  Would create: {}", request.file_path));
         }
         Ok(false)
     } else {
-        write_codegen_file(output_path, file_path, content, "managed")?;
-        output_lines.push(format!("  Generated: {file_path}"));
+        let write_request = CodegenWriteRequest {
+            output_path: request.output_path,
+            file_path: request.file_path,
+            content: request.content,
+            mode: "managed",
+        };
+        write_codegen_file(&write_request)?;
+        request
+            .output_lines
+            .push(format!("  Generated: {}", request.file_path));
         Ok(true)
     }
 }
@@ -289,41 +388,54 @@ fn sync_managed_file(
 ///
 /// Returns `true` if the file was actually written to disk.
 fn sync_scaffold_file(
-    output_lines: &mut Vec<String>,
-    output_path: &Path,
-    file_path: &str,
-    content: &str,
-    dry_run: bool,
-    check: bool,
-    diff: bool,
+    request: &mut CodegenFileSyncRequest<'_>,
+    options: CodegenSyncOptions,
 ) -> Result<bool> {
-    if output_path.exists() {
-        if !dry_run && !check {
-            tracing::debug!("Skipping {file_path} (scaffold mode, file exists)");
+    if request.output_path.exists() {
+        if !options.dry_run && !options.should_check() {
+            tracing::debug!(
+                "Skipping {} (scaffold mode, file exists)",
+                request.file_path
+            );
         }
-        output_lines.push(format!("  Skipped (exists): {file_path}"));
+        request
+            .output_lines
+            .push(format!("  Skipped (exists): {}", request.file_path));
         Ok(false)
-    } else if check || diff {
-        output_lines.push(format!("  Missing scaffold: {file_path}"));
-        maybe_push_diff(output_lines, diff, file_path, None, content);
+    } else if options.should_check() {
+        request
+            .output_lines
+            .push(format!("  Missing scaffold: {}", request.file_path));
+        maybe_push_diff(request, None, options);
         Ok(false)
-    } else if dry_run {
-        output_lines.push(format!("  Would scaffold: {file_path}"));
+    } else if options.dry_run {
+        request
+            .output_lines
+            .push(format!("  Would scaffold: {}", request.file_path));
         Ok(false)
     } else {
-        write_codegen_file(output_path, file_path, content, "scaffold")?;
-        output_lines.push(format!("  Scaffolded: {file_path}"));
+        let write_request = CodegenWriteRequest {
+            output_path: request.output_path,
+            file_path: request.file_path,
+            content: request.content,
+            mode: "scaffold",
+        };
+        write_codegen_file(&write_request)?;
+        request
+            .output_lines
+            .push(format!("  Scaffolded: {}", request.file_path));
         Ok(true)
     }
 }
 
 /// Write a codegen file to disk, creating parent directories as needed
-fn write_codegen_file(
-    output_path: &Path,
-    file_path: &str,
-    content: &str,
-    mode: &str,
-) -> Result<()> {
+fn write_codegen_file(request: &CodegenWriteRequest<'_>) -> Result<()> {
+    let CodegenWriteRequest {
+        output_path,
+        file_path,
+        content,
+        mode,
+    } = *request;
     tracing::debug!(
         file_path = %file_path,
         output_path = %output_path.display(),
@@ -360,20 +472,22 @@ fn write_codegen_file(
 }
 
 fn maybe_push_diff(
-    output_lines: &mut Vec<String>,
-    diff: bool,
-    file_path: &str,
+    request: &mut CodegenFileSyncRequest<'_>,
     existing: Option<&str>,
-    expected: &str,
+    options: CodegenSyncOptions,
 ) {
-    if !diff {
+    if !options.diff {
         return;
     }
     let current = existing.unwrap_or("");
-    if current == expected {
+    if current == request.content {
         return;
     }
-    output_lines.push(format_unified_diff(file_path, current, expected));
+    request.output_lines.push(format_unified_diff(
+        request.file_path,
+        current,
+        request.content,
+    ));
 }
 
 fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
@@ -422,16 +536,12 @@ fn validate_providers(providers: &[String]) -> (Vec<String>, Vec<String>) {
 /// Returns an error if project discovery fails or workflow generation fails.
 #[instrument(name = "sync_ci", skip_all)]
 pub async fn execute_sync_ci(
-    path: &str,
-    _package: &str,
-    dry_run: bool,
-    check: bool,
-    provider: Option<&str>,
+    request: CiSyncRequest<'_>,
     executor: &CommandExecutor,
 ) -> Result<String> {
     tracing::info!("Starting sync ci command");
 
-    let dir_path = Path::new(path);
+    let dir_path = Path::new(request.path);
 
     // Get cached module from executor and discover projects before async work
     // (ModuleGuard contains MutexGuard which is not Send)
@@ -466,7 +576,7 @@ pub async fn execute_sync_ci(
     }
 
     // Determine which providers to sync (CLI flag takes precedence)
-    let providers: Vec<String> = if let Some(p) = provider {
+    let providers: Vec<String> = if let Some(p) = request.options.provider {
         vec![p.to_string()]
     } else {
         // Use configured providers from CUE
@@ -502,8 +612,21 @@ pub async fn execute_sync_ci(
 
     for prov in &valid_providers {
         let result = match prov.as_str() {
-            "github" => execute_sync_github(&repo_root, dry_run, check, &target_projects).await,
-            "buildkite" => execute_sync_buildkite(&repo_root, dry_run, check),
+            "github" => {
+                let github_request = GithubSyncRequest {
+                    repo_root: &repo_root,
+                    options: request.options,
+                    projects: &target_projects,
+                };
+                execute_sync_github(github_request).await
+            }
+            "buildkite" => {
+                let buildkite_request = BuildkiteSyncRequest {
+                    repo_root: &repo_root,
+                    options: request.options,
+                };
+                execute_sync_buildkite(&buildkite_request)
+            }
             "gitlab" => {
                 tracing::debug!("GitLab CI sync not yet implemented");
                 continue;
@@ -518,7 +641,7 @@ pub async fn execute_sync_ci(
             Ok(output) if !output.is_empty() => outputs.push(output),
             Ok(_) => {} // Skip empty output (no config for this provider)
             Err(e) => {
-                if provider.is_some() {
+                if request.options.provider.is_some() {
                     return Err(e);
                 }
                 tracing::debug!("Skipping {prov}: {e}");
@@ -555,10 +678,7 @@ pub async fn execute_sync_ci(
 /// Returns an error if module evaluation or workflow generation fails.
 #[instrument(name = "sync_ci_workspace", skip_all)]
 pub async fn execute_sync_ci_workspace(
-    _package: &str,
-    dry_run: bool,
-    check: bool,
-    provider: Option<&str>,
+    request: CiWorkspaceSyncRequest<'_>,
     executor: &CommandExecutor,
 ) -> Result<String> {
     // Get cached module from executor and discover projects before async work
@@ -581,15 +701,12 @@ pub async fn execute_sync_ci_workspace(
         // Use absolute path - relative_path is relative to module root, not CWD
         let project_path_str = project.project_path.to_string_lossy();
 
-        let result = execute_sync_ci(
-            &project_path_str,
-            "cuenv",
-            dry_run,
-            check,
-            provider,
-            executor,
-        )
-        .await;
+        let ci_request = CiSyncRequest {
+            path: &project_path_str,
+            package: request.package,
+            options: request.options,
+        };
+        let result = execute_sync_ci(ci_request, executor).await;
 
         match result {
             Ok(output) if !output.is_empty() => {
@@ -612,12 +729,12 @@ pub async fn execute_sync_ci_workspace(
 /// Sync GitHub Actions workflow files from CUE configuration.
 #[allow(clippy::too_many_lines)]
 #[instrument(name = "sync_github", skip_all)]
-async fn execute_sync_github(
-    repo_root: &Path,
-    dry_run: bool,
-    check: bool,
-    projects: &[ProjectInfo],
-) -> Result<String> {
+async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
+    let GithubSyncRequest {
+        repo_root,
+        options,
+        projects,
+    } = request;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
             "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
@@ -645,7 +762,7 @@ async fn execute_sync_github(
     let mut output_lines = Vec::new();
 
     // Check mode: compare generated content with existing files
-    if check {
+    if options.check {
         let mut out_of_sync = Vec::new();
         for (filename, content) in &all_workflows {
             let path = workflows_dir.join(filename);
@@ -681,7 +798,7 @@ async fn execute_sync_github(
         let exists = workflow_path.exists();
 
         // Check if content matches (skip if unchanged)
-        if exists && !dry_run {
+        if exists && !options.dry_run {
             let existing = std::fs::read_to_string(&workflow_path).unwrap_or_default();
             if existing == *content {
                 output_lines.push(format!("GitHub: {filename} (unchanged)"));
@@ -689,7 +806,7 @@ async fn execute_sync_github(
             }
         }
 
-        if dry_run {
+        if options.dry_run {
             if exists {
                 output_lines.push(format!("GitHub: Would update {filename}"));
             } else {
@@ -1611,7 +1728,8 @@ fn build_github_trigger_condition(
 
 /// Sync Buildkite bootstrap pipeline file.
 #[instrument(name = "sync_buildkite", skip_all)]
-fn execute_sync_buildkite(repo_root: &Path, dry_run: bool, check: bool) -> Result<String> {
+fn execute_sync_buildkite(request: &BuildkiteSyncRequest<'_>) -> Result<String> {
+    let BuildkiteSyncRequest { repo_root, options } = *request;
     // Note: Using --dynamic instead of --format for the new CLI
     let pipeline_content = r#"# Buildkite bootstrap pipeline for cuenv
 # This installs Nix, builds cuenv, then generates a dynamic pipeline
@@ -1640,7 +1758,7 @@ steps:
     let pipeline_path = buildkite_dir.join("pipeline.yml");
 
     // Check mode
-    if check {
+    if options.check {
         if pipeline_path.exists() {
             let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
             if existing == pipeline_content {
@@ -1658,7 +1776,7 @@ steps:
     let exists = pipeline_path.exists();
 
     // Check if file exists and matches (skip if unchanged)
-    if exists && !dry_run {
+    if exists && !options.dry_run {
         let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
         if existing == pipeline_content {
             return Ok("Buildkite: pipeline.yml (unchanged)".to_string());
@@ -1666,7 +1784,7 @@ steps:
     }
 
     // Dry-run mode
-    if dry_run {
+    if options.dry_run {
         if exists {
             return Ok("Buildkite: Would update pipeline.yml".to_string());
         }

@@ -40,6 +40,19 @@ struct ProjectInfo {
     path: String,
 }
 
+/// Options for executing the info command.
+#[derive(Clone, Copy, Debug)]
+pub struct InfoOptions<'a> {
+    /// None for recursive evaluation (./...), Some(path) for specific directory only.
+    pub path: Option<&'a str>,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Whether to output JSON format.
+    pub json_output: bool,
+    /// Include source location metadata for all values.
+    pub with_meta: bool,
+}
+
 /// Execute the info command.
 ///
 /// Evaluates CUE instances and displays information about
@@ -55,15 +68,10 @@ struct ProjectInfo {
 ///
 /// Returns an error if CUE evaluation fails or path canonicalization fails.
 #[allow(clippy::too_many_lines)]
-pub fn execute_info(
-    path: Option<&str>,
-    package: &str,
-    json_output: bool,
-    with_meta: bool,
-) -> Result<String> {
+pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
     // Determine if we should scan all directories based on whether a path was explicitly provided
-    let scan_all = path.is_none();
-    let effective_path = path.unwrap_or(".");
+    let scan_all = options.path.is_none();
+    let effective_path = options.path.unwrap_or(".");
 
     let start_path =
         Path::new(effective_path)
@@ -85,12 +93,12 @@ pub fn execute_info(
     // Evaluate using discovery-based approach
     let raw_result = if scan_all {
         // Discover all directories with env.cue files matching our package
-        let env_cue_dirs = discover_env_cue_directories(&module_root, package);
+        let env_cue_dirs = discover_env_cue_directories(&module_root, options.package);
 
         if env_cue_dirs.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
                 "No env.cue files with package '{}' found in module: {}",
-                package,
+                options.package,
                 module_root.display()
             )));
         }
@@ -102,15 +110,16 @@ pub fn execute_info(
 
         for dir in env_cue_dirs {
             let dir_rel_path = compute_relative_path(&dir, &module_root);
-            let options = ModuleEvalOptions {
+            let eval_options = ModuleEvalOptions {
                 recursive: false,
-                with_meta,
+                with_meta: options.with_meta,
                 target_dir: Some(dir.to_string_lossy().to_string()),
                 ..Default::default()
             };
 
-            let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options))
-                .map_err(convert_engine_error)
+            let Ok(raw) =
+                cuengine::evaluate_module(&module_root, options.package, Some(&eval_options))
+                    .map_err(convert_engine_error)
             else {
                 continue;
             };
@@ -123,9 +132,16 @@ pub fn execute_info(
                     path_str
                 };
                 all_instances.insert(rel_path.clone(), value);
+            }
 
-                if raw.projects.contains(&".".to_string()) {
-                    all_projects.push(rel_path);
+            for project_path in raw.projects {
+                let rel_project_path = if project_path == "." {
+                    dir_rel_path.clone()
+                } else {
+                    project_path
+                };
+                if !all_projects.contains(&rel_project_path) {
+                    all_projects.push(rel_project_path);
                 }
             }
 
@@ -153,19 +169,19 @@ pub fn execute_info(
         }
     } else {
         // Evaluate specific path only (non-recursive)
-        let options = ModuleEvalOptions {
-            with_meta,
+        let eval_options = ModuleEvalOptions {
+            with_meta: options.with_meta,
             recursive: false,
             target_dir: Some(start_path.to_string_lossy().to_string()),
             ..Default::default()
         };
 
-        cuengine::evaluate_module(&module_root, package, Some(&options))
+        cuengine::evaluate_module(&module_root, options.package, Some(&eval_options))
             .map_err(convert_engine_error)?
     };
 
     // If --meta is requested, dump the full JSON with separate meta map
-    if with_meta {
+    if options.with_meta {
         let output = MetaOutput {
             module_root: module_root.display().to_string(),
             instances: raw_result.instances,
@@ -198,7 +214,7 @@ pub fn execute_info(
     // Sort by name for consistent output
     projects.sort_by(|a, b| a.name.cmp(&b.name));
 
-    if json_output {
+    if options.json_output {
         let output = InfoOutput {
             module_root: module_root.display().to_string(),
             base_count: module.base_count(),
@@ -374,7 +390,12 @@ mod tests {
 
     #[test]
     fn test_execute_info_invalid_path() {
-        let result = execute_info(Some("/nonexistent/path"), "cuenv", false, false);
+        let result = execute_info(InfoOptions {
+            path: Some("/nonexistent/path"),
+            package: "cuenv",
+            json_output: false,
+            with_meta: false,
+        });
         assert!(result.is_err());
     }
 
@@ -382,7 +403,12 @@ mod tests {
     fn test_execute_info_no_cue_module() {
         // Use temp directory with no cue.mod
         let temp = std::env::temp_dir();
-        let result = execute_info(Some(temp.to_str().unwrap()), "cuenv", false, false);
+        let result = execute_info(InfoOptions {
+            path: Some(temp.to_str().unwrap()),
+            package: "cuenv",
+            json_output: false,
+            with_meta: false,
+        });
         // Should fail with "No CUE module found"
         assert!(result.is_err());
     }

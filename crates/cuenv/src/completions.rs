@@ -76,9 +76,16 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
                 path_str
             };
             all_instances.insert(rel_path.clone(), value);
+        }
 
-            if raw.projects.contains(&".".to_string()) {
-                all_projects.push(rel_path);
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                dir_rel_path.clone()
+            } else {
+                project_path
+            };
+            if !all_projects.contains(&rel_project_path) {
+                all_projects.push(rel_project_path);
             }
         }
     }
@@ -87,12 +94,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         return Vec::new();
     }
 
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        all_instances,
-        all_projects,
-        None,
-    );
+    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
 
     // Calculate relative path from module root to target
     let Ok(target_path) = dir_path.canonicalize() else {
@@ -209,9 +211,16 @@ fn get_task_params(
                 path_str
             };
             all_instances.insert(rel_path.clone(), value);
+        }
 
-            if raw.projects.contains(&".".to_string()) {
-                all_projects.push(rel_path);
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                dir_rel_path.clone()
+            } else {
+                project_path
+            };
+            if !all_projects.contains(&rel_project_path) {
+                all_projects.push(rel_project_path);
             }
         }
     }
@@ -220,12 +229,7 @@ fn get_task_params(
         return None;
     }
 
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        all_instances,
-        all_projects,
-        None,
-    );
+    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
 
     // Calculate relative path
     let target_path = dir_path.canonicalize().ok()?;

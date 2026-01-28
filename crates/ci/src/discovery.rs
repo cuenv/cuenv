@@ -10,23 +10,14 @@
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
-use glob::glob;
+use cuenv_core::cue::discovery::discover_env_cue_directories;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
 #[must_use]
 pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().ok()?;
-    loop {
-        if current.join("cue.mod").is_dir() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
+    cuenv_core::cue::discovery::find_cue_module_root(start)
 }
 
 /// Evaluate the CUE module from the current working directory.
@@ -105,9 +96,16 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
                         path_str
                     };
                     all_instances.insert(rel_path.clone(), value);
+                }
 
-                    if raw.projects.contains(&".".to_string()) {
-                        all_projects.push(rel_path);
+                for project_path in raw.projects {
+                    let rel_project_path = if project_path == "." {
+                        dir_rel_path.clone()
+                    } else {
+                        project_path
+                    };
+                    if !all_projects.contains(&rel_project_path) {
+                        all_projects.push(rel_project_path);
                     }
                 }
 
@@ -161,73 +159,6 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         all_projects,
         references,
     ))
-}
-
-/// Discover all directories containing env.cue files with matching package.
-///
-/// Uses glob patterns to find all env.cue files in the module, then filters
-/// to those with the expected package declaration.
-fn discover_env_cue_directories(module_root: &Path, expected_package: &str) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
-
-    // Use glob to find all env.cue files
-    let pattern = format!("{}/**/env.cue", module_root.display());
-    let Ok(paths) = glob(&pattern) else {
-        return directories;
-    };
-
-    for entry in paths.flatten() {
-        // Check package matches
-        let Some(package_name) = detect_package_name(&entry) else {
-            continue;
-        };
-
-        if package_name != expected_package {
-            continue;
-        }
-
-        // Get the parent directory (where env.cue lives)
-        let Some(dir) = entry.parent() else {
-            continue;
-        };
-
-        // Store as absolute path for later use with target_dir
-        if let Ok(canonical) = dir.canonicalize() {
-            directories.push(canonical);
-        }
-    }
-
-    directories
-}
-
-/// Detect the CUE package name from a file.
-fn detect_package_name(path: &Path) -> Option<String> {
-    let contents = fs::read_to_string(path).ok()?;
-
-    // Look for package declaration in the first lines
-    for line in contents.lines().take(20) {
-        let trimmed = line.trim();
-
-        // Skip comments
-        if trimmed.starts_with("//") || trimmed.starts_with("/*") {
-            continue;
-        }
-
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        if let Some(rest) = trimmed.strip_prefix("package ") {
-            return rest.split_whitespace().next().map(String::from);
-        }
-
-        // If we hit a non-package declaration, stop looking
-        if !trimmed.is_empty() && !trimmed.starts_with("//") {
-            break;
-        }
-    }
-
-    None
 }
 
 /// Compute relative path from module_root to target directory.
