@@ -497,10 +497,56 @@ impl Compiler {
         // cue.mod is always at module root, not prefixed with project_path
         paths.insert("cue.mod/**".to_string());
 
+        // Add workspace member dependency paths
+        self.add_workspace_dependency_paths(&mut paths);
+
         // Sort for deterministic output
         let mut result: Vec<_> = paths.into_iter().collect();
         result.sort();
         result
+    }
+
+    /// Adds paths for workspace member dependencies (direct and transitive).
+    ///
+    /// If the current project is a member of a JS workspace, this finds all
+    /// other workspace members that this project depends on and adds their
+    /// paths to the trigger paths.
+    fn add_workspace_dependency_paths(&self, paths: &mut HashSet<String>) {
+        use cuenv_workspaces::{PackageJsonDiscovery, WorkspaceDiscovery};
+
+        let Some(ref project_path) = self.options.project_path else {
+            return; // Root project, no workspace dependency resolution needed
+        };
+
+        if project_path == "." {
+            return; // Root project
+        }
+
+        let module_root = self
+            .options
+            .module_root
+            .clone()
+            .or_else(|| self.options.project_root.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let Ok(workspace) = PackageJsonDiscovery.discover(&module_root) else {
+            return; // Not in a workspace
+        };
+
+        // Find current project as a workspace member by path
+        let project_path_buf = Path::new(project_path);
+        let Some(current_member) = workspace.find_member_by_path(project_path_buf) else {
+            return; // Current project not found as workspace member
+        };
+
+        // Resolve transitive workspace dependencies
+        let dep_paths = workspace.resolve_workspace_dependency_paths(&current_member.name);
+
+        // Add each dependency's path as a glob pattern
+        for dep_path in dep_paths {
+            let path_str = dep_path.to_string_lossy();
+            paths.insert(format!("{path_str}/**"));
+        }
     }
 
     /// Recursively collect task inputs including dependencies
