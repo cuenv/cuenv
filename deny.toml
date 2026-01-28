@@ -46,6 +46,11 @@ ignore = [
     "RUSTSEC-2025-0057",
     # derivative unmaintained - transitive dep
     "RUSTSEC-2025-0066",
+    # wasmtime f64.copysign segfault - transitive dep from extism 1.13.0
+    # extism requires ^37, no patched 37.x exists, awaiting upstream fix
+    # Vulnerability requires specific WASM input to trigger (low risk for us)
+    # TODO: Remove when extism releases version with patched wasmtime
+    "RUSTSEC-2026-0006",
 ]
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is

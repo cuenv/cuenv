@@ -1,8 +1,9 @@
 //! Core types for representing workspaces, dependencies, and package managers.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Type alias for semantic version strings.
 ///
@@ -171,6 +172,100 @@ impl Workspace {
         self.members
             .iter()
             .any(|m| m.path == path || path.starts_with(&m.path) || m.path.starts_with(path))
+    }
+
+    /// Finds a workspace member by its path.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cuenv_workspaces::{Workspace, WorkspaceMember, PackageManager};
+    /// use std::path::PathBuf;
+    ///
+    /// let mut workspace = Workspace::new(
+    ///     PathBuf::from("/workspace"),
+    ///     PackageManager::Bun,
+    /// );
+    ///
+    /// let member = WorkspaceMember {
+    ///     name: "website".to_string(),
+    ///     path: PathBuf::from("projects/website"),
+    ///     manifest_path: PathBuf::from("projects/website/package.json"),
+    ///     dependencies: vec![],
+    /// };
+    ///
+    /// workspace.add_member(member);
+    /// assert!(workspace.find_member_by_path(&PathBuf::from("projects/website")).is_some());
+    /// assert!(workspace.find_member_by_path(&PathBuf::from("other/path")).is_none());
+    /// ```
+    #[must_use]
+    pub fn find_member_by_path(&self, path: &Path) -> Option<&WorkspaceMember> {
+        self.members.iter().find(|m| m.path == path)
+    }
+
+    /// Returns the paths of all workspace members that the given member depends on,
+    /// including transitive dependencies.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use cuenv_workspaces::{Workspace, WorkspaceMember, PackageManager};
+    /// use std::path::PathBuf;
+    ///
+    /// let mut workspace = Workspace::new(
+    ///     PathBuf::from("/workspace"),
+    ///     PackageManager::Bun,
+    /// );
+    ///
+    /// workspace.add_member(WorkspaceMember {
+    ///     name: "shared".to_string(),
+    ///     path: PathBuf::from("packages/shared"),
+    ///     manifest_path: PathBuf::from("packages/shared/package.json"),
+    ///     dependencies: vec![],
+    /// });
+    ///
+    /// workspace.add_member(WorkspaceMember {
+    ///     name: "app".to_string(),
+    ///     path: PathBuf::from("packages/app"),
+    ///     manifest_path: PathBuf::from("packages/app/package.json"),
+    ///     dependencies: vec!["shared".to_string()],
+    /// });
+    ///
+    /// let deps = workspace.resolve_workspace_dependency_paths("app");
+    /// assert_eq!(deps.len(), 1);
+    /// assert!(deps.contains(&PathBuf::from("packages/shared")));
+    /// ```
+    #[must_use]
+    pub fn resolve_workspace_dependency_paths(&self, member_name: &str) -> HashSet<PathBuf> {
+        let mut paths = HashSet::new();
+        let mut visited = HashSet::new();
+        self.collect_workspace_deps_recursive(member_name, &mut paths, &mut visited);
+        paths
+    }
+
+    /// Recursively collects workspace dependency paths, preventing infinite loops
+    /// from circular dependencies.
+    fn collect_workspace_deps_recursive(
+        &self,
+        member_name: &str,
+        paths: &mut HashSet<PathBuf>,
+        visited: &mut HashSet<String>,
+    ) {
+        if !visited.insert(member_name.to_string()) {
+            return; // Already visited - prevent cycles
+        }
+
+        if let Some(member) = self.find_member(member_name) {
+            for dep_name in &member.dependencies {
+                if visited.contains(dep_name) {
+                    continue;
+                }
+                if let Some(dep_member) = self.find_member(dep_name) {
+                    paths.insert(dep_member.path.clone());
+                    self.collect_workspace_deps_recursive(dep_name, paths, visited);
+                }
+            }
+        }
     }
 }
 
@@ -661,5 +756,143 @@ mod tests {
         let json = serde_json::to_string(&entry).unwrap();
         let deserialized: LockfileEntry = serde_json::from_str(&json).unwrap();
         assert_eq!(entry, deserialized);
+    }
+
+    #[test]
+    fn test_find_member_by_path() {
+        let mut workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Bun);
+
+        workspace.add_member(WorkspaceMember {
+            name: "website".to_string(),
+            path: PathBuf::from("projects/website"),
+            manifest_path: PathBuf::from("projects/website/package.json"),
+            dependencies: vec![],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "api".to_string(),
+            path: PathBuf::from("packages/api"),
+            manifest_path: PathBuf::from("packages/api/package.json"),
+            dependencies: vec![],
+        });
+
+        // Find by exact path
+        let found = workspace.find_member_by_path(&PathBuf::from("projects/website"));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "website");
+
+        let found = workspace.find_member_by_path(&PathBuf::from("packages/api"));
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "api");
+
+        // Not found
+        assert!(
+            workspace
+                .find_member_by_path(&PathBuf::from("other/path"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn test_resolve_workspace_dependency_paths() {
+        let mut workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Bun);
+
+        workspace.add_member(WorkspaceMember {
+            name: "shared".to_string(),
+            path: PathBuf::from("packages/shared"),
+            manifest_path: PathBuf::from("packages/shared/package.json"),
+            dependencies: vec![],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "app".to_string(),
+            path: PathBuf::from("packages/app"),
+            manifest_path: PathBuf::from("packages/app/package.json"),
+            dependencies: vec!["shared".to_string()],
+        });
+
+        let deps = workspace.resolve_workspace_dependency_paths("app");
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains(&PathBuf::from("packages/shared")));
+
+        // shared has no workspace deps
+        let deps = workspace.resolve_workspace_dependency_paths("shared");
+        assert!(deps.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_transitive_workspace_deps() {
+        let mut workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Bun);
+
+        // core -> (no deps)
+        // utils -> core
+        // app -> utils (transitively depends on core)
+        workspace.add_member(WorkspaceMember {
+            name: "core".to_string(),
+            path: PathBuf::from("packages/core"),
+            manifest_path: PathBuf::from("packages/core/package.json"),
+            dependencies: vec![],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "utils".to_string(),
+            path: PathBuf::from("packages/utils"),
+            manifest_path: PathBuf::from("packages/utils/package.json"),
+            dependencies: vec!["core".to_string()],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "app".to_string(),
+            path: PathBuf::from("packages/app"),
+            manifest_path: PathBuf::from("packages/app/package.json"),
+            dependencies: vec!["utils".to_string()],
+        });
+
+        let deps = workspace.resolve_workspace_dependency_paths("app");
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&PathBuf::from("packages/utils")));
+        assert!(deps.contains(&PathBuf::from("packages/core")));
+    }
+
+    #[test]
+    fn test_resolve_workspace_deps_with_circular() {
+        let mut workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Npm);
+
+        // a -> b -> c -> a (circular)
+        workspace.add_member(WorkspaceMember {
+            name: "a".to_string(),
+            path: PathBuf::from("packages/a"),
+            manifest_path: PathBuf::from("packages/a/package.json"),
+            dependencies: vec!["b".to_string()],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "b".to_string(),
+            path: PathBuf::from("packages/b"),
+            manifest_path: PathBuf::from("packages/b/package.json"),
+            dependencies: vec!["c".to_string()],
+        });
+
+        workspace.add_member(WorkspaceMember {
+            name: "c".to_string(),
+            path: PathBuf::from("packages/c"),
+            manifest_path: PathBuf::from("packages/c/package.json"),
+            dependencies: vec!["a".to_string()],
+        });
+
+        // Should not infinite loop, should collect all deps
+        let deps = workspace.resolve_workspace_dependency_paths("a");
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains(&PathBuf::from("packages/b")));
+        assert!(deps.contains(&PathBuf::from("packages/c")));
+    }
+
+    #[test]
+    fn test_resolve_workspace_deps_unknown_member() {
+        let workspace = Workspace::new(PathBuf::from("/workspace"), PackageManager::Bun);
+
+        // Unknown member should return empty set
+        let deps = workspace.resolve_workspace_dependency_paths("nonexistent");
+        assert!(deps.is_empty());
     }
 }

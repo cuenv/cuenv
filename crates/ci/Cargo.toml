@@ -18,7 +18,7 @@ workspace = true
 cuenv-core = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-task-graph = { workspace = true }
-cuenv-workspaces = { workspace = true }
+cuenv-workspaces = { workspace = true, features = ["discovery-rust"] }
 cuenv-tools-nix = { workspace = true }
 cuenv-tools-github = { workspace = true }
 cuenv-tools-rustup = { workspace = true }
