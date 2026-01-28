@@ -1,5 +1,4 @@
 //! env.cue file detection and package validation.
-//! env.cue file detection and package validation.
 //!
 //! Provides utilities for finding and validating env.cue files
 //! within a CUE module hierarchy.
@@ -156,15 +155,28 @@ fn collect_ancestor_env_files(
 /// * `expected_package` - The CUE package name to filter for
 ///
 /// # Returns
-/// A vector of directory paths (relative to module_root) containing matching env.cue files.
+/// A vector of canonical directory paths containing matching env.cue files.
 /// The paths are suitable for use with `cuengine::evaluate_module` with `TargetDir` option.
 #[must_use]
 pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) -> Vec<PathBuf> {
     let mut directories = Vec::new();
 
-    let walker = WalkBuilder::new(module_root)
-        .follow_links(true)
+    let canonical_root = match module_root.canonicalize() {
+        Ok(root) => root,
+        Err(e) => {
+            tracing::warn!(
+                module_root = %module_root.display(),
+                error = %e,
+                "Failed to canonicalize module root for env.cue discovery"
+            );
+            return directories;
+        }
+    };
+
+    let walker = WalkBuilder::new(&canonical_root)
+        .follow_links(false)
         .standard_filters(true)
+        .filter_entry(|entry| entry.file_name() != std::ffi::OsStr::new("cue.mod"))
         .build();
 
     for result in walker {
@@ -177,18 +189,51 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
             continue;
         }
 
-        if !matches_package(path, expected_package) {
+        let canonical_path = match path.canonicalize() {
+            Ok(canonical) => canonical,
+            Err(_) => continue,
+        };
+
+        if !canonical_path.starts_with(&canonical_root) {
             continue;
         }
 
-        if let Some(dir) = path.parent()
-            && let Ok(canonical) = dir.canonicalize()
-        {
-            directories.push(canonical);
+        if !matches_package(&canonical_path, expected_package) {
+            continue;
+        }
+
+        if let Some(dir) = canonical_path.parent() {
+            directories.push(dir.to_path_buf());
         }
     }
 
     directories
+}
+
+/// Compute the relative path from module root to target directory.
+///
+/// Returns the path suitable for looking up instances in `ModuleEvaluation`.
+/// Returns `"."` for the module root itself.
+#[must_use]
+pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
+    target.strip_prefix(module_root).map_or_else(
+        |_| PathBuf::from("."),
+        |p| {
+            if p.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                p.to_path_buf()
+            }
+        },
+    )
+}
+
+/// Compute the relative path from module root to target directory as a string.
+#[must_use]
+pub fn relative_path_from_root_str(module_root: &Path, target: &Path) -> String {
+    relative_path_from_root(module_root, target)
+        .to_string_lossy()
+        .to_string()
 }
 
 fn matches_package(path: &Path, expected_package: &str) -> bool {

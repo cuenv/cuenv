@@ -118,7 +118,11 @@ fn sync_pre_push_hook(
     // Check mode
     if check {
         if pre_push_path.exists() {
-            let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
+            let existing = fs::read_to_string(&pre_push_path).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(pre_push_path.clone().into_boxed_path()),
+                operation: "read pre-push hook".to_string(),
+            })?;
             if existing == hook_script {
                 return Ok("pre-push: in sync".to_string());
             }
@@ -133,7 +137,11 @@ fn sync_pre_push_hook(
 
     // Check if unchanged
     if pre_push_path.exists() && !dry_run {
-        let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
+        let existing = fs::read_to_string(&pre_push_path).map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(pre_push_path.clone().into_boxed_path()),
+            operation: "read pre-push hook".to_string(),
+        })?;
         if existing == hook_script {
             return Ok("pre-push: unchanged".to_string());
         }

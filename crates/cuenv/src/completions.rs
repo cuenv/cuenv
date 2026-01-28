@@ -10,6 +10,7 @@
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
+use cuenv_core::cue::discovery::relative_path_from_root_str;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -57,7 +58,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     let mut all_projects = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
         let options = ModuleEvalOptions {
             recursive: false,
             target_dir: Some(dir.to_string_lossy().to_string()),
@@ -100,7 +101,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     let Ok(target_path) = dir_path.canonicalize() else {
         return Vec::new();
     };
-    let relative_path = compute_relative_path(&target_path, &module_root);
+    let relative_path = relative_path_from_root_str(&module_root, &target_path);
 
     let Some(instance) = module.get(&PathBuf::from(&relative_path)) else {
         return Vec::new();
@@ -133,21 +134,6 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
             (indexed.name.clone(), description)
         })
         .collect()
-}
-
-/// Compute relative path from module_root to target directory.
-/// Returns "." if the paths are equal or if stripping fails.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
 }
 
 /// Complete task parameters for a specific task (for future use)
@@ -193,7 +179,7 @@ fn get_task_params(
     let mut all_projects = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
         let options = ModuleEvalOptions {
             recursive: false,
             target_dir: Some(dir.to_string_lossy().to_string()),
@@ -233,7 +219,7 @@ fn get_task_params(
 
     // Calculate relative path
     let target_path = dir_path.canonicalize().ok()?;
-    let relative_path = compute_relative_path(&target_path, &module_root);
+    let relative_path = relative_path_from_root_str(&module_root, &target_path);
 
     let instance = module.get(&PathBuf::from(&relative_path))?;
     let mut manifest: cuenv_core::manifest::Project = instance.deserialize().ok()?;

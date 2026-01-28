@@ -28,16 +28,7 @@ pub fn convert_engine_error(err: cuengine::CueEngineError) -> cuenv_core::Error 
 /// Returns `"."` for the module root itself.
 #[must_use]
 pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
-    target.strip_prefix(module_root).map_or_else(
-        |_| PathBuf::from("."),
-        |p| {
-            if p.as_os_str().is_empty() {
-                PathBuf::from(".")
-            } else {
-                p.to_path_buf()
-            }
-        },
-    )
+    cuenv_core::cue::discovery::relative_path_from_root(module_root, target)
 }
 
 /// A guard that provides access to the loaded `ModuleEvaluation`.

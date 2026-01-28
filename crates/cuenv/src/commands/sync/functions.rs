@@ -340,7 +340,12 @@ fn sync_managed_file(
 ) -> Result<bool> {
     if options.should_check() {
         if request.output_path.exists() {
-            let contents = std::fs::read_to_string(request.output_path).unwrap_or_default();
+            let contents =
+                std::fs::read_to_string(request.output_path).map_err(|e| cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(request.output_path.to_path_buf().into_boxed_path()),
+                    operation: format!("read managed file: {}", request.file_path),
+                })?;
             if contents == request.content {
                 request
                     .output_lines
@@ -799,7 +804,12 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
 
         // Check if content matches (skip if unchanged)
         if exists && !options.dry_run {
-            let existing = std::fs::read_to_string(&workflow_path).unwrap_or_default();
+            let existing =
+                std::fs::read_to_string(&workflow_path).map_err(|e| cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(workflow_path.clone().into_boxed_path()),
+                    operation: "read workflow file".to_string(),
+                })?;
             if existing == *content {
                 output_lines.push(format!("GitHub: {filename} (unchanged)"));
                 continue;
@@ -1760,7 +1770,12 @@ steps:
     // Check mode
     if options.check {
         if pipeline_path.exists() {
-            let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
+            let existing =
+                std::fs::read_to_string(&pipeline_path).map_err(|e| cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(pipeline_path.clone().into_boxed_path()),
+                    operation: "read pipeline file".to_string(),
+                })?;
             if existing == pipeline_content {
                 return Ok("Buildkite: pipeline.yml in sync".to_string());
             }
@@ -1777,7 +1792,12 @@ steps:
 
     // Check if file exists and matches (skip if unchanged)
     if exists && !options.dry_run {
-        let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
+        let existing =
+            std::fs::read_to_string(&pipeline_path).map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(pipeline_path.clone().into_boxed_path()),
+                operation: "read pipeline file".to_string(),
+            })?;
         if existing == pipeline_content {
             return Ok("Buildkite: pipeline.yml (unchanged)".to_string());
         }

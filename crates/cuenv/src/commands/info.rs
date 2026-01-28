@@ -10,6 +10,7 @@
 use crate::commands::convert_engine_error;
 use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
 use cuengine::ModuleEvalOptions;
+use cuenv_core::cue::discovery::relative_path_from_root_str;
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -109,7 +110,7 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
         let mut all_meta = HashMap::new();
 
         for dir in env_cue_dirs {
-            let dir_rel_path = compute_relative_path(&dir, &module_root);
+            let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
             let eval_options = ModuleEvalOptions {
                 recursive: false,
                 with_meta: options.with_meta,
@@ -257,19 +258,6 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
     }
 }
 
-/// Compute relative path from module_root to target directory.
-fn compute_relative_path(target: &std::path::Path, module_root: &std::path::Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
-}
 
 #[cfg(test)]
 mod tests {

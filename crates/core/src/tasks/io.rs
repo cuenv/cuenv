@@ -204,7 +204,7 @@ impl InputResolver {
                 tracing::debug!(dir = %base_dir, "Walking directory for glob matches");
 
                 for entry in WalkDir::new(&walk_root)
-                    .follow_links(true)
+                    .follow_links(false)
                     .into_iter()
                     .filter_map(|e| e.ok())
                 {

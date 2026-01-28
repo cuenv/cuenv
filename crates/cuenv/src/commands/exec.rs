@@ -107,13 +107,15 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             }
         }
         Err(e) => {
-            // Check if this is a "no module found" error
-            let err_msg = e.to_string();
-            if err_msg.contains("No CUE module found") {
-                tracing::debug!("No CUE module found");
-                ManifestKind::None
-            } else {
-                return Err(e);
+            match &e {
+                cuenv_core::Error::Configuration { message, .. }
+                    if message.starts_with("No CUE module found")
+                        || message.starts_with("No env.cue files with package") =>
+                {
+                    tracing::debug!("No usable CUE module found");
+                    ManifestKind::None
+                }
+                _ => return Err(e),
             }
         }
     };

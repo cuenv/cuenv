@@ -47,6 +47,7 @@ use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
+use cuenv_core::cue::discovery::relative_path_from_root_str;
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -354,19 +355,6 @@ pub enum Command {
 /// Compute relative path from module_root to target directory.
 ///
 /// Returns "." if the paths are equal or if stripping fails.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
-}
-
 /// Executes CLI commands with centralized module evaluation and event handling.
 ///
 /// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
@@ -463,7 +451,7 @@ impl CommandExecutor {
                 };
 
                 // Compute relative path once for this directory
-                let dir_rel_path = compute_relative_path(&dir, &module_root);
+                let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
 
                 match cuengine::evaluate_module(&module_root, &self.package, Some(&options)) {
                     Ok(raw) => {

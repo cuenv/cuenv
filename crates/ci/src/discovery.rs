@@ -11,6 +11,7 @@ use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
 use cuenv_core::cue::discovery::discover_env_cue_directories;
+use cuenv_core::cue::discovery::relative_path_from_root_str;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -78,7 +79,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     let mut eval_errors = Vec::new();
 
     for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
         let options = ModuleEvalOptions {
             recursive: false,
             with_references: true,
@@ -162,19 +163,6 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 }
 
 /// Compute relative path from module_root to target directory.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
