@@ -497,10 +497,77 @@ impl Compiler {
         // cue.mod is always at module root, not prefixed with project_path
         paths.insert("cue.mod/**".to_string());
 
+        // Add workspace member dependency paths
+        self.add_workspace_dependency_paths(&mut paths);
+
         // Sort for deterministic output
         let mut result: Vec<_> = paths.into_iter().collect();
         result.sort();
         result
+    }
+
+    /// Adds paths for workspace member dependencies (direct and transitive).
+    ///
+    /// If the current project is a member of a workspace (JS/npm, pnpm, or Cargo),
+    /// this finds all other workspace members that this project depends on and
+    /// adds their paths to the trigger paths.
+    ///
+    /// # Supported Workspace Types
+    /// - npm/yarn workspaces (package.json)
+    /// - pnpm workspaces (pnpm-workspace.yaml)
+    /// - Cargo workspaces (Cargo.toml)
+    ///
+    /// # Testing
+    /// Core dependency resolution logic is tested in `cuenv_workspaces::Workspace`.
+    /// See `crates/workspaces/src/core/types.rs` for unit tests covering direct,
+    /// transitive, and circular dependency resolution.
+    fn add_workspace_dependency_paths(&self, paths: &mut HashSet<String>) {
+        use cuenv_workspaces::{
+            CargoTomlDiscovery, PackageJsonDiscovery, PnpmWorkspaceDiscovery, Workspace,
+            WorkspaceDiscovery,
+        };
+
+        let Some(ref project_path) = self.options.project_path else {
+            return; // Root project, no workspace dependency resolution needed
+        };
+
+        if project_path == "." {
+            return; // Root project
+        }
+
+        let module_root = self
+            .options
+            .module_root
+            .clone()
+            .or_else(|| self.options.project_root.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        // Try all workspace discovery methods
+        let workspace: Option<Workspace> = PackageJsonDiscovery
+            .discover(&module_root)
+            .ok()
+            .or_else(|| PnpmWorkspaceDiscovery.discover(&module_root).ok())
+            .or_else(|| CargoTomlDiscovery.discover(&module_root).ok());
+
+        let Some(workspace) = workspace else {
+            return; // Not in a supported workspace
+        };
+
+        // Find current project as a workspace member by path
+        let project_path_buf = Path::new(project_path);
+        let Some(current_member) = workspace.find_member_by_path(project_path_buf) else {
+            return; // Current project not found as workspace member
+        };
+
+        // Resolve transitive workspace dependencies
+        let dep_paths = workspace.resolve_workspace_dependency_paths(&current_member.name);
+
+        // Add each dependency's path as a glob pattern
+        for dep_path in dep_paths {
+            let mut pattern = dep_path.clone();
+            pattern.push("**");
+            paths.insert(pattern.to_string_lossy().into_owned());
+        }
     }
 
     /// Recursively collect task inputs including dependencies
