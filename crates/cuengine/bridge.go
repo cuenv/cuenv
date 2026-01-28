@@ -675,6 +675,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		Dir:        evalDir,
 		ModuleRoot: goModuleRoot,
 		Registry:   registry,
+		Package:    effectivePackageName,
 	}
 
 	var loadPattern string

@@ -2,24 +2,22 @@
 //!
 //! Provides functions for discovering CUE modules and projects for CI operations.
 //! Projects can be discovered from the current directory or from an already-evaluated module.
+//!
+//! Uses discovery-based evaluation: finds all env.cue files and evaluates each directory
+//! individually with `recursive: false`, avoiding CUE's `./...:package` pattern which
+//! can hang when directories contain mixed packages.
 
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
+use cuenv_core::cue::discovery::discover_env_cue_directories;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
 #[must_use]
 pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().ok()?;
-    loop {
-        if current.join("cue.mod").is_dir() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
+    cuenv_core::cue::discovery::find_cue_module_root(start)
 }
 
 /// Evaluate the CUE module from the current working directory.
@@ -27,10 +25,14 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 /// This is a convenience function that finds the module root from CWD,
 /// evaluates it, and returns the `ModuleEvaluation` for further processing.
 ///
+/// Uses discovery-based evaluation to avoid CUE's `./...:package` pattern
+/// which can hang when directories contain mixed packages.
+///
 /// # Errors
 /// Returns an error if:
 /// - Current directory cannot be determined
 /// - Not inside a CUE module (no `cue.mod/` found)
+/// - No env.cue files with matching package found
 /// - CUE evaluation fails
 ///
 /// # Example
@@ -45,6 +47,8 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 /// }
 /// ```
 pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
+    const PACKAGE: &str = "cuenv";
+
     let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
         source: e,
         path: None,
@@ -57,21 +61,92 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         )
     })?;
 
-    let options = ModuleEvalOptions {
-        recursive: true,
-        with_references: true,
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, "cuenv", Some(&options))
-        .map_err(|e| cuenv_core::Error::configuration(format!("CUE evaluation failed: {e}")))?;
+    // Discover all directories with env.cue files matching our package
+    let env_cue_dirs = discover_env_cue_directories(&module_root, PACKAGE);
+
+    if env_cue_dirs.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No env.cue files with package '{PACKAGE}' found in module: {}",
+            module_root.display()
+        )));
+    }
+
+    // Evaluate each directory individually (non-recursive)
+    let mut all_instances = HashMap::new();
+    let mut all_projects = Vec::new();
+    let mut all_meta = HashMap::new();
+    let mut eval_errors = Vec::new();
+
+    for dir in env_cue_dirs {
+        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let options = ModuleEvalOptions {
+            recursive: false,
+            with_references: true,
+            target_dir: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        match cuengine::evaluate_module(&module_root, PACKAGE, Some(&options)) {
+            Ok(raw) => {
+                // Merge instances (key by relative path from module_root)
+                for (path_str, value) in raw.instances {
+                    let rel_path = if path_str == "." {
+                        dir_rel_path.clone()
+                    } else {
+                        path_str
+                    };
+                    all_instances.insert(rel_path.clone(), value);
+                }
+
+                for project_path in raw.projects {
+                    let rel_project_path = if project_path == "." {
+                        dir_rel_path.clone()
+                    } else {
+                        project_path
+                    };
+                    if !all_projects.contains(&rel_project_path) {
+                        all_projects.push(rel_project_path);
+                    }
+                }
+
+                // Merge meta with adjusted paths
+                for (meta_key, meta_value) in raw.meta {
+                    let adjusted_key = if meta_key.starts_with("./") {
+                        meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
+                    } else {
+                        meta_key
+                    };
+                    all_meta.insert(adjusted_key, meta_value);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "Failed to evaluate env.cue - skipping directory"
+                );
+                eval_errors.push((dir, e));
+            }
+        }
+    }
+
+    if all_instances.is_empty() {
+        let error_summary = eval_errors
+            .iter()
+            .map(|(dir, e)| format!("  {}: {}", dir.display(), e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(cuenv_core::Error::configuration(format!(
+            "No instances could be evaluated. All directories failed:\n{error_summary}"
+        )));
+    }
 
     // Convert meta to reference map for dependsOn resolution
-    let references = if raw_result.meta.is_empty() {
+    let references = if all_meta.is_empty() {
         None
     } else {
         Some(
-            raw_result
-                .meta
+            all_meta
                 .into_iter()
                 .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
                 .collect(),
@@ -80,10 +155,24 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
     Ok(ModuleEvaluation::from_raw(
         module_root,
-        raw_result.instances,
-        raw_result.projects,
+        all_instances,
+        all_projects,
         references,
     ))
+}
+
+/// Compute relative path from module_root to target directory.
+fn compute_relative_path(target: &Path, module_root: &Path) -> String {
+    target.strip_prefix(module_root).map_or_else(
+        |_| ".".to_string(),
+        |p| {
+            if p.as_os_str().is_empty() {
+                ".".to_string()
+            } else {
+                p.to_string_lossy().to_string()
+            }
+        },
+    )
 }
 
 #[cfg(test)]

@@ -280,16 +280,24 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             path,
             package,
             meta,
-        } => match commands::info::execute_info(path.as_deref(), &package, json_mode, meta) {
-            Ok(output) => {
-                cuenv_events::print_redacted(&output);
-                Ok(())
+        } => {
+            let options = commands::info::InfoOptions {
+                path: path.as_deref(),
+                package: &package,
+                json_output: json_mode,
+                with_meta: meta,
+            };
+            match commands::info::execute_info(options) {
+                Ok(output) => {
+                    cuenv_events::print_redacted(&output);
+                    Ok(())
+                }
+                Err(e) => Err(CliError::eval_with_help(
+                    format!("Info command failed: {e}"),
+                    "Check that you are in a CUE module with valid env.cue files",
+                )),
             }
-            Err(e) => Err(CliError::eval_with_help(
-                format!("Info command failed: {e}"),
-                "Check that you are in a CUE module with valid env.cue files",
-            )),
-        },
+        }
 
         Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
 
@@ -925,7 +933,13 @@ async fn execute_command_safe(
             package,
             meta,
         } => {
-            return match commands::info::execute_info(path.as_deref(), package, json_mode, *meta) {
+            let options = commands::info::InfoOptions {
+                path: path.as_deref(),
+                package,
+                json_output: json_mode,
+                with_meta: *meta,
+            };
+            return match commands::info::execute_info(options) {
                 Ok(output) => {
                     cuenv_events::print_redacted(&output);
                     Ok(())
