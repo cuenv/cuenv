@@ -59,9 +59,14 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
 
     for dir in env_cue_dirs {
         let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
+        let target_dir = if dir == module_root {
+            None
+        } else {
+            Some(dir.to_string_lossy().to_string())
+        };
         let options = ModuleEvalOptions {
             recursive: false,
-            target_dir: Some(dir.to_string_lossy().to_string()),
+            target_dir,
             ..Default::default()
         };
 
@@ -180,9 +185,14 @@ fn get_task_params(
 
     for dir in env_cue_dirs {
         let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
+        let target_dir = if dir == module_root {
+            None
+        } else {
+            Some(dir.to_string_lossy().to_string())
+        };
         let options = ModuleEvalOptions {
             recursive: false,
-            target_dir: Some(dir.to_string_lossy().to_string()),
+            target_dir,
             ..Default::default()
         };
 

@@ -111,10 +111,15 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
 
         for dir in env_cue_dirs {
             let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
+            let target_dir = if dir == module_root {
+                None
+            } else {
+                Some(dir.to_string_lossy().to_string())
+            };
             let eval_options = ModuleEvalOptions {
                 recursive: false,
                 with_meta: options.with_meta,
-                target_dir: Some(dir.to_string_lossy().to_string()),
+                target_dir,
                 ..Default::default()
             };
 
@@ -148,10 +153,16 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
 
             // Merge meta with adjusted paths
             for (meta_key, meta_value) in raw.meta {
-                let adjusted_key = if meta_key.starts_with("./") {
-                    meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
+                let key_body = meta_key.strip_prefix("./").unwrap_or(&meta_key);
+                let adjusted_key = if dir_rel_path == "." {
+                    format!("./{key_body}")
                 } else {
-                    meta_key
+                    let prefix = format!("{dir_rel_path}/");
+                    if key_body.starts_with(&prefix) {
+                        key_body.to_string()
+                    } else {
+                        format!("{prefix}{key_body}")
+                    }
                 };
                 all_meta.insert(adjusted_key, meta_value);
             }
@@ -170,10 +181,15 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
         }
     } else {
         // Evaluate specific path only (non-recursive)
+        let target_dir = if start_path == module_root {
+            None
+        } else {
+            Some(start_path.to_string_lossy().to_string())
+        };
         let eval_options = ModuleEvalOptions {
             with_meta: options.with_meta,
             recursive: false,
-            target_dir: Some(start_path.to_string_lossy().to_string()),
+            target_dir,
             ..Default::default()
         };
 

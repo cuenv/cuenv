@@ -123,15 +123,20 @@ fn enrich_task_ref_array(
     references: &ReferenceMap,
 ) {
     for (i, element) in arr.iter_mut().enumerate() {
+        // Look up the reference in metadata
+        let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
+        let alt_key = format!("{}/{}.{}", instance_path, array_path, i);
+        let reference = references
+            .get(&meta_key)
+            .or_else(|| references.get(&alt_key));
+
         if let serde_json::Value::Object(obj) = element {
             // Skip if _name already set
             if obj.contains_key("_name") {
                 continue;
             }
 
-            // Look up the reference in metadata
-            let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
-            if let Some(reference) = references.get(&meta_key) {
+            if let Some(reference) = reference {
                 // CUE ReferencePath already provides canonical path - just strip prefix
                 let task_name = strip_tasks_prefix(reference);
                 obj.insert(
@@ -139,6 +144,16 @@ fn enrich_task_ref_array(
                     serde_json::Value::String(task_name.to_string()),
                 );
             }
+        } else if let Some(reference) = reference {
+            // Replace non-object placeholder (e.g., null from unresolved reference)
+            // with a task reference object so deserialization can proceed.
+            let task_name = strip_tasks_prefix(reference);
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                "_name".to_string(),
+                serde_json::Value::String(task_name.to_string()),
+            );
+            *element = serde_json::Value::Object(obj);
         }
     }
 }

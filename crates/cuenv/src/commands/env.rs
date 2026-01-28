@@ -4,8 +4,10 @@
 //! from CUE configurations.
 
 use crate::commands::{CommandExecutor, relative_path_from_root};
+use cuenv_core::environment::Env;
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
+use std::collections::HashMap;
 use std::path::Path;
 use tracing::instrument;
 
@@ -32,8 +34,27 @@ fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
             relative_path.display()
         ))
     })?;
+    let mut manifest: Base = instance.deserialize()?;
 
-    instance.deserialize()
+    if let Some(extra_envs) = manifest.environments.take() {
+        match manifest.env.as_mut() {
+            Some(env) => {
+                if let Some(existing) = &mut env.environment {
+                    existing.extend(extra_envs);
+                } else {
+                    env.environment = Some(extra_envs);
+                }
+            }
+            None => {
+                manifest.env = Some(Env {
+                    base: HashMap::new(),
+                    environment: Some(extra_envs),
+                });
+            }
+        }
+    }
+
+    Ok(manifest)
 }
 
 /// List available environments in the CUE configuration.
@@ -101,9 +122,9 @@ pub async fn execute_env_print(
     let manifest: Base = load_base_config(path, executor)?;
 
     // Extract the env field
-    let env = manifest.env.ok_or_else(|| {
-        cuenv_core::Error::configuration("No 'env' field found in CUE package".to_string())
-    })?;
+    let Some(env) = manifest.env else {
+        return Ok(String::new());
+    };
 
     // Get environment variables, applying environment-specific overrides if specified
     let env_vars = if let Some(env_name) = environment {

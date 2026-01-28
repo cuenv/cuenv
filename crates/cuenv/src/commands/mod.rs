@@ -443,15 +443,20 @@ impl CommandExecutor {
             let mut eval_errors = Vec::new();
 
             for dir in env_cue_dirs {
-                let options = ModuleEvalOptions {
-                    recursive: false,
-                    with_references: true,
-                    target_dir: Some(dir.to_string_lossy().to_string()),
-                    ..Default::default()
-                };
-
                 // Compute relative path once for this directory
                 let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
+                let target_dir = if dir == module_root {
+                    None
+                } else {
+                    Some(dir.to_string_lossy().to_string())
+                };
+                let options = ModuleEvalOptions {
+                    recursive: false,
+                    with_meta: true,
+                    with_references: true,
+                    target_dir,
+                    ..Default::default()
+                };
 
                 match cuengine::evaluate_module(&module_root, &self.package, Some(&options)) {
                     Ok(raw) => {
@@ -479,11 +484,16 @@ impl CommandExecutor {
 
                         // Merge meta with adjusted paths
                         for (meta_key, meta_value) in raw.meta {
-                            // Meta keys are "instance_path/field_path" - adjust instance_path
-                            let adjusted_key = if meta_key.starts_with("./") {
-                                meta_key.replacen("./", &format!("{}/", dir_rel_path), 1)
+                            let key_body = meta_key.strip_prefix("./").unwrap_or(&meta_key);
+                            let adjusted_key = if dir_rel_path == "." {
+                                format!("./{key_body}")
                             } else {
-                                meta_key
+                                let prefix = format!("{dir_rel_path}/");
+                                if key_body.starts_with(&prefix) {
+                                    key_body.to_string()
+                                } else {
+                                    format!("{prefix}{key_body}")
+                                }
                             };
                             all_meta.insert(adjusted_key, meta_value);
                         }

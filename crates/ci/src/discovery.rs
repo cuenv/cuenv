@@ -80,10 +80,16 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
     for dir in env_cue_dirs {
         let dir_rel_path = relative_path_from_root_str(&module_root, &dir);
+        let target_dir = if dir == module_root {
+            None
+        } else {
+            Some(dir.to_string_lossy().to_string())
+        };
         let options = ModuleEvalOptions {
             recursive: false,
+            with_meta: true,
             with_references: true,
-            target_dir: Some(dir.to_string_lossy().to_string()),
+            target_dir,
             ..Default::default()
         };
 
@@ -112,10 +118,16 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
                 // Merge meta with adjusted paths
                 for (meta_key, meta_value) in raw.meta {
-                    let adjusted_key = if meta_key.starts_with("./") {
-                        meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
+                    let key_body = meta_key.strip_prefix("./").unwrap_or(&meta_key);
+                    let adjusted_key = if dir_rel_path == "." {
+                        format!("./{key_body}")
                     } else {
-                        meta_key
+                        let prefix = format!("{dir_rel_path}/");
+                        if key_body.starts_with(&prefix) {
+                            key_body.to_string()
+                        } else {
+                            format!("{prefix}{key_body}")
+                        }
                     };
                     all_meta.insert(adjusted_key, meta_value);
                 }

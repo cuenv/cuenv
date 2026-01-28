@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use crate::ci::CI;
 use crate::config::Config;
-use crate::environment::Env;
+use crate::environment::{Env, EnvValue};
 use crate::module::Instance;
 use crate::secrets::Secret;
 use crate::tasks::Task;
@@ -114,6 +114,10 @@ pub struct Base {
     /// Environment variables configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Env>,
+
+    /// Legacy top-level environment overrides for schema-free configs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environments: Option<HashMap<String, HashMap<String, EnvValue>>>,
 
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]
