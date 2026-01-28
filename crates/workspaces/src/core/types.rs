@@ -251,14 +251,12 @@ impl Workspace {
         paths: &mut HashSet<PathBuf>,
         visited: &mut HashSet<String>,
     ) {
-        if visited.contains(member_name) {
-            return; // Prevent infinite loops from circular dependencies
+        if !visited.insert(member_name.to_string()) {
+            return; // Already visited - prevent cycles
         }
-        visited.insert(member_name.to_string());
 
         if let Some(member) = self.find_member(member_name) {
             for dep_name in &member.dependencies {
-                // Skip if we've already processed this dependency
                 if visited.contains(dep_name) {
                     continue;
                 }

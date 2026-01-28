@@ -280,7 +280,6 @@
           pkg-config
           llvmPackages.bintools
           bun
-          swift
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
           patchelf

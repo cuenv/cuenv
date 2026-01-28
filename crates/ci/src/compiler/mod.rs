@@ -508,11 +508,24 @@ impl Compiler {
 
     /// Adds paths for workspace member dependencies (direct and transitive).
     ///
-    /// If the current project is a member of a JS workspace, this finds all
-    /// other workspace members that this project depends on and adds their
-    /// paths to the trigger paths.
+    /// If the current project is a member of a workspace (JS/npm, pnpm, or Cargo),
+    /// this finds all other workspace members that this project depends on and
+    /// adds their paths to the trigger paths.
+    ///
+    /// # Supported Workspace Types
+    /// - npm/yarn workspaces (package.json)
+    /// - pnpm workspaces (pnpm-workspace.yaml)
+    /// - Cargo workspaces (Cargo.toml)
+    ///
+    /// # Testing
+    /// Core dependency resolution logic is tested in `cuenv_workspaces::Workspace`.
+    /// See `crates/workspaces/src/core/types.rs` for unit tests covering direct,
+    /// transitive, and circular dependency resolution.
     fn add_workspace_dependency_paths(&self, paths: &mut HashSet<String>) {
-        use cuenv_workspaces::{PackageJsonDiscovery, WorkspaceDiscovery};
+        use cuenv_workspaces::{
+            CargoTomlDiscovery, PackageJsonDiscovery, PnpmWorkspaceDiscovery, Workspace,
+            WorkspaceDiscovery,
+        };
 
         let Some(ref project_path) = self.options.project_path else {
             return; // Root project, no workspace dependency resolution needed
@@ -529,8 +542,15 @@ impl Compiler {
             .or_else(|| self.options.project_root.clone())
             .unwrap_or_else(|| PathBuf::from("."));
 
-        let Ok(workspace) = PackageJsonDiscovery.discover(&module_root) else {
-            return; // Not in a workspace
+        // Try all workspace discovery methods
+        let workspace: Option<Workspace> = PackageJsonDiscovery
+            .discover(&module_root)
+            .ok()
+            .or_else(|| PnpmWorkspaceDiscovery.discover(&module_root).ok())
+            .or_else(|| CargoTomlDiscovery.discover(&module_root).ok());
+
+        let Some(workspace) = workspace else {
+            return; // Not in a supported workspace
         };
 
         // Find current project as a workspace member by path
@@ -544,8 +564,9 @@ impl Compiler {
 
         // Add each dependency's path as a glob pattern
         for dep_path in dep_paths {
-            let path_str = dep_path.to_string_lossy();
-            paths.insert(format!("{path_str}/**"));
+            let mut pattern = dep_path.clone();
+            pattern.push("**");
+            paths.insert(pattern.to_string_lossy().into_owned());
         }
     }
 
