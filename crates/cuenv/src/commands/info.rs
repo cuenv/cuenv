@@ -10,6 +10,7 @@
 use crate::commands::convert_engine_error;
 use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
 use cuengine::ModuleEvalOptions;
+use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path};
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -147,11 +148,7 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
 
             // Merge meta with adjusted paths
             for (meta_key, meta_value) in raw.meta {
-                let adjusted_key = if meta_key.starts_with("./") {
-                    meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
-                } else {
-                    meta_key
-                };
+                let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
                 all_meta.insert(adjusted_key, meta_value);
             }
         }
@@ -255,20 +252,6 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
 
         Ok(output)
     }
-}
-
-/// Compute relative path from module_root to target directory.
-fn compute_relative_path(target: &std::path::Path, module_root: &std::path::Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
 }
 
 #[cfg(test)]

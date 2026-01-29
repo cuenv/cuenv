@@ -10,7 +10,9 @@
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::Result;
-use cuenv_core::cue::discovery::discover_env_cue_directories;
+use cuenv_core::cue::discovery::{
+    adjust_meta_key_path, compute_relative_path, discover_env_cue_directories, format_eval_errors,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -111,11 +113,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
 
                 // Merge meta with adjusted paths
                 for (meta_key, meta_value) in raw.meta {
-                    let adjusted_key = if meta_key.starts_with("./") {
-                        meta_key.replacen("./", &format!("{dir_rel_path}/"), 1)
-                    } else {
-                        meta_key
-                    };
+                    let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
                     all_meta.insert(adjusted_key, meta_value);
                 }
             }
@@ -131,11 +129,7 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     }
 
     if all_instances.is_empty() {
-        let error_summary = eval_errors
-            .iter()
-            .map(|(dir, e)| format!("  {}: {}", dir.display(), e))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let error_summary = format_eval_errors(&eval_errors);
         return Err(cuenv_core::Error::configuration(format!(
             "No instances could be evaluated. All directories failed:\n{error_summary}"
         )));
@@ -159,20 +153,6 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         all_projects,
         references,
     ))
-}
-
-/// Compute relative path from module_root to target directory.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
 }
 
 #[cfg(test)]

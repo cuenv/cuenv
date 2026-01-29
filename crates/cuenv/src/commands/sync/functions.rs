@@ -118,6 +118,7 @@ pub struct CiSyncOptions<'a> {
 }
 
 /// Request for syncing CI for a single path.
+#[derive(Debug)]
 pub struct CiSyncRequest<'a> {
     /// Path to the CUE module or project directory.
     pub path: &'a str,
@@ -128,6 +129,7 @@ pub struct CiSyncRequest<'a> {
 }
 
 /// Request for syncing CI across the workspace.
+#[derive(Debug)]
 pub struct CiWorkspaceSyncRequest<'a> {
     /// CUE package name to evaluate.
     pub package: &'a str,

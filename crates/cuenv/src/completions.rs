@@ -10,6 +10,7 @@
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
+use cuenv_core::cue::discovery::compute_relative_path;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -133,21 +134,6 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
             (indexed.name.clone(), description)
         })
         .collect()
-}
-
-/// Compute relative path from module_root to target directory.
-/// Returns "." if the paths are equal or if stripping fails.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
 }
 
 /// Complete task parameters for a specific task (for future use)

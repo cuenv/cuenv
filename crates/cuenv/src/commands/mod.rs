@@ -47,6 +47,7 @@ use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
+use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -351,22 +352,6 @@ pub enum Command {
     ToolsList,
 }
 
-/// Compute relative path from module_root to target directory.
-///
-/// Returns "." if the paths are equal or if stripping fails.
-fn compute_relative_path(target: &Path, module_root: &Path) -> String {
-    target.strip_prefix(module_root).map_or_else(
-        |_| ".".to_string(),
-        |p| {
-            if p.as_os_str().is_empty() {
-                ".".to_string()
-            } else {
-                p.to_string_lossy().to_string()
-            }
-        },
-    )
-}
-
 /// Executes CLI commands with centralized module evaluation and event handling.
 ///
 /// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
@@ -491,12 +476,7 @@ impl CommandExecutor {
 
                         // Merge meta with adjusted paths
                         for (meta_key, meta_value) in raw.meta {
-                            // Meta keys are "instance_path/field_path" - adjust instance_path
-                            let adjusted_key = if meta_key.starts_with("./") {
-                                meta_key.replacen("./", &format!("{}/", dir_rel_path), 1)
-                            } else {
-                                meta_key
-                            };
+                            let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
                             all_meta.insert(adjusted_key, meta_value);
                         }
                     }
@@ -513,14 +493,9 @@ impl CommandExecutor {
             }
 
             if all_instances.is_empty() {
-                let error_summary = eval_errors
-                    .iter()
-                    .map(|(dir, e)| format!("  {}: {}", dir.display(), e))
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let error_summary = format_eval_errors(&eval_errors);
                 return Err(cuenv_core::Error::configuration(format!(
-                    "No instances could be evaluated. All directories failed:\n{}",
-                    error_summary
+                    "No instances could be evaluated. All directories failed:\n{error_summary}"
                 )));
             }
 
