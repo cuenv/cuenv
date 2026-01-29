@@ -1109,36 +1109,53 @@ impl Compiler {
         // Check for provider references in the environment
         let env_vars = env.for_environment(env_name);
         for value in env_vars.values() {
-            // Check for 1Password references
-            if providers.iter().any(|p| p == "onepassword") {
-                match value {
-                    cuenv_core::environment::EnvValue::String(s) if s.starts_with("op://") => {
-                        return true;
-                    }
-                    cuenv_core::environment::EnvValue::Secret(secret)
-                        if secret.resolver == "onepassword" =>
-                    {
-                        return true;
-                    }
-                    cuenv_core::environment::EnvValue::WithPolicies(wp) => match &wp.value {
-                        cuenv_core::environment::EnvValueSimple::Secret(secret)
-                            if secret.resolver == "onepassword" =>
-                        {
-                            return true;
-                        }
-                        cuenv_core::environment::EnvValueSimple::String(s)
-                            if s.starts_with("op://") =>
-                        {
-                            return true;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
+            if Self::value_has_provider(value, providers) {
+                return true;
             }
-            // Add other provider checks as needed (aws, vault, etc.)
         }
         false
+    }
+
+    /// Check if an `EnvValue` uses any of the specified secret providers.
+    /// Handles all value types including interpolated arrays.
+    fn value_has_provider(value: &cuenv_core::environment::EnvValue, providers: &[String]) -> bool {
+        use cuenv_core::environment::{EnvValue, EnvValueSimple};
+
+        match value {
+            EnvValue::String(s)
+                if providers.iter().any(|p| p == "onepassword") && s.starts_with("op://") =>
+            {
+                true
+            }
+            EnvValue::Secret(secret) => providers.iter().any(|p| p == &secret.resolver),
+            EnvValue::Interpolated(parts) => Self::parts_have_provider(parts, providers),
+            EnvValue::WithPolicies(wp) => match &wp.value {
+                EnvValueSimple::Secret(secret) => providers.iter().any(|p| p == &secret.resolver),
+                EnvValueSimple::String(s)
+                    if providers.iter().any(|p| p == "onepassword") && s.starts_with("op://") =>
+                {
+                    true
+                }
+                EnvValueSimple::Interpolated(parts) => Self::parts_have_provider(parts, providers),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Check if any part in an interpolated array uses one of the specified providers.
+    fn parts_have_provider(
+        parts: &[cuenv_core::environment::EnvPart],
+        providers: &[String],
+    ) -> bool {
+        use cuenv_core::environment::EnvPart;
+
+        parts.iter().any(|part| match part {
+            EnvPart::Secret(secret) => providers.iter().any(|p| p == &secret.resolver),
+            EnvPart::Literal(s) => {
+                providers.iter().any(|p| p == "onepassword") && s.contains("op://")
+            }
+        })
     }
 
     /// Check if any of the specified provider config paths are set
@@ -2994,5 +3011,133 @@ mod tests {
             vec!["docs.build"],
             "Sibling reference 'build' should resolve to 'docs.build'"
         );
+    }
+
+    // =========================================================================
+    // Provider Detection Tests (value_has_provider / parts_have_provider)
+    // =========================================================================
+
+    #[test]
+    fn test_value_has_provider_interpolated_with_exec_secret() {
+        use cuenv_core::environment::{EnvPart, EnvValue};
+        use cuenv_core::secrets::Secret;
+
+        let secret = Secret::new("echo".to_string(), vec!["test".to_string()]);
+        let parts = vec![
+            EnvPart::Literal("prefix-".to_string()),
+            EnvPart::Secret(secret),
+        ];
+        let value = EnvValue::Interpolated(parts);
+
+        // exec secret should NOT match onepassword provider
+        assert!(!Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_value_has_provider_interpolated_with_onepassword_secret() {
+        use cuenv_core::environment::{EnvPart, EnvValue};
+        use cuenv_core::secrets::Secret;
+
+        let secret = Secret::onepassword("op://vault/item/field");
+        let parts = vec![
+            EnvPart::Literal("prefix-".to_string()),
+            EnvPart::Secret(secret),
+        ];
+        let value = EnvValue::Interpolated(parts);
+
+        // onepassword secret SHOULD match onepassword provider
+        assert!(Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_value_has_provider_interpolated_only_literals() {
+        use cuenv_core::environment::{EnvPart, EnvValue};
+
+        let parts = vec![
+            EnvPart::Literal("hello".to_string()),
+            EnvPart::Literal("world".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+
+        // No secrets = no provider match
+        assert!(!Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_value_has_provider_interpolated_with_op_uri_in_literal() {
+        use cuenv_core::environment::{EnvPart, EnvValue};
+
+        // A literal string containing op:// should match onepassword provider
+        let parts = vec![
+            EnvPart::Literal("op://vault/item/field".to_string()),
+            EnvPart::Literal("-suffix".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+
+        assert!(Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_value_has_provider_with_policies_interpolated() {
+        use cuenv_core::environment::{EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies};
+        use cuenv_core::secrets::Secret;
+
+        let secret = Secret::onepassword("op://vault/item/field");
+        let parts = vec![
+            EnvPart::Literal("prefix-".to_string()),
+            EnvPart::Secret(secret),
+        ];
+
+        let value = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::Interpolated(parts),
+            policies: None,
+        });
+
+        assert!(Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_parts_have_provider_op_uri_in_literal() {
+        use cuenv_core::environment::EnvPart;
+
+        let parts = vec![
+            EnvPart::Literal("prefix-".to_string()),
+            EnvPart::Literal("op://vault/item/password".to_string()),
+        ];
+
+        // op:// URI in literal should match onepassword
+        assert!(Compiler::parts_have_provider(
+            &parts,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_parts_have_provider_op_uri_not_matching_other_providers() {
+        use cuenv_core::environment::EnvPart;
+
+        let parts = vec![EnvPart::Literal("op://vault/item/password".to_string())];
+
+        // op:// should NOT match other providers like "aws" or "vault"
+        assert!(!Compiler::parts_have_provider(&parts, &["aws".to_string()]));
+        assert!(!Compiler::parts_have_provider(
+            &parts,
+            &["vault".to_string()]
+        ));
     }
 }

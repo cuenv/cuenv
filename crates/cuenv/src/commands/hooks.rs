@@ -686,12 +686,11 @@ pub async fn execute_env_check(
         // Add CUE env variables to our map
         if let Some(env) = &config.env {
             for (key, value) in &env.base {
-                // Use the to_string_value method for all types
-                let value_str = value.to_string_value();
-                if value_str == "[SECRET]" {
-                    continue; // Skip secrets
+                // Skip any value that contains secrets
+                if value.is_secret() {
+                    continue;
                 }
-                all_env_vars.insert(key.clone(), value_str);
+                all_env_vars.insert(key.clone(), value.to_string_value());
             }
         }
 
