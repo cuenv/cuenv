@@ -1109,36 +1109,55 @@ impl Compiler {
         // Check for provider references in the environment
         let env_vars = env.for_environment(env_name);
         for value in env_vars.values() {
-            // Check for 1Password references
-            if providers.iter().any(|p| p == "onepassword") {
-                match value {
-                    cuenv_core::environment::EnvValue::String(s) if s.starts_with("op://") => {
-                        return true;
-                    }
-                    cuenv_core::environment::EnvValue::Secret(secret)
-                        if secret.resolver == "onepassword" =>
-                    {
-                        return true;
-                    }
-                    cuenv_core::environment::EnvValue::WithPolicies(wp) => match &wp.value {
-                        cuenv_core::environment::EnvValueSimple::Secret(secret)
-                            if secret.resolver == "onepassword" =>
-                        {
-                            return true;
-                        }
-                        cuenv_core::environment::EnvValueSimple::String(s)
-                            if s.starts_with("op://") =>
-                        {
-                            return true;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
+            if Self::value_has_provider(value, providers) {
+                return true;
             }
-            // Add other provider checks as needed (aws, vault, etc.)
         }
         false
+    }
+
+    /// Check if an `EnvValue` uses any of the specified secret providers.
+    /// Handles all value types including interpolated arrays.
+    fn value_has_provider(
+        value: &cuenv_core::environment::EnvValue,
+        providers: &[String],
+    ) -> bool {
+        use cuenv_core::environment::{EnvValue, EnvValueSimple};
+
+        match value {
+            EnvValue::String(s)
+                if providers.iter().any(|p| p == "onepassword") && s.starts_with("op://") =>
+            {
+                true
+            }
+            EnvValue::Secret(secret) => providers.iter().any(|p| p == &secret.resolver),
+            EnvValue::Interpolated(parts) => Self::parts_have_provider(parts, providers),
+            EnvValue::WithPolicies(wp) => match &wp.value {
+                EnvValueSimple::Secret(secret) => providers.iter().any(|p| p == &secret.resolver),
+                EnvValueSimple::String(s)
+                    if providers.iter().any(|p| p == "onepassword") && s.starts_with("op://") =>
+                {
+                    true
+                }
+                EnvValueSimple::Interpolated(parts) => Self::parts_have_provider(parts, providers),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Check if any part in an interpolated array uses one of the specified providers.
+    fn parts_have_provider(
+        parts: &[cuenv_core::environment::EnvPart],
+        providers: &[String],
+    ) -> bool {
+        parts.iter().any(|part| {
+            if let cuenv_core::environment::EnvPart::Secret(secret) = part {
+                providers.iter().any(|p| p == &secret.resolver)
+            } else {
+                false
+            }
+        })
     }
 
     /// Check if any of the specified provider config paths are set

@@ -7,6 +7,25 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 
+/// A part of an interpolated environment variable value.
+/// Can be a literal string or a secret that needs runtime resolution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum EnvPart {
+    /// A literal string value
+    Literal(String),
+    /// A secret that needs runtime resolution
+    Secret(crate::secrets::Secret),
+}
+
+impl EnvPart {
+    /// Check if this part is a secret
+    #[must_use]
+    pub fn is_secret(&self) -> bool {
+        matches!(self, EnvPart::Secret(_))
+    }
+}
+
 /// Policy for controlling environment variable access
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Policy {
@@ -34,24 +53,35 @@ pub struct EnvVarWithPolicies {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValueSimple {
-    String(String),
-    Int(i64),
-    Bool(bool),
+    /// A secret that needs runtime resolution
     Secret(crate::secrets::Secret),
+    /// An interpolated value composed of literal strings and secrets
+    Interpolated(Vec<EnvPart>),
+    /// A simple string value
+    String(String),
+    /// An integer value
+    Int(i64),
+    /// A boolean value
+    Bool(bool),
 }
 
-/// Environment variable values can be strings, integers, booleans, secrets, or values with policies
-/// When exported to actual environment, these will always be strings
+/// Environment variable values can be strings, integers, booleans, secrets,
+/// interpolated arrays, or values with policies.
+/// When exported to actual environment, these will always be strings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValue {
     // Value with policies must come first for serde untagged to try it first
+    // (it's an object with a specific "value" + "policies" shape)
     WithPolicies(EnvVarWithPolicies),
+    // Secret must come before String to parse {"resolver": ...} correctly
+    Secret(crate::secrets::Secret),
+    // Interpolated array must come before simple types
+    Interpolated(Vec<EnvPart>),
     // Simple values (backward compatible)
     String(String),
     Int(i64),
     Bool(bool),
-    Secret(crate::secrets::Secret),
 }
 
 /// Environment configuration with environment-specific overrides
@@ -88,9 +118,11 @@ impl EnvValue {
     pub fn is_accessible_by_task(&self, task_name: &str) -> bool {
         match self {
             // Simple values are always accessible
-            EnvValue::String(_) | EnvValue::Int(_) | EnvValue::Bool(_) | EnvValue::Secret(_) => {
-                true
-            }
+            EnvValue::String(_)
+            | EnvValue::Int(_)
+            | EnvValue::Bool(_)
+            | EnvValue::Secret(_)
+            | EnvValue::Interpolated(_) => true,
 
             // Check policies for restricted variables
             EnvValue::WithPolicies(var) => match &var.policies {
@@ -113,9 +145,11 @@ impl EnvValue {
     pub fn is_accessible_by_exec(&self, command: &str) -> bool {
         match self {
             // Simple values are always accessible
-            EnvValue::String(_) | EnvValue::Int(_) | EnvValue::Bool(_) | EnvValue::Secret(_) => {
-                true
-            }
+            EnvValue::String(_)
+            | EnvValue::Int(_)
+            | EnvValue::Bool(_)
+            | EnvValue::Secret(_)
+            | EnvValue::Interpolated(_) => true,
 
             // Check policies for restricted variables
             EnvValue::WithPolicies(var) => match &var.policies {
@@ -134,28 +168,47 @@ impl EnvValue {
         }
     }
 
-    /// Get the actual string value of the environment variable
+    /// Get the actual string value of the environment variable.
+    /// Secrets are redacted as `[SECRET]` placeholders.
     pub fn to_string_value(&self) -> String {
         match self {
             EnvValue::String(s) => s.clone(),
             EnvValue::Int(i) => i.to_string(),
             EnvValue::Bool(b) => b.to_string(),
-            EnvValue::Secret(_) => "[SECRET]".to_string(), // Placeholder for secrets
+            EnvValue::Secret(_) => "[SECRET]".to_string(),
+            EnvValue::Interpolated(parts) => Self::parts_to_string_value(parts),
             EnvValue::WithPolicies(var) => match &var.value {
                 EnvValueSimple::String(s) => s.clone(),
                 EnvValueSimple::Int(i) => i.to_string(),
                 EnvValueSimple::Bool(b) => b.to_string(),
                 EnvValueSimple::Secret(_) => "[SECRET]".to_string(),
+                EnvValueSimple::Interpolated(parts) => Self::parts_to_string_value(parts),
             },
         }
     }
 
-    /// Check if this environment value is a secret (requires resolution)
+    /// Convert interpolated parts to a string value with secrets redacted.
+    fn parts_to_string_value(parts: &[EnvPart]) -> String {
+        parts
+            .iter()
+            .map(|p| match p {
+                EnvPart::Literal(s) => s.clone(),
+                EnvPart::Secret(_) => "[SECRET]".to_string(),
+            })
+            .collect()
+    }
+
+    /// Check if this environment value contains any secrets (requires resolution)
     #[must_use]
     pub fn is_secret(&self) -> bool {
         match self {
             EnvValue::Secret(_) => true,
-            EnvValue::WithPolicies(var) => matches!(var.value, EnvValueSimple::Secret(_)),
+            EnvValue::Interpolated(parts) => parts.iter().any(EnvPart::is_secret),
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::Secret(_) => true,
+                EnvValueSimple::Interpolated(parts) => parts.iter().any(EnvPart::is_secret),
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -165,17 +218,61 @@ impl EnvValue {
     /// Secrets with typed resolvers (onepassword, exec, aws, etc.) are resolved
     /// via the trait-based [`SecretResolver`] system.
     pub async fn resolve(&self) -> crate::Result<String> {
+        let (resolved, _) = self.resolve_with_secrets().await?;
+        Ok(resolved)
+    }
+
+    /// Resolve the environment variable, returning both the final value
+    /// and a list of resolved secret values (for redaction).
+    ///
+    /// This is the preferred method when you need to track which values
+    /// should be redacted from output.
+    pub async fn resolve_with_secrets(&self) -> crate::Result<(String, Vec<String>)> {
         match self {
-            EnvValue::String(s) => Ok(s.clone()),
-            EnvValue::Int(i) => Ok(i.to_string()),
-            EnvValue::Bool(b) => Ok(b.to_string()),
-            EnvValue::Secret(s) => s.resolve().await,
-            EnvValue::WithPolicies(var) => match &var.value {
-                EnvValueSimple::String(s) => Ok(s.clone()),
-                EnvValueSimple::Int(i) => Ok(i.to_string()),
-                EnvValueSimple::Bool(b) => Ok(b.to_string()),
-                EnvValueSimple::Secret(s) => s.resolve().await,
-            },
+            EnvValue::String(s) => Ok((s.clone(), vec![])),
+            EnvValue::Int(i) => Ok((i.to_string(), vec![])),
+            EnvValue::Bool(b) => Ok((b.to_string(), vec![])),
+            EnvValue::Secret(s) => {
+                let resolved = s.resolve().await?;
+                Ok((resolved.clone(), vec![resolved]))
+            }
+            EnvValue::Interpolated(parts) => Self::resolve_parts_with_secrets(parts).await,
+            EnvValue::WithPolicies(var) => Self::resolve_simple_with_secrets(&var.value).await,
+        }
+    }
+
+    /// Resolve interpolated parts, returning the concatenated result and secret values.
+    async fn resolve_parts_with_secrets(parts: &[EnvPart]) -> crate::Result<(String, Vec<String>)> {
+        let mut result = String::new();
+        let mut secrets = Vec::new();
+
+        for part in parts {
+            match part {
+                EnvPart::Literal(s) => result.push_str(s),
+                EnvPart::Secret(s) => {
+                    let resolved = s.resolve().await?;
+                    secrets.push(resolved.clone());
+                    result.push_str(&resolved);
+                }
+            }
+        }
+
+        Ok((result, secrets))
+    }
+
+    /// Resolve a simple value (used by WithPolicies variant).
+    async fn resolve_simple_with_secrets(
+        value: &EnvValueSimple,
+    ) -> crate::Result<(String, Vec<String>)> {
+        match value {
+            EnvValueSimple::String(s) => Ok((s.clone(), vec![])),
+            EnvValueSimple::Int(i) => Ok((i.to_string(), vec![])),
+            EnvValueSimple::Bool(b) => Ok((b.to_string(), vec![])),
+            EnvValueSimple::Secret(s) => {
+                let resolved = s.resolve().await?;
+                Ok((resolved.clone(), vec![resolved]))
+            }
+            EnvValueSimple::Interpolated(parts) => Self::resolve_parts_with_secrets(parts).await,
         }
     }
 }
@@ -461,6 +558,8 @@ impl Environment {
     ///
     /// Returns `(resolved_env_vars, secret_values)` where `secret_values` contains
     /// the resolved values of any secrets, for use in output redaction.
+    /// For interpolated values, only the actual secret parts are collected for redaction,
+    /// not the full interpolated string.
     pub async fn resolve_for_task_with_secrets(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -481,11 +580,11 @@ impl Environment {
                 "checking env var"
             );
             if value.is_accessible_by_task(task_name) {
-                let resolved_value = value.resolve().await?;
-                if value.is_secret() {
-                    tracing::debug!(key = key, "resolved secret");
-                    secrets.push(resolved_value.clone());
+                let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
+                if !value_secrets.is_empty() {
+                    tracing::debug!(key = key, secret_count = value_secrets.len(), "resolved secrets");
                 }
+                secrets.append(&mut value_secrets);
                 resolved.insert(key.clone(), resolved_value);
             }
         }
@@ -520,6 +619,8 @@ impl Environment {
     ///
     /// Returns `(resolved_env_vars, secret_values)` where `secret_values` contains
     /// the resolved values of any secrets, for use in output redaction.
+    /// For interpolated values, only the actual secret parts are collected for redaction,
+    /// not the full interpolated string.
     pub async fn resolve_for_exec_with_secrets(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
@@ -529,10 +630,8 @@ impl Environment {
 
         for (key, value) in env_vars {
             if value.is_accessible_by_exec(command) {
-                let resolved_value = value.resolve().await?;
-                if value.is_secret() {
-                    secrets.push(resolved_value.clone());
-                }
+                let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
+                secrets.append(&mut value_secrets);
                 resolved.insert(key.clone(), resolved_value);
             }
         }
@@ -862,5 +961,217 @@ mod tests {
         });
         let resolved = env_val.resolve().await.unwrap();
         assert_eq!(resolved, "policy_value");
+    }
+
+    // ==========================================================================
+    // Interpolation tests
+    // ==========================================================================
+
+    #[test]
+    fn test_env_part_literal() {
+        let part = EnvPart::Literal("hello".to_string());
+        assert!(!part.is_secret());
+    }
+
+    #[test]
+    fn test_env_part_secret() {
+        let secret = crate::secrets::Secret::new("echo".to_string(), vec!["test".to_string()]);
+        let part = EnvPart::Secret(secret);
+        assert!(part.is_secret());
+    }
+
+    #[test]
+    fn test_env_part_deserialization_literal() {
+        let json = r#""hello""#;
+        let part: EnvPart = serde_json::from_str(json).unwrap();
+        assert!(matches!(part, EnvPart::Literal(ref s) if s == "hello"));
+        assert!(!part.is_secret());
+    }
+
+    #[test]
+    fn test_env_part_deserialization_secret() {
+        let json = r#"{"resolver": "exec", "command": "echo", "args": ["test"]}"#;
+        let part: EnvPart = serde_json::from_str(json).unwrap();
+        assert!(part.is_secret());
+    }
+
+    #[test]
+    fn test_env_value_interpolated_deserialization() {
+        let json = r#"["prefix-", {"resolver": "exec", "command": "gh", "args": ["auth", "token"]}]"#;
+        let value: EnvValue = serde_json::from_str(json).unwrap();
+        assert!(matches!(value, EnvValue::Interpolated(_)));
+        assert!(value.is_secret());
+    }
+
+    #[test]
+    fn test_interpolated_is_secret_with_no_secrets() {
+        let parts = vec![
+            EnvPart::Literal("hello".to_string()),
+            EnvPart::Literal("world".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        assert!(!value.is_secret());
+    }
+
+    #[test]
+    fn test_interpolated_is_secret_with_secret() {
+        let secret = crate::secrets::Secret::new("echo".to_string(), vec![]);
+        let parts = vec![
+            EnvPart::Literal("prefix".to_string()),
+            EnvPart::Secret(secret),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        assert!(value.is_secret());
+    }
+
+    #[test]
+    fn test_interpolated_to_string_value_redacts_secrets() {
+        let secret =
+            crate::secrets::Secret::new("gh".to_string(), vec!["auth".to_string(), "token".to_string()]);
+        let parts = vec![
+            EnvPart::Literal("access-tokens = github.com=".to_string()),
+            EnvPart::Secret(secret),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        assert_eq!(
+            value.to_string_value(),
+            "access-tokens = github.com=[SECRET]"
+        );
+    }
+
+    #[test]
+    fn test_interpolated_to_string_value_no_secrets() {
+        let parts = vec![
+            EnvPart::Literal("hello".to_string()),
+            EnvPart::Literal("-".to_string()),
+            EnvPart::Literal("world".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        assert_eq!(value.to_string_value(), "hello-world");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_with_secrets_collects_only_secret_parts() {
+        // Test that only actual secret values are collected for redaction,
+        // not the full interpolated string (when there are no secrets)
+        let parts = vec![
+            EnvPart::Literal("hello-".to_string()),
+            EnvPart::Literal("world".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        let (resolved, secrets) = value.resolve_with_secrets().await.unwrap();
+        assert_eq!(resolved, "hello-world");
+        assert!(secrets.is_empty()); // No secrets to redact
+    }
+
+    #[tokio::test]
+    async fn test_resolve_interpolated_concatenates_parts() {
+        let parts = vec![
+            EnvPart::Literal("a".to_string()),
+            EnvPart::Literal("b".to_string()),
+            EnvPart::Literal("c".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        let resolved = value.resolve().await.unwrap();
+        assert_eq!(resolved, "abc");
+    }
+
+    #[test]
+    fn test_interpolated_with_policies_is_secret() {
+        let secret = crate::secrets::Secret::new("cmd".to_string(), vec![]);
+        let parts = vec![
+            EnvPart::Literal("prefix".to_string()),
+            EnvPart::Secret(secret),
+        ];
+
+        let value = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::Interpolated(parts),
+            policies: Some(vec![Policy {
+                allow_tasks: Some(vec!["deploy".to_string()]),
+                allow_exec: None,
+            }]),
+        });
+
+        assert!(value.is_secret());
+    }
+
+    #[test]
+    fn test_interpolated_with_policies_to_string_value() {
+        let secret = crate::secrets::Secret::new("cmd".to_string(), vec![]);
+        let parts = vec![
+            EnvPart::Literal("before-".to_string()),
+            EnvPart::Secret(secret),
+            EnvPart::Literal("-after".to_string()),
+        ];
+
+        let value = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::Interpolated(parts),
+            policies: None,
+        });
+
+        assert_eq!(value.to_string_value(), "before-[SECRET]-after");
+    }
+
+    #[test]
+    fn test_interpolated_accessible_by_task() {
+        let parts = vec![EnvPart::Literal("value".to_string())];
+        let value = EnvValue::Interpolated(parts);
+        // Interpolated values without policies are always accessible
+        assert!(value.is_accessible_by_task("any_task"));
+    }
+
+    #[test]
+    fn test_extract_static_env_vars_skips_interpolated_secrets() {
+        // Simulate the extract_static_env_vars logic
+        let secret = crate::secrets::Secret::new("cmd".to_string(), vec![]);
+        let parts = vec![
+            EnvPart::Literal("prefix".to_string()),
+            EnvPart::Secret(secret),
+        ];
+
+        let mut base = HashMap::new();
+        base.insert("PLAIN".to_string(), EnvValue::String("value".to_string()));
+        base.insert(
+            "INTERPOLATED_SECRET".to_string(),
+            EnvValue::Interpolated(parts),
+        );
+        base.insert(
+            "INTERPOLATED_PLAIN".to_string(),
+            EnvValue::Interpolated(vec![
+                EnvPart::Literal("a".to_string()),
+                EnvPart::Literal("b".to_string()),
+            ]),
+        );
+
+        // Filter out secrets (simulating extract_static_env_vars logic)
+        let vars: HashMap<_, _> = base
+            .iter()
+            .filter(|(_, v)| !v.is_secret())
+            .map(|(k, v)| (k.clone(), v.to_string_value()))
+            .collect();
+
+        assert!(vars.contains_key("PLAIN"));
+        assert!(!vars.contains_key("INTERPOLATED_SECRET"));
+        assert!(vars.contains_key("INTERPOLATED_PLAIN"));
+        assert_eq!(vars.get("INTERPOLATED_PLAIN"), Some(&"ab".to_string()));
+    }
+
+    #[test]
+    fn test_env_value_simple_interpolated_deserialization() {
+        // Test that EnvValueSimple can deserialize interpolated arrays
+        let json = r#"["a", "b", "c"]"#;
+        let value: EnvValueSimple = serde_json::from_str(json).unwrap();
+        assert!(matches!(value, EnvValueSimple::Interpolated(_)));
+    }
+
+    #[test]
+    fn test_env_value_with_policies_interpolated_deserialization() {
+        let json = r#"{
+            "value": ["prefix-", {"resolver": "exec", "command": "gh", "args": ["auth", "token"]}],
+            "policies": [{"allowTasks": ["deploy"]}]
+        }"#;
+        let value: EnvValue = serde_json::from_str(json).unwrap();
+        assert!(matches!(value, EnvValue::WithPolicies(_)));
+        assert!(value.is_secret());
     }
 }

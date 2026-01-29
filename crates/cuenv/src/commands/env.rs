@@ -136,6 +136,9 @@ pub async fn execute_env_print(
 }
 
 /// Resolve all environment variables, returning resolved values and secret values separately.
+///
+/// For interpolated values, only the actual secret parts are collected for redaction,
+/// not the full interpolated string.
 async fn resolve_env_vars_with_secrets(
     env_map: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
 ) -> Result<(std::collections::HashMap<String, String>, Vec<String>)> {
@@ -143,10 +146,8 @@ async fn resolve_env_vars_with_secrets(
     let mut secrets = Vec::new();
 
     for (key, value) in env_map {
-        let resolved_value = value.resolve().await?;
-        if value.is_secret() {
-            secrets.push(resolved_value.clone());
-        }
+        let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
+        secrets.append(&mut value_secrets);
         resolved.insert(key.clone(), resolved_value);
     }
 
