@@ -12,10 +12,10 @@ use std::env;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvPart {
+    /// A secret that needs runtime resolution (must come first for serde untagged)
+    Secret(crate::secrets::Secret),
     /// A literal string value
     Literal(String),
-    /// A secret that needs runtime resolution
-    Secret(crate::secrets::Secret),
 }
 
 impl EnvPart {
@@ -251,8 +251,8 @@ impl EnvValue {
                 EnvPart::Literal(s) => result.push_str(s),
                 EnvPart::Secret(s) => {
                     let resolved = s.resolve().await?;
-                    secrets.push(resolved.clone());
                     result.push_str(&resolved);
+                    secrets.push(resolved);
                 }
             }
         }
@@ -582,7 +582,11 @@ impl Environment {
             if value.is_accessible_by_task(task_name) {
                 let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
                 if !value_secrets.is_empty() {
-                    tracing::debug!(key = key, secret_count = value_secrets.len(), "resolved secrets");
+                    tracing::debug!(
+                        key = key,
+                        secret_count = value_secrets.len(),
+                        "resolved secrets"
+                    );
                 }
                 secrets.append(&mut value_secrets);
                 resolved.insert(key.clone(), resolved_value);
@@ -997,7 +1001,8 @@ mod tests {
 
     #[test]
     fn test_env_value_interpolated_deserialization() {
-        let json = r#"["prefix-", {"resolver": "exec", "command": "gh", "args": ["auth", "token"]}]"#;
+        let json =
+            r#"["prefix-", {"resolver": "exec", "command": "gh", "args": ["auth", "token"]}]"#;
         let value: EnvValue = serde_json::from_str(json).unwrap();
         assert!(matches!(value, EnvValue::Interpolated(_)));
         assert!(value.is_secret());
@@ -1026,8 +1031,10 @@ mod tests {
 
     #[test]
     fn test_interpolated_to_string_value_redacts_secrets() {
-        let secret =
-            crate::secrets::Secret::new("gh".to_string(), vec!["auth".to_string(), "token".to_string()]);
+        let secret = crate::secrets::Secret::new(
+            "gh".to_string(),
+            vec!["auth".to_string(), "token".to_string()],
+        );
         let parts = vec![
             EnvPart::Literal("access-tokens = github.com=".to_string()),
             EnvPart::Secret(secret),
@@ -1173,5 +1180,31 @@ mod tests {
         let value: EnvValue = serde_json::from_str(json).unwrap();
         assert!(matches!(value, EnvValue::WithPolicies(_)));
         assert!(value.is_secret());
+    }
+
+    #[test]
+    fn test_interpolated_empty_array() {
+        let parts = vec![];
+        let value = EnvValue::Interpolated(parts);
+        assert_eq!(value.to_string_value(), "");
+        assert!(!value.is_secret());
+    }
+
+    #[tokio::test]
+    async fn test_resolve_interpolated_with_actual_secret() {
+        let secret =
+            crate::secrets::Secret::new("echo".to_string(), vec!["secret_value".to_string()]);
+        let parts = vec![
+            EnvPart::Literal("prefix-".to_string()),
+            EnvPart::Secret(secret),
+            EnvPart::Literal("-suffix".to_string()),
+        ];
+        let value = EnvValue::Interpolated(parts);
+        let (resolved, secrets) = value.resolve_with_secrets().await.unwrap();
+
+        assert!(resolved.contains("prefix-"));
+        assert!(resolved.contains("secret_value"));
+        assert!(resolved.contains("-suffix"));
+        assert_eq!(secrets.len(), 1);
     }
 }
