@@ -198,12 +198,27 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             }
         }
     } else if let Some(env) = &env_config {
-        // For Base: just use static env vars (no hooks, no secret resolution)
+        // For Base: no hooks, but still resolve secrets for exec
         tracing::debug!("Using Base configuration (no hooks)");
-        for (key, var) in &env.base {
-            // For Base, we use to_string_value() which handles all EnvValue variants
-            // but doesn't resolve secrets (secrets show as "[SECRET]")
-            runtime_env.set(key.clone(), var.to_string_value());
+
+        let env_vars = if let Some(env_name) = request.environment_override {
+            env.for_environment(env_name)
+        } else {
+            env.base.clone()
+        };
+
+        let (exec_env_vars, secrets) =
+            cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
+                request.command,
+                &env_vars,
+            )
+            .await?;
+        secrets_for_redaction = secrets;
+
+        cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
+
+        for (key, value) in exec_env_vars {
+            runtime_env.set(key, value);
         }
     } else {
         // No manifest at all - inherit host PATH
