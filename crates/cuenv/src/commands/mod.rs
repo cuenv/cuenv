@@ -47,6 +47,7 @@ use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
+use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -391,6 +392,10 @@ impl CommandExecutor {
     /// for subsequent calls. Commands that don't need CUE evaluation
     /// (version, completions, etc.) never trigger this load.
     ///
+    /// Uses filesystem discovery to find all env.cue files and evaluates each
+    /// directory individually with `recursive: false`. This avoids CUE's
+    /// `./...:package` pattern which hangs when directories contain mixed packages.
+    ///
     /// # Arguments
     /// * `path` - Directory to start searching for module root
     ///
@@ -402,7 +407,7 @@ impl CommandExecutor {
     /// Returns an error if:
     /// - The module lock cannot be acquired (poisoned mutex)
     /// - No CUE module root (cue.mod/) is found starting from the given path
-    /// - The CUE module evaluation fails
+    /// - No instances could be evaluated (all directories failed)
     pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
         let mut guard = self
             .module
@@ -417,21 +422,89 @@ impl CommandExecutor {
                 ))
             })?;
 
-            // Evaluate the entire module recursively with reference extraction
-            let options = ModuleEvalOptions {
-                recursive: true,
-                with_references: true,
-                ..Default::default()
-            };
-            let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
-                .map_err(convert_engine_error)?;
+            // Discover all directories with env.cue files matching our package
+            let env_cue_dirs = env_file::discover_env_cue_directories(&module_root, &self.package);
+
+            if env_cue_dirs.is_empty() {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "No env.cue files with package '{}' found in module: {}",
+                    self.package,
+                    module_root.display()
+                )));
+            }
+
+            // Evaluate each directory individually (non-recursive)
+            let mut all_instances = std::collections::HashMap::new();
+            let mut all_projects = Vec::new();
+            let mut all_meta = std::collections::HashMap::new();
+            let mut eval_errors = Vec::new();
+
+            for dir in env_cue_dirs {
+                let options = ModuleEvalOptions {
+                    recursive: false,
+                    with_references: true,
+                    target_dir: Some(dir.to_string_lossy().to_string()),
+                    ..Default::default()
+                };
+
+                // Compute relative path once for this directory
+                let dir_rel_path = compute_relative_path(&dir, &module_root);
+
+                match cuengine::evaluate_module(&module_root, &self.package, Some(&options)) {
+                    Ok(raw) => {
+                        // Merge instances (key by relative path from module_root)
+                        for (path_str, value) in raw.instances {
+                            // Convert to relative path for consistent keying
+                            let rel_path = if path_str == "." {
+                                dir_rel_path.clone()
+                            } else {
+                                path_str
+                            };
+                            all_instances.insert(rel_path.clone(), value);
+                        }
+
+                        for project_path in raw.projects {
+                            let rel_project_path = if project_path == "." {
+                                dir_rel_path.clone()
+                            } else {
+                                project_path
+                            };
+                            if !all_projects.contains(&rel_project_path) {
+                                all_projects.push(rel_project_path);
+                            }
+                        }
+
+                        // Merge meta with adjusted paths
+                        for (meta_key, meta_value) in raw.meta {
+                            let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
+                            all_meta.insert(adjusted_key, meta_value);
+                        }
+                    }
+                    Err(e) => {
+                        // Log warning but continue - some directories may fail
+                        tracing::warn!(
+                            dir = %dir.display(),
+                            error = %e,
+                            "Failed to evaluate env.cue - skipping directory"
+                        );
+                        eval_errors.push((dir, e));
+                    }
+                }
+            }
+
+            if all_instances.is_empty() {
+                let error_summary = format_eval_errors(&eval_errors);
+                return Err(cuenv_core::Error::configuration(format!(
+                    "No instances could be evaluated. All directories failed:\n{error_summary}"
+                )));
+            }
 
             // Convert meta to reference map for dependsOn resolution
-            let references = if raw.meta.is_empty() {
+            let references = if all_meta.is_empty() {
                 None
             } else {
                 Some(
-                    raw.meta
+                    all_meta
                         .into_iter()
                         .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
                         .collect(),
@@ -440,8 +513,8 @@ impl CommandExecutor {
 
             *guard = Some(ModuleEvaluation::from_raw(
                 module_root,
-                raw.instances,
-                raw.projects,
+                all_instances,
+                all_projects,
                 references,
             ));
         }
