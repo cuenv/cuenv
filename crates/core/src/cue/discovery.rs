@@ -163,7 +163,7 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
     let mut directories = Vec::new();
 
     let walker = WalkBuilder::new(module_root)
-        .follow_links(true)
+        .follow_links(false)
         .standard_filters(true)
         .build();
 
