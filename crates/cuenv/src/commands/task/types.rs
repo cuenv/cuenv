@@ -133,9 +133,6 @@ pub enum ExecutionMode {
     Tui,
 }
 
-// These builder methods are part of the public API but not all callers have migrated yet.
-// Suppress dead_code warnings until the migration is complete.
-#[allow(dead_code)]
 impl<'a> TaskExecutionRequest<'a> {
     /// Create a new request for listing tasks.
     #[must_use]

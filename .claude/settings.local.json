@@ -19,7 +19,8 @@
       "Bash(do cuenv sync:*)",
       "Bash(md5:*)",
       "Bash(done)",
-      "Bash(for i in 1 2 3 4 5)"
+      "Bash(for i in 1 2 3 4 5)",
+      "Bash(xargs -I {} sh -c 'awk \"\"/^[[:space:]]*\\(pub[[:space:]]+\\)?\\(async[[:space:]]+\\)?fn[[:space:]]+[^\\(]+\\\\\\(/ { start=NR; fn=\\\\$0; params=0; in_fn=1 } in_fn { line=\\\\$0; gsub\\(/\\\\/\\\\/.*/, \\\\\"\"\\\\\"\", line\\); if \\(line ~ /\\\\\\(/\\) params++; if \\(line ~ /\\\\\\)/\\) { params--; if \\(params == 0\\) { param_count = gsub\\(/,/, \\\\\"\"\\\\\"\", fn \\\\$0\\); if \\(param_count > 3\\) print FILENAME \\\\\"\":\\\\\"\" start \\\\\"\":\\\\\"\" fn; in_fn=0 } } else if \\(in_fn\\) fn = fn \\\\\"\" \\\\\"\" \\\\$0 }\"\" {}')"
     ]
   }
 }

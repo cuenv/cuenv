@@ -81,19 +81,19 @@ cuenv-tools-oci = { path = "crates/tools/oci", version = "0.1.0" }
 cuenv-tools-github = { path = "crates/tools/github", version = "0.1.0" }
 cuenv-tools-nix = { path = "crates/tools/nix", version = "0.1.0" }
 cuenv-tools-rustup = { path = "crates/tools/rustup", version = "0.1.0" }
-schemars = "1.0.4"
+schemars = "1.2.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 libc = "0.2"
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
-miette = { version = "7.0", features = ["fancy"] }
-uuid = { version = "1.18", features = ["v4", "serde"] }
+miette = { version = "7.6", features = ["fancy"] }
+uuid = { version = "1.20", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 # New dependencies for hook execution system
@@ -104,7 +104,7 @@ futures = "0.3"
 
 
 # Binary distribution
-bytes = "1.10"
+bytes = "1.11"
 flate2 = "1.1"
 tar = "0.4"
 
@@ -120,9 +120,9 @@ serde_yaml = "0.9"
 glob = "0.3"
 
 # Testing dependencies
-proptest = "1.0"
+proptest = "1.10"
 criterion = "0.8"
-tempfile = "3.0"
+tempfile = "3.25"
 temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies

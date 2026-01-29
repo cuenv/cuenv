@@ -12,17 +12,6 @@ fn create_test_executor() -> (CommandExecutor, EventReceiver) {
     (executor, receiver)
 }
 
-#[allow(dead_code)]
-async fn collect_events(mut receiver: EventReceiver, count: usize) -> Vec<Event> {
-    let mut events = Vec::new();
-    for _ in 0..count {
-        if let Ok(Some(event)) = timeout(Duration::from_millis(500), receiver.recv()).await {
-            events.push(event);
-        }
-    }
-    events
-}
-
 #[tokio::test]
 async fn test_command_executor_new() {
     let (sender, _receiver) = mpsc::unbounded_channel();
@@ -124,11 +113,11 @@ async fn test_execute_version_progress_events() {
 }
 
 #[tokio::test]
-async fn test_execute_env_print_success() {
+async fn test_execute_env_print_emits_failure_on_invalid_path() {
     let (executor, mut receiver) = create_test_executor();
 
-    // Mock successful env print
-    let path = "/tmp/test".to_string();
+    // Use a path that should not resolve to a valid cuenv project.
+    let path = "/definitely-not-a-cuenv-project".to_string();
     let package = "test-package".to_string();
     let format = "json".to_string();
 
@@ -153,9 +142,8 @@ async fn test_execute_env_print_success() {
         }
     }
 
-    // Note: This might fail due to actual file system operations
-    // In a real test, we'd mock the env::execute_env_print function
-    let _ = handle.await.unwrap();
+    let result = handle.await.unwrap();
+    assert!(result.is_err());
 
     // Verify start event was sent
     assert!(
@@ -163,12 +151,14 @@ async fn test_execute_env_print_success() {
             .iter()
             .any(|e| matches!(e, Event::CommandStart { command } if command == "env print"))
     );
-    // Verify complete event was sent (success depends on actual execution)
-    assert!(
-        events
-            .iter()
-            .any(|e| matches!(e, Event::CommandComplete { command, .. } if command == "env print"))
-    );
+    assert!(events.iter().any(|e| matches!(
+        e,
+        Event::CommandComplete {
+            command,
+            success: false,
+            ..
+        } if command == "env print"
+    )));
 }
 
 #[tokio::test]
