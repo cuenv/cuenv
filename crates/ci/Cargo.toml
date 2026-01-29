@@ -35,7 +35,7 @@ chrono = { workspace = true }
 cuenv-events = { workspace = true }
 dirs = { workspace = true }
 glob = "0.3"
-regex = "1.10"
+regex = "1.12"
 sha2 = { workspace = true }
 hex = "0.4"
 uuid = { workspace = true }
@@ -45,7 +45,7 @@ petgraph = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 temp-env = { workspace = true }
-proptest = "1.4"
+proptest = "1.10"
 
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"
 # but we might need git2 later if we want tighter integration.

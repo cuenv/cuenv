@@ -13,5 +13,6 @@
   },
   "rust-analyzer.check.command": "clippy",
   "nix.enableLanguageServer": true,
-  "nix.serverPath": "nil"
+  "nix.serverPath": "nil",
+  "git.enabled": false
 }
