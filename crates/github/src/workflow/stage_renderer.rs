@@ -3,7 +3,7 @@
 //! Converts cuenv IR stage tasks into GitHub Actions workflow steps.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Transform CI-agnostic secret reference syntax to GitHub Actions syntax.
 ///
@@ -62,8 +62,8 @@ pub struct ActionSpec {
     pub uses: String,
 
     /// Action inputs
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub inputs: HashMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, serde_json::Value>,
 }
 
 impl ActionSpec {
@@ -166,12 +166,11 @@ fn json_to_yaml_value(json: &serde_json::Value) -> serde_yaml::Value {
 mod tests {
     use super::*;
     use cuenv_ci::ir::CachePolicy;
-    use std::collections::BTreeMap;
 
     /// Helper to create provider_hints with a GitHub action
     fn make_github_action_hints(
         uses: &str,
-        inputs: HashMap<String, serde_json::Value>,
+        inputs: BTreeMap<String, serde_json::Value>,
     ) -> serde_json::Value {
         let mut action = serde_json::Map::new();
         action.insert(
@@ -244,7 +243,7 @@ mod tests {
 
     #[test]
     fn test_render_action_step() {
-        let mut inputs = HashMap::new();
+        let mut inputs = BTreeMap::new();
         inputs.insert(
             "extra-conf".to_string(),
             serde_json::Value::String("accept-flake-config = true".to_string()),
@@ -353,7 +352,7 @@ mod tests {
 
     #[test]
     fn test_action_spec_from_task() {
-        let mut inputs = HashMap::new();
+        let mut inputs = BTreeMap::new();
         inputs.insert(
             "key".to_string(),
             serde_json::Value::String("value".to_string()),
