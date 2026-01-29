@@ -169,19 +169,19 @@ impl EnvValue {
     }
 
     /// Get the actual string value of the environment variable.
-    /// Secrets are redacted as `[SECRET]` placeholders.
+    /// Secrets are redacted as `*_*` placeholders.
     pub fn to_string_value(&self) -> String {
         match self {
             EnvValue::String(s) => s.clone(),
             EnvValue::Int(i) => i.to_string(),
             EnvValue::Bool(b) => b.to_string(),
-            EnvValue::Secret(_) => "[SECRET]".to_string(),
+            EnvValue::Secret(_) => cuenv_events::REDACTED_PLACEHOLDER.to_string(),
             EnvValue::Interpolated(parts) => Self::parts_to_string_value(parts),
             EnvValue::WithPolicies(var) => match &var.value {
                 EnvValueSimple::String(s) => s.clone(),
                 EnvValueSimple::Int(i) => i.to_string(),
                 EnvValueSimple::Bool(b) => b.to_string(),
-                EnvValueSimple::Secret(_) => "[SECRET]".to_string(),
+                EnvValueSimple::Secret(_) => cuenv_events::REDACTED_PLACEHOLDER.to_string(),
                 EnvValueSimple::Interpolated(parts) => Self::parts_to_string_value(parts),
             },
         }
@@ -193,7 +193,7 @@ impl EnvValue {
             .iter()
             .map(|p| match p {
                 EnvPart::Literal(s) => s.clone(),
-                EnvPart::Secret(_) => "[SECRET]".to_string(),
+                EnvPart::Secret(_) => cuenv_events::REDACTED_PLACEHOLDER.to_string(),
             })
             .collect()
     }
@@ -1042,7 +1042,7 @@ mod tests {
         let value = EnvValue::Interpolated(parts);
         assert_eq!(
             value.to_string_value(),
-            "access-tokens = github.com=[SECRET]"
+            "access-tokens = github.com=*_*"
         );
     }
 
@@ -1116,7 +1116,7 @@ mod tests {
             policies: None,
         });
 
-        assert_eq!(value.to_string_value(), "before-[SECRET]-after");
+        assert_eq!(value.to_string_value(), "before-*_*-after");
     }
 
     #[test]
