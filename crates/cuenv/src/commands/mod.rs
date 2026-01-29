@@ -21,8 +21,6 @@ pub mod hooks;
 /// Project information and metadata display.
 pub mod info;
 mod module_utils;
-/// CODEOWNERS file generation and management.
-pub mod owners;
 /// Release management commands (prepare, version, publish, binaries).
 pub mod release;
 /// Secrets provider setup and management.

@@ -494,42 +494,40 @@ impl TuiManager {
     ///
     /// Returns an error if rendering fails.
     pub fn handle_event(&mut self, event: &Event) -> io::Result<()> {
-        match event {
-            Event::CommandStart { command } => {
-                self.state.command = Some(command.clone());
-                self.state.progress = 0.0;
-                self.state.message = "Starting...".to_string();
-                self.state.is_complete = false;
-                self.state.success = None;
-                self.state.output.clear();
-            }
-            Event::CommandProgress {
-                progress, message, ..
-            } => {
-                self.state.progress = *progress;
-                self.state.message.clone_from(message);
-            }
-            Event::CommandComplete {
-                success, output, ..
-            } => {
-                self.state.progress = 1.0;
-                self.state.is_complete = true;
-                self.state.success = Some(*success);
-                self.state.message = if *success { "Complete" } else { "Failed" }.to_string();
-                if !output.is_empty() {
-                    self.state.output.push(output.clone());
-                }
-            }
-            #[allow(clippy::match_same_arms)]
-            Event::TuiRefresh => {
-                // Force render
-            }
-            _ => {
-                // Other events don't need specific handling
-            }
-        }
+        apply_event_to_state(&mut self.state, event);
 
         self.tui.render(&self.state)
+    }
+}
+
+fn apply_event_to_state(state: &mut TuiState, event: &Event) {
+    match event {
+        Event::CommandStart { command } => {
+            state.command = Some(command.clone());
+            state.progress = 0.0;
+            state.message = "Starting...".to_string();
+            state.is_complete = false;
+            state.success = None;
+            state.output.clear();
+        }
+        Event::CommandProgress {
+            progress, message, ..
+        } => {
+            state.progress = *progress;
+            state.message.clone_from(message);
+        }
+        Event::CommandComplete {
+            success, output, ..
+        } => {
+            state.progress = 1.0;
+            state.is_complete = true;
+            state.success = Some(*success);
+            state.message = if *success { "Complete" } else { "Failed" }.to_string();
+            if !output.is_empty() {
+                state.output.push(output.clone());
+            }
+        }
+        _ => {}
     }
 }
 
@@ -578,14 +576,7 @@ mod tests {
             command: "build".to_string(),
         };
 
-        // Simulate the logic from handle_event
-        if let Event::CommandStart { command } = event {
-            state.command = Some(command.clone());
-            state.progress = 0.0;
-            state.message = "Starting...".to_string();
-            state.is_complete = false;
-            state.success = None;
-        }
+        apply_event_to_state(&mut state, &event);
 
         assert_eq!(state.command, Some("build".to_string()));
         assert_eq!(state.progress, 0.0);
@@ -607,14 +598,7 @@ mod tests {
             message: "Compiling...".to_string(),
         };
 
-        // Simulate the logic from handle_event
-        if let Event::CommandProgress {
-            progress, message, ..
-        } = event
-        {
-            state.progress = progress;
-            state.message = message.clone();
-        }
+        apply_event_to_state(&mut state, &event);
 
         assert!((state.progress - 0.75).abs() < f32::EPSILON);
         assert_eq!(state.message, "Compiling...");
@@ -634,19 +618,7 @@ mod tests {
             output: "Build successful".to_string(),
         };
 
-        // Simulate the logic from handle_event (matching actual implementation)
-        if let Event::CommandComplete {
-            success, output, ..
-        } = event
-        {
-            state.progress = 1.0;
-            state.is_complete = true;
-            state.success = Some(success);
-            state.message = if success { "Complete" } else { "Failed" }.to_string();
-            if !output.is_empty() {
-                state.output.push(output.clone());
-            }
-        }
+        apply_event_to_state(&mut state, &event);
 
         assert!((state.progress - 1.0).abs() < f32::EPSILON);
         assert_eq!(state.message, "Complete");
@@ -668,19 +640,7 @@ mod tests {
             output: "Build failed with errors".to_string(),
         };
 
-        // Simulate the logic from handle_event
-        if let Event::CommandComplete {
-            success, output, ..
-        } = event
-        {
-            state.progress = 1.0;
-            state.is_complete = true;
-            state.success = Some(success);
-            state.message = if success { "Complete" } else { "Failed" }.to_string();
-            if !output.is_empty() {
-                state.output.push(output.clone());
-            }
-        }
+        apply_event_to_state(&mut state, &event);
 
         assert!((state.progress - 1.0).abs() < f32::EPSILON);
         assert_eq!(state.message, "Failed");
@@ -768,33 +728,7 @@ mod tests {
         ];
 
         for event in events {
-            match event {
-                Event::CommandStart { command } => {
-                    state.command = Some(command);
-                    state.progress = 0.0;
-                    state.message = "Starting...".to_string();
-                    state.is_complete = false;
-                    state.success = None;
-                }
-                Event::CommandProgress {
-                    progress, message, ..
-                } => {
-                    state.progress = progress;
-                    state.message = message;
-                }
-                Event::CommandComplete {
-                    success, output, ..
-                } => {
-                    state.progress = 1.0;
-                    state.is_complete = true;
-                    state.success = Some(success);
-                    state.message = if success { "Complete" } else { "Failed" }.to_string();
-                    if !output.is_empty() {
-                        state.output.push(output);
-                    }
-                }
-                _ => {}
-            }
+            apply_event_to_state(&mut state, &event);
         }
 
         assert_eq!(state.command, Some("deploy".to_string()));
@@ -815,18 +749,7 @@ mod tests {
             output: String::new(), // Empty output
         };
 
-        if let Event::CommandComplete {
-            success, output, ..
-        } = event
-        {
-            state.progress = 1.0;
-            state.is_complete = true;
-            state.success = Some(success);
-            state.message = if success { "Complete" } else { "Failed" }.to_string();
-            if !output.is_empty() {
-                state.output.push(output);
-            }
-        }
+        apply_event_to_state(&mut state, &event);
 
         // Empty output should not be added to the output vector
         assert!(state.output.is_empty());

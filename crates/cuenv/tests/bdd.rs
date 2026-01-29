@@ -9,7 +9,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::branches_sharing_code,
-    clippy::panic,
     clippy::needless_pass_by_value,
     clippy::format_push_string
 )]
@@ -19,7 +18,6 @@ use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::PathBuf;
 use std::time::Duration;
-use tempfile::TempDir;
 use tokio::fs;
 use tokio::process::Command;
 use tokio::time::sleep;
@@ -30,9 +28,6 @@ use tokio::time::sleep;
 pub struct TestWorld {
     /// Current working directory for the test
     current_dir: PathBuf,
-    /// Temporary directory for test isolation
-    #[allow(dead_code)]
-    temp_dir: Option<TempDir>,
     /// Environment variables set during test
     env_vars: HashMap<String, String>,
     /// Last command output
@@ -92,7 +87,6 @@ impl TestWorld {
 
         Self {
             current_dir: std::env::current_dir().unwrap(),
-            temp_dir: None,
             env_vars: HashMap::new(),
             last_output: String::new(),
             last_exit_code: 0,
@@ -131,20 +125,6 @@ impl TestWorld {
         self.last_output = String::from_utf8_lossy(&output.stdout).to_string()
             + &String::from_utf8_lossy(&output.stderr);
         self.last_exit_code = output.status.code().unwrap_or(-1);
-
-        Ok(())
-    }
-
-    /// Create a test CUE file with specified content
-    #[allow(dead_code)]
-    async fn create_cue_file(&self, dir: &str, content: &str) -> Result<(), String> {
-        let path = self.temp_dir.as_ref().unwrap().path().join(dir);
-        fs::create_dir_all(&path).await.map_err(|e| e.to_string())?;
-
-        let cue_path = path.join("env.cue");
-        fs::write(&cue_path, content)
-            .await
-            .map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -211,32 +191,6 @@ impl TestWorld {
             .await;
         }
         false
-    }
-
-    /// Compute instance hash matching cuenv's implementation (directory + config)
-    #[allow(dead_code)]
-    fn compute_instance_hash(path: &std::path::Path) -> String {
-        // Match the exact implementation in cuenv-core/src/hooks/state.rs
-        use sha2::{Digest, Sha256};
-
-        // First compute the directory hash
-        let mut dir_hasher = Sha256::new();
-        dir_hasher.update(path.to_string_lossy().as_bytes());
-        let dir_hash = format!("{:x}", dir_hasher.finalize());
-
-        // Then combine with config hash to get instance hash
-        let config_hash = "1906aac1594e349e"; // Fixed config hash for test
-
-        let mut instance_hasher = Sha256::new();
-        instance_hasher.update(dir_hash.as_bytes());
-        instance_hasher.update(config_hash.as_bytes());
-        format!("{:x}", instance_hasher.finalize())[..16].to_string()
-    }
-
-    /// Compute directory hash for backward compatibility
-    #[allow(dead_code)]
-    fn compute_dir_hash(path: &std::path::Path) -> String {
-        Self::compute_instance_hash(path)
     }
 }
 
@@ -1197,7 +1151,10 @@ async fn when_i_run_command(world: &mut TestWorld, command: String) {
 
         world.run_cuenv(&args).await.unwrap();
     } else {
-        panic!("Expected command to start with 'cuenv', got: {}", command);
+        assert!(
+            command.starts_with("cuenv"),
+            "Expected command to start with 'cuenv', got: {command}"
+        );
     }
 }
 
