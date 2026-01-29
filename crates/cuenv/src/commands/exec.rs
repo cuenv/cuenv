@@ -8,11 +8,8 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
-use super::env_file::find_cue_module_root;
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
-use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
-use cuengine::ModuleEvalOptions;
-use cuenv_core::ModuleEvaluation;
+use super::{CommandExecutor, relative_path_from_root};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::{Base, Project};
@@ -35,10 +32,24 @@ enum ManifestKind {
     None,
 }
 
+/// Command execution request for `exec`.
+#[derive(Debug)]
+pub struct ExecRequest<'a> {
+    /// Path to the CUE module or project directory.
+    pub path: &'a str,
+    /// CUE package name to evaluate.
+    pub package: &'a str,
+    /// Command to execute.
+    pub command: &'a str,
+    /// Arguments to pass to the command.
+    pub args: &'a [String],
+    /// Optional environment name to use for execution.
+    pub environment_override: Option<&'a str>,
+}
+
 /// Run a command with the CUE environment.
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Uses the executor's cached module evaluation.
 ///
 /// If no CUE module is found, runs in "tools-only" mode where only
 /// runtime tools from lockfiles are activated.
@@ -47,88 +58,36 @@ enum ManifestKind {
 ///
 /// Returns an error if CUE evaluation fails or command execution fails.
 #[allow(clippy::too_many_lines)]
-#[instrument(name = "exec_run", skip(executor), fields(path = %path, command = %command))]
-pub async fn execute_exec(
-    path: &str,
-    package: &str,
-    command: &str,
-    args: &[String],
-    environment_override: Option<&str>,
-    executor: Option<&CommandExecutor>,
-) -> Result<i32> {
+#[instrument(
+    name = "exec_run",
+    skip(executor),
+    fields(path = %request.path, command = %request.command)
+)]
+pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) -> Result<i32> {
     tracing::info!(
         "Running command with CUE environment from path: {}, package: {}, command: {} {:?}",
-        path,
-        package,
-        command,
-        args
+        request.path,
+        request.package,
+        request.command,
+        request.args
     );
 
     // Evaluate CUE to get environment using module-wide evaluation
-    let target_path = Path::new(path)
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let target_path =
+        Path::new(request.path)
+            .canonicalize()
+            .map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(Path::new(request.path).to_path_buf().into_boxed_path()),
+                operation: "canonicalize path".to_string(),
+            })?;
 
     // Try to get the manifest - can be Project, Base, or None
-    let manifest_kind: ManifestKind = if let Some(cmd_executor) = executor {
-        tracing::debug!("Using cached module evaluation from executor");
-        match cmd_executor.get_module(&target_path) {
-            Ok(module) => {
-                let rel_path = relative_path_from_root(&module.root, &target_path);
+    let manifest_kind: ManifestKind = match executor.get_module(&target_path) {
+        Ok(module) => {
+            tracing::debug!("Using cached module evaluation from executor");
+            let rel_path = relative_path_from_root(&module.root, &target_path);
 
-                let instance = module.get(&rel_path).ok_or_else(|| {
-                    cuenv_core::Error::configuration(format!(
-                        "No CUE instance found at path: {} (relative: {})",
-                        target_path.display(),
-                        rel_path.display()
-                    ))
-                })?;
-
-                // Handle both Project and Base
-                match instance.kind {
-                    cuenv_core::InstanceKind::Project => {
-                        ManifestKind::Project(Box::new(instance.deserialize()?))
-                    }
-                    cuenv_core::InstanceKind::Base => {
-                        ManifestKind::Base(Box::new(instance.deserialize()?))
-                    }
-                }
-            }
-            Err(e) => {
-                // Check if this is a "no module found" error
-                let err_msg = e.to_string();
-                if err_msg.contains("No CUE module found") {
-                    tracing::debug!("No CUE module found");
-                    ManifestKind::None
-                } else {
-                    return Err(e);
-                }
-            }
-        }
-    } else {
-        // Legacy path: fresh evaluation
-        tracing::debug!("Using fresh module evaluation (no executor)");
-
-        if let Some(module_root) = find_cue_module_root(&target_path) {
-            let options = ModuleEvalOptions {
-                recursive: true,
-                ..Default::default()
-            };
-            let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options))
-                .map_err(convert_engine_error)?;
-
-            let module = ModuleEvaluation::from_raw(
-                module_root.clone(),
-                raw_result.instances,
-                raw_result.projects,
-                None,
-            );
-
-            let rel_path = relative_path_from_root(&module_root, &target_path);
             let instance = module.get(&rel_path).ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
                     "No CUE instance found at path: {} (relative: {})",
@@ -146,9 +105,16 @@ pub async fn execute_exec(
                     ManifestKind::Base(Box::new(instance.deserialize()?))
                 }
             }
-        } else {
-            tracing::debug!("No CUE module found");
-            ManifestKind::None
+        }
+        Err(e) => {
+            // Check if this is a "no module found" error
+            let err_msg = e.to_string();
+            if err_msg.contains("No CUE module found") {
+                tracing::debug!("No CUE module found");
+                ManifestKind::None
+            } else {
+                return Err(e);
+            }
         }
     };
 
@@ -166,7 +132,8 @@ pub async fn execute_exec(
     };
 
     // Get environment with hook-generated vars merged in
-    let directory = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let directory = std::fs::canonicalize(request.path)
+        .unwrap_or_else(|_| Path::new(request.path).to_path_buf());
 
     // Build base environment based on manifest type
     let mut runtime_env = Environment::new();
@@ -194,7 +161,7 @@ pub async fn execute_exec(
         }
 
         let base_env_vars = if hooks_approved {
-            get_environment_with_hooks(&directory, project, package, executor).await?
+            get_environment_with_hooks(&directory, project, request.package, Some(executor)).await?
         } else {
             extract_static_env_vars(project)
         };
@@ -210,7 +177,7 @@ pub async fn execute_exec(
 
         // Apply command-specific policies and secret resolution for Project
         if let Some(env) = &project.env {
-            let env_vars = if let Some(env_name) = environment_override {
+            let env_vars = if let Some(env_name) = request.environment_override {
                 env.for_environment(env_name)
             } else {
                 env.base.clone()
@@ -218,7 +185,8 @@ pub async fn execute_exec(
 
             let (exec_env_vars, secrets) =
                 cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
-                    command, &env_vars,
+                    request.command,
+                    &env_vars,
                 )
                 .await?;
             secrets_for_redaction = secrets;
@@ -319,12 +287,12 @@ pub async fn execute_exec(
 
     // Resolve the command path using the runtime environment's PATH (with host fallback)
     // This is necessary because the child process will have hermetic PATH
-    let resolved_command = runtime_env.resolve_command(command);
+    let resolved_command = runtime_env.resolve_command(request.command);
 
     // Execute the command with the environment, redacting any secrets from output
     let exit_code = execute_command_with_redaction(
         &resolved_command,
-        args,
+        request.args,
         &runtime_env,
         &secrets_for_redaction,
     )
@@ -338,6 +306,12 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
+
+    fn create_test_executor(package: &str) -> CommandExecutor {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        CommandExecutor::new(sender, package.to_string())
+    }
 
     #[tokio::test]
     async fn test_execute_command_with_env() {
@@ -348,16 +322,18 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
+        let executor = create_test_executor("test");
+
         // Test depends on FFI availability
-        let result = execute_exec(
-            temp_dir.path().to_str().unwrap(),
-            "test",
-            "echo",
-            &["test".to_string()],
-            None,
-            None, // executor
-        )
-        .await;
+        let args = vec!["test".to_string()];
+        let request = ExecRequest {
+            path: temp_dir.path().to_str().unwrap(),
+            package: "test",
+            command: "echo",
+            args: &args,
+            environment_override: None,
+        };
+        let result = execute_exec(request, &executor).await;
 
         if let Ok(exit_code) = result {
             assert_eq!(exit_code, 0);
@@ -375,16 +351,18 @@ env: {
 }"#;
         fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
+        let executor = create_test_executor("test");
+
         // Test shell execution via execute_exec with shell command
-        let result = execute_exec(
-            temp_dir.path().to_str().unwrap(),
-            "test",
-            "sh",
-            &["-c".to_string(), "echo Hello".to_string()],
-            None,
-            None, // executor
-        )
-        .await;
+        let args = vec!["-c".to_string(), "echo Hello".to_string()];
+        let request = ExecRequest {
+            path: temp_dir.path().to_str().unwrap(),
+            package: "test",
+            command: "sh",
+            args: &args,
+            environment_override: None,
+        };
+        let result = execute_exec(request, &executor).await;
 
         if let Ok(exit_code) = result {
             assert_eq!(exit_code, 0);
@@ -398,16 +376,18 @@ env: {
         // Create temp dir WITHOUT any CUE files - exec should still work
         let temp_dir = TempDir::new().unwrap();
 
+        let executor = create_test_executor("cuenv");
+
         // execute_exec should work even without a CUE module
-        let result = execute_exec(
-            temp_dir.path().to_str().unwrap(),
-            "cuenv", // package doesn't matter without a module
-            "echo",
-            &["no-module-mode".to_string()],
-            None,
-            None,
-        )
-        .await;
+        let args = vec!["no-module-mode".to_string()];
+        let request = ExecRequest {
+            path: temp_dir.path().to_str().unwrap(),
+            package: "cuenv", // package doesn't matter without a module
+            command: "echo",
+            args: &args,
+            environment_override: None,
+        };
+        let result = execute_exec(request, &executor).await;
 
         // Should succeed - exec works without a CUE module
         assert!(

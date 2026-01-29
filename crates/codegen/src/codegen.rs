@@ -7,6 +7,7 @@
 use crate::{CodegenError, Result};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
+use cuenv_core::cue::discovery::find_cue_module_root;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -151,17 +152,22 @@ impl Codegen {
         // Determine package name - try to infer from file content or use default
         let package_name = Self::determine_package_name(path)?;
 
+        let target_path = dir_path
+            .canonicalize()
+            .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
+
         // Find the module root
-        let module_root = Self::find_cue_module_root(dir_path).ok_or_else(|| {
+        let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
             CodegenError::Codegen(format!(
                 "No CUE module found (looking for cue.mod/) starting from: {}",
-                dir_path.display()
+                target_path.display()
             ))
         })?;
 
-        // Use module-wide evaluation
+        // Use targeted evaluation (non-recursive) for the specific directory
         let options = ModuleEvalOptions {
-            recursive: true,
+            recursive: false,
+            target_dir: Some(target_path.to_string_lossy().to_string()),
             ..Default::default()
         };
         let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(&options))
@@ -175,9 +181,6 @@ impl Codegen {
         );
 
         // Calculate relative path and get the instance
-        let target_path = dir_path
-            .canonicalize()
-            .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
         let relative_path = target_path.strip_prefix(&module_root).map_or_else(
             |_| PathBuf::from("."),
             |p| {
@@ -200,19 +203,6 @@ impl Codegen {
         instance
             .deserialize()
             .map_err(|e| CodegenError::Codegen(format!("Failed to deserialize codegen data: {e}")))
-    }
-
-    /// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
-    fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
-        let mut current = start.canonicalize().ok()?;
-        loop {
-            if current.join("cue.mod").is_dir() {
-                return Some(current);
-            }
-            if !current.pop() {
-                return None;
-            }
-        }
     }
 
     /// Determine the CUE package name from a file
@@ -450,26 +440,6 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Failed to read codegen file"));
-    }
-
-    #[test]
-    fn test_find_cue_module_root_found() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let cue_mod = temp_dir.path().join("cue.mod");
-        std::fs::create_dir(&cue_mod).unwrap();
-        let subdir = temp_dir.path().join("subdir");
-        std::fs::create_dir(&subdir).unwrap();
-
-        let root = Codegen::find_cue_module_root(&subdir);
-        assert!(root.is_some());
-        assert_eq!(root.unwrap(), temp_dir.path().canonicalize().unwrap());
-    }
-
-    #[test]
-    fn test_find_cue_module_root_not_found() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = Codegen::find_cue_module_root(temp_dir.path());
-        assert!(root.is_none());
     }
 
     #[test]

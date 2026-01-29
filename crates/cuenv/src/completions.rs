@@ -2,26 +2,20 @@
 //!
 //! Uses `clap_complete`'s dynamic completion feature where the binary itself
 //! handles completion requests - all logic in Rust, no shell scripts needed.
+//!
+//! Note: Completions use discovery-based evaluation (find env.cue files, evaluate each
+//! directory individually with `recursive: false`) since they're invoked from the shell
+//! without access to a `CommandExecutor`.
 
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
+use cuenv_core::cue::discovery::compute_relative_path;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
 use crate::commands::task::list_builder::prepare_task_index;
-
-/// Find the CUE module root by walking up from `start` looking for `cue.mod/` directory.
-fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
-    let mut current = start.canonicalize().ok()?;
-    loop {
-        if current.join("cue.mod").is_dir() {
-            return Some(current);
-        }
-        if !current.pop() {
-            return None;
-        }
-    }
-}
 
 /// Complete task names by querying the CUE configuration in the current directory
 fn complete_tasks() -> Vec<CompletionCandidate> {
@@ -40,7 +34,11 @@ fn complete_tasks() -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// Get available tasks from a CUE configuration
+/// Get available tasks from a CUE configuration using discovery-based evaluation.
+///
+/// Uses filesystem discovery to find env.cue files and evaluates each directory
+/// individually with `recursive: false`, avoiding CUE's `./...:package` pattern
+/// which can hang when directories contain mixed packages.
 fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>)> {
     let dir_path = Path::new(path);
 
@@ -49,38 +47,63 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         return Vec::new();
     };
 
-    // Use module-wide evaluation
-    let options = ModuleEvalOptions {
-        recursive: true,
-        ..Default::default()
-    };
-    let Ok(raw_result) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
+    // Discover all directories with env.cue files matching our package
+    let env_cue_dirs = discover_env_cue_directories(&module_root, package);
+    if env_cue_dirs.is_empty() {
         return Vec::new();
-    };
+    }
 
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
+    // Evaluate each directory individually (non-recursive)
+    let mut all_instances = HashMap::new();
+    let mut all_projects = Vec::new();
+
+    for dir in env_cue_dirs {
+        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let options = ModuleEvalOptions {
+            recursive: false,
+            target_dir: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
+            continue;
+        };
+
+        // Merge instances (key by relative path from module_root)
+        for (path_str, value) in raw.instances {
+            let rel_path = if path_str == "." {
+                dir_rel_path.clone()
+            } else {
+                path_str
+            };
+            all_instances.insert(rel_path.clone(), value);
+        }
+
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                dir_rel_path.clone()
+            } else {
+                project_path
+            };
+            if !all_projects.contains(&rel_project_path) {
+                all_projects.push(rel_project_path);
+            }
+        }
+    }
+
+    if all_instances.is_empty() {
+        return Vec::new();
+    }
+
+    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
 
     // Calculate relative path from module root to target
     let Ok(target_path) = dir_path.canonicalize() else {
         return Vec::new();
     };
-    let relative_path = target_path.strip_prefix(&module_root).map_or_else(
-        |_| PathBuf::from("."),
-        |p| {
-            if p.as_os_str().is_empty() {
-                PathBuf::from(".")
-            } else {
-                p.to_path_buf()
-            }
-        },
-    );
+    let relative_path = compute_relative_path(&target_path, &module_root);
 
-    let Some(instance) = module.get(&relative_path) else {
+    let Some(instance) = module.get(&PathBuf::from(&relative_path)) else {
         return Vec::new();
     };
 
@@ -132,7 +155,8 @@ fn complete_task_params(task_name: &str) -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// Get parameters for a specific task (for future use)
+/// Get parameters for a specific task (for future use).
+/// Uses discovery-based evaluation.
 #[allow(dead_code)]
 fn get_task_params(
     path: &str,
@@ -144,34 +168,60 @@ fn get_task_params(
     // Find the module root
     let module_root = find_cue_module_root(dir_path)?;
 
-    // Use module-wide evaluation
-    let options = ModuleEvalOptions {
-        recursive: true,
-        ..Default::default()
-    };
-    let raw_result = cuengine::evaluate_module(&module_root, package, Some(&options)).ok()?;
+    // Discover all directories with env.cue files matching our package
+    let env_cue_dirs = discover_env_cue_directories(&module_root, package);
+    if env_cue_dirs.is_empty() {
+        return None;
+    }
 
-    let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
-        raw_result.instances,
-        raw_result.projects,
-        None,
-    );
+    // Evaluate each directory individually (non-recursive)
+    let mut all_instances = HashMap::new();
+    let mut all_projects = Vec::new();
+
+    for dir in env_cue_dirs {
+        let dir_rel_path = compute_relative_path(&dir, &module_root);
+        let options = ModuleEvalOptions {
+            recursive: false,
+            target_dir: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
+            continue;
+        };
+
+        for (path_str, value) in raw.instances {
+            let rel_path = if path_str == "." {
+                dir_rel_path.clone()
+            } else {
+                path_str
+            };
+            all_instances.insert(rel_path.clone(), value);
+        }
+
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                dir_rel_path.clone()
+            } else {
+                project_path
+            };
+            if !all_projects.contains(&rel_project_path) {
+                all_projects.push(rel_project_path);
+            }
+        }
+    }
+
+    if all_instances.is_empty() {
+        return None;
+    }
+
+    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
 
     // Calculate relative path
     let target_path = dir_path.canonicalize().ok()?;
-    let relative_path = target_path.strip_prefix(&module_root).map_or_else(
-        |_| PathBuf::from("."),
-        |p| {
-            if p.as_os_str().is_empty() {
-                PathBuf::from(".")
-            } else {
-                p.to_path_buf()
-            }
-        },
-    );
+    let relative_path = compute_relative_path(&target_path, &module_root);
 
-    let instance = module.get(&relative_path)?;
+    let instance = module.get(&PathBuf::from(&relative_path))?;
     let mut manifest: cuenv_core::manifest::Project = instance.deserialize().ok()?;
 
     // Build task index with auto-detected workspace tasks injected

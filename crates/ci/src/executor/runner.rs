@@ -304,6 +304,7 @@ mod tests {
     use super::*;
     use crate::ir::CachePolicy;
     use std::collections::BTreeMap;
+    use std::path::Path;
     use tempfile::TempDir;
 
     fn make_task(id: &str, command: &[&str], shell: bool) -> IRTask {
@@ -338,7 +339,12 @@ mod tests {
     async fn test_simple_command() {
         let tmp = TempDir::new().unwrap();
         let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
-        let task = make_task("test", &["echo", "hello"], false);
+        let echo_path = if Path::new("/bin/echo").exists() {
+            "/bin/echo"
+        } else {
+            "echo"
+        };
+        let task = make_task("test", &[echo_path, "hello"], false);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
 
