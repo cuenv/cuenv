@@ -9,7 +9,17 @@
       "Bash(then)",
       "Bash(fi)",
       "Bash(cue vet:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cuenv sync:*)",
+      "Bash(cuenv fmt:*)",
+      "Bash(cuenv task lint:*)",
+      "Bash(cuenv task test.unit:*)",
+      "Bash(cuenv task:*)",
+      "Bash(for i in 1 2 3)",
+      "Bash(do cuenv sync:*)",
+      "Bash(md5:*)",
+      "Bash(done)",
+      "Bash(for i in 1 2 3 4 5)"
     ]
   }
 }

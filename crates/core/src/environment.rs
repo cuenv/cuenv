@@ -1040,10 +1040,7 @@ mod tests {
             EnvPart::Secret(secret),
         ];
         let value = EnvValue::Interpolated(parts);
-        assert_eq!(
-            value.to_string_value(),
-            "access-tokens = github.com=*_*"
-        );
+        assert_eq!(value.to_string_value(), "access-tokens = github.com=*_*");
     }
 
     #[test]
