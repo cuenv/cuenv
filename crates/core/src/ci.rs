@@ -321,8 +321,8 @@ pub struct GitHubActionConfig {
     pub uses: String,
 
     /// Action inputs (optional)
-    #[serde(default, skip_serializing_if = "HashMap::is_empty", rename = "with")]
-    pub inputs: HashMap<String, serde_json::Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "with")]
+    pub inputs: BTreeMap<String, serde_json::Value>,
 }
 
 /// Pipeline generation mode

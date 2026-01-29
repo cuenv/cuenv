@@ -2249,7 +2249,7 @@ mod tests {
     fn test_contributor_task_to_ir_github_action() {
         use cuenv_core::ci::{GitHubActionConfig, TaskProviderConfig};
 
-        let mut inputs = std::collections::HashMap::new();
+        let mut inputs = std::collections::BTreeMap::new();
         inputs.insert(
             "extra-conf".to_string(),
             serde_json::Value::String("accept-flake-config = true".to_string()),
