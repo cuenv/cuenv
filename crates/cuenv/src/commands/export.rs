@@ -384,20 +384,18 @@ fn extract_hooks_with_resolved_dirs(
 
 /// Extract static environment variables from CUE config.
 ///
-/// Secrets are excluded from the returned map.
+/// Secrets (including interpolated values containing secrets) are excluded from the returned map.
 #[must_use]
 pub fn extract_static_env_vars(config: &Project) -> HashMap<String, String> {
     let mut env_vars = HashMap::new();
 
     if let Some(env) = &config.env {
         for (key, value) in &env.base {
-            // Use to_string_value for consistent handling
-            let value_str = value.to_string_value();
-            if value_str == "[SECRET]" {
-                // Skip secrets in export
+            // Skip any value that contains secrets
+            if value.is_secret() {
                 continue;
             }
-            env_vars.insert(key.clone(), value_str);
+            env_vars.insert(key.clone(), value.to_string_value());
         }
     }
 
