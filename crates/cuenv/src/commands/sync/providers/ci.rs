@@ -50,15 +50,17 @@ impl SyncProvider for CiSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_ci(
-            path.to_str().unwrap_or("."),
-            package,
+        let ci_options = functions::CiSyncOptions {
             dry_run,
             check,
-            options.ci_provider.as_deref(),
-            executor,
-        )
-        .await?;
+            provider: options.ci_provider.as_deref(),
+        };
+        let request = functions::CiSyncRequest {
+            path: path.to_str().unwrap_or("."),
+            package,
+            options: ci_options,
+        };
+        let output = functions::execute_sync_ci(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }
@@ -72,14 +74,16 @@ impl SyncProvider for CiSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = functions::execute_sync_ci_workspace(
-            package,
+        let ci_options = functions::CiSyncOptions {
             dry_run,
             check,
-            options.ci_provider.as_deref(),
-            executor,
-        )
-        .await?;
+            provider: options.ci_provider.as_deref(),
+        };
+        let request = functions::CiWorkspaceSyncRequest {
+            package,
+            options: ci_options,
+        };
+        let output = functions::execute_sync_ci_workspace(request, executor).await?;
 
         Ok(SyncResult::success(output))
     }
