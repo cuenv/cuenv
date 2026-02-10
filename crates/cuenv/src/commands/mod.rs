@@ -45,6 +45,7 @@ use crate::cli::StatusFormat;
 use crate::events::{Event, EventSender};
 use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
+use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use std::path::{Path, PathBuf};
@@ -158,7 +159,7 @@ pub enum Command {
         /// Whether to skip running task dependencies.
         skip_dependencies: bool,
         /// Dry run mode: export DAG without executing.
-        dry_run: bool,
+        dry_run: DryRun,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
     },
@@ -208,8 +209,6 @@ pub enum Command {
         path: String,
         /// CUE package name to evaluate.
         package: String,
-        /// Deny all projects (not just the specified path).
-        all: bool,
     },
     /// Export environment variables in shell format.
     Export {
@@ -266,7 +265,7 @@ pub enum Command {
         /// Git ref to start from.
         since: Option<String>,
         /// Perform a dry run without making changes.
-        dry_run: bool,
+        dry_run: DryRun,
         /// Branch name for the release PR.
         branch: String,
         /// Skip creating a pull request.
@@ -277,21 +276,21 @@ pub enum Command {
         /// Path to the repository root.
         path: String,
         /// Perform a dry run without making changes.
-        dry_run: bool,
+        dry_run: DryRun,
     },
     /// Publish packages to their registries.
     ReleasePublish {
         /// Path to the repository root.
         path: String,
         /// Perform a dry run without making changes.
-        dry_run: bool,
+        dry_run: DryRun,
     },
     /// Build and publish release binaries.
     ReleaseBinaries {
         /// Path to the repository root.
         path: String,
         /// Perform a dry run without making changes.
-        dry_run: bool,
+        dry_run: DryRun,
         /// Specific backends to use for building.
         backends: Option<Vec<String>>,
         /// Only build binaries, skip packaging and publishing.
@@ -655,8 +654,8 @@ impl CommandExecutor {
                 })
                 .await
             }
-            Command::Deny { path, package, all } => {
-                self.run_command(handler::DenyHandler { path, package, all })
+            Command::Deny { path, package } => {
+                self.run_command(handler::DenyHandler { path, package })
                     .await
             }
             Command::Export {

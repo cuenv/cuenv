@@ -4,6 +4,7 @@
 //! parallelism, and secret handling.
 
 use crate::ir::CachePolicy;
+use cuenv_core::{DryRun, OutputCapture};
 use std::path::PathBuf;
 
 /// Default shell path for task execution
@@ -22,10 +23,10 @@ pub struct CIExecutorConfig {
     pub max_parallel: usize,
 
     /// Capture stdout/stderr for reports
-    pub capture_output: bool,
+    pub capture_output: OutputCapture,
 
     /// Dry run mode (don't execute, just report what would run)
-    pub dry_run: bool,
+    pub dry_run: DryRun,
 
     /// Global cache policy override (for fork PRs -> Readonly)
     pub cache_policy_override: Option<CachePolicy>,
@@ -46,8 +47,8 @@ impl Default for CIExecutorConfig {
             project_root: PathBuf::from("."),
             cache_root: None,
             max_parallel: 4,
-            capture_output: true,
-            dry_run: false,
+            capture_output: OutputCapture::Capture,
+            dry_run: DryRun::No,
             cache_policy_override: None,
             secret_salt: None,
             secret_salt_prev: None,
@@ -82,14 +83,14 @@ impl CIExecutorConfig {
 
     /// Enable or disable output capture
     #[must_use]
-    pub const fn with_capture_output(mut self, capture: bool) -> Self {
+    pub const fn with_capture_output(mut self, capture: OutputCapture) -> Self {
         self.capture_output = capture;
         self
     }
 
     /// Enable or disable dry run mode
     #[must_use]
-    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: DryRun) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -139,8 +140,8 @@ mod tests {
     fn test_default_config() {
         let config = CIExecutorConfig::default();
         assert_eq!(config.max_parallel, 4);
-        assert!(config.capture_output);
-        assert!(!config.dry_run);
+        assert!(config.capture_output.should_capture());
+        assert!(!config.dry_run.is_dry_run());
         assert!(config.cache_policy_override.is_none());
     }
 
@@ -148,11 +149,11 @@ mod tests {
     fn test_builder_pattern() {
         let config = CIExecutorConfig::new(PathBuf::from("/project"))
             .with_max_parallel(8)
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_cache_policy_override(CachePolicy::Readonly);
 
         assert_eq!(config.max_parallel, 8);
-        assert!(config.dry_run);
+        assert!(config.dry_run.is_dry_run());
         assert_eq!(config.cache_policy_override, Some(CachePolicy::Readonly));
     }
 

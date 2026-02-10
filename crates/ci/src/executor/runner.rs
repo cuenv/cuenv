@@ -95,7 +95,7 @@ pub struct IRTaskRunner {
     /// Working directory for task execution
     project_root: PathBuf,
     /// Whether to capture output
-    capture_output: bool,
+    capture_output: cuenv_core::OutputCapture,
     /// Shell path for shell-mode execution
     shell_path: String,
 }
@@ -103,7 +103,7 @@ pub struct IRTaskRunner {
 impl IRTaskRunner {
     /// Create a new task runner with default shell
     #[must_use]
-    pub fn new(project_root: PathBuf, capture_output: bool) -> Self {
+    pub fn new(project_root: PathBuf, capture_output: cuenv_core::OutputCapture) -> Self {
         Self {
             project_root,
             capture_output,
@@ -115,7 +115,7 @@ impl IRTaskRunner {
     #[must_use]
     pub fn with_shell(
         project_root: PathBuf,
-        capture_output: bool,
+        capture_output: cuenv_core::OutputCapture,
         shell_path: impl Into<String>,
     ) -> Self {
         Self {
@@ -204,7 +204,7 @@ impl IRTaskRunner {
         }
 
         // Configure output - always pipe for streaming, or inherit if not capturing
-        if self.capture_output {
+        if self.capture_output.should_capture() {
             cmd.stdout(Stdio::piped());
             cmd.stderr(Stdio::piped());
         } else {
@@ -222,7 +222,7 @@ impl IRTaskRunner {
         })?;
 
         // Collect output while streaming via events
-        let (stdout_content, stderr_content) = if self.capture_output {
+        let (stdout_content, stderr_content) = if self.capture_output.should_capture() {
             let stdout_handle = child.stdout.take();
             let stderr_handle = child.stderr.take();
 
@@ -338,7 +338,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_command() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         let echo_path = if Path::new("/bin/echo").exists() {
             "/bin/echo"
         } else {
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn test_shell_mode() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         let task = make_task("test", &["echo", "hello", "&&", "echo", "world"], true);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
@@ -370,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn test_env_injection() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         let task = make_task("test", &["printenv", "MY_VAR"], false);
 
         let env = BTreeMap::from([("MY_VAR".to_string(), "test_value".to_string())]);
@@ -383,7 +383,7 @@ mod tests {
     #[tokio::test]
     async fn test_failing_command() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         let task = make_task("test", &["false"], false);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
@@ -395,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn test_empty_command_error() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         let task = make_task("test", &[], false);
 
         let result = runner.execute(&task, BTreeMap::new()).await;
@@ -423,7 +423,7 @@ mod tests {
     async fn test_custom_shell() {
         let tmp = TempDir::new().unwrap();
         // Use /bin/bash (available on most Unix systems)
-        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true, "/bin/bash");
+        let runner = IRTaskRunner::with_shell(tmp.path().to_path_buf(), true.into(), "/bin/bash");
         let task = make_task("test", &["echo", "$BASH_VERSION"], true);
 
         let result = runner.execute(&task, BTreeMap::new()).await.unwrap();
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn test_runner_default_shell() {
         let tmp = TempDir::new().unwrap();
-        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true);
+        let runner = IRTaskRunner::new(tmp.path().to_path_buf(), true.into());
         assert_eq!(runner.shell_path, "/bin/sh");
     }
 }

@@ -7,6 +7,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::commands::CommandExecutor;
+use cuenv_core::{DryRun, OutputCapture};
 
 /// Request to execute a task or set of tasks.
 ///
@@ -40,7 +41,7 @@ pub struct TaskExecutionRequest<'a> {
     pub skip_dependencies: bool,
 
     /// Dry run mode: export DAG as JSON without executing
-    pub dry_run: bool,
+    pub dry_run: DryRun,
 
     /// Executor for cached module evaluation (required - single CUE eval per process)
     pub executor: &'a CommandExecutor,
@@ -98,7 +99,7 @@ pub struct OutputConfig {
     pub format: String,
 
     /// Whether to capture stdout/stderr instead of streaming
-    pub capture_output: bool,
+    pub capture_output: OutputCapture,
 
     /// Whether to show cache paths in output
     pub show_cache_path: bool,
@@ -114,7 +115,7 @@ impl Default for OutputConfig {
     fn default() -> Self {
         Self {
             format: "simple".to_string(),
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             show_cache_path: false,
             materialize_outputs: None,
             help: false,
@@ -150,7 +151,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
-            dry_run: false,
+            dry_run: DryRun::No,
             executor,
         }
     }
@@ -175,7 +176,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
-            dry_run: false,
+            dry_run: DryRun::No,
             executor,
         }
     }
@@ -197,7 +198,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
-            dry_run: false,
+            dry_run: DryRun::No,
             executor,
         }
     }
@@ -218,7 +219,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
-            dry_run: false,
+            dry_run: DryRun::No,
             executor,
         }
     }
@@ -239,7 +240,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
-            dry_run: false,
+            dry_run: DryRun::No,
             executor,
         }
     }
@@ -270,7 +271,7 @@ impl<'a> TaskExecutionRequest<'a> {
     /// Enable output capture.
     #[must_use]
     pub const fn with_capture(mut self) -> Self {
-        self.output.capture_output = true;
+        self.output.capture_output = OutputCapture::Capture;
         self
     }
 
@@ -319,7 +320,7 @@ impl<'a> TaskExecutionRequest<'a> {
     /// Enable dry run mode (export DAG as JSON without executing).
     #[must_use]
     pub const fn with_dry_run(mut self) -> Self {
-        self.dry_run = true;
+        self.dry_run = DryRun::Yes;
         self
     }
 }
@@ -366,7 +367,7 @@ mod tests {
 
         assert_eq!(req.environment, Some("dev".to_string()));
         assert_eq!(req.output.format, "json");
-        assert!(req.output.capture_output);
+        assert!(req.output.capture_output.should_capture());
         assert_eq!(req.execution_mode, ExecutionMode::Tui);
 
         if let TaskSelection::Named { args, .. } = &req.selection {
@@ -391,7 +392,7 @@ mod tests {
                 if name == "build" && args == &vec!["--release".to_string()]
         ));
         assert_eq!(req.environment, Some("prod".to_string()));
-        assert!(req.output.capture_output);
+        assert!(req.output.capture_output.should_capture());
     }
 
     #[test]
@@ -478,7 +479,7 @@ mod tests {
     fn test_output_config_default() {
         let config = OutputConfig::default();
         assert_eq!(config.format, "simple");
-        assert!(config.capture_output);
+        assert!(config.capture_output.should_capture());
         assert!(!config.show_cache_path);
         assert!(config.materialize_outputs.is_none());
         assert!(!config.help);
@@ -523,14 +524,14 @@ mod tests {
     fn test_output_config_clone() {
         let config = OutputConfig {
             format: "json".to_string(),
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             show_cache_path: true,
             materialize_outputs: Some(PathBuf::from("/tmp")),
             help: true,
         };
         let cloned = config.clone();
         assert_eq!(cloned.format, "json");
-        assert!(cloned.capture_output);
+        assert!(cloned.capture_output.should_capture());
         assert!(cloned.show_cache_path);
     }
 

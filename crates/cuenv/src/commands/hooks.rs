@@ -613,7 +613,7 @@ pub async fn execute_allow(
 /// # Errors
 ///
 /// Returns an error if path resolution or approval revocation fails.
-pub async fn execute_deny(path: &str, package: &str, _all: bool) -> Result<String> {
+pub async fn execute_deny(path: &str, package: &str) -> Result<String> {
     // Resolve directory path, but don't strictly require env.cue to exist
     // (user might want to deny a directory they deleted)
     let directory =

@@ -282,8 +282,6 @@ pub struct DenyHandler {
     pub path: String,
     /// Name of the CUE package to evaluate.
     pub package: String,
-    /// Deny all previously allowed projects.
-    pub all: bool,
 }
 
 #[async_trait]
@@ -297,7 +295,7 @@ impl CommandHandler for DenyHandler {
     }
 
     async fn execute(&self, _executor: &CommandExecutor) -> Result<String> {
-        hooks::execute_deny(&self.path, &self.package, self.all).await
+        hooks::execute_deny(&self.path, &self.package).await
     }
 }
 
@@ -408,7 +406,7 @@ pub struct TaskHandler {
     /// Whether to skip task dependencies.
     pub skip_dependencies: bool,
     /// Dry run mode: export DAG without executing.
-    pub dry_run: bool,
+    pub dry_run: cuenv_core::DryRun,
     /// Additional arguments to pass to the task.
     pub task_args: Vec<String>,
 }
@@ -478,7 +476,7 @@ impl CommandHandler for TaskHandler {
         if self.skip_dependencies {
             request = request.with_skip_dependencies();
         }
-        if self.dry_run {
+        if self.dry_run.is_dry_run() {
             request = request.with_dry_run();
         }
 

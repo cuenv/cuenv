@@ -6,6 +6,7 @@
 use crate::artifact::{Artifact, ArtifactBuilder, ChecksumsManifest, PackagedArtifact, Target};
 use crate::backends::{BackendContext, PublishResult, ReleaseBackend};
 use crate::error::{Error, Result};
+use cuenv_core::DryRun;
 use std::path::PathBuf;
 use tracing::{debug, info, warn};
 
@@ -34,7 +35,7 @@ pub struct OrchestratorConfig {
     /// Output directory for artifacts.
     pub output_dir: PathBuf,
     /// Dry run mode (no actual publishing).
-    pub dry_run: bool,
+    pub dry_run: DryRun,
     /// Base URL for downloading release assets.
     pub download_base_url: Option<String>,
 }
@@ -48,7 +49,7 @@ impl OrchestratorConfig {
             version: version.into(),
             targets: vec![Target::LinuxX64, Target::LinuxArm64, Target::DarwinArm64],
             output_dir: PathBuf::from("target/release-artifacts"),
-            dry_run: false,
+            dry_run: DryRun::No,
             download_base_url: None,
         }
     }
@@ -69,7 +70,7 @@ impl OrchestratorConfig {
 
     /// Sets dry-run mode.
     #[must_use]
-    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: DryRun) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -193,7 +194,7 @@ impl ReleaseOrchestrator {
             "Build phase (cross-compilation handled by CI)"
         );
 
-        if self.config.dry_run {
+        if self.config.dry_run.is_dry_run() {
             info!(
                 "[dry-run] Would build for {} targets",
                 self.config.targets.len()
@@ -213,7 +214,7 @@ impl ReleaseOrchestrator {
         );
 
         // Ensure output directory exists
-        if !self.config.dry_run {
+        if !self.config.dry_run.is_dry_run() {
             std::fs::create_dir_all(&self.config.output_dir).map_err(|e| {
                 Error::artifact(
                     format!("Failed to create output directory: {e}"),
@@ -234,7 +235,7 @@ impl ReleaseOrchestrator {
         for target in &self.config.targets {
             let binary_path = self.find_binary_for_target(*target)?;
 
-            if self.config.dry_run {
+            if self.config.dry_run.is_dry_run() {
                 info!(
                     target = %target.short_id(),
                     binary = %binary_path.display(),
@@ -262,7 +263,7 @@ impl ReleaseOrchestrator {
         }
 
         // Write checksums file
-        if !self.config.dry_run && !packaged_artifacts.is_empty() {
+        if !self.config.dry_run.is_dry_run() && !packaged_artifacts.is_empty() {
             let checksums_path = self.config.output_dir.join("CHECKSUMS.txt");
             checksums.write(&checksums_path)?;
             info!(path = %checksums_path.display(), "Wrote checksums file");
@@ -323,7 +324,7 @@ impl ReleaseOrchestrator {
         info!(
             backend_count = self.backends.len(),
             artifact_count = artifacts.len(),
-            dry_run = self.config.dry_run,
+            dry_run = self.config.dry_run.is_dry_run(),
             "Publishing to backends"
         );
 
@@ -503,14 +504,14 @@ mod tests {
         let config = OrchestratorConfig::new("test", "1.0.0")
             .with_targets(vec![Target::LinuxX64])
             .with_output_dir("dist")
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_download_url("https://example.com/releases");
 
         assert_eq!(config.name, "test");
         assert_eq!(config.version, "1.0.0");
         assert_eq!(config.targets.len(), 1);
         assert_eq!(config.output_dir, PathBuf::from("dist"));
-        assert!(config.dry_run);
+        assert!(config.dry_run.is_dry_run());
         assert_eq!(
             config.download_base_url,
             Some("https://example.com/releases".to_string())
@@ -528,18 +529,18 @@ mod tests {
         assert!(config.targets.contains(&Target::LinuxArm64));
         assert!(config.targets.contains(&Target::DarwinArm64));
         assert_eq!(config.output_dir, PathBuf::from("target/release-artifacts"));
-        assert!(!config.dry_run);
+        assert!(!config.dry_run.is_dry_run());
         assert!(config.download_base_url.is_none());
     }
 
     #[test]
     fn test_orchestrator_config_clone() {
-        let config = OrchestratorConfig::new("app", "1.0.0").with_dry_run(true);
+        let config = OrchestratorConfig::new("app", "1.0.0").with_dry_run(DryRun::Yes);
         let cloned = config.clone();
 
         assert_eq!(cloned.name, "app");
         assert_eq!(cloned.version, "1.0.0");
-        assert!(cloned.dry_run);
+        assert!(cloned.dry_run.is_dry_run());
     }
 
     #[test]
@@ -664,13 +665,13 @@ mod tests {
 
     #[test]
     fn test_orchestrator_config_accessor() {
-        let config = OrchestratorConfig::new("myapp", "2.0.0").with_dry_run(true);
+        let config = OrchestratorConfig::new("myapp", "2.0.0").with_dry_run(DryRun::Yes);
         let orchestrator = ReleaseOrchestrator::new(config);
 
         let retrieved_config = orchestrator.config();
         assert_eq!(retrieved_config.name, "myapp");
         assert_eq!(retrieved_config.version, "2.0.0");
-        assert!(retrieved_config.dry_run);
+        assert!(retrieved_config.dry_run.is_dry_run());
     }
 
     #[test]
@@ -748,7 +749,7 @@ mod tests {
     #[tokio::test]
     async fn test_orchestrator_build_dry_run() {
         let config = OrchestratorConfig::new("test", "1.0.0")
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_targets(vec![Target::LinuxX64]);
 
         let orchestrator = ReleaseOrchestrator::new(config);
@@ -802,7 +803,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         let config = OrchestratorConfig::new("test", "1.0.0")
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_output_dir(temp.path().to_path_buf())
             .with_targets(vec![Target::LinuxX64]);
 

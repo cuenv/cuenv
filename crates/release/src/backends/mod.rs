@@ -40,6 +40,7 @@
 
 use crate::artifact::PackagedArtifact;
 use crate::error::Result;
+use cuenv_core::DryRun;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -51,7 +52,7 @@ pub struct BackendContext {
     /// Version being released (without 'v' prefix)
     pub version: String,
     /// Whether this is a dry-run (no actual publishing)
-    pub dry_run: bool,
+    pub dry_run: DryRun,
     /// Base URL for downloading release assets (e.g., GitHub releases URL)
     pub download_base_url: Option<String>,
 }
@@ -63,14 +64,14 @@ impl BackendContext {
         Self {
             name: name.into(),
             version: version.into(),
-            dry_run: false,
+            dry_run: DryRun::No,
             download_base_url: None,
         }
     }
 
     /// Sets the dry-run flag.
     #[must_use]
-    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: DryRun) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -187,14 +188,14 @@ mod tests {
         let ctx = BackendContext::new("my-app", "1.0.0");
         assert_eq!(ctx.name, "my-app");
         assert_eq!(ctx.version, "1.0.0");
-        assert!(!ctx.dry_run);
+        assert!(!ctx.dry_run.is_dry_run());
         assert!(ctx.download_base_url.is_none());
     }
 
     #[test]
     fn test_backend_context_with_dry_run() {
-        let ctx = BackendContext::new("my-app", "1.0.0").with_dry_run(true);
-        assert!(ctx.dry_run);
+        let ctx = BackendContext::new("my-app", "1.0.0").with_dry_run(DryRun::Yes);
+        assert!(ctx.dry_run.is_dry_run());
     }
 
     #[test]
@@ -210,12 +211,12 @@ mod tests {
     #[test]
     fn test_backend_context_builder_chain() {
         let ctx = BackendContext::new("test", "2.0.0")
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_download_url("https://example.com");
 
         assert_eq!(ctx.name, "test");
         assert_eq!(ctx.version, "2.0.0");
-        assert!(ctx.dry_run);
+        assert!(ctx.dry_run.is_dry_run());
         assert_eq!(
             ctx.download_base_url,
             Some("https://example.com".to_string())
@@ -281,7 +282,7 @@ mod tests {
     #[test]
     fn test_backend_context_clone() {
         let ctx = BackendContext::new("app", "1.0")
-            .with_dry_run(true)
+            .with_dry_run(DryRun::Yes)
             .with_download_url("https://example.com");
         let cloned = ctx.clone();
         assert_eq!(ctx.name, cloned.name);
