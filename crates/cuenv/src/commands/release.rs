@@ -907,19 +907,7 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
 /// Gets the GitHub owner/repo from the git remote origin.
 #[cfg(feature = "github")]
 fn get_github_repo_from_remote(root: &std::path::Path) -> Option<(String, String)> {
-    use std::process::Command;
-
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let url = get_remote_url_gix(root, "origin").ok()?;
     parse_github_url(&url)
 }
 
@@ -1119,11 +1107,11 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
 
     // Step 6: Create release branch
     let _ = writeln!(output, "Creating release branch '{}'...", opts.branch);
-    run_git_command(&root, &["checkout", "-b", &opts.branch])?;
+    create_branch_gix(&root, &opts.branch)?;
 
     // Step 7: Commit changes
     let _ = writeln!(output, "Committing version updates...");
-    run_git_command(&root, &["add", "-A"])?;
+    stage_all_gix(&root)?;
 
     let commit_msg = format!(
         "chore(release): prepare release\n\n{}",
@@ -1133,9 +1121,9 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
             .collect::<Vec<_>>()
             .join("\n")
     );
-    run_git_command(&root, &["commit", "-m", &commit_msg])?;
+    commit_gix(&root, &commit_msg)?;
 
-    // Step 8: Push branch
+    // Step 8: Push branch (keep as Command due to auth complexity)
     let _ = writeln!(output, "Pushing branch to origin...");
     run_git_command(&root, &["push", "-u", "origin", &opts.branch])?;
 
@@ -1202,6 +1190,202 @@ fn update_package_version(manifest_path: &Path, new_version: &str) -> cuenv_core
             "Failed to write {}: {e}",
             manifest_path.display()
         ))
+    })?;
+
+    Ok(())
+}
+
+/// Get the URL for a remote using gix.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the remote does not exist.
+fn get_remote_url_gix(root: &Path, remote_name: &str) -> cuenv_core::Result<String> {
+    let repo = gix::open(root).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to open repository: {e}"))
+    })?;
+
+    let remote = repo
+        .find_remote(remote_name)
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to find remote '{remote_name}': {e}"))
+        })?
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("Remote '{remote_name}' does not exist"))
+        })?;
+
+    let url = remote
+        .url(gix::remote::Direction::Fetch)
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("Remote '{remote_name}' has no fetch URL"))
+        })?;
+
+    Ok(url.to_bstring().to_string())
+}
+
+/// Create a new branch and check it out using gix.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the branch cannot be created.
+fn create_branch_gix(root: &Path, branch_name: &str) -> cuenv_core::Result<()> {
+    let repo = gix::open(root).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to open repository: {e}"))
+    })?;
+
+    // Get current HEAD commit
+    let head_id = repo.head_id().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get HEAD: {e}"))
+    })?;
+
+    // Create new branch reference
+    let branch_ref = format!("refs/heads/{branch_name}");
+    repo.reference(
+        &branch_ref,
+        head_id,
+        gix::refs::transaction::PreviousValue::MustNotExist,
+        "create release branch",
+    )
+    .map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to create branch '{branch_name}': {e}"))
+    })?;
+
+    // Update HEAD to point to new branch
+    let head = repo.head_ref().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get HEAD reference: {e}"))
+    })?;
+
+    head.set_target_id(head_id, "checkout release branch")
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to update HEAD: {e}"))
+        })?;
+
+    // Set symbolic ref
+    repo.edit_reference(gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: gix::refs::transaction::LogChange {
+                mode: gix::refs::transaction::RefLog::AndReference,
+                force_create_reflog: false,
+                message: format!("checkout: moving from {} to {branch_name}", head.name().as_bstr()).into(),
+            },
+            expected: gix::refs::transaction::PreviousValue::Any,
+            new: gix::refs::Target::Symbolic(branch_ref.into()),
+        },
+        name: "HEAD".try_into().expect("HEAD is a valid reference name"),
+        deref: false,
+    })
+    .map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to set HEAD to branch '{branch_name}': {e}"))
+    })?;
+
+    Ok(())
+}
+
+/// Stage all changes in the working directory using gix.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or files cannot be staged.
+fn stage_all_gix(root: &Path) -> cuenv_core::Result<()> {
+    let repo = gix::open(root).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to open repository: {e}"))
+    })?;
+
+    let mut index = repo.index().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get repository index: {e}"))
+    })?;
+
+    // Add all files from worktree to index
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| cuenv_core::Error::configuration("Cannot operate in a bare repository"))?;
+
+    index
+        .add_entries_from_paths(
+            Some(workdir),
+            &gix::index::entry::AddStageOptions {
+                apply_filters: true,
+                ..Default::default()
+            },
+            gix::progress::Discard,
+        )
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to add files to index: {e}"))
+        })?;
+
+    index.write(Default::default()).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to write index: {e}"))
+    })?;
+
+    Ok(())
+}
+
+/// Commit staged changes using gix.
+///
+/// # Errors
+///
+/// Returns an error if the repository cannot be opened or the commit cannot be created.
+fn commit_gix(root: &Path, message: &str) -> cuenv_core::Result<()> {
+    let repo = gix::open(root).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to open repository: {e}"))
+    })?;
+
+    // Get config for author/committer info
+    let config = repo.config_snapshot();
+
+    let author_name = config
+        .string("user", None, "name")
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(
+                "Git user.name not configured. Run: git config user.name \"Your Name\"",
+            )
+        })?
+        .to_string();
+
+    let author_email = config
+        .string("user", None, "email")
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(
+                "Git user.email not configured. Run: git config user.email \"your@email.com\"",
+            )
+        })?
+        .to_string();
+
+    let author = gix::actor::SignatureRef {
+        name: author_name.as_bytes().into(),
+        email: author_email.as_bytes().into(),
+        time: gix::date::Time::now_local_or_utc(),
+    };
+
+    // Get HEAD commit as parent
+    let head_id = repo.head_id().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get HEAD: {e}"))
+    })?;
+
+    let parent_commit = repo.find_commit(head_id).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to find HEAD commit: {e}"))
+    })?;
+
+    // Get tree from index
+    let mut index = repo.index().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to get repository index: {e}"))
+    })?;
+
+    let tree_id = index.write_tree().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to write tree: {e}"))
+    })?;
+
+    // Create commit
+    repo.commit(
+        "HEAD",
+        author,
+        author,
+        message,
+        tree_id,
+        [parent_commit.id],
+    )
+    .map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to create commit: {e}"))
     })?;
 
     Ok(())
