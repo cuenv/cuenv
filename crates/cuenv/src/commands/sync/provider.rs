@@ -60,7 +60,6 @@ impl SyncResult {
     }
 
     /// Create an error sync result.
-    #[allow(dead_code)]
     #[must_use]
     pub fn error(output: impl Into<String>) -> Self {
         Self {
@@ -75,7 +74,6 @@ impl SyncResult {
 /// Each provider implements this trait to handle synchronization of a specific
 /// type of generated file. Providers are registered with a `SyncRegistry` and
 /// can be invoked individually or collectively via `cuenv sync`.
-#[allow(dead_code)] // Methods may be unused internally but are part of the public API
 #[async_trait]
 pub trait SyncProvider: Send + Sync {
     /// Name of the sync provider (e.g., "codegen", "ignore").

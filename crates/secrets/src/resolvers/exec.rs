@@ -25,7 +25,7 @@ pub struct ExecSecretConfig {
 impl ExecSecretConfig {
     /// Create a new exec secret config
     #[must_use]
-    #[allow(dead_code)] // Public API
+    #[allow(dead_code)] // Used in tests; #[expect] incompatible with --all-targets
     pub fn new(command: impl Into<String>, args: Vec<String>) -> Self {
         Self {
             command: command.into(),

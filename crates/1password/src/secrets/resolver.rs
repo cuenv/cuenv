@@ -103,12 +103,6 @@ impl OnePasswordResolver {
         token_set && wasm_available
     }
 
-    /// Check if HTTP credentials are available in environment
-    #[allow(dead_code)]
-    fn http_credentials_available() -> bool {
-        std::env::var("OP_SERVICE_ACCOUNT_TOKEN").is_ok()
-    }
-
     /// Initialize the WASM client and return the client ID
     fn init_wasm_client() -> Result<u64, SecretError> {
         let token = std::env::var("OP_SERVICE_ACCOUNT_TOKEN").map_err(|_| {
@@ -446,12 +440,6 @@ mod tests {
     fn test_simple_config() {
         let config = OnePasswordConfig::new("op://Personal/GitHub/token");
         assert_eq!(config.reference, "op://Personal/GitHub/token");
-    }
-
-    #[test]
-    fn test_http_credentials_check() {
-        // This test just ensures the function exists and doesn't panic
-        let _ = OnePasswordResolver::http_credentials_available();
     }
 
     #[test]

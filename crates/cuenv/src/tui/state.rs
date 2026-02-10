@@ -5,7 +5,6 @@ use std::time::Instant;
 
 /// Status of a task in the execution graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum TaskStatus {
     /// Task is waiting for dependencies
     Pending,
@@ -99,7 +98,6 @@ impl TreeViewItem {
 
 /// Information about a task in the execution graph
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TaskInfo {
     /// Task name
     pub name: String,
@@ -158,7 +156,6 @@ pub struct OutputLine {
 
 /// Output buffer for a running task
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TaskOutput {
     /// Task name
     pub name: String,
@@ -226,7 +223,6 @@ impl TaskOutput {
     }
 
     /// Clear dirty flags after rendering
-    #[allow(dead_code)]
     pub const fn clear_dirty(&mut self) {
         self.stdout_dirty = false;
         self.stderr_dirty = false;

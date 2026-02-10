@@ -43,7 +43,6 @@ impl SyncRegistry {
     }
 
     /// Get all registered providers.
-    #[allow(dead_code)]
     pub fn all(&self) -> impl Iterator<Item = &dyn SyncProvider> {
         self.providers.iter().map(AsRef::as_ref)
     }
@@ -56,7 +55,6 @@ impl SyncRegistry {
 
     /// Build CLI commands for all providers.
     #[must_use]
-    #[allow(dead_code)]
     pub fn build_commands(&self) -> Vec<clap::Command> {
         self.providers.iter().map(|p| p.build_command()).collect()
     }

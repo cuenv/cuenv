@@ -66,7 +66,6 @@ impl PerformanceRegistry {
     /// Returns an aggregated summary of all recorded operations.
     ///
     /// Recovers from poisoned mutex state to ensure metrics are never lost.
-    #[allow(dead_code)]
     #[must_use]
     pub fn get_summary(&self) -> PerformanceSummary {
         // If the mutex is poisoned, recover the data anyway since metrics are non-critical
