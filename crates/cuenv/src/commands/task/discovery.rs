@@ -66,8 +66,7 @@ pub fn format_label_root(labels: &[String]) -> String {
 /// configuration at the specified directory. It provides helpful error messages
 /// when the config uses Base schema instead of Project (tasks require Project).
 ///
-/// When an `executor` is provided, uses its cached module evaluation.
-/// Otherwise, falls back to fresh evaluation (legacy behavior).
+/// Uses the executor's cached module evaluation for efficient single-eval-per-process.
 pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) -> Result<Project> {
     // Suppress unused parameter warning - package is kept for API compatibility
     let _ = package;

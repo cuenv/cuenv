@@ -1,7 +1,6 @@
 //! Task execution request types
 //!
-//! Defines structured types for task execution parameters, replacing
-//! the 16-parameter function signature with a single request struct.
+//! Defines structured types for task execution parameters.
 
 use std::fmt;
 use std::path::PathBuf;
@@ -10,9 +9,8 @@ use crate::commands::CommandExecutor;
 
 /// Request to execute a task or set of tasks.
 ///
-/// This struct groups all parameters needed for task execution,
-/// replacing the 16-parameter `execute_task` signature with a
-/// single, structured request.
+/// This struct groups all parameters needed for task execution
+/// into a single, structured request.
 #[derive(Clone)]
 pub struct TaskExecutionRequest<'a> {
     /// Path to the directory containing the CUE configuration
