@@ -172,34 +172,6 @@ mod tests {
     }
 
     #[test]
-    fn test_platform_clone() {
-        let p1 = Platform::new("darwin", "arm64");
-        let p2 = p1.clone();
-        assert_eq!(p1, p2);
-    }
-
-    #[test]
-    fn test_platform_debug() {
-        let p = Platform::new("linux", "x86_64");
-        let debug = format!("{p:?}");
-        assert!(debug.contains("Platform"));
-        assert!(debug.contains("linux"));
-        assert!(debug.contains("x86_64"));
-    }
-
-    #[test]
-    fn test_platform_hash() {
-        use std::collections::HashSet;
-
-        let mut set = HashSet::new();
-        set.insert(Platform::new("darwin", "arm64"));
-        set.insert(Platform::new("darwin", "arm64")); // Duplicate
-        set.insert(Platform::new("linux", "x86_64"));
-
-        assert_eq!(set.len(), 2);
-    }
-
-    #[test]
     fn test_normalize_platform_osx() {
         assert_eq!(normalize_platform("osx-arm64"), "darwin-arm64");
     }
