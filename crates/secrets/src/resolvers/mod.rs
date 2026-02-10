@@ -5,11 +5,8 @@
 //! - [`EnvSecretResolver`] - Environment variables
 //! - [`ExecSecretResolver`] - Command execution
 //!
-//! Additional providers are available via feature flags:
+//! Additional providers are available via separate crates:
 //!
-//! - `aws` - AWS Secrets Manager (cuenv-aws crate)
-//! - `gcp` - GCP Secret Manager (cuenv-gcp crate)
-//! - `vault` - `HashiCorp` Vault (cuenv-vault crate)
 //! - `onepassword` - 1Password (cuenv-1password crate)
 
 mod env;
