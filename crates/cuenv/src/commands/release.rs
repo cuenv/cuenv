@@ -1207,9 +1207,6 @@ fn get_remote_url_gix(root: &Path, remote_name: &str) -> cuenv_core::Result<Stri
 
     let remote = repo
         .find_remote(remote_name)
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to find remote '{remote_name}': {e}"))
-        })?
         .ok_or_else(|| {
             cuenv_core::Error::configuration(format!("Remote '{remote_name}' does not exist"))
         })?;
@@ -1220,7 +1217,7 @@ fn get_remote_url_gix(root: &Path, remote_name: &str) -> cuenv_core::Result<Stri
             cuenv_core::Error::configuration(format!("Remote '{remote_name}' has no fetch URL"))
         })?;
 
-    Ok(url.to_bstring().to_string())
+    Ok(url.to_string())
 }
 
 /// Create a new branch and check it out using gix.
@@ -1238,44 +1235,45 @@ fn create_branch_gix(root: &Path, branch_name: &str) -> cuenv_core::Result<()> {
         cuenv_core::Error::configuration(format!("Failed to get HEAD: {e}"))
     })?;
 
-    // Create new branch reference
-    let branch_ref = format!("refs/heads/{branch_name}");
-    repo.reference(
-        &branch_ref,
-        head_id,
-        gix::refs::transaction::PreviousValue::MustNotExist,
-        "create release branch",
-    )
-    .map_err(|e| {
+    // Create new branch reference pointing to HEAD
+    let branch_ref_name = format!("refs/heads/{branch_name}");
+    
+    // First, create the branch reference
+    let mut edit = gix::refs::transaction::RefEdit::default();
+    edit.change = gix::refs::transaction::Change::Update {
+        log: gix::refs::transaction::LogChange {
+            mode: gix::refs::transaction::RefLog::AndReference,
+            force_create_reflog: false,
+            message: format!("branch: Created from HEAD").into(),
+        },
+        expected: gix::refs::transaction::PreviousValue::MustNotExist,
+        new: gix::refs::Target::Peeled(head_id.detach()),
+    };
+    edit.name = branch_ref_name.as_str().try_into().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Invalid branch name '{branch_name}': {e}"))
+    })?;
+    edit.deref = false;
+
+    repo.edit_reference(edit).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to create branch '{branch_name}': {e}"))
     })?;
 
-    // Update HEAD to point to new branch
-    let head = repo.head_ref().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to get HEAD reference: {e}"))
-    })?;
-
-    head.set_target_id(head_id, "checkout release branch")
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to update HEAD: {e}"))
-        })?;
-
-    // Set symbolic ref
-    repo.edit_reference(gix::refs::transaction::RefEdit {
-        change: gix::refs::transaction::Change::Update {
-            log: gix::refs::transaction::LogChange {
-                mode: gix::refs::transaction::RefLog::AndReference,
-                force_create_reflog: false,
-                message: format!("checkout: moving from {} to {branch_name}", head.name().as_bstr()).into(),
-            },
-            expected: gix::refs::transaction::PreviousValue::Any,
-            new: gix::refs::Target::Symbolic(branch_ref.into()),
+    // Now update HEAD to point to the new branch symbolically
+    let mut head_edit = gix::refs::transaction::RefEdit::default();
+    head_edit.change = gix::refs::transaction::Change::Update {
+        log: gix::refs::transaction::LogChange {
+            mode: gix::refs::transaction::RefLog::AndReference,
+            force_create_reflog: false,
+            message: format!("checkout: moving to {branch_name}").into(),
         },
-        name: "HEAD".try_into().expect("HEAD is a valid reference name"),
-        deref: false,
-    })
-    .map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to set HEAD to branch '{branch_name}': {e}"))
+        expected: gix::refs::transaction::PreviousValue::Any,
+        new: gix::refs::Target::Symbolic(branch_ref_name.into()),
+    };
+    head_edit.name = "HEAD".try_into().expect("HEAD is a valid reference name");
+    head_edit.deref = false;
+
+    repo.edit_reference(head_edit).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to update HEAD to '{branch_name}': {e}"))
     })?;
 
     Ok(())
