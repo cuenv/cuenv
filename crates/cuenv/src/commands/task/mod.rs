@@ -76,8 +76,9 @@ use tracing::instrument;
 /// let output = execute(request).await?;
 /// ```
 #[instrument(name = "task_execute", skip(request), fields(path = %request.path, package = %request.package))]
+#[allow(clippy::too_many_lines)]
 pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
-    // Extract parameters from the request and delegate to the legacy implementation
+    // Extract selection parameters from the structured request
     let (task_name, labels, task_args, interactive, all) = match &request.selection {
         TaskSelection::Named { name, args } => {
             (Some(name.as_str()), &[][..], args.as_slice(), false, false)
@@ -88,61 +89,24 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
         TaskSelection::All => (None, &[][..], &[][..], false, true),
     };
 
+    // Extract remaining fields from the request
+    let path = &*request.path;
+    let package = &*request.package;
+    let environment = request.environment.as_deref();
+    let format = &*request.output.format;
+    let capture_output = request.output.capture_output;
+    let materialize_outputs = request
+        .output
+        .materialize_outputs
+        .as_ref()
+        .and_then(|p| p.to_str());
+    let show_cache_path = request.output.show_cache_path;
+    let backend = request.backend.as_deref();
     let tui = request.execution_mode == ExecutionMode::Tui;
-
-    execute_task_legacy(
-        &request.path,
-        &request.package,
-        task_name,
-        labels,
-        request.environment.as_deref(),
-        &request.output.format,
-        request.output.capture_output,
-        request
-            .output
-            .materialize_outputs
-            .as_ref()
-            .and_then(|p| p.to_str()),
-        request.output.show_cache_path,
-        request.backend.as_deref(),
-        tui,
-        interactive,
-        request.output.help,
-        all,
-        request.skip_dependencies,
-        request.dry_run,
-        task_args,
-        request.executor,
-    )
-    .await
-}
-
-/// Internal implementation of task execution.
-#[allow(
-    clippy::too_many_lines,
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools
-)]
-async fn execute_task_legacy(
-    path: &str,
-    package: &str,
-    task_name: Option<&str>,
-    labels: &[String],
-    environment: Option<&str>,
-    format: &str,
-    capture_output: bool,
-    materialize_outputs: Option<&str>,
-    show_cache_path: bool,
-    backend: Option<&str>,
-    tui: bool,
-    interactive: bool,
-    help: bool,
-    all: bool,
-    skip_dependencies: bool,
-    dry_run: bool,
-    task_args: &[String],
-    executor: &CommandExecutor,
-) -> Result<String> {
+    let help = request.output.help;
+    let skip_dependencies = request.skip_dependencies;
+    let dry_run = request.dry_run;
+    let executor = request.executor;
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
         return Ok(get_task_cli_help());

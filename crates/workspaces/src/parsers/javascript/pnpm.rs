@@ -104,9 +104,6 @@ struct PnpmImporter {
     dev_dependencies: BTreeMap<String, String>,
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    specifiers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -125,12 +122,6 @@ struct PnpmPackage {
     /// Integrity checksum (e.g., "sha512-...")
     #[serde(default)]
     integrity: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    dev: bool,
-    #[serde(default)]
-    #[allow(dead_code)]
-    optional: bool,
 }
 
 #[derive(Debug, Deserialize)]

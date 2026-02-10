@@ -109,9 +109,9 @@ mod tests {
 
     #[test]
     fn test_ffi_error() {
-        let err = CueEngineError::ffi("cue_eval_package", "null pointer");
+        let err = CueEngineError::ffi("cue_eval_module", "null pointer");
         assert!(err.to_string().contains("FFI operation failed"));
-        assert!(err.to_string().contains("cue_eval_package"));
+        assert!(err.to_string().contains("cue_eval_module"));
         assert!(err.to_string().contains("null pointer"));
     }
 

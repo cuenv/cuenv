@@ -125,8 +125,8 @@ The Go-Rust FFI bridge is a critical component enabling CUE evaluation from Rust
 
 ```go
 // Exported functions callable from Rust
-//export cue_eval_package
-func cue_eval_package(pathPtr *C.char, packagePtr *C.char) *C.char
+//export cue_eval_module
+func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C.char) *C.char
 
 //export cue_free_string
 func cue_free_string(ptr *C.char)
@@ -140,7 +140,11 @@ func cue_bridge_version() *C.char
 ```rust
 // FFI declarations
 extern "C" {
-    fn cue_eval_package(path: *const c_char, package: *const c_char) -> *mut c_char;
+    fn cue_eval_module(
+        module_root: *const c_char,
+        package_name: *const c_char,
+        options_json: *const c_char,
+    ) -> *mut c_char;
     fn cue_free_string(ptr: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
 }

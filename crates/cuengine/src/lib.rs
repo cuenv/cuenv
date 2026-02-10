@@ -138,7 +138,7 @@ impl Drop for CStringPtr {
         if !self.ptr.is_null() {
             // Safety: cue_free_string is safe to call because:
             // - self.ptr is not null (checked above)
-            // - self.ptr was allocated by the Go side via cue_eval_package
+            // - self.ptr was allocated by the Go side via cue_eval_module
             // - We have exclusive ownership of this pointer (enforced by Rust's ownership)
             // - This pointer has not been freed already (enforced by Drop only running once)
             // - After this call, the pointer becomes invalid and won't be used again

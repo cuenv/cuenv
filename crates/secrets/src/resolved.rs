@@ -1,7 +1,7 @@
 //! Resolved secrets with fingerprinting support
 
 use crate::{
-    BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
+    SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
 };
 use std::collections::HashMap;
 
@@ -77,15 +77,6 @@ impl ResolvedSecrets {
         })
     }
 
-    /// Create from a `BatchSecrets` instance.
-    ///
-    /// This consumes the batch and converts it to the legacy format.
-    /// Note that this exposes the secret values from the secure storage.
-    #[must_use]
-    pub fn from_batch(batch: BatchSecrets) -> Self {
-        batch.into_resolved_secrets()
-    }
-
     /// Resolve secrets using batch resolution with a resolver.
     ///
     /// This is the preferred method for resolving multiple secrets efficiently.
@@ -106,7 +97,7 @@ impl ResolvedSecrets {
         salt_config: &SaltConfig,
     ) -> Result<Self, SecretError> {
         let batch = crate::batch::resolve_batch(resolver, secrets, salt_config).await?;
-        Ok(Self::from_batch(batch))
+        Ok(batch.into_resolved_secrets())
     }
 
     /// Check if any secrets were resolved

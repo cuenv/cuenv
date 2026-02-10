@@ -81,7 +81,7 @@ extern "C" {
 
 extern void cue_free_string(char* s);
 extern char* cue_bridge_version();
-extern char* cue_eval_package(char* dirPath, char* packageName);
+extern char* cue_eval_module(char* moduleRootPath, char* packageName, char* optionsJSON);
 
 #ifdef __cplusplus
 }
