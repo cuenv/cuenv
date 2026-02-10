@@ -72,6 +72,7 @@ pub use config::{
     VersioningStrategy,
 };
 pub use conventional::{CommitParser, ConventionalCommit};
+pub use cuenv_core::DryRun;
 pub use error::{Error, Result};
 pub use manifest::CargoManifest;
 pub use orchestrator::{OrchestratorConfig, ReleaseOrchestrator, ReleasePhase, ReleaseReport};

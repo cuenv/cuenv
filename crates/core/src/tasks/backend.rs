@@ -5,6 +5,7 @@
 //! For Dagger container execution, use the `cuenv-dagger` crate.
 
 use super::{Task, TaskResult};
+use crate::OutputCapture;
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
@@ -25,7 +26,7 @@ pub trait TaskBackend: Send + Sync {
         task: &Task,
         environment: &Environment,
         project_root: &Path,
-        capture_output: bool,
+        capture_output: OutputCapture,
     ) -> Result<TaskResult>;
 
     /// Get the name of the backend
@@ -55,7 +56,7 @@ impl TaskBackend for HostBackend {
         task: &Task,
         environment: &Environment,
         project_root: &Path,
-        capture_output: bool,
+        capture_output: OutputCapture,
     ) -> Result<TaskResult> {
         tracing::info!(
             task = %name,
@@ -93,7 +94,7 @@ impl TaskBackend for HostBackend {
         }
 
         // Execute - always capture output for consistent behavior
-        if capture_output {
+        if capture_output.should_capture() {
             let output = cmd
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())

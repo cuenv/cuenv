@@ -189,7 +189,7 @@ impl ReleaseBackend for GitHubReleaseBackend {
         Box::pin(async move {
             let tag = format!("v{}", ctx.version);
 
-            if ctx.dry_run {
+            if ctx.dry_run.is_dry_run() {
                 info!(
                     owner = %self.config.owner,
                     repo = %self.config.repo,

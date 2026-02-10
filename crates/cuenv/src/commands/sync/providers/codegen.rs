@@ -48,7 +48,7 @@ impl SyncProvider for CodegenSyncProvider {
         let check = options.mode == SyncMode::Check;
 
         let codegen_options = functions::CodegenSyncOptions {
-            dry_run,
+            dry_run: dry_run.into(),
             check,
             diff: options.show_diff,
         };
@@ -99,7 +99,7 @@ impl SyncProvider for CodegenSyncProvider {
         // Iterate through projects with codegen config
         for (full_path, display_path) in project_paths {
             let codegen_options = functions::CodegenSyncOptions {
-                dry_run,
+                dry_run: dry_run.into(),
                 check,
                 diff: options.show_diff,
             };

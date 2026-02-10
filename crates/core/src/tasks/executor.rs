@@ -7,6 +7,7 @@
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::process_registry::global_registry;
 use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
+use crate::OutputCapture;
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
@@ -60,7 +61,7 @@ pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
     /// Whether to capture output (vs streaming to stdout/stderr)
-    pub capture_output: bool,
+    pub capture_output: OutputCapture,
     /// Maximum parallel tasks (0 = unlimited)
     pub max_parallel: usize,
     /// Environment variables to propagate (resolved via policies)
@@ -86,7 +87,7 @@ pub struct ExecutorConfig {
 impl Default for ExecutorConfig {
     fn default() -> Self {
         Self {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             max_parallel: 0,
             environment: Environment::new(),
             working_dir: None,
@@ -314,7 +315,7 @@ impl TaskExecutor {
 
         // Execute - always capture output for consistent behavior
         // If not in capture mode, stream output to terminal in real-time
-        if self.config.capture_output {
+        if self.config.capture_output.should_capture() {
             use tokio::io::{AsyncBufReadExt, BufReader};
 
             let start_time = std::time::Instant::now();
@@ -506,7 +507,7 @@ impl TaskExecutor {
         sequence: &[TaskNode],
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
-        if !self.config.capture_output {
+        if !self.config.capture_output.should_capture() {
             cuenv_events::emit_task_group_started!(prefix, true, sequence.len());
         }
         let mut results = Vec::new();
@@ -537,7 +538,7 @@ impl TaskExecutor {
     ) -> Result<Vec<TaskResult>> {
         // Check for "default" task to override parallel execution
         if let Some(default_task) = group.children.get("default") {
-            if !self.config.capture_output {
+            if !self.config.capture_output.should_capture() {
                 cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
             // Execute only the default task, using the group prefix directly
@@ -546,7 +547,7 @@ impl TaskExecutor {
             return self.execute_node(&task_name, default_task, all_tasks).await;
         }
 
-        if !self.config.capture_output {
+        if !self.config.capture_output.should_capture() {
             cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
         }
         let mut join_set = JoinSet::new();
@@ -917,7 +918,7 @@ mod tests {
     #[tokio::test]
     async fn test_executor_config_default() {
         let config = ExecutorConfig::default();
-        assert!(config.capture_output);
+        assert!(config.capture_output.should_capture());
         assert_eq!(config.max_parallel, 0);
         assert!(config.environment.is_empty());
     }
@@ -940,7 +941,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_simple_task() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -959,7 +960,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_with_environment() {
         let mut config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         config
@@ -980,7 +981,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_failing_task() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -997,7 +998,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_sequential_group() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -1031,7 +1032,7 @@ mod tests {
     #[tokio::test]
     async fn test_command_injection_prevention() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -1052,7 +1053,7 @@ mod tests {
     #[tokio::test]
     async fn test_special_characters_in_args() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         let executor = TaskExecutor::new(config);
@@ -1082,7 +1083,7 @@ mod tests {
     #[tokio::test]
     async fn test_environment_variable_safety() {
         let mut config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             ..Default::default()
         };
         config
@@ -1104,7 +1105,7 @@ mod tests {
     async fn test_execute_graph_parallel_groups() {
         // two independent tasks -> can run in same parallel group
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             max_parallel: 2,
             ..Default::default()
         };
@@ -1136,7 +1137,7 @@ mod tests {
         let root = tmp.path();
 
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             max_parallel: 2,
             project_root: root.to_path_buf(),
             ..Default::default()
@@ -1424,7 +1425,7 @@ mod tests {
     #[test]
     fn test_executor_config_with_fields() {
         let config = ExecutorConfig {
-            capture_output: true,
+            capture_output: OutputCapture::Capture,
             max_parallel: 4,
             working_dir: Some(PathBuf::from("/tmp")),
             project_root: PathBuf::from("/project"),
@@ -1435,7 +1436,7 @@ mod tests {
             cli_backend: Some("host".to_string()),
             ..Default::default()
         };
-        assert!(config.capture_output);
+        assert!(config.capture_output.should_capture());
         assert_eq!(config.max_parallel, 4);
         assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
         assert!(config.show_cache_path);

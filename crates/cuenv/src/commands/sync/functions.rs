@@ -8,6 +8,7 @@
 //! Use `cuenv sync rules` for those.
 
 use super::super::{CommandExecutor, relative_path_from_root};
+use cuenv_core::DryRun;
 use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_github::GitHubConfigExt;
@@ -55,7 +56,7 @@ impl ProjectInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct CodegenSyncOptions {
     /// Show what would be generated without writing files.
-    pub dry_run: bool,
+    pub dry_run: DryRun,
     /// Check if files are in sync without making changes.
     pub check: bool,
     /// Show diff for files that would change.
@@ -110,7 +111,7 @@ struct CodegenWriteRequest<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct CiSyncOptions<'a> {
     /// Show what would be generated without writing files.
-    pub dry_run: bool,
+    pub dry_run: DryRun,
     /// Check if files are in sync without making changes.
     pub check: bool,
     /// Optional provider override.
@@ -230,10 +231,10 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
 
     // Run formatters only on files that were actually written
     let format_result = if let Some(ref formatters) = manifest.formatters {
-        if sync_result.written_files.is_empty() && !options.dry_run {
+        if sync_result.written_files.is_empty() && !options.dry_run.is_dry_run() {
             // No files were written, skip formatting
             String::new()
-        } else if options.dry_run {
+        } else if options.dry_run.is_dry_run() {
             // In dry-run mode, show what would be formatted based on all configured files
             let file_paths: Vec<std::path::PathBuf> = codegen_config
                 .files
@@ -360,7 +361,7 @@ fn sync_managed_file(
             maybe_push_diff(request, None, options);
         }
         Ok(false)
-    } else if options.dry_run {
+    } else if options.dry_run.is_dry_run() {
         if request.output_path.exists() {
             request
                 .output_lines
@@ -394,7 +395,7 @@ fn sync_scaffold_file(
     options: CodegenSyncOptions,
 ) -> Result<bool> {
     if request.output_path.exists() {
-        if !options.dry_run && !options.should_check() {
+        if !options.dry_run.is_dry_run() && !options.should_check() {
             tracing::debug!(
                 "Skipping {} (scaffold mode, file exists)",
                 request.file_path
@@ -410,7 +411,7 @@ fn sync_scaffold_file(
             .push(format!("  Missing scaffold: {}", request.file_path));
         maybe_push_diff(request, None, options);
         Ok(false)
-    } else if options.dry_run {
+    } else if options.dry_run.is_dry_run() {
         request
             .output_lines
             .push(format!("  Would scaffold: {}", request.file_path));
@@ -800,7 +801,7 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
         let exists = workflow_path.exists();
 
         // Check if content matches (skip if unchanged)
-        if exists && !options.dry_run {
+        if exists && !options.dry_run.is_dry_run() {
             let existing = std::fs::read_to_string(&workflow_path).unwrap_or_default();
             if existing == *content {
                 output_lines.push(format!("GitHub: {filename} (unchanged)"));
@@ -808,7 +809,7 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
             }
         }
 
-        if options.dry_run {
+        if options.dry_run.is_dry_run() {
             if exists {
                 output_lines.push(format!("GitHub: Would update {filename}"));
             } else {
@@ -1778,7 +1779,7 @@ steps:
     let exists = pipeline_path.exists();
 
     // Check if file exists and matches (skip if unchanged)
-    if exists && !options.dry_run {
+    if exists && !options.dry_run.is_dry_run() {
         let existing = std::fs::read_to_string(&pipeline_path).unwrap_or_default();
         if existing == pipeline_content {
             return Ok("Buildkite: pipeline.yml (unchanged)".to_string());
@@ -1786,7 +1787,7 @@ steps:
     }
 
     // Dry-run mode
-    if options.dry_run {
+    if options.dry_run.is_dry_run() {
         if exists {
             return Ok("Buildkite: Would update pipeline.yml".to_string());
         }

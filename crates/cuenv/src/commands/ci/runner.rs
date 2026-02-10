@@ -46,7 +46,7 @@ pub async fn execute_runner(args: &CiArgs) -> Result<()> {
     // This will be replaced with the new ExecutionEngine in Phase 1 Part 2
     run_ci(
         provider,
-        args.dry_run,
+        args.dry_run.into(),
         args.pipeline.clone(),
         args.environment.clone(),
         effective_path.as_deref(),

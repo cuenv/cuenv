@@ -221,9 +221,9 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
     }
 }
 
-/// Render error appropriately based on JSON flag
-pub fn render_error(err: &CliError, json_mode: bool) {
-    if json_mode {
+/// Render error appropriately based on output format
+pub fn render_error(err: &CliError, format: OutputFormat) {
+    if format.is_json() {
         let error_envelope = ErrorEnvelope::new(serde_json::json!({
             "code": match err {
                 CliError::Config { .. } => "config",
@@ -273,6 +273,19 @@ pub enum OutputFormat {
     Dashboard,
     /// Emoji taxonomy with semantic prefixes
     Emoji,
+}
+
+impl OutputFormat {
+    /// Convert a `--json` CLI flag to an `OutputFormat`.
+    pub const fn from_json_flag(json: bool) -> Self {
+        if json { Self::Json } else { Self::Text }
+    }
+
+    /// Check whether output should be JSON-formatted.
+    #[must_use]
+    pub const fn is_json(self) -> bool {
+        matches!(self, Self::Json)
+    }
 }
 
 impl std::fmt::Display for OutputFormat {
@@ -640,12 +653,6 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
-        /// Revoke all approvals for this directory.
-        #[arg(
-            long,
-            help = "Revoke all approvals for this directory (default behavior currently)"
-        )]
-        all: bool,
     },
     /// Export environment variables for shell evaluation.
     #[command(
@@ -1420,7 +1427,7 @@ impl Commands {
                 help,
                 all,
                 skip_dependencies,
-                dry_run,
+                dry_run: dry_run.into(),
                 task_args,
             },
             Self::Exec {
@@ -1460,7 +1467,7 @@ impl Commands {
                 note,
                 yes,
             },
-            Self::Deny { path, package, all } => Command::Deny { path, package, all },
+            Self::Deny { path, package } => Command::Deny { path, package },
             Self::Export {
                 shell,
                 path,
@@ -1514,16 +1521,18 @@ impl Commands {
                 } => Command::ReleasePrepare {
                     path,
                     since,
-                    dry_run,
+                    dry_run: dry_run.into(),
                     branch,
                     no_pr,
                 },
-                ReleaseCommands::Version { path, dry_run } => {
-                    Command::ReleaseVersion { path, dry_run }
-                }
-                ReleaseCommands::Publish { path, dry_run } => {
-                    Command::ReleasePublish { path, dry_run }
-                }
+                ReleaseCommands::Version { path, dry_run } => Command::ReleaseVersion {
+                    path,
+                    dry_run: dry_run.into(),
+                },
+                ReleaseCommands::Publish { path, dry_run } => Command::ReleasePublish {
+                    path,
+                    dry_run: dry_run.into(),
+                },
                 ReleaseCommands::Binaries {
                     path,
                     dry_run,
@@ -1535,7 +1544,7 @@ impl Commands {
                     version,
                 } => Command::ReleaseBinaries {
                     path,
-                    dry_run,
+                    dry_run: dry_run.into(),
                     backends: backend,
                     build_only,
                     package_only,

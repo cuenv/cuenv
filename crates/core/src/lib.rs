@@ -470,6 +470,54 @@ impl From<cuenv_task_graph::Error> for Error {
 /// Result type alias for cuenv operations
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Type-safe replacement for `dry_run: bool` function parameters.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum DryRun {
+    /// Perform the operation for real
+    #[default]
+    No,
+    /// Preview the operation without making changes
+    Yes,
+}
+
+impl DryRun {
+    /// Returns `true` if this is a dry run.
+    #[must_use]
+    pub const fn is_dry_run(self) -> bool {
+        matches!(self, Self::Yes)
+    }
+}
+
+impl From<bool> for DryRun {
+    fn from(v: bool) -> Self {
+        if v { Self::Yes } else { Self::No }
+    }
+}
+
+/// Type-safe replacement for `capture_output: bool` function parameters.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, Hash)]
+pub enum OutputCapture {
+    /// Capture stdout/stderr into buffers
+    #[default]
+    Capture,
+    /// Stream stdout/stderr to the terminal
+    Stream,
+}
+
+impl OutputCapture {
+    /// Returns `true` if output should be captured.
+    #[must_use]
+    pub const fn should_capture(self) -> bool {
+        matches!(self, Self::Capture)
+    }
+}
+
+impl From<bool> for OutputCapture {
+    fn from(v: bool) -> Self {
+        if v { Self::Capture } else { Self::Stream }
+    }
+}
+
 /// Configuration limits
 pub struct Limits {
     pub max_path_length: usize,
