@@ -79,7 +79,7 @@ pub fn extract_from_layers(layers: &[PathBuf], file_path: &str, dest: &Path) -> 
 }
 
 /// List all files in an archive (for debugging).
-#[allow(dead_code)]
+#[allow(dead_code)] // Debug utility for archive inspection
 pub fn list_archive_contents(archive_path: &Path) -> Result<Vec<String>> {
     let file = File::open(archive_path)?;
     let decoder = GzDecoder::new(file);

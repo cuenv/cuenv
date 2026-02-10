@@ -49,7 +49,7 @@ struct BridgeError {
 /// Structured response envelope from the Go bridge
 #[derive(Debug, Deserialize)]
 struct BridgeEnvelope<'a> {
-    #[allow(dead_code)] // Used in tests for version compatibility checks
+    #[allow(dead_code)] // Deserialized from Go FFI bridge; used in tests
     version: String,
     #[serde(borrow)]
     ok: Option<&'a serde_json::value::RawValue>,
