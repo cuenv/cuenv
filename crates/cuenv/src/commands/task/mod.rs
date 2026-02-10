@@ -33,7 +33,6 @@ use cuenv_core::tasks::{
 };
 use cuenv_task_discovery::TaskDiscovery;
 
-use super::CommandExecutor;
 use super::env_file::find_cue_module_root;
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use crate::tui::rich::RichTui;
@@ -77,7 +76,13 @@ use tracing::instrument;
 /// ```
 #[instrument(name = "task_execute", skip(request), fields(path = %request.path, package = %request.package))]
 pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
-    // Extract parameters from the request and delegate to the legacy implementation
+    execute_task_impl(&request).await
+}
+
+/// Internal implementation of task execution.
+#[allow(clippy::too_many_lines)]
+async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String> {
+    // Extract derived values from the structured request
     let (task_name, labels, task_args, interactive, all) = match &request.selection {
         TaskSelection::Named { name, args } => {
             (Some(name.as_str()), &[][..], args.as_slice(), false, false)
@@ -88,61 +93,23 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
         TaskSelection::All => (None, &[][..], &[][..], false, true),
     };
 
+    let path = &request.path;
+    let package = &request.package;
+    let environment = request.environment.as_deref();
+    let format: &str = &request.output.format;
+    let capture_output = request.output.capture_output;
+    let materialize_outputs = request
+        .output
+        .materialize_outputs
+        .as_ref()
+        .and_then(|p| p.to_str());
+    let show_cache_path = request.output.show_cache_path;
+    let backend = request.backend.as_deref();
     let tui = request.execution_mode == ExecutionMode::Tui;
-
-    execute_task_legacy(
-        &request.path,
-        &request.package,
-        task_name,
-        labels,
-        request.environment.as_deref(),
-        &request.output.format,
-        request.output.capture_output,
-        request
-            .output
-            .materialize_outputs
-            .as_ref()
-            .and_then(|p| p.to_str()),
-        request.output.show_cache_path,
-        request.backend.as_deref(),
-        tui,
-        interactive,
-        request.output.help,
-        all,
-        request.skip_dependencies,
-        request.dry_run,
-        task_args,
-        request.executor,
-    )
-    .await
-}
-
-/// Internal implementation of task execution.
-#[allow(
-    clippy::too_many_lines,
-    clippy::too_many_arguments,
-    clippy::fn_params_excessive_bools
-)]
-async fn execute_task_legacy(
-    path: &str,
-    package: &str,
-    task_name: Option<&str>,
-    labels: &[String],
-    environment: Option<&str>,
-    format: &str,
-    capture_output: cuenv_core::OutputCapture,
-    materialize_outputs: Option<&str>,
-    show_cache_path: bool,
-    backend: Option<&str>,
-    tui: bool,
-    interactive: bool,
-    help: bool,
-    all: bool,
-    skip_dependencies: bool,
-    dry_run: cuenv_core::DryRun,
-    task_args: &[String],
-    executor: &CommandExecutor,
-) -> Result<String> {
+    let help = request.output.help;
+    let skip_dependencies = request.skip_dependencies;
+    let dry_run = request.dry_run;
+    let executor = request.executor;
     // Handle CLI help immediately if no task specified
     if task_name.is_none() && help {
         return Ok(get_task_cli_help());
@@ -748,17 +715,7 @@ async fn execute_task_legacy(
         };
         let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
 
-        return execute_with_rich_tui(
-            path,
-            &tui_executor,
-            display_task_name.as_str(),
-            &task_node,
-            &task_graph,
-            &all_tasks,
-            manifest.env.as_ref(),
-            &runtime_env,
-        )
-        .await;
+        return execute_with_rich_tui(&tui_executor, display_task_name.as_str(), &task_graph).await;
     }
 
     // Execute using the appropriate method
@@ -788,16 +745,10 @@ async fn execute_task_legacy(
 ///
 /// Note: The executor MUST have `capture_output: true` to ensure task output
 /// goes through the event system rather than directly to stdout/stderr.
-#[allow(clippy::too_many_arguments)]
 async fn execute_with_rich_tui(
-    _project_dir: &str,
     executor: &TaskExecutor,
     task_name: &str,
-    _task_node: &TaskNode,
     task_graph: &TaskGraph,
-    _all_tasks: &Tasks,
-    _env_base: Option<&cuenv_core::environment::Env>,
-    _hook_env: &Environment,
 ) -> Result<String> {
     // Subscribe to the global event bus.
     // The global bus is set up during CLI initialization and receives all events
@@ -996,6 +947,7 @@ fn format_task_results(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::CommandExecutor;
     use cuenv_core::tasks::{TaskDependency, TaskNode};
     use resolution::resolve_task_refs_in_node;
     use tokio::sync::mpsc;

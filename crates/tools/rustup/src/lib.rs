@@ -9,7 +9,8 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::tools::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
+    ToolSource,
 };
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
@@ -186,13 +187,12 @@ impl ToolProvider for RustupToolProvider {
         Ok(())
     }
 
-    async fn resolve(
-        &self,
-        tool_name: &str,
-        version: &str,
-        platform: &Platform,
-        config: &serde_json::Value,
-    ) -> Result<ResolvedTool> {
+    async fn resolve(&self, request: &ToolResolveRequest<'_>) -> Result<ResolvedTool> {
+        let tool_name = request.tool_name;
+        let version = request.version;
+        let platform = request.platform;
+        let config = request.config;
+
         let toolchain = config
             .get("toolchain")
             .and_then(|v| v.as_str())
@@ -579,7 +579,15 @@ mod tests {
         let platform = Platform::new(Os::Darwin, Arch::Arm64);
         let config = serde_json::json!({});
 
-        let resolved = provider.resolve("rust", "1.83.0", &platform, &config).await;
+        let resolved = provider
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "1.83.0",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
+            .await;
         assert!(resolved.is_ok());
 
         let resolved = resolved.unwrap();
@@ -611,7 +619,13 @@ mod tests {
         });
 
         let resolved = provider
-            .resolve("rust", "latest", &platform, &config)
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "latest",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
             .await
             .unwrap();
 
@@ -632,7 +646,13 @@ mod tests {
         });
 
         let resolved = provider
-            .resolve("rust", "1.80.0", &platform, &config)
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "1.80.0",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
             .await
             .unwrap();
 
@@ -653,7 +673,13 @@ mod tests {
         });
 
         let resolved = provider
-            .resolve("rust", "stable", &platform, &config)
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "stable",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
             .await
             .unwrap();
 
@@ -677,7 +703,13 @@ mod tests {
         });
 
         let resolved = provider
-            .resolve("rust", "1.82.0", &platform, &config)
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "1.82.0",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
             .await
             .unwrap();
 
@@ -703,7 +735,13 @@ mod tests {
         });
 
         let resolved = provider
-            .resolve("rust", "nightly", &platform, &config)
+            .resolve(&ToolResolveRequest {
+                tool_name: "rust",
+                version: "nightly",
+                platform: &platform,
+                config: &config,
+                token: None,
+            })
             .await
             .unwrap();
 

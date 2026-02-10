@@ -88,7 +88,9 @@ impl std::fmt::Debug for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::provider::{FetchedTool, Platform, ResolvedTool, ToolOptions};
+    use crate::tools::provider::{
+        FetchedTool, ResolvedTool, ToolOptions, ToolResolveRequest,
+    };
     use async_trait::async_trait;
 
     struct MockProvider {
@@ -109,13 +111,7 @@ mod tests {
             matches!(source, ToolSource::GitHub { .. }) && self.name == "github"
         }
 
-        async fn resolve(
-            &self,
-            _tool_name: &str,
-            _version: &str,
-            _platform: &Platform,
-            _config: &serde_json::Value,
-        ) -> crate::Result<ResolvedTool> {
+        async fn resolve(&self, _request: &ToolResolveRequest<'_>) -> crate::Result<ResolvedTool> {
             unimplemented!()
         }
 

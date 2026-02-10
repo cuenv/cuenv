@@ -142,16 +142,14 @@ impl TaskExecutor {
 
         // If using Dagger backend, execute in a containerized context.
         if self.backend.name() == "dagger" {
-            return self
-                .backend
-                .execute(
-                    name,
-                    task,
-                    &self.config.environment,
-                    &self.config.project_root,
-                    self.config.capture_output,
-                )
-                .await;
+            let ctx = super::backend::TaskExecutionContext {
+                name,
+                task,
+                environment: &self.config.environment,
+                project_root: &self.config.project_root,
+                capture_output: self.config.capture_output,
+            };
+            return self.backend.execute(&ctx).await;
         }
 
         // Host backend runs tasks directly in the workspace.
