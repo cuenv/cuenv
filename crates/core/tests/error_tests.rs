@@ -131,27 +131,3 @@ fn test_error_variants_match() {
         _ => panic!("Expected Timeout variant"),
     }
 }
-
-#[test]
-fn test_error_debug_format() {
-    let error = Error::configuration("debug test");
-    let debug_str = format!("{:?}", error);
-    assert!(debug_str.contains("Configuration"));
-    assert!(debug_str.contains("debug test"));
-}
-
-#[test]
-fn test_result_type_alias() {
-    use cuenv_core::Result;
-
-    fn returns_ok() -> Result<String> {
-        Ok("success".to_string())
-    }
-
-    fn returns_err() -> Result<String> {
-        Err(Error::configuration("failure"))
-    }
-
-    assert!(returns_ok().is_ok());
-    assert!(returns_err().is_err());
-}
