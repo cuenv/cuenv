@@ -41,7 +41,7 @@ func createTestCueModule(t *testing.T, packageName string, content string) (stri
 		t.Fatalf("Failed to create cue.mod dir: %v", err)
 	}
 
-	moduleCue := `module: "test.example"\nlanguage: version: "v0.9.0"\n`
+	moduleCue := "module: \"test.example\"\nlanguage: version: \"v0.9.0\"\n"
 	if err := os.WriteFile(filepath.Join(cueModDir, "module.cue"), []byte(moduleCue), 0644); err != nil {
 		os.RemoveAll(tempDir)
 		t.Fatalf("Failed to write module.cue: %v", err)
