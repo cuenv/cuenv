@@ -169,16 +169,16 @@ pub async fn run_ci(
         );
 
         if !dry_run.is_dry_run() {
-            let result = execute_project_pipeline(
+            let result = execute_project_pipeline(&PipelineExecutionRequest {
                 project_path,
                 config,
-                &pipeline_name,
-                &tasks_to_run,
-                resolved_environment.as_deref(),
+                pipeline_name: &pipeline_name,
+                tasks_to_run: &tasks_to_run,
+                environment: resolved_environment.as_deref(),
                 context,
-                &changed_files,
-                provider.as_ref(),
-            )
+                changed_files: &changed_files,
+                provider: provider.as_ref(),
+            })
             .await;
 
             match result {
@@ -210,21 +210,34 @@ pub async fn run_ci(
     Ok(())
 }
 
+/// All parameters needed to execute a project pipeline.
+pub struct PipelineExecutionRequest<'a> {
+    pub project_path: &'a Path,
+    pub config: &'a Project,
+    pub pipeline_name: &'a str,
+    pub tasks_to_run: &'a [String],
+    pub environment: Option<&'a str>,
+    pub context: &'a crate::context::CIContext,
+    pub changed_files: &'a [PathBuf],
+    pub provider: &'a dyn CIProvider,
+}
+
 /// Execute a project's pipeline and handle reporting
 ///
 /// Returns the pipeline status and a list of task failures (project path, error).
-#[allow(clippy::too_many_arguments)] // Pipeline execution requires many context params
 #[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
-    project_path: &Path,
-    config: &Project,
-    pipeline_name: &str,
-    tasks_to_run: &[String],
-    environment: Option<&str>,
-    context: &crate::context::CIContext,
-    changed_files: &[PathBuf],
-    provider: &dyn CIProvider,
+    request: &PipelineExecutionRequest<'_>,
 ) -> Result<(PipelineStatus, Vec<(String, cuenv_core::Error)>)> {
+    let project_path = request.project_path;
+    let config = request.config;
+    let pipeline_name = request.pipeline_name;
+    let tasks_to_run = request.tasks_to_run;
+    let environment = request.environment;
+    let context = request.context;
+    let changed_files = request.changed_files;
+    let provider = request.provider;
+
     let start_time = Utc::now();
     let mut tasks_reports = Vec::new();
     let mut pipeline_status = PipelineStatus::Success;

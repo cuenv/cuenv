@@ -176,16 +176,30 @@ pub struct TaskLogs {
     pub stderr: Option<String>,
 }
 
+/// All data needed to save a task result to the cache.
+pub struct SaveResultData<'a> {
+    /// Cache key for this result
+    pub key: &'a str,
+    /// Metadata about the task execution
+    pub meta: &'a TaskResultMeta,
+    /// Directory containing task output files
+    pub outputs_root: &'a Path,
+    /// Directory containing the hermetic workspace snapshot
+    pub hermetic_root: &'a Path,
+    /// Captured stdout/stderr logs
+    pub logs: &'a TaskLogs,
+    /// Optional override for the cache root directory
+    pub root: Option<&'a Path>,
+}
+
 /// Save a task result to the cache
-#[allow(clippy::too_many_arguments)] // Task result caching requires multiple path parameters
-pub fn save_result(
-    key: &str,
-    meta: &TaskResultMeta,
-    outputs_root: &Path,
-    hermetic_root: &Path,
-    logs: &TaskLogs,
-    root: Option<&Path>,
-) -> Result<()> {
+pub fn save_result(data: &SaveResultData<'_>) -> Result<()> {
+    let key = data.key;
+    let meta = data.meta;
+    let outputs_root = data.outputs_root;
+    let hermetic_root = data.hermetic_root;
+    let logs = data.logs;
+    let root = data.root;
     let path = key_to_path(key, root)?;
     fs::create_dir_all(&path).map_err(|e| Error::io(e, &path, "create_dir_all"))?;
 
@@ -1129,14 +1143,14 @@ mod tests {
         };
 
         let key = "roundtrip-key-123";
-        save_result(
+        save_result(&SaveResultData {
             key,
-            &meta,
-            outputs.path(),
-            herm.path(),
-            &logs,
-            Some(cache_tmp.path()),
-        )
+            meta: &meta,
+            outputs_root: outputs.path(),
+            hermetic_root: herm.path(),
+            logs: &logs,
+            root: Some(cache_tmp.path()),
+        })
         .expect("save_result");
 
         // Verify cache layout

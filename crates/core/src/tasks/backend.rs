@@ -15,19 +15,26 @@ use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 
+/// Context for a single task execution, grouping all parameters
+/// needed by [`TaskBackend::execute`].
+pub struct TaskExecutionContext<'a> {
+    /// Name of the task being executed
+    pub name: &'a str,
+    /// Task definition
+    pub task: &'a Task,
+    /// Environment variables for the task
+    pub environment: &'a Environment,
+    /// Root directory of the project
+    pub project_root: &'a Path,
+    /// Whether to capture or stream output
+    pub capture_output: OutputCapture,
+}
+
 /// Trait for task execution backends
 #[async_trait]
 pub trait TaskBackend: Send + Sync {
     /// Execute a single task and return the result
-    #[allow(clippy::too_many_arguments)] // Task execution requires full context
-    async fn execute(
-        &self,
-        name: &str,
-        task: &Task,
-        environment: &Environment,
-        project_root: &Path,
-        capture_output: OutputCapture,
-    ) -> Result<TaskResult>;
+    async fn execute(&self, ctx: &TaskExecutionContext<'_>) -> Result<TaskResult>;
 
     /// Get the name of the backend
     fn name(&self) -> &'static str;
@@ -50,25 +57,18 @@ impl HostBackend {
 
 #[async_trait]
 impl TaskBackend for HostBackend {
-    async fn execute(
-        &self,
-        name: &str,
-        task: &Task,
-        environment: &Environment,
-        project_root: &Path,
-        capture_output: OutputCapture,
-    ) -> Result<TaskResult> {
+    async fn execute(&self, ctx: &TaskExecutionContext<'_>) -> Result<TaskResult> {
         tracing::info!(
-            task = %name,
+            task = %ctx.name,
             backend = "host",
             "Executing task on host"
         );
 
         // Resolve command path using the environment's PATH
-        let resolved_command = environment.resolve_command(&task.command);
+        let resolved_command = ctx.environment.resolve_command(&ctx.task.command);
 
         // Build command
-        let mut cmd = if let Some(shell) = &task.shell {
+        let mut cmd = if let Some(shell) = &ctx.task.shell {
             let mut c = Command::new(shell.command.as_deref().unwrap_or("bash"));
             if let Some(flag) = &shell.flag {
                 c.arg(flag);
@@ -76,25 +76,25 @@ impl TaskBackend for HostBackend {
                 c.arg("-c");
             }
             // Append the task command string to the shell invocation
-            c.arg(&task.command);
+            c.arg(&ctx.task.command);
             c
         } else {
             let mut c = Command::new(resolved_command);
-            c.args(&task.args);
+            c.args(&ctx.task.args);
             c
         };
 
         // Set working directory
-        cmd.current_dir(project_root);
+        cmd.current_dir(ctx.project_root);
 
         // Set environment variables
         cmd.env_clear();
-        for (k, v) in &environment.vars {
+        for (k, v) in &ctx.environment.vars {
             cmd.env(k, v);
         }
 
         // Execute - always capture output for consistent behavior
-        if capture_output.should_capture() {
+        if ctx.capture_output.should_capture() {
             let output = cmd
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -103,7 +103,7 @@ impl TaskBackend for HostBackend {
                 .map_err(|e| Error::Io {
                     source: e,
                     path: None,
-                    operation: format!("spawn task {}", name),
+                    operation: format!("spawn task {}", ctx.name),
                 })?;
 
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -112,11 +112,11 @@ impl TaskBackend for HostBackend {
             let success = output.status.success();
 
             if !success {
-                tracing::warn!(task = %name, exit = exit_code, "Task failed");
+                tracing::warn!(task = %ctx.name, exit = exit_code, "Task failed");
             }
 
             Ok(TaskResult {
-                name: name.to_string(),
+                name: ctx.name.to_string(),
                 exit_code: Some(exit_code),
                 stdout,
                 stderr,
@@ -132,18 +132,18 @@ impl TaskBackend for HostBackend {
                 .map_err(|e| Error::Io {
                     source: e,
                     path: None,
-                    operation: format!("spawn task {}", name),
+                    operation: format!("spawn task {}", ctx.name),
                 })?;
 
             let exit_code = status.code().unwrap_or(-1);
             let success = status.success();
 
             if !success {
-                tracing::warn!(task = %name, exit = exit_code, "Task failed");
+                tracing::warn!(task = %ctx.name, exit = exit_code, "Task failed");
             }
 
             Ok(TaskResult {
-                name: name.to_string(),
+                name: ctx.name.to_string(),
                 exit_code: Some(exit_code),
                 stdout: String::new(), // Output went to terminal
                 stderr: String::new(),

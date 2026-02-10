@@ -8,7 +8,8 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::tools::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
+    ToolSource,
 };
 use flate2::read::GzDecoder;
 use reqwest::Client;
@@ -582,13 +583,13 @@ impl ToolProvider for GitHubToolProvider {
         matches!(source, ToolSource::GitHub { .. })
     }
 
-    async fn resolve(
-        &self,
-        tool_name: &str,
-        version: &str,
-        platform: &Platform,
-        config: &serde_json::Value,
-    ) -> Result<ResolvedTool> {
+    async fn resolve(&self, request: &ToolResolveRequest<'_>) -> Result<ResolvedTool> {
+        let tool_name = request.tool_name;
+        let version = request.version;
+        let platform = request.platform;
+        let config = request.config;
+        let token = request.token;
+
         let repo = config
             .get("repo")
             .and_then(|v| v.as_str())
@@ -614,74 +615,6 @@ impl ToolProvider for GitHubToolProvider {
         let path = config.get("path").and_then(|v| v.as_str());
 
         info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release");
-
-        // Expand templates
-        let tag = self.expand_template(&tag_template, version, platform);
-        let asset = self.expand_template(asset_template, version, platform);
-        let expanded_path = path.map(|p| self.expand_template(p, version, platform));
-
-        // Fetch release to verify it exists (no runtime token for backward compat)
-        let release = self.fetch_release(repo, &tag, None).await?;
-
-        // Find the asset
-        let found_asset = release.assets.iter().find(|a| a.name == asset);
-        if found_asset.is_none() {
-            let available: Vec<_> = release.assets.iter().map(|a| &a.name).collect();
-            return Err(cuenv_core::Error::tool_resolution(format!(
-                "Asset '{}' not found in release. Available: {:?}",
-                asset, available
-            )));
-        }
-
-        debug!(%tag, %asset, "Resolved GitHub release");
-
-        Ok(ResolvedTool {
-            name: tool_name.to_string(),
-            version: version.to_string(),
-            platform: platform.clone(),
-            source: ToolSource::GitHub {
-                repo: repo.to_string(),
-                tag,
-                asset,
-                path: expanded_path,
-            },
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn resolve_with_token(
-        &self,
-        tool_name: &str,
-        version: &str,
-        platform: &Platform,
-        config: &serde_json::Value,
-        token: Option<&str>,
-    ) -> Result<ResolvedTool> {
-        let repo = config
-            .get("repo")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'repo' in config"))?;
-
-        let asset_template = config
-            .get("asset")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| cuenv_core::Error::tool_resolution("Missing 'asset' in config"))?;
-
-        let tag_template = config
-            .get("tag")
-            .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| {
-                let prefix = config
-                    .get("tagPrefix")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                format!("{prefix}{{version}}")
-            });
-
-        let path = config.get("path").and_then(|v| v.as_str());
-
-        info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release with token");
 
         // Expand templates
         let tag = self.expand_template(&tag_template, version, platform);

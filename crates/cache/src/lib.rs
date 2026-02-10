@@ -35,7 +35,7 @@ pub use error::{Error, Result};
 
 // Re-export main types
 pub use tasks::{
-    CacheEntry, CacheKeyEnvelope, OutputIndexEntry, TaskLatestIndex, TaskLogs, TaskResultMeta,
-    compute_cache_key, get_project_cache_keys, key_to_path, lookup, lookup_latest,
+    CacheEntry, CacheKeyEnvelope, OutputIndexEntry, SaveResultData, TaskLatestIndex, TaskLogs,
+    TaskResultMeta, compute_cache_key, get_project_cache_keys, key_to_path, lookup, lookup_latest,
     materialize_outputs, record_latest, save_result, snapshot_workspace_tar_zst,
 };
