@@ -2,6 +2,7 @@
 //!
 //! Runs configured formatters on generated files after sync operations.
 
+use cuenv_core::DryRun;
 use cuenv_core::Result;
 use cuenv_core::manifest::{Formatters, NixFormatter, NixFormatterTool, RustFormatter};
 use glob::Pattern;
@@ -37,7 +38,7 @@ pub fn format_generated_files(
     files: &[&Path],
     formatters: &Formatters,
     project_root: &Path,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
     let mut output_lines = Vec::new();
@@ -178,10 +179,10 @@ pub fn run_rust_formatter(
     files: &[&Path],
     config: Option<&RustFormatter>,
     project_root: &Path,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
-    if dry_run {
+    if dry_run.is_dry_run() {
         return Ok(format!(
             "Would format {} Rust file(s) with rustfmt",
             files.len()
@@ -250,13 +251,13 @@ pub fn run_nix_formatter(
     files: &[&Path],
     config: Option<&NixFormatter>,
     project_root: &Path,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
     let tool = config.map_or(NixFormatterTool::default(), |c| c.tool);
     let tool_name = tool.command();
 
-    if dry_run {
+    if dry_run.is_dry_run() {
         return Ok(format!(
             "Would format {} Nix file(s) with {tool_name}",
             files.len()
@@ -320,10 +321,10 @@ pub fn run_nix_formatter(
 pub fn run_go_formatter(
     files: &[&Path],
     project_root: &Path,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
-    if dry_run {
+    if dry_run.is_dry_run() {
         return Ok(format!(
             "Would format {} Go file(s) with gofmt",
             files.len()
@@ -397,10 +398,10 @@ pub fn run_go_formatter(
 pub fn run_cue_formatter(
     files: &[&Path],
     project_root: &Path,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
-    if dry_run {
+    if dry_run.is_dry_run() {
         return Ok(format!(
             "Would format {} CUE file(s) with cue fmt",
             files.len()

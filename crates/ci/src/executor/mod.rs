@@ -146,25 +146,25 @@ mod tests {
     fn test_executor_config_builder() {
         let config = CIExecutorConfig::new(std::path::PathBuf::from("/project"))
             .with_max_parallel(8)
-            .with_dry_run(true);
+            .with_dry_run(cuenv_core::DryRun::Yes);
 
         assert_eq!(config.max_parallel, 8);
-        assert!(config.dry_run);
+        assert!(config.dry_run.is_dry_run());
     }
 
     #[test]
     fn test_executor_config_default() {
         let config = CIExecutorConfig::default();
-        assert!(!config.dry_run);
+        assert!(!config.dry_run.is_dry_run());
         assert!(config.max_parallel >= 1);
     }
 
     #[test]
     fn test_executor_config_with_capture_output() {
-        let config =
-            CIExecutorConfig::new(std::path::PathBuf::from("/project")).with_capture_output(true);
+        let config = CIExecutorConfig::new(std::path::PathBuf::from("/project"))
+            .with_capture_output(cuenv_core::OutputCapture::Capture);
 
-        assert!(config.capture_output);
+        assert!(config.capture_output.should_capture());
     }
 
     // ==========================================================================

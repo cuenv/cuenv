@@ -5,6 +5,7 @@
 //! that can be run via `cuenv task hooks.pre-push.<name>`.
 
 use async_trait::async_trait;
+use cuenv_core::DryRun;
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
 use std::path::Path;
@@ -92,7 +93,7 @@ impl SyncProvider for GitHooksSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
-        let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run, check)?;
+        let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
 
         Ok(SyncResult::success(output))
     }
@@ -102,7 +103,7 @@ impl SyncProvider for GitHooksSyncProvider {
 fn sync_pre_push_hook(
     git_root: &Path,
     _hooks: &std::collections::HashMap<String, cuenv_hooks::Hook>,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
     use std::fs;
@@ -132,7 +133,7 @@ fn sync_pre_push_hook(
     }
 
     // Check if unchanged
-    if pre_push_path.exists() && !dry_run {
+    if pre_push_path.exists() && !dry_run.is_dry_run() {
         let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
         if existing == hook_script {
             return Ok("pre-push: unchanged".to_string());
@@ -140,7 +141,7 @@ fn sync_pre_push_hook(
     }
 
     // Dry-run mode
-    if dry_run {
+    if dry_run.is_dry_run() {
         if pre_push_path.exists() {
             return Ok("pre-push: Would update".to_string());
         }

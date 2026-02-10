@@ -17,11 +17,11 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
-use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
+use cuenv_core::{DryRun, Result};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +38,7 @@ use super::runner::{IRTaskRunner, TaskOutput};
 /// # Arguments
 ///
 /// * `provider` - The CI provider to use for changed files detection and reporting
-/// * `dry_run` - If true, don't actually run tasks
+/// * `dry_run` - Whether to skip actual task execution
 /// * `specific_pipeline` - If set, only run tasks from this pipeline
 /// * `environment` - Optional environment override for secrets resolution
 /// * `path_filter` - If set, only process projects under this path (relative to module root)
@@ -48,7 +48,7 @@ use super::runner::{IRTaskRunner, TaskOutput};
 #[allow(clippy::too_many_lines)]
 pub async fn run_ci(
     provider: Arc<dyn CIProvider>,
-    dry_run: bool,
+    dry_run: DryRun,
     specific_pipeline: Option<String>,
     environment: Option<String>,
     path_filter: Option<&str>,
@@ -168,7 +168,7 @@ pub async fn run_ci(
             "Running tasks for project"
         );
 
-        if !dry_run {
+        if !dry_run.is_dry_run() {
             let result = execute_project_pipeline(
                 project_path,
                 config,
@@ -240,8 +240,8 @@ async fn execute_project_pipeline(
 
     // Create executor configuration with salt rotation support
     let mut executor_config = CIExecutorConfig::new(project_path.to_path_buf())
-        .with_capture_output(true)
-        .with_dry_run(false)
+        .with_capture_output(cuenv_core::OutputCapture::Capture)
+        .with_dry_run(DryRun::No)
         .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
 
     // Add previous salt for rotation support
@@ -608,7 +608,10 @@ async fn compile_and_execute_ir(
     cuenv_events::register_secrets(secrets.into_iter());
 
     // Execute all compiled IR tasks sequentially
-    let runner = IRTaskRunner::new(project_root.to_path_buf(), true);
+    let runner = IRTaskRunner::new(
+        project_root.to_path_buf(),
+        cuenv_core::OutputCapture::Capture,
+    );
     let mut combined_stdout = String::new();
     let mut combined_stderr = String::new();
     let mut all_success = true;

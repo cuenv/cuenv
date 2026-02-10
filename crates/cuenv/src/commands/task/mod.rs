@@ -130,7 +130,7 @@ async fn execute_task_legacy(
     labels: &[String],
     environment: Option<&str>,
     format: &str,
-    capture_output: bool,
+    capture_output: cuenv_core::OutputCapture,
     materialize_outputs: Option<&str>,
     show_cache_path: bool,
     backend: Option<&str>,
@@ -139,7 +139,7 @@ async fn execute_task_legacy(
     help: bool,
     all: bool,
     skip_dependencies: bool,
-    dry_run: bool,
+    dry_run: cuenv_core::DryRun,
     task_args: &[String],
     executor: &CommandExecutor,
 ) -> Result<String> {
@@ -250,7 +250,7 @@ async fn execute_task_legacy(
                 if let Some(env) = environment {
                     request = request.with_environment(env);
                 }
-                if capture_output {
+                if capture_output.should_capture() {
                     request = request.with_capture();
                 }
                 if let Some(mat_path) = materialize_outputs {
@@ -596,7 +596,7 @@ async fn execute_task_legacy(
     );
 
     // Handle dry-run mode: export DAG as JSON without executing
-    if dry_run {
+    if dry_run.is_dry_run() {
         let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
         return serde_json::to_string_pretty(&dag_export).map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
@@ -734,7 +734,7 @@ async fn execute_task_legacy(
         // For TUI mode, we MUST capture output so it goes through the event system
         // rather than directly to stdout/stderr (which would corrupt the TUI display).
         let tui_config = ExecutorConfig {
-            capture_output: true, // Force capture for TUI mode
+            capture_output: cuenv_core::OutputCapture::Capture, // Force capture for TUI mode
             max_parallel: 0,
             environment: runtime_env.clone(),
             working_dir: None,
@@ -948,12 +948,12 @@ async fn execute_task_with_strategy(
 
 fn format_task_results(
     results: Vec<cuenv_core::tasks::TaskResult>,
-    capture_output: bool,
+    capture_output: cuenv_core::OutputCapture,
     task_name: &str,
 ) -> String {
     let mut output = String::new();
     for result in results {
-        if capture_output {
+        if capture_output.should_capture() {
             write!(output, "Task '{}' ", result.name).expect("write to string");
             if result.success {
                 output.push_str("succeeded\n");
@@ -978,9 +978,9 @@ fn format_task_results(
         }
     }
 
-    if capture_output && output.is_empty() {
+    if capture_output.should_capture() && output.is_empty() {
         output = format!("Task '{task_name}' completed");
-    } else if !capture_output {
+    } else if !capture_output.should_capture() {
         // In non-capturing mode, ensure we always include a clear completion
         // message even if we printed cached logs above.
         if output.is_empty() {
@@ -1099,19 +1099,19 @@ env: {
         };
 
         // capture on: show status and fields
-        let s = format_task_results(vec![r_ok.clone(), r_fail.clone()], true, "t");
+        let s = format_task_results(vec![r_ok.clone(), r_fail.clone()], true.into(), "t");
         assert!(s.contains("succeeded"));
         assert!(s.contains("Output:"));
         assert!(s.contains("failed with exit code"));
         assert!(s.contains("Error:"));
 
         // capture off: logs passed through + completion line
-        let s2 = format_task_results(vec![r_ok], false, "t");
+        let s2 = format_task_results(vec![r_ok], false.into(), "t");
         assert!(!s2.contains("hello")); // Output handled by executor now
         assert!(s2.contains("Task 't' completed"));
 
         // capture on with empty output -> default completion
-        let s3 = format_task_results(vec![], true, "abc");
+        let s3 = format_task_results(vec![], true.into(), "abc");
         assert_eq!(s3, "Task 'abc' completed");
     }
 

@@ -25,7 +25,9 @@
 
 // Import everything from the library
 use crossterm::ExecutableCommand;
-use cuenv::cli::{self, CliError, EXIT_OK, OkEnvelope, exit_code_for, parse, render_error};
+use cuenv::cli::{
+    self, CliError, EXIT_OK, OkEnvelope, OutputFormat, exit_code_for, parse, render_error,
+};
 use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv::{coordinator, tui};
@@ -232,6 +234,8 @@ fn run_sync(cli: cli::Cli) -> i32 {
         return EXIT_OK;
     }
 
+    let json_format = OutputFormat::from_json_flag(cli.json);
+
     // Ensure a subcommand was provided
     let Some(cli_command) = cli.command else {
         render_error(
@@ -239,7 +243,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
                 "No subcommand provided",
                 "Run 'cuenv --help' for usage information",
             ),
-            cli.json,
+            json_format,
         );
         return exit_code_for(&CliError::config("No subcommand provided"));
     };
@@ -254,10 +258,10 @@ fn run_sync(cli: cli::Cli) -> i32 {
     let command: Command = cli_command.into_command(cli.environment.clone());
 
     // Execute synchronously
-    match execute_sync_command(command, cli.json) {
+    match execute_sync_command(command, json_format) {
         Ok(()) => EXIT_OK,
         Err(err) => {
-            render_error(&err, cli.json);
+            render_error(&err, json_format);
             exit_code_for(&err)
         }
     }
@@ -265,7 +269,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
 
 /// Execute commands synchronously (no tokio runtime)
 #[allow(clippy::too_many_lines)] // Command dispatcher naturally has many cases
-fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliError> {
+fn execute_sync_command(command: Command, json_format: cli::OutputFormat) -> Result<(), CliError> {
     match command {
         Command::Version { format: _ } => {
             let version_info = commands::version::get_version_info();
@@ -284,7 +288,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             let options = commands::info::InfoOptions {
                 path: path.as_deref(),
                 package: &package,
-                json_output: json_mode,
+                json_output: json_format.is_json(),
                 with_meta: meta,
             };
             match commands::info::execute_info(options) {
@@ -299,7 +303,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             }
         }
 
-        Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_mode),
+        Command::ShellInit { shell } => execute_shell_init_command_safe(shell, json_format),
 
         Command::EnvStatus {
             path,
@@ -309,7 +313,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             ..
         } => match commands::hooks::execute_env_status_sync(&path, &package, format) {
             Ok(output) => {
-                if json_mode {
+                if json_format.is_json() {
                     let envelope = OkEnvelope::new(serde_json::json!({
                         "status": output
                     }));
@@ -401,7 +405,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             description.as_deref(),
         ) {
             Ok(output) => {
-                if json_mode {
+                if json_format.is_json() {
                     let envelope = OkEnvelope::new(serde_json::json!({ "message": output }));
                     match serde_json::to_string(&envelope) {
                         Ok(json) => cuenv_events::println_redacted(&json),
@@ -421,8 +425,8 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         },
 
         Command::ChangesetStatus { path, json } => {
-            let use_json = json || json_mode;
-            match commands::release::execute_changeset_status_with_format(&path, use_json) {
+            let merged_format = OutputFormat::from_json_flag(json || json_format.is_json());
+            match commands::release::execute_changeset_status_with_format(&path, merged_format) {
                 Ok(output) => {
                     cuenv_events::println_redacted(&output);
                     Ok(())
@@ -437,7 +441,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         Command::ChangesetFromCommits { path, since } => {
             match commands::release::execute_changeset_from_commits(&path, since.as_deref()) {
                 Ok(output) => {
-                    if json_mode {
+                    if json_format.is_json() {
                         let envelope = OkEnvelope::new(serde_json::json!({ "message": output }));
                         match serde_json::to_string(&envelope) {
                             Ok(json) => cuenv_events::println_redacted(&json),
@@ -475,7 +479,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
             };
             match commands::release::execute_release_prepare(&opts) {
                 Ok(output) => {
-                    if json_mode {
+                    if json_format.is_json() {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
                             Ok(json) => cuenv_events::println_redacted(&json),
@@ -500,7 +504,7 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         Command::ReleaseVersion { path, dry_run } => {
             match commands::release::execute_release_version(&path, dry_run) {
                 Ok(output) => {
-                    if json_mode {
+                    if json_format.is_json() {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
                             Ok(json) => cuenv_events::println_redacted(&json),
@@ -523,14 +527,14 @@ fn execute_sync_command(command: Command, json_mode: bool) -> Result<(), CliErro
         }
 
         Command::ReleasePublish { path, dry_run } => {
-            let format = if json_mode {
+            let format = if json_format.is_json() {
                 commands::release::OutputFormat::Json
             } else {
                 commands::release::OutputFormat::Human
             };
             match commands::release::execute_release_publish(&path, dry_run, format) {
                 Ok(output) => {
-                    if json_mode {
+                    if json_format.is_json() {
                         let envelope = OkEnvelope::new(serde_json::json!({ "result": output }));
                         match serde_json::to_string(&envelope) {
                             Ok(json) => cuenv_events::println_redacted(&json),
@@ -658,7 +662,7 @@ async fn run() -> i32 {
                     let args: Vec<String> = std::env::args().collect();
                     let json_mode = args.iter().any(|arg| arg == "--json");
 
-                    render_error(&err, json_mode);
+                    render_error(&err, OutputFormat::from_json_flag(json_mode));
                     exit_code_for(&err)
                 }
             }
@@ -773,7 +777,8 @@ async fn real_main() -> Result<(), CliError> {
     let command: Command = cli_command.into_command(init_result.cli.environment.clone());
 
     // Execute the command with the shared executor for module caching
-    let result = execute_command_safe(command, init_result.cli.json, &executor).await;
+    let json_format = OutputFormat::from_json_flag(init_result.cli.json);
+    let result = execute_command_safe(command, json_format, &executor).await;
 
     // Signal renderers to finish processing and exit gracefully
     cuenv_events::emit_shutdown!();
@@ -891,7 +896,7 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
 #[instrument(name = "cuenv_execute_command_safe", skip(executor))]
 async fn execute_command_safe(
     command: Command,
-    json_mode: bool,
+    json_format: cli::OutputFormat,
     executor: &CommandExecutor,
 ) -> Result<(), CliError> {
     // Special commands that bypass the executor (they don't fit the event pattern)
@@ -927,7 +932,7 @@ async fn execute_command_safe(
         Command::ToolsList => {
             return commands::tools::execute_tools_list();
         }
-        // Info command needs special handling for json_mode and output
+        // Info command needs special handling for json_format and output
         Command::Info {
             path,
             package,
@@ -936,7 +941,7 @@ async fn execute_command_safe(
             let options = commands::info::InfoOptions {
                 path: path.as_deref(),
                 package,
-                json_output: json_mode,
+                json_output: json_format.is_json(),
                 with_meta: *meta,
             };
             return match commands::info::execute_info(options) {
@@ -950,7 +955,7 @@ async fn execute_command_safe(
                 )),
             };
         }
-        // Changeset commands need special handling for json_mode
+        // Changeset commands need special handling for json_format
         Command::ChangesetAdd {
             path,
             summary,
@@ -962,16 +967,16 @@ async fn execute_command_safe(
                 summary.clone(),
                 description.clone(),
                 packages.clone(),
-                json_mode,
+                json_format,
             )
             .await;
         }
         Command::ChangesetStatus { path, json } => {
-            let use_json = *json || json_mode;
-            return execute_changeset_status_safe(path.clone(), use_json).await;
+            let merged_format = OutputFormat::from_json_flag(*json || json_format.is_json());
+            return execute_changeset_status_safe(path.clone(), merged_format).await;
         }
         Command::ChangesetFromCommits { path, since } => {
-            return execute_changeset_from_commits_safe(path.clone(), since.clone(), json_mode)
+            return execute_changeset_from_commits_safe(path.clone(), since.clone(), json_format)
                 .await;
         }
         Command::ReleasePrepare {
@@ -987,15 +992,15 @@ async fn execute_command_safe(
                 *dry_run,
                 branch.clone(),
                 *no_pr,
-                json_mode,
+                json_format,
             )
             .await;
         }
         Command::ReleaseVersion { path, dry_run } => {
-            return execute_release_version_safe(path.clone(), *dry_run, json_mode).await;
+            return execute_release_version_safe(path.clone(), *dry_run, json_format).await;
         }
         Command::ReleasePublish { path, dry_run } => {
-            return execute_release_publish_safe(path.clone(), *dry_run, json_mode).await;
+            return execute_release_publish_safe(path.clone(), *dry_run, json_format).await;
         }
         Command::ReleaseBinaries {
             path,
@@ -1026,7 +1031,7 @@ async fn execute_command_safe(
                 .with_targets(targets.clone())
                 .with_version(version.clone());
 
-            return execute_release_binaries_safe(opts, json_mode).await;
+            return execute_release_binaries_safe(opts, json_format).await;
         }
         _ => {}
     }
@@ -1091,10 +1096,13 @@ async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
 
 /// Execute shell init command safely
 #[instrument(name = "cuenv_execute_shell_init_safe")]
-fn execute_shell_init_command_safe(shell: cli::ShellType, json_mode: bool) -> Result<(), CliError> {
+fn execute_shell_init_command_safe(
+    shell: cli::ShellType,
+    json_format: cli::OutputFormat,
+) -> Result<(), CliError> {
     let output = commands::hooks::execute_shell_init(shell);
 
-    if json_mode {
+    if json_format.is_json() {
         let envelope = OkEnvelope::new(serde_json::json!({
             "script": output
         }));
@@ -1426,7 +1434,7 @@ async fn execute_changeset_add_safe(
     summary: Option<String>,
     description: Option<String>,
     packages: Vec<(String, String)>,
-    json_mode: bool,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     match commands::release::execute_changeset_add(
         &path,
@@ -1435,7 +1443,7 @@ async fn execute_changeset_add_safe(
         description.as_deref(),
     ) {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "message": output
                 }));
@@ -1459,9 +1467,12 @@ async fn execute_changeset_add_safe(
 
 /// Execute changeset status command safely
 #[instrument(name = "cuenv_execute_changeset_status_safe")]
-async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<(), CliError> {
+async fn execute_changeset_status_safe(
+    path: String,
+    json_format: cli::OutputFormat,
+) -> Result<(), CliError> {
     // Use the format-aware function that returns proper JSON structure
-    match commands::release::execute_changeset_status_with_format(&path, json_mode) {
+    match commands::release::execute_changeset_status_with_format(&path, json_format) {
         Ok(output) => {
             cuenv_events::println_redacted(&output);
             Ok(())
@@ -1478,11 +1489,11 @@ async fn execute_changeset_status_safe(path: String, json_mode: bool) -> Result<
 async fn execute_changeset_from_commits_safe(
     path: String,
     since: Option<String>,
-    json_mode: bool,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     match commands::release::execute_changeset_from_commits(&path, since.as_deref()) {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "message": output
                 }));
@@ -1509,10 +1520,10 @@ async fn execute_changeset_from_commits_safe(
 async fn execute_release_prepare_safe(
     path: String,
     since: Option<String>,
-    dry_run: bool,
+    dry_run: cuenv_core::DryRun,
     branch: String,
     no_pr: bool,
-    json_mode: bool,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     let opts = commands::release::ReleasePrepareOptions {
         path,
@@ -1523,7 +1534,7 @@ async fn execute_release_prepare_safe(
     };
     match commands::release::execute_release_prepare(&opts) {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "result": output
                 }));
@@ -1549,12 +1560,12 @@ async fn execute_release_prepare_safe(
 #[instrument(name = "cuenv_execute_release_version_safe")]
 async fn execute_release_version_safe(
     path: String,
-    dry_run: bool,
-    json_mode: bool,
+    dry_run: cuenv_core::DryRun,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     match commands::release::execute_release_version(&path, dry_run) {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "result": output
                 }));
@@ -1580,18 +1591,18 @@ async fn execute_release_version_safe(
 #[instrument(name = "cuenv_execute_release_publish_safe")]
 async fn execute_release_publish_safe(
     path: String,
-    dry_run: bool,
-    json_mode: bool,
+    dry_run: cuenv_core::DryRun,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     // Use Human format for CLI, JSON can be accessed via --json flag
-    let format = if json_mode {
+    let format = if json_format.is_json() {
         commands::release::OutputFormat::Json
     } else {
         commands::release::OutputFormat::Human
     };
     match commands::release::execute_release_publish(&path, dry_run, format) {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "result": output
                 }));
@@ -1615,11 +1626,11 @@ async fn execute_release_publish_safe(
 
 async fn execute_release_binaries_safe(
     opts: commands::release::ReleaseBinariesOptions,
-    json_mode: bool,
+    json_format: cli::OutputFormat,
 ) -> Result<(), CliError> {
     match commands::release::execute_release_binaries(opts).await {
         Ok(output) => {
-            if json_mode {
+            if json_format.is_json() {
                 let envelope = OkEnvelope::new(serde_json::json!({
                     "result": output
                 }));

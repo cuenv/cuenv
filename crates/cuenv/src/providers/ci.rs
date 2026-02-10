@@ -107,7 +107,7 @@ impl SyncCapability for CiProvider {
         })?;
 
         let ci_options = functions::CiSyncOptions {
-            dry_run,
+            dry_run: dry_run.into(),
             check,
             provider: options.ci_provider.as_deref(),
         };
@@ -131,7 +131,7 @@ impl SyncCapability for CiProvider {
         let check = options.mode == SyncMode::Check;
 
         let ci_options = functions::CiSyncOptions {
-            dry_run,
+            dry_run: dry_run.into(),
             check,
             provider: options.ci_provider.as_deref(),
         };

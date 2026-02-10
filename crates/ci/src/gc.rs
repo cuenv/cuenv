@@ -5,6 +5,7 @@
 // GC involves complex file system traversal with LRU and size calculations
 #![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 
+use cuenv_core::DryRun;
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -67,7 +68,7 @@ pub struct GCConfig {
     /// Whether to run Nix garbage collection
     pub run_nix_gc: bool,
     /// Dry run (don't actually delete)
-    pub dry_run: bool,
+    pub dry_run: DryRun,
 }
 
 impl Default for GCConfig {
@@ -77,7 +78,7 @@ impl Default for GCConfig {
             max_size_bytes: DEFAULT_MAX_SIZE_BYTES,
             max_age_days: DEFAULT_MAX_AGE_DAYS,
             run_nix_gc: false,
-            dry_run: false,
+            dry_run: DryRun::No,
         }
     }
 }
@@ -133,7 +134,7 @@ impl GarbageCollector {
     /// Enable dry run mode
     #[must_use]
     pub const fn dry_run(mut self) -> Self {
-        self.config.dry_run = true;
+        self.config.dry_run = DryRun::Yes;
         self
     }
 
@@ -182,7 +183,7 @@ impl GarbageCollector {
             let should_remove = age > max_age || current_size > self.config.max_size_bytes;
 
             if should_remove {
-                if self.config.dry_run {
+                if self.config.dry_run.is_dry_run() {
                     tracing::info!(
                         path = %entry.path.display(),
                         size = entry.size,
@@ -222,7 +223,7 @@ impl GarbageCollector {
 
         // Run Nix GC if configured
         if self.config.run_nix_gc
-            && !self.config.dry_run
+            && !self.config.dry_run.is_dry_run()
             && let Err(e) = Self::run_nix_gc()
         {
             tracing::warn!(error = %e, "Nix garbage collection failed");
@@ -460,7 +461,7 @@ mod tests {
         assert_eq!(config.max_size_bytes, DEFAULT_MAX_SIZE_BYTES);
         assert_eq!(config.max_age_days, DEFAULT_MAX_AGE_DAYS);
         assert!(!config.run_nix_gc);
-        assert!(!config.dry_run);
+        assert!(!config.dry_run.is_dry_run());
     }
 
     #[test]
@@ -470,7 +471,7 @@ mod tests {
             max_size_bytes: 1000,
             max_age_days: 7,
             run_nix_gc: true,
-            dry_run: true,
+            dry_run: DryRun::Yes,
         };
         let cloned = config.clone();
         assert_eq!(cloned.cache_dir, PathBuf::from("/test"));
@@ -504,7 +505,7 @@ mod tests {
             max_size_bytes: 5000,
             max_age_days: 14,
             run_nix_gc: false,
-            dry_run: false,
+            dry_run: DryRun::No,
         };
         let gc = GarbageCollector::with_config(config);
         assert_eq!(gc.config.cache_dir, PathBuf::from("/custom/path"));
@@ -538,7 +539,7 @@ mod tests {
     #[test]
     fn test_garbage_collector_builder_dry_run() {
         let gc = GarbageCollector::new().dry_run();
-        assert!(gc.config.dry_run);
+        assert!(gc.config.dry_run.is_dry_run());
     }
 
     #[test]
@@ -554,7 +555,7 @@ mod tests {
         assert_eq!(gc.config.max_size_bytes, 1000);
         assert_eq!(gc.config.max_age_days, 7);
         assert!(gc.config.run_nix_gc);
-        assert!(gc.config.dry_run);
+        assert!(gc.config.dry_run.is_dry_run());
     }
 
     #[test]

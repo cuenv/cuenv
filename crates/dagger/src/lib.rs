@@ -45,7 +45,7 @@ impl TaskBackend for DaggerBackend {
         task: &Task,
         env: &Environment,
         _project_root: &Path,
-        capture_output: bool,
+        capture_output: cuenv_core::OutputCapture,
     ) -> Result<TaskResult> {
         let dagger_config = task.dagger.as_ref();
 
@@ -253,7 +253,7 @@ impl TaskBackend for DaggerBackend {
         }
 
         // Print output if not capturing
-        if !capture_output {
+        if !capture_output.should_capture() {
             if !stdout.is_empty() {
                 print!("{}", stdout);
             }
@@ -265,12 +265,12 @@ impl TaskBackend for DaggerBackend {
         Ok(TaskResult {
             name: task_name_for_cache,
             exit_code: Some(exit_code),
-            stdout: if capture_output {
+            stdout: if capture_output.should_capture() {
                 stdout
             } else {
                 String::new()
             },
-            stderr: if capture_output {
+            stderr: if capture_output.should_capture() {
                 stderr
             } else {
                 String::new()

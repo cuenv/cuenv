@@ -8,6 +8,7 @@
 use async_trait::async_trait;
 use cuenv_codeowners::Rule;
 use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
+use cuenv_core::DryRun;
 use cuenv_core::Result;
 use cuenv_core::manifest::{DirectoryRules, Ignore, IgnoreValue};
 use cuenv_editorconfig::{EditorConfigFile, EditorConfigSection as BuilderSection};
@@ -65,10 +66,10 @@ impl SyncProvider for RulesSyncProvider {
         let repo_root = find_repo_root(path).unwrap_or_else(|| path.to_path_buf());
         let is_root = path == repo_root;
 
-        let mut output = sync_directory_rules(path, &config, dry_run, check, is_root)?;
+        let mut output = sync_directory_rules(path, &config, dry_run.into(), check, is_root)?;
 
         if let Some(project) = build_project_owners(path, &repo_root, &config) {
-            let codeowners_output = sync_codeowners(&repo_root, &[project], dry_run, check)?;
+            let codeowners_output = sync_codeowners(&repo_root, &[project], dry_run.into(), check)?;
             if !codeowners_output.is_empty() {
                 if !output.is_empty() {
                     output.push('\n');
@@ -144,7 +145,7 @@ impl SyncProvider for RulesSyncProvider {
             let is_root = directory == repo_root;
 
             // Sync per-directory config (ignore, editorconfig)
-            let result = sync_directory_rules(&directory, &config, dry_run, check, is_root);
+            let result = sync_directory_rules(&directory, &config, dry_run.into(), check, is_root);
 
             match result {
                 Ok(output) if !output.is_empty() => {
@@ -165,7 +166,7 @@ impl SyncProvider for RulesSyncProvider {
 
         // Generate aggregated CODEOWNERS at repo root
         if !owner_projects.is_empty() {
-            let output = sync_codeowners(&repo_root, &owner_projects, dry_run, check)?;
+            let output = sync_codeowners(&repo_root, &owner_projects, dry_run.into(), check)?;
             if !output.is_empty() {
                 outputs.push(format!("[CODEOWNERS]\n{output}"));
             }
@@ -217,12 +218,12 @@ fn evaluate_rules_file(file_path: &Path, executor: &CommandExecutor) -> Result<D
 fn sync_directory_rules(
     directory: &Path,
     config: &DirectoryRules,
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
     is_root: bool,
 ) -> Result<String> {
     let mut outputs = Vec::new();
-    let effective_dry_run = dry_run || check;
+    let effective_dry_run = dry_run.is_dry_run() || check;
 
     // Generate ignore files
     if let Some(ref ignore) = config.ignore {
@@ -418,7 +419,7 @@ fn sync_editorconfig(
 fn sync_codeowners(
     repo_root: &Path,
     projects: &[ProjectOwners],
-    dry_run: bool,
+    dry_run: DryRun,
     check: bool,
 ) -> Result<String> {
     if projects.is_empty() {
@@ -447,7 +448,7 @@ fn sync_codeowners(
     }
 
     let result = provider
-        .sync(repo_root, projects, dry_run)
+        .sync(repo_root, projects, dry_run.is_dry_run())
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
     let status = match result.status {
@@ -480,7 +481,7 @@ mod tests {
             vec![Rule::new("*.rs", ["@backend"])],
         )];
 
-        let output = sync_codeowners(temp.path(), &projects, true, false).expect("sync");
+        let output = sync_codeowners(temp.path(), &projects, true.into(), false).expect("sync");
         assert!(output.contains("CODEOWNERS"));
         assert!(
             output.contains("Would"),
@@ -497,7 +498,8 @@ mod tests {
             vec![Rule::new("*", ["@team"])],
         )];
 
-        let err = sync_codeowners(temp.path(), &projects, false, true).expect_err("missing file");
+        let err =
+            sync_codeowners(temp.path(), &projects, false.into(), true).expect_err("missing file");
         let msg = err.to_string();
         assert!(
             msg.contains("CODEOWNERS file not found"),

@@ -101,7 +101,7 @@ impl SyncCapability for CodegenProvider {
         })?;
 
         let codegen_options = functions::CodegenSyncOptions {
-            dry_run,
+            dry_run: dry_run.into(),
             check,
             diff: options.show_diff,
         };
@@ -159,7 +159,7 @@ impl SyncCapability for CodegenProvider {
             };
 
             let codegen_options = functions::CodegenSyncOptions {
-                dry_run,
+                dry_run: dry_run.into(),
                 check,
                 diff: options.show_diff,
             };

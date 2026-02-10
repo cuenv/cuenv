@@ -231,7 +231,7 @@ pub fn execute_fmt(
 
     // Run formatters (check = !fix)
     let check = !fix;
-    let dry_run = false;
+    let dry_run = cuenv_core::DryRun::No;
     let mut results = Vec::new();
     let mut errors = Vec::new();
 

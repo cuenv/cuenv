@@ -182,18 +182,21 @@ pub struct PackageBumpSummary {
 /// Returns an error if changesets cannot be read.
 #[cfg(test)]
 pub fn execute_changeset_status(path: &str) -> cuenv_core::Result<String> {
-    execute_changeset_status_with_format(path, false)
+    execute_changeset_status_with_format(path, crate::cli::OutputFormat::Text)
 }
 
 /// Execute the `changeset status` command with format option.
 ///
 /// Lists all pending changesets and their accumulated bumps.
-/// When `json` is true, returns structured JSON output suitable for CI parsing.
+/// When format is JSON, returns structured JSON output suitable for CI parsing.
 ///
 /// # Errors
 ///
 /// Returns an error if changesets cannot be read.
-pub fn execute_changeset_status_with_format(path: &str, json: bool) -> cuenv_core::Result<String> {
+pub fn execute_changeset_status_with_format(
+    path: &str,
+    format: crate::cli::OutputFormat,
+) -> cuenv_core::Result<String> {
     let root = Path::new(path);
     let manager = ChangesetManager::new(root);
 
@@ -206,7 +209,7 @@ pub fn execute_changeset_status_with_format(path: &str, json: bool) -> cuenv_cor
         .get_package_bumps()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to aggregate bumps: {e}")))?;
 
-    if json {
+    if format.is_json() {
         let output = ChangesetStatusOutput {
             count: changesets.len(),
             has_pending: !changesets.is_empty(),
@@ -374,7 +377,10 @@ pub fn execute_changeset_from_commits(
 /// # Errors
 ///
 /// Returns an error if version calculation fails.
-pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<String> {
+pub fn execute_release_version(
+    path: &str,
+    dry_run: cuenv_core::DryRun,
+) -> cuenv_core::Result<String> {
     let root = Path::new(path);
     let manager = ChangesetManager::new(root);
     let manifest = CargoManifest::new(root);
@@ -406,7 +412,7 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
 
     let mut output = String::new();
 
-    if dry_run {
+    if dry_run.is_dry_run() {
         output.push_str("Dry run - no changes will be made.\n\n");
     }
 
@@ -422,7 +428,7 @@ pub fn execute_release_version(path: &str, dry_run: bool) -> cuenv_core::Result<
         let _ = writeln!(output, "  {pkg}: {current} -> {new_version}");
     }
 
-    if !dry_run {
+    if !dry_run.is_dry_run() {
         // Update the workspace version
         if let Some(new_version) = max_new_version {
             manifest
@@ -578,7 +584,7 @@ fn publish_packages_to_crates_io(
 /// Returns an error if package order cannot be determined.
 pub fn execute_release_publish(
     path: &str,
-    dry_run: bool,
+    dry_run: cuenv_core::DryRun,
     format: OutputFormat,
 ) -> cuenv_core::Result<String> {
     let root = Path::new(path);
@@ -614,7 +620,7 @@ pub fn execute_release_publish(
         }
     }
 
-    if !dry_run {
+    if !dry_run.is_dry_run() {
         publish_packages_to_crates_io(root, &plan, &publishable)?;
     }
 
@@ -624,7 +630,11 @@ pub fn execute_release_publish(
                 .iter()
                 .map(|p| {
                     let status = if publishable.contains(&p.name) {
-                        if dry_run { "planned" } else { "published" }
+                        if dry_run.is_dry_run() {
+                            "planned"
+                        } else {
+                            "published"
+                        }
                     } else {
                         "skipped"
                     };
@@ -639,7 +649,7 @@ pub fn execute_release_publish(
             let json = serde_json::json!({
                 "packages": sorted_packages,
                 "results": results,
-                "dry_run": dry_run
+                "dry_run": dry_run.is_dry_run()
             });
             serde_json::to_string_pretty(&json).map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}"))
@@ -648,11 +658,11 @@ pub fn execute_release_publish(
         OutputFormat::Human => {
             let mut output = String::new();
 
-            if dry_run {
+            if dry_run.is_dry_run() {
                 output.push_str("Dry run - no packages will be published.\n\n");
             }
 
-            if dry_run {
+            if dry_run.is_dry_run() {
                 output.push_str("Publish plan (topologically sorted):\n\n");
             } else {
                 output.push_str("Publish order (topologically sorted):\n\n");
@@ -666,7 +676,7 @@ pub fn execute_release_publish(
                 }
             }
 
-            if dry_run {
+            if dry_run.is_dry_run() {
                 output.push_str("\nDry run complete.\n");
             }
 
@@ -695,7 +705,7 @@ pub struct ReleaseBinariesOptions {
     /// Project root path.
     pub path: String,
     /// Dry run mode (no actual publishing).
-    pub dry_run: bool,
+    pub dry_run: cuenv_core::DryRun,
     /// Filter to specific backends.
     pub backends: Option<Vec<String>>,
     /// Release phase to execute.
@@ -718,7 +728,7 @@ impl ReleaseBinariesOptions {
 
     /// Sets dry run mode.
     #[must_use]
-    pub const fn with_dry_run(mut self, dry_run: bool) -> Self {
+    pub const fn with_dry_run(mut self, dry_run: cuenv_core::DryRun) -> Self {
         self.dry_run = dry_run;
         self
     }
@@ -864,7 +874,7 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
     // Format output
     let mut output = String::new();
 
-    if opts.dry_run {
+    if opts.dry_run.is_dry_run() {
         output.push_str("[dry-run] ");
     }
 
@@ -951,7 +961,7 @@ pub struct ReleasePrepareOptions {
     /// Git tag or ref to analyze commits from.
     pub since: Option<String>,
     /// Preview changes without applying.
-    pub dry_run: bool,
+    pub dry_run: cuenv_core::DryRun,
     /// Branch name for the release.
     pub branch: String,
     /// Skip creating the pull request.
@@ -1080,7 +1090,7 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
     }
     let _ = writeln!(output, "{:-<60}\n", "");
 
-    if opts.dry_run {
+    if opts.dry_run.is_dry_run() {
         let _ = writeln!(output, "[DRY RUN] No changes applied.");
         let _ = writeln!(output, "\nTo apply changes, run without --dry-run");
         return Ok(output);
@@ -1458,7 +1468,7 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        let result = execute_release_version(&path, true);
+        let result = execute_release_version(&path, true.into());
         assert!(result.is_err());
     }
 
@@ -1471,7 +1481,7 @@ version.workspace = true
         let packages = vec![("foo".to_string(), "minor".to_string())];
         execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
 
-        let result = execute_release_version(&path, true);
+        let result = execute_release_version(&path, true.into());
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("Dry run"));
@@ -1488,7 +1498,7 @@ version.workspace = true
         execute_changeset_add(&path, &packages, Some("Feature"), None).unwrap();
 
         // Apply version changes
-        let result = execute_release_version(&path, false);
+        let result = execute_release_version(&path, false.into());
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("Manifest files updated"));
@@ -1505,7 +1515,7 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        let result = execute_release_publish(&path, true, OutputFormat::Human);
+        let result = execute_release_publish(&path, true.into(), OutputFormat::Human);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("Dry run"));
@@ -1517,7 +1527,7 @@ version.workspace = true
         let temp = TempDir::new().unwrap();
         let path = create_test_workspace(&temp);
 
-        let result = execute_release_publish(&path, true, OutputFormat::Json);
+        let result = execute_release_publish(&path, true.into(), OutputFormat::Json);
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("\"packages\""));

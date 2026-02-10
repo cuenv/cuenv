@@ -257,7 +257,7 @@ impl ReleaseBackend for HomebrewBackend {
                 "Generated formula"
             );
 
-            if ctx.dry_run {
+            if ctx.dry_run.is_dry_run() {
                 info!(
                     tap = %self.config.tap,
                     formula = %self.config.formula,
@@ -292,7 +292,7 @@ impl ReleaseBackend for HomebrewBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_release::Target;
+    use cuenv_release::{DryRun, Target};
 
     #[test]
     fn test_parse_tap() {
@@ -397,7 +397,7 @@ mod tests {
             name: "cuenv".to_string(),
             version: "1.0.0".to_string(),
             download_base_url: Some("https://github.com/cuenv/cuenv/releases/download".to_string()),
-            dry_run: false,
+            dry_run: DryRun::No,
         };
 
         let artifacts = vec![PackagedArtifact {
@@ -424,7 +424,7 @@ mod tests {
             name: "myapp".to_string(),
             version: "2.0.0".to_string(),
             download_base_url: None, // Uses default
-            dry_run: false,
+            dry_run: DryRun::No,
         };
 
         let artifacts = vec![PackagedArtifact {
@@ -449,7 +449,7 @@ mod tests {
             name: "myapp".to_string(),
             version: "1.0.0".to_string(),
             download_base_url: None,
-            dry_run: false,
+            dry_run: DryRun::No,
         };
 
         let formula = backend.generate_formula(&ctx, &[]);
@@ -467,7 +467,7 @@ mod tests {
             name: "tool".to_string(),
             version: "3.0.0".to_string(),
             download_base_url: Some("https://releases.tool.dev".to_string()),
-            dry_run: false,
+            dry_run: DryRun::No,
         };
 
         let artifacts = vec![
