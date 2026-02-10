@@ -14,7 +14,9 @@ use cuenv_core::lockfile::{
     PlatformData,
 };
 use cuenv_core::manifest::{Base, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec};
-use cuenv_core::tools::{Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolSource};
+use cuenv_core::tools::{
+    Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolResolveRequest, ToolSource,
+};
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -554,13 +556,13 @@ async fn execute_lock_sync(
 
                 // Resolve the tool (pass GitHub token for authenticated API access)
                 let resolved = provider
-                    .resolve_with_token(
-                        &tool.name,
-                        &tool.version,
-                        &platform,
-                        &config,
-                        github_token.as_deref(),
-                    )
+                    .resolve(&ToolResolveRequest {
+                        tool_name: &tool.name,
+                        version: &tool.version,
+                        platform: &platform,
+                        config: &config,
+                        token: github_token.as_deref(),
+                    })
                     .await
                     .map_err(|e| {
                         cuenv_core::Error::configuration(format!(

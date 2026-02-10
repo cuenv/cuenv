@@ -10,7 +10,7 @@ pub mod profile;
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::tools::{
-    FetchedTool, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
+    FetchedTool, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest, ToolSource,
 };
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -79,13 +79,12 @@ impl ToolProvider for NixToolProvider {
         matches!(source, ToolSource::Nix { .. })
     }
 
-    async fn resolve(
-        &self,
-        tool_name: &str,
-        version: &str,
-        platform: &Platform,
-        config: &serde_json::Value,
-    ) -> Result<ResolvedTool> {
+    async fn resolve(&self, request: &ToolResolveRequest<'_>) -> Result<ResolvedTool> {
+        let tool_name = request.tool_name;
+        let version = request.version;
+        let platform = request.platform;
+        let config = request.config;
+
         let flake_name = config
             .get("flake")
             .and_then(|v| v.as_str())
@@ -206,7 +205,7 @@ impl ToolProvider for NixToolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tools::{Arch, Os};
+    use cuenv_core::tools::{Arch, Os, Platform};
 
     #[test]
     fn test_provider_name() {

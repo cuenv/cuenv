@@ -5,12 +5,10 @@
 
 use async_trait::async_trait;
 use cuenv_core::config::BackendConfig;
-use cuenv_core::environment::Environment;
-use cuenv_core::tasks::{Task, TaskBackend, TaskResult};
+use cuenv_core::tasks::{TaskBackend, TaskResult};
 use cuenv_core::{Error, Result};
 use dagger_sdk::{Config, ContainerId, connect_opts};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 type DaggerReport = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -41,12 +39,13 @@ impl DaggerBackend {
 impl TaskBackend for DaggerBackend {
     async fn execute(
         &self,
-        name: &str,
-        task: &Task,
-        env: &Environment,
-        _project_root: &Path,
-        capture_output: cuenv_core::OutputCapture,
+        ctx: &cuenv_core::tasks::backend::TaskExecutionContext<'_>,
     ) -> Result<TaskResult> {
+        let name = ctx.name;
+        let task = ctx.task;
+        let env = ctx.environment;
+        let capture_output = ctx.capture_output;
+
         let dagger_config = task.dagger.as_ref();
 
         // Determine if we're using container chaining (from) or a base image

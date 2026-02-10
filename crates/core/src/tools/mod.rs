@@ -27,7 +27,13 @@
 //!
 //! // Resolve and fetch a tool
 //! let provider = registry.get("github").unwrap();
-//! let resolved = provider.resolve("jq", "1.7.1", &Platform::current(), &config).await?;
+//! let resolved = provider.resolve(&ToolResolveRequest {
+//!     tool_name: "jq",
+//!     version: "1.7.1",
+//!     platform: &Platform::current(),
+//!     config: &config,
+//!     token: None,
+//! }).await?;
 //! let fetched = provider.fetch(&resolved, &ToolOptions::default()).await?;
 //! ```
 
@@ -35,7 +41,7 @@ mod provider;
 mod registry;
 
 pub use provider::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolSource,
-    default_cache_dir,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
+    ToolSource, default_cache_dir,
 };
 pub use registry::ToolRegistry;

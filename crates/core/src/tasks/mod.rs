@@ -18,8 +18,8 @@ pub mod process_registry;
 
 // Re-export executor and graph modules
 pub use backend::{
-    BackendFactory, HostBackend, TaskBackend, create_backend, create_backend_with_factory,
-    should_use_dagger,
+    BackendFactory, HostBackend, TaskBackend, TaskExecutionContext, create_backend,
+    create_backend_with_factory, should_use_dagger,
 };
 pub use executor::*;
 pub use graph::*;
