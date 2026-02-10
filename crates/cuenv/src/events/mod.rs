@@ -7,7 +7,6 @@ use tracing::{Level, event};
 /// Events are used to communicate between different parts of the application,
 /// such as user input, command execution progress, and system lifecycle events.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Event {
     /// User-initiated input event.
     UserInput {
@@ -78,11 +77,9 @@ impl fmt::Display for Event {
 }
 
 /// Sender half of an unbounded event channel.
-#[allow(dead_code)]
 pub type EventSender = mpsc::UnboundedSender<Event>;
 
 /// Receiver half of an unbounded event channel.
-#[allow(dead_code)]
 pub type EventReceiver = mpsc::UnboundedReceiver<Event>;
 
 /// A message bus for broadcasting events between components.
@@ -90,7 +87,6 @@ pub type EventReceiver = mpsc::UnboundedReceiver<Event>;
 /// The `EventBus` provides an unbounded channel for sending and receiving
 /// events asynchronously. It can be split into separate sender and receiver
 /// handles for use across different tasks.
-#[allow(dead_code)]
 pub struct EventBus {
     /// The sender half of the event channel.
     sender: EventSender,
@@ -98,7 +94,6 @@ pub struct EventBus {
     receiver: EventReceiver,
 }
 
-#[allow(dead_code)]
 impl EventBus {
     /// Creates a new event bus with an unbounded channel.
     #[must_use]

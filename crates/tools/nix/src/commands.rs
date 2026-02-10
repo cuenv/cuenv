@@ -75,7 +75,6 @@ pub async fn profile_list(profile_path: &Path) -> Result<String> {
 /// # Errors
 ///
 /// Returns an error if the nix command fails.
-#[allow(dead_code)]
 pub async fn profile_remove(profile_path: &Path, index: u32) -> Result<()> {
     debug!(profile = ?profile_path, %index, "Removing package from profile");
 

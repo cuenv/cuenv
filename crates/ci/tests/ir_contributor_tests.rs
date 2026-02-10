@@ -75,7 +75,7 @@ fn compile_with_pipeline(
 }
 
 /// Compile a project to IR without a specific pipeline context
-#[allow(dead_code)]
+#[allow(dead_code)] // Test helper for non-pipeline compilation
 fn compile_without_pipeline(project: Project) -> Result<IntermediateRepresentation, String> {
     Compiler::new(project)
         .compile()

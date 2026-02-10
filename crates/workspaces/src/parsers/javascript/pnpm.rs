@@ -105,7 +105,7 @@ struct PnpmImporter {
     #[serde(default)]
     optional_dependencies: BTreeMap<String, String>,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // pnpm-lock.yaml format field for deserialization
     specifiers: BTreeMap<String, String>,
 }
 
@@ -126,10 +126,10 @@ struct PnpmPackage {
     #[serde(default)]
     integrity: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // pnpm-lock.yaml format field for deserialization
     dev: bool,
     #[serde(default)]
-    #[allow(dead_code)]
+    #[allow(dead_code)] // pnpm-lock.yaml format field for deserialization
     optional: bool,
 }
 

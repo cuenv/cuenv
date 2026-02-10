@@ -727,7 +727,6 @@ fn create_tool_registry() -> ToolRegistry {
 }
 
 /// Convert a lockfile entry to a `ToolSource`.
-#[allow(dead_code)]
 fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
     match locked.provider.as_str() {
         "oci" => {

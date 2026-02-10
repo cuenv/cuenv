@@ -70,7 +70,6 @@ impl CliError {
 
     /// Create a new evaluation error
     #[must_use]
-    #[allow(dead_code)]
     pub fn eval(message: impl Into<String>) -> Self {
         Self::Eval {
             message: message.into(),
@@ -98,7 +97,6 @@ impl CliError {
 
     /// Create a new other error with help text
     #[must_use]
-    #[allow(dead_code)]
     pub fn other_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
         Self::Other {
             message: message.into(),
@@ -318,7 +316,6 @@ pub struct OkEnvelope<T> {
 impl<T> OkEnvelope<T> {
     /// Create a new success envelope
     #[must_use]
-    #[allow(dead_code)]
     pub const fn new(data: T) -> Self {
         Self { status: "ok", data }
     }

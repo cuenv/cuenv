@@ -56,7 +56,6 @@ use tokio::time::{Duration, sleep};
 /// Each variant corresponds to a subcommand in the CLI and contains
 /// all the configuration needed to execute that command.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum Command {
     /// Display version information in the specified format.
     Version {
@@ -355,7 +354,6 @@ pub enum Command {
 /// The `CommandExecutor` provides lazy-loading of CUE module evaluation, ensuring
 /// that the module is only loaded when a command actually needs CUE access.
 /// This avoids startup overhead for simple commands like `version` or `completions`.
-#[allow(dead_code)]
 pub struct CommandExecutor {
     /// Channel sender for broadcasting events to UI renderers.
     event_sender: EventSender,
@@ -365,7 +363,6 @@ pub struct CommandExecutor {
     package: String,
 }
 
-#[allow(dead_code)]
 impl CommandExecutor {
     /// Create a new executor with the specified event sender and package name.
     #[must_use]
@@ -378,7 +375,6 @@ impl CommandExecutor {
     }
 
     /// Get the CUE package name used for evaluation.
-    #[allow(dead_code)]
     #[must_use]
     pub fn package(&self) -> &str {
         &self.package
@@ -523,7 +519,6 @@ impl CommandExecutor {
     /// Get the module root path if the module has been loaded.
     ///
     /// Returns `None` if `get_module` hasn't been called yet.
-    #[allow(dead_code)]
     #[must_use]
     pub fn module_root(&self) -> Option<PathBuf> {
         self.module
@@ -541,7 +536,6 @@ impl CommandExecutor {
     /// # Errors
     ///
     /// Returns an error if the module has not been loaded yet (call `get_module` first).
-    #[allow(dead_code)]
     pub fn relative_path(&self, target: &Path) -> Result<PathBuf> {
         let root = self.module_root().ok_or_else(|| {
             cuenv_core::Error::configuration("Module not loaded; call get_module first")
@@ -553,7 +547,6 @@ impl CommandExecutor {
     ///
     /// This uses the CUE schema verification performed during module evaluation
     /// to determine if an instance conforms to `schema.#Project`.
-    #[allow(dead_code)]
     #[must_use]
     pub fn is_project(&self, path: &Path) -> bool {
         self.module

@@ -137,7 +137,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
 }
 
 /// Complete task parameters for a specific task (for future use)
-#[allow(dead_code)]
+#[allow(dead_code)] // Prepared for task parameter completion
 fn complete_task_params(task_name: &str) -> Vec<CompletionCandidate> {
     let Some(params) = get_task_params(".", "cuenv", task_name) else {
         return Vec::new();
@@ -157,7 +157,7 @@ fn complete_task_params(task_name: &str) -> Vec<CompletionCandidate> {
 
 /// Get parameters for a specific task (for future use).
 /// Uses discovery-based evaluation.
-#[allow(dead_code)]
+#[allow(dead_code)] // Prepared for task parameter completion
 fn get_task_params(
     path: &str,
     package: &str,

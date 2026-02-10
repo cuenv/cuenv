@@ -94,7 +94,6 @@ impl std::str::FromStr for TracingFormat {
 /// Controls format, log level, and optional features like correlation IDs
 /// and file location tracking.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct TracingConfig {
     /// Output format for log messages.
     pub format: TracingFormat,
@@ -141,7 +140,6 @@ pub fn correlation_id() -> Uuid {
 /// # Errors
 ///
 /// Returns an error if the tracing filter configuration is invalid.
-#[allow(dead_code)]
 pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
     let correlation_id = correlation_id();
 
