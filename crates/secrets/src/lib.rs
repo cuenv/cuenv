@@ -42,9 +42,6 @@ pub use types::{BatchSecrets, SecureSecret};
 pub use resolvers::{EnvSecretResolver, ExecSecretResolver};
 
 // Provider implementations are in separate crates:
-// - cuenv-aws: AwsResolver, AwsSecretConfig
-// - cuenv-gcp: GcpResolver, GcpSecretConfig
-// - cuenv-vault: VaultResolver, VaultSecretConfig
 // - cuenv-1password: OnePasswordResolver, OnePasswordConfig
 
 use async_trait::async_trait;
