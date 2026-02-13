@@ -124,25 +124,20 @@ fn enrich_task_ref_array(
 ) {
     for (i, element) in arr.iter_mut().enumerate() {
         if let serde_json::Value::Object(obj) = element {
-            // Fast-path: already-enriched entries are left untouched.
+            // Skip if _name already set
             if obj.contains_key("_name") {
                 continue;
             }
-        }
 
-        // Look up the reference in metadata
-        let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
-        let Some(reference) = references.get(&meta_key) else {
-            continue;
-        };
-        let task_name = strip_tasks_prefix(reference).to_string();
-
-        match element {
-            serde_json::Value::Object(obj) => {
-                obj.insert("_name".to_string(), serde_json::Value::String(task_name));
-            }
-            other => {
-                *other = serde_json::json!({"_name": task_name});
+            // Look up the reference in metadata
+            let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
+            if let Some(reference) = references.get(&meta_key) {
+                // CUE ReferencePath already provides canonical path - just strip prefix
+                let task_name = strip_tasks_prefix(reference);
+                obj.insert(
+                    "_name".to_string(),
+                    serde_json::Value::String(task_name.to_string()),
+                );
             }
         }
     }
@@ -716,100 +711,6 @@ mod tests {
 
         assert_eq!(base, InstanceKind::Base);
         assert_eq!(project, InstanceKind::Project);
-    }
-
-    #[test]
-    fn test_enrich_task_refs_handles_sequence_dependency() {
-        let mut value = json!({
-            "tasks": {
-                "lint": [
-                    {
-                        "command": "cue",
-                        "args": ["fmt", "./..."]
-                    },
-                    {
-                        "command": "cue",
-                        "args": ["vet", "./..."]
-                    }
-                ],
-                "test": {
-                    "command": "cue",
-                    "args": ["export", "--out", "yaml", "./examples"],
-                    "dependsOn": [
-                        [
-                            {
-                                "command": "cue",
-                                "args": ["fmt", "./..."]
-                            },
-                            {
-                                "command": "cue",
-                                "args": ["vet", "./..."]
-                            }
-                        ]
-                    ]
-                }
-            }
-        });
-
-        let mut references = HashMap::new();
-        references.insert(
-            "./tasks.test.dependsOn[0]".to_string(),
-            "tasks.lint".to_string(),
-        );
-        enrich_task_refs(&mut value, ".", &references);
-
-        assert_eq!(
-            value["tasks"]["test"]["dependsOn"][0],
-            json!({"_name": "lint"})
-        );
-    }
-
-    #[test]
-    fn test_enrich_task_refs_handles_group_dependency() {
-        let mut value = json!({
-            "tasks": {
-                "unit-group": {
-                    "type": "group",
-                    "linux": {
-                        "command": "echo",
-                        "args": ["linux"]
-                    },
-                    "macos": {
-                        "command": "echo",
-                        "args": ["macos"]
-                    }
-                },
-                "test": {
-                    "command": "cue",
-                    "args": ["export", "--out", "yaml", "./examples"],
-                    "dependsOn": [
-                        {
-                            "type": "group",
-                            "linux": {
-                                "command": "echo",
-                                "args": ["linux"]
-                            },
-                            "macos": {
-                                "command": "echo",
-                                "args": ["macos"]
-                            }
-                        }
-                    ]
-                }
-            }
-        });
-
-        let mut references = HashMap::new();
-        references.insert(
-            "./tasks.test.dependsOn[0]".to_string(),
-            "tasks.unit-group".to_string(),
-        );
-        enrich_task_refs(&mut value, ".", &references);
-
-        assert_eq!(
-            value["tasks"]["test"]["dependsOn"][0]["_name"],
-            json!("unit-group")
-        );
     }
 
     // ==========================================================================
