@@ -138,8 +138,9 @@ fn enrich_task_ref_array(
         let task_name = strip_tasks_prefix(reference).to_string();
 
         match element {
-            serde_json::Value::Object(obj) => obj
-                .insert("_name".to_string(), serde_json::Value::String(task_name)),
+            serde_json::Value::Object(obj) => {
+                obj.insert("_name".to_string(), serde_json::Value::String(task_name));
+            }
             other => {
                 *other = serde_json::json!({"_name": task_name});
             }
