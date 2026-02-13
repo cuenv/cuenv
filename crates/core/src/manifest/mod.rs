@@ -1576,7 +1576,7 @@ mod tests {
                     "deploy": {
                         "command": "bash",
                         "args": ["-c", "wrangler deploy"],
-                        "dependsOn": ["docs.build"],
+                        "dependsOn": [{"_name": "docs.build"}],
                         "inputs": [{"task": "docs.build"}]
                     }
                 }
