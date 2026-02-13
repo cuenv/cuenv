@@ -303,6 +303,8 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     let task_node: TaskNode;
     let all_tasks: Tasks;
     let task_graph_root_name: String;
+    #[allow(clippy::useless_let_if_seq)]
+    let mut output_ref_deps: Vec<(String, String)> = vec![];
 
     if normalized_labels.is_empty() {
         // Execute a named task
@@ -394,11 +396,49 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
         task_node = selected_task_node;
 
-        all_tasks = tasks;
-        task_graph_root_name = display_task_name.clone();
+        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
+        // This enables cross-project dependency graphs and proper cycle detection.
+        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
+        let (global_tasks, task_root_name, ref_deps) = if let Some(module_root) = &cue_module_root {
+            let mut result = build_global_tasks(module_root, &project_root, &manifest, executor)?;
+
+            // If we interpolated args for the invoked task, patch that task node in the
+            // global registry so execution matches the CLI-resolved definition.
+            // (We avoid patching otherwise, because the global registry has normalized
+            // dependsOn entries to FQDNs.)
+            if !task_args.is_empty()
+                && let TaskNode::Task(ref t) = task_node
+            {
+                let fqdn = task_fqdn(&result.current_project_id, &display_task_name);
+                if let Some(TaskNode::Task(existing)) = result.tasks.tasks.get_mut(&fqdn) {
+                    existing.command.clone_from(&t.command);
+                    existing.args.clone_from(&t.args);
+                }
+            }
+
+            let root = task_fqdn(&result.current_project_id, &display_task_name);
+            (result.tasks, root, result.output_ref_deps)
+        } else {
+            (tasks, display_task_name.clone(), vec![])
+        };
+
+        all_tasks = global_tasks;
+        task_graph_root_name = task_root_name;
+        output_ref_deps = ref_deps;
     } else {
         // Execute tasks by label
-        let mut tasks_in_scope = local_tasks.clone();
+        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
+        let (mut tasks_in_scope, ref_deps) = if let Some(module_root) = &cue_module_root {
+            let result = build_global_tasks(module_root, &project_root, &manifest, executor)
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to discover tasks for label execution: {e}"
+                    ))
+                })?;
+            (result.tasks, result.output_ref_deps)
+        } else {
+            (local_tasks.clone(), vec![])
+        };
 
         let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
 
@@ -441,6 +481,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             })?;
         task_graph_root_name = display_task_name.clone();
         all_tasks = tasks_in_scope;
+        output_ref_deps = ref_deps;
     }
 
     // Build task graph for dependency-aware execution
@@ -461,6 +502,13 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
                 tracing::error!("Failed to build task graph: {}", e);
                 e
             })?;
+    }
+
+    // Inject implicit dependency edges from task output references.
+    // Output ref deps were collected during CUE JSON processing (from_raw)
+    // and converted to FQDNs in build_global_tasks.
+    if !output_ref_deps.is_empty() {
+        task_graph.add_output_ref_deps(&output_ref_deps, &all_tasks)?;
     }
 
     tracing::debug!(

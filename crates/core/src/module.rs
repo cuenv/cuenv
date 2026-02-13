@@ -221,10 +221,17 @@ impl ModuleEvaluation {
                     enrich_task_refs(&mut value, &path, refs);
                 }
 
+                // Process task output references: replace ref objects with
+                // placeholder strings and collect auto-dependency pairs.
+                // Must happen before Task deserialization (ref objects would
+                // fail Vec<String> deserialization in Task.args).
+                let output_ref_deps = crate::tasks::output_refs::process_output_refs(&mut value);
+
                 let instance = Instance {
                     path: path_buf.clone(),
                     kind,
                     value,
+                    output_ref_deps,
                 };
                 (path_buf, instance)
             })
@@ -331,6 +338,11 @@ pub struct Instance {
 
     /// The raw evaluated JSON value
     pub value: serde_json::Value,
+
+    /// Auto-inferred dependencies from task output references.
+    /// Each pair is (task_that_references, task_being_referenced).
+    #[serde(default, skip_serializing)]
+    pub output_ref_deps: Vec<crate::tasks::output_refs::OutputRefDep>,
 }
 
 impl Instance {
@@ -570,6 +582,7 @@ mod tests {
                 "name": "my-project",
                 "env": { "FOO": "bar" }
             }),
+            output_ref_deps: vec![],
         };
 
         let config: TestConfig = instance.deserialize().unwrap();
@@ -589,6 +602,7 @@ mod tests {
             path: PathBuf::from("test/path"),
             kind: InstanceKind::Base,
             value: json!({}), // Missing required field
+            output_ref_deps: vec![],
         };
 
         let result: crate::Result<RequiredFields> = instance.deserialize();
@@ -738,6 +752,7 @@ mod tests {
                 "name": "my-project",
                 "version": "1.0.0"
             }),
+            output_ref_deps: vec![],
         };
 
         assert_eq!(instance.get_field("name"), Some(&json!("my-project")));
@@ -751,6 +766,7 @@ mod tests {
             path: PathBuf::from("test"),
             kind: InstanceKind::Project,
             value: json!({"name": "test", "env": {}}),
+            output_ref_deps: vec![],
         };
 
         assert!(instance.has_field("name"));
@@ -764,6 +780,7 @@ mod tests {
             path: PathBuf::from("test"),
             kind: InstanceKind::Base,
             value: json!({"name": "should-be-ignored"}),
+            output_ref_deps: vec![],
         };
 
         // Base instances don't return project name even if they have one
@@ -776,6 +793,7 @@ mod tests {
             path: PathBuf::from("test"),
             kind: InstanceKind::Project,
             value: json!({}),
+            output_ref_deps: vec![],
         };
 
         assert!(instance.project_name().is_none());
@@ -787,6 +805,7 @@ mod tests {
             path: PathBuf::from("original"),
             kind: InstanceKind::Project,
             value: json!({"name": "test"}),
+            output_ref_deps: vec![],
         };
 
         let cloned = instance.clone();
@@ -801,6 +820,7 @@ mod tests {
             path: PathBuf::from("test/path"),
             kind: InstanceKind::Project,
             value: json!({"name": "my-project"}),
+            output_ref_deps: vec![],
         };
 
         let json = serde_json::to_string(&instance).unwrap();
