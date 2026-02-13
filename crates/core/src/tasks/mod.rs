@@ -237,8 +237,9 @@ impl SourceLocation {
 /// When tasks reference other tasks directly in CUE (e.g., `dependsOn: [build]`),
 /// the Go bridge injects the `_name` field to identify the dependency.
 ///
-/// Supports deserialization from an object with `_name`:
-/// `{ "_name": "taskName", ... }` -> `TaskDependency { name: "taskName" }`
+/// Supports deserialization from:
+/// - A string: `"taskName"` -> `TaskDependency { name: "taskName" }`
+/// - An object with `_name`: `{ "_name": "taskName", ... }` -> `TaskDependency { name: "taskName" }`
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TaskDependency {
     /// The task name (injected by Go bridge based on task path)
@@ -256,20 +257,50 @@ impl<'de> serde::Deserialize<'de> for TaskDependency {
     where
         D: serde::Deserializer<'de>,
     {
-        use serde::de;
+        use serde::de::{self, Visitor};
 
-        let value = serde_json::Value::deserialize(deserializer)?;
-        let obj = value
-            .as_object()
-            .ok_or_else(|| de::Error::invalid_type(serde::de::Unexpected::Other("dependency"), &"an object"))?;
+        struct TaskDependencyVisitor;
 
-        let name = obj
-            .get("_name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| de::Error::missing_field("_name"))?
-            .to_string();
+        impl<'de> Visitor<'de> for TaskDependencyVisitor {
+            type Value = TaskDependency;
 
-        Ok(TaskDependency { name, _rest: value })
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or an object with _name field")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(TaskDependency::from_name(value))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(TaskDependency::from_name(value))
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: de::MapAccess<'de>,
+            {
+                // Deserialize as a JSON object and extract _name
+                let value: serde_json::Value =
+                    serde::Deserialize::deserialize(de::value::MapAccessDeserializer::new(map))?;
+
+                let name = value
+                    .get("_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| de::Error::missing_field("_name"))?
+                    .to_string();
+
+                Ok(TaskDependency { name, _rest: value })
+            }
+        }
+
+        deserializer.deserialize_any(TaskDependencyVisitor)
     }
 }
 
@@ -1065,17 +1096,6 @@ mod tests {
     }
 
     #[test]
-    fn test_task_dependency_deserialization_rejects_string_form() {
-        let json = r#"{
-            "command": "echo",
-            "dependsOn": ["docs.build"]
-        }"#;
-
-        let result: Result<Task, _> = serde_json::from_str(json);
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_task_script_deserialization() {
         // Test that script-only tasks (no command) deserialize correctly
         let json = r#"{
@@ -1184,7 +1204,7 @@ mod tests {
                 "deploy": {
                     "command": "bash",
                     "args": ["-c", "wrangler deploy"],
-                    "dependsOn": [{"_name": "docs.build"}],
+                    "dependsOn": ["docs.build"],
                     "inputs": [{"task": "docs.build"}]
                 }
             }
