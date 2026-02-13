@@ -123,6 +123,13 @@ fn enrich_task_ref_array(
     references: &ReferenceMap,
 ) {
     for (i, element) in arr.iter_mut().enumerate() {
+        if let serde_json::Value::Object(obj) = element {
+            // Fast-path: already-enriched entries are left untouched.
+            if obj.contains_key("_name") {
+                continue;
+            }
+        }
+
         // Look up the reference in metadata
         let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
         let Some(reference) = references.get(&meta_key) else {
@@ -131,14 +138,8 @@ fn enrich_task_ref_array(
         let task_name = strip_tasks_prefix(reference).to_string();
 
         match element {
-            serde_json::Value::Object(obj) => {
-                // Skip if _name already set
-                if obj.contains_key("_name") {
-                    continue;
-                }
-
-                obj.insert("_name".to_string(), serde_json::Value::String(task_name));
-            }
+            serde_json::Value::Object(obj) => obj
+                .insert("_name".to_string(), serde_json::Value::String(task_name)),
             other => {
                 *other = serde_json::json!({"_name": task_name});
             }
