@@ -1,6 +1,6 @@
 [package]
 name = "cuenv-tools-nix"
-version = "0.1.0"
+version.workspace = true
 edition = "2024"
 rust-version = "1.85.0"
 description = "Nix flake tool provider for cuenv"
