@@ -1,9 +1,9 @@
 ---
 title: Architecture Decision Records Index
-description: Catalog of ratified cuenv decisions
+description: Catalog of accepted and deferred cuenv decisions
 ---
 
-This section captures binding decisions derived from proposals and implementation experience.
+This section captures accepted and deferred decisions derived from proposals and implementation experience.
 
 ## Accepted ADRs
 
@@ -12,6 +12,10 @@ This section captures binding decisions derived from proposals and implementatio
 - [ADR-0003: Task Graph Execution Strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/)
 - [ADR-0004: Environment Export Filtering Policy](/decisions/adrs/adr-0004-environment-export-filtering-policy/)
 - [ADR-0005: CLI Error Taxonomy and Exit Codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/)
+
+## Deferred ADRs
+
+- [ADR-0007: Evaluation of Ecdysis for Graceful Restarts](/decisions/adrs/adr-0007-ecdysis-graceful-restarts-evaluation/)
 
 ## Notes
 
