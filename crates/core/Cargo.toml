@@ -22,6 +22,7 @@ default = ["1password"]
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { workspace = true }
+serde_path_to_error = "0.1"
 toml = "0.8"
 miette = { workspace = true }
 petgraph = { workspace = true }
