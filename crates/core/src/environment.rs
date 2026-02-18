@@ -88,14 +88,14 @@ pub enum EnvValue {
 /// Based on schema/env.cue
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Env {
+    /// Environment-specific overrides
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, HashMap<String, EnvValue>>>,
+
     /// Base environment variables
     /// Keys must match pattern: ^[A-Z][A-Z0-9_]*$
     #[serde(flatten)]
     pub base: HashMap<String, EnvValue>,
-
-    /// Environment-specific overrides
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<HashMap<String, HashMap<String, EnvValue>>>,
 }
 
 impl Env {
@@ -934,6 +934,30 @@ mod tests {
             dev_vars.get("DEV_VAR"),
             Some(&EnvValue::String("development".to_string()))
         );
+    }
+
+    #[test]
+    fn test_env_deserialize_with_environment_overrides() {
+        let json = r#"{
+            "API_URL": "https://api.example.com",
+            "environment": {
+                "production": {
+                    "API_URL": "https://api.prod.example.com",
+                    "AUTH_SECRET": {"resolver": "exec", "command": "echo", "args": ["token"]}
+                }
+            }
+        }"#;
+
+        let env: Env = serde_json::from_str(json).expect("valid env payload");
+
+        assert!(env.base.contains_key("API_URL"));
+        assert!(!env.base.contains_key("environment"));
+
+        let environments = env.environment.expect("environment overrides should deserialize");
+        let production = environments
+            .get("production")
+            .expect("production overrides should exist");
+        assert!(production.contains_key("AUTH_SECRET"));
     }
 
     #[tokio::test]
