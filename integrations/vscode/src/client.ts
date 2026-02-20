@@ -1,6 +1,13 @@
 import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { CuenvTask, WorkspaceTask } from './types';
+import {
+    buildEnvironmentListArgs,
+    buildEnvironmentPrintArgs,
+    buildTaskListArgs,
+    buildTaskRunArgs,
+    buildWorkspaceTaskListArgs
+} from './cuenvArgs';
 
 export class CuenvClient {
     private currentEnv: string | undefined = 'Base';
@@ -30,7 +37,7 @@ export class CuenvClient {
         if (!root) return [];
 
         try {
-            const output = await this.execJson(['task', '--output-format', 'json'], root);
+            const output = await this.execJson(buildTaskListArgs(), root);
             return output as CuenvTask[];
         } catch (e) {
             this.outputChannel.appendLine(`Error fetching tasks: ${e}`);
@@ -43,7 +50,7 @@ export class CuenvClient {
         if (!root) return ['Base'];
 
         try {
-            const output = await this.execJson(['env', 'list', '--output-format', 'json'], root);
+            const output = await this.execJson(buildEnvironmentListArgs(), root);
             const envs = output as string[];
             // Always ensure Base is present
             if (!envs.includes('Base')) {
@@ -61,11 +68,7 @@ export class CuenvClient {
         if (!root) return;
 
         const executable = this.getExecutable();
-        const args = ['task', taskName];
-        
-        if (this.currentEnv && this.currentEnv !== 'Base') {
-            args.push('--env', this.currentEnv);
-        }
+        const args = buildTaskRunArgs(taskName, this.currentEnv);
 
         const terminal = vscode.window.createTerminal({
             name: `Cuenv: ${taskName}`,
@@ -81,12 +84,8 @@ export class CuenvClient {
         const root = this.getWorkspaceRoot();
         if (!root) return {};
 
-        const args = ['env', 'print', '--output-format', 'json'];
         const targetEnv = envName || this.currentEnv;
-        // Only pass --env if it's not "Base"
-        if (targetEnv && targetEnv !== 'Base') {
-            args.push('--env', targetEnv);
-        }
+        const args = buildEnvironmentPrintArgs(targetEnv);
 
         try {
             return await this.execJson(args, root);
@@ -136,10 +135,7 @@ export class CuenvClient {
         if (!root) return [];
 
         try {
-            const output = await this.execJson(
-                ['task', '--all', '--output-format', 'json'],
-                root
-            );
+            const output = await this.execJson(buildWorkspaceTaskListArgs(), root);
             this.workspaceTasksCache = output as WorkspaceTask[];
             this.workspaceTasksCacheTime = now;
             return this.workspaceTasksCache;
