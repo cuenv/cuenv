@@ -1,17 +1,17 @@
-const BASE_ENVIRONMENT = 'Base';
+export const BASE_ENVIRONMENT = 'Base';
 
 /**
  * Build args for `cuenv task` list in JSON mode.
  */
-export function buildTaskListArgs(): string[] {
-    return ['task', '--output', 'json'];
+export function buildTaskListArgs(environment?: string): string[] {
+    return withGlobalEnvironment(['task', '--output', 'json'], environment);
 }
 
 /**
  * Build args for `cuenv task --all` list in JSON mode.
  */
-export function buildWorkspaceTaskListArgs(): string[] {
-    return ['task', '--all', '--output', 'json'];
+export function buildWorkspaceTaskListArgs(environment?: string): string[] {
+    return withGlobalEnvironment(['task', '--all', '--output', 'json'], environment);
 }
 
 /**
