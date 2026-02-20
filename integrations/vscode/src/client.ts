@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as cp from 'child_process';
 import { CuenvTask, WorkspaceTask } from './types';
 import {
+    BASE_ENVIRONMENT,
     buildEnvironmentListArgs,
     buildEnvironmentPrintArgs,
     buildTaskListArgs,
@@ -10,7 +11,7 @@ import {
 } from './cuenvArgs';
 
 export class CuenvClient {
-    private currentEnv: string | undefined = 'Base';
+    private currentEnv: string | undefined = BASE_ENVIRONMENT;
 
     // Cache for workspace tasks (used by completion provider)
     private workspaceTasksCache: WorkspaceTask[] | null = null;
@@ -37,7 +38,7 @@ export class CuenvClient {
         if (!root) return [];
 
         try {
-            const output = await this.execJson(buildTaskListArgs(), root);
+            const output = await this.execJson(buildTaskListArgs(this.currentEnv), root);
             return output as CuenvTask[];
         } catch (e) {
             this.outputChannel.appendLine(`Error fetching tasks: ${e}`);
@@ -47,19 +48,19 @@ export class CuenvClient {
 
     async getEnvironments(): Promise<string[]> {
         const root = this.getWorkspaceRoot();
-        if (!root) return ['Base'];
+        if (!root) return [BASE_ENVIRONMENT];
 
         try {
             const output = await this.execJson(buildEnvironmentListArgs(), root);
             const envs = output as string[];
             // Always ensure Base is present
-            if (!envs.includes('Base')) {
-                envs.unshift('Base');
+            if (!envs.includes(BASE_ENVIRONMENT)) {
+                envs.unshift(BASE_ENVIRONMENT);
             }
             return envs;
         } catch (e) {
             this.outputChannel.appendLine(`Error fetching environments: ${e}`);
-            return ['Base'];
+            return [BASE_ENVIRONMENT];
         }
     }
 
@@ -73,11 +74,12 @@ export class CuenvClient {
         const terminal = vscode.window.createTerminal({
             name: `Cuenv: ${taskName}`,
             cwd: root,
-            env: process.env
+            env: process.env,
+            shellPath: executable,
+            shellArgs: args
         });
         
         terminal.show();
-        terminal.sendText(`${executable} ${args.join(' ')}`);
     }
 
     async getEnvironmentVariables(envName?: string): Promise<Record<string, string>> {
@@ -101,7 +103,11 @@ export class CuenvClient {
             
             cp.execFile(executable, args, { cwd }, (error, stdout, stderr) => {
                 if (error) {
-                    reject(stderr || error.message);
+                    const stderrOutput = stderr.trim();
+                    const stdoutOutput = stdout.trim();
+                    const message = stderrOutput
+                        || `${error.message}${stdoutOutput ? `\nStdout: ${stdoutOutput}` : ''}`;
+                    reject(message);
                     return;
                 }
                 try {
@@ -135,7 +141,7 @@ export class CuenvClient {
         if (!root) return [];
 
         try {
-            const output = await this.execJson(buildWorkspaceTaskListArgs(), root);
+            const output = await this.execJson(buildWorkspaceTaskListArgs(this.currentEnv), root);
             this.workspaceTasksCache = output as WorkspaceTask[];
             this.workspaceTasksCacheTime = now;
             return this.workspaceTasksCache;
