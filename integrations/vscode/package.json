@@ -144,7 +144,8 @@
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild ./src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
     "package": "vsce package --allow-missing-repository --no-dependencies",
-    "test-compile": "tsc -p ./"
+    "test-compile": "tsc -p ./",
+    "test": "bun run test-compile && node --test dist/cuenvArgs.test.js"
   },
   "devDependencies": {
     "@types/node": "^18.x",

@@ -7,7 +7,7 @@ export interface CuenvTask {
 
 /**
  * Task reference for workspace-wide task listing (used by IDE completions).
- * Returned by `cuenv task --all --output-format json`.
+ * Returned by `cuenv task --all --output json`.
  */
 export interface WorkspaceTask {
     /** Project name from env.cue `name` field */
@@ -38,6 +38,6 @@ export interface TaskDefinition {
     // Group definitions can have nested tasks, but the CLI output currently flattens groups
     // or returns the raw structure for 'definition'.
     // If is_group is true, definition might be an object of TaskDefinitions or array.
-    // However, cuenv task --output-format json returns a flat list of all addressable tasks.
+    // However, cuenv task --output json returns a flat list of all addressable tasks.
     // We primarily care about single tasks for graph visualization.
 }
