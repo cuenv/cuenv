@@ -9,6 +9,9 @@ package schema
 
 	// CI-specific configuration
 	ci?: #CIConfig
+
+	// Infisical secret resolution defaults
+	infisical?: #InfisicalConfig
 })
 
 // Command-specific configuration

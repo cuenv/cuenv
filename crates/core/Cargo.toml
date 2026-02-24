@@ -15,8 +15,9 @@ exclude = [
 ]
 
 [features]
-default = ["1password"]
+default = ["1password", "infisical"]
 1password = ["dep:cuenv-1password"]
+infisical = ["dep:cuenv-infisical"]
 
 [dependencies]
 thiserror = "2.0"
@@ -33,6 +34,7 @@ async-trait = "0.1"
 futures = "0.3"
 cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true, optional = true }
+cuenv-infisical = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
 cuenv-cache = { workspace = true }
 cuenv-task-graph = { workspace = true }

@@ -181,7 +181,7 @@ package schema
 	cuenvSource?: [...string]
 
 	// Secrets provider detection (active if environment uses any of these providers)
-	// Values: "onepassword", "aws", "vault", "azure", "gcp"
+	// Values: "onepassword", "infisical", "aws", "vault", "azure", "gcp"
 	secretsProvider?: [...string]
 
 	// Provider configuration detection (active if these config paths are set)

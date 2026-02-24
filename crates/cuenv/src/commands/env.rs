@@ -3,6 +3,9 @@
 //! Provides commands for listing and printing environment variables
 //! from CUE configurations.
 
+use crate::commands::infisical::{
+    InfisicalPreprocessContext, preprocess_infisical_secrets, resolve_env_definition_dirs,
+};
 use crate::commands::{CommandExecutor, relative_path_from_root};
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
@@ -99,6 +102,13 @@ pub async fn execute_env_print(
     // Load Base configuration using module-wide evaluation
     tracing::debug!("Loading CUE config at path '{}'", path);
     let manifest: Base = load_base_config(path, executor)?;
+    let instance_path = Path::new(path)
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
 
     // Extract the env field
     let env = manifest.env.ok_or_else(|| {
@@ -106,12 +116,32 @@ pub async fn execute_env_print(
     })?;
 
     // Get environment variables, applying environment-specific overrides if specified
-    let env_vars = if let Some(env_name) = environment {
+    let mut env_vars = if let Some(env_name) = environment {
         tracing::debug!("Applying environment-specific overrides for '{}'", env_name);
         env.for_environment(env_name)
     } else {
         env.base.clone()
     };
+    let definition_dirs = {
+        let module = executor.get_module(&instance_path)?;
+        let instance_relative_path = relative_path_from_root(&module.root, &instance_path);
+        let env_keys = env_vars.keys().cloned().collect::<Vec<_>>();
+        resolve_env_definition_dirs(&module, &instance_relative_path, environment, &env_keys)
+    };
+
+    let infisical_config = manifest
+        .config
+        .as_ref()
+        .and_then(|cfg| cfg.infisical.as_ref());
+    preprocess_infisical_secrets(
+        &mut env_vars,
+        &InfisicalPreprocessContext {
+            selected_environment: environment,
+            config: infisical_config,
+            instance_path: &instance_path,
+            env_var_definition_dirs: Some(&definition_dirs),
+        },
+    )?;
 
     // Resolve all environment variables including secrets
     let (resolved_vars, secrets) = resolve_env_vars_with_secrets(&env_vars).await?;

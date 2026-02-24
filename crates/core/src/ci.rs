@@ -411,7 +411,7 @@ pub struct ActivationCondition {
     pub cuenv_source: Vec<String>,
 
     /// Secrets provider detection (active if environment uses any of these providers)
-    /// Values: "onepassword", "aws", "vault", "azure", "gcp"
+    /// Values: "onepassword", "infisical", "aws", "vault", "azure", "gcp"
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secrets_provider: Vec<String>,
 

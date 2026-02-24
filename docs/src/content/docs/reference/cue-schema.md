@@ -61,9 +61,10 @@ config: {
 
 **Fields:**
 
-| Field          | Type     | Default | Description        |
-| -------------- | -------- | ------- | ------------------ |
-| `outputFormat` | `string` | -       | Task output format |
+| Field          | Type               | Default | Description                           |
+| -------------- | ------------------ | ------- | ------------------------------------- |
+| `outputFormat` | `string`           | -       | Task output format                    |
+| `infisical`    | `#InfisicalConfig` | -       | Infisical secret resolution defaults  |
 
 **Output Formats:**
 
@@ -74,6 +75,32 @@ config: {
 | `simple`  | Plain text output          |
 | `tree`    | Tree-structured output     |
 | `json`    | JSON output for scripting  |
+
+### #InfisicalConfig
+
+Default settings for Infisical secret resolution.
+
+```cue
+config: {
+    infisical: {
+        defaultEnvironment: "development"
+        projectId:          "proj_123"
+        inheritPath:        true
+        pathReplace: {
+            ".": "-"
+        }
+    }
+}
+```
+
+**Fields:**
+
+| Field                | Type                 | Default | Description                                               |
+| -------------------- | -------------------- | ------- | --------------------------------------------------------- |
+| `defaultEnvironment` | `string`             | -       | Default environment for Infisical secrets                 |
+| `projectId`          | `string`             | -       | Default Infisical project id                              |
+| `inheritPath`        | `bool`               | `false` | Allow relative paths derived from instance filesystem path |
+| `pathReplace`        | `{[string]: string}` | -       | Optional string replacements for derived paths            |
 
 ## Environment
 
@@ -440,7 +467,7 @@ tasks: {
 
 ### #Secret
 
-Base secret type with exec-based resolution.
+Base secret type used by all built-in secret providers.
 
 ```cue
 env: {
@@ -454,11 +481,11 @@ env: {
 
 **Fields:**
 
-| Field      | Type          | Description                |
-| ---------- | ------------- | -------------------------- |
-| `resolver` | `"exec"`      | Always "exec"              |
-| `command`  | `string`      | Command to retrieve secret |
-| `args`     | `[...string]` | Command arguments          |
+| Field      | Type                                                          | Description                                  |
+| ---------- | ------------------------------------------------------------- | -------------------------------------------- |
+| `resolver` | `"exec" \| "onepassword" \| "infisical" \| "aws" \| "gcp" \| "vault"` | Secret resolver provider                      |
+| `command`  | `string`                                                      | Command to retrieve secret (exec resolver)   |
+| `args`     | `[...string]`                                                 | Command arguments (exec resolver)            |
 
 ### #OnePasswordRef
 
@@ -477,6 +504,33 @@ env: {
 | Field | Type     | Description             |
 | ----- | -------- | ----------------------- |
 | `ref` | `string` | 1Password reference URI |
+
+### #InfisicalSecret
+
+Infisical secret reference.
+
+```cue
+config: {
+    infisical: {
+        defaultEnvironment: "development"
+        projectId:          "proj_123"
+    }
+}
+
+env: {
+    API_KEY: schema.#InfisicalSecret & {
+        path: "/team/service/API_KEY"
+    }
+}
+```
+
+**Fields:**
+
+| Field         | Type     | Description                                  |
+| ------------- | -------- | -------------------------------------------- |
+| `path`        | `string` | Full secret path including key               |
+| `environment` | `string` | Optional per-secret environment override     |
+| `projectId`   | `string` | Optional per-secret project override         |
 
 ### #GcpSecret
 

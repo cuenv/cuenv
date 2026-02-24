@@ -14,6 +14,23 @@ use crate::Error;
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
 
+/// Source metadata for a field extracted from CUE evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct FieldMeta {
+    /// Directory containing the file (relative to module root).
+    #[serde(default)]
+    pub directory: String,
+    /// Source filename relative to module root.
+    #[serde(default)]
+    pub filename: String,
+    /// 1-based line number in the source file.
+    #[serde(default)]
+    pub line: usize,
+    /// Optional reference path if this field resolves from a CUE reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
 /// Strip known task reference prefixes from a reference path to get the canonical task name.
 ///
 /// The CUE bridge exports raw reference paths which may include:
@@ -154,6 +171,9 @@ pub struct ModuleEvaluation {
 
     /// Map of relative path to evaluated instance
     pub instances: HashMap<PathBuf, Instance>,
+
+    /// Source metadata for fields, keyed by `instance/fieldPath`.
+    pub meta: HashMap<String, FieldMeta>,
 }
 
 impl ModuleEvaluation {
@@ -169,6 +189,30 @@ impl ModuleEvaluation {
         raw_instances: HashMap<String, serde_json::Value>,
         project_paths: Vec<String>,
         references: Option<ReferenceMap>,
+    ) -> Self {
+        Self::from_raw_with_meta(
+            root,
+            raw_instances,
+            project_paths,
+            references,
+            HashMap::new(),
+        )
+    }
+
+    /// Create a new module evaluation from raw FFI result with source metadata.
+    ///
+    /// # Arguments
+    /// * `root` - Path to the CUE module root
+    /// * `raw_instances` - Map of relative paths to evaluated JSON values
+    /// * `project_paths` - Paths verified to conform to `schema.#Project` via CUE unification
+    /// * `references` - Optional reference map for dependsOn resolution (extracted from CUE metadata)
+    /// * `meta` - Source metadata map keyed by `instance/fieldPath`
+    pub fn from_raw_with_meta(
+        root: PathBuf,
+        raw_instances: HashMap<String, serde_json::Value>,
+        project_paths: Vec<String>,
+        references: Option<ReferenceMap>,
+        meta: HashMap<String, FieldMeta>,
     ) -> Self {
         // Convert project paths to a set for O(1) lookup
         let project_set: std::collections::HashSet<&str> =
@@ -199,7 +243,11 @@ impl ModuleEvaluation {
             })
             .collect();
 
-        Self { root, instances }
+        Self {
+            root,
+            instances,
+            meta,
+        }
     }
 
     /// Get all Base instances (directories without a `name` field)
@@ -286,6 +334,65 @@ impl ModuleEvaluation {
         }
 
         false
+    }
+
+    /// Get source metadata for a field in an instance.
+    #[must_use]
+    pub fn field_meta(&self, instance_path: &Path, field_path: &str) -> Option<&FieldMeta> {
+        let key = Self::meta_key(instance_path, field_path);
+        self.meta.get(&key)
+    }
+
+    /// Get source metadata for a field, following CUE references when available.
+    ///
+    /// If metadata includes a `reference`, this follows the reference path within
+    /// the same instance until a concrete source location is found.
+    #[must_use]
+    pub fn resolved_field_meta(
+        &self,
+        instance_path: &Path,
+        field_path: &str,
+    ) -> Option<&FieldMeta> {
+        let mut key = Self::meta_key(instance_path, field_path);
+        let mut visited = std::collections::HashSet::new();
+
+        loop {
+            if !visited.insert(key.clone()) {
+                return None;
+            }
+
+            let meta = self.meta.get(&key)?;
+            let Some(reference) = meta.reference.as_deref() else {
+                return Some(meta);
+            };
+
+            if reference.is_empty() {
+                return Some(meta);
+            }
+
+            let next_key = Self::reference_key(instance_path, reference);
+            if !self.meta.contains_key(&next_key) {
+                return Some(meta);
+            }
+            key = next_key;
+        }
+    }
+
+    fn meta_key(instance_path: &Path, field_path: &str) -> String {
+        let instance = instance_path.to_string_lossy();
+        if instance == "." {
+            format!("./{field_path}")
+        } else {
+            format!("{instance}/{field_path}")
+        }
+    }
+
+    fn reference_key(instance_path: &Path, reference: &str) -> String {
+        if reference.starts_with("./") || reference.contains('/') {
+            reference.to_string()
+        } else {
+            Self::meta_key(instance_path, reference)
+        }
     }
 }
 
@@ -657,6 +764,43 @@ mod tests {
 
         assert_eq!(module.project_count(), 3);
         assert_eq!(module.base_count(), 0);
+    }
+
+    #[test]
+    fn test_resolved_field_meta_follows_reference_path() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            ".".to_string(),
+            json!({"env": {"A_KEY": "value", "OTHER": "value"}}),
+        );
+
+        let mut meta = HashMap::new();
+        meta.insert(
+            "./env.A_KEY".to_string(),
+            FieldMeta {
+                filename: "env.cue".to_string(),
+                line: 10,
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "./env.OTHER".to_string(),
+            FieldMeta {
+                filename: "services/api/env.cue".to_string(),
+                line: 22,
+                reference: Some("env.A_KEY".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let module =
+            ModuleEvaluation::from_raw_with_meta(PathBuf::from("/repo"), raw, vec![], None, meta);
+
+        let resolved = module
+            .resolved_field_meta(Path::new("."), "env.OTHER")
+            .expect("resolved metadata should exist");
+        assert_eq!(resolved.filename, "env.cue");
+        assert_eq!(resolved.line, 10);
     }
 
     #[test]

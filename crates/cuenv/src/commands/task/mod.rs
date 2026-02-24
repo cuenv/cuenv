@@ -34,6 +34,10 @@ use cuenv_core::tasks::{
 use cuenv_task_discovery::TaskDiscovery;
 
 use super::env_file::find_cue_module_root;
+use super::infisical::{
+    InfisicalPreprocessContext, preprocess_infisical_secrets, resolve_env_definition_dirs,
+};
+use super::relative_path_from_root;
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
@@ -54,6 +58,21 @@ use std::path::Path;
 
 use super::export::get_environment_with_hooks;
 use tracing::instrument;
+
+fn infisical_definition_dirs_for_project(
+    executor: &crate::commands::CommandExecutor,
+    project_root: &Path,
+    selected_environment: Option<&str>,
+    env_vars: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
+) -> std::collections::HashMap<String, std::path::PathBuf> {
+    let Ok(module) = executor.get_module(project_root) else {
+        return std::collections::HashMap::new();
+    };
+
+    let relative_path = relative_path_from_root(&module.root, project_root);
+    let env_keys = env_vars.keys().cloned().collect::<Vec<_>>();
+    resolve_env_definition_dirs(&module, &relative_path, selected_environment, &env_keys)
+}
 
 /// Execute a task using the new structured request API.
 ///
@@ -586,11 +605,26 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         }
 
         // Get environment variables, applying environment-specific overrides if specified
-        let env_vars = if let Some(env_name) = environment {
+        let mut env_vars = if let Some(env_name) = environment {
             env.for_environment(env_name)
         } else {
             env.base.clone()
         };
+        let infisical_config = manifest
+            .config
+            .as_ref()
+            .and_then(|cfg| cfg.infisical.as_ref());
+        let definition_dirs =
+            infisical_definition_dirs_for_project(executor, &project_root, environment, &env_vars);
+        preprocess_infisical_secrets(
+            &mut env_vars,
+            &InfisicalPreprocessContext {
+                selected_environment: environment,
+                config: infisical_config,
+                instance_path: &project_root,
+                env_var_definition_dirs: Some(&definition_dirs),
+            },
+        )?;
 
         // Then apply task-specific overrides with policies and secret resolution
         let (task_env_vars, secrets) =

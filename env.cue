@@ -95,7 +95,10 @@ schema.#Project & {
 
 	hooks: onEnter: tools: schema.#ToolsActivate
 
-	formatters: rust: {edition: "2024"}
+	formatters: {
+		rust: {edition: "2024"}
+		go: enabled: true
+	}
 
 	// ============================================================================
 	// Configuration
@@ -197,7 +200,7 @@ schema.#Project & {
 				}
 				tasks: [
 					{
-						task:   _t.cargo.build
+						task: _t.cargo.build
 						matrix: arch: ["linux-x64", "darwin-arm64"]
 					},
 					{
@@ -352,7 +355,7 @@ schema.#Project & {
 			type: "group"
 
 			linux: schema.#Task & {
-				script: """
+			script: """
 					#!/bin/bash
 					set -euo pipefail
 					TARGET="x86_64-unknown-linux-gnu"

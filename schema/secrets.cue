@@ -5,9 +5,10 @@ package schema
 // - AWS: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY → HTTP, otherwise CLI
 // - GCP: GOOGLE_APPLICATION_CREDENTIALS → HTTP, otherwise CLI
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
+// - Infisical: INFISICAL_CLIENT_ID + INFISICAL_CLIENT_SECRET → SDK, otherwise CLI
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
 #Secret: {
-	resolver: "aws" | "gcp" | "onepassword" | "vault" | "exec"
+	resolver: "aws" | "gcp" | "onepassword" | "infisical" | "vault" | "exec"
 	...
 }
 

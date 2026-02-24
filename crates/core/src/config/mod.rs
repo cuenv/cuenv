@@ -3,6 +3,7 @@
 //! Based on schema/config.cue
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Main configuration structure for cuenv
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -45,6 +46,10 @@ pub struct Config {
     /// CI-specific configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CIConfig>,
+
+    /// Infisical defaults used for secret resolution.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub infisical: Option<InfisicalConfig>,
 }
 
 /// Command-specific configuration
@@ -95,6 +100,27 @@ pub struct CIConfig {
     /// Cuenv installation configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cuenv: Option<CuenvConfig>,
+}
+
+/// Infisical secret resolution defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct InfisicalConfig {
+    /// Default Infisical environment when a secret does not specify one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_environment: Option<String>,
+
+    /// Default Infisical project id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+
+    /// Allow relative Infisical paths to inherit from instance filesystem path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inherit_path: Option<bool>,
+
+    /// String replacements applied to derived Infisical paths.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_replace: Option<HashMap<String, String>>,
 }
 
 /// Configuration for cuenv installation in CI

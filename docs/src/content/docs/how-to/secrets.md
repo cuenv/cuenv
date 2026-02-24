@@ -109,6 +109,45 @@ args: ["read", "op://vault-name/item-name/password"]
 
 Sign in with `op signin` before using CLI mode.
 
+### Infisical (SDK + CLI)
+
+cuenv also supports Infisical with SDK-first resolution and CLI fallback.
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+config: {
+    infisical: {
+        defaultEnvironment: "development"
+        projectId:          "proj_123"
+    }
+}
+
+env: {
+    API_KEY: schema.#InfisicalSecret & {
+        path: "/team/service/API_KEY"
+    }
+}
+```
+
+If `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET` are set, cuenv uses the Infisical SDK.
+Otherwise it falls back to the `infisical` CLI.
+
+For relative paths, enable inheritance:
+
+```cue
+config: {
+    infisical: {
+        inheritPath: true
+        pathReplace: {
+            ".": "-"
+        }
+    }
+}
+```
+
 ### Google Cloud Secret Manager
 
 Use GCP Secret Manager for cloud-native secret storage:

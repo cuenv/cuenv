@@ -1,0 +1,24 @@
+[package]
+name = "cuenv-infisical"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Infisical integration for the cuenv ecosystem"
+
+[lints]
+workspace = true
+
+[dependencies]
+cuenv-secrets = { workspace = true }
+async-trait = "0.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+infisical = "0.0.3"

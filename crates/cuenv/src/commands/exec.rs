@@ -8,6 +8,9 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
+use super::infisical::{
+    InfisicalPreprocessContext, preprocess_infisical_secrets, resolve_env_definition_dirs,
+};
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use super::{CommandExecutor, relative_path_from_root};
 use cuenv_core::Result;
@@ -45,6 +48,21 @@ pub struct ExecRequest<'a> {
     pub args: &'a [String],
     /// Optional environment name to use for execution.
     pub environment_override: Option<&'a str>,
+}
+
+fn infisical_definition_dirs(
+    executor: &CommandExecutor,
+    target_path: &Path,
+    selected_environment: Option<&str>,
+    env_vars: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
+) -> std::collections::HashMap<String, std::path::PathBuf> {
+    let Ok(module) = executor.get_module(target_path) else {
+        return std::collections::HashMap::new();
+    };
+
+    let relative_path = relative_path_from_root(&module.root, target_path);
+    let env_keys = env_vars.keys().cloned().collect::<Vec<_>>();
+    resolve_env_definition_dirs(&module, &relative_path, selected_environment, &env_keys)
 }
 
 /// Run a command with the CUE environment.
@@ -177,11 +195,31 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
 
         // Apply command-specific policies and secret resolution for Project
         if let Some(env) = &project.env {
-            let env_vars = if let Some(env_name) = request.environment_override {
+            let mut env_vars = if let Some(env_name) = request.environment_override {
                 env.for_environment(env_name)
             } else {
                 env.base.clone()
             };
+
+            let infisical_config = project
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.infisical.as_ref());
+            let definition_dirs = infisical_definition_dirs(
+                executor,
+                &target_path,
+                request.environment_override,
+                &env_vars,
+            );
+            preprocess_infisical_secrets(
+                &mut env_vars,
+                &InfisicalPreprocessContext {
+                    selected_environment: request.environment_override,
+                    config: infisical_config,
+                    instance_path: &directory,
+                    env_var_definition_dirs: Some(&definition_dirs),
+                },
+            )?;
 
             let (exec_env_vars, secrets) =
                 cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
@@ -201,11 +239,35 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         // For Base: no hooks, but still resolve secrets for exec
         tracing::debug!("Using Base configuration (no hooks)");
 
-        let env_vars = if let Some(env_name) = request.environment_override {
+        let mut env_vars = if let Some(env_name) = request.environment_override {
             env.for_environment(env_name)
         } else {
             env.base.clone()
         };
+
+        let infisical_config = match &manifest_kind {
+            ManifestKind::Base(base) => base.config.as_ref().and_then(|cfg| cfg.infisical.as_ref()),
+            ManifestKind::Project(project) => project
+                .config
+                .as_ref()
+                .and_then(|cfg| cfg.infisical.as_ref()),
+            ManifestKind::None => None,
+        };
+        let definition_dirs = infisical_definition_dirs(
+            executor,
+            &target_path,
+            request.environment_override,
+            &env_vars,
+        );
+        preprocess_infisical_secrets(
+            &mut env_vars,
+            &InfisicalPreprocessContext {
+                selected_environment: request.environment_override,
+                config: infisical_config,
+                instance_path: &directory,
+                env_var_definition_dirs: Some(&definition_dirs),
+            },
+        )?;
 
         let (exec_env_vars, secrets) =
             cuenv_core::environment::Environment::resolve_for_exec_with_secrets(

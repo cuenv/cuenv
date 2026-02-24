@@ -18,6 +18,7 @@ pub mod git_hooks;
 pub mod handler;
 /// Hook execution for environment lifecycle events.
 pub mod hooks;
+mod infisical;
 /// Project information and metadata display.
 pub mod info;
 mod module_utils;
@@ -435,6 +436,7 @@ impl CommandExecutor {
             for dir in env_cue_dirs {
                 let options = ModuleEvalOptions {
                     recursive: false,
+                    with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
                     ..Default::default()
@@ -498,17 +500,33 @@ impl CommandExecutor {
             } else {
                 Some(
                     all_meta
-                        .into_iter()
-                        .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
+                        .iter()
+                        .filter_map(|(k, v)| v.reference.clone().map(|r| (k.clone(), r)))
                         .collect(),
                 )
             };
 
-            *guard = Some(ModuleEvaluation::from_raw(
+            let module_meta = all_meta
+                .into_iter()
+                .map(|(k, v)| {
+                    (
+                        k,
+                        cuenv_core::module::FieldMeta {
+                            directory: v.directory,
+                            filename: v.filename,
+                            line: v.line,
+                            reference: v.reference,
+                        },
+                    )
+                })
+                .collect();
+
+            *guard = Some(ModuleEvaluation::from_raw_with_meta(
                 module_root,
                 all_instances,
                 all_projects,
                 references,
+                module_meta,
             ));
         }
 
