@@ -113,8 +113,9 @@ pub async fn execute_env_print(
         env.base.clone()
     };
 
-    // Resolve all environment variables including secrets
-    let (resolved_vars, secrets) = resolve_env_vars_with_secrets(&env_vars).await?;
+    // Resolve all environment variables including secrets (parallel resolution)
+    let (resolved_vars, secrets) =
+        cuenv_core::environment::Environment::resolve_all_with_secrets(&env_vars).await?;
 
     // Register resolved secrets for global redaction
     cuenv_events::register_secrets(secrets.into_iter());
@@ -133,25 +134,6 @@ pub async fn execute_env_print(
 
     tracing::info!("Env print command completed successfully");
     Ok(output)
-}
-
-/// Resolve all environment variables, returning resolved values and secret values separately.
-///
-/// For interpolated values, only the actual secret parts are collected for redaction,
-/// not the full interpolated string.
-async fn resolve_env_vars_with_secrets(
-    env_map: &std::collections::HashMap<String, cuenv_core::environment::EnvValue>,
-) -> Result<(std::collections::HashMap<String, String>, Vec<String>)> {
-    let mut resolved = std::collections::HashMap::new();
-    let mut secrets = Vec::new();
-
-    for (key, value) in env_map {
-        let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
-        secrets.append(&mut value_secrets);
-        resolved.insert(key.clone(), resolved_value);
-    }
-
-    Ok((resolved, secrets))
 }
 
 /// Format environment variables as shell-style KEY=VALUE pairs.
