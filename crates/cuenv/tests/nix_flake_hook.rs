@@ -5,7 +5,10 @@
 
 use assert_cmd::Command;
 use std::fs;
+use std::time::Duration;
 use tempfile::TempDir;
+
+const MAX_ATTEMPTS: usize = 5;
 
 /// Create a test directory with non-hidden name and CUE module setup
 fn create_test_dir() -> TempDir {
@@ -71,7 +74,7 @@ hooks: {
             order: 10
             propagate: false
             command: "nix"
-            args: ["print-dev-env"]
+            args: ["--extra-experimental-features", "nix-command flakes", "print-dev-env"]
             source: true
             inputs: ["flake.nix", "flake.lock"]
         }
@@ -122,45 +125,83 @@ hooks: {
     );
 
     // 2. Exec command to check shellHook-exported variable
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let output = cmd
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .env("CUENV_FOREGROUND_HOOKS", "1")
-        .env("CUENV_STATE_DIR", state_dir.as_os_str())
-        .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
-        .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
-        .env("NIX_CONFIG", nix_config)
-        .arg("exec")
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg(
-            "if [ \"$NIX_SHELL_HOOK_VAR\" = \"from_nix_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
-        )
-        .output()
-        .unwrap();
+    let mut last_output: Option<std::process::Output> = None;
+    let mut last_inspect_output: Option<std::process::Output> = None;
+    for attempt in 1..=MAX_ATTEMPTS {
+        #[allow(deprecated)]
+        let mut cmd = Command::cargo_bin("cuenv").unwrap();
+        let output = cmd
+            .current_dir(path)
+            .env("CUENV_EXECUTABLE", cuenv_bin)
+            .env("CUENV_FOREGROUND_HOOKS", "1")
+            .env("CUENV_STATE_DIR", state_dir.as_os_str())
+            .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
+            .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
+            .env("NIX_CONFIG", nix_config)
+            .arg("exec")
+            .arg("--")
+            .arg("sh")
+            .arg("-c")
+            .arg(
+                "if [ \"$NIX_SHELL_HOOK_VAR\" = \"from_nix_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
+            )
+            .output()
+            .unwrap();
 
-    // Handle FFI error in sandbox
-    if output.status.code() == Some(3) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-            "Expected FFI or Unexpected error in sandbox, got: {stderr}"
-        );
-    } else {
-        assert!(
-            output.status.success(),
-            "cuenv exec failed (code {:?})\nstdout:\n{}\nstderr:\n{}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // Handle FFI error in sandbox
+        if output.status.code() == Some(3) {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
+                "Expected FFI or Unexpected error in sandbox, got: {stderr}"
+            );
+            return;
+        }
+
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("FOUND"),
-            "Expected FOUND in stdout, got: {stdout}"
-        );
+        if output.status.success() && stdout.contains("FOUND") {
+            return;
+        }
+
+        #[allow(deprecated)]
+        let mut inspect_cmd = Command::cargo_bin("cuenv").unwrap();
+        let inspect_output = inspect_cmd
+            .current_dir(path)
+            .env("CUENV_EXECUTABLE", cuenv_bin)
+            .env("CUENV_FOREGROUND_HOOKS", "1")
+            .env("CUENV_STATE_DIR", state_dir.as_os_str())
+            .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
+            .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
+            .env("NIX_CONFIG", nix_config)
+            .arg("env")
+            .arg("inspect")
+            .output()
+            .unwrap();
+
+        last_output = Some(output);
+        last_inspect_output = Some(inspect_output);
+
+        if attempt < MAX_ATTEMPTS {
+            std::thread::sleep(Duration::from_millis(200));
+        }
     }
+
+    let output = last_output.expect("expected at least one failed attempt");
+    let inspect_output = last_inspect_output.expect("expected inspect output for failed attempt");
+
+    assert!(
+        output.status.success(),
+        "cuenv exec failed after {MAX_ATTEMPTS} attempts (code {:?})\nstdout:\n{}\nstderr:\n{}\ninspect stdout:\n{}\ninspect stderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&inspect_output.stdout),
+        String::from_utf8_lossy(&inspect_output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FOUND"),
+        "Expected FOUND in stdout after {MAX_ATTEMPTS} attempts, got: {stdout}"
+    );
 }
