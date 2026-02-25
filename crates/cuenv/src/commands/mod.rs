@@ -48,6 +48,7 @@ use cuengine::ModuleEvalOptions;
 use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
@@ -426,28 +427,45 @@ impl CommandExecutor {
                 )));
             }
 
-            // Evaluate each directory individually (non-recursive)
+            // Evaluate each directory individually (non-recursive), in parallel via rayon.
+            // Each evaluate_module call creates independent Go state (cuecontext.New(),
+            // load.Config, load.Instances) so there is no shared mutable state.
+            let package = &self.package;
+            let results: Vec<_> = env_cue_dirs
+                .par_iter()
+                .map(|dir| {
+                    let options = ModuleEvalOptions {
+                        recursive: false,
+                        with_references: true,
+                        target_dir: Some(dir.to_string_lossy().to_string()),
+                        ..Default::default()
+                    };
+                    let dir_rel_path = compute_relative_path(dir, &module_root);
+
+                    match cuengine::evaluate_module(&module_root, package, Some(&options)) {
+                        Ok(raw) => Ok((dir_rel_path, raw)),
+                        Err(e) => {
+                            tracing::warn!(
+                                dir = %dir.display(),
+                                error = %e,
+                                "Failed to evaluate env.cue - skipping directory"
+                            );
+                            Err((dir.clone(), e))
+                        }
+                    }
+                })
+                .collect();
+
+            // Merge results sequentially (fast, no FFI)
             let mut all_instances = std::collections::HashMap::new();
             let mut all_projects = Vec::new();
             let mut all_meta = std::collections::HashMap::new();
             let mut eval_errors = Vec::new();
 
-            for dir in env_cue_dirs {
-                let options = ModuleEvalOptions {
-                    recursive: false,
-                    with_references: true,
-                    target_dir: Some(dir.to_string_lossy().to_string()),
-                    ..Default::default()
-                };
-
-                // Compute relative path once for this directory
-                let dir_rel_path = compute_relative_path(&dir, &module_root);
-
-                match cuengine::evaluate_module(&module_root, &self.package, Some(&options)) {
-                    Ok(raw) => {
-                        // Merge instances (key by relative path from module_root)
+            for result in results {
+                match result {
+                    Ok((dir_rel_path, raw)) => {
                         for (path_str, value) in raw.instances {
-                            // Convert to relative path for consistent keying
                             let rel_path = if path_str == "." {
                                 dir_rel_path.clone()
                             } else {
@@ -467,19 +485,12 @@ impl CommandExecutor {
                             }
                         }
 
-                        // Merge meta with adjusted paths
                         for (meta_key, meta_value) in raw.meta {
                             let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
                             all_meta.insert(adjusted_key, meta_value);
                         }
                     }
-                    Err(e) => {
-                        // Log warning but continue - some directories may fail
-                        tracing::warn!(
-                            dir = %dir.display(),
-                            error = %e,
-                            "Failed to evaluate env.cue - skipping directory"
-                        );
+                    Err((dir, e)) => {
                         eval_errors.push((dir, e));
                     }
                 }
