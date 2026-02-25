@@ -71,6 +71,7 @@ cuenv-tools-rustup = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"
+rayon = { workspace = true }
 async-trait = "0.1"
 futures = "0.3"
 libc = { workspace = true }

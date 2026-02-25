@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::sync::Arc;
 
 /// A part of an interpolated environment variable value.
 /// Can be a literal string or a secret that needs runtime resolution.
@@ -275,6 +276,90 @@ impl EnvValue {
             EnvValueSimple::Interpolated(parts) => Self::resolve_parts_with_secrets(parts).await,
         }
     }
+
+    /// Collect all secrets from this value, returning them with their part index.
+    ///
+    /// The part index is used to match resolved values back to their position
+    /// during reassembly. For non-interpolated secrets, index 0 is used.
+    fn collect_secrets(&self) -> Vec<(usize, &crate::secrets::Secret)> {
+        match self {
+            EnvValue::Secret(s) => vec![(0, s)],
+            EnvValue::Interpolated(parts) => Self::collect_secrets_from_parts(parts),
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::Secret(s) => vec![(0, s)],
+                EnvValueSimple::Interpolated(parts) => Self::collect_secrets_from_parts(parts),
+                _ => vec![],
+            },
+            _ => vec![],
+        }
+    }
+
+    /// Collect secrets from interpolated parts with their indices.
+    fn collect_secrets_from_parts(parts: &[EnvPart]) -> Vec<(usize, &crate::secrets::Secret)> {
+        parts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, part)| match part {
+                EnvPart::Secret(s) => Some((i, s)),
+                EnvPart::Literal(_) => None,
+            })
+            .collect()
+    }
+
+    /// Reassemble the resolved string value given pre-resolved secret values.
+    ///
+    /// `resolved_secrets` maps part indices to their resolved string values.
+    /// Returns the final concatenated string and the list of secret values for redaction.
+    fn reassemble_with_resolved(
+        &self,
+        resolved_secrets: &HashMap<usize, String>,
+    ) -> (String, Vec<String>) {
+        match self {
+            EnvValue::String(s) => (s.clone(), vec![]),
+            EnvValue::Int(i) => (i.to_string(), vec![]),
+            EnvValue::Bool(b) => (b.to_string(), vec![]),
+            EnvValue::Secret(_) => {
+                let val = resolved_secrets.get(&0).cloned().unwrap_or_default();
+                (val.clone(), vec![val])
+            }
+            EnvValue::Interpolated(parts) => {
+                Self::reassemble_parts(parts, resolved_secrets)
+            }
+            EnvValue::WithPolicies(var) => match &var.value {
+                EnvValueSimple::String(s) => (s.clone(), vec![]),
+                EnvValueSimple::Int(i) => (i.to_string(), vec![]),
+                EnvValueSimple::Bool(b) => (b.to_string(), vec![]),
+                EnvValueSimple::Secret(_) => {
+                    let val = resolved_secrets.get(&0).cloned().unwrap_or_default();
+                    (val.clone(), vec![val])
+                }
+                EnvValueSimple::Interpolated(parts) => {
+                    Self::reassemble_parts(parts, resolved_secrets)
+                }
+            },
+        }
+    }
+
+    /// Reassemble interpolated parts using pre-resolved secret values.
+    fn reassemble_parts(
+        parts: &[EnvPart],
+        resolved_secrets: &HashMap<usize, String>,
+    ) -> (String, Vec<String>) {
+        let mut result = String::new();
+        let mut secrets = Vec::new();
+        for (i, part) in parts.iter().enumerate() {
+            match part {
+                EnvPart::Literal(s) => result.push_str(s),
+                EnvPart::Secret(_) => {
+                    if let Some(val) = resolved_secrets.get(&i) {
+                        result.push_str(val);
+                        secrets.push(val.clone());
+                    }
+                }
+            }
+        }
+        (result, secrets)
+    }
 }
 
 /// Runtime environment variables for task execution
@@ -542,6 +627,18 @@ impl Environment {
             .collect()
     }
 
+    /// Resolve all environment variables, returning resolved values and secret values.
+    ///
+    /// No policy filtering is applied - all variables are resolved.
+    /// Secrets are resolved in parallel using a shared `SecretRegistry` and
+    /// `tokio::task::JoinSet` for concurrent I/O.
+    pub async fn resolve_all_with_secrets(
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        let all: Vec<_> = env_vars.iter().collect();
+        Self::resolve_filtered_with_secrets(&all).await
+    }
+
     /// Build and resolve environment for a task, filtering based on policies
     ///
     /// Resolves all environment variables including secrets via the
@@ -560,39 +657,25 @@ impl Environment {
     /// the resolved values of any secrets, for use in output redaction.
     /// For interpolated values, only the actual secret parts are collected for redaction,
     /// not the full interpolated string.
+    ///
+    /// Secrets are resolved in parallel using a shared `SecretRegistry` and
+    /// `tokio::task::JoinSet` for concurrent I/O.
     pub async fn resolve_for_task_with_secrets(
         task_name: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
-        let mut resolved = HashMap::new();
-        let mut secrets = Vec::new();
-
         tracing::debug!(
             task = task_name,
             env_count = env_vars.len(),
             "resolve_for_task_with_secrets"
         );
-        for (key, value) in env_vars {
-            tracing::debug!(
-                key = key,
-                is_secret = value.is_secret(),
-                accessible = value.is_accessible_by_task(task_name),
-                "checking env var"
-            );
-            if value.is_accessible_by_task(task_name) {
-                let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
-                if !value_secrets.is_empty() {
-                    tracing::debug!(
-                        key = key,
-                        secret_count = value_secrets.len(),
-                        "resolved secrets"
-                    );
-                }
-                secrets.append(&mut value_secrets);
-                resolved.insert(key.clone(), resolved_value);
-            }
-        }
-        Ok((resolved, secrets))
+
+        let accessible: Vec<_> = env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_task(task_name))
+            .collect();
+
+        Self::resolve_filtered_with_secrets(&accessible).await
     }
 
     /// Build environment for exec command, filtering based on policies
@@ -625,21 +708,106 @@ impl Environment {
     /// the resolved values of any secrets, for use in output redaction.
     /// For interpolated values, only the actual secret parts are collected for redaction,
     /// not the full interpolated string.
+    ///
+    /// Secrets are resolved in parallel using a shared `SecretRegistry` and
+    /// `tokio::task::JoinSet` for concurrent I/O.
     pub async fn resolve_for_exec_with_secrets(
         command: &str,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
-        let mut resolved = HashMap::new();
-        let mut secrets = Vec::new();
+        let accessible: Vec<_> = env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_exec(command))
+            .collect();
 
-        for (key, value) in env_vars {
-            if value.is_accessible_by_exec(command) {
-                let (resolved_value, mut value_secrets) = value.resolve_with_secrets().await?;
-                secrets.append(&mut value_secrets);
-                resolved.insert(key.clone(), resolved_value);
+        Self::resolve_filtered_with_secrets(&accessible).await
+    }
+
+    /// Resolve a pre-filtered set of environment variables, resolving all secrets
+    /// in parallel via a shared `SecretRegistry` and `tokio::task::JoinSet`.
+    ///
+    /// Phase 1 (Collect): Non-secret vars go straight to output. Secrets are
+    /// collected with their env key and part index for later reassembly.
+    ///
+    /// Phase 2 (Resolve): One `SecretRegistry` is created and shared via `Arc`.
+    /// All secrets are spawned into a `JoinSet` for concurrent resolution.
+    ///
+    /// Phase 3 (Reassemble): Resolved values are grouped by env key and passed
+    /// to `reassemble_with_resolved` to rebuild the final string values.
+    async fn resolve_filtered_with_secrets(
+        accessible: &[(&String, &EnvValue)],
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        let mut resolved = HashMap::new();
+        let mut all_secrets = Vec::new();
+
+        // Phase 1: Separate non-secret vars (instant) from secret vars (need resolution)
+        type SecretVarEntry<'a> = (&'a String, &'a EnvValue, Vec<(usize, crate::secrets::Secret)>);
+        let mut secret_vars: Vec<SecretVarEntry<'_>> = Vec::new();
+
+        for (key, value) in accessible {
+            let collected = value.collect_secrets();
+            if collected.is_empty() {
+                // No secrets - resolve immediately (just string conversion)
+                resolved.insert((*key).clone(), value.to_string_value());
+            } else {
+                let owned_secrets: Vec<(usize, crate::secrets::Secret)> = collected
+                    .into_iter()
+                    .map(|(idx, s)| (idx, s.clone()))
+                    .collect();
+                secret_vars.push((key, value, owned_secrets));
             }
         }
-        Ok((resolved, secrets))
+
+        // If no secrets, return early
+        if secret_vars.is_empty() {
+            return Ok((resolved, all_secrets));
+        }
+
+        // Phase 2: Resolve all secrets in parallel with a shared registry
+        let registry = Arc::new(crate::secrets::create_default_registry()?);
+        let mut join_set = tokio::task::JoinSet::new();
+
+        for (key, _, secrets) in &secret_vars {
+            for (part_idx, secret) in secrets {
+                let key = (*key).clone();
+                let part_idx = *part_idx;
+                let secret = secret.clone();
+                let registry = Arc::clone(&registry);
+                join_set.spawn(async move {
+                    let value = secret.resolve_with_registry(&registry).await?;
+                    Ok::<_, crate::Error>((key, part_idx, value))
+                });
+            }
+        }
+
+        // Collect all resolved values, grouped by env key
+        let mut resolved_by_key: HashMap<String, HashMap<usize, String>> = HashMap::new();
+        while let Some(result) = join_set.join_next().await {
+            let (key, part_idx, value) = result
+                .map_err(|e| crate::Error::configuration(format!("Secret resolution task panicked: {e}")))?
+                ?;
+            resolved_by_key
+                .entry(key)
+                .or_default()
+                .insert(part_idx, value);
+        }
+
+        // Phase 3: Reassemble final values
+        for (key, value, _) in &secret_vars {
+            let key_resolved = resolved_by_key.get(*key).cloned().unwrap_or_default();
+            let (final_value, mut value_secrets) = value.reassemble_with_resolved(&key_resolved);
+            if !value_secrets.is_empty() {
+                tracing::debug!(
+                    key = *key,
+                    secret_count = value_secrets.len(),
+                    "resolved secrets"
+                );
+            }
+            all_secrets.append(&mut value_secrets);
+            resolved.insert((*key).clone(), final_value);
+        }
+
+        Ok((resolved, all_secrets))
     }
 }
 
