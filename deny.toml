@@ -41,13 +41,19 @@ ignore = [
     "RUSTSEC-2025-0134",
     # proc-macro-error unmaintained - transitive dep from clap/derive_more
     "RUSTSEC-2025-0057",
-    # derivative unmaintained - transitive dep
-    "RUSTSEC-2025-0066",
     # wasmtime f64.copysign segfault - transitive dep from extism 1.13.0
     # extism requires ^37, no patched 37.x exists, awaiting upstream fix
     # Vulnerability requires specific WASM input to trigger (low risk for us)
     # TODO: Remove when extism releases version with patched wasmtime
     "RUSTSEC-2026-0006",
+    # wasmtime WASI guest-controlled resource exhaustion - transitive dep from extism 1.13.0
+    # extism currently constrains wasmtime to 37.x; patched versions are outside this range
+    # TODO: Remove when extism updates to a patched wasmtime release
+    "RUSTSEC-2026-0020",
+    # wasmtime panic from excessive wasi:http/types.fields entries - transitive dep from extism 1.13.0
+    # extism currently constrains wasmtime to 37.x; patched versions are outside this range
+    # TODO: Remove when extism updates to a patched wasmtime release
+    "RUSTSEC-2026-0021",
 ]
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is
