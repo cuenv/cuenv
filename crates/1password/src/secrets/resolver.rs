@@ -583,7 +583,7 @@ shift
 case "$cmd" in
   whoami)
     printf "whoami\n" >> "$OP_TEST_LOG"
-    if [ "${OP_TEST_FAIL_WHOAMI:-0}" = "1" ]; then
+    if [ "x$OP_TEST_FAIL_WHOAMI" = "x1" ]; then
       printf "not signed in\n" >&2
       exit 1
     fi
@@ -592,7 +592,7 @@ case "$cmd" in
     ;;
   read)
     printf "read:%s\n" "$1" >> "$OP_TEST_LOG"
-    if [ "${OP_TEST_FAIL_READ:-0}" = "1" ]; then
+    if [ "x$OP_TEST_FAIL_READ" = "x1" ]; then
       printf "read failed\n" >&2
       exit 1
     fi
@@ -843,8 +843,8 @@ esac
                     ),
                 ]);
 
-                let resolved = resolver.resolve_batch(&secrets).await.unwrap();
-                assert_eq!(resolved.len(), 3);
+                let secret_values = resolver.resolve_batch(&secrets).await.unwrap();
+                assert_eq!(secret_values.len(), 3);
             },
         )
         .await;

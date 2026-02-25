@@ -1,7 +1,7 @@
 //! Integration test for NixFlake onEnter hook behavior
 
 // Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 
 use assert_cmd::Command;
 use std::fs;
@@ -82,6 +82,13 @@ hooks: {
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
     let nix_config = "experimental-features = nix-command flakes";
+    let state_dir = path.join(".cuenv-state");
+    let cache_dir = path.join(".cuenv-cache");
+    let runtime_dir = path.join(".cuenv-runtime");
+
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&cache_dir).unwrap();
+    fs::create_dir_all(&runtime_dir).unwrap();
 
     // 1. Approve config
     #[allow(deprecated)]
@@ -89,6 +96,10 @@ hooks: {
     let allow_output = cmd
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
+        .env("CUENV_FOREGROUND_HOOKS", "1")
+        .env("CUENV_STATE_DIR", state_dir.as_os_str())
+        .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
+        .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
         .env("NIX_CONFIG", nix_config)
         .arg("allow")
         .arg("--yes")
@@ -116,6 +127,10 @@ hooks: {
     let output = cmd
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
+        .env("CUENV_FOREGROUND_HOOKS", "1")
+        .env("CUENV_STATE_DIR", state_dir.as_os_str())
+        .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
+        .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
         .env("NIX_CONFIG", nix_config)
         .arg("exec")
         .arg("--")
@@ -135,7 +150,13 @@ hooks: {
             "Expected FFI or Unexpected error in sandbox, got: {stderr}"
         );
     } else {
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "cuenv exec failed (code {:?})\nstdout:\n{}\nstderr:\n{}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
             stdout.contains("FOUND"),
