@@ -223,10 +223,17 @@ impl OnePasswordResolver {
     }
 
     /// Ensure CLI auth is valid once per resolver instance.
-    async fn ensure_cli_authenticated(&self, name: &str) -> Result<(), SecretError> {
+    ///
+    /// Returns `Some(secret_value)` when auth bootstrap consumed the current
+    /// secret read, allowing caller to skip a second `op read` call.
+    async fn ensure_cli_authenticated(
+        &self,
+        name: &str,
+        config: &OnePasswordConfig,
+    ) -> Result<Option<String>, SecretError> {
         let mut state = self.cli_auth_state.lock().await;
         match &*state {
-            CliAuthState::Authenticated => return Ok(()),
+            CliAuthState::Authenticated => return Ok(None),
             CliAuthState::Failed(message) => {
                 return Err(SecretError::ResolutionFailed {
                     name: name.to_string(),
@@ -241,7 +248,7 @@ impl OnePasswordResolver {
         match preflight_result {
             Ok(output) if output.status.success() => {
                 *state = CliAuthState::Authenticated;
-                Ok(())
+                Ok(None)
             }
             Ok(output) => {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -250,6 +257,68 @@ impl OnePasswordResolver {
                 } else {
                     stderr
                 };
+
+                // Interactive local workflows may be signed out before the first read.
+                // In this case, allow one bootstrap read to trigger signin once,
+                // then keep all remaining reads parallel.
+                if details.to_lowercase().contains("not signed in") {
+                    let read_result = Command::new("op")
+                        .args(["read", &config.reference])
+                        .output()
+                        .await;
+
+                    match read_result {
+                        Ok(read_output) if read_output.status.success() => {
+                            *state = CliAuthState::Authenticated;
+                            let secret = String::from_utf8_lossy(&read_output.stdout)
+                                .trim()
+                                .to_string();
+                            return Ok(Some(secret));
+                        }
+                        Ok(read_output) => {
+                            let read_stderr = String::from_utf8_lossy(&read_output.stderr)
+                                .trim()
+                                .to_string();
+                            let read_details = if read_stderr.is_empty() {
+                                "no error output from 1Password CLI".to_string()
+                            } else {
+                                read_stderr
+                            };
+                            let message = format!(
+                                "1Password CLI authentication check failed (`op whoami`) and \
+                                bootstrap secret read failed. Run `op signin` and retry. \
+                                Details: {read_details}"
+                            );
+                            *state = CliAuthState::Failed(message.clone());
+                            return Err(SecretError::ResolutionFailed {
+                                name: name.to_string(),
+                                message,
+                            });
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                            let message = "1Password CLI not found (`op` command unavailable). \
+                                Install the 1Password CLI and retry."
+                                .to_string();
+                            *state = CliAuthState::Failed(message.clone());
+                            return Err(SecretError::ResolutionFailed {
+                                name: name.to_string(),
+                                message,
+                            });
+                        }
+                        Err(e) => {
+                            let message = format!(
+                                "Failed to execute 1Password bootstrap secret read (`op read`): {e}. \
+                                Run `op signin` and retry."
+                            );
+                            *state = CliAuthState::Failed(message.clone());
+                            return Err(SecretError::ResolutionFailed {
+                                name: name.to_string(),
+                                message,
+                            });
+                        }
+                    }
+                }
+
                 let message = format!(
                     "1Password CLI authentication check failed (`op whoami`). \
                     Run `op signin` and retry. Details: {details}"
@@ -296,7 +365,9 @@ impl OnePasswordResolver {
         }
 
         // Fallback to CLI
-        self.ensure_cli_authenticated(name).await?;
+        if let Some(secret) = self.ensure_cli_authenticated(name, config).await? {
+            return Ok(secret);
+        }
         self.resolve_cli(name, config).await
     }
 
@@ -521,6 +592,10 @@ case "$cmd" in
     ;;
   read)
     printf "read:%s\n" "$1" >> "$OP_TEST_LOG"
+    if [ "${OP_TEST_FAIL_READ:-0}" = "1" ]; then
+      printf "read failed\n" >&2
+      exit 1
+    fi
     printf "secret-for-%s\n" "$1"
     exit 0
     ;;
@@ -792,7 +867,7 @@ esac
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn test_cli_preflight_fail_fast_skips_parallel_reads() {
+    async fn test_cli_preflight_signed_out_bootstraps_then_runs_parallel_reads() {
         let temp = tempfile::tempdir().unwrap();
         write_fake_op_shim(temp.path());
         let log_path = temp.path().join("op.log");
@@ -814,9 +889,59 @@ esac
                 ]);
 
                 let result = resolver.resolve_batch(&secrets).await;
+                assert!(result.is_ok(), "expected bootstrap read to recover auth");
+                assert_eq!(result.unwrap().len(), 2);
+            },
+        )
+        .await;
+
+        let lines = read_log_lines(&log_path);
+        assert_eq!(
+            lines.iter().filter(|line| *line == "whoami").count(),
+            1,
+            "expected single preflight attempt, got log lines: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("read:"))
+                .count(),
+            2,
+            "expected one read per secret after bootstrap auth, got log lines: {lines:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cli_preflight_bootstrap_read_failure_fails_fast() {
+        let temp = tempfile::tempdir().unwrap();
+        write_fake_op_shim(temp.path());
+        let log_path = temp.path().join("op.log");
+        let path = prepend_path(temp.path());
+        let log_path_str = log_path.to_string_lossy().into_owned();
+
+        temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path_str.as_str())),
+                ("OP_TEST_FAIL_WHOAMI", Some("1")),
+                ("OP_TEST_FAIL_READ", Some("1")),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let secrets = HashMap::from([
+                    ("A".to_string(), SecretSpec::new("op://vault/item/a")),
+                    ("B".to_string(), SecretSpec::new("op://vault/item/b")),
+                ]);
+
+                let result = resolver.resolve_batch(&secrets).await;
                 assert!(result.is_err());
                 let err = result.unwrap_err().to_string();
-                assert!(err.contains("op whoami"), "unexpected error: {err}");
+                assert!(
+                    err.contains("bootstrap secret read"),
+                    "unexpected error: {err}"
+                );
                 assert!(err.contains("op signin"), "unexpected error: {err}");
             },
         )
@@ -833,8 +958,8 @@ esac
                 .iter()
                 .filter(|line| line.starts_with("read:"))
                 .count(),
-            0,
-            "read should not run when preflight fails, got log lines: {lines:?}"
+            1,
+            "expected a single bootstrap read attempt before fail-fast, got log lines: {lines:?}"
         );
     }
 
