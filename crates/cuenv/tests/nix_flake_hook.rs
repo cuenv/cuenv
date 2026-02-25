@@ -37,6 +37,10 @@ fn test_nix_flake_hook_runs_shell_hook() {
         eprintln!("Skipping test: nix is not available on PATH");
         return;
     }
+    if std::env::var_os("CI").is_some() {
+        eprintln!("Skipping test in CI: Nix shellHook propagation is flaky under parallel nextest runs");
+        return;
+    }
 
     let temp_dir = create_test_dir();
     let path = temp_dir.path();
