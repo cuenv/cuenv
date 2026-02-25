@@ -33,3 +33,5 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 [dev-dependencies]
 tokio-test = { workspace = true }
 reqwest = { version = "0.12", features = ["blocking"] }
+temp-env = { workspace = true }
+tempfile = { workspace = true }

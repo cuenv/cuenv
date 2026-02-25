@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::process::Command;
+use tokio::{process::Command, sync::Mutex};
 
 /// Configuration for 1Password secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +48,15 @@ impl OnePasswordConfig {
 pub struct OnePasswordResolver {
     /// Client ID for WASM SDK (when using HTTP mode)
     client_id: Option<u64>,
+    /// One-time CLI auth preflight state for `op whoami` in CLI mode.
+    cli_auth_state: Mutex<CliAuthState>,
+}
+
+#[derive(Debug, Clone)]
+enum CliAuthState {
+    Unknown,
+    Authenticated,
+    Failed(String),
 }
 
 impl std::fmt::Debug for OnePasswordResolver {
@@ -88,7 +97,10 @@ impl OnePasswordResolver {
             None
         };
 
-        Ok(Self { client_id })
+        Ok(Self {
+            client_id,
+            cli_auth_state: Mutex::new(CliAuthState::Unknown),
+        })
     }
 
     /// Check if HTTP mode is available (token set + WASM installed)
@@ -210,6 +222,68 @@ impl OnePasswordResolver {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
+    /// Ensure CLI auth is valid once per resolver instance.
+    async fn ensure_cli_authenticated(&self, name: &str) -> Result<(), SecretError> {
+        let mut state = self.cli_auth_state.lock().await;
+        match &*state {
+            CliAuthState::Authenticated => return Ok(()),
+            CliAuthState::Failed(message) => {
+                return Err(SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message: message.clone(),
+                });
+            }
+            CliAuthState::Unknown => {}
+        }
+
+        let preflight_result = Command::new("op").arg("whoami").output().await;
+
+        match preflight_result {
+            Ok(output) if output.status.success() => {
+                *state = CliAuthState::Authenticated;
+                Ok(())
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let details = if stderr.is_empty() {
+                    "no error output from 1Password CLI".to_string()
+                } else {
+                    stderr
+                };
+                let message = format!(
+                    "1Password CLI authentication check failed (`op whoami`). \
+                    Run `op signin` and retry. Details: {details}"
+                );
+                *state = CliAuthState::Failed(message.clone());
+                Err(SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message,
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let message = "1Password CLI not found (`op` command unavailable). \
+                    Install the 1Password CLI and retry."
+                    .to_string();
+                *state = CliAuthState::Failed(message.clone());
+                Err(SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message,
+                })
+            }
+            Err(e) => {
+                let message = format!(
+                    "Failed to execute 1Password CLI authentication check (`op whoami`): {e}. \
+                    Run `op signin` and retry."
+                );
+                *state = CliAuthState::Failed(message.clone());
+                Err(SecretError::ResolutionFailed {
+                    name: name.to_string(),
+                    message,
+                })
+            }
+        }
+    }
+
     /// Resolve a secret - tries HTTP first if available, falls back to CLI
     async fn resolve_with_config(
         &self,
@@ -222,6 +296,7 @@ impl OnePasswordResolver {
         }
 
         // Fallback to CLI
+        self.ensure_cli_authenticated(name).await?;
         self.resolve_cli(name, config).await
     }
 
@@ -422,6 +497,69 @@ impl SecretResolver for OnePasswordResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::{fs, path::Path};
+
+    #[cfg(unix)]
+    fn write_fake_op_shim(dir: &Path) -> std::path::PathBuf {
+        let op_path = dir.join("op");
+        let script = r#"#!/bin/sh
+cmd="$1"
+shift
+
+case "$cmd" in
+  whoami)
+    printf "whoami\n" >> "$OP_TEST_LOG"
+    if [ "${OP_TEST_FAIL_WHOAMI:-0}" = "1" ]; then
+      printf "not signed in\n" >&2
+      exit 1
+    fi
+    printf "test-user@example.com\n"
+    exit 0
+    ;;
+  read)
+    printf "read:%s\n" "$1" >> "$OP_TEST_LOG"
+    printf "secret-for-%s\n" "$1"
+    exit 0
+    ;;
+  *)
+    printf "unsupported op command: %s\n" "$cmd" >&2
+    exit 2
+    ;;
+esac
+"#;
+
+        fs::write(&op_path, script).unwrap();
+        let mut perms = fs::metadata(&op_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&op_path, perms).unwrap();
+        op_path
+    }
+
+    #[cfg(unix)]
+    fn prepend_path(dir: &Path) -> String {
+        let mut parts = vec![dir.to_path_buf()];
+        if let Some(current) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&current));
+        }
+        std::env::join_paths(parts)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[cfg(unix)]
+    fn read_log_lines(path: &Path) -> Vec<String> {
+        let content = fs::read_to_string(path).unwrap_or_default();
+        content
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
 
     #[test]
     fn test_onepassword_config_serialization() {
@@ -596,5 +734,132 @@ mod tests {
     fn test_config_unicode_reference() {
         let config = OnePasswordConfig::new("op://vault/项目/密码");
         assert_eq!(config.reference, "op://vault/项目/密码");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cli_preflight_runs_once_for_parallel_batch_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        write_fake_op_shim(temp.path());
+        let log_path = temp.path().join("op.log");
+        let path = prepend_path(temp.path());
+        let log_path_str = log_path.to_string_lossy().into_owned();
+
+        temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path_str.as_str())),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let secrets = HashMap::from([
+                    (
+                        "API_KEY".to_string(),
+                        SecretSpec::new("op://vault/service/api_key"),
+                    ),
+                    (
+                        "DB_PASSWORD".to_string(),
+                        SecretSpec::new("op://vault/service/db_password"),
+                    ),
+                    (
+                        "JWT_SECRET".to_string(),
+                        SecretSpec::new("op://vault/service/jwt_secret"),
+                    ),
+                ]);
+
+                let resolved = resolver.resolve_batch(&secrets).await.unwrap();
+                assert_eq!(resolved.len(), 3);
+            },
+        )
+        .await;
+
+        let lines = read_log_lines(&log_path);
+        assert_eq!(
+            lines.iter().filter(|line| *line == "whoami").count(),
+            1,
+            "expected exactly one auth preflight, got log lines: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("read:"))
+                .count(),
+            3,
+            "expected one read per secret, got log lines: {lines:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cli_preflight_fail_fast_skips_parallel_reads() {
+        let temp = tempfile::tempdir().unwrap();
+        write_fake_op_shim(temp.path());
+        let log_path = temp.path().join("op.log");
+        let path = prepend_path(temp.path());
+        let log_path_str = log_path.to_string_lossy().into_owned();
+
+        temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_TEST_LOG", Some(log_path_str.as_str())),
+                ("OP_TEST_FAIL_WHOAMI", Some("1")),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let secrets = HashMap::from([
+                    ("A".to_string(), SecretSpec::new("op://vault/item/a")),
+                    ("B".to_string(), SecretSpec::new("op://vault/item/b")),
+                ]);
+
+                let result = resolver.resolve_batch(&secrets).await;
+                assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains("op whoami"), "unexpected error: {err}");
+                assert!(err.contains("op signin"), "unexpected error: {err}");
+            },
+        )
+        .await;
+
+        let lines = read_log_lines(&log_path);
+        assert_eq!(
+            lines.iter().filter(|line| *line == "whoami").count(),
+            1,
+            "expected single preflight attempt, got log lines: {lines:?}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.starts_with("read:"))
+                .count(),
+            0,
+            "read should not run when preflight fails, got log lines: {lines:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_cli_preflight_missing_op_reports_clear_error() {
+        let empty_dir = tempfile::tempdir().unwrap();
+        let path = empty_dir.path().to_string_lossy().into_owned();
+
+        temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("OP_SERVICE_ACCOUNT_TOKEN", None),
+            ],
+            async {
+                let resolver = OnePasswordResolver::new().unwrap();
+                let spec = SecretSpec::new("op://vault/item/password");
+
+                let result = resolver.resolve("missing-op", &spec).await;
+                assert!(result.is_err());
+                let err = result.unwrap_err().to_string();
+                assert!(err.contains("1Password CLI"), "unexpected error: {err}");
+                assert!(err.contains("not found"), "unexpected error: {err}");
+            },
+        )
+        .await;
     }
 }
