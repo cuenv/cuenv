@@ -509,9 +509,27 @@ impl TaskExecutor {
             cuenv_events::emit_task_group_started!(prefix, true, sequence.len());
         }
         let mut results = Vec::new();
+        // Track completed step results for output ref resolution within sequences.
+        let mut seq_results: std::collections::HashMap<String, TaskResult> =
+            std::collections::HashMap::new();
+
         for (i, step) in sequence.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
-            let task_results = self.execute_node(&task_name, step, all_tasks).await?;
+
+            // For Task steps, resolve any output ref placeholders from prior steps
+            let step = if let TaskNode::Task(task) = step {
+                let mut resolved_task = (**task).clone();
+                let resolver = super::output_refs::OutputRefResolver {
+                    task_name: &task_name,
+                    results: &seq_results,
+                };
+                resolver.resolve(&mut resolved_task.args, &mut resolved_task.env)?;
+                TaskNode::Task(Box::new(resolved_task))
+            } else {
+                step.clone()
+            };
+
+            let task_results = self.execute_node(&task_name, &step, all_tasks).await?;
             for result in &task_results {
                 // Sequences always stop on first error (no configuration option)
                 if !result.success {
@@ -522,6 +540,7 @@ impl TaskExecutor {
                         &result.stderr,
                     ));
                 }
+                seq_results.insert(result.name.clone(), result.clone());
             }
             results.extend(task_results);
         }
@@ -602,6 +621,10 @@ impl TaskExecutor {
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
         let parallel_groups = graph.get_parallel_groups()?;
         let mut all_results = Vec::new();
+        // Map of completed task results for resolving output references.
+        // Populated between sequential parallel groups — no concurrent access.
+        let mut results_map: std::collections::HashMap<String, TaskResult> =
+            std::collections::HashMap::new();
 
         // IMPORTANT:
         // Each parallel group represents a dependency "level". We must not start tasks from the
@@ -616,8 +639,18 @@ impl TaskExecutor {
             while !group.is_empty() || !join_set.is_empty() {
                 // Fill the concurrency window for this group
                 while let Some(node) = group.pop() {
-                    let task = node.task.clone();
+                    let mut task = node.task.clone();
                     let name = node.name.clone();
+
+                    // Resolve any task output reference placeholders in args/env
+                    // before spawning. The results_map contains all completed
+                    // upstream tasks (from prior parallel groups).
+                    let resolver = super::output_refs::OutputRefResolver {
+                        task_name: &name,
+                        results: &results_map,
+                    };
+                    resolver.resolve(&mut task.args, &mut task.env)?;
+
                     let executor = self.clone_with_config();
                     join_set.spawn(async move { executor.execute_task(&name, &task).await });
 
@@ -638,6 +671,7 @@ impl TaskExecutor {
                                     &task_result.stderr,
                                 ));
                             }
+                            results_map.insert(task_result.name.clone(), task_result.clone());
                             all_results.push(task_result);
                         }
                         Ok(Err(e)) => {

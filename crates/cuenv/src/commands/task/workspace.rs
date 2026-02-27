@@ -85,12 +85,21 @@ pub fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path)
 ///
 /// Returns the global tasks and the current project's ID.
 #[allow(clippy::too_many_lines)]
+/// Result of building the global task registry.
+/// Contains the merged tasks, the current project ID, and any output ref deps
+/// with task names converted to FQDNs.
+pub struct GlobalTasksResult {
+    pub tasks: Tasks,
+    pub current_project_id: String,
+    pub output_ref_deps: Vec<(String, String)>,
+}
+
 pub fn build_global_tasks(
     module_root: &Path,
     current_project_root: &Path,
     current_manifest: &Project,
     executor: &CommandExecutor,
-) -> Result<(Tasks, String)> {
+) -> Result<GlobalTasksResult> {
     let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
 
     // Use executor's cached module (single CUE evaluation per process).
@@ -193,6 +202,8 @@ pub fn build_global_tasks(
             let mut node = entry.node.clone();
             set_default_project_root(&mut node, &p.root);
             normalize_node_deps(&mut node, &id_by_root, &project_id_by_name, &p.id);
+            // Rewrite output ref placeholders from bare names to FQDNs
+            rewrite_output_ref_placeholders(&mut node, &p.id);
             let fqdn = task_fqdn(&p.id, &entry.name);
             if global.contains_key(&fqdn) {
                 return Err(cuenv_core::Error::configuration(format!(
@@ -203,5 +214,67 @@ pub fn build_global_tasks(
         }
     }
 
-    Ok((Tasks { tasks: global }, current_project_id))
+    // Collect output ref deps from module instances, converting bare task
+    // names to FQDNs so they match the graph's naming convention.
+    let mut all_output_ref_deps = Vec::new();
+    for instance in module.projects() {
+        let project_root = module.root.join(&instance.path);
+        let canonical = fs::canonicalize(&project_root).unwrap_or(project_root);
+        if let Some(project_id) = id_by_root.get(&canonical) {
+            for (from_bare, to_bare) in &instance.output_ref_deps {
+                let from_fqdn = task_fqdn(project_id, from_bare);
+                let to_fqdn = task_fqdn(project_id, to_bare);
+                all_output_ref_deps.push((from_fqdn, to_fqdn));
+            }
+        }
+    }
+
+    Ok(GlobalTasksResult {
+        tasks: Tasks { tasks: global },
+        current_project_id,
+        output_ref_deps: all_output_ref_deps,
+    })
+}
+
+/// Rewrite output ref placeholder strings in a task node from bare names to FQDNs.
+///
+/// Transforms `cuenv:ref:tmpdir:stdout` → `cuenv:ref:task:project_id:tmpdir:stdout`
+/// so that placeholders match the FQDN-keyed results map in the executor.
+fn rewrite_output_ref_placeholders(node: &mut TaskNode, project_id: &str) {
+    use cuenv_core::tasks::TaskOutputRef;
+
+    match node {
+        TaskNode::Task(task) => {
+            for arg in &mut task.args {
+                if let Some(output_ref) = TaskOutputRef::parse(arg) {
+                    let fqdn_ref = TaskOutputRef {
+                        task: task_fqdn(project_id, &output_ref.task),
+                        output: output_ref.output,
+                    };
+                    *arg = fqdn_ref.to_placeholder();
+                }
+            }
+            for env_val in task.env.values_mut() {
+                if let Some(s) = env_val.as_str()
+                    && let Some(output_ref) = TaskOutputRef::parse(s)
+                {
+                    let fqdn_ref = TaskOutputRef {
+                        task: task_fqdn(project_id, &output_ref.task),
+                        output: output_ref.output,
+                    };
+                    *env_val = serde_json::Value::String(fqdn_ref.to_placeholder());
+                }
+            }
+        }
+        TaskNode::Group(group) => {
+            for child in group.children.values_mut() {
+                rewrite_output_ref_placeholders(child, project_id);
+            }
+        }
+        TaskNode::Sequence(seq) => {
+            for step in seq.iter_mut() {
+                rewrite_output_ref_placeholders(step, project_id);
+            }
+        }
+    }
 }
