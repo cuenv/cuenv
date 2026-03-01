@@ -519,14 +519,6 @@ pub enum Commands {
         /// Print help.
         #[arg(long, action = clap::ArgAction::SetTrue, help = "Print help")]
         help: bool,
-        /// List tasks from all projects in the workspace (for IDE completions).
-        #[arg(
-            long = "all",
-            short = 'A',
-            help = "List tasks from all projects in the workspace (for IDE completions)",
-            default_value_t = false
-        )]
-        all: bool,
         /// Skip executing task dependencies (for CI orchestrators that handle deps externally).
         #[arg(
             long = "skip-dependencies",
@@ -1407,7 +1399,6 @@ impl Commands {
                 tui,
                 interactive,
                 help,
-                all,
                 skip_dependencies,
                 dry_run,
                 task_args,
@@ -1425,7 +1416,6 @@ impl Commands {
                 tui,
                 interactive,
                 help,
-                all,
                 skip_dependencies,
                 dry_run: dry_run.into(),
                 task_args,
@@ -2347,7 +2337,6 @@ mod tests {
             tui: false,
             interactive: false,
             help: false,
-            all: false,
             skip_dependencies: false,
             dry_run: false,
             task_args: vec![],

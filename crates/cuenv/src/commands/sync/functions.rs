@@ -690,7 +690,7 @@ pub async fn execute_sync_ci_workspace(
         let cwd = std::env::current_dir().map_err(|e| {
             cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
         })?;
-        let module = executor.get_module(&cwd)?;
+        let module = executor.discover_all_modules(&cwd)?;
         ProjectInfo::collect_from_module(&module)?
     };
 

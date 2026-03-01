@@ -1,6 +1,7 @@
 //! Module utilities for CUE evaluation and error conversion.
 
 use cuenv_core::ModuleEvaluation;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
 
@@ -45,16 +46,15 @@ pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
 /// This wrapper around `MutexGuard` ensures the inner `Option` is always `Some`
 /// by the time it's constructed, providing direct access to the module.
 pub struct ModuleGuard<'a> {
-    pub(super) guard: MutexGuard<'a, Option<ModuleEvaluation>>,
+    pub(super) guard: MutexGuard<'a, HashMap<PathBuf, ModuleEvaluation>>,
+    pub(super) key: PathBuf,
 }
 
 impl std::ops::Deref for ModuleGuard<'_> {
     type Target = ModuleEvaluation;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: ModuleGuard is only constructed after ensuring the Option is Some.
-        // This unwrap_or_else with unreachable! documents the invariant while avoiding expect().
-        self.guard.as_ref().unwrap_or_else(|| {
+        self.guard.get(&self.key).unwrap_or_else(|| {
             unreachable!("ModuleGuard invariant violated: module should be loaded")
         })
     }
