@@ -205,6 +205,43 @@ import "github.com/cuenv/cuenv/schema"
 	]
 }
 
+// #D2 provides the D2 diagram scripting language CLI from GitHub releases.
+//
+// Usage:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: d2: xTools.#D2 & {version: "0.7.1"}
+//	}
+#D2: schema.#Tool & {
+	version!: string
+	overrides: [
+		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
+			repo:      "terrastruct/d2"
+			tagPrefix: "v"
+			asset:     "d2-v{version}-darwin-arm64.tar.gz"
+			path:      "d2-v{version}-darwin-arm64/bin/d2"
+		}},
+		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "terrastruct/d2"
+			tagPrefix: "v"
+			asset:     "d2-v{version}-darwin-amd64.tar.gz"
+			path:      "d2-v{version}-darwin-amd64/bin/d2"
+		}},
+		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "terrastruct/d2"
+			tagPrefix: "v"
+			asset:     "d2-v{version}-linux-amd64.tar.gz"
+			path:      "d2-v{version}-linux-amd64/bin/d2"
+		}},
+		{os: "linux", arch: "arm64", source: schema.#GitHub & {
+			repo:      "terrastruct/d2"
+			tagPrefix: "v"
+			asset:     "d2-v{version}-linux-arm64.tar.gz"
+			path:      "d2-v{version}-linux-arm64/bin/d2"
+		}},
+	]
+}
+
 // #Go provides the Go toolchain from GitHub releases.
 // Includes gofmt for formatting Go files.
 //
