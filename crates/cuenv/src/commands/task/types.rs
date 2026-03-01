@@ -87,9 +87,6 @@ pub enum TaskSelection {
 
     /// Interactively pick a task to run
     Interactive,
-
-    /// Discover and list tasks from all projects in workspace
-    All,
 }
 
 /// Configuration for output formatting and capture.
@@ -214,27 +211,6 @@ impl<'a> TaskExecutionRequest<'a> {
             path: path.into(),
             package: package.into(),
             selection: TaskSelection::Interactive,
-            environment: None,
-            output: OutputConfig::default(),
-            execution_mode: ExecutionMode::default(),
-            backend: None,
-            skip_dependencies: false,
-            dry_run: DryRun::No,
-            executor,
-        }
-    }
-
-    /// Create a new request for listing all workspace tasks.
-    #[must_use]
-    pub fn all(
-        path: impl Into<String>,
-        package: impl Into<String>,
-        executor: &'a CommandExecutor,
-    ) -> Self {
-        Self {
-            path: path.into(),
-            package: package.into(),
-            selection: TaskSelection::All,
             environment: None,
             output: OutputConfig::default(),
             execution_mode: ExecutionMode::default(),
@@ -432,13 +408,6 @@ mod tests {
         let executor = create_test_executor();
         let req = TaskExecutionRequest::interactive("./", "cuenv", &executor);
         assert!(matches!(req.selection, TaskSelection::Interactive));
-    }
-
-    #[test]
-    fn test_request_all() {
-        let executor = create_test_executor();
-        let req = TaskExecutionRequest::all("./", "cuenv", &executor);
-        assert!(matches!(req.selection, TaskSelection::All));
     }
 
     #[test]

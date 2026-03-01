@@ -110,7 +110,7 @@ impl SyncProvider for LockSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let output = execute_lock_sync(path, package, options, executor).await?;
+        let output = execute_lock_sync(path, package, options, executor, false).await?;
         Ok(SyncResult::success(output))
     }
 
@@ -120,9 +120,7 @@ impl SyncProvider for LockSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        // For lock, workspace sync is the same as path sync at current dir
-        // since the lockfile is at module root and aggregates all projects
-        let output = execute_lock_sync(Path::new("."), package, options, executor).await?;
+        let output = execute_lock_sync(Path::new("."), package, options, executor, true).await?;
         Ok(SyncResult::success(output))
     }
 }
@@ -213,6 +211,7 @@ async fn execute_lock_sync(
     _package: &str,
     options: &SyncOptions,
     executor: &CommandExecutor,
+    workspace: bool,
 ) -> Result<String> {
     let check = options.mode == SyncMode::Check;
     // Collect all OCI artifacts and tools from projects
@@ -227,7 +226,11 @@ async fn execute_lock_sync(
         collected_flakes,
         github_config,
     ) = {
-        let module = executor.get_module(path)?;
+        let module = if workspace {
+            executor.discover_all_modules(path)?
+        } else {
+            executor.get_module(path)?
+        };
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
 

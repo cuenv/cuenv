@@ -77,7 +77,7 @@ impl SyncProvider for CodegenSyncProvider {
 
         // Collect project info before any async operations
         let project_paths: Vec<(std::path::PathBuf, String)> = {
-            let module = executor.get_module(&cwd)?;
+            let module = executor.discover_all_modules(&cwd)?;
             let mut paths = Vec::new();
             for instance in module.projects() {
                 if let Ok(manifest) = instance.deserialize::<Project>()

@@ -64,7 +64,7 @@ impl SyncProvider for GitHooksSyncProvider {
         };
 
         // Get all projects and collect pre-push hooks
-        let module = executor.get_module(&cwd)?;
+        let module = executor.discover_all_modules(&cwd)?;
         let mut all_pre_push_hooks = std::collections::HashMap::new();
 
         for instance in module.projects() {
