@@ -538,7 +538,7 @@ pub async fn execute_hooks(
                             "Evaluating source hook output for environment variables (success={})",
                             hook_result.success
                         );
-                        match evaluate_shell_environment(&hook_result.stdout).await {
+                        match evaluate_shell_environment(&hook_result.stdout, &state.environment_vars).await {
                             Ok(env_vars) => {
                                 let count = env_vars.len();
                                 debug!("Captured {} environment variables from source hook", count);
@@ -637,7 +637,7 @@ async fn is_shell_capable(shell: &str) -> bool {
 }
 
 /// Evaluate shell script and extract resulting environment variables
-async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String, String>> {
+async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<String, String>) -> Result<HashMap<String, String>> {
     const DELIMITER: &str = "__CUENV_ENV_START__";
 
     debug!(
@@ -673,6 +673,10 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     cmd_before.arg("env -0");
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
+    // Inject prior hooks' environment so the baseline reflects accumulated state
+    for (key, value) in prior_env {
+        cmd_before.env(key, value);
+    }
 
     let output_before = cmd_before
         .output()
@@ -724,6 +728,10 @@ async fn evaluate_shell_environment(shell_script: &str) -> Result<HashMap<String
     cmd.arg(script);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    // Inject prior hooks' environment so $PATH etc. expand correctly
+    for (key, value) in prior_env {
+        cmd.env(key, value);
+    }
 
     let output = cmd.output().await.map_err(|e| {
         Error::configuration(format!("Failed to evaluate shell environment: {}", e))
@@ -1622,7 +1630,7 @@ line2
 line3'
 ";
 
-        let result = evaluate_shell_environment(multiline_script).await;
+        let result = evaluate_shell_environment(multiline_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse multiline env vars");
 
         let env_vars = result.unwrap();
@@ -1646,7 +1654,7 @@ export CHINESE_VAR='中文测试'
 export JAPANESE_VAR='日本語テスト'
 ";
 
-        let result = evaluate_shell_environment(unicode_script).await;
+        let result = evaluate_shell_environment(unicode_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse unicode env vars");
 
         let env_vars = result.unwrap();
@@ -1666,7 +1674,7 @@ export PATH_VAR="/usr/local/bin:/usr/bin:/bin"
 export EQUALS_VAR="key=value=another"
 "#;
 
-        let result = evaluate_shell_environment(special_chars_script).await;
+        let result = evaluate_shell_environment(special_chars_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse special chars");
 
         let env_vars = result.unwrap();
@@ -1688,14 +1696,14 @@ export EMPTY_VAR=''
 export SPACE_VAR='   '
 ";
 
-        let result = evaluate_shell_environment(empty_script).await;
+        let result = evaluate_shell_environment(empty_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should handle empty/whitespace values");
 
         // Test very long value
         let long_value = "x".repeat(10000);
         let long_script = format!("export LONG_VAR='{}'", long_value);
 
-        let result = evaluate_shell_environment(&long_script).await;
+        let result = evaluate_shell_environment(&long_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should handle very long values");
 
         let env_vars = result.unwrap();
