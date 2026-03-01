@@ -49,6 +49,7 @@ use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
@@ -155,8 +156,6 @@ pub enum Command {
         interactive: bool,
         /// Whether to show help for the task.
         help: bool,
-        /// Whether to run all available tasks.
-        all: bool,
         /// Whether to skip running task dependencies.
         skip_dependencies: bool,
         /// Dry run mode: export DAG without executing.
@@ -357,8 +356,10 @@ pub enum Command {
 pub struct CommandExecutor {
     /// Channel sender for broadcasting events to UI renderers.
     event_sender: EventSender,
-    /// Lazy-loaded module evaluation, cached after first access.
-    module: Mutex<Option<ModuleEvaluation>>,
+    /// Path-local module evaluations keyed by canonical target directory.
+    local_modules: Mutex<HashMap<PathBuf, ModuleEvaluation>>,
+    /// Workspace-wide module evaluations keyed by canonical module root.
+    workspace_modules: Mutex<HashMap<PathBuf, ModuleEvaluation>>,
     /// The CUE package name to evaluate (typically "cuenv").
     package: String,
 }
@@ -366,10 +367,11 @@ pub struct CommandExecutor {
 impl CommandExecutor {
     /// Create a new executor with the specified event sender and package name.
     #[must_use]
-    pub const fn new(event_sender: EventSender, package: String) -> Self {
+    pub fn new(event_sender: EventSender, package: String) -> Self {
         Self {
             event_sender,
-            module: Mutex::new(None),
+            local_modules: Mutex::new(HashMap::new()),
+            workspace_modules: Mutex::new(HashMap::new()),
             package,
         }
     }
@@ -380,18 +382,13 @@ impl CommandExecutor {
         &self.package
     }
 
-    /// Get or load the module evaluation (cached after first call).
+    /// Get or load a path-local module evaluation (cached by target directory).
     ///
-    /// This method lazily loads the CUE module on first access and caches it
-    /// for subsequent calls. Commands that don't need CUE evaluation
-    /// (version, completions, etc.) never trigger this load.
-    ///
-    /// Uses filesystem discovery to find all env.cue files and evaluates each
-    /// directory individually with `recursive: false`. This avoids CUE's
-    /// `./...:package` pattern which hangs when directories contain mixed packages.
+    /// This evaluates only the requested directory (`target_dir`) with
+    /// `recursive: false` and does not scan sibling projects.
     ///
     /// # Arguments
-    /// * `path` - Directory to start searching for module root
+    /// * `path` - Directory to evaluate
     ///
     /// # Returns
     /// A `ModuleGuard` that provides direct access to the `ModuleEvaluation`
@@ -400,141 +397,253 @@ impl CommandExecutor {
     ///
     /// Returns an error if:
     /// - The module lock cannot be acquired (poisoned mutex)
+    /// - The path cannot be canonicalized
     /// - No CUE module root (cue.mod/) is found starting from the given path
-    /// - No instances could be evaluated (all directories failed)
+    /// - CUE evaluation fails for the target directory
     pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
-        let mut guard = self
-            .module
-            .lock()
-            .map_err(|_| cuenv_core::Error::configuration("Failed to acquire module lock"))?;
+        let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(path.to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
 
-        if guard.is_none() {
-            let module_root = env_file::find_cue_module_root(path).ok_or_else(|| {
-                cuenv_core::Error::configuration(format!(
-                    "No CUE module found (looking for cue.mod/) starting from: {}",
-                    path.display()
-                ))
-            })?;
+        let mut guard = self.local_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire local module cache lock")
+        })?;
 
-            // Discover all directories with env.cue files matching our package
-            let env_cue_dirs = env_file::discover_env_cue_directories(&module_root, &self.package);
-
-            if env_cue_dirs.is_empty() {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "No env.cue files with package '{}' found in module: {}",
-                    self.package,
-                    module_root.display()
-                )));
-            }
-
-            // Evaluate each directory individually (non-recursive), in parallel via rayon.
-            // Each evaluate_module call creates independent Go state (cuecontext.New(),
-            // load.Config, load.Instances) so there is no shared mutable state.
-            let package = &self.package;
-            let results: Vec<_> = env_cue_dirs
-                .par_iter()
-                .map(|dir| {
-                    let options = ModuleEvalOptions {
-                        recursive: false,
-                        with_references: true,
-                        target_dir: Some(dir.to_string_lossy().to_string()),
-                        ..Default::default()
-                    };
-                    let dir_rel_path = compute_relative_path(dir, &module_root);
-
-                    match cuengine::evaluate_module(&module_root, package, Some(&options)) {
-                        Ok(raw) => Ok((dir_rel_path, raw)),
-                        Err(e) => {
-                            tracing::warn!(
-                                dir = %dir.display(),
-                                error = %e,
-                                "Failed to evaluate env.cue - skipping directory"
-                            );
-                            Err((dir.clone(), e))
-                        }
-                    }
-                })
-                .collect();
-
-            // Merge results sequentially (fast, no FFI)
-            let mut all_instances = std::collections::HashMap::new();
-            let mut all_projects = Vec::new();
-            let mut all_meta = std::collections::HashMap::new();
-            let mut eval_errors = Vec::new();
-
-            for result in results {
-                match result {
-                    Ok((dir_rel_path, raw)) => {
-                        for (path_str, value) in raw.instances {
-                            let rel_path = if path_str == "." {
-                                dir_rel_path.clone()
-                            } else {
-                                path_str
-                            };
-                            all_instances.insert(rel_path.clone(), value);
-                        }
-
-                        for project_path in raw.projects {
-                            let rel_project_path = if project_path == "." {
-                                dir_rel_path.clone()
-                            } else {
-                                project_path
-                            };
-                            if !all_projects.contains(&rel_project_path) {
-                                all_projects.push(rel_project_path);
-                            }
-                        }
-
-                        for (meta_key, meta_value) in raw.meta {
-                            let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                            all_meta.insert(adjusted_key, meta_value);
-                        }
-                    }
-                    Err((dir, e)) => {
-                        eval_errors.push((dir, e));
-                    }
-                }
-            }
-
-            if all_instances.is_empty() {
-                let error_summary = format_eval_errors(&eval_errors);
-                return Err(cuenv_core::Error::configuration(format!(
-                    "No instances could be evaluated. All directories failed:\n{error_summary}"
-                )));
-            }
-
-            // Convert meta to reference map for dependsOn resolution
-            let references = if all_meta.is_empty() {
-                None
-            } else {
-                Some(
-                    all_meta
-                        .into_iter()
-                        .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                        .collect(),
-                )
-            };
-
-            *guard = Some(ModuleEvaluation::from_raw(
-                module_root,
-                all_instances,
-                all_projects,
-                references,
-            ));
+        if !guard.contains_key(&target_path) {
+            let module = self.evaluate_path_module(&target_path)?;
+            guard.insert(target_path.clone(), module);
         }
 
-        Ok(ModuleGuard { guard })
+        Ok(ModuleGuard {
+            guard,
+            key: target_path,
+        })
     }
 
-    /// Get the module root path if the module has been loaded.
+    /// Discover and load all modules in the current workspace (cached by module root).
     ///
-    /// Returns `None` if `get_module` hasn't been called yet.
+    /// This scans all matching `env.cue` files in the module and evaluates each
+    /// directory individually with `recursive: false`, then merges the results.
+    ///
+    /// Use this only for explicitly workspace-wide commands (for example `sync -A`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if module discovery/evaluation fails.
+    pub fn discover_all_modules(&self, path: &Path) -> Result<ModuleGuard<'_>> {
+        let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
+            source: e,
+            path: Some(path.to_path_buf().into_boxed_path()),
+            operation: "canonicalize path".to_string(),
+        })?;
+
+        let module_root = env_file::find_cue_module_root(&target_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE module found (looking for cue.mod/) starting from: {}",
+                target_path.display()
+            ))
+        })?;
+
+        let mut guard = self.workspace_modules.lock().map_err(|_| {
+            cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
+        })?;
+
+        if !guard.contains_key(&module_root) {
+            let module = self.evaluate_workspace_module(&module_root)?;
+            guard.insert(module_root.clone(), module);
+        }
+
+        Ok(ModuleGuard {
+            guard,
+            key: module_root,
+        })
+    }
+
+    fn evaluate_path_module(&self, target_path: &Path) -> Result<ModuleEvaluation> {
+        let module_root = env_file::find_cue_module_root(target_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE module found (looking for cue.mod/) starting from: {}",
+                target_path.display()
+            ))
+        })?;
+
+        let target_rel_path = compute_relative_path(target_path, &module_root);
+        let options = ModuleEvalOptions {
+            recursive: false,
+            with_references: true,
+            target_dir: Some(target_path.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+
+        let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
+            .map_err(convert_engine_error)?;
+
+        let mut instances = HashMap::new();
+        let mut projects = Vec::new();
+        let mut meta = HashMap::new();
+
+        for (path_str, value) in raw.instances {
+            let rel_path = if path_str == "." {
+                target_rel_path.clone()
+            } else {
+                path_str
+            };
+            instances.insert(rel_path, value);
+        }
+
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                target_rel_path.clone()
+            } else {
+                project_path
+            };
+            if !projects.contains(&rel_project_path) {
+                projects.push(rel_project_path);
+            }
+        }
+
+        for (meta_key, meta_value) in raw.meta {
+            let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
+            meta.insert(adjusted_key, meta_value);
+        }
+
+        let references = if meta.is_empty() {
+            None
+        } else {
+            Some(
+                meta.into_iter()
+                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
+                    .collect(),
+            )
+        };
+
+        Ok(ModuleEvaluation::from_raw(
+            module_root,
+            instances,
+            projects,
+            references,
+        ))
+    }
+
+    fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
+        let env_cue_dirs = env_file::discover_env_cue_directories(module_root, &self.package);
+
+        if env_cue_dirs.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No env.cue files with package '{}' found in module: {}",
+                self.package,
+                module_root.display()
+            )));
+        }
+
+        let package = &self.package;
+        let results: Vec<_> = env_cue_dirs
+            .par_iter()
+            .map(|dir| {
+                let options = ModuleEvalOptions {
+                    recursive: false,
+                    with_references: true,
+                    target_dir: Some(dir.to_string_lossy().to_string()),
+                    ..Default::default()
+                };
+                let dir_rel_path = compute_relative_path(dir, module_root);
+
+                match cuengine::evaluate_module(module_root, package, Some(&options)) {
+                    Ok(raw) => Ok((dir_rel_path, raw)),
+                    Err(e) => {
+                        tracing::warn!(
+                            dir = %dir.display(),
+                            error = %e,
+                            "Failed to evaluate env.cue - skipping directory"
+                        );
+                        Err((dir.clone(), e))
+                    }
+                }
+            })
+            .collect();
+
+        let mut all_instances = HashMap::new();
+        let mut all_projects = Vec::new();
+        let mut all_meta = HashMap::new();
+        let mut eval_errors = Vec::new();
+
+        for result in results {
+            match result {
+                Ok((dir_rel_path, raw)) => {
+                    for (path_str, value) in raw.instances {
+                        let rel_path = if path_str == "." {
+                            dir_rel_path.clone()
+                        } else {
+                            path_str
+                        };
+                        all_instances.insert(rel_path, value);
+                    }
+
+                    for project_path in raw.projects {
+                        let rel_project_path = if project_path == "." {
+                            dir_rel_path.clone()
+                        } else {
+                            project_path
+                        };
+                        if !all_projects.contains(&rel_project_path) {
+                            all_projects.push(rel_project_path);
+                        }
+                    }
+
+                    for (meta_key, meta_value) in raw.meta {
+                        let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
+                        all_meta.insert(adjusted_key, meta_value);
+                    }
+                }
+                Err((dir, e)) => eval_errors.push((dir, e)),
+            }
+        }
+
+        if all_instances.is_empty() {
+            let error_summary = format_eval_errors(&eval_errors);
+            return Err(cuenv_core::Error::configuration(format!(
+                "No instances could be evaluated. All directories failed:\n{error_summary}"
+            )));
+        }
+
+        let references = if all_meta.is_empty() {
+            None
+        } else {
+            Some(
+                all_meta
+                    .into_iter()
+                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
+                    .collect(),
+            )
+        };
+
+        Ok(ModuleEvaluation::from_raw(
+            module_root.to_path_buf(),
+            all_instances,
+            all_projects,
+            references,
+        ))
+    }
+
+    /// Get the module root path if at least one module has been loaded.
+    ///
+    /// Returns `None` if no module has been loaded yet.
     #[must_use]
     pub fn module_root(&self) -> Option<PathBuf> {
-        self.module
+        let local_root = self
+            .local_modules
             .lock()
             .ok()
-            .and_then(|guard| guard.as_ref().map(|m| m.root.clone()))
+            .and_then(|g| g.values().next().map(|m| m.root.clone()));
+        if local_root.is_some() {
+            return local_root;
+        }
+        self.workspace_modules
+            .lock()
+            .ok()
+            .and_then(|g| g.values().next().map(|m| m.root.clone()))
     }
 
     /// Compute the relative path from module root to target directory.
@@ -559,14 +668,29 @@ impl CommandExecutor {
     /// to determine if an instance conforms to `schema.#Project`.
     #[must_use]
     pub fn is_project(&self, path: &Path) -> bool {
-        self.module
+        let Ok(target_path) = path.canonicalize() else {
+            return false;
+        };
+
+        let check = |modules: &HashMap<PathBuf, ModuleEvaluation>| -> Option<bool> {
+            modules.values().find_map(|module| {
+                let rel_path = relative_path_from_root(&module.root, &target_path);
+                module
+                    .get(&rel_path)
+                    .map(|instance| instance.kind == InstanceKind::Project)
+            })
+        };
+
+        if let Ok(modules) = self.local_modules.lock()
+            && let Some(result) = check(&modules)
+        {
+            return result;
+        }
+
+        self.workspace_modules
             .lock()
             .ok()
-            .and_then(|guard| {
-                guard
-                    .as_ref()
-                    .and_then(|m| m.get(path).map(|i| i.kind == InstanceKind::Project))
-            })
+            .and_then(|modules| check(&modules))
             .unwrap_or(false)
     }
 
@@ -710,7 +834,6 @@ impl CommandExecutor {
                 tui,
                 interactive,
                 help,
-                all,
                 skip_dependencies,
                 dry_run,
                 task_args,
@@ -728,7 +851,6 @@ impl CommandExecutor {
                     tui,
                     interactive,
                     help,
-                    all,
                     skip_dependencies,
                     dry_run,
                     task_args,

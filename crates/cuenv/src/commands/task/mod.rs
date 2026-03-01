@@ -4,11 +4,8 @@ mod arguments;
 mod dag_export;
 mod discovery;
 pub mod list_builder;
-pub mod normalization;
 mod rendering;
-mod resolution;
 mod types;
-mod workspace;
 
 // Re-export types for the public API. Some types may not be used externally yet.
 #[allow(unused_imports)]
@@ -17,12 +14,7 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use arguments::{apply_args_to_task, resolve_task_args};
 use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, normalize_labels};
 use list_builder::prepare_task_index;
-use normalization::task_fqdn;
-use rendering::{
-    collect_workspace_tasks, format_task_detail, get_task_cli_help, render_task_tree,
-    render_workspace_task_list,
-};
-use workspace::build_global_tasks;
+use rendering::{format_task_detail, get_task_cli_help, render_task_tree};
 
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
@@ -31,7 +23,6 @@ use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_fai
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
 };
-use cuenv_task_discovery::TaskDiscovery;
 
 use super::env_file::find_cue_module_root;
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
@@ -83,14 +74,13 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
 #[allow(clippy::too_many_lines)]
 async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String> {
     // Extract derived values from the structured request
-    let (task_name, labels, task_args, interactive, all) = match &request.selection {
+    let (task_name, labels, task_args, interactive) = match &request.selection {
         TaskSelection::Named { name, args } => {
-            (Some(name.as_str()), &[][..], args.as_slice(), false, false)
+            (Some(name.as_str()), &[][..], args.as_slice(), false)
         }
-        TaskSelection::Labels(l) => (None, l.as_slice(), &[][..], false, false),
-        TaskSelection::List => (None, &[][..], &[][..], false, false),
-        TaskSelection::Interactive => (None, &[][..], &[][..], true, false),
-        TaskSelection::All => (None, &[][..], &[][..], false, true),
+        TaskSelection::Labels(l) => (None, l.as_slice(), &[][..], false),
+        TaskSelection::List => (None, &[][..], &[][..], false),
+        TaskSelection::Interactive => (None, &[][..], &[][..], true),
     };
 
     let path = &request.path;
@@ -139,53 +129,6 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     // Build a canonical index to support nested task paths (with auto-detected workspace tasks)
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
-
-    // Handle workspace-wide task listing for IDE completions
-    if all && task_name.is_none() && labels.is_empty() {
-        tracing::debug!("Listing workspace-wide tasks for IDE completions");
-
-        let Some(cue_mod_root) = cue_module_root.as_ref() else {
-            return Err(cuenv_core::Error::configuration(
-                "Cannot use --all outside of a CUE module (no cue.mod found)",
-            ));
-        };
-
-        let mut discovery = TaskDiscovery::new(cue_mod_root.clone());
-
-        // Use executor's cached module (single CUE evaluation per process)
-        tracing::debug!("Using cached module for workspace task discovery");
-        let module = executor.get_module(cue_mod_root)?;
-
-        // Iterate through all Project instances and add them directly
-        for instance in module.projects() {
-            match instance.deserialize::<Project>() {
-                Ok(project) => {
-                    let project_root = module.root.join(&instance.path);
-                    discovery.add_project(project_root, project);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %instance.path.display(),
-                        error = %e,
-                        "Failed to deserialize project - tasks will not be available"
-                    );
-                }
-            }
-        }
-
-        let workspace_tasks = collect_workspace_tasks(&discovery);
-
-        if format == "json" {
-            return serde_json::to_string(&workspace_tasks).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "Failed to serialize workspace tasks: {e}"
-                ))
-            });
-        }
-
-        // Human-readable format for workspace tasks
-        return Ok(render_workspace_task_list(&workspace_tasks));
-    }
 
     // Handle interactive mode: show picker and execute selected task
     if interactive && task_name.is_none() && labels.is_empty() {
@@ -277,7 +220,6 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         // Calculate current working directory relative to cue.mod root
         let project_root =
             std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-        let cue_module_root = find_cue_module_root(&project_root);
         let cwd_relative = cue_module_root.as_ref().and_then(|root| {
             project_root
                 .strip_prefix(root)
@@ -451,48 +393,11 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
         task_node = selected_task_node;
 
-        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
-        // This enables cross-project dependency graphs and proper cycle detection.
-        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
-        let (global_tasks, task_root_name) = if let Some(module_root) = &cue_module_root {
-            let (mut global, current_project_id) =
-                build_global_tasks(module_root, &project_root, &manifest, executor)?;
-
-            // If we interpolated args for the invoked task, patch that task node in the
-            // global registry so execution matches the CLI-resolved definition.
-            // (We avoid patching otherwise, because the global registry has normalized
-            // dependsOn entries to FQDNs.)
-            if !task_args.is_empty()
-                && let TaskNode::Task(ref t) = task_node
-            {
-                let fqdn = task_fqdn(&current_project_id, &display_task_name);
-                if let Some(TaskNode::Task(existing)) = global.tasks.get_mut(&fqdn) {
-                    existing.command.clone_from(&t.command);
-                    existing.args.clone_from(&t.args);
-                }
-            }
-
-            let root = task_fqdn(&current_project_id, &display_task_name);
-            (global, root)
-        } else {
-            (tasks, display_task_name.clone())
-        };
-
-        all_tasks = global_tasks;
-        task_graph_root_name = task_root_name;
+        all_tasks = tasks;
+        task_graph_root_name = display_task_name.clone();
     } else {
         // Execute tasks by label
-        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
-        let (mut tasks_in_scope, _current_project_id) = if let Some(module_root) = &cue_module_root
-        {
-            build_global_tasks(module_root, &project_root, &manifest, executor).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "Failed to discover tasks for label execution: {e}"
-                ))
-            })?
-        } else {
-            (local_tasks.clone(), String::new())
-        };
+        let mut tasks_in_scope = local_tasks.clone();
 
         let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
 
@@ -881,13 +786,8 @@ async fn execute_task_with_strategy(
             executor.execute_node(task_name, task_node, all_tasks).await
         }
         TaskNode::Task(_) => {
-            // IMPORTANT:
-            // The TaskNode passed here may be sourced from the *local* manifest
-            // (pre-global-normalization / pre-injection). In global mode, additional
-            // dependencies can be injected (e.g., workspace setup chains, TaskRef
-            // expansion) that won't be reflected in the task's `depends_on`.
-            //
-            // The task graph is built from `all_tasks` and is the authoritative view.
+            // The task graph is built from `all_tasks` and is the authoritative
+            // dependency view for execution.
             if task_graph.task_count() <= 1 {
                 executor.execute_node(task_name, task_node, all_tasks).await
             } else {
@@ -948,11 +848,9 @@ fn format_task_results(
 mod tests {
     use super::*;
     use crate::commands::CommandExecutor;
-    use cuenv_core::tasks::{TaskDependency, TaskNode};
-    use resolution::resolve_task_refs_in_node;
+    use cuenv_core::tasks::TaskNode;
     use tokio::sync::mpsc;
 
-    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -982,55 +880,6 @@ env: {
         } else {
             // FFI not available in test environment
         }
-    }
-
-    #[test]
-    fn test_resolve_task_ref_merges_dependencies() {
-        let tmp = TempDir::new().expect("write to string");
-        fs::write(tmp.path().join("env.cue"), "package test").expect("write to string");
-
-        let mut manifest = Project {
-            name: "proj".to_string(),
-            ..Default::default()
-        };
-
-        let referenced_task = Task {
-            command: "echo".into(),
-            depends_on: vec![
-                TaskDependency::from_name("dep-a"),
-                TaskDependency::from_name("dep-b"),
-            ],
-            ..Default::default()
-        };
-        manifest.tasks.insert(
-            "run".into(),
-            TaskNode::Task(Box::new(referenced_task.clone())),
-        );
-
-        let mut discovery = TaskDiscovery::new(tmp.path().to_path_buf());
-        discovery.add_project(tmp.path().to_path_buf(), manifest.clone());
-
-        let placeholder_task = Task {
-            task_ref: Some("#proj:run".into()),
-            depends_on: vec![TaskDependency::from_name("placeholder")],
-            ..Default::default()
-        };
-        let mut task_node = TaskNode::Task(Box::new(placeholder_task));
-
-        let project_id_by_name: HashMap<String, String> = HashMap::new();
-        resolve_task_refs_in_node(&mut task_node, &discovery, "proj", &project_id_by_name);
-
-        let TaskNode::Task(resolved) = task_node else {
-            panic!("expected single task");
-        };
-
-        assert_eq!(resolved.command, "echo");
-        let dep_names: Vec<&str> = resolved.depends_on.iter().map(|d| d.task_name()).collect();
-        assert_eq!(dep_names, vec!["dep-a", "dep-b", "task:proj:placeholder"]);
-        assert_eq!(
-            resolved.project_root,
-            Some(fs::canonicalize(tmp.path()).unwrap())
-        );
     }
 
     #[test]

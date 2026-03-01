@@ -6,10 +6,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 
-use cuenv_core::tasks::{TaskNode, WorkspaceTask};
-use cuenv_task_discovery::TaskDiscovery;
-
-use super::list_builder::prepare_task_index;
+use cuenv_core::tasks::TaskNode;
 
 /// Node in a hierarchical task tree for display purposes
 #[derive(Default)]
@@ -111,82 +108,6 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
             writeln!(output, "Type: Task Sequence (Sequential)").expect("write to string");
         }
     }
-    output
-}
-
-/// Collect all tasks from discovered projects into `WorkspaceTask` format
-pub fn collect_workspace_tasks(discovery: &TaskDiscovery) -> Vec<WorkspaceTask> {
-    let mut result = Vec::new();
-
-    for project in discovery.projects() {
-        let project_name = project.manifest.name.trim();
-        if project_name.is_empty() {
-            continue;
-        }
-
-        // Clone manifest for mutation during prepare_task_index
-        let mut manifest = project.manifest.clone();
-
-        // Build task index with auto-detected workspace tasks injected
-        // Best-effort: if injection fails, fall back to basic index
-        let task_index = prepare_task_index(&mut manifest, &project.project_root).or_else(|_| {
-            // Fall back to basic index without workspace injection
-            cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
-        });
-
-        if let Ok(index) = task_index {
-            for entry in index.list() {
-                // Get description from task node (only available for single tasks)
-                let description = entry.node.as_task().and_then(|t| {
-                    let desc = t.description();
-                    if desc.is_empty() {
-                        None
-                    } else {
-                        Some(desc.to_string())
-                    }
-                });
-
-                result.push(WorkspaceTask {
-                    project: project_name.to_string(),
-                    task: entry.name.clone(),
-                    task_ref: format!("#{}:{}", project_name, entry.name),
-                    description,
-                    is_group: entry.is_group,
-                });
-            }
-        }
-    }
-
-    result
-}
-
-/// Render workspace tasks in human-readable format
-pub fn render_workspace_task_list(tasks: &[WorkspaceTask]) -> String {
-    if tasks.is_empty() {
-        return "No tasks found in workspace".to_string();
-    }
-
-    let mut output = String::new();
-    let mut by_project: BTreeMap<&str, Vec<&WorkspaceTask>> = BTreeMap::new();
-
-    for task in tasks {
-        by_project.entry(&task.project).or_default().push(task);
-    }
-
-    for (project, project_tasks) in by_project {
-        writeln!(output, "\n{project}").expect("write to string");
-        writeln!(output, "{}", "─".repeat(project.len())).expect("write to string");
-
-        for task in project_tasks {
-            let desc = task
-                .description
-                .as_ref()
-                .map(|d| format!(" - {d}"))
-                .unwrap_or_default();
-            writeln!(output, "  {}{}", task.task_ref, desc).expect("write to string");
-        }
-    }
-
     output
 }
 

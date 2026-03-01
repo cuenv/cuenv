@@ -7,10 +7,26 @@
 use std::path::Path;
 
 use cuenv_core::Result;
+use cuenv_core::contributors::{
+    ContributorContext, ContributorEngine, builtin_workspace_contributors,
+};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
 
-use super::workspace::apply_workspace_contributors;
+/// Apply workspace contributors to inject setup tasks for detected package managers.
+fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
+    let context = ContributorContext::detect(project_root).with_task_commands(&manifest.tasks);
+    let contributors = builtin_workspace_contributors();
+    let engine = ContributorEngine::new(&contributors, context);
+
+    if let Err(error) = engine.apply(&mut manifest.tasks) {
+        tracing::warn!(
+            project_root = %project_root.display(),
+            error = %error,
+            "Failed to apply workspace contributors"
+        );
+    }
+}
 
 /// Prepare a task index with all contributor tasks injected.
 ///
