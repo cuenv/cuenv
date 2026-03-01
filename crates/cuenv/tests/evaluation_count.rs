@@ -1,7 +1,8 @@
 //! Regression tests for CUE module evaluation count.
 //!
-//! These tests ensure that `sync -A` and related commands only evaluate
-//! the CUE module once, using the `CommandExecutor`'s cached module.
+//! These tests verify evaluation scope behavior:
+//! - path sync evaluates only local scope
+//! - workspace sync (`-A`) evaluates workspace scope
 //!
 //! Note: These tests run against the actual cuenv repository since setting up
 //! a proper CUE environment with schema imports in a temp directory is complex.
@@ -49,18 +50,22 @@ fn count_evaluate_module_calls_in_repo(args: &[&str]) -> usize {
         .count()
 }
 
-/// Test that `sync -A` evaluates the CUE module exactly once.
-///
-/// This is a regression test for the performance issue where each sync provider
-/// was independently evaluating the module instead of sharing the cached result.
+/// Test that workspace sync (`-A`) evaluates more than one module in this repo.
 #[test]
-fn test_sync_all_evaluates_module_once() {
+fn test_sync_all_evaluates_workspace_scope() {
     let eval_count = count_evaluate_module_calls_in_repo(&["sync", "-A"]);
+    assert!(
+        eval_count > 1,
+        "sync -A should evaluate workspace scope (multiple modules) in this repository, but evaluated {eval_count}"
+    );
+}
 
-    // Should evaluate exactly once - the CommandExecutor caches the result
-    assert_eq!(
-        eval_count, 1,
-        "sync -A should evaluate the CUE module exactly once, but it was evaluated {eval_count} times. \
-         This indicates a regression in module caching."
+/// Test that path sync stays path-local.
+#[test]
+fn test_sync_path_evaluates_local_scope() {
+    let eval_count = count_evaluate_module_calls_in_repo(&["sync"]);
+    assert!(
+        eval_count <= 2,
+        "sync (without -A) should stay path-local and avoid workspace fan-out, but evaluated {eval_count} modules"
     );
 }

@@ -401,8 +401,6 @@ pub struct TaskHandler {
     pub interactive: bool,
     /// Whether to show help for the specified task.
     pub help: bool,
-    /// Whether to run all tasks.
-    pub all: bool,
     /// Whether to skip task dependencies.
     pub skip_dependencies: bool,
     /// Dry run mode: export DAG without executing.
@@ -431,24 +429,21 @@ impl CommandHandler for TaskHandler {
         }
 
         // Build request using the builder pattern
-        let mut request = match (&self.name, &self.labels, self.interactive, self.all) {
-            (Some(name), _, _, _) => {
+        let mut request = match (&self.name, &self.labels, self.interactive) {
+            (Some(name), _, _) => {
                 task::TaskExecutionRequest::named(&self.path, &self.package, name, executor)
                     .with_args(self.task_args.clone())
             }
-            (None, labels, _, _) if !labels.is_empty() => task::TaskExecutionRequest::labels(
+            (None, labels, _) if !labels.is_empty() => task::TaskExecutionRequest::labels(
                 &self.path,
                 &self.package,
                 labels.clone(),
                 executor,
             ),
-            (None, _, true, _) => {
+            (None, _, true) => {
                 task::TaskExecutionRequest::interactive(&self.path, &self.package, executor)
             }
-            (None, _, _, true) => {
-                task::TaskExecutionRequest::all(&self.path, &self.package, executor)
-            }
-            (None, _, _, _) => {
+            (None, _, _) => {
                 task::TaskExecutionRequest::list(&self.path, &self.package, executor)
             }
         };
