@@ -539,14 +539,16 @@ pub async fn execute_hooks(
                             hook_result.success
                         );
                         match evaluate_shell_environment(&hook_result.stdout, &state.environment_vars).await {
-                            Ok(env_vars) => {
+                            Ok((env_vars, removed_keys)) => {
                                 let count = env_vars.len();
-                                debug!("Captured {} environment variables from source hook", count);
-                                if count > 0 {
-                                    // Merge captured environment variables into state
-                                    for (key, value) in env_vars {
-                                        state.environment_vars.insert(key, value);
-                                    }
+                                debug!("Captured {} environment variables from source hook ({} removed)", count, removed_keys.len());
+                                // Merge captured environment variables into state
+                                for (key, value) in env_vars {
+                                    state.environment_vars.insert(key, value);
+                                }
+                                // Remove variables that were unset by the hook
+                                for key in &removed_keys {
+                                    state.environment_vars.remove(key);
                                 }
                             }
                             Err(e) => {
@@ -637,7 +639,7 @@ async fn is_shell_capable(shell: &str) -> bool {
 }
 
 /// Evaluate shell script and extract resulting environment variables
-async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<String, String>) -> Result<HashMap<String, String>> {
+async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<String, String>) -> Result<(HashMap<String, String>, Vec<String>)> {
     const DELIMITER: &str = "__CUENV_ENV_START__";
 
     debug!(
@@ -670,7 +672,7 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
     // First, get the environment before running the script
     let mut cmd_before = Command::new(&shell);
     cmd_before.arg("-c");
-    cmd_before.arg("env -0");
+    cmd_before.arg("/usr/bin/env -0");
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
     // Inject prior hooks' environment so the baseline reflects accumulated state
@@ -722,7 +724,7 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
     cmd.arg("-c");
 
     let script = format!(
-        "{}\necho -ne '\\0{}\\0'; env -0",
+        "{}\necho -ne '\\0{}\\0'; /usr/bin/env -0",
         filtered_script, DELIMITER
     );
     cmd.arg(script);
@@ -778,6 +780,18 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
 
     let env_output = String::from_utf8_lossy(env_output_bytes);
     let mut env_delta = HashMap::new();
+    let mut post_env_keys = std::collections::HashSet::new();
+
+    let is_skip_key = |key: &str| -> bool {
+        key.starts_with("BASH_FUNC_")
+            || key == "PS1"
+            || key == "PS2"
+            || key == "_"
+            || key == "PWD"
+            || key == "OLDPWD"
+            || key == "SHLVL"
+            || key.starts_with("BASH")
+    };
 
     for line in env_output.split('\0') {
         if line.is_empty() {
@@ -785,17 +799,12 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
         }
 
         if let Some((key, value)) = line.split_once('=') {
-            // Skip some problematic variables that can interfere
-            if key.starts_with("BASH_FUNC_")
-                || key == "PS1"
-                || key == "PS2"
-                || key == "_"
-                || key == "PWD"
-                || key == "OLDPWD"
-                || key == "SHLVL"
-                || key.starts_with("BASH")
-            {
+            if is_skip_key(key) {
                 continue;
+            }
+
+            if !key.is_empty() {
+                post_env_keys.insert(key.to_string());
             }
 
             // Only include variables that are new or changed
@@ -806,7 +815,14 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
         }
     }
 
-    if env_delta.is_empty() && !output.status.success() {
+    // Detect variables that were present in prior_env but removed by this hook
+    let removed_keys: Vec<String> = prior_env
+        .keys()
+        .filter(|key| !is_skip_key(key) && !post_env_keys.contains(key.as_str()))
+        .cloned()
+        .collect();
+
+    if env_delta.is_empty() && removed_keys.is_empty() && !output.status.success() {
         // If we failed AND got no variables, that's a real problem.
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(Error::configuration(format!(
@@ -816,10 +832,11 @@ async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<Stri
     }
 
     debug!(
-        "Evaluated shell script and extracted {} new/changed environment variables",
-        env_delta.len()
+        "Evaluated shell script and extracted {} new/changed environment variables ({} removed)",
+        env_delta.len(),
+        removed_keys.len()
     );
-    Ok(env_delta)
+    Ok((env_delta, removed_keys))
 }
 
 /// Execute a single hook with timeout
@@ -1633,7 +1650,7 @@ line3'
         let result = evaluate_shell_environment(multiline_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse multiline env vars");
 
-        let env_vars = result.unwrap();
+        let (env_vars, _removed) = result.unwrap();
         if let Some(value) = env_vars.get("MULTILINE_VAR") {
             assert!(
                 value.contains("line1"),
@@ -1657,7 +1674,7 @@ export JAPANESE_VAR='日本語テスト'
         let result = evaluate_shell_environment(unicode_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse unicode env vars");
 
-        let env_vars = result.unwrap();
+        let (env_vars, _removed) = result.unwrap();
         if let Some(value) = env_vars.get("UNICODE_VAR") {
             assert!(
                 value.contains("世界"),
@@ -1677,7 +1694,7 @@ export EQUALS_VAR="key=value=another"
         let result = evaluate_shell_environment(special_chars_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should parse special chars");
 
-        let env_vars = result.unwrap();
+        let (env_vars, _removed) = result.unwrap();
         if let Some(value) = env_vars.get("EQUALS_VAR") {
             assert!(
                 value.contains("key=value=another"),
@@ -1698,6 +1715,7 @@ export SPACE_VAR='   '
 
         let result = evaluate_shell_environment(empty_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should handle empty/whitespace values");
+        let (_env_vars, _removed) = result.unwrap();
 
         // Test very long value
         let long_value = "x".repeat(10000);
@@ -1706,10 +1724,60 @@ export SPACE_VAR='   '
         let result = evaluate_shell_environment(&long_script, &HashMap::new()).await;
         assert!(result.is_ok(), "Should handle very long values");
 
-        let env_vars = result.unwrap();
+        let (env_vars, _removed) = result.unwrap();
         if let Some(value) = env_vars.get("LONG_VAR") {
             assert_eq!(value.len(), 10000, "Should preserve full length");
         }
+    }
+
+    /// Test that prior_env is passed through to child shells and that unset propagation works
+    #[tokio::test]
+    async fn test_environment_prior_env_chaining() {
+        // Test 1: prior_env variables are visible and can be extended
+        let mut prior_env = HashMap::new();
+        prior_env.insert(
+            "CUENV_TEST_PRIOR".to_string(),
+            "original_value".to_string(),
+        );
+
+        let script = r#"export CUENV_TEST_PRIOR="extended_${CUENV_TEST_PRIOR}""#;
+        let result = evaluate_shell_environment(script, &prior_env).await;
+        assert!(result.is_ok(), "Should evaluate with prior_env: {:?}", result.as_ref().err());
+
+        let (env_vars, _removed) = result.unwrap();
+        if let Some(value) = env_vars.get("CUENV_TEST_PRIOR") {
+            assert!(
+                value.contains("extended_"),
+                "Value should contain extended_ prefix: {}",
+                value
+            );
+            assert!(
+                value.contains("original_value"),
+                "Value should contain original_value from prior_env: {}",
+                value
+            );
+        } else {
+            panic!("CUENV_TEST_PRIOR should be in env_vars delta since it was modified");
+        }
+
+        // Test 2: unsetting a prior_env variable is reported in removed_keys
+        let mut prior_env = HashMap::new();
+        prior_env.insert("CUENV_TEST_REMOVE".to_string(), "bar".to_string());
+
+        let script = "unset CUENV_TEST_REMOVE";
+        let result = evaluate_shell_environment(script, &prior_env).await;
+        assert!(result.is_ok(), "Should evaluate unset script");
+
+        let (env_vars, removed) = result.unwrap();
+        assert!(
+            !env_vars.contains_key("CUENV_TEST_REMOVE"),
+            "Unset variable should not appear in env_vars"
+        );
+        assert!(
+            removed.contains(&"CUENV_TEST_REMOVE".to_string()),
+            "Unset variable should appear in removed_keys: {:?}",
+            removed
+        );
     }
 
     /// Test that hooks with different working directories are isolated
