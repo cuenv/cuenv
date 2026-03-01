@@ -35,14 +35,43 @@ impl SyncProvider for GitHooksSyncProvider {
 
     async fn sync_path(
         &self,
-        _path: &Path,
-        package: &str,
+        path: &Path,
+        _package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        // Git hooks always aggregate from all projects (like CODEOWNERS)
-        // since there's only one .git/hooks/pre-push per repo
-        self.sync_workspace(package, options, executor).await
+        let Ok(git_root) = find_git_root(path) else {
+            return Ok(SyncResult::success(
+                "Not in a git repository. Skipping git hooks sync.",
+            ));
+        };
+
+        // Get path-local module and collect pre-push hooks
+        let module = executor.get_module(path)?;
+        let mut all_pre_push_hooks = std::collections::HashMap::new();
+
+        for instance in module.projects() {
+            if let Ok(project) = instance.deserialize::<cuenv_core::manifest::Project>() {
+                let hooks = project.pre_push_hooks_map();
+                for (name, hook) in hooks {
+                    let hook_name = format_hook_name(&instance.path, &project.name, name);
+                    all_pre_push_hooks.insert(hook_name, hook);
+                }
+            }
+        }
+
+        if all_pre_push_hooks.is_empty() {
+            return Ok(SyncResult::success(
+                "No pre-push hooks configured in this project.",
+            ));
+        }
+
+        let dry_run = options.mode == SyncMode::DryRun;
+        let check = options.mode == SyncMode::Check;
+
+        let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
+
+        Ok(SyncResult::success(output))
     }
 
     async fn sync_workspace(
@@ -63,7 +92,7 @@ impl SyncProvider for GitHooksSyncProvider {
             ));
         };
 
-        // Get all projects and collect pre-push hooks
+        // Get all projects across the workspace and collect pre-push hooks
         let module = executor.discover_all_modules(&cwd)?;
         let mut all_pre_push_hooks = std::collections::HashMap::new();
 
@@ -72,13 +101,7 @@ impl SyncProvider for GitHooksSyncProvider {
                 let hooks = project.pre_push_hooks_map();
                 for (name, hook) in hooks {
                     // Prefix with project name if not at root
-                    let hook_name = if instance.path.as_os_str().is_empty()
-                        || instance.path == std::path::Path::new(".")
-                    {
-                        name
-                    } else {
-                        format!("{}:{}", project.name, name)
-                    };
+                    let hook_name = format_hook_name(&instance.path, &project.name, name);
                     all_pre_push_hooks.insert(hook_name, hook);
                 }
             }
@@ -96,6 +119,15 @@ impl SyncProvider for GitHooksSyncProvider {
         let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
 
         Ok(SyncResult::success(output))
+    }
+}
+
+/// Format a hook name, prefixing with project name when the instance is not at the module root.
+fn format_hook_name(instance_path: &std::path::Path, project_name: &str, name: String) -> String {
+    if instance_path.as_os_str().is_empty() || instance_path == std::path::Path::new(".") {
+        name
+    } else {
+        format!("{project_name}:{name}")
     }
 }
 
