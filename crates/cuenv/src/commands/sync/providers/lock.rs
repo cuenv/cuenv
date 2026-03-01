@@ -197,8 +197,10 @@ fn tool_identity_key(name: &str, version: &str, source: Option<&SourceConfig>) -
 
 /// Execute lock synchronization for a path.
 ///
-/// Scans all projects in the CUE module, collects OCI image references,
-/// resolves them to digests, and writes `cuenv.lock`.
+/// When `workspace` is `true`, scans all projects in the CUE module via
+/// `discover_all_modules`, collecting OCI image references and tools from
+/// every sub-project. When `workspace` is `false`, evaluates only the target
+/// directory via `get_module` (path-local scope).
 ///
 /// For Tools runtime, uses ToolProvider to resolve each tool from
 /// GitHub releases or Nix packages.

@@ -43,8 +43,9 @@ pub fn relative_path_from_root(module_root: &Path, target: &Path) -> PathBuf {
 
 /// A guard that provides access to the loaded `ModuleEvaluation`.
 ///
-/// This wrapper around `MutexGuard` ensures the inner `Option` is always `Some`
-/// by the time it's constructed, providing direct access to the module.
+/// This wrapper around `MutexGuard` holds a `HashMap<PathBuf, ModuleEvaluation>`
+/// and a lookup key. The keyed entry is guaranteed to exist in the map while
+/// the guard is held.
 pub struct ModuleGuard<'a> {
     pub(super) guard: MutexGuard<'a, HashMap<PathBuf, ModuleEvaluation>>,
     pub(super) key: PathBuf,
