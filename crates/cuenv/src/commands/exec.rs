@@ -8,11 +8,13 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
+use super::sync::{SyncMode, SyncOptions, default_registry};
 use super::tools::{ensure_tools_downloaded, get_tool_paths};
 use super::{CommandExecutor, relative_path_from_root};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
-use cuenv_core::manifest::{Base, Project};
+use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
+use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 use cuenv_core::tasks::execute_command_with_redaction;
 use std::path::Path;
 
@@ -235,6 +237,12 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         secrets_for_redaction.push(token);
     }
 
+    // Ensure lockfile is up to date for tools declared in the current project.
+    // This keeps `cuenv exec` self-healing when runtime tool definitions change.
+    if let Some(project) = project_for_hooks {
+        ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor).await?;
+    }
+
     // Download and activate tools from lockfile by prepending to PATH and library path.
     // This happens automatically without requiring hook approval since tool
     // activation is a controlled, safe operation (just adds paths to the environment).
@@ -314,6 +322,99 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
     .await?;
 
     Ok(exit_code)
+}
+
+/// Synchronize the lockfile when runtime tools for the current project are missing or stale.
+async fn ensure_lockfile_for_runtime_tools(
+    project_path: &Path,
+    package: &str,
+    project: &Project,
+    executor: &CommandExecutor,
+) -> Result<()> {
+    if !lockfile_needs_runtime_tool_sync(project_path, project)? {
+        return Ok(());
+    }
+
+    tracing::info!(
+        project = %project_path.display(),
+        "Lockfile missing/stale runtime tools; running sync lock"
+    );
+
+    let options = SyncOptions {
+        mode: SyncMode::Write,
+        show_diff: false,
+        ci_provider: None,
+        update_tools: None,
+    };
+    let registry = default_registry();
+    registry
+        .sync_provider("lock", project_path, package, &options, false, executor)
+        .await
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to sync lockfile: {e}")))?;
+
+    Ok(())
+}
+
+/// Check whether lockfile entries required by this project's runtime tools are missing or stale.
+fn lockfile_needs_runtime_tool_sync(project_path: &Path, project: &Project) -> Result<bool> {
+    let Some(Runtime::Tools(tools_runtime)) = &project.runtime else {
+        return Ok(false);
+    };
+    if tools_runtime.tools.is_empty() {
+        return Ok(false);
+    }
+
+    let Some(lockfile_path) = find_lockfile(project_path) else {
+        return Ok(true);
+    };
+
+    let lockfile = Lockfile::load(&lockfile_path)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to load lockfile: {e}")))?;
+    let Some(lockfile) = lockfile else {
+        return Ok(true);
+    };
+
+    let platform_str = cuenv_core::tools::Platform::current().to_string();
+    for (tool_name, spec) in &tools_runtime.tools {
+        let required_version = match spec {
+            ToolSpec::Version(v) => v.as_str(),
+            ToolSpec::Full(config) => config.version.as_str(),
+        };
+
+        let Some(locked_tool) = lockfile.find_tool(tool_name) else {
+            return Ok(true);
+        };
+        if !versions_match(required_version, &locked_tool.version) {
+            return Ok(true);
+        }
+        if !locked_tool.platforms.contains_key(&platform_str) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+/// Compare tool versions while tolerating optional `v` prefixes.
+fn versions_match(required: &str, locked: &str) -> bool {
+    required == locked || required.trim_start_matches('v') == locked.trim_start_matches('v')
+}
+
+/// Find `cuenv.lock` from the current directory up to ancestors.
+fn find_lockfile(start_dir: &Path) -> Option<std::path::PathBuf> {
+    let mut current = start_dir
+        .canonicalize()
+        .unwrap_or_else(|_| start_dir.to_path_buf());
+
+    loop {
+        let candidate = current.join(LOCKFILE_NAME);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
 }
 
 #[cfg(test)]
