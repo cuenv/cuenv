@@ -42,8 +42,9 @@ impl TaskOutputRef {
     #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let rest = s.strip_prefix(OUTPUT_REF_PREFIX)?;
-        // Find the last ':' to split task name from output field.
-        // Task names can contain dots and brackets but not colons.
+        // After FQDN rewriting, task names can include colons
+        // (`task:project_id:task_name`). Split on the last ':' so
+        // we preserve the full task FQDN and only isolate the output field.
         let last_colon = rest.rfind(':')?;
         let task = &rest[..last_colon];
         let output_str = &rest[last_colon + 1..];
@@ -119,11 +120,9 @@ fn process_task_node(
                 // Process args array
                 if let Some(serde_json::Value::Array(args)) = obj.get_mut("args") {
                     for arg in args.iter_mut() {
-                        if let Some(placeholder) = try_extract_output_ref(arg) {
-                            if let Some(parsed) = TaskOutputRef::parse(&placeholder) {
-                                deps.push((current_task.to_string(), parsed.task.clone()));
-                            }
-                            *arg = serde_json::Value::String(placeholder);
+                        if let Some(output_ref) = try_extract_output_ref(arg) {
+                            deps.push((current_task.to_string(), output_ref.task.clone()));
+                            *arg = serde_json::Value::String(output_ref.to_placeholder());
                         }
                     }
                 }
@@ -131,11 +130,9 @@ fn process_task_node(
                 // Process env map
                 if let Some(serde_json::Value::Object(env)) = obj.get_mut("env") {
                     for env_val in env.values_mut() {
-                        if let Some(placeholder) = try_extract_output_ref(env_val) {
-                            if let Some(parsed) = TaskOutputRef::parse(&placeholder) {
-                                deps.push((current_task.to_string(), parsed.task.clone()));
-                            }
-                            *env_val = serde_json::Value::String(placeholder);
+                        if let Some(output_ref) = try_extract_output_ref(env_val) {
+                            deps.push((current_task.to_string(), output_ref.task.clone()));
+                            *env_val = serde_json::Value::String(output_ref.to_placeholder());
                         }
                     }
                 }
@@ -200,8 +197,8 @@ fn process_task_node(
 }
 
 /// Try to extract a `#TaskOutputRef` from a JSON value.
-/// Returns the placeholder string if the value is a ref object, None otherwise.
-fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
+/// Returns a parsed reference if the value is a ref object, None otherwise.
+fn try_extract_output_ref(value: &serde_json::Value) -> Option<TaskOutputRef> {
     let obj = value.as_object()?;
 
     // Check discriminator field
@@ -224,11 +221,10 @@ fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
         _ => return None,
     };
 
-    let r = TaskOutputRef {
+    Some(TaskOutputRef {
         task: task.to_string(),
         output: output_field,
-    };
-    Some(r.to_placeholder())
+    })
 }
 
 /// Context for resolving task output reference placeholders at runtime.
