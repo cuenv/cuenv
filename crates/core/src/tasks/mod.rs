@@ -14,6 +14,7 @@ pub mod executor;
 pub mod graph;
 pub mod index;
 pub mod io;
+pub mod output_refs;
 pub mod process_registry;
 
 // Re-export executor and graph modules
@@ -24,6 +25,7 @@ pub use backend::{
 pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
+pub use output_refs::{OutputRefResolver, TaskOutputField, TaskOutputRef, process_output_refs};
 pub use process_registry::global_registry;
 
 use serde::{Deserialize, Serialize};

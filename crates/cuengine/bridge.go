@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -756,6 +757,10 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			continue
 		}
 
+		// Inject _name into all tasks so that computed output ref fields
+		// (stdout, stderr, exitCode) resolve to concrete values.
+		v = injectTaskNames(v, ctx)
+
 		// Check if this is a Project (has required "name" field) vs Base (no name)
 		isProject := false
 		nameField := v.LookupPath(cue.ParsePath("name"))
@@ -885,6 +890,156 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 
 	result = createSuccessResponse(string(resultBytes))
 	return result
+}
+
+// injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
+// _name field on every #Task node. This causes computed fields like stdout,
+// stderr, and exitCode (which reference _name) to resolve to concrete values.
+//
+// The function handles:
+//   - Named tasks:     tasks.build       -> _name = "build"
+//   - Group children:  tasks.check.lint  -> _name = "check.lint"
+//   - Sequence items:  tasks.pipeline[0] -> _name = "pipeline[0]"
+func injectTaskNames(v cue.Value, ctx *cue.Context) cue.Value {
+	tasksVal := v.LookupPath(cue.ParsePath("tasks"))
+	if !tasksVal.Exists() || tasksVal.Err() != nil {
+		return v
+	}
+
+	return injectTaskNamesRecursive(v, tasksVal, "", ctx)
+}
+
+// injectTaskNamesRecursive walks task nodes and fills _name at each level.
+func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string, ctx *cue.Context) cue.Value {
+	switch node.Kind() {
+	case cue.StructKind:
+		// Check if this struct looks like a Task (has "command" or "script" field)
+		if isTaskShaped(node) {
+			root = fillTaskName(root, prefix, ctx)
+			return root
+		}
+
+		// Check if this is a TaskGroup (has type: "group")
+		typeField := node.LookupPath(cue.ParsePath("type"))
+		if typeField.Exists() && typeField.Err() == nil {
+			if s, err := typeField.String(); err == nil && s == "group" {
+				// Walk group children (skip known group fields)
+				iter, _ := node.Fields(cue.Definitions(false))
+				for iter.Next() {
+					label := iter.Label()
+					if label == "type" || label == "dependsOn" || label == "maxConcurrency" || label == "description" {
+						continue
+					}
+					childPrefix := label
+					if prefix != "" {
+						childPrefix = prefix + "." + label
+					}
+					root = injectTaskNamesRecursive(root, iter.Value(), childPrefix, ctx)
+				}
+				return root
+			}
+		}
+
+		// Otherwise treat as a struct with named task children
+		iter, _ := node.Fields(cue.Definitions(false))
+		for iter.Next() {
+			label := iter.Label()
+			childPrefix := label
+			if prefix != "" {
+				childPrefix = prefix + "." + label
+			}
+			root = injectTaskNamesRecursive(root, iter.Value(), childPrefix, ctx)
+		}
+
+	case cue.ListKind:
+		// Sequence: walk each element
+		list, _ := node.List()
+		for i := 0; list.Next(); i++ {
+			childPrefix := fmt.Sprintf("%s[%d]", prefix, i)
+			root = injectTaskNamesRecursive(root, list.Value(), childPrefix, ctx)
+		}
+	}
+
+	return root
+}
+
+// isTaskShaped returns true if the CUE value looks like a #Task
+// (has a "command" or "script" field).
+func isTaskShaped(v cue.Value) bool {
+	cmd := v.LookupPath(cue.ParsePath("command"))
+	if cmd.Exists() && cmd.Err() == nil {
+		return true
+	}
+	scr := v.LookupPath(cue.ParsePath("script"))
+	return scr.Exists() && scr.Err() == nil
+}
+
+// fillTaskName fills the _name hidden field on a task at the given path.
+func fillTaskName(root cue.Value, taskName string, ctx *cue.Context) cue.Value {
+	if taskName == "" {
+		return root
+	}
+	// Build the path with selectors so sequence syntax like pipeline[0] works.
+	namePath := makeTaskPath(taskName)
+	namePath = appendHiddenField(namePath)
+
+	return root.FillPath(namePath, taskName)
+}
+
+// makeTaskPath converts a task name like "build", "group.child", or
+// "pipeline[0].step" into a CUE path rooted at tasks.
+func makeTaskPath(taskName string) cue.Path {
+	sels := []cue.Selector{cue.Str("tasks")}
+	for _, segment := range strings.Split(taskName, ".") {
+		if segment == "" {
+			continue
+		}
+
+		for {
+			bracket := strings.IndexByte(segment, '[')
+			if bracket == -1 {
+				sels = append(sels, cue.Str(segment))
+				break
+			}
+
+			if bracket > 0 {
+				sels = append(sels, cue.Str(segment[:bracket]))
+			}
+
+			closeBracket := strings.IndexByte(segment[bracket:], ']')
+			if closeBracket <= 1 {
+				sels = append(sels, cue.Str(segment[bracket:]))
+				break
+			}
+
+			indexStr := segment[bracket+1 : bracket+closeBracket]
+			idx, err := strconv.Atoi(indexStr)
+			if err != nil {
+				sels = append(sels, cue.Str(segment[bracket:bracket+closeBracket+1]))
+			} else {
+				sels = append(sels, cue.Index(idx))
+			}
+
+			segment = segment[bracket+closeBracket+1:]
+			if segment == "" {
+				break
+			}
+		}
+	}
+
+	return cue.MakePath(sels...)
+}
+
+// schemaPackagePath is the CUE import path for the schema package.
+// Hidden fields (_name) are scoped to their defining package, so FillPath
+// needs the full package path to target them.
+const schemaPackagePath = "github.com/cuenv/cuenv/schema"
+
+// appendHiddenField appends the hidden _name selector to a CUE path.
+func appendHiddenField(base cue.Path) cue.Path {
+	sels := base.Selectors()
+	sels = append(sels, cue.Hid("_name", schemaPackagePath))
+	return cue.MakePath(sels...)
 }
 
 func main() {}

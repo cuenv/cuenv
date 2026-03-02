@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"unsafe"
+
+	"cuelang.org/go/cue/cuecontext"
 )
 
 /*
@@ -589,5 +591,109 @@ tasks: {
 				}
 			}
 		}
+	}
+}
+
+func TestMakeTaskPath_Selectors(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskName string
+		wantPath string
+	}{
+		{name: "named task", taskName: "build", wantPath: "tasks.build"},
+		{name: "group child", taskName: "check.lint", wantPath: "tasks.check.lint"},
+		{name: "sequence item", taskName: "pipeline[0]", wantPath: "tasks.pipeline[0]"},
+		{name: "nested sequence", taskName: "group.pipeline[1].step", wantPath: "tasks.group.pipeline[1].step"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := makeTaskPath(tt.taskName)
+			if got := path.String(); got != tt.wantPath {
+				t.Fatalf("makeTaskPath(%q) = %q, want %q", tt.taskName, got, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestFillTaskName_SetsHiddenName(t *testing.T) {
+	ctx := cuecontext.New()
+	root := ctx.CompileString(`
+		package cuenv
+		tasks: {
+			build: { command: "echo" }
+			check: {
+				lint: { command: "echo" }
+			}
+			pipeline: [
+				{ command: "echo" },
+			]
+		}
+	`)
+
+	for _, taskName := range []string{"build", "check.lint", "pipeline[0]"} {
+		root = fillTaskName(root, taskName, ctx)
+		path := appendHiddenField(makeTaskPath(taskName))
+		nameVal := root.LookupPath(path)
+		if !nameVal.Exists() || nameVal.Err() != nil {
+			t.Fatalf("hidden _name missing for %q: %v", taskName, nameVal.Err())
+		}
+		got, err := nameVal.String()
+		if err != nil {
+			t.Fatalf("hidden _name for %q is not a string: %v", taskName, err)
+		}
+		if got != taskName {
+			t.Fatalf("hidden _name for %q = %q, want %q", taskName, got, taskName)
+		}
+	}
+}
+
+func TestInjectTaskNames_HandlesNestedAndSequenceTasks(t *testing.T) {
+	ctx := cuecontext.New()
+	root := ctx.CompileString(`
+		package cuenv
+		tasks: {
+			build: { command: "echo" }
+			check: {
+				type: "group"
+				lint: { command: "echo" }
+			}
+			pipeline: [
+				{ command: "echo" },
+				{ command: "echo" },
+			]
+		}
+	`)
+
+	root = injectTaskNames(root, ctx)
+
+	cases := []string{"build", "check.lint", "pipeline[0]", "pipeline[1]"}
+	for _, taskName := range cases {
+		namePath := appendHiddenField(makeTaskPath(taskName))
+		nameVal := root.LookupPath(namePath)
+		if !nameVal.Exists() || nameVal.Err() != nil {
+			t.Fatalf("missing hidden _name for %q", taskName)
+		}
+		got, err := nameVal.String()
+		if err != nil {
+			t.Fatalf("hidden _name for %q unreadable: %v", taskName, err)
+		}
+		if got != taskName {
+			t.Fatalf("hidden _name for %q = %q, want %q", taskName, got, taskName)
+		}
+	}
+}
+
+func TestFillTaskName_EmptyNameNoop(t *testing.T) {
+	ctx := cuecontext.New()
+	root := ctx.CompileString(`package cuenv
+tasks: { build: { command: "echo" } }`)
+	updated := fillTaskName(root, "", ctx)
+	if !updated.Equals(root) {
+		t.Fatalf("expected empty task name to leave root unchanged")
+	}
+	path := appendHiddenField(makeTaskPath("build"))
+	if updated.LookupPath(path).Exists() {
+		t.Fatalf("did not expect hidden _name to be set for no-op call")
 	}
 }

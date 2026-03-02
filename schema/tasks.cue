@@ -27,6 +27,30 @@ package schema
 #TaskNode: #Task | #TaskGroup | #TaskSequence
 
 // =============================================================================
+// Task Output References
+// =============================================================================
+//
+// Tasks produce stdout, stderr, and exitCode fields that evaluate to
+// #TaskOutputRef structs. These can be referenced by other tasks:
+//
+//   tasks: {
+//       tmpdir: { command: "mktemp", args: ["-d"] }
+//       work: {
+//           command: "ls"
+//           env: TEMP_DIR: tasks.tmpdir.stdout
+//       }
+//   }
+//
+// Field names use no underscore prefix so they appear in JSON output.
+// The Rust executor resolves these at runtime after upstream tasks complete.
+
+#TaskOutputRef: {
+	cuenvOutputRef: true
+	cuenvTask:      string
+	cuenvOutput:    "stdout" | "stderr" | "exitCode"
+}
+
+// =============================================================================
 // Script Shell Configuration
 // =============================================================================
 
@@ -49,12 +73,21 @@ package schema
 	// Disallow 'type' field to prevent matching #TaskGroup pattern
 	type?: _|_
 
-	// Task name - auto-injected by Go bridge based on task path
-	_name?: string
+	// Task name - injected by Go bridge via FillPath before JSON serialization.
+	// Optional with default so CUE evaluation succeeds even without bridge injection.
+	// The default empty string produces refs that won't match any real task at runtime.
+	_name: string | *""
+
+	// Runtime output references - resolve to #TaskOutputRef structs.
+	// Other tasks can reference these (e.g., tasks.tmpdir.stdout) to pass
+	// runtime outputs between tasks. Resolved by Rust executor, not CUE.
+	stdout:   #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stdout"}
+	stderr:   #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stderr"}
+	exitCode: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "exitCode"}
 
 	// Command-based execution
 	command?: string
-	args?: [...string]
+	args?: [...(string | #TaskOutputRef)]
 
 	// Script-based execution (mutually exclusive with command)
 	script?:       string
@@ -62,7 +95,7 @@ package schema
 	shellOptions?: #ShellOptions
 
 	// Environment variables
-	env?: [string]: #EnvironmentVariable
+	env?: [string]: #EnvironmentVariable | #TaskOutputRef
 
 	// Working directory override
 	dir?: string
