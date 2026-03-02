@@ -219,25 +219,25 @@ import "github.com/cuenv/cuenv/schema"
 			repo:      "terrastruct/d2"
 			tagPrefix: "v"
 			asset:     "d2-v{version}-macos-arm64.tar.gz"
-			path:      "d2-v{version}-macos-arm64/bin/d2"
+			path:      "d2-v{version}/bin/d2"
 		}},
 		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
 			repo:      "terrastruct/d2"
 			tagPrefix: "v"
 			asset:     "d2-v{version}-macos-amd64.tar.gz"
-			path:      "d2-v{version}-macos-amd64/bin/d2"
+			path:      "d2-v{version}/bin/d2"
 		}},
 		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
 			repo:      "terrastruct/d2"
 			tagPrefix: "v"
 			asset:     "d2-v{version}-linux-amd64.tar.gz"
-			path:      "d2-v{version}-linux-amd64/bin/d2"
+			path:      "d2-v{version}/bin/d2"
 		}},
 		{os: "linux", arch: "arm64", source: schema.#GitHub & {
 			repo:      "terrastruct/d2"
 			tagPrefix: "v"
 			asset:     "d2-v{version}-linux-arm64.tar.gz"
-			path:      "d2-v{version}-linux-arm64/bin/d2"
+			path:      "d2-v{version}/bin/d2"
 		}},
 	]
 }
