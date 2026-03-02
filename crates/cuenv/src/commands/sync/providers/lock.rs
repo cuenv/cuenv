@@ -110,7 +110,10 @@ impl SyncProvider for LockSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let output = execute_lock_sync(path, package, options, executor, false).await?;
+        // Lockfiles are module-scoped (written at module root), so partial path-only
+        // resolution can silently drop tools from other projects. Always resolve tools
+        // across the full workspace for deterministic lockfile contents.
+        let output = execute_lock_sync(path, package, options, executor, true).await?;
         Ok(SyncResult::success(output))
     }
 
