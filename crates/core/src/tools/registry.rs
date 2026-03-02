@@ -88,9 +88,7 @@ impl std::fmt::Debug for ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::provider::{
-        FetchedTool, ResolvedTool, ToolOptions, ToolResolveRequest,
-    };
+    use crate::tools::provider::{FetchedTool, ResolvedTool, ToolOptions, ToolResolveRequest};
     use async_trait::async_trait;
 
     struct MockProvider {

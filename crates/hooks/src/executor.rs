@@ -538,10 +538,19 @@ pub async fn execute_hooks(
                             "Evaluating source hook output for environment variables (success={})",
                             hook_result.success
                         );
-                        match evaluate_shell_environment(&hook_result.stdout, &state.environment_vars).await {
+                        match evaluate_shell_environment(
+                            &hook_result.stdout,
+                            &state.environment_vars,
+                        )
+                        .await
+                        {
                             Ok((env_vars, removed_keys)) => {
                                 let count = env_vars.len();
-                                debug!("Captured {} environment variables from source hook ({} removed)", count, removed_keys.len());
+                                debug!(
+                                    "Captured {} environment variables from source hook ({} removed)",
+                                    count,
+                                    removed_keys.len()
+                                );
                                 // Merge captured environment variables into state
                                 for (key, value) in env_vars {
                                     state.environment_vars.insert(key, value);
@@ -639,7 +648,10 @@ async fn is_shell_capable(shell: &str) -> bool {
 }
 
 /// Evaluate shell script and extract resulting environment variables
-async fn evaluate_shell_environment(shell_script: &str, prior_env: &HashMap<String, String>) -> Result<(HashMap<String, String>, Vec<String>)> {
+async fn evaluate_shell_environment(
+    shell_script: &str,
+    prior_env: &HashMap<String, String>,
+) -> Result<(HashMap<String, String>, Vec<String>)> {
     const DELIMITER: &str = "__CUENV_ENV_START__";
 
     debug!(
@@ -1735,14 +1747,15 @@ export SPACE_VAR='   '
     async fn test_environment_prior_env_chaining() {
         // Test 1: prior_env variables are visible and can be extended
         let mut prior_env = HashMap::new();
-        prior_env.insert(
-            "CUENV_TEST_PRIOR".to_string(),
-            "original_value".to_string(),
-        );
+        prior_env.insert("CUENV_TEST_PRIOR".to_string(), "original_value".to_string());
 
         let script = r#"export CUENV_TEST_PRIOR="extended_${CUENV_TEST_PRIOR}""#;
         let result = evaluate_shell_environment(script, &prior_env).await;
-        assert!(result.is_ok(), "Should evaluate with prior_env: {:?}", result.as_ref().err());
+        assert!(
+            result.is_ok(),
+            "Should evaluate with prior_env: {:?}",
+            result.as_ref().err()
+        );
 
         let (env_vars, _removed) = result.unwrap();
         if let Some(value) = env_vars.get("CUENV_TEST_PRIOR") {

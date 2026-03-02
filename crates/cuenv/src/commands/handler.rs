@@ -443,9 +443,7 @@ impl CommandHandler for TaskHandler {
             (None, _, true) => {
                 task::TaskExecutionRequest::interactive(&self.path, &self.package, executor)
             }
-            (None, _, _) => {
-                task::TaskExecutionRequest::list(&self.path, &self.package, executor)
-            }
+            (None, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package, executor),
         };
 
         // Apply optional settings

@@ -38,7 +38,9 @@ fn test_nix_flake_hook_runs_shell_hook() {
         return;
     }
     if std::env::var_os("NEXTEST").is_some() {
-        eprintln!("Skipping test under nextest: Nix shellHook propagation is flaky in this harness");
+        eprintln!(
+            "Skipping test under nextest: Nix shellHook propagation is flaky in this harness"
+        );
         return;
     }
 
