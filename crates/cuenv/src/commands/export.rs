@@ -9,7 +9,7 @@ use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
-use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
+use cuenv_core::{Error, ModuleEvaluation, Result, shell::Shell};
 use cuenv_hooks::{
     ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutionConfig,
     HookExecutionState, HookExecutor, StateManager, check_approval_status, compute_instance_hash,
@@ -425,7 +425,6 @@ async fn run_hooks_foreground(
     hooks: Vec<cuenv_hooks::Hook>,
     config: &Project,
 ) -> Result<HashMap<String, String>> {
-    let static_env = extract_static_env_vars(config);
     let instance_hash = compute_instance_hash(directory, config_hash);
 
     // Get or create state manager
@@ -470,16 +469,21 @@ async fn run_hooks_foreground(
             Ok(collect_all_env_vars(config, &state.environment_vars))
         }
         ExecutionStatus::Failed => {
-            debug!(
-                "Foreground hooks failed: {:?}. Using captured environment.",
-                state.error_message
-            );
-            Ok(collect_all_env_vars(config, &state.environment_vars))
+            let msg = state
+                .error_message
+                .unwrap_or_else(|| "unknown error".to_string());
+            Err(Error::execution_with_help(
+                format!(
+                    "Hook execution failed for {}: {msg}",
+                    directory.display()
+                ),
+                "Check the hook command output above for details",
+            ))
         }
-        _ => {
-            debug!("Foreground hooks did not complete normally");
-            Ok(static_env)
-        }
+        _ => Err(Error::execution(format!(
+            "Hook execution did not complete normally for {}",
+            directory.display()
+        )))
     }
 }
 
@@ -616,12 +620,15 @@ pub async fn get_environment_with_hooks(
             .await?;
     }
 
-    // Wait for completion with progress indicator (timeout 60s)
+    // Wait for completion with progress indicator
     debug!("Waiting for hooks to complete for {}", directory.display());
 
     let poll_interval = Duration::from_millis(50);
     let start_time = Instant::now();
-    let timeout_seconds = 60u64;
+    let timeout_seconds = std::env::var("CUENV_HOOK_TIMEOUT")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(120);
     let is_tty = std::io::stderr().is_terminal();
 
     loop {
@@ -657,24 +664,30 @@ pub async fn get_environment_with_hooks(
                         Ok(collect_all_env_vars(config, &state.environment_vars))
                     }
                     ExecutionStatus::Failed => {
-                        debug!(
-                            "Hooks failed for {}: {:?}. Using captured environment.",
-                            directory.display(),
-                            state.error_message
-                        );
-                        Ok(collect_all_env_vars(config, &state.environment_vars))
+                        let msg = state
+                            .error_message
+                            .unwrap_or_else(|| "unknown error".to_string());
+                        Err(Error::execution_with_help(
+                            format!(
+                                "Hook execution failed for {}: {msg}",
+                                directory.display()
+                            ),
+                            "Run with CUENV_LOG=debug for more details, or CUENV_FOREGROUND_HOOKS=1 to see hook output directly",
+                        ))
                     }
-                    ExecutionStatus::Cancelled => {
-                        debug!("Hooks cancelled for {}", directory.display());
-                        Ok(static_env)
-                    }
-                    ExecutionStatus::Running => Ok(static_env),
+                    ExecutionStatus::Cancelled => Err(Error::execution(format!(
+                        "Hook execution was cancelled for {}",
+                        directory.display()
+                    ))),
+                    ExecutionStatus::Running => unreachable!("is_complete() returned true but status is Running"),
                 };
             }
         } else {
             // No state found - this shouldn't happen since we started execution above
-            tracing::warn!("No execution state found, using static environment");
-            return Ok(static_env);
+            return Err(Error::execution(format!(
+                "Hook execution state lost for {}. This is a bug — hooks were started but no state was recorded.",
+                directory.display()
+            )));
         }
 
         // Check timeout
@@ -686,11 +699,9 @@ pub async fn get_environment_with_hooks(
                 }
                 let _ = std::io::stderr().flush();
             }
-            tracing::warn!(
-                "Timeout waiting for hooks after {}s, using static environment",
-                timeout_seconds
-            );
-            return Ok(static_env);
+            return Err(Error::Timeout {
+                seconds: timeout_seconds,
+            });
         }
 
         tokio::time::sleep(poll_interval).await;
