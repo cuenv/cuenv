@@ -165,7 +165,7 @@ fn get_valid_cached_resolution<'a>(
     locked_tool: &'a LockedTool,
     manifest_version: &str,
     platform_str: &str,
-    _resolved_source_config: &serde_json::Value,
+    resolved_source_config: &serde_json::Value,
 ) -> Option<&'a LockedToolPlatform> {
     // Check version match
     if locked_tool.version != manifest_version {
@@ -183,9 +183,15 @@ fn get_valid_cached_resolution<'a>(
         return None;
     };
 
-    // If version and platform match, the cache is valid.
-    // The source configuration is implicitly validated by the version match,
-    // since changing the source would require updating the tool definition.
+    // Compare source config to detect template changes (e.g. path fix)
+    if locked_platform.source != *resolved_source_config {
+        debug!(
+            %platform_str,
+            "Cache miss: source config changed"
+        );
+        return None;
+    }
+
     Some(locked_platform)
 }
 
@@ -748,23 +754,25 @@ fn source_config_to_tool_source(
             let resolved_tag = tag
                 .clone()
                 .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
-            // Expand {version} template in asset name
+            // Expand {version} template in asset name and path
             #[allow(clippy::literal_string_with_formatting_args)]
             let resolved_asset = asset.replace("{version}", version);
+            #[allow(clippy::literal_string_with_formatting_args)]
+            let resolved_path = path.as_ref().map(|p| p.replace("{version}", version));
             (
                 "github".to_string(),
                 ToolSource::GitHub {
                     repo: repo.clone(),
                     tag: resolved_tag.clone(),
                     asset: resolved_asset.clone(),
-                    path: path.clone(),
+                    path: resolved_path.clone(),
                 },
                 serde_json::json!({
                     "type": "github",
                     "repo": repo,
                     "tag": resolved_tag,
                     "asset": resolved_asset,
-                    "path": path,
+                    "path": resolved_path,
                 }),
             )
         }
