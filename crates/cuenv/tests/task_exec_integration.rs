@@ -881,7 +881,7 @@ env: {
 }
 
 #[test]
-fn test_task_label_execution_discovers_projects() {
+fn test_task_label_execution_is_path_scoped() {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
 
@@ -943,7 +943,10 @@ tasks: {
         "Expected success.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
     );
     assert!(stdout.contains("A-PROJEN"));
-    assert!(stdout.contains("B-PROJEN"));
+    assert!(
+        !stdout.contains("B-PROJEN"),
+        "Label execution must be scoped to the selected path"
+    );
 }
 
 #[test]
