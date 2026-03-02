@@ -782,7 +782,8 @@ async fn compile_and_execute_ir(
     let mut last_exit_code = 0;
 
     // Ensure tools are downloaded before getting activation paths.
-    ensure_tools_downloaded(project_root).await;
+    // Tool activation failures are fatal.
+    ensure_tools_downloaded(project_root).await?;
     let tool_paths = get_tool_paths(project_root);
     if !tool_paths.is_empty() {
         tracing::debug!(
@@ -1190,27 +1191,28 @@ fn get_tool_paths(project_root: &Path) -> ToolPaths {
 }
 
 /// Ensure all tools from the lockfile are downloaded for the current platform.
-async fn ensure_tools_downloaded(project_root: &Path) {
+async fn ensure_tools_downloaded(project_root: &Path) -> std::result::Result<(), ExecutorError> {
     let Some(lockfile_path) = find_lockfile(project_root) else {
         tracing::debug!("No lockfile found - skipping tool download");
-        return;
+        return Ok(());
     };
 
     let lockfile = match Lockfile::load(&lockfile_path) {
         Ok(Some(lf)) => lf,
         Ok(None) => {
             tracing::debug!("Empty lockfile - skipping tool download");
-            return;
+            return Ok(());
         }
         Err(e) => {
-            tracing::warn!("Failed to load lockfile: {e}");
-            return;
+            return Err(ExecutorError::Compilation(format!(
+                "Failed to load lockfile: {e}"
+            )));
         }
     };
 
     if lockfile.tools.is_empty() {
         tracing::debug!("No tools in lockfile - skipping download");
-        return;
+        return Ok(());
     }
 
     let platform = Platform::current();
@@ -1239,6 +1241,8 @@ async fn ensure_tools_downloaded(project_root: &Path) {
     }
 
     // Download tools that aren't cached
+    let mut errors: Vec<String> = Vec::new();
+
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
             continue;
@@ -1278,7 +1282,17 @@ async fn ensure_tools_downloaded(project_root: &Path) {
             }
             Err(e) => {
                 tracing::warn!("Failed to download tool '{}': {}", name, e);
+                errors.push(format!("{}: {}", name, e));
             }
         }
     }
+
+    if !errors.is_empty() {
+        return Err(ExecutorError::Compilation(format!(
+            "Failed to download tools: {}",
+            errors.join(", ")
+        )));
+    }
+
+    Ok(())
 }

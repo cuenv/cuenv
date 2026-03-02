@@ -84,6 +84,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
     // Download tools
     let mut downloaded = 0;
     let mut skipped = 0;
+    let mut errors: Vec<String> = Vec::new();
 
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
@@ -204,6 +205,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
             }
             Err(e) => {
                 eprintln!("  Error downloading '{}': {}", name, e);
+                errors.push(format!("{}: {}", name, e));
             }
         }
     }
@@ -213,6 +215,13 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
         "Downloaded {} tools, {} already cached",
         downloaded, skipped
     );
+
+    if !errors.is_empty() {
+        return Err(CliError::other(format!(
+            "Failed to download tools: {}",
+            errors.join(", ")
+        )));
+    }
 
     Ok(())
 }
@@ -280,6 +289,7 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
 
     // Download tools that aren't cached
     let mut downloaded = 0;
+    let mut errors: Vec<String> = Vec::new();
 
     for (name, tool) in &lockfile.tools {
         let Some(locked) = tool.platforms.get(&platform_str) else {
@@ -329,13 +339,21 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
                 downloaded += 1;
             }
             Err(e) => {
-                tracing::warn!("Failed to download '{}': {} - continuing anyway", name, e);
+                tracing::warn!("Failed to download '{}': {}", name, e);
+                errors.push(format!("{}: {}", name, e));
             }
         }
     }
 
     if downloaded > 0 {
         tracing::info!("Downloaded {} tools", downloaded);
+    }
+
+    if !errors.is_empty() {
+        return Err(CliError::other(format!(
+            "Failed to download tools: {}",
+            errors.join(", ")
+        )));
     }
 
     Ok(())
