@@ -165,12 +165,12 @@ jobs:
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Download cargo-build-darwin-arm64
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
     - name: Download cargo-build-linux-x64
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: cargo-build-linux-x64
         path: dist/linux-x64
@@ -265,7 +265,7 @@ jobs:
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Download docs-build-artifacts
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@v8
       with:
         name: docs-build-artifacts
         path: docs/dist
