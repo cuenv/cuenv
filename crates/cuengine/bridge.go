@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -978,11 +979,55 @@ func fillTaskName(root cue.Value, taskName string, ctx *cue.Context) cue.Value {
 	if taskName == "" {
 		return root
 	}
-	// Build the path: tasks.<taskName>._name
-	namePath := cue.ParsePath("tasks." + taskName)
+	// Build the path with selectors so sequence syntax like pipeline[0] works.
+	namePath := makeTaskPath(taskName)
 	namePath = appendHiddenField(namePath)
 
 	return root.FillPath(namePath, taskName)
+}
+
+// makeTaskPath converts a task name like "build", "group.child", or
+// "pipeline[0].step" into a CUE path rooted at tasks.
+func makeTaskPath(taskName string) cue.Path {
+	sels := []cue.Selector{cue.Str("tasks")}
+	for _, segment := range strings.Split(taskName, ".") {
+		if segment == "" {
+			continue
+		}
+
+		for {
+			bracket := strings.IndexByte(segment, '[')
+			if bracket == -1 {
+				sels = append(sels, cue.Str(segment))
+				break
+			}
+
+			if bracket > 0 {
+				sels = append(sels, cue.Str(segment[:bracket]))
+			}
+
+			closeBracket := strings.IndexByte(segment[bracket:], ']')
+			if closeBracket <= 1 {
+				sels = append(sels, cue.Str(segment[bracket:]))
+				break
+			}
+
+			indexStr := segment[bracket+1 : bracket+closeBracket]
+			idx, err := strconv.Atoi(indexStr)
+			if err != nil {
+				sels = append(sels, cue.Str(segment[bracket:bracket+closeBracket+1]))
+			} else {
+				sels = append(sels, cue.Index(idx))
+			}
+
+			segment = segment[bracket+closeBracket+1:]
+			if segment == "" {
+				break
+			}
+		}
+	}
+
+	return cue.MakePath(sels...)
 }
 
 // schemaPackagePath is the CUE import path for the schema package.
