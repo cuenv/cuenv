@@ -322,9 +322,7 @@ impl EnvValue {
                 let val = resolved_secrets.get(&0).cloned().unwrap_or_default();
                 (val.clone(), vec![val])
             }
-            EnvValue::Interpolated(parts) => {
-                Self::reassemble_parts(parts, resolved_secrets)
-            }
+            EnvValue::Interpolated(parts) => Self::reassemble_parts(parts, resolved_secrets),
             EnvValue::WithPolicies(var) => match &var.value {
                 EnvValueSimple::String(s) => (s.clone(), vec![]),
                 EnvValueSimple::Int(i) => (i.to_string(), vec![]),
@@ -741,7 +739,11 @@ impl Environment {
         let mut all_secrets = Vec::new();
 
         // Phase 1: Separate non-secret vars (instant) from secret vars (need resolution)
-        type SecretVarEntry<'a> = (&'a String, &'a EnvValue, Vec<(usize, crate::secrets::Secret)>);
+        type SecretVarEntry<'a> = (
+            &'a String,
+            &'a EnvValue,
+            Vec<(usize, crate::secrets::Secret)>,
+        );
         let mut secret_vars: Vec<SecretVarEntry<'_>> = Vec::new();
 
         for (key, value) in accessible {
@@ -783,9 +785,9 @@ impl Environment {
         // Collect all resolved values, grouped by env key
         let mut resolved_by_key: HashMap<String, HashMap<usize, String>> = HashMap::new();
         while let Some(result) = join_set.join_next().await {
-            let (key, part_idx, value) = result
-                .map_err(|e| crate::Error::configuration(format!("Secret resolution task panicked: {e}")))?
-                ?;
+            let (key, part_idx, value) = result.map_err(|e| {
+                crate::Error::configuration(format!("Secret resolution task panicked: {e}"))
+            })??;
             resolved_by_key
                 .entry(key)
                 .or_default()
@@ -1121,7 +1123,9 @@ mod tests {
         assert!(env.base.contains_key("API_URL"));
         assert!(!env.base.contains_key("environment"));
 
-        let environments = env.environment.expect("environment overrides should deserialize");
+        let environments = env
+            .environment
+            .expect("environment overrides should deserialize");
         let production = environments
             .get("production")
             .expect("production overrides should exist");

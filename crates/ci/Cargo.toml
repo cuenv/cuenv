@@ -22,6 +22,7 @@ cuenv-workspaces = { workspace = true, features = ["discovery-rust"] }
 cuenv-tools-nix = { workspace = true }
 cuenv-tools-github = { workspace = true }
 cuenv-tools-rustup = { workspace = true }
+cuenv-hooks = { workspace = true }
 cuengine = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

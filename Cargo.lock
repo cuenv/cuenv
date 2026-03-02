@@ -1329,6 +1329,7 @@ dependencies = [
  "cuengine",
  "cuenv-core",
  "cuenv-events",
+ "cuenv-hooks",
  "cuenv-secrets",
  "cuenv-task-graph",
  "cuenv-tools-github",

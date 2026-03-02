@@ -17,12 +17,17 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
+use cuenv_core::cue::discovery::find_ancestor_env_files;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use cuenv_core::tools::{Platform, ResolvedTool, ToolOptions, ToolRegistry, ToolSource};
 use cuenv_core::{DryRun, Result};
-use std::collections::{BTreeMap, HashSet};
+use cuenv_hooks::{
+    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager, compute_instance_hash,
+    execute_hooks,
+};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -97,12 +102,18 @@ pub async fn run_ci(
         )));
     }
 
-    // Build project map for cross-project dependency resolution
-    let mut project_map = std::collections::HashMap::new();
+    // Build project maps for cross-project dependency resolution and hook lookup.
+    let mut project_map = HashMap::new();
+    let mut project_configs = HashMap::new();
     for (path, config) in &projects {
         let name = config.name.trim();
         if !name.is_empty() {
             project_map.insert(name.to_string(), (path.clone(), config.clone()));
+        }
+
+        project_configs.insert(path.clone(), config.clone());
+        if let Ok(canonical) = path.canonicalize() {
+            project_configs.insert(canonical, config.clone());
         }
     }
 
@@ -178,6 +189,7 @@ pub async fn run_ci(
                 context,
                 changed_files: &changed_files,
                 provider: provider.as_ref(),
+                project_configs: &project_configs,
             })
             .await;
 
@@ -220,6 +232,7 @@ pub struct PipelineExecutionRequest<'a> {
     pub context: &'a crate::context::CIContext,
     pub changed_files: &'a [PathBuf],
     pub provider: &'a dyn CIProvider,
+    pub project_configs: &'a HashMap<PathBuf, Project>,
 }
 
 /// Execute a project's pipeline and handle reporting
@@ -237,6 +250,7 @@ async fn execute_project_pipeline(
     let context = request.context;
     let changed_files = request.changed_files;
     let provider = request.provider;
+    let project_configs = request.project_configs;
 
     let start_time = Utc::now();
     let mut tasks_reports = Vec::new();
@@ -274,6 +288,9 @@ async fn execute_project_pipeline(
     // These are typically passed via GitHub Actions secrets or similar.
     register_ci_secrets();
 
+    // Merge static + hook-generated environment once per project, then reuse for all tasks.
+    let hook_env = build_hook_environment(project_path, config, project_configs).await?;
+
     // Execute tasks
     for task_name in tasks_to_run {
         let inputs_matched =
@@ -295,6 +312,7 @@ async fn execute_project_pipeline(
             project_path,
             cache_policy_override,
             environment,
+            &hook_env,
         )
         .await;
 
@@ -498,6 +516,136 @@ fn resolve_environment(
         .map(|name| name.to_string())
 }
 
+/// Build the project environment by merging static env with hook-generated values.
+async fn build_hook_environment(
+    project_root: &Path,
+    config: &Project,
+    project_configs: &HashMap<PathBuf, Project>,
+) -> Result<BTreeMap<String, String>> {
+    let static_env = extract_static_env_vars(config);
+    let hooks = collect_hooks_from_ancestors(project_root, config, project_configs)?;
+
+    if hooks.is_empty() {
+        return Ok(static_env);
+    }
+
+    let config_hash = cuenv_hooks::compute_execution_hash(&hooks, project_root);
+    let instance_hash = compute_instance_hash(project_root, &config_hash);
+
+    let state_dir = if let Ok(dir) = std::env::var("CUENV_STATE_DIR") {
+        PathBuf::from(dir)
+    } else {
+        StateManager::default_state_dir()?
+    };
+    let state_manager = StateManager::new(state_dir);
+
+    let hook_config = HookExecutionConfig {
+        default_timeout_seconds: 600,
+        fail_fast: true,
+        state_dir: None,
+    };
+
+    let mut state = HookExecutionState::new(
+        project_root.to_path_buf(),
+        instance_hash,
+        config_hash,
+        hooks.clone(),
+    );
+
+    execute_hooks(
+        hooks,
+        project_root,
+        &hook_config,
+        &state_manager,
+        &mut state,
+    )
+    .await?;
+
+    match state.status {
+        ExecutionStatus::Completed | ExecutionStatus::Failed => {
+            Ok(collect_all_env_vars(config, &state.environment_vars))
+        }
+        ExecutionStatus::Running | ExecutionStatus::Cancelled => Ok(static_env),
+    }
+}
+
+/// Collect `onEnter` hooks from ancestor env.cue files (root-to-leaf order).
+fn collect_hooks_from_ancestors(
+    project_root: &Path,
+    config: &Project,
+    project_configs: &HashMap<PathBuf, Project>,
+) -> Result<Vec<cuenv_hooks::Hook>> {
+    let ancestors = find_ancestor_env_files(project_root, "cuenv")?;
+    let ancestors_len = ancestors.len();
+    let mut all_hooks = Vec::new();
+
+    for (idx, ancestor_dir) in ancestors.into_iter().enumerate() {
+        let is_current_dir = idx + 1 == ancestors_len;
+        let source_config = if is_current_dir {
+            Some(config)
+        } else {
+            project_configs.get(&ancestor_dir).or_else(|| {
+                ancestor_dir
+                    .canonicalize()
+                    .ok()
+                    .and_then(|canonical| project_configs.get(&canonical))
+            })
+        };
+
+        let Some(source_config) = source_config else {
+            continue;
+        };
+
+        let mut hooks = source_config.on_enter_hooks();
+        for hook in &mut hooks {
+            resolve_hook_dir(hook, &ancestor_dir);
+        }
+
+        // Ancestor hooks only run when propagate=true.
+        if !is_current_dir {
+            hooks.retain(|hook| hook.propagate);
+        }
+
+        all_hooks.extend(hooks);
+    }
+
+    Ok(all_hooks)
+}
+
+/// Resolve hook.dir relative to the env.cue directory where the hook is defined.
+fn resolve_hook_dir(hook: &mut cuenv_hooks::Hook, env_cue_dir: &Path) {
+    let relative_dir = hook.dir.as_deref().unwrap_or(".");
+    let absolute_dir = env_cue_dir.join(relative_dir);
+    let resolved = absolute_dir.canonicalize().unwrap_or(absolute_dir);
+    hook.dir = Some(resolved.to_string_lossy().to_string());
+}
+
+/// Extract static (non-secret) environment variables from config.
+fn extract_static_env_vars(config: &Project) -> BTreeMap<String, String> {
+    let mut env_vars = BTreeMap::new();
+    if let Some(env) = &config.env {
+        for (key, value) in &env.base {
+            if value.is_secret() {
+                continue;
+            }
+            env_vars.insert(key.clone(), value.to_string_value());
+        }
+    }
+    env_vars
+}
+
+/// Merge static config env vars with hook-generated values (hooks win).
+fn collect_all_env_vars(
+    config: &Project,
+    hook_env: &std::collections::HashMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut merged = extract_static_env_vars(config);
+    for (key, value) in hook_env {
+        merged.insert(key.clone(), value.clone());
+    }
+    merged
+}
+
 /// Execute a task with all its dependencies in correct order.
 ///
 /// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
@@ -508,6 +656,7 @@ async fn execute_task_with_deps(
     project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
     environment: Option<&str>,
+    hook_env: &BTreeMap<String, String>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     // 1. Build TaskIndex (same flattening as CLI)
     let index =
@@ -549,6 +698,7 @@ async fn execute_task_with_deps(
             project_root,
             cache_policy_override,
             environment,
+            hook_env,
         )
         .await?;
 
@@ -572,6 +722,7 @@ async fn compile_and_execute_ir(
     project_root: &Path,
     cache_policy_override: Option<CachePolicy>,
     environment: Option<&str>,
+    hook_env: &BTreeMap<String, String>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     let start = std::time::Instant::now();
 
@@ -630,43 +781,66 @@ async fn compile_and_execute_ir(
     let mut all_success = true;
     let mut last_exit_code = 0;
 
-    // Ensure tools are downloaded before getting their paths
+    // Ensure tools are downloaded before getting activation paths.
     ensure_tools_downloaded(project_root).await;
-
-    // Get tool bin directories from lockfile
-    let tool_bin_dirs = get_tool_bin_dirs(project_root);
-    let tool_path_prepend = if tool_bin_dirs.is_empty() {
-        String::new()
-    } else {
-        tool_bin_dirs
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join(":")
-    };
+    let tool_paths = get_tool_paths(project_root);
+    if !tool_paths.is_empty() {
+        tracing::debug!(
+            bin_dirs = tool_paths.bin_dirs.len(),
+            lib_dirs = tool_paths.lib_dirs.len(),
+            "Activating tool paths for CI task execution"
+        );
+    }
 
     for ir_task in &ir.tasks {
-        // Build environment: start with IR task env (task-specific vars)
-        let mut env: BTreeMap<String, String> = ir_task.env.clone();
-
-        // Merge project-level resolved environment (includes secrets)
-        // Project env is lower priority - task-specific overrides win
+        // Build environment with explicit precedence:
+        // task env > resolved project env > hook/static env.
+        let mut env: BTreeMap<String, String> = hook_env.clone();
         for (key, value) in &resolved_env {
-            env.entry(key.clone()).or_insert_with(|| value.clone());
+            env.insert(key.clone(), value.clone());
+        }
+        for (key, value) in &ir_task.env {
+            env.insert(key.clone(), value.clone());
         }
 
-        // Add PATH with tool directories prepended, then HOME
-        if let Ok(system_path) = std::env::var("PATH") {
-            let path = if tool_path_prepend.is_empty() {
-                system_path
+        // Prepend tool paths to the effective runtime PATH (or system PATH fallback).
+        if let Some(path_prepend) = tool_paths.path_prepend() {
+            let current_path = env
+                .get("PATH")
+                .cloned()
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let new_path = if current_path.is_empty() {
+                path_prepend
             } else {
-                format!("{tool_path_prepend}:{system_path}")
+                format!("{path_prepend}:{current_path}")
             };
-            env.insert("PATH".to_string(), path);
-        } else if !tool_path_prepend.is_empty() {
-            env.insert("PATH".to_string(), tool_path_prepend.clone());
+            env.insert("PATH".to_string(), new_path);
         }
-        if let Ok(home) = std::env::var("HOME") {
+
+        // Prepend tool library paths for runtimes that require shared libs.
+        if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
+            #[cfg(target_os = "macos")]
+            let lib_var = "DYLD_LIBRARY_PATH";
+            #[cfg(not(target_os = "macos"))]
+            let lib_var = "LD_LIBRARY_PATH";
+
+            let current_lib = env
+                .get(lib_var)
+                .cloned()
+                .or_else(|| std::env::var(lib_var).ok())
+                .unwrap_or_default();
+            let new_path = if current_lib.is_empty() {
+                lib_prepend
+            } else {
+                format!("{lib_prepend}:{current_lib}")
+            };
+            env.insert(lib_var.to_string(), new_path);
+        }
+
+        if !env.contains_key("HOME")
+            && let Ok(home) = std::env::var("HOME")
+        {
             env.insert("HOME".to_string(), home);
         }
 
@@ -853,20 +1027,67 @@ fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
     }
 }
 
-/// Get tool bin directories from the lockfile for PATH injection.
-fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
+/// Tool environment paths for activation.
+#[derive(Debug, Clone, Default)]
+struct ToolPaths {
+    /// Directories to prepend to PATH.
+    bin_dirs: Vec<PathBuf>,
+    /// Directories to prepend to library path.
+    lib_dirs: Vec<PathBuf>,
+}
+
+impl ToolPaths {
+    /// Check if there are any activation paths available.
+    fn is_empty(&self) -> bool {
+        self.bin_dirs.is_empty() && self.lib_dirs.is_empty()
+    }
+
+    /// Build the `PATH` prepend segment.
+    fn path_prepend(&self) -> Option<String> {
+        if self.bin_dirs.is_empty() {
+            None
+        } else {
+            Some(
+                self.bin_dirs
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            )
+        }
+    }
+
+    /// Build the shared library path prepend segment.
+    fn lib_path_prepend(&self) -> Option<String> {
+        if self.lib_dirs.is_empty() {
+            None
+        } else {
+            Some(
+                self.lib_dirs
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(":"),
+            )
+        }
+    }
+}
+
+/// Get tool activation paths from the lockfile for PATH and library path injection.
+fn get_tool_paths(project_root: &Path) -> ToolPaths {
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut lib_dirs: HashSet<PathBuf> = HashSet::new();
 
     let Some(lockfile_path) = find_lockfile(project_root) else {
-        return vec![];
+        return ToolPaths::default();
     };
 
     let Ok(Some(lockfile)) = Lockfile::load(&lockfile_path) else {
-        return vec![];
+        return ToolPaths::default();
     };
 
     if lockfile.tools.is_empty() {
-        return vec![];
+        return ToolPaths::default();
     }
 
     let platform = Platform::current();
@@ -879,6 +1100,10 @@ fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
         let bin = profile_path.join("bin");
         if bin.exists() {
             bin_dirs.insert(bin);
+        }
+        let lib = profile_path.join("lib");
+        if lib.exists() {
+            lib_dirs.insert(lib);
         }
     }
 
@@ -917,12 +1142,14 @@ fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
                     }
                 );
                 let toolchain_name = format!("{toolchain}-{host_triple}");
-                let bin = rustup_home
-                    .join("toolchains")
-                    .join(toolchain_name)
-                    .join("bin");
+                let toolchain_dir = rustup_home.join("toolchains").join(toolchain_name);
+                let bin = toolchain_dir.join("bin");
+                let lib = toolchain_dir.join("lib");
                 if bin.exists() {
                     bin_dirs.insert(bin);
+                }
+                if lib.exists() {
+                    lib_dirs.insert(lib);
                 }
             }
             continue;
@@ -944,10 +1171,22 @@ fn get_tool_bin_dirs(project_root: &Path) -> Vec<PathBuf> {
             if bin.exists() {
                 bin_dirs.insert(bin);
             }
+
+            let lib = tool_dir.join("lib");
+            if lib.exists() {
+                lib_dirs.insert(lib);
+            }
         }
     }
 
-    bin_dirs.into_iter().collect()
+    let mut paths = ToolPaths {
+        bin_dirs: bin_dirs.into_iter().collect(),
+        lib_dirs: lib_dirs.into_iter().collect(),
+    };
+
+    paths.bin_dirs.sort();
+    paths.lib_dirs.sort();
+    paths
 }
 
 /// Ensure all tools from the lockfile are downloaded for the current platform.
