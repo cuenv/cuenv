@@ -319,6 +319,7 @@ schema.#Project & {
 				command: "bash"
 				args: ["-c", "cd docs && npx wrangler deploy"]
 				dependsOn: [_t.docs.build]
+				inputs: [{task: "docs.build"}]
 			}
 		}
 
