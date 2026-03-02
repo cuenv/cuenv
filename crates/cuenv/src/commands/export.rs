@@ -473,17 +473,14 @@ async fn run_hooks_foreground(
                 .error_message
                 .unwrap_or_else(|| "unknown error".to_string());
             Err(Error::execution_with_help(
-                format!(
-                    "Hook execution failed for {}: {msg}",
-                    directory.display()
-                ),
+                format!("Hook execution failed for {}: {msg}", directory.display()),
                 "Check the hook command output above for details",
             ))
         }
         _ => Err(Error::execution(format!(
             "Hook execution did not complete normally for {}",
             directory.display()
-        )))
+        ))),
     }
 }
 
@@ -668,10 +665,7 @@ pub async fn get_environment_with_hooks(
                             .error_message
                             .unwrap_or_else(|| "unknown error".to_string());
                         Err(Error::execution_with_help(
-                            format!(
-                                "Hook execution failed for {}: {msg}",
-                                directory.display()
-                            ),
+                            format!("Hook execution failed for {}: {msg}", directory.display()),
                             "Run with CUENV_LOG=debug for more details, or CUENV_FOREGROUND_HOOKS=1 to see hook output directly",
                         ))
                     }
@@ -679,7 +673,9 @@ pub async fn get_environment_with_hooks(
                         "Hook execution was cancelled for {}",
                         directory.display()
                     ))),
-                    ExecutionStatus::Running => unreachable!("is_complete() returned true but status is Running"),
+                    ExecutionStatus::Running => {
+                        unreachable!("is_complete() returned true but status is Running")
+                    }
                 };
             }
         } else {
