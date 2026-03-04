@@ -389,6 +389,13 @@ func extractReferencesFromExpr(expr ast.Expr, fieldPath, instancePath string, re
 			refs[metaKey] = refPath
 		}
 
+		// Recurse into complex selector bases so we don't miss references
+		// inside expressions like `(#Template & { dependsOn: [build] }).output`.
+		switch e.X.(type) {
+		case *ast.ParenExpr, *ast.BinaryExpr, *ast.StructLit, *ast.ListLit, *ast.CallExpr, *ast.UnaryExpr, *ast.IndexExpr, *ast.SliceExpr:
+			extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
+		}
+
 	case *ast.IndexExpr:
 		// Handle index expressions
 		extractReferencesFromExpr(e.X, fieldPath, instancePath, refs)
@@ -550,7 +557,8 @@ func buildValueClean(v cue.Value) interface{} {
 		return result
 
 	case cue.ListKind:
-		var items []interface{}
+		// Use a non-nil slice so empty CUE lists serialize to [] (not null).
+		items := make([]interface{}, 0)
 		iter, _ := v.List()
 		for iter.Next() {
 			items = append(items, buildValueClean(iter.Value()))
