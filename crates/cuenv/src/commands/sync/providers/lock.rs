@@ -686,7 +686,7 @@ async fn execute_lock_sync(
 fn seed_lockfile(existing: Option<&Lockfile>) -> Lockfile {
     let mut lockfile = Lockfile::new();
     if let Some(existing) = existing {
-        lockfile.tools_activation = existing.tools_activation.clone();
+        lockfile.tools_activation.clone_from(&existing.tools_activation);
     }
     lockfile
 }
