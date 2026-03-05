@@ -145,8 +145,8 @@ pub enum ToolSource {
         repo: String,
         tag: String,
         asset: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extract: Vec<ToolExtract>,
     },
     /// Package from a Nix flake.
     Nix {
@@ -168,6 +168,46 @@ pub enum ToolSource {
         /// Additional targets to install (e.g., "x86_64-unknown-linux-gnu").
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         targets: Vec<String>,
+    },
+}
+
+/// Typed extract rule for GitHub release assets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ToolExtract {
+    /// Extract to `bin/`.
+    Bin {
+        /// Path within archive/pkg payload.
+        path: String,
+        /// Optional binary rename.
+        #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+        as_name: Option<String>,
+    },
+    /// Extract to `lib/`.
+    Lib {
+        /// Path within archive/pkg payload.
+        path: String,
+        /// Optional env var for exact path export.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<String>,
+    },
+    /// Extract to `include/`.
+    Include {
+        /// Path within archive/pkg payload.
+        path: String,
+    },
+    /// Extract to `lib/pkgconfig/`.
+    PkgConfig {
+        /// Path within archive/pkg payload.
+        path: String,
+    },
+    /// Extract to `files/`.
+    File {
+        /// Path within archive/pkg payload.
+        path: String,
+        /// Optional env var for exact path export.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<String>,
     },
 }
 
@@ -500,7 +540,7 @@ mod tests {
             repo: "jqlang/jq".into(),
             tag: "jq-1.7.1".into(),
             asset: "jq-macos-arm64".into(),
-            path: None,
+            extract: vec![],
         };
         assert_eq!(s.provider_type(), "github");
 
@@ -535,11 +575,15 @@ mod tests {
             repo: "jqlang/jq".into(),
             tag: "jq-1.7.1".into(),
             asset: "jq-macos-arm64".into(),
-            path: Some("jq-macos-arm64/jq".into()),
+            extract: vec![ToolExtract::Bin {
+                path: "jq-macos-arm64/jq".into(),
+                as_name: None,
+            }],
         };
         let json = serde_json::to_string(&source).unwrap();
         assert!(json.contains("\"type\":\"github\""));
         assert!(json.contains("\"repo\":\"jqlang/jq\""));
+        assert!(json.contains("\"kind\":\"bin\""));
         assert!(json.contains("\"path\":\"jq-macos-arm64/jq\""));
     }
 
@@ -597,7 +641,7 @@ mod tests {
                 repo: "jqlang/jq".into(),
                 tag: "jq-1.7.1".into(),
                 asset: "jq-macos-arm64".into(),
-                path: None,
+                extract: vec![],
             },
         };
         let json = serde_json::to_string(&tool).unwrap();

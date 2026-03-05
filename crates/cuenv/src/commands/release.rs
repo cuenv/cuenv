@@ -1661,7 +1661,7 @@ version.workspace = true
 
         // Create a tag (use -m to create annotated tag, works with all git configs)
         let out = std::process::Command::new("git")
-            .args(["tag", "-m", "Release v0.1.0", "v0.1.0"])
+            .args(["tag", "--no-sign", "-m", "Release v0.1.0", "v0.1.0"])
             .current_dir(&path)
             .output()
             .unwrap();

@@ -1340,6 +1340,8 @@ async fn given_project_with_no_env_vars(world: &mut TestWorld) {
     let cue_content = r#"package test
 
 name: "empty-env-test"
+
+env: {}
 "#;
 
     // Create a unique test directory
@@ -1396,11 +1398,10 @@ name: "env-inheritance-test"
 
 env: {{
     {var_name}: "{var_value}"
-}}
-
-environments: {{
-    dev: {{
-        // Will be filled in by next step
+    environment: {{
+        dev: {{
+            // Will be filled in by next step
+        }}
     }}
 }}
 "#
@@ -1479,11 +1480,10 @@ name: "env-inheritance-test"
 
 env: {{
     {base_var}: "{base_value}"
-}}
-
-environments: {{
-    {env_name}: {{
-        {var_name}: "{var_value}"
+    environment: {{
+        {env_name}: {{
+            {var_name}: "{var_value}"
+        }}
     }}
 }}
 "#
