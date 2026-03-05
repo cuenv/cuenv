@@ -397,7 +397,7 @@ mod tests {
             repo: "org/repo".into(),
             tag: "v1".into(),
             asset: "file.zip".into(),
-            path: None,
+            extract: vec![],
         };
         assert!(!provider.can_handle(&github_source));
     }
@@ -774,7 +774,7 @@ mod tests {
                 repo: "owner/repo".to_string(),
                 tag: "v1.0.0".to_string(),
                 asset: "file.zip".to_string(),
-                path: None,
+                extract: vec![],
             },
         };
 
