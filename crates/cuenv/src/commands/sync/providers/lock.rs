@@ -375,20 +375,14 @@ async fn execute_lock_sync(
     };
     // Module guard is now dropped, we can safely use async operations
 
-    // Load existing lockfile for cache lookup (unless in check mode or forcing update)
-    let existing_lockfile = if check {
-        // In check mode, we'll load it later for comparison
-        None
-    } else {
-        let loaded = Lockfile::load(&lockfile_path)?;
-        debug!(
-            path = %lockfile_path.display(),
-            has_lockfile = loaded.is_some(),
-            tools_count = loaded.as_ref().map_or(0, |l| l.tools.len()),
-            "Loaded existing lockfile"
-        );
-        loaded
-    };
+    // Load existing lockfile once so we can preserve metadata and compare in check mode.
+    let existing_lockfile = Lockfile::load(&lockfile_path)?;
+    debug!(
+        path = %lockfile_path.display(),
+        has_lockfile = existing_lockfile.is_some(),
+        tools_count = existing_lockfile.as_ref().map_or(0, |l| l.tools.len()),
+        "Loaded existing lockfile"
+    );
 
     // Resolve GitHub token if configured
     let github_token = if let Some(ref cfg) = github_config {
@@ -460,7 +454,7 @@ async fn execute_lock_sync(
     }
 
     // Process Tools runtime
-    let mut lockfile = Lockfile::new();
+    let mut lockfile = seed_lockfile(existing_lockfile.as_ref());
 
     if !collected_tools.is_empty() {
         info!(
@@ -512,6 +506,9 @@ async fn execute_lock_sync(
                 // Check cache
                 let cached = if force_update {
                     debug!(tool = %tool.name, "Skipping cache: force update requested");
+                    None
+                } else if check {
+                    debug!(tool = %tool.name, "Skipping cache: check mode");
                     None
                 } else if let Some(ref existing) = existing_lockfile {
                     if let Some(locked_tool) = existing.find_tool(&tool.name) {
@@ -635,9 +632,9 @@ async fn execute_lock_sync(
 
     if check {
         // Check mode: compare against existing lockfile
-        match Lockfile::load(&lockfile_path)? {
+        match existing_lockfile.as_ref() {
             Some(existing) => {
-                if existing == lockfile {
+                if existing == &lockfile {
                     Ok("Lockfile is up to date.".to_string())
                 } else {
                     Err(cuenv_core::Error::configuration(
@@ -684,6 +681,14 @@ async fn execute_lock_sync(
             lockfile_path.display()
         ))
     }
+}
+
+fn seed_lockfile(existing: Option<&Lockfile>) -> Lockfile {
+    let mut lockfile = Lockfile::new();
+    if let Some(existing) = existing {
+        lockfile.tools_activation = existing.tools_activation.clone();
+    }
+    lockfile
 }
 
 /// Check if the lockfile contains any Nix tools for the current platform.
@@ -850,7 +855,9 @@ fn resolve_github_extract(
         })
         .collect();
 
-    if resolved.is_empty() && let Some(path) = legacy_path {
+    if resolved.is_empty()
+        && let Some(path) = legacy_path
+    {
         let path = expand_version_template(path, version);
         if path_looks_like_library(&path) {
             resolved.push(ToolExtract::Lib { path, env: None });
@@ -866,14 +873,11 @@ fn resolve_github_extract(
 }
 
 fn path_looks_like_library(path: &str) -> bool {
-    std::path::Path::new(path)
-        .extension()
-        .is_some_and(|ext| {
-            ext.eq_ignore_ascii_case("dylib")
-                || ext.eq_ignore_ascii_case("so")
-                || ext.eq_ignore_ascii_case("dll")
-        })
-        || path.to_ascii_lowercase().contains(".so.")
+    std::path::Path::new(path).extension().is_some_and(|ext| {
+        ext.eq_ignore_ascii_case("dylib")
+            || ext.eq_ignore_ascii_case("so")
+            || ext.eq_ignore_ascii_case("dll")
+    }) || path.to_ascii_lowercase().contains(".so.")
 }
 
 fn expand_version_template(value: &str, version: &str) -> String {
@@ -899,4 +903,103 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
     // Include source info for uniqueness
     hasher.update(format!("{:?}", resolved.source).as_bytes());
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::lockfile::{LOCKFILE_VERSION, LockedToolPlatform};
+    use cuenv_core::tools::{ToolActivationOperation, ToolActivationSource, ToolActivationStep};
+
+    #[test]
+    fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections() {
+        let mut existing = Lockfile::new();
+        existing.version = 1;
+        existing.tools.insert(
+            "jq".to_string(),
+            LockedTool {
+                version: "1.7.1".to_string(),
+                platforms: BTreeMap::from([(
+                    "linux-x86_64".to_string(),
+                    LockedToolPlatform {
+                        provider: "github".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({"repo": "jqlang/jq"}),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+        existing.tools_activation.push(ToolActivationStep {
+            var: "PATH".to_string(),
+            op: ToolActivationOperation::Prepend,
+            separator: ":".to_string(),
+            from: ToolActivationSource::AllBinDirs,
+        });
+        existing.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
+            },
+            platforms: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                PlatformData {
+                    digest: "sha256:def".to_string(),
+                    size: None,
+                },
+            )]),
+        });
+
+        let seeded = seed_lockfile(Some(&existing));
+
+        assert_eq!(seeded.version, LOCKFILE_VERSION);
+        assert_eq!(seeded.tools_activation, existing.tools_activation);
+        assert!(seeded.tools.is_empty());
+        assert!(seeded.artifacts.is_empty());
+    }
+
+    #[test]
+    fn test_seeded_lockfile_remains_equal_when_generated_sections_are_rebuilt() {
+        let mut existing = Lockfile::new();
+        existing.tools.insert(
+            "jq".to_string(),
+            LockedTool {
+                version: "1.7.1".to_string(),
+                platforms: BTreeMap::from([(
+                    "linux-x86_64".to_string(),
+                    LockedToolPlatform {
+                        provider: "github".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({"repo": "jqlang/jq"}),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+        existing.tools_activation.push(ToolActivationStep {
+            var: "PATH".to_string(),
+            op: ToolActivationOperation::Prepend,
+            separator: ":".to_string(),
+            from: ToolActivationSource::AllBinDirs,
+        });
+        existing.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
+            },
+            platforms: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                PlatformData {
+                    digest: "sha256:def".to_string(),
+                    size: None,
+                },
+            )]),
+        });
+
+        let mut rebuilt = seed_lockfile(Some(&existing));
+        rebuilt.tools = existing.tools.clone();
+        rebuilt.artifacts = existing.artifacts.clone();
+
+        assert_eq!(rebuilt, existing);
+    }
 }

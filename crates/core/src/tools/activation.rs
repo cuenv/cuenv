@@ -295,6 +295,16 @@ struct ToolPathIndex {
 
 impl ToolPathIndex {
     fn collect(options: &ToolActivationResolveOptions<'_>) -> Result<Self> {
+        Self::collect_with(options, nix_profile_path_for_project)
+    }
+
+    fn collect_with<F>(
+        options: &ToolActivationResolveOptions<'_>,
+        nix_profile_path_for_project: F,
+    ) -> Result<Self>
+    where
+        F: Fn(&Path) -> Result<PathBuf>,
+    {
         let mut index = Self::default();
         let mut all_bin_seen = HashSet::new();
         let mut all_lib_seen = HashSet::new();
@@ -302,7 +312,7 @@ impl ToolPathIndex {
         let mut all_pkgconfig_seen = HashSet::new();
         let platform_key = options.platform.to_string();
         let lockfile_dir = options.lockfile_path.parent().unwrap_or(Path::new("."));
-        let nix_profile_path = nix_profile_path_for_project(lockfile_dir)?;
+        let mut nix_profile_path: Option<Option<PathBuf>> = None;
 
         for (name, tool) in &options.lockfile.tools {
             let Some(platform_data) = tool.platforms.get(&platform_key) else {
@@ -311,36 +321,35 @@ impl ToolPathIndex {
 
             match platform_data.provider.as_str() {
                 "nix" => {
+                    // Non-Nix tools should still activate even when we cannot derive
+                    // the project-local Nix profile path in constrained environments.
+                    let profile_path = nix_profile_path
+                        .get_or_insert_with(|| nix_profile_path_for_project(lockfile_dir).ok());
+                    let Some(profile_path) = profile_path.as_ref() else {
+                        continue;
+                    };
                     add_existing_dir(
                         &mut index.all_bin_dirs,
                         &mut all_bin_seen,
-                        nix_profile_path.join("bin"),
+                        profile_path.join("bin"),
                     );
                     add_existing_dir(
                         &mut index.all_lib_dirs,
                         &mut all_lib_seen,
-                        nix_profile_path.join("lib"),
+                        profile_path.join("lib"),
                     );
                     add_existing_dir(
                         &mut index.all_include_dirs,
                         &mut all_include_seen,
-                        nix_profile_path.join("include"),
+                        profile_path.join("include"),
                     );
                     add_existing_dir(
                         &mut index.all_pkgconfig_dirs,
                         &mut all_pkgconfig_seen,
-                        nix_profile_path.join("lib").join("pkgconfig"),
+                        profile_path.join("lib").join("pkgconfig"),
                     );
-                    add_tool_existing_dir(
-                        &mut index.tool_bin_dirs,
-                        name,
-                        nix_profile_path.join("bin"),
-                    );
-                    add_tool_existing_dir(
-                        &mut index.tool_lib_dirs,
-                        name,
-                        nix_profile_path.join("lib"),
-                    );
+                    add_tool_existing_dir(&mut index.tool_bin_dirs, name, profile_path.join("bin"));
+                    add_tool_existing_dir(&mut index.tool_lib_dirs, name, profile_path.join("lib"));
                 }
                 "rustup" => {
                     let toolchain = platform_data
@@ -627,16 +636,22 @@ mod tests {
     use super::*;
     use crate::lockfile::{LockedTool, LockedToolPlatform, Lockfile};
     use std::collections::BTreeMap;
+    use std::fs;
+
+    fn current_platform_key() -> String {
+        Platform::current().to_string()
+    }
 
     #[test]
     fn test_validate_missing_activation_is_allowed() {
+        let platform_key = current_platform_key();
         let mut lockfile = Lockfile::new();
         lockfile.tools.insert(
             "jq".to_string(),
             LockedTool {
                 version: "1.7.1".to_string(),
                 platforms: BTreeMap::from([(
-                    "darwin-arm64".to_string(),
+                    platform_key,
                     LockedToolPlatform {
                         provider: "github".to_string(),
                         digest: "sha256:abc".to_string(),
@@ -663,13 +678,14 @@ mod tests {
 
     #[test]
     fn test_validate_rejects_per_tool_nix_reference() {
+        let platform_key = current_platform_key();
         let mut lockfile = Lockfile::new();
         lockfile.tools.insert(
             "rust".to_string(),
             LockedTool {
                 version: "1.0.0".to_string(),
                 platforms: BTreeMap::from([(
-                    "darwin-arm64".to_string(),
+                    platform_key,
                     LockedToolPlatform {
                         provider: "nix".to_string(),
                         digest: "sha256:def".to_string(),
@@ -705,6 +721,206 @@ mod tests {
                 .to_string()
                 .contains("do not support Nix tools")
         );
+    }
+
+    #[test]
+    fn test_collect_with_failing_nix_profile_lookup_still_collects_non_nix_tools() {
+        let platform_key = current_platform_key();
+        let mut lockfile = Lockfile::new();
+        lockfile.tools.insert(
+            "jq".to_string(),
+            LockedTool {
+                version: "1.7.1".to_string(),
+                platforms: BTreeMap::from([(
+                    platform_key,
+                    LockedToolPlatform {
+                        provider: "github".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({
+                            "type": "github",
+                            "repo": "jqlang/jq",
+                            "tag": "jq-1.7.1",
+                            "asset": "jq",
+                        }),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let bin_dir = cache_dir
+            .join("github")
+            .join("jq")
+            .join("1.7.1")
+            .join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let options =
+            ToolActivationResolveOptions::new(&lockfile, &lockfile_path).with_cache_dir(cache_dir);
+        let index = ToolPathIndex::collect_with(&options, |_| {
+            Err(Error::configuration("Could not determine cache directory"))
+        })
+        .unwrap();
+
+        assert_eq!(index.all_bin_dirs, vec![bin_dir.clone()]);
+        assert_eq!(index.tool_bin_dirs.get("jq"), Some(&vec![bin_dir]));
+    }
+
+    #[test]
+    fn test_collect_with_failing_nix_profile_lookup_skips_nix_tools() {
+        let platform_key = current_platform_key();
+        let mut lockfile = Lockfile::new();
+        lockfile.tools.insert(
+            "jq".to_string(),
+            LockedTool {
+                version: "1.7.1".to_string(),
+                platforms: BTreeMap::from([(
+                    platform_key.clone(),
+                    LockedToolPlatform {
+                        provider: "github".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({
+                            "type": "github",
+                            "repo": "jqlang/jq",
+                            "tag": "jq-1.7.1",
+                            "asset": "jq",
+                        }),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+        lockfile.tools.insert(
+            "rust".to_string(),
+            LockedTool {
+                version: "1.85.0".to_string(),
+                platforms: BTreeMap::from([(
+                    platform_key,
+                    LockedToolPlatform {
+                        provider: "nix".to_string(),
+                        digest: "sha256:def".to_string(),
+                        source: serde_json::json!({
+                            "type": "nix",
+                            "flake": "nixpkgs",
+                            "package": "rustc",
+                        }),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let bin_dir = cache_dir
+            .join("github")
+            .join("jq")
+            .join("1.7.1")
+            .join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let options =
+            ToolActivationResolveOptions::new(&lockfile, &lockfile_path).with_cache_dir(cache_dir);
+        let index = ToolPathIndex::collect_with(&options, |_| {
+            Err(Error::configuration("Could not determine cache directory"))
+        })
+        .unwrap();
+
+        assert_eq!(index.all_bin_dirs, vec![bin_dir.clone()]);
+        assert_eq!(index.tool_bin_dirs.get("jq"), Some(&vec![bin_dir]));
+        assert!(!index.tool_bin_dirs.contains_key("rust"));
+        assert!(index.all_lib_dirs.is_empty());
+    }
+
+    #[test]
+    fn test_resolve_tool_activation_includes_file_env_exports() {
+        let platform = Platform::current();
+        let platform_key = platform.to_string();
+        let mut lockfile = Lockfile::new();
+        lockfile.tools.insert(
+            "foundationdb".to_string(),
+            LockedTool {
+                version: "7.3.63".to_string(),
+                platforms: BTreeMap::from([(
+                    platform_key,
+                    LockedToolPlatform {
+                        provider: "github".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({
+                            "type": "github",
+                            "repo": "apple/foundationdb",
+                            "tag": "7.3.63",
+                            "asset": "FoundationDB.pkg",
+                            "extract": [
+                                {"kind": "bin", "path": "bin/fdbcli"},
+                                {"kind": "lib", "path": "lib/libfdb_c.dylib", "env": "FDB_CLIENT_LIB"},
+                                {"kind": "file", "path": "etc/fdb.cluster", "env": "FDB_CLUSTER_FILE"},
+                                {"kind": "include", "path": "include/foundationdb/fdb_c.h"},
+                                {"kind": "pkgconfig", "path": "lib/pkgconfig/foundationdb.pc"}
+                            ],
+                        }),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let tool_dir = cache_dir.join("github").join("foundationdb").join("7.3.63");
+        let bin_dir = tool_dir.join("bin");
+        let lib_dir = tool_dir.join("lib");
+        let files_dir = tool_dir.join("files");
+        let include_dir = tool_dir.join("include");
+        let pkgconfig_dir = lib_dir.join("pkgconfig");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&lib_dir).unwrap();
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::create_dir_all(&include_dir).unwrap();
+        fs::create_dir_all(&pkgconfig_dir).unwrap();
+        fs::write(bin_dir.join("fdbcli"), "").unwrap();
+        fs::write(lib_dir.join("libfdb_c.dylib"), "").unwrap();
+        fs::write(files_dir.join("fdb.cluster"), "").unwrap();
+        fs::write(include_dir.join("fdb_c.h"), "").unwrap();
+        fs::write(pkgconfig_dir.join("foundationdb.pc"), "").unwrap();
+
+        let options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path)
+            .with_platform(platform)
+            .with_cache_dir(cache_dir);
+        let steps = resolve_tool_activation(&options).unwrap();
+
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.var == "PATH" && step.value == bin_dir.to_string_lossy())
+        );
+        assert!(steps.iter().any(|step| {
+            step.var == "FDB_CLIENT_LIB"
+                && step.op == ToolActivationOperation::Set
+                && step.value == lib_dir.join("libfdb_c.dylib").to_string_lossy()
+        }));
+        assert!(steps.iter().any(|step| {
+            step.var == "FDB_CLUSTER_FILE"
+                && step.op == ToolActivationOperation::Set
+                && step.value == files_dir.join("fdb.cluster").to_string_lossy()
+        }));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.var == "CPATH" && step.value == include_dir.to_string_lossy())
+        );
+        assert!(steps.iter().any(|step| {
+            step.var == "PKG_CONFIG_PATH" && step.value == pkgconfig_dir.to_string_lossy()
+        }));
     }
 
     #[test]

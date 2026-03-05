@@ -6,9 +6,9 @@
 use crate::cli::CliError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::tools::{
-    Platform, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolExtract, ToolOptions,
-    ToolRegistry, ToolSource, apply_resolved_tool_activation, resolve_tool_activation,
-    validate_tool_activation,
+    Platform, ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
+    ToolExtract, ToolOptions, ToolRegistry, ToolSource, apply_resolved_tool_activation,
+    resolve_tool_activation, validate_tool_activation,
 };
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -239,7 +239,7 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 /// Returns an error if tools cannot be downloaded due to provider issues.
 pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), CliError> {
     // Find the lockfile - not finding one is not an error
-    let Some(lockfile_path) = find_lockfile(project_path) else {
+    let Some(lockfile_path) = find_runtime_lockfile(project_path) else {
         tracing::debug!("No lockfile found - skipping tool download");
         return Ok(());
     };
@@ -525,7 +525,7 @@ fn path_looks_like_library(path: &str) -> bool {
 pub fn resolve_tool_activation_steps(
     project_path: Option<&Path>,
 ) -> Result<Option<Vec<ResolvedToolActivationStep>>, CliError> {
-    let Some(lockfile_path) = find_lockfile(project_path) else {
+    let Some(lockfile_path) = find_runtime_lockfile(project_path) else {
         return Ok(None);
     };
 
@@ -672,6 +672,10 @@ pub fn execute_tools_list() -> Result<(), CliError> {
     }
 
     println!();
+    for line in activation_section_lines(&lockfile, &lockfile_path) {
+        println!("{line}");
+    }
+    println!();
     println!(
         "Total: {} tools, {} platforms",
         lockfile.tools.len(),
@@ -683,6 +687,74 @@ pub fn execute_tools_list() -> Result<(), CliError> {
     );
 
     Ok(())
+}
+
+fn activation_section_lines(lockfile: &Lockfile, lockfile_path: &Path) -> Vec<String> {
+    activation_section_lines_with_cache_dir(lockfile, lockfile_path, None)
+}
+
+fn activation_section_lines_with_cache_dir(
+    lockfile: &Lockfile,
+    lockfile_path: &Path,
+    cache_dir: Option<PathBuf>,
+) -> Vec<String> {
+    let platform = Platform::current();
+    let mode = if lockfile.tools_activation.is_empty() {
+        "inferred"
+    } else {
+        "explicit"
+    };
+    let mut lines = vec![format!("Activation ({platform}, {mode}):")];
+    let mut options =
+        ToolActivationResolveOptions::new(lockfile, lockfile_path).with_platform(platform);
+    if let Some(cache_dir) = cache_dir {
+        options = options.with_cache_dir(cache_dir);
+    }
+
+    match resolve_tool_activation(&options) {
+        Ok(steps) => {
+            let rendered = render_activation_steps(&steps);
+            if rendered.is_empty() {
+                lines.push(
+                    "  - No activation paths are currently materialized for this platform."
+                        .to_string(),
+                );
+            } else {
+                lines.extend(rendered);
+            }
+        }
+        Err(err) => lines.push(format!("  - error: {err}")),
+    }
+
+    lines
+}
+
+fn render_activation_steps(steps: &[ResolvedToolActivationStep]) -> Vec<String> {
+    steps
+        .iter()
+        .filter(|step| !step.value.is_empty() || matches!(step.op, ToolActivationOperation::Set))
+        .map(|step| {
+            let value = if step.value.is_empty() {
+                "<empty>"
+            } else {
+                step.value.as_str()
+            };
+            format!(
+                "  - {} ({}): {}",
+                step.var,
+                activation_operation_label(&step.op),
+                value
+            )
+        })
+        .collect()
+}
+
+fn activation_operation_label(operation: &ToolActivationOperation) -> &'static str {
+    match operation {
+        ToolActivationOperation::Set => "set",
+        ToolActivationOperation::Prepend => "prepend",
+        ToolActivationOperation::Append => "append",
+    }
 }
 
 /// Find the lockfile by walking up from the given directory (or current directory).
@@ -708,9 +780,60 @@ fn find_lockfile(start_path: Option<&Path>) -> Option<PathBuf> {
     }
 }
 
+/// Find a lockfile scoped to the current project only.
+///
+/// Runtime commands like `task` and `exec` should not inherit an ancestor
+/// workspace lockfile when the target project does not define one.
+fn find_lockfile_in_project(project_path: &Path) -> Option<PathBuf> {
+    let project_lockfile = project_path.join(LOCKFILE_NAME);
+    if project_lockfile.exists() {
+        return Some(project_lockfile);
+    }
+
+    let cue_mod_lockfile = project_path.join("cue.mod").join(LOCKFILE_NAME);
+    if cue_mod_lockfile.exists() {
+        return Some(cue_mod_lockfile);
+    }
+
+    None
+}
+
+fn find_runtime_lockfile(project_path: Option<&Path>) -> Option<PathBuf> {
+    project_path.map_or_else(|| find_lockfile(None), find_lockfile_in_project)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::lockfile::{LockedTool, LockedToolPlatform};
+    use cuenv_core::tools::{ToolActivationSource, ToolActivationStep};
+    use std::collections::BTreeMap;
+    use std::fs;
+
+    fn current_platform_key() -> String {
+        Platform::current().to_string()
+    }
+
+    fn github_tool(version: &str) -> LockedTool {
+        LockedTool {
+            version: version.to_string(),
+            platforms: BTreeMap::from([(
+                current_platform_key(),
+                LockedToolPlatform {
+                    provider: "github".to_string(),
+                    digest: "sha256:abc".to_string(),
+                    source: serde_json::json!({
+                        "type": "github",
+                        "repo": "jqlang/jq",
+                        "tag": "jq-1.7.1",
+                        "asset": "jq",
+                    }),
+                    size: None,
+                    dependencies: vec![],
+                },
+            )]),
+        }
+    }
 
     #[test]
     fn test_find_lockfile_not_found() {
@@ -728,5 +851,145 @@ mod tests {
         std::env::set_current_dir(&original_cwd).unwrap();
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_lockfile_in_project_checks_project_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join(LOCKFILE_NAME);
+        fs::write(&lockfile_path, "").unwrap();
+
+        let result = find_lockfile_in_project(temp.path());
+
+        assert_eq!(result, Some(lockfile_path));
+    }
+
+    #[test]
+    fn test_find_lockfile_in_project_does_not_walk_to_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(temp.path().join(LOCKFILE_NAME), "").unwrap();
+
+        let project_dir = temp.path().join("nested-project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let result = find_lockfile_in_project(&project_dir);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_activation_section_lines_show_inferred_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let bin_dir = cache_dir
+            .join("github")
+            .join("jq")
+            .join("1.7.1")
+            .join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .tools
+            .insert("jq".to_string(), github_tool("1.7.1"));
+
+        let lines =
+            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
+
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Activation (") && line.contains("inferred"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == &format!("  - PATH (prepend): {}", bin_dir.display()))
+        );
+    }
+
+    #[test]
+    fn test_activation_section_lines_show_explicit_activation() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let bin_dir = cache_dir
+            .join("github")
+            .join("jq")
+            .join("1.7.1")
+            .join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .tools
+            .insert("jq".to_string(), github_tool("1.7.1"));
+        lockfile.tools_activation = vec![ToolActivationStep {
+            var: "PATH".to_string(),
+            op: ToolActivationOperation::Prepend,
+            separator: ":".to_string(),
+            from: ToolActivationSource::ToolBinDir {
+                tool: "jq".to_string(),
+            },
+        }];
+
+        let lines =
+            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
+
+        assert!(
+            lines
+                .first()
+                .is_some_and(|line| line.contains("Activation (") && line.contains("explicit"))
+        );
+        assert_eq!(
+            lines[1],
+            format!("  - PATH (prepend): {}", bin_dir.display())
+        );
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn test_activation_section_lines_show_invalid_activation_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .tools
+            .insert("jq".to_string(), github_tool("1.7.1"));
+        lockfile.tools_activation = vec![ToolActivationStep {
+            var: "PATH".to_string(),
+            op: ToolActivationOperation::Prepend,
+            separator: ":".to_string(),
+            from: ToolActivationSource::ToolBinDir {
+                tool: "missing".to_string(),
+            },
+        }];
+
+        let lines = activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, None);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("error:") && line.contains("unknown tool 'missing'"))
+        );
+    }
+
+    #[test]
+    fn test_activation_section_lines_note_when_no_paths_are_materialized() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .tools
+            .insert("jq".to_string(), github_tool("1.7.1"));
+
+        let lines =
+            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
+
+        assert!(lines.iter().any(|line| {
+            line == "  - No activation paths are currently materialized for this platform."
+        }));
     }
 }

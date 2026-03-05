@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use std::fs::File;
 use std::io::{Cursor, Read};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
@@ -128,24 +129,37 @@ impl Default for GitHubToolProvider {
 }
 
 impl GitHubToolProvider {
+    fn build_client() -> Client {
+        let primary = catch_unwind(AssertUnwindSafe(|| {
+            Client::builder().user_agent("cuenv").build()
+        }));
+
+        match primary {
+            Ok(Ok(client)) => client,
+            Ok(Err(primary_err)) => Client::builder()
+                .user_agent("cuenv")
+                .no_proxy()
+                .build()
+                .unwrap_or_else(|fallback_err| {
+                    panic!(
+                        "Failed to create GitHub HTTP client: primary={primary_err}; fallback={fallback_err}"
+                    )
+                }),
+            Err(_) => Client::builder()
+                .user_agent("cuenv")
+                .no_proxy()
+                .build()
+                .expect(
+                    "Failed to create GitHub HTTP client after system proxy discovery panicked",
+                ),
+        }
+    }
+
     /// Create a new GitHub tool provider.
-    ///
-    /// # Panics
-    ///
-    /// This function uses `expect` internally because `reqwest::Client::builder().build()`
-    /// only fails with invalid TLS configuration, which cannot happen with default settings.
-    /// The panic is acceptable here as it indicates a fundamental environment issue.
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: Client::builder().build() only fails if:
-        // 1. TLS backend fails to initialize (system-level issue)
-        // 2. Invalid proxy configuration (we don't set any)
-        // With default settings and user_agent only, this cannot fail.
         Self {
-            client: Client::builder()
-                .user_agent("cuenv")
-                .build()
-                .expect("Failed to create HTTP client - TLS backend initialization failed"),
+            client: Self::build_client(),
         }
     }
 
@@ -1190,7 +1204,46 @@ async fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
+
+    fn with_token_env<R>(
+        github_token: Option<&str>,
+        gh_token: Option<&str>,
+        test: impl FnOnce() -> R,
+    ) -> R {
+        static TOKEN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = TOKEN_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let original_github_token = std::env::var("GITHUB_TOKEN").ok();
+        let original_gh_token = std::env::var("GH_TOKEN").ok();
+
+        set_token_env("GITHUB_TOKEN", github_token);
+        set_token_env("GH_TOKEN", gh_token);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        set_token_env("GITHUB_TOKEN", original_github_token.as_deref());
+        set_token_env("GH_TOKEN", original_gh_token.as_deref());
+
+        match result {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    fn set_token_env(name: &str, value: Option<&str>) {
+        // SAFETY: Tests serialize access to process-global env via TOKEN_ENV_LOCK.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 
     // ==========================================================================
     // GitHubToolProvider construction and ToolProvider trait tests
@@ -1411,62 +1464,34 @@ mod tests {
 
     #[test]
     fn test_get_effective_token_runtime_only() {
-        // Clear env vars first
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("runtime-token".to_string()));
+        with_token_env(None, None, || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("runtime-token".to_string()));
+        });
     }
 
     #[test]
     fn test_get_effective_token_none() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(None);
-        assert!(token.is_none());
+        with_token_env(None, None, || {
+            let token = GitHubToolProvider::get_effective_token(None);
+            assert!(token.is_none());
+        });
     }
 
     #[test]
     fn test_get_effective_token_github_token_priority() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_TOKEN", "github-token");
-            std::env::set_var("GH_TOKEN", "gh-token");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("github-token".to_string()));
-
-        // SAFETY: Cleanup
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
+        with_token_env(Some("github-token"), Some("gh-token"), || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("github-token".to_string()));
+        });
     }
 
     #[test]
     fn test_get_effective_token_gh_token_fallback() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::set_var("GH_TOKEN", "gh-token");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("gh-token".to_string()));
-
-        // SAFETY: Cleanup
-        unsafe {
-            std::env::remove_var("GH_TOKEN");
-        }
+        with_token_env(None, Some("gh-token"), || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("gh-token".to_string()));
+        });
     }
 
     // ==========================================================================
