@@ -7,7 +7,9 @@ use oci_distribution::manifest::OciDescriptor;
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
 use sha2::{Digest, Sha256};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, info, trace};
 
@@ -17,7 +19,7 @@ use crate::{Error, Result};
 
 /// OCI registry client for image resolution and blob pulling.
 pub struct OciClient {
-    client: Client,
+    client: OnceLock<std::result::Result<Client, String>>,
 }
 
 impl Default for OciClient {
@@ -27,15 +29,30 @@ impl Default for OciClient {
 }
 
 impl OciClient {
-    /// Create a new OCI client with default configuration.
-    #[must_use]
-    pub fn new() -> Self {
+    fn create_client() -> std::result::Result<Client, String> {
         let config = ClientConfig {
             protocol: ClientProtocol::Https,
             ..Default::default()
         };
-        let client = Client::new(config);
-        Self { client }
+
+        catch_unwind(AssertUnwindSafe(|| Client::new(config))).map_err(|_| {
+            "Failed to initialize OCI client because system proxy discovery panicked".to_string()
+        })
+    }
+
+    fn client(&self) -> Result<&Client> {
+        match self.client.get_or_init(Self::create_client) {
+            Ok(client) => Ok(client),
+            Err(err) => Err(Error::Oci(err.clone())),
+        }
+    }
+
+    /// Create a new OCI client with default configuration.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            client: OnceLock::new(),
+        }
     }
 
     /// Resolve an image reference to a digest for a specific platform.
@@ -46,10 +63,10 @@ impl OciClient {
         info!(%image, %platform, "Resolving image digest");
 
         let auth = self.get_auth(&reference);
+        let client = self.client()?;
 
         // Pull the manifest and config
-        let (manifest, digest, _config) = self
-            .client
+        let (manifest, digest, _config) = client
             .pull_manifest_and_config(&reference, &auth)
             .await
             .map_err(|e| Error::Oci(e.to_string()))?;
@@ -98,8 +115,9 @@ impl OciClient {
 
         // Pull the blob
         let mut file = tokio::fs::File::create(dest).await?;
+        let client = self.client()?;
 
-        self.client
+        client
             .pull_blob(reference, descriptor, &mut file)
             .await
             .map_err(|e| Error::blob_pull_failed(&descriptor.digest, e.to_string()))?;

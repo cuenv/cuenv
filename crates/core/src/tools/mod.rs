@@ -37,11 +37,17 @@
 //! let fetched = provider.fetch(&resolved, &ToolOptions::default()).await?;
 //! ```
 
+pub mod activation;
 mod provider;
 mod registry;
 
+pub use activation::{
+    ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
+    ToolActivationSource, ToolActivationStep, apply_resolved_tool_activation,
+    resolve_tool_activation, validate_tool_activation,
+};
 pub use provider::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
-    ToolSource, default_cache_dir,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
+    ToolResolveRequest, ToolSource, default_cache_dir,
 };
 pub use registry::ToolRegistry;

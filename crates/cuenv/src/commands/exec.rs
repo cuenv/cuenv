@@ -9,13 +9,14 @@
 //!    tools from any available lockfile.
 
 use super::sync::{SyncMode, SyncOptions, default_registry};
-use super::tools::{ensure_tools_downloaded, get_tool_paths};
+use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use super::{CommandExecutor, relative_path_from_root};
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 use cuenv_core::tasks::execute_command_with_redaction;
+use cuenv_core::tools::apply_resolved_tool_activation;
 use std::path::Path;
 
 use cuenv_events::emit_stderr;
@@ -251,59 +252,20 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
     ensure_tools_downloaded(Some(&target_path))
         .await
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
-    if let Ok(Some(tool_paths)) = get_tool_paths(Some(&target_path)) {
+    if let Some(activation_steps) =
+        resolve_tool_activation_steps(Some(&target_path)).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
+        })?
+    {
         tracing::debug!(
-            "Activating {} tool bin directories and {} lib directories",
-            tool_paths.bin_dirs.len(),
-            tool_paths.lib_dirs.len()
+            steps = activation_steps.len(),
+            "Applying configured tool activation operations"
         );
 
-        // Prepend tool bin directories to PATH
-        // Use runtime_env PATH (from CUE), NOT host PATH - this ensures hermetic isolation
-        if let Some(path_prepend) = tool_paths.path_prepend() {
-            let current_path = runtime_env
-                .get("PATH")
-                .map(ToString::to_string)
-                .unwrap_or_default();
-            let new_path = if current_path.is_empty() {
-                path_prepend
-            } else {
-                format!("{path_prepend}:{current_path}")
-            };
-            runtime_env.set("PATH".to_string(), new_path);
-        }
-
-        // Prepend tool lib directories to library path
-        // Use runtime_env lib path (from CUE), NOT host lib path - hermetic isolation
-        if let Some(lib_prepend) = tool_paths.lib_path_prepend() {
-            #[cfg(target_os = "macos")]
-            {
-                let lib_var = "DYLD_LIBRARY_PATH";
-                let current = runtime_env
-                    .get(lib_var)
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                let new_path = if current.is_empty() {
-                    lib_prepend
-                } else {
-                    format!("{lib_prepend}:{current}")
-                };
-                runtime_env.set(lib_var.to_string(), new_path);
-            }
-
-            #[cfg(not(target_os = "macos"))]
-            {
-                let lib_var = "LD_LIBRARY_PATH";
-                let current = runtime_env
-                    .get(lib_var)
-                    .map(ToString::to_string)
-                    .unwrap_or_default();
-                let new_path = if current.is_empty() {
-                    lib_prepend
-                } else {
-                    format!("{lib_prepend}:{current}")
-                };
-                runtime_env.set(lib_var.to_string(), new_path);
+        for step in activation_steps {
+            let current = runtime_env.get(&step.var);
+            if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
+                runtime_env.set(step.var.clone(), new_value);
             }
         }
     }

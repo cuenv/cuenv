@@ -2,22 +2,29 @@
 //!
 //! Fetches development tools from GitHub Releases. Supports:
 //! - Template variables in asset names: `{version}`, `{os}`, `{arch}`
-//! - Automatic archive extraction (zip, tar.gz)
+//! - Automatic archive extraction (zip, tar.gz, pkg)
 //! - Path-based binary extraction from archives
 
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::tools::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
-    ToolSource,
+    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
+    ToolResolveRequest, ToolSource,
 };
 use flate2::read::GzDecoder;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::fs::File;
 use std::io::{Cursor, Read};
-use std::path::PathBuf;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::process::{Command, Stdio};
 use tar::Archive;
+#[cfg(target_os = "macos")]
+use tempfile::Builder;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
 
@@ -122,24 +129,37 @@ impl Default for GitHubToolProvider {
 }
 
 impl GitHubToolProvider {
+    fn build_client() -> Client {
+        let primary = catch_unwind(AssertUnwindSafe(|| {
+            Client::builder().user_agent("cuenv").build()
+        }));
+
+        match primary {
+            Ok(Ok(client)) => client,
+            Ok(Err(primary_err)) => Client::builder()
+                .user_agent("cuenv")
+                .no_proxy()
+                .build()
+                .unwrap_or_else(|fallback_err| {
+                    panic!(
+                        "Failed to create GitHub HTTP client: primary={primary_err}; fallback={fallback_err}"
+                    )
+                }),
+            Err(_) => Client::builder()
+                .user_agent("cuenv")
+                .no_proxy()
+                .build()
+                .expect(
+                    "Failed to create GitHub HTTP client after system proxy discovery panicked",
+                ),
+        }
+    }
+
     /// Create a new GitHub tool provider.
-    ///
-    /// # Panics
-    ///
-    /// This function uses `expect` internally because `reqwest::Client::builder().build()`
-    /// only fails with invalid TLS configuration, which cannot happen with default settings.
-    /// The panic is acceptable here as it indicates a fundamental environment issue.
     #[must_use]
     pub fn new() -> Self {
-        // SAFETY: Client::builder().build() only fails if:
-        // 1. TLS backend fails to initialize (system-level issue)
-        // 2. Invalid proxy configuration (we don't set any)
-        // With default settings and user_agent only, this cannot fail.
         Self {
-            client: Client::builder()
-                .user_agent("cuenv")
-                .build()
-                .expect("Failed to create HTTP client - TLS backend initialization failed"),
+            client: Self::build_client(),
         }
     }
 
@@ -317,11 +337,14 @@ impl GitHubToolProvider {
         // Determine archive type
         let is_zip = asset_name.ends_with(".zip");
         let is_tar_gz = asset_name.ends_with(".tar.gz") || asset_name.ends_with(".tgz");
+        let is_pkg = asset_name.ends_with(".pkg");
 
         if is_zip {
             self.extract_from_zip(data, binary_path, dest)
         } else if is_tar_gz {
             self.extract_from_tar_gz(data, binary_path, dest)
+        } else if is_pkg {
+            self.extract_from_pkg(data, binary_path, dest)
         } else {
             // Assume it's a raw binary
             std::fs::create_dir_all(dest)?;
@@ -526,6 +549,340 @@ impl GitHubToolProvider {
         self.find_main_binary(dest)
     }
 
+    /// Extract from a macOS .pkg archive.
+    #[cfg(target_os = "macos")]
+    fn extract_from_pkg(
+        &self,
+        data: &[u8],
+        binary_path: Option<&str>,
+        dest: &std::path::Path,
+    ) -> Result<PathBuf> {
+        std::fs::create_dir_all(dest)?;
+
+        let work_dir = Builder::new().prefix("cuenv-pkg-").tempdir().map_err(|e| {
+            cuenv_core::Error::tool_resolution(format!(
+                "Failed to create temporary directory for pkg extraction: {}",
+                e
+            ))
+        })?;
+
+        let pkg_path = work_dir.path().join("asset.pkg");
+        std::fs::write(&pkg_path, data)?;
+
+        let expanded_dir = work_dir.path().join("expanded");
+        Self::run_command(
+            Command::new("pkgutil")
+                .arg("--expand")
+                .arg(&pkg_path)
+                .arg(&expanded_dir),
+            "expand pkg archive",
+        )?;
+
+        let payloads = Self::collect_payload_files(&expanded_dir)?;
+        if payloads.is_empty() {
+            return Err(cuenv_core::Error::tool_resolution(
+                "No payload files found in pkg archive".to_string(),
+            ));
+        }
+
+        for (index, payload_path) in payloads.iter().enumerate() {
+            let payload_dir = work_dir.path().join(format!("payload-{index}"));
+            std::fs::create_dir_all(&payload_dir)?;
+
+            let payload_file = File::open(payload_path)?;
+            let payload_extract = Self::run_command(
+                Command::new("cpio")
+                    .args(["-idm", "--quiet"])
+                    .current_dir(&payload_dir)
+                    .stdin(Stdio::from(payload_file)),
+                "extract pkg payload",
+            );
+
+            if let Err(error) = payload_extract {
+                debug!(?payload_path, %error, "Skipping unreadable pkg payload");
+                continue;
+            }
+
+            if let Some(path) = binary_path {
+                if let Some(found) = Self::find_path_in_tree(&payload_dir, path)? {
+                    return Self::copy_extracted_file(&found, dest, path);
+                }
+            } else if let Ok(found) = self.find_main_binary(&payload_dir) {
+                return Self::copy_extracted_file(&found, dest, "binary");
+            }
+        }
+
+        if let Some(path) = binary_path {
+            return Err(cuenv_core::Error::tool_resolution(format!(
+                "Binary '{}' not found in pkg payloads",
+                path
+            )));
+        }
+
+        Err(cuenv_core::Error::tool_resolution(
+            "No executable found in pkg payloads".to_string(),
+        ))
+    }
+
+    /// Extract from a macOS .pkg archive (unsupported on non-macOS hosts).
+    #[cfg(not(target_os = "macos"))]
+    fn extract_from_pkg(
+        &self,
+        _data: &[u8],
+        _binary_path: Option<&str>,
+        _dest: &std::path::Path,
+    ) -> Result<PathBuf> {
+        Err(cuenv_core::Error::tool_resolution(
+            ".pkg extraction is only supported on macOS hosts".to_string(),
+        ))
+    }
+
+    /// Copy a selected extracted file into the destination directory.
+    #[cfg(target_os = "macos")]
+    fn copy_extracted_file(source: &Path, dest: &Path, fallback_name: &str) -> Result<PathBuf> {
+        std::fs::create_dir_all(dest)?;
+        let file_name = source
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(fallback_name);
+        let dest_path = dest.join(file_name);
+        std::fs::copy(source, &dest_path)?;
+        Self::ensure_executable(&dest_path)?;
+        Ok(dest_path)
+    }
+
+    /// Run a process and map non-zero exits to tool-resolution errors.
+    #[cfg(target_os = "macos")]
+    fn run_command(command: &mut Command, action: &str) -> Result<()> {
+        let status = command.status().map_err(|e| {
+            cuenv_core::Error::tool_resolution(format!("Failed to {}: {}", action, e))
+        })?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(cuenv_core::Error::tool_resolution(format!(
+                "Failed to {}: {}",
+                action, status
+            )))
+        }
+    }
+
+    /// Recursively collect all `Payload` files from an expanded pkg directory.
+    #[cfg(target_os = "macos")]
+    fn collect_payload_files(root: &Path) -> Result<Vec<PathBuf>> {
+        let mut stack = vec![root.to_path_buf()];
+        let mut payloads = Vec::new();
+
+        while let Some(current) = stack.pop() {
+            for entry in std::fs::read_dir(&current)? {
+                let entry = entry?;
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+
+                if path.is_file() && path.file_name().and_then(|n| n.to_str()) == Some("Payload") {
+                    payloads.push(path);
+                }
+            }
+        }
+
+        Ok(payloads)
+    }
+
+    /// Find a file in a directory tree matching the requested pkg path.
+    #[cfg(target_os = "macos")]
+    fn find_path_in_tree(root: &Path, path: &str) -> Result<Option<PathBuf>> {
+        let requested = Self::normalize_lookup_path(path);
+        let mut stack = vec![root.to_path_buf()];
+
+        while let Some(current) = stack.pop() {
+            for entry in std::fs::read_dir(&current)? {
+                let entry = entry?;
+                let entry_path = entry.path();
+
+                if entry_path.is_dir() {
+                    stack.push(entry_path);
+                    continue;
+                }
+
+                if !entry_path.is_file() {
+                    continue;
+                }
+
+                let Ok(relative) = entry_path.strip_prefix(root) else {
+                    continue;
+                };
+                let candidate = relative.to_string_lossy().replace('\\', "/");
+                let candidate = candidate.trim_start_matches("./");
+
+                if candidate == requested || candidate.ends_with(&format!("/{requested}")) {
+                    return Ok(Some(entry_path));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Normalize lookup paths for suffix matching.
+    #[cfg(target_os = "macos")]
+    fn normalize_lookup_path(path: &str) -> String {
+        path.trim_start_matches('/')
+            .trim_start_matches("./")
+            .to_string()
+    }
+
+    /// Determine whether a path looks like a dynamic library.
+    fn path_looks_like_library(path: &str) -> bool {
+        let path_lower = path.to_ascii_lowercase();
+        path_lower.ends_with(".dylib")
+            || path_lower.ends_with(".so")
+            || path_lower.contains(".so.")
+            || path_lower.ends_with(".dll")
+    }
+
+    /// Determine whether a filesystem path looks like a dynamic library.
+    fn file_looks_like_library(path: &Path) -> bool {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        name.ends_with(".dylib")
+            || name.ends_with(".so")
+            || name.contains(".so.")
+            || name.ends_with(".dll")
+    }
+
+    fn expand_extract_templates(
+        &self,
+        extract: &[ToolExtract],
+        version: &str,
+        platform: &Platform,
+    ) -> Vec<ToolExtract> {
+        extract
+            .iter()
+            .map(|item| match item {
+                ToolExtract::Bin { path, as_name } => ToolExtract::Bin {
+                    path: self.expand_template(path, version, platform),
+                    as_name: as_name.clone(),
+                },
+                ToolExtract::Lib { path, env } => ToolExtract::Lib {
+                    path: self.expand_template(path, version, platform),
+                    env: env.clone(),
+                },
+                ToolExtract::Include { path } => ToolExtract::Include {
+                    path: self.expand_template(path, version, platform),
+                },
+                ToolExtract::PkgConfig { path } => ToolExtract::PkgConfig {
+                    path: self.expand_template(path, version, platform),
+                },
+                ToolExtract::File { path, env } => ToolExtract::File {
+                    path: self.expand_template(path, version, platform),
+                    env: env.clone(),
+                },
+            })
+            .collect()
+    }
+
+    fn cache_targets_from_source(
+        &self,
+        resolved: &ResolvedTool,
+        options: &ToolOptions,
+    ) -> Vec<PathBuf> {
+        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
+        let extract = match &resolved.source {
+            ToolSource::GitHub { extract, .. } => extract,
+            _ => return vec![cache_dir.join("bin").join(&resolved.name)],
+        };
+
+        if extract.is_empty() {
+            return vec![cache_dir.join("bin").join(&resolved.name)];
+        }
+
+        extract
+            .iter()
+            .map(|item| self.cache_target_for_extract(&cache_dir, &resolved.name, item))
+            .collect()
+    }
+
+    fn cache_target_for_extract(
+        &self,
+        cache_dir: &Path,
+        tool_name: &str,
+        item: &ToolExtract,
+    ) -> PathBuf {
+        match item {
+            ToolExtract::Bin { path, as_name } => {
+                let name = as_name.as_deref().unwrap_or_else(|| {
+                    Path::new(path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(tool_name)
+                });
+                cache_dir.join("bin").join(name)
+            }
+            ToolExtract::Lib { path, .. } => {
+                let name = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(tool_name);
+                cache_dir.join("lib").join(name)
+            }
+            ToolExtract::Include { path } => {
+                let name = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(tool_name);
+                cache_dir.join("include").join(name)
+            }
+            ToolExtract::PkgConfig { path } => {
+                let name = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(tool_name);
+                cache_dir.join("lib").join("pkgconfig").join(name)
+            }
+            ToolExtract::File { path, .. } => {
+                let name = Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(tool_name);
+                cache_dir.join("files").join(name)
+            }
+        }
+    }
+
+    fn is_executable_extract(item: &ToolExtract) -> bool {
+        matches!(item, ToolExtract::Bin { .. })
+    }
+
+    fn extract_source_path(item: &ToolExtract) -> &str {
+        match item {
+            ToolExtract::Bin { path, .. }
+            | ToolExtract::Lib { path, .. }
+            | ToolExtract::Include { path }
+            | ToolExtract::PkgConfig { path }
+            | ToolExtract::File { path, .. } => path,
+        }
+    }
+
+    /// Ensure a file is executable on Unix hosts.
+    fn ensure_executable(path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(path, perms)?;
+        }
+
+        Ok(())
+    }
+
     /// Find the main binary in an extracted directory.
     fn find_main_binary(&self, dir: &std::path::Path) -> Result<PathBuf> {
         // First, look for binaries in bin/
@@ -612,14 +969,45 @@ impl ToolProvider for GitHubToolProvider {
                 format!("{prefix}{{version}}")
             });
 
-        let path = config.get("path").and_then(|v| v.as_str());
+        let extract: Vec<ToolExtract> = config
+            .get("extract")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| {
+                cuenv_core::Error::tool_resolution(format!(
+                    "Invalid 'extract' in GitHub source config: {}",
+                    e
+                ))
+            })?
+            .unwrap_or_default();
+        let path = config
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(String::from);
 
         info!(%tool_name, %repo, %version, %platform, "Resolving GitHub release");
 
         // Expand templates
         let tag = self.expand_template(&tag_template, version, platform);
         let asset = self.expand_template(asset_template, version, platform);
-        let expanded_path = path.map(|p| self.expand_template(p, version, platform));
+        let mut expanded_extract = self.expand_extract_templates(&extract, version, platform);
+        if expanded_extract.is_empty()
+            && let Some(path) = path.as_deref()
+        {
+            let expanded_path = self.expand_template(path, version, platform);
+            if Self::path_looks_like_library(&expanded_path) {
+                expanded_extract.push(ToolExtract::Lib {
+                    path: expanded_path,
+                    env: None,
+                });
+            } else {
+                expanded_extract.push(ToolExtract::Bin {
+                    path: expanded_path,
+                    as_name: None,
+                });
+            }
+        }
 
         // Fetch release to verify it exists (uses runtime token if provided)
         let release = self.fetch_release(repo, &tag, token).await?;
@@ -644,7 +1032,7 @@ impl ToolProvider for GitHubToolProvider {
                 repo: repo.to_string(),
                 tag,
                 asset,
-                path: expanded_path,
+                extract: expanded_extract,
             },
         })
     }
@@ -654,7 +1042,7 @@ impl ToolProvider for GitHubToolProvider {
             repo,
             tag,
             asset,
-            path,
+            extract,
         } = &resolved.source
         else {
             return Err(cuenv_core::Error::tool_resolution(
@@ -670,17 +1058,19 @@ impl ToolProvider for GitHubToolProvider {
             "Fetching GitHub release"
         );
 
-        // Check cache - binaries go in bin/ subdirectory for consistency with other providers
+        // Check cache
         let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let bin_dir = cache_dir.join("bin");
-        let binary_path = bin_dir.join(&resolved.name);
-
-        if binary_path.exists() && !options.force_refetch {
-            debug!(?binary_path, "Tool already cached");
-            let sha256 = compute_file_sha256(&binary_path).await?;
+        let cached_targets = self.cache_targets_from_source(resolved, options);
+        if !options.force_refetch && cached_targets.iter().all(|p| p.exists()) {
+            let cached_path = cached_targets
+                .first()
+                .cloned()
+                .unwrap_or_else(|| cache_dir.join("bin").join(&resolved.name));
+            debug!(?cached_path, "Tool already cached");
+            let sha256 = compute_file_sha256(&cached_path).await?;
             return Ok(FetchedTool {
                 name: resolved.name.clone(),
-                binary_path,
+                binary_path: cached_path,
                 sha256,
             });
         }
@@ -699,42 +1089,97 @@ impl ToolProvider for GitHubToolProvider {
             .download_asset(&found_asset.browser_download_url, None)
             .await?;
 
-        // Ensure bin directory exists
-        std::fs::create_dir_all(&bin_dir)?;
+        if extract.is_empty() {
+            // Legacy behavior: single binary inferred from archive.
+            let extracted = self.extract_binary(&data, asset, None, &cache_dir)?;
+            let final_path = if Self::file_looks_like_library(&extracted) {
+                let file_name = extracted
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&resolved.name);
+                cache_dir.join("lib").join(file_name)
+            } else {
+                cache_dir.join("bin").join(&resolved.name)
+            };
+            if let Some(parent) = final_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            if extracted != final_path {
+                if final_path.exists() {
+                    std::fs::remove_file(&final_path)?;
+                }
+                std::fs::rename(&extracted, &final_path)?;
+            }
+            if !Self::file_looks_like_library(&final_path) {
+                Self::ensure_executable(&final_path)?;
+            }
 
-        // Extract binary to a temp location first, then move to bin/
-        let extracted = self.extract_binary(&data, asset, path.as_deref(), &cache_dir)?;
+            let sha256 = compute_file_sha256(&final_path).await?;
+            info!(
+                tool = %resolved.name,
+                binary = ?final_path,
+                %sha256,
+                "Fetched GitHub release"
+            );
+            return Ok(FetchedTool {
+                name: resolved.name.clone(),
+                binary_path: final_path,
+                sha256,
+            });
+        }
 
-        // Move to bin/<tool_name> for consistency with other providers
-        let final_path = bin_dir.join(&resolved.name);
-        if extracted != final_path {
-            // If extracted to a different location, move it
+        // Typed extract mode: fetch each declared artifact by path.
+        let extract_dir = cache_dir.join(".extract");
+        if extract_dir.exists() {
+            std::fs::remove_dir_all(&extract_dir)?;
+        }
+        std::fs::create_dir_all(&extract_dir)?;
+
+        let mut produced_paths: Vec<PathBuf> = Vec::with_capacity(extract.len());
+        for item in extract {
+            let source_path = Self::extract_source_path(item);
+            let extracted_path =
+                self.extract_binary(&data, asset, Some(source_path), &extract_dir)?;
+            let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
+            if let Some(parent) = final_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
             if final_path.exists() {
                 std::fs::remove_file(&final_path)?;
             }
-            std::fs::rename(&extracted, &final_path)?;
+            std::fs::rename(&extracted_path, &final_path)?;
+            if Self::is_executable_extract(item) {
+                Self::ensure_executable(&final_path)?;
+            }
+            produced_paths.push(final_path);
+        }
+        if extract_dir.exists() {
+            let _ = std::fs::remove_dir_all(&extract_dir);
         }
 
-        let sha256 = compute_file_sha256(&final_path).await?;
-
+        let primary_path = produced_paths
+            .first()
+            .cloned()
+            .unwrap_or_else(|| cache_dir.join("bin").join(&resolved.name));
+        let sha256 = compute_file_sha256(&primary_path).await?;
         info!(
             tool = %resolved.name,
-            binary = ?final_path,
+            binary = ?primary_path,
             %sha256,
             "Fetched GitHub release"
         );
 
         Ok(FetchedTool {
             name: resolved.name.clone(),
-            binary_path: final_path,
+            binary_path: primary_path,
             sha256,
         })
     }
 
     fn is_cached(&self, resolved: &ResolvedTool, options: &ToolOptions) -> bool {
-        let cache_dir = self.tool_cache_dir(options, &resolved.name, &resolved.version);
-        let binary_path = cache_dir.join("bin").join(&resolved.name);
-        binary_path.exists()
+        self.cache_targets_from_source(resolved, options)
+            .into_iter()
+            .all(|path| path.exists())
     }
 }
 
@@ -759,7 +1204,46 @@ async fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
+
+    fn with_token_env<R>(
+        github_token: Option<&str>,
+        gh_token: Option<&str>,
+        test: impl FnOnce() -> R,
+    ) -> R {
+        static TOKEN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = TOKEN_ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap();
+
+        let original_github_token = std::env::var("GITHUB_TOKEN").ok();
+        let original_gh_token = std::env::var("GH_TOKEN").ok();
+
+        set_token_env("GITHUB_TOKEN", github_token);
+        set_token_env("GH_TOKEN", gh_token);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        set_token_env("GITHUB_TOKEN", original_github_token.as_deref());
+        set_token_env("GH_TOKEN", original_gh_token.as_deref());
+
+        match result {
+            Ok(value) => value,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
+
+    fn set_token_env(name: &str, value: Option<&str>) {
+        // SAFETY: Tests serialize access to process-global env via TOKEN_ENV_LOCK.
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+        }
+    }
 
     // ==========================================================================
     // GitHubToolProvider construction and ToolProvider trait tests
@@ -791,7 +1275,7 @@ mod tests {
             repo: "org/repo".into(),
             tag: "v1".into(),
             asset: "file.zip".into(),
-            path: None,
+            extract: vec![],
         };
         assert!(provider.can_handle(&github_source));
 
@@ -811,7 +1295,10 @@ mod tests {
             repo: "owner/repo".into(),
             tag: "v1.0.0".into(),
             asset: "archive.tar.gz".into(),
-            path: Some("bin/tool".into()),
+            extract: vec![ToolExtract::Bin {
+                path: "bin/tool".into(),
+                as_name: None,
+            }],
         };
         assert!(provider.can_handle(&source));
     }
@@ -900,67 +1387,111 @@ mod tests {
     }
 
     // ==========================================================================
+    // library path routing tests
+    // ==========================================================================
+
+    #[test]
+    fn test_path_looks_like_library() {
+        assert!(GitHubToolProvider::path_looks_like_library(
+            "lib/libfdb_c.dylib"
+        ));
+        assert!(GitHubToolProvider::path_looks_like_library(
+            "lib/libssl.so.3"
+        ));
+        assert!(GitHubToolProvider::path_looks_like_library(
+            "bin/sqlite3.dll"
+        ));
+        assert!(!GitHubToolProvider::path_looks_like_library("bin/fdbcli"));
+    }
+
+    #[test]
+    fn test_cache_targets_from_source_uses_lib_for_library_extract() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let resolved = ResolvedTool {
+            name: "foundationdb".to_string(),
+            version: "7.3.63".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "apple/foundationdb".to_string(),
+                tag: "7.3.63".to_string(),
+                asset: "FoundationDB-7.3.63_arm64.pkg".to_string(),
+                extract: vec![ToolExtract::Lib {
+                    path: "libfdb_c.dylib".to_string(),
+                    env: None,
+                }],
+            },
+        };
+
+        let target = provider
+            .cache_targets_from_source(&resolved, &options)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(target.ends_with("github/foundationdb/7.3.63/lib/libfdb_c.dylib"));
+    }
+
+    #[test]
+    fn test_cache_targets_from_source_uses_bin_for_default_extract() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let resolved = ResolvedTool {
+            name: "foundationdb".to_string(),
+            version: "7.3.63".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "apple/foundationdb".to_string(),
+                tag: "7.3.63".to_string(),
+                asset: "FoundationDB-7.3.63_arm64.pkg".to_string(),
+                extract: vec![],
+            },
+        };
+        let target = provider
+            .cache_targets_from_source(&resolved, &options)
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(target.ends_with("github/foundationdb/7.3.63/bin/foundationdb"));
+    }
+
+    // ==========================================================================
     // get_effective_token tests
     // ==========================================================================
 
     #[test]
     fn test_get_effective_token_runtime_only() {
-        // Clear env vars first
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("runtime-token".to_string()));
+        with_token_env(None, None, || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("runtime-token".to_string()));
+        });
     }
 
     #[test]
     fn test_get_effective_token_none() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(None);
-        assert!(token.is_none());
+        with_token_env(None, None, || {
+            let token = GitHubToolProvider::get_effective_token(None);
+            assert!(token.is_none());
+        });
     }
 
     #[test]
     fn test_get_effective_token_github_token_priority() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::set_var("GITHUB_TOKEN", "github-token");
-            std::env::set_var("GH_TOKEN", "gh-token");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("github-token".to_string()));
-
-        // SAFETY: Cleanup
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
+        with_token_env(Some("github-token"), Some("gh-token"), || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("github-token".to_string()));
+        });
     }
 
     #[test]
     fn test_get_effective_token_gh_token_fallback() {
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::set_var("GH_TOKEN", "gh-token");
-        }
-
-        let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
-        assert_eq!(token, Some("gh-token".to_string()));
-
-        // SAFETY: Cleanup
-        unsafe {
-            std::env::remove_var("GH_TOKEN");
-        }
+        with_token_env(None, Some("gh-token"), || {
+            let token = GitHubToolProvider::get_effective_token(Some("runtime-token"));
+            assert_eq!(token, Some("gh-token".to_string()));
+        });
     }
 
     // ==========================================================================
@@ -1219,7 +1750,7 @@ mod tests {
                 repo: "owner/repo".to_string(),
                 tag: "v1.0.0".to_string(),
                 asset: "mytool.tar.gz".to_string(),
-                path: None,
+                extract: vec![],
             },
         };
 
@@ -1240,7 +1771,7 @@ mod tests {
                 repo: "owner/repo".to_string(),
                 tag: "v1.0.0".to_string(),
                 asset: "mytool.tar.gz".to_string(),
-                path: None,
+                extract: vec![],
             },
         };
 
@@ -1249,6 +1780,35 @@ mod tests {
         let bin_dir = cache_dir.join("bin");
         std::fs::create_dir_all(&bin_dir).unwrap();
         std::fs::write(bin_dir.join("mytool"), b"binary").unwrap();
+
+        assert!(provider.is_cached(&resolved, &options));
+    }
+
+    #[test]
+    fn test_is_cached_library_path_uses_lib_directory() {
+        let provider = GitHubToolProvider::new();
+        let temp_dir = TempDir::new().unwrap();
+        let options = ToolOptions::new().with_cache_dir(temp_dir.path().to_path_buf());
+
+        let resolved = ResolvedTool {
+            name: "foundationdb".to_string(),
+            version: "7.3.63".to_string(),
+            platform: Platform::new(Os::Darwin, Arch::Arm64),
+            source: ToolSource::GitHub {
+                repo: "apple/foundationdb".to_string(),
+                tag: "7.3.63".to_string(),
+                asset: "FoundationDB-7.3.63_arm64.pkg".to_string(),
+                extract: vec![ToolExtract::Lib {
+                    path: "libfdb_c.dylib".to_string(),
+                    env: None,
+                }],
+            },
+        };
+
+        let cache_dir = provider.tool_cache_dir(&options, "foundationdb", "7.3.63");
+        let lib_dir = cache_dir.join("lib");
+        std::fs::create_dir_all(&lib_dir).unwrap();
+        std::fs::write(lib_dir.join("libfdb_c.dylib"), b"library").unwrap();
 
         assert!(provider.is_cached(&resolved, &options));
     }

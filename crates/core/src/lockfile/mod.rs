@@ -4,10 +4,10 @@
 //! reproducible, hermetic builds. It supports multiple tool sources:
 //! GitHub releases, Nix flakes, and OCI images.
 //!
-//! ## Structure (v2)
+//! ## Structure (v3)
 //!
 //! ```toml
-//! version = 2
+//! version = 3
 //!
 //! # Tools section - multi-source tool management
 //! [tools.jq]
@@ -31,6 +31,12 @@
 //!   digest = "sha256:ghi..."
 //!   source = { flake = "nixpkgs", package = "rustc" }
 //!
+//! [[tools_activation]]
+//! var = "PATH"
+//! op = "prepend"
+//! separator = ":"
+//! from = { type = "allBinDirs" }
+//!
 //! # Legacy artifacts section (for OCI images)
 //! [[artifacts]]
 //! kind = "image"
@@ -40,12 +46,13 @@
 //!   "linux-x86_64" = { digest = "sha256:abc...", size = 1234567 }
 //! ```
 
+use crate::tools::ToolActivationStep;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Current lockfile format version.
-pub const LOCKFILE_VERSION: u32 = 2;
+pub const LOCKFILE_VERSION: u32 = 3;
 
 /// Filename for the lockfile.
 pub const LOCKFILE_NAME: &str = "cuenv.lock";
@@ -58,6 +65,9 @@ pub struct Lockfile {
     /// Locked tools with per-platform resolution (v2+).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, LockedTool>,
+    /// Tool activation operations shared by CLI/CI execution paths (v3+).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools_activation: Vec<ToolActivationStep>,
     /// Legacy OCI artifacts (for backward compatibility with v1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<LockedArtifact>,
@@ -68,6 +78,7 @@ impl Default for Lockfile {
         Self {
             version: LOCKFILE_VERSION,
             tools: BTreeMap::new(),
+            tools_activation: Vec::new(),
             artifacts: Vec::new(),
         }
     }
@@ -420,7 +431,7 @@ mod tests {
         });
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
-        assert!(toml_str.contains("version = 2"));
+        assert!(toml_str.contains("version = 3"));
         assert!(toml_str.contains("kind = \"image\""));
         assert!(toml_str.contains("nginx:1.25-alpine"));
 
@@ -611,7 +622,7 @@ mod tests {
             .unwrap();
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
-        assert!(toml_str.contains("version = 2"));
+        assert!(toml_str.contains("version = 3"));
         assert!(toml_str.contains("[tools.jq]"));
         assert!(toml_str.contains("provider = \"github\""));
         assert!(toml_str.contains("digest = \"sha256:abc123\""));
@@ -621,6 +632,29 @@ mod tests {
         assert_eq!(parsed.tools.len(), 1);
         assert_eq!(parsed.tools["jq"].version, "1.7.1");
         assert_eq!(parsed.tools["jq"].platforms.len(), 2);
+    }
+
+    #[test]
+    fn test_tools_activation_serialization() {
+        use crate::tools::{ToolActivationOperation, ToolActivationSource, ToolActivationStep};
+
+        let mut lockfile = Lockfile::new();
+        lockfile.tools_activation.push(ToolActivationStep {
+            var: "PATH".to_string(),
+            op: ToolActivationOperation::Prepend,
+            separator: ":".to_string(),
+            from: ToolActivationSource::AllBinDirs,
+        });
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("[[tools_activation]]"));
+        assert!(toml_str.contains("var = \"PATH\""));
+        assert!(toml_str.contains("op = \"prepend\""));
+        assert!(toml_str.contains("type = \"allBinDirs\""));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.tools_activation.len(), 1);
+        assert_eq!(parsed.tools_activation[0], lockfile.tools_activation[0]);
     }
 
     #[test]

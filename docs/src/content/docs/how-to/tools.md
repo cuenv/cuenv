@@ -218,6 +218,7 @@ The lockfile contains:
 - Exact versions and digests for each tool
 - Platform-specific resolutions
 - Provider metadata
+- Preserved tool activation metadata (`[[tools_activation]]`) when present
 
 Commit `cuenv.lock` to your repository for reproducible builds across machines.
 
@@ -283,6 +284,11 @@ View all tools and their per-platform resolutions:
 ```bash
 cuenv tools list
 ```
+
+The output now includes an activation preview for the current platform, showing the
+effective inferred or explicit env mutations that `cuenv tools activate`,
+`cuenv exec`, `cuenv task`, and CI will apply. If activation metadata is invalid,
+the list still renders tool inventory and shows the activation error inline.
 
 Output shows tool names, versions, providers, and digests for each platform.
 

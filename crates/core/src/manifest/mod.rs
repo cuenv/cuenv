@@ -524,7 +524,7 @@ pub enum Runtime {
     /// OCI-based binary fetching from container images
     Oci(OciRuntime),
     /// Multi-source tool management (GitHub, OCI, Nix)
-    Tools(ToolsRuntime),
+    Tools(Box<ToolsRuntime>),
 }
 
 /// Nix runtime configuration
@@ -758,9 +758,12 @@ pub enum SourceConfig {
         tag: Option<String>,
         /// Asset name with optional {version}, {os}, {arch} templates
         asset: String,
-        /// Path to binary within archive (if archived)
+        /// Legacy single-file selector inside archive/pkg payloads.
         #[serde(skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// Optional typed extraction rules for archive/pkg assets.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extract: Vec<GitHubExtract>,
     },
     /// Build from Nix flake
     Nix {
@@ -790,6 +793,46 @@ pub enum SourceConfig {
 
 fn default_rustup_profile() -> String {
     "default".to_string()
+}
+
+/// Typed extraction rule for GitHub release assets.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum GitHubExtract {
+    /// Extract a binary and place it in `bin/`.
+    Bin {
+        /// Path to file in the archive/pkg payload.
+        path: String,
+        /// Optional binary rename in cache/bin.
+        #[serde(rename = "as", skip_serializing_if = "Option::is_none")]
+        as_name: Option<String>,
+    },
+    /// Extract a dynamic library and place it in `lib/`.
+    Lib {
+        /// Path to file in the archive/pkg payload.
+        path: String,
+        /// Optional env var to export the absolute file path.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<String>,
+    },
+    /// Extract include/header material and place it in `include/`.
+    Include {
+        /// Path to file in the archive/pkg payload.
+        path: String,
+    },
+    /// Extract pkg-config metadata and place it in `lib/pkgconfig/`.
+    PkgConfig {
+        /// Path to file in the archive/pkg payload.
+        path: String,
+    },
+    /// Extract a generic file and place it in `files/`.
+    File {
+        /// Path to file in the archive/pkg payload.
+        path: String,
+        /// Optional env var to export the absolute file path.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        env: Option<String>,
+    },
 }
 
 // ============================================================================

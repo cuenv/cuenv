@@ -291,7 +291,7 @@ mod tests {
             repo: "jqlang/jq".into(),
             tag: "v1.7.1".into(),
             asset: "jq-linux-amd64".into(),
-            path: None,
+            extract: vec![],
         };
         assert!(!provider.can_handle(&github_source));
     }
@@ -367,7 +367,7 @@ mod tests {
                 repo: "owner/repo".to_string(),
                 tag: "v1.0.0".to_string(),
                 asset: "file.zip".to_string(),
-                path: None,
+                extract: vec![],
             },
         };
 

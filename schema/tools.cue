@@ -99,8 +99,45 @@ package schema
 	tag?: string
 	// Asset name with optional {version}, {os}, {arch} templates
 	asset!: string
-	// Path to binary within archive (if archived)
+	// Legacy path selector for single-file archive extraction.
+	// Prefer `extract` for typed outputs.
 	path?: string
+	// Optional typed extraction rules for archive/pkg assets.
+	// When omitted, cuenv treats the tool as a single binary.
+	extract?: [...#GitHubExtract]
+}
+
+// Typed extraction items for GitHub assets.
+#GitHubExtract: #BinExtract | #LibExtract | #IncludeExtract | #PkgConfigExtract | #FileExtract
+
+#BinExtract: {
+	kind: "bin"
+	path!: string
+	as?:  string
+}
+
+#LibExtract: {
+	kind: "lib"
+	path!: string
+	// Optional env var to export this exact file path (for example FDB_CLIENT_LIB)
+	env?: string
+}
+
+#IncludeExtract: {
+	kind: "include"
+	path!: string
+}
+
+#PkgConfigExtract: {
+	kind: "pkgconfig"
+	path!: string
+}
+
+#FileExtract: {
+	kind: "file"
+	path!: string
+	// Optional env var to export this exact file path.
+	env?: string
 }
 
 // #Nix builds from a Nix flake
@@ -128,12 +165,12 @@ package schema
 }
 
 // #ToolsActivate is a pre-configured hook that downloads tools
-// and adds them to PATH before executing tasks.
+// and emits inferred exports based on tool output types (bin/lib/include/pkgconfig/file env).
 //
 // The hook runs `cuenv tools activate` which:
 // 1. Reads `cuenv.lock` to find tools for the current platform
 // 2. Downloads and extracts binaries (if not already cached)
-// 3. Outputs `export PATH=...` to add binaries to PATH
+// 3. Outputs inferred `export ...` statements
 //
 // Usage:
 //   hooks: onEnter: tools: #ToolsActivate

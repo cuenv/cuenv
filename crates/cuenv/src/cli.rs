@@ -935,8 +935,8 @@ pub enum ToolsCommands {
     /// Download tools for the current platform.
     #[command(about = "Download tools for the current platform from lockfile")]
     Download,
-    /// Activate tools (output shell exports for PATH).
-    #[command(about = "Activate tools (output shell exports for PATH)")]
+    /// Activate tools (output inferred shell exports from lockfile tool metadata).
+    #[command(about = "Activate tools (output inferred shell exports from lockfile tool metadata)")]
     Activate,
     /// List configured tools.
     #[command(about = "List configured tools from lockfile")]

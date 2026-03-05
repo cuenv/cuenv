@@ -162,10 +162,7 @@ fn enrich_task_ref_array(
                     if obj.contains_key("_name") {
                         continue;
                     }
-                    obj.insert(
-                        "_name".to_string(),
-                        serde_json::Value::String(task_name),
-                    );
+                    obj.insert("_name".to_string(), serde_json::Value::String(task_name));
                 }
                 _ => {
                     // Reference targets can be non-object task shapes (e.g., TaskSequence arrays).

@@ -9,7 +9,10 @@ package schema
 //   runtime: #ContainerRuntime & {image: "node:20"}
 //   runtime: #DaggerRuntime & {image: "rust:1.75"}
 //   runtime: #OCIRuntime & {platforms: ["darwin-arm64"], images: [{image: "nginx:1.25-alpine", extract: [{path: "/usr/sbin/nginx"}]}]}
-//   runtime: #ToolsRuntime & {platforms: ["darwin-arm64"], tools: {jq: "1.7.1"}}
+//   runtime: #ToolsRuntime & {
+//       platforms: ["darwin-arm64"]
+//       tools: {jq: "1.7.1"}
+//   }
 #Runtime: #NixRuntime | #DevenvRuntime | #ContainerRuntime | #DaggerRuntime | #OCIRuntime | #ToolsRuntime
 
 // #NixRuntime activates a Nix flake devShell

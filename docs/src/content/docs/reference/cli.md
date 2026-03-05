@@ -430,7 +430,10 @@ List configured tools and their platforms.
 cuenv tools list
 ```
 
-Shows all tools from `cuenv.lock` with their versions, providers, and digests per platform. The current platform is marked with `(current)`.
+Shows all tools from `cuenv.lock` with their versions, providers, and digests per
+platform. The current platform is marked with `(current)`. The command also prints
+the current-platform activation preview, including inferred or explicit env
+mutations and inline activation errors when the lockfile metadata is invalid.
 
 **Example output:**
 
