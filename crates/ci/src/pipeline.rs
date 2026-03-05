@@ -281,4 +281,60 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_expand_task_groups_sequence_prefix_simple_reference() {
+        let ir_tasks = vec![
+            make_task("sequence.0", &[]),
+            make_task("sequence.1", &["sequence.0"]),
+        ];
+        let pipeline_tasks = vec![PipelineTask::Simple(TaskRef::from_name("sequence"))];
+        let explicit: HashSet<String> = HashSet::new();
+
+        let result = expand_task_groups(&pipeline_tasks, &ir_tasks, &explicit);
+
+        assert_eq!(result.len(), 2);
+        for task in &result {
+            assert!(matches!(task, PipelineTask::Simple(_)));
+        }
+
+        let names: Vec<_> = result.iter().map(PipelineTask::task_name).collect();
+        assert!(names.contains(&"sequence.0"));
+        assert!(names.contains(&"sequence.1"));
+    }
+
+    #[test]
+    fn test_expand_task_groups_sequence_prefix_matrix_reference() {
+        let ir_tasks = vec![
+            make_task("sequence.0", &[]),
+            make_task("sequence.1", &["sequence.0"]),
+        ];
+        let pipeline_tasks = vec![PipelineTask::Matrix(MatrixTask {
+            task_type: Some("matrix".to_string()),
+            task: TaskRef::from_name("sequence"),
+            artifacts: None,
+            params: None,
+            matrix: [("arch".to_string(), vec!["linux-x64".to_string()])]
+                .into_iter()
+                .collect(),
+        })];
+        let explicit: HashSet<String> = HashSet::new();
+
+        let result = expand_task_groups(&pipeline_tasks, &ir_tasks, &explicit);
+
+        assert_eq!(result.len(), 2);
+
+        for task in &result {
+            match task {
+                PipelineTask::Matrix(matrix) if matrix.task.task_name() == "sequence.0" => {
+                    assert!(
+                        matrix.matrix.is_empty(),
+                        "entry point should use aggregation-mode matrix"
+                    );
+                }
+                PipelineTask::Simple(task_ref) if task_ref.task_name() == "sequence.1" => {}
+                _ => panic!("Unexpected task configuration: {:?}", task),
+            }
+        }
+    }
 }
