@@ -29,6 +29,19 @@ fn strip_tasks_prefix(path: &str) -> &str {
     path
 }
 
+/// Returns true when the current object is a CI matrix task in `ci.pipelines.*.tasks[*]`.
+fn is_ci_matrix_task_object(
+    field_path: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    if !(field_path.starts_with("ci.pipelines.") && field_path.contains(".tasks[")) {
+        return false;
+    }
+
+    obj.contains_key("matrix")
+        || obj.get("type").and_then(serde_json::Value::as_str) == Some("matrix")
+}
+
 /// Enrich task references in a JSON value with _name fields using reference metadata.
 ///
 /// Walks the JSON structure recursively, finding task references and injecting
@@ -62,8 +75,10 @@ fn enrich_task_refs_recursive(
                 enrich_task_ref_array(deps, instance_path, &depends_on_path, references);
             }
 
-            // Handle "task" field (pipeline MatrixTask references)
-            if let Some(task_value) = obj.get_mut("task") {
+            // Handle "task" field for CI matrix tasks only.
+            if is_ci_matrix_task_object(field_path, obj)
+                && let Some(task_value) = obj.get_mut("task")
+            {
                 let task_path = if field_path.is_empty() {
                     "task".to_string()
                 } else {
@@ -82,11 +97,15 @@ fn enrich_task_refs_recursive(
                                 );
                             }
                         }
-                        _ => {
+                        serde_json::Value::Array(_) => {
                             // Reference targets can be non-object task shapes (e.g., TaskSequence arrays).
                             // Synthesize a canonical TaskRef object so downstream deserialization can resolve names.
                             *task_value = serde_json::json!({ "_name": task_name });
                         }
+                        serde_json::Value::Null
+                        | serde_json::Value::Bool(_)
+                        | serde_json::Value::Number(_)
+                        | serde_json::Value::String(_) => {}
                     }
                 }
             }
@@ -450,6 +469,7 @@ mod tests {
     use super::*;
     use crate::ci::PipelineTask;
     use crate::manifest::Project;
+    use crate::tasks::TaskNode;
     use serde_json::json;
 
     fn create_test_module() -> ModuleEvaluation {
@@ -1107,5 +1127,54 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_non_ci_task_string_field_is_not_rewritten() {
+        let instance = json!({
+            "name": "shape-contract",
+            "tasks": {
+                "producer": {
+                    "command": "echo",
+                    "args": ["producer"],
+                },
+                "consumer": {
+                    "command": "echo",
+                    "args": ["consumer"],
+                    "inputs": [
+                        {
+                            "task": "producer",
+                        },
+                    ],
+                },
+            },
+        });
+
+        let mut references = ReferenceMap::new();
+        references.insert(
+            "./tasks.consumer.inputs[0].task".to_string(),
+            "tasks.producer".to_string(),
+        );
+
+        let project = deserialize_project_with_references(instance, references);
+        let consumer_node = project
+            .tasks
+            .get("consumer")
+            .expect("consumer task should exist");
+        let consumer_task = match consumer_node {
+            TaskNode::Task(task) => task,
+            TaskNode::Group(_) | TaskNode::Sequence(_) => {
+                panic!("expected consumer to deserialize as a task")
+            }
+        };
+
+        let task_output = consumer_task
+            .iter_task_outputs()
+            .next()
+            .expect("consumer should have one task output input");
+        assert_eq!(
+            task_output.task, "producer",
+            "non-CI task string fields must remain strings after enrichment"
+        );
     }
 }
