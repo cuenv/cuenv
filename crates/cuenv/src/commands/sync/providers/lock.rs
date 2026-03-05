@@ -13,9 +13,12 @@ use cuenv_core::lockfile::{
     ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedTool, LockedToolPlatform, Lockfile,
     PlatformData,
 };
-use cuenv_core::manifest::{Base, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec};
+use cuenv_core::manifest::{
+    Base, GitHubExtract, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec,
+};
 use cuenv_core::tools::{
-    Platform as ToolPlatform, ResolvedTool, ToolRegistry, ToolResolveRequest, ToolSource,
+    Platform as ToolPlatform, ResolvedTool, ToolExtract, ToolRegistry, ToolResolveRequest,
+    ToolSource,
 };
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::{BTreeMap, HashMap};
@@ -750,29 +753,29 @@ fn source_config_to_tool_source(
             tag,
             asset,
             path,
+            extract,
         } => {
             let resolved_tag = tag
                 .clone()
                 .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
-            // Expand {version} template in asset name and path
+            // Expand {version} template in asset name and extraction rules.
             #[allow(clippy::literal_string_with_formatting_args)]
             let resolved_asset = asset.replace("{version}", version);
-            #[allow(clippy::literal_string_with_formatting_args)]
-            let resolved_path = path.as_ref().map(|p| p.replace("{version}", version));
+            let resolved_extract = resolve_github_extract(extract, version, path.as_deref());
             (
                 "github".to_string(),
                 ToolSource::GitHub {
                     repo: repo.clone(),
                     tag: resolved_tag.clone(),
                     asset: resolved_asset.clone(),
-                    path: resolved_path.clone(),
+                    extract: resolved_extract.clone(),
                 },
                 serde_json::json!({
                     "type": "github",
                     "repo": repo,
                     "tag": resolved_tag,
                     "asset": resolved_asset,
-                    "path": resolved_path,
+                    "extract": resolved_extract,
                 }),
             )
         }
@@ -815,6 +818,68 @@ fn source_config_to_tool_source(
                 "targets": targets,
             }),
         ),
+    }
+}
+
+fn resolve_github_extract(
+    extract: &[GitHubExtract],
+    version: &str,
+    legacy_path: Option<&str>,
+) -> Vec<ToolExtract> {
+    let mut resolved: Vec<ToolExtract> = extract
+        .iter()
+        .map(|item| match item {
+            GitHubExtract::Bin { path, as_name } => ToolExtract::Bin {
+                path: expand_version_template(path, version),
+                as_name: as_name.clone(),
+            },
+            GitHubExtract::Lib { path, env } => ToolExtract::Lib {
+                path: expand_version_template(path, version),
+                env: env.clone(),
+            },
+            GitHubExtract::Include { path } => ToolExtract::Include {
+                path: expand_version_template(path, version),
+            },
+            GitHubExtract::PkgConfig { path } => ToolExtract::PkgConfig {
+                path: expand_version_template(path, version),
+            },
+            GitHubExtract::File { path, env } => ToolExtract::File {
+                path: expand_version_template(path, version),
+                env: env.clone(),
+            },
+        })
+        .collect();
+
+    if resolved.is_empty() && let Some(path) = legacy_path {
+        let path = expand_version_template(path, version);
+        if path_looks_like_library(&path) {
+            resolved.push(ToolExtract::Lib { path, env: None });
+        } else {
+            resolved.push(ToolExtract::Bin {
+                path,
+                as_name: None,
+            });
+        }
+    }
+
+    resolved
+}
+
+fn path_looks_like_library(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("dylib")
+                || ext.eq_ignore_ascii_case("so")
+                || ext.eq_ignore_ascii_case("dll")
+        })
+        || path.to_ascii_lowercase().contains(".so.")
+}
+
+fn expand_version_template(value: &str, version: &str) -> String {
+    #[allow(clippy::literal_string_with_formatting_args)]
+    {
+        value.replace("{version}", version)
     }
 }
 

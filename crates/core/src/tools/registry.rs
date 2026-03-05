@@ -144,7 +144,7 @@ mod tests {
             repo: "org/repo".into(),
             tag: "v1".into(),
             asset: "file.zip".into(),
-            path: None,
+            extract: vec![],
         };
         assert!(registry.find_for_source(&source).is_some());
 
