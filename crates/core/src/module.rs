@@ -63,22 +63,30 @@ fn enrich_task_refs_recursive(
             }
 
             // Handle "task" field (pipeline MatrixTask references)
-            if let Some(serde_json::Value::Object(task_obj)) = obj.get_mut("task") {
-                // Skip if _name already set
-                if !task_obj.contains_key("_name") {
-                    let task_path = if field_path.is_empty() {
-                        "task".to_string()
-                    } else {
-                        format!("{}.task", field_path)
-                    };
-                    let meta_key = format!("{}/{}", instance_path, task_path);
-                    if let Some(reference) = references.get(&meta_key) {
-                        // Strip "tasks." prefix from the raw CUE reference path
-                        let task_name = strip_tasks_prefix(reference);
-                        task_obj.insert(
-                            "_name".to_string(),
-                            serde_json::Value::String(task_name.to_string()),
-                        );
+            if let Some(task_value) = obj.get_mut("task") {
+                let task_path = if field_path.is_empty() {
+                    "task".to_string()
+                } else {
+                    format!("{}.task", field_path)
+                };
+                let meta_key = format!("{}/{}", instance_path, task_path);
+                if let Some(reference) = references.get(&meta_key) {
+                    let task_name = strip_tasks_prefix(reference).to_string();
+                    match task_value {
+                        serde_json::Value::Object(task_obj) => {
+                            // Skip if _name already set
+                            if !task_obj.contains_key("_name") {
+                                task_obj.insert(
+                                    "_name".to_string(),
+                                    serde_json::Value::String(task_name),
+                                );
+                            }
+                        }
+                        _ => {
+                            // Reference targets can be non-object task shapes (e.g., TaskSequence arrays).
+                            // Synthesize a canonical TaskRef object so downstream deserialization can resolve names.
+                            *task_value = serde_json::json!({ "_name": task_name });
+                        }
                     }
                 }
             }
@@ -123,21 +131,28 @@ fn enrich_task_ref_array(
     references: &ReferenceMap,
 ) {
     for (i, element) in arr.iter_mut().enumerate() {
-        if let serde_json::Value::Object(obj) = element {
-            // Skip if _name already set
-            if obj.contains_key("_name") {
-                continue;
-            }
+        // Look up the reference in metadata
+        let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
+        if let Some(reference) = references.get(&meta_key) {
+            // CUE ReferencePath already provides canonical path - just strip prefix
+            let task_name = strip_tasks_prefix(reference).to_string();
 
-            // Look up the reference in metadata
-            let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
-            if let Some(reference) = references.get(&meta_key) {
-                // CUE ReferencePath already provides canonical path - just strip prefix
-                let task_name = strip_tasks_prefix(reference);
-                obj.insert(
-                    "_name".to_string(),
-                    serde_json::Value::String(task_name.to_string()),
-                );
+            match element {
+                serde_json::Value::Object(obj) => {
+                    // Skip if _name already set
+                    if obj.contains_key("_name") {
+                        continue;
+                    }
+                    obj.insert(
+                        "_name".to_string(),
+                        serde_json::Value::String(task_name),
+                    );
+                }
+                _ => {
+                    // Reference targets can be non-object task shapes (e.g., TaskSequence arrays).
+                    // Convert to a canonical reference object.
+                    *element = serde_json::json!({ "_name": task_name });
+                }
             }
         }
     }
@@ -433,6 +448,7 @@ impl std::fmt::Display for InstanceKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ci::PipelineTask;
     use crate::manifest::Project;
     use serde_json::json;
 
@@ -832,5 +848,264 @@ mod tests {
         // No prefix (already canonical)
         assert_eq!(strip_tasks_prefix("build"), "build");
         assert_eq!(strip_tasks_prefix("ci.deploy"), "ci.deploy");
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum TaskNodeShape {
+        Task,
+        Group,
+        Sequence,
+    }
+
+    impl TaskNodeShape {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::Task => "task",
+                Self::Group => "group",
+                Self::Sequence => "sequence",
+            }
+        }
+
+        fn as_value(self) -> serde_json::Value {
+            match self {
+                Self::Task => json!({
+                    "command": "echo",
+                    "args": ["task"],
+                }),
+                Self::Group => json!({
+                    "type": "group",
+                    "step": {
+                        "command": "echo",
+                        "args": ["group"],
+                    },
+                }),
+                Self::Sequence => json!([
+                    {
+                        "command": "echo",
+                        "args": ["sequence-0"],
+                    },
+                    {
+                        "command": "echo",
+                        "args": ["sequence-1"],
+                    },
+                ]),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum DependencyOwner {
+        Task,
+        Group,
+    }
+
+    impl DependencyOwner {
+        const fn name(self) -> &'static str {
+            match self {
+                Self::Task => "task",
+                Self::Group => "group",
+            }
+        }
+
+        fn node_with_dependency(self, target: serde_json::Value) -> serde_json::Value {
+            match self {
+                Self::Task => json!({
+                    "command": "echo",
+                    "args": ["consumer"],
+                    "dependsOn": [target],
+                }),
+                Self::Group => json!({
+                    "type": "group",
+                    "dependsOn": [target],
+                    "step": {
+                        "command": "echo",
+                        "args": ["consumer"],
+                    },
+                }),
+            }
+        }
+    }
+
+    fn deserialize_project_with_references(
+        instance: serde_json::Value,
+        references: ReferenceMap,
+    ) -> Project {
+        let mut raw = HashMap::new();
+        raw.insert(".".to_string(), instance);
+        let module = ModuleEvaluation::from_raw(
+            PathBuf::from("/test"),
+            raw,
+            vec![".".to_string()],
+            Some(references),
+        );
+        module
+            .root_instance()
+            .expect("root instance should exist")
+            .deserialize::<Project>()
+            .expect("project deserialization should succeed")
+    }
+
+    #[test]
+    fn test_depends_on_accepts_all_task_node_shapes_for_task_and_group() {
+        let shapes = [
+            TaskNodeShape::Task,
+            TaskNodeShape::Group,
+            TaskNodeShape::Sequence,
+        ];
+        let owners = [DependencyOwner::Task, DependencyOwner::Group];
+
+        for owner in owners {
+            for shape in shapes {
+                let target = shape.as_value();
+                let consumer = owner.node_with_dependency(target.clone());
+
+                let instance = json!({
+                    "name": "shape-contract",
+                    "tasks": {
+                        "target": target,
+                        "consumer": consumer,
+                    },
+                });
+
+                let mut references = ReferenceMap::new();
+                references.insert(
+                    "./tasks.consumer.dependsOn[0]".to_string(),
+                    "tasks.target".to_string(),
+                );
+
+                let project = deserialize_project_with_references(instance, references);
+                let consumer_node = project
+                    .tasks
+                    .get("consumer")
+                    .expect("consumer task should exist");
+                let dependency_names: Vec<&str> = consumer_node
+                    .depends_on()
+                    .iter()
+                    .map(|dependency| dependency.task_name())
+                    .collect();
+
+                assert_eq!(
+                    dependency_names,
+                    vec!["target"],
+                    "dependsOn owner={} should canonicalize {} reference",
+                    owner.name(),
+                    shape.name()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ci_pipeline_tasks_reference_accepts_all_task_node_shapes() {
+        for shape in [
+            TaskNodeShape::Task,
+            TaskNodeShape::Group,
+            TaskNodeShape::Sequence,
+        ] {
+            let target = shape.as_value();
+            let instance = json!({
+                "name": "shape-contract",
+                "tasks": {
+                    "target": target.clone(),
+                },
+                "ci": {
+                    "pipelines": {
+                        "default": {
+                            "tasks": [target],
+                        },
+                    },
+                },
+            });
+
+            let mut references = ReferenceMap::new();
+            references.insert(
+                "./ci.pipelines.default.tasks[0]".to_string(),
+                "tasks.target".to_string(),
+            );
+
+            let project = deserialize_project_with_references(instance, references);
+            let pipeline = &project
+                .ci
+                .as_ref()
+                .expect("ci should exist")
+                .pipelines
+                .get("default")
+                .expect("default pipeline should exist");
+            let pipeline_task = pipeline.tasks.first().expect("pipeline task should exist");
+
+            assert!(
+                pipeline_task.is_simple(),
+                "pipeline task should remain a simple reference for {}",
+                shape.name()
+            );
+            assert_eq!(
+                pipeline_task.task_name(),
+                "target",
+                "pipeline task reference should canonicalize {} shape",
+                shape.name()
+            );
+        }
+    }
+
+    #[test]
+    fn test_ci_matrix_task_reference_accepts_all_task_node_shapes() {
+        for shape in [
+            TaskNodeShape::Task,
+            TaskNodeShape::Group,
+            TaskNodeShape::Sequence,
+        ] {
+            let target = shape.as_value();
+            let instance = json!({
+                "name": "shape-contract",
+                "tasks": {
+                    "target": target.clone(),
+                },
+                "ci": {
+                    "pipelines": {
+                        "default": {
+                            "tasks": [
+                                {
+                                    "type": "matrix",
+                                    "task": target,
+                                    "matrix": {
+                                        "arch": ["linux-x64"],
+                                    },
+                                },
+                            ],
+                        },
+                    },
+                },
+            });
+
+            let mut references = ReferenceMap::new();
+            references.insert(
+                "./ci.pipelines.default.tasks[0].task".to_string(),
+                "tasks.target".to_string(),
+            );
+
+            let project = deserialize_project_with_references(instance, references);
+            let pipeline = &project
+                .ci
+                .as_ref()
+                .expect("ci should exist")
+                .pipelines
+                .get("default")
+                .expect("default pipeline should exist");
+            let pipeline_task = pipeline.tasks.first().expect("pipeline task should exist");
+
+            match pipeline_task {
+                PipelineTask::Matrix(matrix_task) => {
+                    assert_eq!(
+                        matrix_task.task.task_name(),
+                        "target",
+                        "matrix task reference should canonicalize {} shape",
+                        shape.name()
+                    );
+                }
+                PipelineTask::Simple(_) | PipelineTask::Node(_) => {
+                    panic!("expected matrix task for {}", shape.name())
+                }
+            }
+        }
     }
 }
