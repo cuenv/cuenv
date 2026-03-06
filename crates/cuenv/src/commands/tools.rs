@@ -99,77 +99,12 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
             continue;
         };
 
-        // Convert lockfile data to ToolSource
-        let source = match locked.provider.as_str() {
-            "oci" => {
-                let image = locked
-                    .source
-                    .get("image")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let path = locked
-                    .source
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                ToolSource::Oci {
-                    image: image.to_string(),
-                    path: path.to_string(),
-                }
-            }
-            "github" => {
-                let repo = locked
-                    .source
-                    .get("repo")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let tag = locked
-                    .source
-                    .get("tag")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let asset = locked
-                    .source
-                    .get("asset")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let extract = parse_github_extract_list(&locked.source);
-                ToolSource::GitHub {
-                    repo: repo.to_string(),
-                    tag: tag.to_string(),
-                    asset: asset.to_string(),
-                    extract,
-                }
-            }
-            "nix" => {
-                let flake = locked
-                    .source
-                    .get("flake")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let package = locked
-                    .source
-                    .get("package")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let output = locked
-                    .source
-                    .get("output")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                ToolSource::Nix {
-                    flake: flake.to_string(),
-                    package: package.to_string(),
-                    output,
-                }
-            }
-            _ => {
-                eprintln!(
-                    "Warning: Unknown provider '{}' for tool '{}'",
-                    locked.provider, name
-                );
-                continue;
-            }
+        let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
+            eprintln!(
+                "Warning: Unknown provider '{}' for tool '{}'",
+                locked.provider, name
+            );
+            continue;
         };
 
         // Get the provider
@@ -476,6 +411,18 @@ fn lockfile_entry_to_source(
                 profile,
                 components,
                 targets,
+            })
+        }
+        "url" => {
+            let url = locked
+                .source
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let extract = parse_github_extract_list(&locked.source);
+            Some(ToolSource::Url {
+                url: url.to_string(),
+                extract,
             })
         }
         _ => None,
@@ -994,5 +941,35 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line == "  - No activation paths are currently materialized for this platform."
         }));
+    }
+
+    #[test]
+    fn test_lockfile_entry_to_source_parses_url_source() {
+        let locked = LockedToolPlatform {
+            provider: "url".to_string(),
+            digest: "sha256:abc".to_string(),
+            source: serde_json::json!({
+                "type": "url",
+                "url": "https://example.com/tool.tar.gz",
+                "extract": [{"kind": "bin", "path": "tool"}],
+            }),
+            size: None,
+            dependencies: vec![],
+        };
+
+        let source = lockfile_entry_to_source("tool", "1.0.0", &locked).expect("parsed source");
+        match source {
+            ToolSource::Url { url, extract } => {
+                assert_eq!(url, "https://example.com/tool.tar.gz");
+                assert_eq!(
+                    extract,
+                    vec![ToolExtract::Bin {
+                        path: "tool".to_string(),
+                        as_name: None,
+                    }]
+                );
+            }
+            _ => panic!("expected URL source"),
+        }
     }
 }

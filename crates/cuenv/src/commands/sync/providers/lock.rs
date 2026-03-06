@@ -485,14 +485,14 @@ async fn execute_lock_sync(
                         .ok_or_else(|| {
                         cuenv_core::Error::configuration(format!(
                             "Tool '{}' has no source configured for platform '{}'. \
-                                 Specify a source (github, nix, or oci) in your tool definition.",
+                                 Specify a source (github, nix, rustup, url, or oci) in your tool definition.",
                             tool.name, platform_str
                         ))
                     })?;
 
                 // Convert SourceConfig to ToolSource
                 let (provider_name, _tool_source, config) =
-                    source_config_to_tool_source(&tool.name, &tool.version, &source_config);
+                    source_config_to_tool_source(&tool.version, &source_config, &platform);
 
                 // Check if we should use cached resolution from existing lockfile
                 let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
@@ -689,7 +689,9 @@ async fn execute_lock_sync(
 fn seed_lockfile(existing: Option<&Lockfile>) -> Lockfile {
     let mut lockfile = Lockfile::new();
     if let Some(existing) = existing {
-        lockfile.tools_activation.clone_from(&existing.tools_activation);
+        lockfile
+            .tools_activation
+            .clone_from(&existing.tools_activation);
     }
     lockfile
 }
@@ -740,11 +742,11 @@ fn resolve_source_for_platform(
     best_match.cloned().or_else(|| default_source.cloned())
 }
 
-/// Convert SourceConfig to ToolSource and provider config.
+/// Convert `SourceConfig` to `ToolSource` and provider config.
 fn source_config_to_tool_source(
-    _tool_name: &str,
     version: &str,
     config: &SourceConfig,
+    platform: &ToolPlatform,
 ) -> (String, ToolSource, serde_json::Value) {
     match config {
         SourceConfig::Oci { image, path } => (
@@ -763,13 +765,17 @@ fn source_config_to_tool_source(
             path,
             extract,
         } => {
-            let resolved_tag = tag
+            let tag_template = tag
                 .clone()
                 .unwrap_or_else(|| format!("{}{}", tag_prefix, version));
-            // Expand {version} template in asset name and extraction rules.
-            #[allow(clippy::literal_string_with_formatting_args)]
-            let resolved_asset = asset.replace("{version}", version);
-            let resolved_extract = resolve_github_extract(extract, version, path.as_deref());
+            let resolved_tag = expand_source_template(&tag_template, version, platform);
+            let resolved_asset = expand_source_template(asset, version, platform);
+            let resolve_context = ExtractResolveContext {
+                version,
+                platform,
+                legacy_path: path.as_deref(),
+            };
+            let resolved_extract = resolve_extract_templates(extract, &resolve_context);
             (
                 "github".to_string(),
                 ToolSource::GitHub {
@@ -827,16 +833,22 @@ fn source_config_to_tool_source(
             }),
         ),
         SourceConfig::Url { url, path, extract } => {
-            let resolved_extract = resolve_github_extract(extract, version, path.as_deref());
+            let resolved_url = expand_source_template(url, version, platform);
+            let resolve_context = ExtractResolveContext {
+                version,
+                platform,
+                legacy_path: path.as_deref(),
+            };
+            let resolved_extract = resolve_extract_templates(extract, &resolve_context);
             (
                 "url".to_string(),
                 ToolSource::Url {
-                    url: url.clone(),
+                    url: resolved_url.clone(),
                     extract: resolved_extract.clone(),
                 },
                 serde_json::json!({
                     "type": "url",
-                    "url": url,
+                    "url": resolved_url,
                     "extract": resolved_extract,
                 }),
             )
@@ -844,39 +856,44 @@ fn source_config_to_tool_source(
     }
 }
 
-fn resolve_github_extract(
+struct ExtractResolveContext<'a> {
+    version: &'a str,
+    platform: &'a ToolPlatform,
+    legacy_path: Option<&'a str>,
+}
+
+fn resolve_extract_templates(
     extract: &[GitHubExtract],
-    version: &str,
-    legacy_path: Option<&str>,
+    context: &ExtractResolveContext<'_>,
 ) -> Vec<ToolExtract> {
     let mut resolved: Vec<ToolExtract> = extract
         .iter()
         .map(|item| match item {
             GitHubExtract::Bin { path, as_name } => ToolExtract::Bin {
-                path: expand_version_template(path, version),
+                path: expand_source_template(path, context.version, context.platform),
                 as_name: as_name.clone(),
             },
             GitHubExtract::Lib { path, env } => ToolExtract::Lib {
-                path: expand_version_template(path, version),
+                path: expand_source_template(path, context.version, context.platform),
                 env: env.clone(),
             },
             GitHubExtract::Include { path } => ToolExtract::Include {
-                path: expand_version_template(path, version),
+                path: expand_source_template(path, context.version, context.platform),
             },
             GitHubExtract::PkgConfig { path } => ToolExtract::PkgConfig {
-                path: expand_version_template(path, version),
+                path: expand_source_template(path, context.version, context.platform),
             },
             GitHubExtract::File { path, env } => ToolExtract::File {
-                path: expand_version_template(path, version),
+                path: expand_source_template(path, context.version, context.platform),
                 env: env.clone(),
             },
         })
         .collect();
 
     if resolved.is_empty()
-        && let Some(path) = legacy_path
+        && let Some(path) = context.legacy_path
     {
-        let path = expand_version_template(path, version);
+        let path = expand_source_template(path, context.version, context.platform);
         if path_looks_like_library(&path) {
             resolved.push(ToolExtract::Lib { path, env: None });
         } else {
@@ -898,10 +915,22 @@ fn path_looks_like_library(path: &str) -> bool {
     }) || path.to_ascii_lowercase().contains(".so.")
 }
 
-fn expand_version_template(value: &str, version: &str) -> String {
+fn expand_source_template(value: &str, version: &str, platform: &ToolPlatform) -> String {
+    let os_str = match platform.os {
+        cuenv_core::tools::Os::Darwin => "darwin",
+        cuenv_core::tools::Os::Linux => "linux",
+    };
+    let arch_str = match platform.arch {
+        cuenv_core::tools::Arch::Arm64 => "aarch64",
+        cuenv_core::tools::Arch::X86_64 => "x86_64",
+    };
+
     #[allow(clippy::literal_string_with_formatting_args)]
     {
-        value.replace("{version}", version)
+        value
+            .replace("{version}", version)
+            .replace("{os}", os_str)
+            .replace("{arch}", arch_str)
     }
 }
 
@@ -927,7 +956,10 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
 mod tests {
     use super::*;
     use cuenv_core::lockfile::{LOCKFILE_VERSION, LockedToolPlatform};
-    use cuenv_core::tools::{ToolActivationOperation, ToolActivationSource, ToolActivationStep};
+    use cuenv_core::manifest::SourceConfig;
+    use cuenv_core::tools::{
+        Arch, Os, ToolActivationOperation, ToolActivationSource, ToolActivationStep,
+    };
 
     #[test]
     fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections() {
@@ -1019,5 +1051,41 @@ mod tests {
         rebuilt.artifacts = existing.artifacts.clone();
 
         assert_eq!(rebuilt, existing);
+    }
+
+    #[test]
+    fn test_source_config_to_tool_source_expands_url_templates_for_cache_comparison() {
+        let source = SourceConfig::Url {
+            url: "https://example.com/tool-{version}-{os}-{arch}.tar.gz".to_string(),
+            path: Some("tool-{os}-{arch}".to_string()),
+            extract: vec![],
+        };
+        let platform = ToolPlatform::new(Os::Linux, Arch::Arm64);
+
+        let (_, tool_source, source_json) =
+            source_config_to_tool_source("1.2.3", &source, &platform);
+
+        match tool_source {
+            ToolSource::Url { url, extract } => {
+                assert_eq!(url, "https://example.com/tool-1.2.3-linux-aarch64.tar.gz");
+                assert_eq!(
+                    extract,
+                    vec![ToolExtract::Bin {
+                        path: "tool-linux-aarch64".to_string(),
+                        as_name: None,
+                    }]
+                );
+            }
+            _ => panic!("expected url source"),
+        }
+
+        assert_eq!(
+            source_json,
+            serde_json::json!({
+                "type": "url",
+                "url": "https://example.com/tool-1.2.3-linux-aarch64.tar.gz",
+                "extract": [{"kind": "bin", "path": "tool-linux-aarch64"}],
+            })
+        );
     }
 }
