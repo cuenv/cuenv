@@ -41,6 +41,9 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     // Register Rustup provider
     registry.register(cuenv_tools_rustup::RustupToolProvider::new());
 
+    // Register URL provider
+    registry.register(cuenv_tools_url::UrlToolProvider::new());
+
     registry
 }
 
@@ -823,6 +826,21 @@ fn source_config_to_tool_source(
                 "targets": targets,
             }),
         ),
+        SourceConfig::Url { url, path, extract } => {
+            let resolved_extract = resolve_github_extract(extract, version, path.as_deref());
+            (
+                "url".to_string(),
+                ToolSource::Url {
+                    url: url.clone(),
+                    extract: resolved_extract.clone(),
+                },
+                serde_json::json!({
+                    "type": "url",
+                    "url": url,
+                    "extract": resolved_extract,
+                }),
+            )
+        }
     }
 }
 

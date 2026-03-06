@@ -26,6 +26,9 @@ fn create_registry() -> ToolRegistry {
     // Register Rustup provider
     registry.register(cuenv_tools_rustup::RustupToolProvider::new());
 
+    // Register URL provider
+    registry.register(cuenv_tools_url::UrlToolProvider::new());
+
     registry
 }
 
