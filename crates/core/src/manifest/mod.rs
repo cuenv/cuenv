@@ -789,6 +789,18 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         targets: Vec<String>,
     },
+    /// Download from an arbitrary HTTP URL
+    #[serde(rename = "url")]
+    Url {
+        /// URL with optional {version}, {os}, {arch} templates
+        url: String,
+        /// Legacy single-file selector inside archive payloads.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        /// Optional typed extraction rules for archive assets.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extract: Vec<GitHubExtract>,
+    },
 }
 
 fn default_rustup_profile() -> String {
