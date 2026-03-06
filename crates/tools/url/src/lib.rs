@@ -219,7 +219,8 @@ impl UrlToolProvider {
                 })?;
 
                 let name = file.name().to_string();
-                if name.ends_with(path) || name == path {
+                // Match exact path or a path-component-level suffix (e.g. "bin/tool" matches "archive/bin/tool")
+                if name == path || name.ends_with(&format!("/{}", path)) {
                     std::fs::create_dir_all(dest)?;
                     let file_name = std::path::Path::new(&name)
                         .file_name()
@@ -335,7 +336,8 @@ impl UrlToolProvider {
                 })?;
 
                 let path_str = entry_path.to_string_lossy();
-                if path_str.ends_with(path) || path_str.as_ref() == path {
+                // Match exact path or a path-component-level suffix (e.g. "bin/tool" matches "archive/bin/tool")
+                if path_str.as_ref() == path || path_str.ends_with(&format!("/{}", path)) {
                     let file_name = std::path::Path::new(path)
                         .file_name()
                         .and_then(|s| s.to_str())
