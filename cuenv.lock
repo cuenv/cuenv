@@ -5,47 +5,59 @@ version = "1.3.5"
 
 [tools.bun.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:627932cdd0a4ea67325512474f5bca7e8ea690a3c320d9f23afb0d8c83076641"
+digest = "sha256:63f7fdf283ce9a2984a4d39d6b37725eb2ee3e84a5366ca12df7ce3c21c0daf6"
 
 [tools.bun.platforms.darwin-arm64.source]
 asset = "bun-darwin-aarch64.zip"
-path = "bun-darwin-aarch64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v1.3.5"
 type = "github"
+
+[[tools.bun.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "bun-darwin-aarch64/bun"
 
 [tools.bun.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:15dd00fb3156a8c84f1c9c5317c62cf8944e1663f9cd1e88713c79a9e45a33aa"
+digest = "sha256:52af026326df7adb12fe99afa15f7ebb3059f5f67203aae37f6ca4fb9204da2e"
 
 [tools.bun.platforms.darwin-x86_64.source]
 asset = "bun-darwin-x64.zip"
-path = "bun-darwin-x64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v1.3.5"
 type = "github"
+
+[[tools.bun.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "bun-darwin-x64/bun"
 
 [tools.bun.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:62c8624eead3e87b858c5f74420e1453c8acfa1023fd3cd64d31108b25e7194b"
+digest = "sha256:f534fffba8cf22a1be206b972ee09a1b15de6200206730d1a859b18aab33dea7"
 
 [tools.bun.platforms.linux-arm64.source]
 asset = "bun-linux-aarch64.zip"
-path = "bun-linux-aarch64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v1.3.5"
 type = "github"
+
+[[tools.bun.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "bun-linux-aarch64/bun"
 
 [tools.bun.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:0085249b13a8be13b9ecc62119e6e9b723b0fa71001de3977f5b12862a278dab"
+digest = "sha256:f4d716ecb20353aae7cb55e347fbddc32a2df0cf24f33842b157793b773d9ede"
 
 [tools.bun.platforms.linux-x86_64.source]
 asset = "bun-linux-x64.zip"
-path = "bun-linux-x64/bun"
 repo = "oven-sh/bun"
 tag = "bun-v1.3.5"
 type = "github"
+
+[[tools.bun.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "bun-linux-x64/bun"
 
 [tools.cargo-cyclonedx]
 version = "0.5.7"
@@ -91,242 +103,302 @@ version = "0.18.9"
 
 [tools.cargo-deny.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:938a39703a2fc725db5aae835347b522937900f936bbe66581ed59168ac19711"
+digest = "sha256:8b27c44394a6e262811e33abc4558bd20f29d959adb8e65fed2f20b220e1042f"
 
 [tools.cargo-deny.platforms.darwin-arm64.source]
 asset = "cargo-deny-0.18.9-aarch64-apple-darwin.tar.gz"
-path = "cargo-deny-0.18.9-aarch64-apple-darwin/cargo-deny"
 repo = "EmbarkStudios/cargo-deny"
 tag = "0.18.9"
 type = "github"
+
+[[tools.cargo-deny.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "cargo-deny-0.18.9-aarch64-apple-darwin/cargo-deny"
 
 [tools.cargo-deny.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:9540032bbca7083b142de7e96bdca80451413762a696ef4fb31a7b72ad7c9384"
+digest = "sha256:f8e5d49a1c290fc3a468787807f6c240e3f5996d7dd9c6eb4bdeb83c99c2a25d"
 
 [tools.cargo-deny.platforms.darwin-x86_64.source]
 asset = "cargo-deny-0.18.9-x86_64-apple-darwin.tar.gz"
-path = "cargo-deny-0.18.9-x86_64-apple-darwin/cargo-deny"
 repo = "EmbarkStudios/cargo-deny"
 tag = "0.18.9"
 type = "github"
+
+[[tools.cargo-deny.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-deny-0.18.9-x86_64-apple-darwin/cargo-deny"
 
 [tools.cargo-deny.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:7c7b5a8317f5ae58c1a33d0cea28c82515c04b5cc42b30a5cf5a30dde92c3ec3"
+digest = "sha256:115660bd98c6215b415603c64495182fbb9599e3abb0f777fef17d944ea2a776"
 
 [tools.cargo-deny.platforms.linux-arm64.source]
 asset = "cargo-deny-0.18.9-aarch64-unknown-linux-musl.tar.gz"
-path = "cargo-deny-0.18.9-aarch64-unknown-linux-musl/cargo-deny"
 repo = "EmbarkStudios/cargo-deny"
 tag = "0.18.9"
 type = "github"
+
+[[tools.cargo-deny.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "cargo-deny-0.18.9-aarch64-unknown-linux-musl/cargo-deny"
 
 [tools.cargo-deny.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:5024d651d84ac4ed8c70a4427a3f7fedaafac7995769137374f97cfcede06db2"
+digest = "sha256:062674937b7ace871ac1c3d48b2913901472870c6be5abaff0ecba7a7a59e567"
 
 [tools.cargo-deny.platforms.linux-x86_64.source]
 asset = "cargo-deny-0.18.9-x86_64-unknown-linux-musl.tar.gz"
-path = "cargo-deny-0.18.9-x86_64-unknown-linux-musl/cargo-deny"
 repo = "EmbarkStudios/cargo-deny"
 tag = "0.18.9"
 type = "github"
+
+[[tools.cargo-deny.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-deny-0.18.9-x86_64-unknown-linux-musl/cargo-deny"
 
 [tools.cargo-llvm-cov]
 version = "0.6.21"
 
 [tools.cargo-llvm-cov.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:223ae08261972e556f3905cd0ff9909237fa3c181c95a2e9aa91be5ab0618160"
+digest = "sha256:e18e1cbe17baa4ec5a45deebf1c1f5e2d6727e0f36e780926def64ed09762561"
 
 [tools.cargo-llvm-cov.platforms.darwin-arm64.source]
 asset = "cargo-llvm-cov-aarch64-apple-darwin.tar.gz"
-path = "cargo-llvm-cov"
 repo = "taiki-e/cargo-llvm-cov"
 tag = "v0.6.21"
 type = "github"
+
+[[tools.cargo-llvm-cov.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "cargo-llvm-cov"
 
 [tools.cargo-llvm-cov.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:e4159ecfc174e69e05d6861b8abe1ad53e2fe904895deb36c6ea345793df99fd"
+digest = "sha256:faf44e26be3de5a3feb345eb6a16ede5b663d307670fc93a420553739862ca98"
 
 [tools.cargo-llvm-cov.platforms.darwin-x86_64.source]
 asset = "cargo-llvm-cov-x86_64-apple-darwin.tar.gz"
-path = "cargo-llvm-cov"
 repo = "taiki-e/cargo-llvm-cov"
 tag = "v0.6.21"
 type = "github"
+
+[[tools.cargo-llvm-cov.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-llvm-cov"
 
 [tools.cargo-llvm-cov.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:cfd629a1684b6fbd977645bd602a6fd30f8b33016d0c078987ce470145e9ee77"
+digest = "sha256:17daac90bf46956e11b3bb1a8e56b43125c762b910be47be54ac170b000365be"
 
 [tools.cargo-llvm-cov.platforms.linux-arm64.source]
 asset = "cargo-llvm-cov-aarch64-unknown-linux-gnu.tar.gz"
-path = "cargo-llvm-cov"
 repo = "taiki-e/cargo-llvm-cov"
 tag = "v0.6.21"
 type = "github"
+
+[[tools.cargo-llvm-cov.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "cargo-llvm-cov"
 
 [tools.cargo-llvm-cov.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:b7a0c9b2bd0296fa457d3a18038d48b42bfda0144417dfae187912ee6ee65a75"
+digest = "sha256:6da60f686943fcdc3087abf13060df4ae449eda499c6d7db96b95f1f5fc232cd"
 
 [tools.cargo-llvm-cov.platforms.linux-x86_64.source]
 asset = "cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz"
-path = "cargo-llvm-cov"
 repo = "taiki-e/cargo-llvm-cov"
 tag = "v0.6.21"
 type = "github"
+
+[[tools.cargo-llvm-cov.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-llvm-cov"
 
 [tools.cargo-nextest]
 version = "0.9.116"
 
 [tools.cargo-nextest.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:bf10e1adca9997b3c52f5df5da19cb6e0ff95e8a051be30f1570d97585d38665"
+digest = "sha256:b8b69377ad985e2bd390c46974fabbd76843e001eb47e69733e7c70252e1c3f0"
 
 [tools.cargo-nextest.platforms.darwin-arm64.source]
 asset = "cargo-nextest-0.9.116-universal-apple-darwin.tar.gz"
-path = "cargo-nextest"
 repo = "nextest-rs/nextest"
 tag = "cargo-nextest-0.9.116"
 type = "github"
+
+[[tools.cargo-nextest.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "cargo-nextest"
 
 [tools.cargo-nextest.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:5d2e22fba6bd1dd1c05633c054b4ecfa20118445b542384ab7f45fa94c7def5b"
+digest = "sha256:8d1200bf56ea24a3cc28f35237e139e6d3ac432cd96a536887f1f6070f078197"
 
 [tools.cargo-nextest.platforms.darwin-x86_64.source]
 asset = "cargo-nextest-0.9.116-universal-apple-darwin.tar.gz"
-path = "cargo-nextest"
 repo = "nextest-rs/nextest"
 tag = "cargo-nextest-0.9.116"
 type = "github"
+
+[[tools.cargo-nextest.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-nextest"
 
 [tools.cargo-nextest.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:01bb2c7b56092935638ecd258a59016fab87395c1ec2f02790c2de9eb97c9083"
+digest = "sha256:3f31068d3b41e4f693989b624085c01334da806922f6101e77bafd82298ad9b5"
 
 [tools.cargo-nextest.platforms.linux-arm64.source]
 asset = "cargo-nextest-0.9.116-aarch64-unknown-linux-gnu.tar.gz"
-path = "cargo-nextest"
 repo = "nextest-rs/nextest"
 tag = "cargo-nextest-0.9.116"
 type = "github"
+
+[[tools.cargo-nextest.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "cargo-nextest"
 
 [tools.cargo-nextest.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:0491daa50eb836e6dfe71a32d177a9b739e28b6b581b120ba2d232d828108bba"
+digest = "sha256:06c59f24a363fe1a4232d00eb0e8385e412229b52c183883e27739d81105750e"
 
 [tools.cargo-nextest.platforms.linux-x86_64.source]
 asset = "cargo-nextest-0.9.116-x86_64-unknown-linux-gnu.tar.gz"
-path = "cargo-nextest"
 repo = "nextest-rs/nextest"
 tag = "cargo-nextest-0.9.116"
 type = "github"
+
+[[tools.cargo-nextest.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-nextest"
 
 [tools.cargo-zigbuild]
 version = "0.20.1"
 
 [tools.cargo-zigbuild.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:81a274fc6d8d1128475e9f1785057f1defb4d9863bc8d87910db331f6cc1121b"
+digest = "sha256:5389a4f2834ff013a072a9d0f9bee5948f91f65095ce4cb3a31a3d5b79cd8849"
 
 [tools.cargo-zigbuild.platforms.darwin-arm64.source]
 asset = "cargo-zigbuild-v0.20.1.apple-darwin.tar.gz"
-path = "cargo-zigbuild"
 repo = "rust-cross/cargo-zigbuild"
 tag = "v0.20.1"
 type = "github"
+
+[[tools.cargo-zigbuild.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "cargo-zigbuild"
 
 [tools.cargo-zigbuild.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:ad7236afdabb0769e46ca8194e82cf01e0a0d019dcce2fe8dbb1c404fd69c460"
+digest = "sha256:94e8a2bd8b6e02d6256711e8ff61e691fe3dbd95c1021a470acd8636a9ccc10a"
 
 [tools.cargo-zigbuild.platforms.darwin-x86_64.source]
 asset = "cargo-zigbuild-v0.20.1.apple-darwin.tar.gz"
-path = "cargo-zigbuild"
 repo = "rust-cross/cargo-zigbuild"
 tag = "v0.20.1"
 type = "github"
+
+[[tools.cargo-zigbuild.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-zigbuild"
 
 [tools.cargo-zigbuild.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:b33bae661c5149883666dc3f8cd20350317a2ecfd72657026fa0cdfc8ea787a5"
+digest = "sha256:af011d1051efe3d003569c596f520cebd95c48be691a43fc0730e2756cec2dd5"
 
 [tools.cargo-zigbuild.platforms.linux-arm64.source]
 asset = "cargo-zigbuild-v0.20.1.aarch64-unknown-linux-musl.tar.gz"
-path = "cargo-zigbuild"
 repo = "rust-cross/cargo-zigbuild"
 tag = "v0.20.1"
 type = "github"
+
+[[tools.cargo-zigbuild.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "cargo-zigbuild"
 
 [tools.cargo-zigbuild.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:14b3a41c516165156d7c615fbe2fc7f541b71d060bdd84f8eb0a86e17ee861f3"
+digest = "sha256:656b235a7fa922430f8769aa174741f12c66ed02ee0045d8f6b9d4a108dbe445"
 
 [tools.cargo-zigbuild.platforms.linux-x86_64.source]
 asset = "cargo-zigbuild-v0.20.1.x86_64-unknown-linux-musl.tar.gz"
-path = "cargo-zigbuild"
 repo = "rust-cross/cargo-zigbuild"
 tag = "v0.20.1"
 type = "github"
+
+[[tools.cargo-zigbuild.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "cargo-zigbuild"
 
 [tools.cue]
 version = "0.15.3"
 
 [tools.cue.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:61c631cdea06670b8c01e2c978e953fe9a03e64f405890ce649f9b99cefe973a"
+digest = "sha256:5895bdfc41cb35f25ff36767da8c38b3eb04057fd6d7b0b401639e0840f8d651"
 
 [tools.cue.platforms.darwin-arm64.source]
 asset = "cue_v0.15.3_darwin_arm64.tar.gz"
-path = "cue"
 repo = "cue-lang/cue"
 tag = "v0.15.3"
 type = "github"
+
+[[tools.cue.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "cue"
 
 [tools.cue.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:d3d444947dd14f52739f8f35a466d6a5004af855558d10eeb69cf8b0c21f97d0"
+digest = "sha256:3dfcb91dffe2e6cc9380c1858150a439fddf5dda8225b49686d9280f4ad83f56"
 
 [tools.cue.platforms.darwin-x86_64.source]
 asset = "cue_v0.15.3_darwin_amd64.tar.gz"
-path = "cue"
 repo = "cue-lang/cue"
 tag = "v0.15.3"
 type = "github"
+
+[[tools.cue.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "cue"
 
 [tools.cue.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:6b2385b56f300521da1e5b5a69184419e065d927c71f7569fe5db52eff4a1082"
+digest = "sha256:927be0cf7ca4a983b700a51b5d9d8c0d85381776a84d2f5608e12ddf4ee9d7de"
 
 [tools.cue.platforms.linux-arm64.source]
 asset = "cue_v0.15.3_linux_arm64.tar.gz"
-path = "cue"
 repo = "cue-lang/cue"
 tag = "v0.15.3"
 type = "github"
+
+[[tools.cue.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "cue"
 
 [tools.cue.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:329a01d2f5de293256ed1ea9777cdadcd11137d420090813da4ebc9891cca477"
+digest = "sha256:6d700c50424a1ccec228e15faee2a087d7b844c99412ee1da68ac2b548d5b593"
 
 [tools.cue.platforms.linux-x86_64.source]
 asset = "cue_v0.15.3_linux_amd64.tar.gz"
-path = "cue"
 repo = "cue-lang/cue"
 tag = "v0.15.3"
 type = "github"
+
+[[tools.cue.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "cue"
 
 [tools.jq]
 version = "1.7.1"
 
 [tools.jq.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:d59bf590fe28999b1bdc7d6b2824e0e0c0226f783173e1fd00c6bca60a0f5000"
+digest = "sha256:168586d58c75f646d0ac70094c60e3bdede0495ece16175ad56938010228dc5e"
 
 [tools.jq.platforms.darwin-arm64.source]
 asset = "jq-macos-arm64"
@@ -336,7 +408,7 @@ type = "github"
 
 [tools.jq.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:459f45f50a98d4940028bab2f1786867b619d096431ffb5b98e57f5e146a7567"
+digest = "sha256:8f2d57b165289a316b3efaafb9dde409ebec28c7dae02c7ca00e00ff73375c3d"
 
 [tools.jq.platforms.darwin-x86_64.source]
 asset = "jq-macos-amd64"
@@ -346,7 +418,7 @@ type = "github"
 
 [tools.jq.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:6434673e28b41a1e654302c3c1315cc1ead7c95d7079ff52b42a696d8e05970c"
+digest = "sha256:08bb46a0c0927186b2bf0ad4f563f566578d8f07b96f896a6109c935501e7aff"
 
 [tools.jq.platforms.linux-arm64.source]
 asset = "jq-linux-arm64"
@@ -356,7 +428,7 @@ type = "github"
 
 [tools.jq.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:561cec6e8b28fd13ffe3602829cad3c9c8bf9e60202dc700c20bd112e8761086"
+digest = "sha256:c1019444e4ea6dc37ec657f316851f668076bee1691d2713a7c55b2acd40c0a1"
 
 [tools.jq.platforms.linux-x86_64.source]
 asset = "jq-linux-amd64"
@@ -534,7 +606,7 @@ version = "2025-12-22"
 
 [tools.rust-analyzer.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:bd7375a9a43b897cd37a2021c50566dce0debce9b34a1ff75d8cc7b2d540763b"
+digest = "sha256:58a2573a028431ced1dccdb299dae8a21dcbb9e28d1fcbbe9c33eb9a0b32af6f"
 
 [tools.rust-analyzer.platforms.darwin-arm64.source]
 asset = "rust-analyzer-aarch64-apple-darwin.gz"
@@ -544,7 +616,7 @@ type = "github"
 
 [tools.rust-analyzer.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:357426f332ada2f8961df3182a4891292143891e9037803bf97be156f287435c"
+digest = "sha256:7418097398ba704be0633e4aad385e22e27ecfff3724523f5c366665ff6dba6d"
 
 [tools.rust-analyzer.platforms.darwin-x86_64.source]
 asset = "rust-analyzer-x86_64-apple-darwin.gz"
@@ -554,7 +626,7 @@ type = "github"
 
 [tools.rust-analyzer.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:3861a01efe3c6dae94809fd8bf6d3a2da60205e918cfefb78e0e8ff5add6c41d"
+digest = "sha256:77e724f0550a89a98adc6924f95905e44e2ce8e24455d44ab69e3efbd7efac60"
 
 [tools.rust-analyzer.platforms.linux-arm64.source]
 asset = "rust-analyzer-aarch64-unknown-linux-gnu.gz"
@@ -564,7 +636,7 @@ type = "github"
 
 [tools.rust-analyzer.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:745e353e4c1313198c2a38baf151a295021f6929bf488046af1f288c358662fe"
+digest = "sha256:e65f20e6603adc1d524d834f58f54ee39c69585b4c119c3f40da5d5d0f32174b"
 
 [tools.rust-analyzer.platforms.linux-x86_64.source]
 asset = "rust-analyzer-x86_64-unknown-linux-gnu.gz"
@@ -577,101 +649,125 @@ version = "0.12.0"
 
 [tools.sccache.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:5669a6c6dac6146bf526695916f80a19512b3f403018dfee8ceb39fc2bd0ce40"
+digest = "sha256:bfa5402cdc0338ecafe6593e637530ac8f2d94b8809a6780c1a3bd8ccef417c4"
 
 [tools.sccache.platforms.darwin-arm64.source]
 asset = "sccache-v0.12.0-aarch64-apple-darwin.tar.gz"
-path = "sccache-v0.12.0-aarch64-apple-darwin/sccache"
 repo = "mozilla/sccache"
 tag = "v0.12.0"
 type = "github"
+
+[[tools.sccache.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "sccache-v0.12.0-aarch64-apple-darwin/sccache"
 
 [tools.sccache.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:9eaca96ea109d0c4359045f4812fb24969d46fbfc1afdf9f3e2701b2e27030c6"
+digest = "sha256:fc952636f142682312afe4adc3a52cffa49c1fd7a440704d377ef7408cd419d0"
 
 [tools.sccache.platforms.darwin-x86_64.source]
 asset = "sccache-v0.12.0-x86_64-apple-darwin.tar.gz"
-path = "sccache-v0.12.0-x86_64-apple-darwin/sccache"
 repo = "mozilla/sccache"
 tag = "v0.12.0"
 type = "github"
+
+[[tools.sccache.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "sccache-v0.12.0-x86_64-apple-darwin/sccache"
 
 [tools.sccache.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:4d66e7defd71873717fa789133e8f7368d00db0b945cc43ed6856dd55b55af37"
+digest = "sha256:09af50dc6171a7b3f8efd5f7b2983685104722238378dcfd7d19e2eaffe86815"
 
 [tools.sccache.platforms.linux-arm64.source]
 asset = "sccache-v0.12.0-aarch64-unknown-linux-musl.tar.gz"
-path = "sccache-v0.12.0-aarch64-unknown-linux-musl/sccache"
 repo = "mozilla/sccache"
 tag = "v0.12.0"
 type = "github"
+
+[[tools.sccache.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "sccache-v0.12.0-aarch64-unknown-linux-musl/sccache"
 
 [tools.sccache.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:28007eb4bedcb6ceab42176c013f28f277a51bad5fd21a90ab8606d4408e2a63"
+digest = "sha256:4e241ccf78af03303e62b413da53baf7e3733f41f2af9ac1f83149fa5a457e12"
 
 [tools.sccache.platforms.linux-x86_64.source]
 asset = "sccache-v0.12.0-x86_64-unknown-linux-musl.tar.gz"
-path = "sccache-v0.12.0-x86_64-unknown-linux-musl/sccache"
 repo = "mozilla/sccache"
 tag = "v0.12.0"
 type = "github"
+
+[[tools.sccache.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "sccache-v0.12.0-x86_64-unknown-linux-musl/sccache"
 
 [tools.treefmt]
 version = "2.4.0"
 
 [tools.treefmt.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:d50ec4d90f96d9dbcaf5bd4d68e285de9e5b21e5e05a851ca570eafffc5baa11"
+digest = "sha256:ce7b583e090e6f07f9a300576807ea2002cc4f9c1db5411259370d943bca07fa"
 
 [tools.treefmt.platforms.darwin-arm64.source]
 asset = "treefmt_2.4.0_darwin_arm64.tar.gz"
-path = "treefmt"
 repo = "numtide/treefmt"
 tag = "v2.4.0"
 type = "github"
+
+[[tools.treefmt.platforms.darwin-arm64.source.extract]]
+kind = "bin"
+path = "treefmt"
 
 [tools.treefmt.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:6b2964d238817448f1a11b9475d8c5e5c6c4b4f3ed5e9f9be3876f6199948b87"
+digest = "sha256:57904cbf78652caf6b79303f9b60eeeeec14503ce5c0b1039389aeec2b1306dd"
 
 [tools.treefmt.platforms.darwin-x86_64.source]
 asset = "treefmt_2.4.0_darwin_amd64.tar.gz"
-path = "treefmt"
 repo = "numtide/treefmt"
 tag = "v2.4.0"
 type = "github"
+
+[[tools.treefmt.platforms.darwin-x86_64.source.extract]]
+kind = "bin"
+path = "treefmt"
 
 [tools.treefmt.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:8de3fa62465eec6aa236fc4a40b35c4e44dc45e9c1ff71b30f2272720d866b9b"
+digest = "sha256:7e24a193b90fd8bce21646824458ca20adae8b750a9f8186ad93d5336daad1d6"
 
 [tools.treefmt.platforms.linux-arm64.source]
 asset = "treefmt_2.4.0_linux_arm64.tar.gz"
-path = "treefmt"
 repo = "numtide/treefmt"
 tag = "v2.4.0"
 type = "github"
+
+[[tools.treefmt.platforms.linux-arm64.source.extract]]
+kind = "bin"
+path = "treefmt"
 
 [tools.treefmt.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:bbb28b0aac5499af0a3daf36c54ac5c4a2d8dfe756c0991539dbc0868b3178ae"
+digest = "sha256:b5fdf93ae66d2b2b5756164fa730528ab19cf351957dee0d257916f3f7bb3477"
 
 [tools.treefmt.platforms.linux-x86_64.source]
 asset = "treefmt_2.4.0_linux_amd64.tar.gz"
-path = "treefmt"
 repo = "numtide/treefmt"
 tag = "v2.4.0"
 type = "github"
+
+[[tools.treefmt.platforms.linux-x86_64.source.extract]]
+kind = "bin"
+path = "treefmt"
 
 [tools.yq]
 version = "4.44.6"
 
 [tools.yq.platforms.darwin-arm64]
 provider = "github"
-digest = "sha256:0094444d5cbf0427f29b9ffa2fcdc0cf96214188064daa70c6af5caf102d03af"
+digest = "sha256:e9c60093588e7b43d182b9b5674a4a202315181acf2061d7e3e420752faa1b14"
 
 [tools.yq.platforms.darwin-arm64.source]
 asset = "yq_darwin_arm64"
@@ -681,7 +777,7 @@ type = "github"
 
 [tools.yq.platforms.darwin-x86_64]
 provider = "github"
-digest = "sha256:da95a3c76b4777900c47a3cd193bddff0b85b2667281f38d1b95078786c3968a"
+digest = "sha256:cba61ee0a762a4e0957a4df25c4c9002410dfb6be0a371f34fae8e288ffbf87b"
 
 [tools.yq.platforms.darwin-x86_64.source]
 asset = "yq_darwin_amd64"
@@ -691,7 +787,7 @@ type = "github"
 
 [tools.yq.platforms.linux-arm64]
 provider = "github"
-digest = "sha256:f516d81620774918d4651511096d11bd841a847dbbf465f63deba5f4536c518a"
+digest = "sha256:59e711b0695cee4d11678d5175e4aba9cabb3007d39a3eec0d3346706598a2a9"
 
 [tools.yq.platforms.linux-arm64.source]
 asset = "yq_linux_arm64"
@@ -701,7 +797,7 @@ type = "github"
 
 [tools.yq.platforms.linux-x86_64]
 provider = "github"
-digest = "sha256:469b1b69b872d9a1e4f2b84b3dfab0daa39de39358a8e90024e8d3fd651ad8e9"
+digest = "sha256:451fab4a6332cc927eb63451e86bda521643faccd58f7175928467dcc5ac09c3"
 
 [tools.yq.platforms.linux-x86_64.source]
 asset = "yq_linux_amd64"
