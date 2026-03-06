@@ -77,7 +77,7 @@ package schema
 }
 
 // #Source is a union of all supported tool sources
-#Source: #Oci | #GitHub | #Nix | #Rustup
+#Source: #Oci | #GitHub | #Nix | #Rustup | #URL
 
 // #Oci extracts binaries from OCI container images
 #Oci: {
@@ -162,6 +162,30 @@ package schema
 	components: [...string] | *[]
 	// Additional targets to install (e.g., "x86_64-unknown-linux-gnu")
 	targets: [...string] | *[]
+}
+
+// #URL downloads a tool from an arbitrary HTTP/HTTPS URL.
+//
+// Supports template variables in the URL:
+//   - {version} - the tool version string
+//   - {os}      - the target OS (darwin, linux)
+//   - {arch}    - the target architecture (aarch64, x86_64)
+//
+// Example:
+//   source: #URL & {
+//       url: "https://example.com/releases/{version}/tool-{os}-{arch}.tar.gz"
+//       path: "tool-{version}/bin/tool"
+//   }
+#URL: {
+	type: "url"
+	// Download URL with optional {version}, {os}, {arch} templates
+	url!: string
+	// Legacy path selector for single-file archive extraction.
+	// Prefer `extract` for typed outputs.
+	path?: string
+	// Optional typed extraction rules for archive assets.
+	// When omitted, cuenv treats the download as a single binary.
+	extract?: [...#GitHubExtract]
 }
 
 // #ToolsActivate is a pre-configured hook that downloads tools

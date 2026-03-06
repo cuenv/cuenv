@@ -1221,6 +1221,7 @@ dependencies = [
  "cuenv-tools-nix",
  "cuenv-tools-oci",
  "cuenv-tools-rustup",
+ "cuenv-tools-url",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "futures",
@@ -1335,6 +1336,7 @@ dependencies = [
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-rustup",
+ "cuenv-tools-url",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "glob",
@@ -1667,6 +1669,23 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cuenv-tools-url"
+version = "0.26.18"
+dependencies = [
+ "async-trait",
+ "cuenv-core",
+ "flate2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
+ "tracing",
+ "zip",
 ]
 
 [[package]]
