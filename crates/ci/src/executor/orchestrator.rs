@@ -883,6 +883,7 @@ fn create_tool_registry() -> ToolRegistry {
     registry.register(cuenv_tools_nix::NixToolProvider::new());
     registry.register(cuenv_tools_github::GitHubToolProvider::new());
     registry.register(cuenv_tools_rustup::RustupToolProvider::new());
+    registry.register(cuenv_tools_url::UrlToolProvider::new());
 
     registry
 }
@@ -988,6 +989,18 @@ fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
                 profile,
                 components,
                 targets,
+            })
+        }
+        "url" => {
+            let url = locked
+                .source
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let extract = parse_github_extract_list(&locked.source);
+            Some(ToolSource::Url {
+                url: url.to_string(),
+                extract,
             })
         }
         _ => None,

@@ -169,6 +169,15 @@ pub enum ToolSource {
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         targets: Vec<String>,
     },
+    /// Asset from an arbitrary HTTP URL.
+    #[serde(rename = "url")]
+    Url {
+        /// Fully-resolved download URL.
+        url: String,
+        /// Typed extraction rules for archive/binary assets.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extract: Vec<ToolExtract>,
+    },
 }
 
 /// Typed extract rule for GitHub release assets.
@@ -220,6 +229,7 @@ impl ToolSource {
             Self::GitHub { .. } => "github",
             Self::Nix { .. } => "nix",
             Self::Rustup { .. } => "rustup",
+            Self::Url { .. } => "url",
         }
     }
 }
@@ -558,6 +568,12 @@ mod tests {
             targets: vec!["x86_64-unknown-linux-gnu".into()],
         };
         assert_eq!(s.provider_type(), "rustup");
+
+        let s = ToolSource::Url {
+            url: "https://example.com/tool-1.0.0.tar.gz".into(),
+            extract: vec![],
+        };
+        assert_eq!(s.provider_type(), "url");
     }
 
     #[test]
@@ -629,6 +645,34 @@ mod tests {
         // Empty vecs should not be serialized
         assert!(!json.contains("components"));
         assert!(!json.contains("targets"));
+    }
+
+    #[test]
+    fn test_tool_source_url_serialization() {
+        let source = ToolSource::Url {
+            url: "https://example.com/tool-1.0.0.tar.gz".into(),
+            extract: vec![ToolExtract::Bin {
+                path: "tool".into(),
+                as_name: None,
+            }],
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"type\":\"url\""));
+        assert!(json.contains("\"url\":\"https://example.com/tool-1.0.0.tar.gz\""));
+        assert!(json.contains("\"kind\":\"bin\""));
+    }
+
+    #[test]
+    fn test_tool_source_url_deserialization() {
+        let json = r#"{"type":"url","url":"https://example.com/tool-1.0.0.tar.gz"}"#;
+        let source: ToolSource = serde_json::from_str(json).unwrap();
+        match source {
+            ToolSource::Url { url, extract } => {
+                assert_eq!(url, "https://example.com/tool-1.0.0.tar.gz");
+                assert!(extract.is_empty());
+            }
+            _ => panic!("Expected URL source"),
+        }
     }
 
     #[test]

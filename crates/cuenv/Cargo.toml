@@ -68,6 +68,7 @@ cuenv-tools-oci = { workspace = true }
 cuenv-tools-github = { workspace = true }
 cuenv-tools-nix = { workspace = true }
 cuenv-tools-rustup = { workspace = true }
+cuenv-tools-url = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = "0.7"
