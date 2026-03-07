@@ -917,7 +917,7 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
 /// Gets the GitHub owner/repo from the git remote origin.
 #[cfg(feature = "github")]
 fn get_github_repo_from_remote(root: &std::path::Path) -> Option<(String, String)> {
-    let repo = gix::open(root).ok()?;
+    let repo = gix::discover(root).ok()?;
     let remote = repo.find_remote("origin").ok()?;
     let url = remote.url(gix::remote::Direction::Fetch)?;
     parse_github_url(&url.to_bstring().to_string())
@@ -1205,8 +1205,11 @@ fn update_package_version(manifest_path: &Path, new_version: &str) -> cuenv_core
 ///
 /// This replaces the previous `git checkout -b`, `git add -A`, and `git commit` shell calls
 /// with native gix operations. The approach:
-/// 1. Open the repository and resolve HEAD
+/// 1. Discover the repository from the given path
 /// 2. Build a new tree by diffing the worktree against the HEAD tree
+///    - Handles tracked file modifications, deletions, and mode changes
+///    - Walks worktree for new untracked files (matching `git add -A` semantics)
+///    - Correctly handles symlinks by storing link targets, not dereferenced content
 /// 3. Create the branch reference pointing to the current HEAD
 /// 4. Point HEAD at the new branch (symbolic ref)
 /// 5. Create a commit on HEAD with the new tree
@@ -1214,10 +1217,10 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
     use gix::object::tree::EntryKind;
     use gix::refs::transaction::PreviousValue;
 
-    let repo = gix::open(root).map_err(|e| {
+    let repo = gix::discover(root).map_err(|e| {
         cuenv_core::Error::execution_with_help(
-            format!("Failed to open git repository: {e}"),
-            "Ensure you are in a valid git repository",
+            format!("Failed to discover git repository: {e}"),
+            "Ensure you are inside a valid git repository",
         )
     })?;
 
@@ -1255,21 +1258,57 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         )
     })?;
 
+    // Collect tracked file paths for new-file detection later
+    let mut tracked_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+
     for entry in index.entries() {
         let rel_path = entry.path(&index);
-        let abs_path = workdir.join(gix::path::from_bstr(rel_path));
+        let rel_path_os = gix::path::from_bstr(rel_path);
+        let abs_path = workdir.join(&rel_path_os);
+        tracked_paths.insert(rel_path_os.to_path_buf());
 
-        if !abs_path.exists() {
-            // File was deleted — remove from tree
-            let path_str = String::from_utf8_lossy(rel_path);
-            let _ = editor.remove(path_str.as_ref());
-            continue;
-        }
+        let path_str = String::from_utf8_lossy(rel_path);
 
-        // Read file and write as blob to detect changes
-        let Ok(content) = fs::read(&abs_path) else {
-            continue;
+        // Use symlink_metadata to avoid following symlinks
+        let metadata = match abs_path.symlink_metadata() {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // File was deleted — remove from tree
+                editor.remove(path_str.as_ref()).map_err(|e| {
+                    cuenv_core::Error::execution_with_help(
+                        format!("Failed to remove tree entry for '{path_str}': {e}"),
+                        "Tree editing failed while removing deleted files",
+                    )
+                })?;
+                continue;
+            }
+            Err(e) => {
+                return Err(cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file metadata for '{}': {e}", abs_path.display()),
+                    "Ensure the file is accessible before running release prepare",
+                ));
+            }
         };
+
+        // Read content: for symlinks, store the link target path; for regular files, read bytes
+        let content = if metadata.is_symlink() {
+            let target = fs::read_link(&abs_path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read symlink '{}': {e}", abs_path.display()),
+                    "Ensure the symlink is readable",
+                )
+            })?;
+            target.as_os_str().as_encoded_bytes().to_vec()
+        } else {
+            fs::read(&abs_path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file '{}': {e}", abs_path.display()),
+                    "Ensure the file is readable before running release prepare",
+                )
+            })?
+        };
+
         let blob_id = repo.write_blob(&content).map_err(|e| {
             cuenv_core::Error::execution_with_help(
                 format!("Failed to write blob: {e}"),
@@ -1277,16 +1316,26 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
             )
         })?;
 
-        // Only upsert if the blob changed
-        if blob_id.detach() != entry.id {
-            let path_str = String::from_utf8_lossy(rel_path);
-            let kind = if entry.mode.contains(gix::index::entry::Mode::FILE_EXECUTABLE) {
-                EntryKind::BlobExecutable
-            } else if entry.mode.contains(gix::index::entry::Mode::SYMLINK) {
-                EntryKind::Link
-            } else {
-                EntryKind::Blob
-            };
+        // Determine the correct entry kind from the worktree metadata
+        let kind = if metadata.is_symlink() {
+            EntryKind::Link
+        } else if is_executable(&metadata) {
+            EntryKind::BlobExecutable
+        } else {
+            EntryKind::Blob
+        };
+
+        // Determine the kind that the index currently records
+        let index_kind = if entry.mode.contains(gix::index::entry::Mode::SYMLINK) {
+            EntryKind::Link
+        } else if entry.mode.contains(gix::index::entry::Mode::FILE_EXECUTABLE) {
+            EntryKind::BlobExecutable
+        } else {
+            EntryKind::Blob
+        };
+
+        // Upsert if content or mode changed
+        if blob_id.detach() != entry.id || kind != index_kind {
             editor.upsert(path_str.as_ref(), kind, blob_id).map_err(|e| {
                 cuenv_core::Error::execution_with_help(
                     format!("Failed to update tree entry: {e}"),
@@ -1294,6 +1343,72 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
                 )
             })?;
         }
+    }
+
+    // Walk the worktree for new (untracked) files to match `git add -A` semantics.
+    // Uses ignore::WalkBuilder which respects .gitignore rules.
+    for dir_entry in ignore::WalkBuilder::new(workdir).hidden(false).build().flatten() {
+        let path = dir_entry.path();
+        if !path.is_file() && !path.is_symlink() {
+            continue;
+        }
+        let Ok(rel_path) = path.strip_prefix(workdir) else {
+            continue;
+        };
+        if tracked_paths.contains(rel_path) {
+            continue;
+        }
+        // Skip .git directory entries
+        if rel_path.starts_with(".git") {
+            continue;
+        }
+
+        let metadata = path.symlink_metadata().map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to read metadata for '{}': {e}", path.display()),
+                "Ensure the file is accessible",
+            )
+        })?;
+
+        let content = if metadata.is_symlink() {
+            let target = fs::read_link(path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read symlink '{}': {e}", path.display()),
+                    "Ensure the symlink is readable",
+                )
+            })?;
+            target.as_os_str().as_encoded_bytes().to_vec()
+        } else {
+            fs::read(path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file '{}': {e}", path.display()),
+                    "Ensure the file is readable",
+                )
+            })?
+        };
+
+        let blob_id = repo.write_blob(&content).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to write blob: {e}"),
+                "Object database may be corrupted",
+            )
+        })?;
+
+        let kind = if metadata.is_symlink() {
+            EntryKind::Link
+        } else if is_executable(&metadata) {
+            EntryKind::BlobExecutable
+        } else {
+            EntryKind::Blob
+        };
+
+        let rel_str = rel_path.to_string_lossy();
+        editor.upsert(rel_str.as_ref(), kind, blob_id).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to add new file '{rel_str}' to tree: {e}"),
+                "Tree editing failed",
+            )
+        })?;
     }
 
     let new_tree_id = editor.write().map_err(|e| {
@@ -1314,7 +1429,7 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
     .map_err(|e| {
         cuenv_core::Error::execution_with_help(
             format!("Failed to create branch '{branch}': {e}"),
-            "A branch with this name may already exist",
+            "Check that the branch name is valid and does not already exist",
         )
     })?;
 
@@ -1361,6 +1476,18 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         })?;
 
     Ok(())
+}
+
+/// Check if file metadata indicates the executable bit is set.
+#[cfg(unix)]
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// Push a branch to the remote origin via CLI.
