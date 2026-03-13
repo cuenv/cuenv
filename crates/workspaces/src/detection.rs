@@ -734,7 +734,7 @@ __metadata:
 
     #[test]
     fn test_read_first_lines_respects_limit() {
-        let reader = BufReader::new("one\ntwo\nthree\nfour\n".as_bytes());
+        let reader = BufReader::new(&b"one\ntwo\nthree\nfour\n"[..]);
 
         let lines = read_first_lines(reader, 2, Path::new("yarn.lock")).unwrap();
 
