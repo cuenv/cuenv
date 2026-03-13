@@ -171,22 +171,30 @@ fn detect_from_workspace_configs(
 /// Returns the effective command name from a shell-like command string.
 ///
 /// This skips common environment variable prefixes such as `FOO=bar cargo test`
-/// and `env -i FOO=bar bun run build`.
+/// and `env -i FOO=bar bun run build`, while respecting shell quoting rules.
 #[must_use]
-pub fn command_name(command: &str) -> Option<&str> {
-    let mut saw_env_wrapper = false;
+pub fn command_name(command: &str) -> Option<String> {
+    let tokens = shlex::split(command)?;
+    let mut parsing_env_options = false;
 
-    for token in command.split_whitespace() {
+    for token in tokens {
         if token == "env" {
-            saw_env_wrapper = true;
+            parsing_env_options = true;
             continue;
         }
 
-        if saw_env_wrapper && (token == "--" || token.starts_with('-')) {
-            continue;
+        if parsing_env_options {
+            if token == "--" {
+                parsing_env_options = false;
+                continue;
+            }
+
+            if token.starts_with('-') {
+                continue;
+            }
         }
 
-        if is_env_assignment(token) {
+        if is_env_assignment(&token) {
             continue;
         }
 
@@ -233,7 +241,7 @@ fn is_env_assignment(token: &str) -> bool {
 pub fn detect_from_command(command: &str) -> Option<PackageManager> {
     let cmd = command_name(command)?;
 
-    match cmd {
+    match cmd.as_str() {
         "cargo" => Some(PackageManager::Cargo),
         "npm" | "npx" | "node" => Some(PackageManager::Npm),
         "bun" | "bunx" => Some(PackageManager::Bun),
@@ -672,15 +680,42 @@ mod tests {
 
     #[test]
     fn test_command_name_skips_env_prefixes() {
-        assert_eq!(command_name("FOO=bar cargo test"), Some("cargo"));
-        assert_eq!(command_name("env FOO=bar bun run build"), Some("bun"));
+        assert_eq!(
+            command_name("FOO=bar cargo test"),
+            Some("cargo".to_string())
+        );
+        assert_eq!(
+            command_name("env FOO=bar bun run build"),
+            Some("bun".to_string())
+        );
         assert_eq!(
             command_name("env -i CARGO_TERM_COLOR=always cargo test"),
-            Some("cargo")
+            Some("cargo".to_string())
         );
-        assert_eq!(command_name("env -- BUN_ENV=1 bun run lint"), Some("bun"));
+        assert_eq!(
+            command_name("env -- BUN_ENV=1 bun run lint"),
+            Some("bun".to_string())
+        );
         assert_eq!(command_name(""), None);
         assert_eq!(command_name("FOO=bar"), None);
+    }
+
+    #[test]
+    fn test_command_name_respects_env_option_terminator() {
+        assert_eq!(
+            command_name("env -- -custom-command --flag"),
+            Some("-custom-command".to_string())
+        );
+    }
+
+    #[test]
+    fn test_command_name_respects_shell_quoting() {
+        assert_eq!(
+            command_name(r#"env "BUN_ENV=space value" bun run test"#),
+            Some("bun".to_string())
+        );
+        assert_eq!(command_name(r#""cargo" build"#), Some("cargo".to_string()));
+        assert_eq!(command_name(r#""unterminated"#), None);
     }
 
     #[test]

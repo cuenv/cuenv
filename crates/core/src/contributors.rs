@@ -84,10 +84,10 @@ fn workspace_name_for_manager(manager: cuenv_workspaces::PackageManager) -> &'st
 fn collect_commands_from_node(node: &TaskNode, commands: &mut HashSet<String>) {
     match node {
         TaskNode::Task(task) => {
-            if !task.command.is_empty() {
-                if let Some(cmd) = cuenv_workspaces::command_name(&task.command) {
-                    commands.insert(cmd.to_string());
-                }
+            if !task.command.is_empty()
+                && let Some(cmd) = cuenv_workspaces::command_name(&task.command)
+            {
+                commands.insert(cmd);
             }
         }
         TaskNode::Group(group) => {
@@ -400,7 +400,7 @@ impl<'a> ContributorEngine<'a> {
                     return;
                 };
 
-                if commands.iter().any(|c| c == base_cmd) {
+                if commands.iter().any(|c| c == &base_cmd) {
                     // Add dependency if not already present
                     if !task.depends_on.iter().any(|d| d.task_name() == inject_dep) {
                         task.depends_on.push(TaskDependency::from_name(inject_dep));
