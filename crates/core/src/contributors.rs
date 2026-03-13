@@ -85,8 +85,7 @@ fn collect_commands_from_node(node: &TaskNode, commands: &mut HashSet<String>) {
     match node {
         TaskNode::Task(task) => {
             if !task.command.is_empty() {
-                // Extract the base command (first word)
-                if let Some(cmd) = task.command.split_whitespace().next() {
+                if let Some(cmd) = cuenv_workspaces::command_name(&task.command) {
                     commands.insert(cmd.to_string());
                 }
             }
@@ -397,7 +396,9 @@ impl<'a> ContributorEngine<'a> {
         match node {
             TaskNode::Task(task) => {
                 // Check if task command matches any auto-associate command
-                let base_cmd = task.command.split_whitespace().next().unwrap_or("");
+                let Some(base_cmd) = cuenv_workspaces::command_name(&task.command) else {
+                    return;
+                };
 
                 if commands.iter().any(|c| c == base_cmd) {
                     // Add dependency if not already present
@@ -738,6 +739,39 @@ mod tests {
         engine.apply(&mut tasks).unwrap();
 
         // User task should now depend on the contributor setup task
+        let dev_task = tasks.get("dev").unwrap();
+        if let TaskNode::Task(task) = dev_task {
+            assert!(
+                task.depends_on
+                    .iter()
+                    .any(|d| d.task_name() == "cuenv:contributor:bun.workspace.setup")
+            );
+        } else {
+            panic!("Expected single task");
+        }
+    }
+
+    #[test]
+    fn test_contributor_auto_association_with_env_prefixed_command() {
+        let contrib = create_test_contributor("bun.workspace", vec!["bun"]);
+        let ctx = ContributorContext {
+            workspace_member: Some("bun".to_string()),
+            workspace_root: None,
+            task_commands: ["test-cmd".to_string()].into_iter().collect(),
+        };
+
+        let user_task = Task {
+            command: "env TEST_MODE=1 test-cmd run dev".to_string(),
+            ..Default::default()
+        };
+
+        let mut tasks: HashMap<String, TaskNode> = HashMap::new();
+        tasks.insert("dev".to_string(), TaskNode::Task(Box::new(user_task)));
+
+        let contributors = [contrib];
+        let engine = ContributorEngine::new(&contributors, ctx);
+        engine.apply(&mut tasks).unwrap();
+
         let dev_task = tasks.get("dev").unwrap();
         if let TaskNode::Task(task) = dev_task {
             assert!(

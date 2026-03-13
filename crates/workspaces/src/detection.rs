@@ -168,6 +168,51 @@ fn detect_from_workspace_configs(
     Ok(())
 }
 
+/// Returns the effective command name from a shell-like command string.
+///
+/// This skips common environment variable prefixes such as `FOO=bar cargo test`
+/// and `env -i FOO=bar bun run build`.
+#[must_use]
+pub fn command_name(command: &str) -> Option<&str> {
+    let mut saw_env_wrapper = false;
+
+    for token in command.split_whitespace() {
+        if token == "env" {
+            saw_env_wrapper = true;
+            continue;
+        }
+
+        if saw_env_wrapper && (token == "--" || token.starts_with('-')) {
+            continue;
+        }
+
+        if is_env_assignment(token) {
+            continue;
+        }
+
+        return Some(token);
+    }
+
+    None
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 /// Infers the package manager from a command string.
 ///
 /// Maps common command names to their corresponding package managers.
@@ -186,8 +231,7 @@ fn detect_from_workspace_configs(
 /// assert_eq!(detect_from_command("unknown"), None);
 /// ```
 pub fn detect_from_command(command: &str) -> Option<PackageManager> {
-    // Extract the first word (command name)
-    let cmd = command.split_whitespace().next().unwrap_or(command);
+    let cmd = command_name(command)?;
 
     match cmd {
         "cargo" => Some(PackageManager::Cargo),
@@ -627,6 +671,19 @@ mod tests {
     }
 
     #[test]
+    fn test_command_name_skips_env_prefixes() {
+        assert_eq!(command_name("FOO=bar cargo test"), Some("cargo"));
+        assert_eq!(command_name("env FOO=bar bun run build"), Some("bun"));
+        assert_eq!(
+            command_name("env -i CARGO_TERM_COLOR=always cargo test"),
+            Some("cargo")
+        );
+        assert_eq!(command_name("env -- BUN_ENV=1 bun run lint"), Some("bun"));
+        assert_eq!(command_name(""), None);
+        assert_eq!(command_name("FOO=bar"), None);
+    }
+
+    #[test]
     fn test_detect_from_command_with_args() {
         assert_eq!(
             detect_from_command("cargo build"),
@@ -647,6 +704,14 @@ mod tests {
         assert_eq!(
             detect_from_command("npx prisma generate"),
             Some(PackageManager::Npm)
+        );
+        assert_eq!(
+            detect_from_command("FOO=bar cargo build"),
+            Some(PackageManager::Cargo)
+        );
+        assert_eq!(
+            detect_from_command("env -i BUN_ENV=1 bun run test"),
+            Some(PackageManager::Bun)
         );
     }
 
