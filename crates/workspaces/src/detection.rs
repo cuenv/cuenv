@@ -168,6 +168,59 @@ fn detect_from_workspace_configs(
     Ok(())
 }
 
+/// Returns the effective command name from a shell-like command string.
+///
+/// This skips common environment variable prefixes such as `FOO=bar cargo test`
+/// and `env -i FOO=bar bun run build`, while respecting shell quoting rules.
+#[must_use]
+pub fn command_name(command: &str) -> Option<String> {
+    let tokens = shlex::split(command)?;
+    let mut parsing_env_options = false;
+
+    for token in tokens {
+        if token == "env" {
+            parsing_env_options = true;
+            continue;
+        }
+
+        if parsing_env_options {
+            if token == "--" {
+                parsing_env_options = false;
+                continue;
+            }
+
+            if token.starts_with('-') {
+                continue;
+            }
+        }
+
+        if is_env_assignment(&token) {
+            continue;
+        }
+
+        return Some(token);
+    }
+
+    None
+}
+
+fn is_env_assignment(token: &str) -> bool {
+    let Some((name, _)) = token.split_once('=') else {
+        return false;
+    };
+
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
 /// Infers the package manager from a command string.
 ///
 /// Maps common command names to their corresponding package managers.
@@ -186,10 +239,9 @@ fn detect_from_workspace_configs(
 /// assert_eq!(detect_from_command("unknown"), None);
 /// ```
 pub fn detect_from_command(command: &str) -> Option<PackageManager> {
-    // Extract the first word (command name)
-    let cmd = command.split_whitespace().next().unwrap_or(command);
+    let cmd = command_name(command)?;
 
-    match cmd {
+    match cmd.as_str() {
         "cargo" => Some(PackageManager::Cargo),
         "npm" | "npx" | "node" => Some(PackageManager::Npm),
         "bun" | "bunx" => Some(PackageManager::Bun),
@@ -627,6 +679,46 @@ mod tests {
     }
 
     #[test]
+    fn test_command_name_skips_env_prefixes() {
+        assert_eq!(
+            command_name("FOO=bar cargo test"),
+            Some("cargo".to_string())
+        );
+        assert_eq!(
+            command_name("env FOO=bar bun run build"),
+            Some("bun".to_string())
+        );
+        assert_eq!(
+            command_name("env -i CARGO_TERM_COLOR=always cargo test"),
+            Some("cargo".to_string())
+        );
+        assert_eq!(
+            command_name("env -- BUN_ENV=1 bun run lint"),
+            Some("bun".to_string())
+        );
+        assert_eq!(command_name(""), None);
+        assert_eq!(command_name("FOO=bar"), None);
+    }
+
+    #[test]
+    fn test_command_name_respects_env_option_terminator() {
+        assert_eq!(
+            command_name("env -- -custom-command --flag"),
+            Some("-custom-command".to_string())
+        );
+    }
+
+    #[test]
+    fn test_command_name_respects_shell_quoting() {
+        assert_eq!(
+            command_name(r#"env "BUN_ENV=space value" bun run test"#),
+            Some("bun".to_string())
+        );
+        assert_eq!(command_name(r#""cargo" build"#), Some("cargo".to_string()));
+        assert_eq!(command_name(r#""unterminated"#), None);
+    }
+
+    #[test]
     fn test_detect_from_command_with_args() {
         assert_eq!(
             detect_from_command("cargo build"),
@@ -647,6 +739,14 @@ mod tests {
         assert_eq!(
             detect_from_command("npx prisma generate"),
             Some(PackageManager::Npm)
+        );
+        assert_eq!(
+            detect_from_command("FOO=bar cargo build"),
+            Some(PackageManager::Cargo)
+        );
+        assert_eq!(
+            detect_from_command("env -i BUN_ENV=1 bun run test"),
+            Some(PackageManager::Bun)
         );
     }
 

@@ -226,7 +226,9 @@ pub use error::{Error, Result};
 
 // Re-export detection functions
 #[cfg(feature = "detection")]
-pub use detection::{detect_from_command, detect_package_managers, detect_with_command_hint};
+pub use detection::{
+    command_name, detect_from_command, detect_package_managers, detect_with_command_hint,
+};
 
 // Re-export JavaScript discovery types
 #[cfg(feature = "discovery-package-json")]
