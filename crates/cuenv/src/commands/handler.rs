@@ -529,6 +529,58 @@ pub struct SyncHandler {
     pub update_tools: Option<Vec<String>>,
 }
 
+struct SelectedSyncProvidersRequest<'a> {
+    registry: &'a sync::SyncRegistry,
+    provider_names: &'a [&'a str],
+    path: &'a std::path::Path,
+    package: &'a str,
+    options: &'a sync::SyncOptions,
+    scope: &'a SyncScope,
+    executor: &'a CommandExecutor,
+}
+
+async fn run_selected_sync_providers(request: SelectedSyncProvidersRequest<'_>) -> Result<String> {
+    let mut outputs = Vec::new();
+    let mut had_error = false;
+    let sync_all = request.scope == &SyncScope::Workspace;
+
+    for name in request.provider_names {
+        let result = request
+            .registry
+            .sync_provider(
+                name,
+                request.path,
+                request.package,
+                request.options,
+                sync_all,
+                request.executor,
+            )
+            .await;
+
+        match result {
+            Ok(r) => {
+                if !r.output.is_empty() {
+                    outputs.push(format!("[{name}]\n{}", r.output));
+                }
+                had_error |= r.had_error;
+            }
+            Err(e) => {
+                outputs.push(format!("[{name}] Error: {e}"));
+                had_error = true;
+            }
+        }
+    }
+
+    let combined = outputs.join("\n\n");
+    if had_error {
+        Err(cuenv_core::Error::configuration(combined))
+    } else if combined.is_empty() {
+        Ok("No sync operations performed.".to_string())
+    } else {
+        Ok(combined)
+    }
+}
+
 #[async_trait]
 impl CommandHandler for SyncHandler {
     fn command_name(&self) -> &'static str {
@@ -581,37 +633,16 @@ impl CommandHandler for SyncHandler {
                     return Err(project_error(path));
                 }
 
-                let provider_names = ["rules"];
-                let mut outputs = Vec::new();
-                let mut had_error = false;
-
-                for name in provider_names {
-                    let result = registry
-                        .sync_provider(name, path, &self.package, &options, sync_all, executor)
-                        .await;
-
-                    match result {
-                        Ok(r) => {
-                            if !r.output.is_empty() {
-                                outputs.push(format!("[{name}]\n{}", r.output));
-                            }
-                            had_error |= r.had_error;
-                        }
-                        Err(e) => {
-                            outputs.push(format!("[{name}] Error: {e}"));
-                            had_error = true;
-                        }
-                    }
-                }
-
-                let combined = outputs.join("\n\n");
-                return if had_error {
-                    Err(cuenv_core::Error::configuration(combined))
-                } else if combined.is_empty() {
-                    Ok("No sync operations performed.".to_string())
-                } else {
-                    Ok(combined)
-                };
+                return run_selected_sync_providers(SelectedSyncProvidersRequest {
+                    registry: &registry,
+                    provider_names: &["rules"],
+                    path,
+                    package: &self.package,
+                    options: &options,
+                    scope: &self.scope,
+                    executor,
+                })
+                .await;
             }
         }
 
@@ -625,9 +656,16 @@ impl CommandHandler for SyncHandler {
             }
             // All providers: cuenv sync or cuenv sync -A
             None => {
-                registry
-                    .sync_all(path, &self.package, &options, sync_all, executor)
-                    .await
+                run_selected_sync_providers(SelectedSyncProvidersRequest {
+                    registry: &registry,
+                    provider_names: &["codegen", "ci", "rules", "git-hooks"],
+                    path,
+                    package: &self.package,
+                    options: &options,
+                    scope: &self.scope,
+                    executor,
+                })
+                .await
             }
         }
     }
