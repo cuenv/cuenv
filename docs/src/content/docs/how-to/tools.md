@@ -346,6 +346,7 @@ import (
     xTools "github.com/cuenv/cuenv/contrib/tools"
     xRust "github.com/cuenv/cuenv/contrib/rust"
     xBun "github.com/cuenv/cuenv/contrib/bun"
+    xNode "github.com/cuenv/cuenv/contrib/node"
 )
 
 runtime: schema.#ToolsRuntime & {
@@ -365,6 +366,9 @@ runtime: schema.#ToolsRuntime & {
 
         // Bun runtime
         bun: xBun.#Bun & {version: "1.3.5"}
+
+        // Node.js runtime
+        node: xNode.#Node & {version: "24.14.0"}
     }
 }
 ```
@@ -468,6 +472,32 @@ runtime: schema.#ToolsRuntime & {
     }
 }
 ```
+
+### contrib/node
+
+Official Node.js runtime from `nodejs.org`, installed as a full upstream prefix so
+`node`, `npm`, and `npx` are available together without Nix.
+
+| Definition | Tool | Description                                                  |
+| ---------- | ---- | ------------------------------------------------------------ |
+| `#Node`    | node | Official Node.js runtime with `npm`/`npx` and upstream libs |
+
+**Example:**
+
+```cue
+import xNode "github.com/cuenv/cuenv/contrib/node"
+
+runtime: schema.#ToolsRuntime & {
+    platforms: ["darwin-arm64", "linux-x86_64"]
+    tools: {
+        node: xNode.#Node & {version: "24.14.0"}
+    }
+}
+```
+
+Node 25 and newer no longer bundle `corepack` in the official archives. cuenv
+installs the upstream payload unchanged, so `corepack` is present on Node 24
+LTS and absent on Node 25+ unless you install it separately.
 
 ### Creating Custom Contrib-Style Definitions
 
