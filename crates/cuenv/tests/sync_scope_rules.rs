@@ -139,6 +139,32 @@ schema.#Base
     .to_string()
 }
 
+fn tools_project_env_cue(name: &str) -> String {
+    format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  name: "{name}"
+
+  runtime: schema.#ToolsRuntime & {{
+    platforms: ["darwin-arm64"]
+    tools: {{
+      jq: {{
+        version: "1.7.1"
+        source: schema.#GitHub & {{
+          repo: "jqlang/jq"
+          asset: "jq-{{os}}-{{arch}}"
+        }}
+      }}
+    }}
+  }}
+}}
+"#
+    )
+}
+
 fn run_cuenv(current_dir: &Path, args: &[&str]) -> (String, String, bool) {
     let output = clean_environment_command(CUENV_BIN)
         .args(args)
@@ -253,4 +279,42 @@ fn sync_outside_project_errors() {
     assert!(output.contains("cuenv"));
     assert!(output.contains("info"));
     assert!(output.contains("-A"));
+}
+
+#[test]
+fn sync_does_not_create_lockfile_for_tools_projects() {
+    let tmp = create_repo();
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), tools_project_env_cue("tools-project")).unwrap();
+
+    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
+    assert!(success, "sync failed: {stderr}");
+    assert!(
+        !root.join("cuenv.lock").exists(),
+        "cuenv sync should not create or update cuenv.lock"
+    );
+}
+
+#[test]
+fn sync_all_does_not_create_lockfile_for_tools_projects() {
+    let tmp = create_repo();
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+
+    let nested = root.join("apps/tools");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        nested.join("env.cue"),
+        tools_project_env_cue("tools-project"),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, success) = run_cuenv(root, &["sync", "-A"]);
+    assert!(success, "sync -A failed: {stderr}");
+    assert!(
+        !root.join("cuenv.lock").exists(),
+        "cuenv sync -A should not create or update cuenv.lock"
+    );
 }
