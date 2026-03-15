@@ -113,16 +113,12 @@ impl UrlToolProvider {
             )));
         }
 
-        response
-            .bytes()
-            .await
-            .map(|b| b.to_vec())
-            .map_err(|e| {
-                cuenv_core::Error::tool_resolution(format!(
-                    "Failed to read response from '{}': {}",
-                    url, e
-                ))
-            })
+        response.bytes().await.map(|b| b.to_vec()).map_err(|e| {
+            cuenv_core::Error::tool_resolution(format!(
+                "Failed to read response from '{}': {}",
+                url, e
+            ))
+        })
     }
 
     /// Determine whether a filesystem path looks like a dynamic library.
@@ -158,6 +154,79 @@ impl UrlToolProvider {
         }
 
         Ok(())
+    }
+
+    fn temp_extract_dir(dest: &Path) -> PathBuf {
+        dest.with_file_name(format!(
+            ".{}.tmp",
+            dest.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("extract")
+        ))
+    }
+
+    fn single_root_dir(dir: &Path) -> Result<Option<PathBuf>> {
+        let mut entries = std::fs::read_dir(dir)?
+            .filter_map(std::result::Result::ok)
+            .collect::<Vec<_>>();
+
+        if entries.len() != 1 {
+            return Ok(None);
+        }
+
+        let only_entry = entries.swap_remove(0);
+        let entry_path = only_entry.path();
+        if entry_path.is_dir() {
+            Ok(Some(entry_path))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn finalize_extracted_tree(dest: &Path, temp_dir: &Path) -> Result<()> {
+        let effective_root = Self::single_root_dir(temp_dir)?.unwrap_or_else(|| temp_dir.into());
+        let normalized_dir = temp_dir.with_file_name(format!(
+            ".{}.normalized",
+            dest.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("extract")
+        ));
+
+        if normalized_dir.exists() {
+            std::fs::remove_dir_all(&normalized_dir)?;
+        }
+
+        if effective_root == temp_dir {
+            std::fs::rename(temp_dir, &normalized_dir)?;
+        } else {
+            std::fs::create_dir_all(&normalized_dir)?;
+            for entry in std::fs::read_dir(&effective_root)? {
+                let entry = entry?;
+                let source_path = entry.path();
+                let target_path = normalized_dir.join(entry.file_name());
+                std::fs::rename(source_path, target_path)?;
+            }
+            std::fs::remove_dir_all(temp_dir)?;
+        }
+
+        if dest.exists() {
+            std::fs::remove_dir_all(dest)?;
+        }
+        std::fs::rename(normalized_dir, dest)?;
+        Ok(())
+    }
+
+    fn looks_like_prefix_install(dest: &Path) -> bool {
+        dest.join("bin").is_dir() || dest.join("lib").is_dir() || dest.join("include").is_dir()
+    }
+
+    fn find_primary_binary_in_prefix(&self, dest: &Path, tool_name: &str) -> Result<PathBuf> {
+        let preferred = dest.join("bin").join(tool_name);
+        if preferred.exists() {
+            return Ok(preferred);
+        }
+
+        self.find_main_binary(dest)
     }
 
     /// Extract a binary from an archive or treat the download as a raw binary.
@@ -251,12 +320,7 @@ impl UrlToolProvider {
         }
 
         // Extract all files to a temp directory first for atomic operation
-        let temp_dir = dest.with_file_name(format!(
-            ".{}.tmp",
-            dest.file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("extract")
-        ));
+        let temp_dir = Self::temp_extract_dir(dest);
 
         if temp_dir.exists() {
             std::fs::remove_dir_all(&temp_dir)?;
@@ -301,11 +365,7 @@ impl UrlToolProvider {
             return Err(e);
         }
 
-        if dest.exists() {
-            std::fs::remove_dir_all(dest)?;
-        }
-        std::fs::rename(&temp_dir, dest)?;
-
+        Self::finalize_extracted_tree(dest, &temp_dir)?;
         self.find_main_binary(dest)
     }
 
@@ -366,11 +426,21 @@ impl UrlToolProvider {
             )));
         }
 
-        // Extract all files
-        archive.unpack(dest).map_err(|e| {
-            cuenv_core::Error::tool_resolution(format!("Failed to extract tar: {}", e))
-        })?;
+        let temp_dir = Self::temp_extract_dir(dest);
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir)?;
+        }
+        std::fs::create_dir_all(&temp_dir)?;
 
+        let extract_result = archive.unpack(&temp_dir).map_err(|e| {
+            cuenv_core::Error::tool_resolution(format!("Failed to extract tar: {}", e))
+        });
+        if let Err(err) = extract_result {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(err);
+        }
+
+        Self::finalize_extracted_tree(dest, &temp_dir)?;
         self.find_main_binary(dest)
     }
 
@@ -641,6 +711,22 @@ impl ToolProvider for UrlToolProvider {
         if extract.is_empty() {
             // Legacy behavior: single binary inferred from archive or raw file.
             let extracted = self.extract_binary(&data, url, None, &cache_dir)?;
+            if Self::looks_like_prefix_install(&cache_dir) {
+                let primary_path =
+                    self.find_primary_binary_in_prefix(&cache_dir, &resolved.name)?;
+                let sha256 = compute_file_sha256(&primary_path).await?;
+                info!(
+                    tool = %resolved.name,
+                    binary = ?primary_path,
+                    %sha256,
+                    "Fetched URL tool"
+                );
+                return Ok(FetchedTool {
+                    name: resolved.name.clone(),
+                    binary_path: primary_path,
+                    sha256,
+                });
+            }
             let final_path = if Self::file_looks_like_library(&extracted) {
                 let file_name = extracted
                     .file_name()
@@ -753,11 +839,44 @@ async fn compute_file_sha256(path: &Path) -> Result<String> {
 mod tests {
     use super::*;
     use cuenv_core::tools::{Arch, Os, Platform};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+    use tar::{Builder, Header};
+    use tempfile::TempDir;
+
+    fn build_tar_gz(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (path, contents, mode) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(*mode);
+                header.set_cksum();
+                builder.append(&header, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.flush().unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn temp_dir() -> TempDir {
+        tempfile::Builder::new()
+            .prefix("cuenv_url_provider_")
+            .tempdir()
+            .unwrap()
+    }
 
     #[test]
     fn test_expand_template_version() {
-        let result =
-            UrlToolProvider::expand_template("https://example.com/tool-{version}.tar.gz", "1.2.3", &Platform::new(Os::Linux, Arch::X86_64));
+        let result = UrlToolProvider::expand_template(
+            "https://example.com/tool-{version}.tar.gz",
+            "1.2.3",
+            &Platform::new(Os::Linux, Arch::X86_64),
+        );
         assert_eq!(result, "https://example.com/tool-1.2.3.tar.gz");
     }
 
@@ -850,6 +969,97 @@ mod tests {
             extract: vec![],
         };
         assert!(!provider.can_handle(&source));
+    }
+
+    #[test]
+    fn test_extract_from_tar_gz_flattens_node24_prefix_layout() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_gz(&[
+            (
+                "node-v24.14.0-linux-x64/bin/node",
+                b"#!/bin/sh\necho node24\n",
+                0o755,
+            ),
+            (
+                "node-v24.14.0-linux-x64/bin/npm",
+                b"#!/bin/sh\necho npm24\n",
+                0o755,
+            ),
+            (
+                "node-v24.14.0-linux-x64/bin/npx",
+                b"#!/bin/sh\necho npx24\n",
+                0o755,
+            ),
+            (
+                "node-v24.14.0-linux-x64/bin/corepack",
+                b"#!/bin/sh\necho corepack24\n",
+                0o755,
+            ),
+            (
+                "node-v24.14.0-linux-x64/lib/node_modules/npm/package.json",
+                br#"{"name":"npm"}"#,
+                0o644,
+            ),
+            (
+                "node-v24.14.0-linux-x64/include/node/node.h",
+                b"#define NODE_MAJOR_VERSION 24\n",
+                0o644,
+            ),
+        ]);
+        let temp = temp_dir();
+        let dest = temp.path().join("node");
+
+        let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+
+        assert_eq!(extracted, dest.join("bin").join("node"));
+        assert!(dest.join("bin").join("npm").exists());
+        assert!(dest.join("bin").join("npx").exists());
+        assert!(dest.join("bin").join("corepack").exists());
+        assert!(
+            dest.join("lib")
+                .join("node_modules")
+                .join("npm")
+                .join("package.json")
+                .exists()
+        );
+        assert!(dest.join("include").join("node").join("node.h").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_gz_preserves_node25_without_corepack() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_gz(&[
+            (
+                "node-v25.8.1-linux-x64/bin/node",
+                b"#!/bin/sh\necho node25\n",
+                0o755,
+            ),
+            (
+                "node-v25.8.1-linux-x64/bin/npm",
+                b"#!/bin/sh\necho npm25\n",
+                0o755,
+            ),
+            (
+                "node-v25.8.1-linux-x64/bin/npx",
+                b"#!/bin/sh\necho npx25\n",
+                0o755,
+            ),
+            (
+                "node-v25.8.1-linux-x64/lib/node_modules/npm/package.json",
+                br#"{"name":"npm"}"#,
+                0o644,
+            ),
+        ]);
+        let temp = temp_dir();
+        let dest = temp.path().join("node");
+
+        let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+
+        assert_eq!(extracted, dest.join("bin").join("node"));
+        assert!(dest.join("bin").join("node").exists());
+        assert!(dest.join("bin").join("npm").exists());
+        assert!(dest.join("bin").join("npx").exists());
+        assert!(!dest.join("bin").join("corepack").exists());
     }
 
     #[tokio::test]

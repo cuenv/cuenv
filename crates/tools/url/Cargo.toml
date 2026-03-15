@@ -25,3 +25,4 @@ zip = "2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }
