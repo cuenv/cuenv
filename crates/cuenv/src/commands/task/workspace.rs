@@ -279,3 +279,87 @@ fn rewrite_output_ref_placeholders(node: &mut TaskNode, project_id: &str) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::rewrite_output_ref_placeholders;
+    use cuenv_core::tasks::{Task, TaskNode};
+    use std::collections::HashMap;
+
+    #[test]
+    fn rewrites_placeholders_in_task_args_and_env() {
+        let mut task = Task {
+            command: Some("echo".into()),
+            args: vec!["cuenv:ref:tmpdir:stdout".into()],
+            env: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "TEMP_DIR".to_string(),
+                    serde_json::Value::String("cuenv:ref:tmpdir:stdout".into()),
+                );
+                m
+            },
+            ..Default::default()
+        };
+
+        let mut node = TaskNode::Task(Box::new(task));
+        rewrite_output_ref_placeholders(&mut node, "proj1");
+
+        if let TaskNode::Task(t) = node {
+            assert_eq!(t.args[0], "cuenv:ref:task:proj1:tmpdir:stdout");
+            assert_eq!(
+                t.env["TEMP_DIR"].as_str().unwrap(),
+                "cuenv:ref:task:proj1:tmpdir:stdout"
+            );
+        } else {
+            panic!("expected TaskNode::Task");
+        }
+    }
+
+    #[test]
+    fn rewrites_placeholders_recursively_in_groups_and_sequences() {
+        // Inner task with a placeholder
+        let t_inner = Task {
+            command: Some("echo".into()),
+            args: vec!["cuenv:ref:step0:stdout".into()],
+            ..Default::default()
+        };
+        // Sequence: [ step0, step1(arg references step0) ]
+        let seq = TaskNode::Sequence(vec![
+            TaskNode::Task(Box::new(Task { command: Some("mktemp".into()), ..Default::default() })),
+            TaskNode::Task(Box::new(t_inner)),
+        ]);
+
+        // Group with the sequence inside
+        let mut group_children = std::collections::BTreeMap::new();
+        group_children.insert("pipeline".to_string(), seq);
+        let group = TaskNode::Group(cuenv_core::tasks::TaskGroup {
+            type_: "group".to_string(),
+            children: group_children,
+            depends_on: vec![],
+            description: None,
+            max_concurrency: None,
+        });
+
+        let mut root = group;
+        rewrite_output_ref_placeholders(&mut root, "projX");
+
+        // Walk back into the sequence and verify rewrite occurred
+        if let TaskNode::Group(g) = root {
+            let seq = g.children.get("pipeline").unwrap();
+            if let TaskNode::Sequence(v) = seq {
+                if let TaskNode::Task(t) = &v[1] {
+                    assert_eq!(
+                        t.args[0],
+                        "cuenv:ref:task:projX:step0:stdout"
+                    );
+                } else {
+                    panic!("expected TaskNode::Task at pipeline[1]");
+                }
+            } else {
+                panic!("expected TaskNode::Sequence");
+            }
+        } else {
+            panic!("expected TaskNode::Group");
+        }
+    }
+}
