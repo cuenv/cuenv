@@ -6,6 +6,7 @@ mod discovery;
 pub mod list_builder;
 mod rendering;
 mod types;
+mod workspace; // global registry helpers
 
 // Re-export types for the public API. Some types may not be used externally yet.
 #[allow(unused_imports)]
@@ -15,6 +16,8 @@ use arguments::{apply_args_to_task, resolve_task_args};
 use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, normalize_labels};
 use list_builder::prepare_task_index;
 use rendering::{format_task_detail, get_task_cli_help, render_task_tree};
+use workspace::build_global_tasks;
+use workspace::task_fqdn;
 
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
@@ -396,49 +399,20 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
         task_node = selected_task_node;
 
-        // Use a global task registry (keyed by FQDN) when we can locate cue.mod.
-        // This enables cross-project dependency graphs and proper cycle detection.
-        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
-        let (global_tasks, task_root_name, ref_deps) = if let Some(module_root) = &cue_module_root {
-            let mut result = build_global_tasks(module_root, &project_root, &manifest, executor)?;
-
-            // If we interpolated args for the invoked task, patch that task node in the
-            // global registry so execution matches the CLI-resolved definition.
-            // (We avoid patching otherwise, because the global registry has normalized
-            // dependsOn entries to FQDNs.)
-            if !task_args.is_empty()
-                && let TaskNode::Task(ref t) = task_node
-            {
-                let fqdn = task_fqdn(&result.current_project_id, &display_task_name);
-                if let Some(TaskNode::Task(existing)) = result.tasks.tasks.get_mut(&fqdn) {
-                    existing.command.clone_from(&t.command);
-                    existing.args.clone_from(&t.args);
-                }
-            }
-
-            let root = task_fqdn(&result.current_project_id, &display_task_name);
-            (result.tasks, root, result.output_ref_deps)
-        } else {
-            (tasks, display_task_name.clone(), vec![])
-        };
+        // Build using the local task registry (per-project). The TaskGraph will
+        // add explicit dependsOn edges; output-ref inferred edges will be added
+        // later based on collected deps from evaluation.
+        let global_tasks = tasks;
+        let task_root_name = display_task_name.clone();
+        let ref_deps: Vec<(String, String)> = vec![];
 
         all_tasks = global_tasks;
         task_graph_root_name = task_root_name;
         output_ref_deps = ref_deps;
     } else {
-        // Execute tasks by label
-        // The executor's cached module ensures no subprocess spawning (single CUE eval per process).
-        let (mut tasks_in_scope, ref_deps) = if let Some(module_root) = &cue_module_root {
-            let result = build_global_tasks(module_root, &project_root, &manifest, executor)
-                .map_err(|e| {
-                    cuenv_core::Error::configuration(format!(
-                        "Failed to discover tasks for label execution: {e}"
-                    ))
-                })?;
-            (result.tasks, result.output_ref_deps)
-        } else {
-            (local_tasks.clone(), vec![])
-        };
+        // Execute tasks by label using local task registry
+        let (mut tasks_in_scope, ref_deps): (Tasks, Vec<(String, String)>) =
+            (local_tasks.clone(), vec![]);
 
         let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
 

@@ -635,6 +635,7 @@ mod tests {
                     }
                 }
             }),
+            output_ref_deps: vec![],
         };
 
         let result: crate::Result<Project> = instance.deserialize();
