@@ -96,9 +96,9 @@ dirs = { workspace = true }
 ctrlc = "3.5"
 similar = "2.7"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
 sha2 = { workspace = true }
