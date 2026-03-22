@@ -210,11 +210,25 @@ impl ModuleEvaluation {
             .map(|(path, mut value)| {
                 let path_buf = PathBuf::from(&path);
                 // Use CUE's schema verification instead of heuristic name check
-                let kind = if project_set.contains(path.as_str()) {
+                // Determine instance kind:
+                // 1) Prefer explicit project paths provided by the evaluator.
+                // 2) Fallback: if the instance JSON has a non-empty string `name`,
+                //    treat it as a Project (covers root-level single-project repos
+                //    where the evaluator may not list '.' in project paths).
+                let mut kind = if project_set.contains(path.as_str()) {
                     InstanceKind::Project
                 } else {
                     InstanceKind::Base
                 };
+                if matches!(kind, InstanceKind::Base)
+                    && value
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false)
+                {
+                    kind = InstanceKind::Project;
+                }
 
                 // Enrich dependsOn arrays with _name using reference metadata
                 if let Some(ref refs) = references {

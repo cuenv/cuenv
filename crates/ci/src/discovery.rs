@@ -135,6 +135,38 @@ pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
         )));
     }
 
+    // Fallbacks for older evaluator behavior:
+    // 1) If no project paths were returned, or instance values are `null`,
+    //    attempt typed per-dir evaluation and synthesize instance/project entries.
+    if all_projects.is_empty() {
+        for dir in discover_env_cue_directories(&module_root, PACKAGE) {
+            let rel = compute_relative_path(&dir, &module_root);
+            let needs_fallback = match all_instances.get(&rel) {
+                Some(serde_json::Value::Null) | None => true,
+                Some(v) => v
+                    .get("name")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.trim().is_empty())
+                    .unwrap_or(true),
+            };
+            if needs_fallback {
+                tracing::info!(dir=%dir.display(), "CI discovery fallback: using typed evaluation for project detection");
+                match cuengine::evaluate_cue_package_typed::<cuenv_core::manifest::Project>(&dir, PACKAGE) {
+                    Ok(project) => {
+                        let v = serde_json::to_value(&project).unwrap_or(serde_json::Value::Null);
+                        all_instances.insert(rel.clone(), v);
+                        if !all_projects.contains(&rel) {
+                            all_projects.push(rel);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(dir=%dir.display(), error=%e, "Typed evaluation fallback failed");
+                    }
+                }
+            }
+        }
+    }
+
     // Convert meta to reference map for dependsOn resolution
     let references = if all_meta.is_empty() {
         None
