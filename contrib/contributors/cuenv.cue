@@ -27,7 +27,7 @@ import "github.com/cuenv/cuenv/schema"
 		label:    "Setup cuenv"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		script: "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A"
+    script: "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync ci"
 	}]
 }
 
@@ -56,12 +56,12 @@ import "github.com/cuenv/cuenv/schema"
 		priority:  10
 		dependsOn: ["nix.install"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		script: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-			nix develop -c cargo build --release -p cuenv
-			echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-			./target/release/cuenv sync -A
-			"""
+    script: """
+            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+            nix develop -c cargo build --release -p cuenv
+            echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+            ./target/release/cuenv sync ci
+            """
 	}]
 }
 
@@ -95,11 +95,11 @@ import "github.com/cuenv/cuenv/schema"
 			priority:  10
 			dependsOn: ["cuenv.setup.rust", "cuenv.setup.go"]
 			env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-			script: """
-				cargo build --release -p cuenv
-				echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-				./target/release/cuenv sync -A
-				"""
+            script: """
+                cargo build --release -p cuenv
+                echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+                ./target/release/cuenv sync ci
+                """
 		},
 	]
 }
@@ -113,11 +113,11 @@ import "github.com/cuenv/cuenv/schema"
 		id:       "cuenv.setup"
 		label:    "Setup cuenv (from artifact)"
 		priority: 10
-		script: """
-			chmod +x target/release/cuenv
-			echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-			./target/release/cuenv sync -A
-			"""
+    script: """
+            chmod +x target/release/cuenv
+            echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+            ./target/release/cuenv sync ci
+            """
 	}]
 }
 
@@ -132,11 +132,11 @@ import "github.com/cuenv/cuenv/schema"
 		priority:  10
 		dependsOn: ["nix.install"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		script: """
-			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-			nix profile install github:cuenv/cuenv#cuenv --accept-flake-config
-			cuenv sync -A
-			"""
+    script: """
+            . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+            nix profile install github:cuenv/cuenv#cuenv --accept-flake-config
+            cuenv sync ci
+            """
 	}]
 }
 

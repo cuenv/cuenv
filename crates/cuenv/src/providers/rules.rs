@@ -237,31 +237,50 @@ impl SyncCapability for RulesProvider {
 }
 
 /// Evaluate a .rules.cue file and return the parsed configuration.
-fn evaluate_rules_file(file_path: &Path, executor: &CommandExecutor) -> Result<DirectoryRules> {
-    let dir = file_path.parent().ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "Invalid .rules.cue path: {}",
-            file_path.display()
-        ))
+fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<DirectoryRules> {
+    use std::fs;
+
+    let original = fs::read_to_string(file_path).map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: Some(file_path.to_path_buf().into_boxed_path()),
+        operation: "read .rules.cue".to_string(),
     })?;
 
-    let module = executor.get_module(dir)?;
+    // Ensure we can evaluate even though CUE ignores dotfiles by copying into
+    // a temporary directory as package `rules`.
+    let mut patched = String::new();
+    for (i, line) in original.lines().enumerate() {
+        if i == 0 && line.trim_start().starts_with("package ") {
+            patched.push_str("package rules\n");
+        } else {
+            patched.push_str(line);
+            patched.push('\n');
+        }
+    }
+    if !patched.starts_with("package ") {
+        patched = format!("package rules\n{}", original);
+    }
 
-    let relative_path = crate::commands::relative_path_from_root(&module.root, dir);
-    let instance = module.get(&relative_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE instance found for .rules.cue at: {}",
-            dir.display()
-        ))
+    let tempdir = tempfile::tempdir().map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: None,
+        operation: "create tempdir for .rules.cue eval".to_string(),
+    })?;
+    let temp_path = tempdir.path().join("rules_eval.cue");
+    fs::write(&temp_path, patched).map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: Some(temp_path.clone().into_boxed_path()),
+        operation: "write temp rules file".to_string(),
     })?;
 
-    instance.deserialize::<DirectoryRules>().map_err(|e| {
-        cuenv_core::Error::configuration(format!(
-            "Failed to parse .rules.cue at {}: {}",
+    let cfg: DirectoryRules = cuengine::evaluate_cue_package_typed(tempdir.path(), "rules")
+        .map_err(|e| cuenv_core::Error::configuration(format!(
+            "Failed to parse .rules.cue [isolated-eval] at {}: {}",
             file_path.display(),
             e
-        ))
-    })
+        )))?;
+
+    Ok(cfg)
 }
 
 /// Sync per-directory rules (ignore files, editorconfig).
