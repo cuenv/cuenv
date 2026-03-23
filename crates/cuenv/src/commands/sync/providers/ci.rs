@@ -56,9 +56,7 @@ impl SyncProvider for CiSyncProvider {
         // (and cache) the module for this path first.
         let is_module_root = {
             use crate::commands::env_file::find_cue_module_root as find_root;
-            let target_path = path
-                .canonicalize()
-                .unwrap_or_else(|_| path.to_path_buf());
+            let target_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
             match find_root(&target_path) {
                 Some(root) => root == target_path,
                 None => false,
@@ -71,7 +69,10 @@ impl SyncProvider for CiSyncProvider {
                 check,
                 provider: options.ci_provider.as_deref(),
             };
-            let request = functions::CiWorkspaceSyncRequest { package, options: ci_options };
+            let request = functions::CiWorkspaceSyncRequest {
+                package,
+                options: ci_options,
+            };
             let output = functions::execute_sync_ci_workspace(request, executor).await?;
             return Ok(SyncResult::success(output));
         }

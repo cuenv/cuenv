@@ -38,7 +38,11 @@ fn compute_project_id(manifest: &Project, root: &Path, module_root: &Path) -> St
         .unwrap_or(root)
         .to_string_lossy()
         .replace(['/', '\\'], ".");
-    if rel.is_empty() { "root".to_string() } else { rel }
+    if rel.is_empty() {
+        "root".to_string()
+    } else {
+        rel
+    }
 }
 
 pub fn task_fqdn(project_id: &str, task_name: &str) -> String {
@@ -380,7 +384,10 @@ mod tests {
         };
         // Sequence: [ step0, step1(arg references step0) ]
         let seq = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(Task { command: "mktemp".into(), ..Default::default() })),
+            TaskNode::Task(Box::new(Task {
+                command: "mktemp".into(),
+                ..Default::default()
+            })),
             TaskNode::Task(Box::new(t_inner)),
         ]);
 
@@ -403,10 +410,7 @@ mod tests {
             let seq = g.children.get("pipeline").unwrap();
             if let TaskNode::Sequence(v) = seq {
                 if let TaskNode::Task(t) = &v[1] {
-                    assert_eq!(
-                        t.args[0],
-                        "cuenv:ref:task:projX:step0:stdout"
-                    );
+                    assert_eq!(t.args[0], "cuenv:ref:task:projX:step0:stdout");
                 } else {
                     panic!("expected TaskNode::Task at pipeline[1]");
                 }

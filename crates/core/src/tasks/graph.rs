@@ -675,12 +675,8 @@ mod tests {
         let mut tasks = Tasks::new();
         let a = create_task("a", vec![], vec![]);
         let b = create_task("b", vec![], vec![]);
-        tasks
-            .tasks
-            .insert("a".into(), TaskNode::Task(Box::new(a)));
-        tasks
-            .tasks
-            .insert("b".into(), TaskNode::Task(Box::new(b)));
+        tasks.tasks.insert("a".into(), TaskNode::Task(Box::new(a)));
+        tasks.tasks.insert("b".into(), TaskNode::Task(Box::new(b)));
 
         let mut graph = TaskGraph::new();
         graph.build_for_task("a", &tasks).unwrap();
@@ -716,8 +712,10 @@ mod tests {
         graph.add_dependency_edges().unwrap();
         let sorted1 = graph.topological_sort().unwrap();
         let names1: Vec<_> = sorted1.iter().map(|n| n.name.as_str()).collect();
-        assert!(names1.iter().position(|&n| n == "tmpdir").unwrap()
-            < names1.iter().position(|&n| n == "work").unwrap());
+        assert!(
+            names1.iter().position(|&n| n == "tmpdir").unwrap()
+                < names1.iter().position(|&n| n == "work").unwrap()
+        );
 
         // Now apply output-ref deps; should be a no-op logically
         graph

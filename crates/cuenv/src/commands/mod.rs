@@ -531,7 +531,8 @@ impl CommandExecutor {
         // For workspace-wide operations, consider all env.cue files regardless of
         // package so we exercise evaluation across the full repository tree.
         // Individual per-directory evaluations still filter by `self.package`.
-        let env_cue_dirs = cuenv_core::cue::discovery::discover_all_env_cue_directories(module_root);
+        let env_cue_dirs =
+            cuenv_core::cue::discovery::discover_all_env_cue_directories(module_root);
 
         if env_cue_dirs.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(

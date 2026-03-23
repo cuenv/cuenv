@@ -274,11 +274,13 @@ fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<
     })?;
 
     let cfg: DirectoryRules = cuengine::evaluate_cue_package_typed(tempdir.path(), "rules")
-        .map_err(|e| cuenv_core::Error::configuration(format!(
-            "Failed to parse .rules.cue [isolated-eval] at {}: {}",
-            file_path.display(),
-            e
-        )))?;
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to parse .rules.cue [isolated-eval] at {}: {}",
+                file_path.display(),
+                e
+            ))
+        })?;
 
     Ok(cfg)
 }

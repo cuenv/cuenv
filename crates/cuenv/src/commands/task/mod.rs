@@ -369,51 +369,64 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
         tracing::debug!("Found task node: {:?}", original_task_node);
 
-        // Process task arguments if provided
-        let (selected_task_node, tasks) = if task_args.is_empty() {
-            (original_task_node.clone(), local_tasks.clone())
-        } else if let TaskNode::Task(task) = original_task_node {
-            // Parse and validate arguments against task params
-            let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
-            tracing::debug!("Resolved task args: {:?}", resolved_args);
+        // Build a global task registry (workspace-aware) and capture inferred
+        // output-ref dependencies from module evaluation. This also rewrites
+        // output-ref placeholders to FQDNs to match executor result keys.
+        let module_root = cue_module_root.as_deref().unwrap_or(&project_root);
+        let global = build_global_tasks(module_root, &project_root, &manifest, executor)?;
+        let mut global_tasks = global.tasks;
+        let current_project_id = global.current_project_id;
+        let ref_deps = global.output_ref_deps;
 
-            // Apply argument interpolation to task
-            let modified_task = apply_args_to_task(task, &resolved_args);
+        // Resolve the FQDN for the selected task within the current project
+        let fqdn_name = task_fqdn(&current_project_id, &display_task_name);
 
-            // Create a new task node with the modified task
-            let modified_node = TaskNode::Task(Box::new(modified_task));
-
-            // Create a new Tasks collection with the modified task
-            let mut modified_tasks = local_tasks.clone();
-            modified_tasks
-                .tasks
-                .insert(display_task_name.clone(), modified_node.clone());
-
-            (modified_node, modified_tasks)
+        // If args were provided, apply them to the FQDN task definition so we
+        // preserve placeholder rewrites while still honoring CLI interpolation.
+        let selected_task_node = if task_args.is_empty() {
+            global_tasks.get(&fqdn_name).cloned().ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "Task '{fqdn_name}' not found in global tasks"
+                ))
+            })?
         } else {
-            // For groups and lists, we don't support arguments
-            return Err(cuenv_core::Error::configuration(
-                "Task arguments are not supported for task groups or lists".to_string(),
-            ));
+            let node = global_tasks.get(&fqdn_name).cloned().ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "Task '{fqdn_name}' not found in global tasks"
+                ))
+            })?;
+            if let TaskNode::Task(task) = node {
+                // Parse and validate arguments against task params
+                let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
+                tracing::debug!("Resolved task args: {:?}", resolved_args);
+
+                // Apply argument interpolation to task (keeps FQDN placeholders)
+                let modified_task = apply_args_to_task(&task, &resolved_args);
+                let modified_node = TaskNode::Task(Box::new(modified_task.clone()));
+
+                // Overwrite the task in the global registry so graph build uses it
+                global_tasks
+                    .tasks
+                    .insert(fqdn_name.clone(), modified_node.clone());
+                modified_node
+            } else {
+                // For groups and lists, we don't support arguments
+                return Err(cuenv_core::Error::configuration(
+                    "Task arguments are not supported for task groups or lists".to_string(),
+                ));
+            }
         };
 
         task_node = selected_task_node;
-
-        // Build using the local task registry (per-project). The TaskGraph will
-        // add explicit dependsOn edges; output-ref inferred edges will be added
-        // later based on collected deps from evaluation.
-        let global_tasks = tasks;
-        let task_root_name = display_task_name.clone();
-        let ref_deps: Vec<(String, String)> = vec![];
-
         all_tasks = global_tasks;
-        task_graph_root_name = task_root_name;
+        task_graph_root_name = fqdn_name;
         output_ref_deps = ref_deps;
     } else {
-        // Execute tasks by label using local task registry
-        let (mut tasks_in_scope, ref_deps): (Tasks, Vec<(String, String)>) =
-            (local_tasks.clone(), vec![]);
-
+        // Execute tasks by label using global task registry so referenced
+        // tasks (via output refs) can be pulled into the graph automatically.
+        let module_root = cue_module_root.as_deref().unwrap_or(&project_root);
+        let global = build_global_tasks(module_root, &project_root, &manifest, executor)?;
+        let mut tasks_in_scope: Tasks = global.tasks;
         let matching_tasks = find_tasks_with_labels(&tasks_in_scope, &normalized_labels);
 
         if matching_tasks.is_empty() {
@@ -441,21 +454,23 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             ..Default::default()
         };
 
-        tasks_in_scope.tasks.insert(
-            display_task_name.clone(),
-            TaskNode::Task(Box::new(synthetic)),
-        );
+        // Insert the synthetic aggregator task under an FQDN key so naming is
+        // consistent with other tasks in the graph.
+        let synthetic_fqdn = task_fqdn(&global.current_project_id, &display_task_name);
+        tasks_in_scope
+            .tasks
+            .insert(synthetic_fqdn.clone(), TaskNode::Task(Box::new(synthetic)));
 
         // Safety: We just inserted the synthetic task above, so it will always exist.
         task_node = tasks_in_scope
-            .get(&display_task_name)
+            .get(&synthetic_fqdn)
             .cloned()
             .ok_or_else(|| {
                 cuenv_core::Error::execution("synthetic task missing after insertion")
             })?;
-        task_graph_root_name = display_task_name.clone();
+        task_graph_root_name = synthetic_fqdn;
         all_tasks = tasks_in_scope;
-        output_ref_deps = ref_deps;
+        output_ref_deps = global.output_ref_deps;
     }
 
     // Build task graph for dependency-aware execution
