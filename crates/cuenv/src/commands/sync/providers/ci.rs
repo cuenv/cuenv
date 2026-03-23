@@ -50,6 +50,30 @@ impl SyncProvider for CiSyncProvider {
         let dry_run = options.mode == SyncMode::DryRun;
         let check = options.mode == SyncMode::Check;
 
+        // If the provided path is the module root (not a specific project),
+        // treat this as a workspace-wide sync to avoid spurious
+        // "No cuenv project found at path: ." errors on repos whose root
+        // is a Base instance.
+        let is_module_root = {
+            let target_path = path
+                .canonicalize()
+                .unwrap_or_else(|_| path.to_path_buf());
+            executor
+                .module_root()
+                .is_some_and(|root| root == target_path)
+        };
+
+        if is_module_root {
+            let ci_options = functions::CiSyncOptions {
+                dry_run: dry_run.into(),
+                check,
+                provider: options.ci_provider.as_deref(),
+            };
+            let request = functions::CiWorkspaceSyncRequest { package, options: ci_options };
+            let output = functions::execute_sync_ci_workspace(request, executor).await?;
+            return Ok(SyncResult::success(output));
+        }
+
         let ci_options = functions::CiSyncOptions {
             dry_run: dry_run.into(),
             check,
