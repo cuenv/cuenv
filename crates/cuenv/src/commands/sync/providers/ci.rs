@@ -51,16 +51,18 @@ impl SyncProvider for CiSyncProvider {
         let check = options.mode == SyncMode::Check;
 
         // If the provided path is the module root (not a specific project),
-        // treat this as a workspace-wide sync to avoid spurious
-        // "No cuenv project found at path: ." errors on repos whose root
-        // is a Base instance.
+        // treat this as a workspace-wide sync to avoid spurious errors when
+        // the repo root is a Base instance. To resolve the module root, load
+        // (and cache) the module for this path first.
         let is_module_root = {
+            use crate::commands::env_file::find_cue_module_root as find_root;
             let target_path = path
                 .canonicalize()
                 .unwrap_or_else(|_| path.to_path_buf());
-            executor
-                .module_root()
-                .is_some_and(|root| root == target_path)
+            match find_root(&target_path) {
+                Some(root) => root == target_path,
+                None => false,
+            }
         };
 
         if is_module_root {
