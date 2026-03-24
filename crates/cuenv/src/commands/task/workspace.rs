@@ -1,0 +1,395 @@
+//! Workspace setup and global task building
+//!
+//! Uses the ContributorEngine to inject workspace setup tasks based on auto-detection.
+//! Workspaces are detected from lockfiles (bun.lock, package-lock.json, etc.)
+//!
+//! Contributors inject tasks with the `cuenv:contributor:` prefix:
+//! - `cuenv:contributor:{manager}.workspace.install` (package manager install)
+//! - `cuenv:contributor:{manager}.workspace.setup` (depends on install, dependency anchor)
+//!
+//! Tasks are auto-associated by command: if a task uses `bun` and we detected
+//! a Bun workspace, the task automatically depends on `cuenv:contributor:bun.workspace.setup`.
+
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use cuenv_core::Result;
+use cuenv_core::contributors::{
+    ContributorContext, ContributorEngine, builtin_workspace_contributors,
+};
+use cuenv_core::manifest::Project;
+use cuenv_core::tasks::{TaskIndex, TaskNode, Tasks};
+use cuenv_task_discovery::TaskDiscovery;
+
+use crate::commands::CommandExecutor;
+
+// Local minimal helpers to avoid pulling additional modules.
+// These provide enough behavior for building a global task registry for
+// dependency analysis without changing existing semantics.
+
+fn compute_project_id(manifest: &Project, root: &Path, module_root: &Path) -> String {
+    let name = manifest.name.trim();
+    if !name.is_empty() {
+        return name.to_string();
+    }
+    let rel = root
+        .strip_prefix(module_root)
+        .unwrap_or(root)
+        .to_string_lossy()
+        .replace(['/', '\\'], ".");
+    if rel.is_empty() {
+        "root".to_string()
+    } else {
+        rel
+    }
+}
+
+pub fn task_fqdn(project_id: &str, task_name: &str) -> String {
+    format!("task:{project_id}:{task_name}")
+}
+
+fn set_default_project_root(node: &mut TaskNode, project_root: &Path) {
+    match node {
+        TaskNode::Task(task) => {
+            if task.project_root.is_none() {
+                task.project_root = Some(project_root.to_path_buf());
+            }
+        }
+        TaskNode::Group(group) => {
+            for child in group.children.values_mut() {
+                set_default_project_root(child, project_root);
+            }
+        }
+        TaskNode::Sequence(seq) => {
+            for step in seq.iter_mut() {
+                set_default_project_root(step, project_root);
+            }
+        }
+    }
+}
+
+/// Context for a project during global task building.
+#[derive(Clone)]
+pub struct ProjectCtx {
+    pub root: PathBuf,
+    pub id: String,
+    pub manifest: Project,
+    pub is_current: bool,
+}
+
+/// Apply workspace contributors to inject setup tasks.
+///
+/// Uses the ContributorEngine to:
+/// 1. Detect package managers from lockfiles
+/// 2. Inject `cuenv:contributor:{manager}.workspace.install` and `.setup` tasks
+/// 3. Auto-associate user tasks by command
+pub fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
+    // Create context with workspace detection
+    let context = ContributorContext::detect(project_root).with_task_commands(&manifest.tasks);
+
+    // Get built-in workspace contributors
+    let contributors = builtin_workspace_contributors();
+
+    // Apply contributors using the engine
+    let engine = ContributorEngine::new(&contributors, context);
+    match engine.apply(&mut manifest.tasks) {
+        Ok(injected) => {
+            if injected > 0 {
+                tracing::debug!(
+                    "ContributorEngine injected {} tasks in {}",
+                    injected,
+                    project_root.display()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                "Failed to apply workspace contributors in {}: {}",
+                project_root.display(),
+                e
+            );
+        }
+    }
+}
+
+/// Build the global task registry from all discovered projects.
+///
+/// This function:
+/// 1. Discovers all projects in the module
+/// 2. Assigns unique IDs to each project
+/// 3. Injects workspace setup tasks
+/// 4. Resolves `TaskRef` placeholders
+/// 5. Normalizes all dependencies to FQDNs
+/// 6. Builds a unified task registry keyed by FQDN
+///
+/// Returns the global tasks and the current project's ID.
+/// Result of building the global task registry.
+/// Contains the merged tasks, the current project ID, and any output ref deps
+/// with task names converted to FQDNs.
+pub struct GlobalTasksResult {
+    pub tasks: Tasks,
+    pub current_project_id: String,
+    pub output_ref_deps: Vec<(String, String)>,
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn build_global_tasks(
+    module_root: &Path,
+    current_project_root: &Path,
+    current_manifest: &Project,
+    executor: &CommandExecutor,
+) -> Result<GlobalTasksResult> {
+    let mut discovery = TaskDiscovery::new(module_root.to_path_buf());
+
+    // Use executor's cached module (single CUE evaluation per process).
+    // All projects must use `package cuenv` - this is enforced by the CUE schema.
+    tracing::debug!("Using cached module for global task registry build");
+    let module = executor.get_module(module_root)?;
+
+    // Iterate through all Project instances and add them directly
+    for instance in module.projects() {
+        match instance.deserialize::<Project>() {
+            Ok(project) => {
+                let project_root = module.root.join(&instance.path);
+                discovery.add_project(project_root, project);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    path = %instance.path.display(),
+                    error = %e,
+                    "Failed to deserialize project for global task registry"
+                );
+            }
+        }
+    }
+
+    let current_root = fs::canonicalize(current_project_root)
+        .unwrap_or_else(|_| current_project_root.to_path_buf());
+
+    // Build project contexts
+    let mut used_project_ids: HashSet<String> = HashSet::new();
+    let mut projects: Vec<ProjectCtx> = Vec::new();
+    for p in discovery.projects() {
+        let root = fs::canonicalize(&p.project_root).unwrap_or_else(|_| p.project_root.clone());
+        let is_current = root == current_root;
+        let mut manifest = if is_current {
+            current_manifest.clone()
+        } else {
+            p.manifest.clone()
+        };
+        manifest = manifest.with_implicit_tasks();
+
+        // Prefer the explicit `name` field for stable cross-project refs, but ensure uniqueness.
+        let base_id = compute_project_id(&manifest, &root, module_root);
+        let mut id = base_id.clone();
+        if used_project_ids.contains(&id) {
+            // Disambiguate collisions (common in repos that layer multiple env.cue files for the same package)
+            // by suffixing with a path-derived identifier.
+            let rel = root
+                .strip_prefix(module_root)
+                .unwrap_or(&root)
+                .to_string_lossy()
+                .replace(['/', '\\'], ".");
+            let mut candidate = format!("{base_id}.{rel}");
+            let mut i = 2;
+            while used_project_ids.contains(&candidate) {
+                candidate = format!("{base_id}.{rel}.{i}");
+                i += 1;
+            }
+            id = candidate;
+        }
+        used_project_ids.insert(id.clone());
+
+        projects.push(ProjectCtx {
+            root,
+            id,
+            manifest,
+            is_current,
+        });
+    }
+
+    // Index roots -> ids (used to scope relative dependencies by task.project_root)
+    let mut id_by_root: HashMap<PathBuf, String> = HashMap::new();
+    for p in &projects {
+        id_by_root.insert(p.root.clone(), p.id.clone());
+    }
+
+    let current_project_id = projects.iter().find(|p| p.is_current).map_or_else(
+        || compute_project_id(current_manifest, &current_root, module_root),
+        |p| p.id.clone(),
+    );
+
+    // Apply workspace contributors (auto-detected from lockfiles)
+    for p in &mut projects {
+        apply_workspace_contributors(&mut p.manifest, &p.root);
+    }
+
+    // Build global tasks keyed by FQDN
+    let mut global: HashMap<String, TaskNode> = HashMap::new();
+    for p in &projects {
+        let idx = TaskIndex::build(&p.manifest.tasks)?;
+        for entry in idx.list() {
+            let mut node = entry.node.clone();
+            set_default_project_root(&mut node, &p.root);
+            // Rewrite output ref placeholders from bare names to FQDNs
+            rewrite_output_ref_placeholders(&mut node, &p.id);
+            let fqdn = task_fqdn(&p.id, &entry.name);
+            if global.contains_key(&fqdn) {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "Duplicate task FQDN detected: '{fqdn}'",
+                )));
+            }
+            global.insert(fqdn, node);
+        }
+    }
+
+    // Collect output ref deps from module instances, converting bare task
+    // names to FQDNs so they match the graph's naming convention.
+    let mut all_output_ref_deps = Vec::new();
+    for instance in module.projects() {
+        let project_root = module.root.join(&instance.path);
+        let canonical = fs::canonicalize(&project_root).unwrap_or(project_root);
+        if let Some(project_id) = id_by_root.get(&canonical) {
+            for (from_bare, to_bare) in &instance.output_ref_deps {
+                let from_fqdn = task_fqdn(project_id, from_bare);
+                let to_fqdn = task_fqdn(project_id, to_bare);
+                all_output_ref_deps.push((from_fqdn, to_fqdn));
+            }
+        }
+    }
+
+    Ok(GlobalTasksResult {
+        tasks: Tasks { tasks: global },
+        current_project_id,
+        output_ref_deps: all_output_ref_deps,
+    })
+}
+
+/// Rewrite output ref placeholder strings in a task node from bare names to FQDNs.
+///
+/// Transforms `cuenv:ref:tmpdir:stdout` → `cuenv:ref:task:project_id:tmpdir:stdout`
+/// so that placeholders match the FQDN-keyed results map in the executor.
+fn rewrite_output_ref_placeholders(node: &mut TaskNode, project_id: &str) {
+    use cuenv_core::tasks::TaskOutputRef;
+
+    match node {
+        TaskNode::Task(task) => {
+            for arg in &mut task.args {
+                if let Some(output_ref) = TaskOutputRef::parse(arg) {
+                    let fqdn_ref = TaskOutputRef {
+                        task: task_fqdn(project_id, &output_ref.task),
+                        output: output_ref.output,
+                    };
+                    *arg = fqdn_ref.to_placeholder();
+                }
+            }
+            for env_val in task.env.values_mut() {
+                if let Some(s) = env_val.as_str()
+                    && let Some(output_ref) = TaskOutputRef::parse(s)
+                {
+                    let fqdn_ref = TaskOutputRef {
+                        task: task_fqdn(project_id, &output_ref.task),
+                        output: output_ref.output,
+                    };
+                    *env_val = serde_json::Value::String(fqdn_ref.to_placeholder());
+                }
+            }
+        }
+        TaskNode::Group(group) => {
+            for child in group.children.values_mut() {
+                rewrite_output_ref_placeholders(child, project_id);
+            }
+        }
+        TaskNode::Sequence(seq) => {
+            for step in seq.iter_mut() {
+                rewrite_output_ref_placeholders(step, project_id);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rewrite_output_ref_placeholders;
+    use cuenv_core::tasks::{Task, TaskNode};
+    use std::collections::HashMap;
+
+    #[test]
+    fn rewrites_placeholders_in_task_args_and_env() {
+        let mut task = Task {
+            command: "echo".into(),
+            args: vec!["cuenv:ref:tmpdir:stdout".into()],
+            env: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "TEMP_DIR".to_string(),
+                    serde_json::Value::String("cuenv:ref:tmpdir:stdout".into()),
+                );
+                m
+            },
+            ..Default::default()
+        };
+
+        let mut node = TaskNode::Task(Box::new(task));
+        rewrite_output_ref_placeholders(&mut node, "proj1");
+
+        if let TaskNode::Task(t) = node {
+            assert_eq!(t.args[0], "cuenv:ref:task:proj1:tmpdir:stdout");
+            assert_eq!(
+                t.env["TEMP_DIR"].as_str().unwrap(),
+                "cuenv:ref:task:proj1:tmpdir:stdout"
+            );
+        } else {
+            panic!("expected TaskNode::Task");
+        }
+    }
+
+    #[test]
+    fn rewrites_placeholders_recursively_in_groups_and_sequences() {
+        // Inner task with a placeholder
+        let t_inner = Task {
+            command: "echo".into(),
+            args: vec!["cuenv:ref:step0:stdout".into()],
+            ..Default::default()
+        };
+        // Sequence: [ step0, step1(arg references step0) ]
+        let seq = TaskNode::Sequence(vec![
+            TaskNode::Task(Box::new(Task {
+                command: "mktemp".into(),
+                ..Default::default()
+            })),
+            TaskNode::Task(Box::new(t_inner)),
+        ]);
+
+        // Group with the sequence inside
+        let mut group_children = std::collections::HashMap::new();
+        group_children.insert("pipeline".to_string(), seq);
+        let group = TaskNode::Group(cuenv_core::tasks::TaskGroup {
+            type_: "group".to_string(),
+            children: group_children,
+            depends_on: vec![],
+            description: None,
+            max_concurrency: None,
+        });
+
+        let mut root = group;
+        rewrite_output_ref_placeholders(&mut root, "projX");
+
+        // Walk back into the sequence and verify rewrite occurred
+        if let TaskNode::Group(g) = root {
+            let seq = g.children.get("pipeline").unwrap();
+            if let TaskNode::Sequence(v) = seq {
+                if let TaskNode::Task(t) = &v[1] {
+                    assert_eq!(t.args[0], "cuenv:ref:task:projX:step0:stdout");
+                } else {
+                    panic!("expected TaskNode::Task at pipeline[1]");
+                }
+            } else {
+                panic!("expected TaskNode::Sequence");
+            }
+        } else {
+            panic!("expected TaskNode::Group");
+        }
+    }
+}
