@@ -917,20 +917,10 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
 /// Gets the GitHub owner/repo from the git remote origin.
 #[cfg(feature = "github")]
 fn get_github_repo_from_remote(root: &std::path::Path) -> Option<(String, String)> {
-    use std::process::Command;
-
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(root)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    parse_github_url(&url)
+    let repo = gix::discover(root).ok()?;
+    let remote = repo.find_remote("origin").ok()?;
+    let url = remote.url(gix::remote::Direction::Fetch)?;
+    parse_github_url(&url.to_bstring().to_string())
 }
 
 /// Parses a GitHub URL into (owner, repo).
@@ -1127,14 +1117,8 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
             })?;
     }
 
-    // Step 6: Create release branch
+    // Step 6: Create release branch, stage changes, and commit via gix
     let _ = writeln!(output, "Creating release branch '{}'...", opts.branch);
-    run_git_command(&root, &["checkout", "-b", &opts.branch])?;
-
-    // Step 7: Commit changes
-    let _ = writeln!(output, "Committing version updates...");
-    run_git_command(&root, &["add", "-A"])?;
-
     let commit_msg = format!(
         "chore(release): prepare release\n\n{}",
         bump_infos
@@ -1143,13 +1127,13 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
             .collect::<Vec<_>>()
             .join("\n")
     );
-    run_git_command(&root, &["commit", "-m", &commit_msg])?;
+    create_branch_and_commit(&root, &opts.branch, &commit_msg)?;
 
-    // Step 8: Push branch
+    // Step 7: Push branch (kept as CLI for authentication handling)
     let _ = writeln!(output, "Pushing branch to origin...");
-    run_git_command(&root, &["push", "-u", "origin", &opts.branch])?;
+    run_git_push(&root, &opts.branch)?;
 
-    // Step 9: Create PR
+    // Step 8: Create PR
     if !opts.no_pr {
         let _ = writeln!(output, "Creating pull request...");
         let pr_body = generate_pr_body(&bump_infos, &commits);
@@ -1217,15 +1201,331 @@ fn update_package_version(manifest_path: &Path, new_version: &str) -> cuenv_core
     Ok(())
 }
 
-/// Run a git command.
-fn run_git_command(root: &Path, args: &[&str]) -> cuenv_core::Result<()> {
+/// Create a new branch, stage all working-tree changes, and commit them using gix.
+///
+/// This replaces the previous `git checkout -b`, `git add -A`, and `git commit` shell calls
+/// with native gix operations. The approach:
+/// 1. Discover the repository from the given path
+/// 2. Build a new tree by diffing the worktree against the HEAD tree
+///    - Handles tracked file modifications, deletions, and mode changes
+///    - Walks worktree for new untracked files (matching `git add -A` semantics)
+///    - Correctly handles symlinks by storing link targets, not dereferenced content
+/// 3. Create the branch reference pointing to the current HEAD
+/// 4. Point HEAD at the new branch (symbolic ref)
+/// 5. Create a commit on HEAD with the new tree
+fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_core::Result<()> {
+    use gix::object::tree::EntryKind;
+    use gix::refs::transaction::PreviousValue;
+
+    let repo = gix::discover(root).map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to discover git repository: {e}"),
+            "Ensure you are inside a valid git repository",
+        )
+    })?;
+
+    let head_commit = repo.head_commit().map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to resolve HEAD commit: {e}"),
+            "Ensure the repository has at least one commit",
+        )
+    })?;
+    let head_id = head_commit.id;
+    let head_tree = head_commit.tree().map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to read HEAD tree: {e}"),
+            "Repository may be corrupted",
+        )
+    })?;
+
+    // Build a new tree by updating blobs for all modified tracked files
+    let workdir = repo.workdir().ok_or_else(|| {
+        cuenv_core::Error::configuration("Cannot operate in a bare repository")
+    })?;
+
+    let mut editor = repo.edit_tree(head_tree.id).map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to create tree editor: {e}"),
+            "Repository may be corrupted",
+        )
+    })?;
+
+    // Read the current index to find all tracked files, then check for modifications
+    let index = repo.open_index().map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to open index: {e}"),
+            "Repository index may be missing or corrupted",
+        )
+    })?;
+
+    // Collect tracked file paths for new-file detection later
+    let mut tracked_paths: std::collections::HashSet<std::path::PathBuf> =
+        std::collections::HashSet::new();
+
+    for entry in index.entries() {
+        let rel_path = entry.path(&index);
+        let rel_path_os = gix::path::from_bstr(rel_path);
+        let abs_path = workdir.join(&rel_path_os);
+        tracked_paths.insert(rel_path_os.to_path_buf());
+
+        let path_str = String::from_utf8_lossy(rel_path);
+
+        // Use lstat (no symlink follow) to get file metadata
+        let fs_metadata = match gix::index::fs::Metadata::from_path_no_follow(&abs_path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // File was deleted — remove from tree
+                editor.remove(path_str.as_ref()).map_err(|e| {
+                    cuenv_core::Error::execution_with_help(
+                        format!("Failed to remove tree entry for '{path_str}': {e}"),
+                        "Tree editing failed while removing deleted files",
+                    )
+                })?;
+                continue;
+            }
+            Err(e) => {
+                return Err(cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file metadata for '{}': {e}", abs_path.display()),
+                    "Ensure the file is accessible before running release prepare",
+                ));
+            }
+        };
+
+        // Skip unchanged files using stat comparison (avoids reading+hashing every file)
+        if let Ok(fs_stat) = gix::index::entry::Stat::from_fs(&fs_metadata)
+            && entry.stat.matches(&fs_stat, gix::index::entry::stat::Options::default())
+        {
+            continue;
+        }
+
+        let metadata = abs_path.symlink_metadata().map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to read file metadata for '{}': {e}", abs_path.display()),
+                "Ensure the file is accessible before running release prepare",
+            )
+        })?;
+
+        // Read content: for symlinks, store the link target path; for regular files, read bytes
+        let content = if metadata.is_symlink() {
+            let target = fs::read_link(&abs_path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read symlink '{}': {e}", abs_path.display()),
+                    "Ensure the symlink is readable",
+                )
+            })?;
+            target.as_os_str().as_encoded_bytes().to_vec()
+        } else {
+            fs::read(&abs_path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file '{}': {e}", abs_path.display()),
+                    "Ensure the file is readable before running release prepare",
+                )
+            })?
+        };
+
+        let blob_id = repo.write_blob(&content).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to write blob: {e}"),
+                "Object database may be corrupted",
+            )
+        })?;
+
+        // Determine the correct entry kind from the worktree metadata
+        let kind = if metadata.is_symlink() {
+            EntryKind::Link
+        } else if is_executable(&metadata) {
+            EntryKind::BlobExecutable
+        } else {
+            EntryKind::Blob
+        };
+
+        editor.upsert(path_str.as_ref(), kind, blob_id).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to update tree entry: {e}"),
+                "Tree editing failed",
+            )
+        })?;
+    }
+
+    // Walk the worktree for new (untracked) files to match `git add -A` semantics.
+    // Uses ignore::WalkBuilder which respects .gitignore rules.
+    for dir_entry in ignore::WalkBuilder::new(workdir).hidden(false).build().flatten() {
+        let path = dir_entry.path();
+        if !path.is_file() && !path.is_symlink() {
+            continue;
+        }
+        let Ok(rel_path) = path.strip_prefix(workdir) else {
+            continue;
+        };
+        if tracked_paths.contains(rel_path) {
+            continue;
+        }
+        // Skip .git directory entries
+        if rel_path.starts_with(".git") {
+            continue;
+        }
+
+        let metadata = path.symlink_metadata().map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to read metadata for '{}': {e}", path.display()),
+                "Ensure the file is accessible",
+            )
+        })?;
+
+        let content = if metadata.is_symlink() {
+            let target = fs::read_link(path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read symlink '{}': {e}", path.display()),
+                    "Ensure the symlink is readable",
+                )
+            })?;
+            target.as_os_str().as_encoded_bytes().to_vec()
+        } else {
+            fs::read(path).map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to read file '{}': {e}", path.display()),
+                    "Ensure the file is readable",
+                )
+            })?
+        };
+
+        let blob_id = repo.write_blob(&content).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to write blob: {e}"),
+                "Object database may be corrupted",
+            )
+        })?;
+
+        let kind = if metadata.is_symlink() {
+            EntryKind::Link
+        } else if is_executable(&metadata) {
+            EntryKind::BlobExecutable
+        } else {
+            EntryKind::Blob
+        };
+
+        let rel_str = rel_path.to_string_lossy();
+        editor.upsert(rel_str.as_ref(), kind, blob_id).map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to add new file '{rel_str}' to tree: {e}"),
+                "Tree editing failed",
+            )
+        })?;
+    }
+
+    let new_tree_id = editor.write().map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to write tree: {e}"),
+            "Object database may be corrupted",
+        )
+    })?;
+
+    // Create the branch reference pointing to the current HEAD commit
+    let branch_ref = format!("refs/heads/{branch}");
+    repo.reference(
+        branch_ref.as_str(),
+        head_id,
+        PreviousValue::MustNotExist,
+        format!("branch: Created {branch}"),
+    )
+    .map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to create branch '{branch}': {e}"),
+            "Check that the branch name is valid and does not already exist",
+        )
+    })?;
+
+    // Point HEAD at the new branch (equivalent to git checkout)
+    repo.edit_reference(gix::refs::transaction::RefEdit {
+        change: gix::refs::transaction::Change::Update {
+            log: gix::refs::transaction::LogChange::default(),
+            expected: PreviousValue::Any,
+            new: gix::refs::Target::Symbolic(
+                branch_ref
+                    .try_into()
+                    .map_err(|e: gix::validate::reference::name::Error| {
+                        cuenv_core::Error::execution_with_help(
+                            format!("Invalid branch name '{branch}': {e}"),
+                            "Use a valid git branch name",
+                        )
+                    })?,
+            ),
+        },
+        name: "HEAD"
+            .try_into()
+            .map_err(|e: gix::validate::reference::name::Error| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to resolve HEAD: {e}"),
+                    "Repository may be corrupted",
+                )
+            })?,
+        deref: false,
+    })
+    .map_err(|e| {
+        cuenv_core::Error::execution_with_help(
+            format!("Failed to update HEAD to branch '{branch}': {e}"),
+            "Reference transaction failed",
+        )
+    })?;
+
+    // Create the commit on HEAD (which now points to the new branch)
+    repo.commit("HEAD", message, new_tree_id, [head_id])
+        .map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to create commit: {e}"),
+                "Ensure git user.name and user.email are configured",
+            )
+        })?;
+
+    // Refresh the index to match the new commit so `git status` is clean.
+    // We use `git reset` via CLI since gix index-write APIs are complex and
+    // this runs once per release.
+    let workdir_path = workdir.to_path_buf();
     let output = Command::new("git")
-        .args(args)
+        .args(["reset", "--mixed", "HEAD"])
+        .current_dir(&workdir_path)
+        .output()
+        .map_err(|e| {
+            cuenv_core::Error::execution_with_help(
+                format!("Failed to refresh index after commit: {e}"),
+                "The commit was created successfully but the index may be stale",
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(cuenv_core::Error::execution_with_help(
+            format!("Failed to refresh index after commit: {stderr}"),
+            "The commit was created successfully but the index may be stale",
+        ));
+    }
+
+    Ok(())
+}
+
+/// Check if file metadata indicates the executable bit is set.
+#[cfg(unix)]
+fn is_executable(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Push a branch to the remote origin via CLI.
+///
+/// Push is kept as a shell command because authentication handling
+/// (SSH agents, credential helpers, etc.) is complex to replicate in-process.
+fn run_git_push(root: &Path, branch: &str) -> cuenv_core::Result<()> {
+    let output = Command::new("git")
+        .args(["push", "-u", "origin", branch])
         .current_dir(root)
         .output()
         .map_err(|e| {
             cuenv_core::Error::execution_with_help(
-                format!("Failed to run git {}: {e}", args.join(" ")),
+                format!("Failed to run git push: {e}"),
                 "Ensure git is installed and available in PATH",
             )
         })?;
@@ -1233,8 +1533,8 @@ fn run_git_command(root: &Path, args: &[&str]) -> cuenv_core::Result<()> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(cuenv_core::Error::execution_with_help(
-            format!("git {} failed: {stderr}", args.join(" ")),
-            "Check the error message above",
+            format!("git push failed: {stderr}"),
+            "Check remote access and authentication",
         ));
     }
 
