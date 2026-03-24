@@ -272,6 +272,36 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
     directories
 }
 
+/// Discover all directories containing an env.cue file, regardless of package.
+///
+/// This scans the workspace for any `env.cue` files and returns their
+/// canonical parent directories. Use when a command intends to operate over the
+/// entire workspace scope (e.g., `sync -A`), independent of CUE package names.
+#[must_use]
+pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+
+    let walker = WalkBuilder::new(module_root)
+        .follow_links(false)
+        .standard_filters(true)
+        .build();
+
+    for result in walker {
+        let Ok(entry) = result else { continue };
+        let path = entry.path();
+        if !is_env_cue_file(path) {
+            continue;
+        }
+        if let Some(dir) = path.parent()
+            && let Ok(canonical) = dir.canonicalize()
+        {
+            directories.push(canonical);
+        }
+    }
+
+    directories
+}
+
 fn matches_package(path: &Path, expected_package: &str) -> bool {
     let Ok(package_name) = detect_package_name(path) else {
         return false;

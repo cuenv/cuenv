@@ -191,6 +191,30 @@ Union of all task types - this is what gets validated:
 #TaskNode: #Task | #TaskGroup | #TaskSequence
 ```
 
+### #TaskOutputRef
+
+A typed reference to another task's runtime output. Produced automatically when you reference `tasks.<name>.stdout`, `.stderr`, or `.exitCode` in CUE.
+
+```cue
+tasks: {
+    tmpdir: schema.#Task & { command: "mktemp", args: ["-d"] }
+    work: schema.#Task & {
+        command: "echo"
+        args: ["working in", tasks.tmpdir.stdout]  // → #TaskOutputRef
+    }
+}
+```
+
+**Fields:**
+
+| Field            | Type                                     | Description                      |
+| ---------------- | ---------------------------------------- | -------------------------------- |
+| `cuenvOutputRef` | `true`                                   | Discriminator (always true)      |
+| `cuenvTask`      | `string`                                 | Name of the referenced task      |
+| `cuenvOutput`    | `"stdout" \| "stderr" \| "exitCode"`     | Which output field               |
+
+You don't construct these manually — CUE generates them when you reference a task's `stdout`, `stderr`, or `exitCode` field. See [Task Output References](/how-to/run-tasks/#task-output-references) for usage.
+
 ### #Task
 
 A single executable task (command or script-based).
@@ -225,21 +249,24 @@ tasks: {
 
 **Fields:**
 
-| Field            | Type                               | Required | Description                              |
-| ---------------- | ---------------------------------- | -------- | ---------------------------------------- |
-| `command`        | `string`                           | No*      | Command to execute                       |
-| `args`           | `[...string]`                      | No       | Command arguments                        |
-| `script`         | `string`                           | No*      | Multi-line script (alternative to cmd)   |
-| `scriptShell`    | `#ScriptShell`                     | No       | Shell for script execution (default: bash) |
-| `shellOptions`   | `#ShellOptions`                    | No       | Shell options (errexit, pipefail, etc.)  |
-| `env`            | `{[string]: #EnvironmentVariable}` | No       | Task-specific environment                |
-| `dependsOn`      | `[...#TaskNode]`                   | No       | Task dependencies (CUE references)       |
-| `inputs`         | `[...#Input]`                      | No       | Input file patterns for caching          |
-| `outputs`        | `[...string]`                      | No       | Output file patterns for caching         |
-| `description`    | `string`                           | No       | Human-readable description               |
-| `hermetic`       | `bool`                             | No       | Isolated execution (default: true)       |
-| `timeout`        | `string`                           | No       | Execution timeout (e.g., "30m")          |
-| `continueOnError`| `bool`                             | No       | Continue on failure (default: false)     |
+| Field            | Type                                              | Required | Description                              |
+| ---------------- | ------------------------------------------------- | -------- | ---------------------------------------- |
+| `command`        | `string`                                          | No*      | Command to execute                       |
+| `args`           | `[...(string \| #TaskOutputRef)]`                 | No       | Command arguments                        |
+| `script`         | `string`                                          | No*      | Multi-line script (alternative to cmd)   |
+| `scriptShell`    | `#ScriptShell`                                    | No       | Shell for script execution (default: bash) |
+| `shellOptions`   | `#ShellOptions`                                   | No       | Shell options (errexit, pipefail, etc.)  |
+| `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
+| `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
+| `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
+| `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
+| `description`    | `string`                                          | No       | Human-readable description               |
+| `hermetic`       | `bool`                                            | No       | Isolated execution (default: true)       |
+| `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")          |
+| `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)     |
+| `stdout`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stdout          |
+| `stderr`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stderr          |
+| `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
 
 *Either `command` or `script` should be provided.
 

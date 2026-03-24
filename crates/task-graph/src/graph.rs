@@ -249,6 +249,12 @@ impl<T: TaskNodeData> TaskGraph<T> {
         self.name_to_node.get(name).copied()
     }
 
+    /// Get a mutable reference to a task's data by name.
+    pub fn get_task_mut(&mut self, name: &str) -> Option<&mut T> {
+        let idx = self.name_to_node.get(name).copied()?;
+        self.graph.node_weight_mut(idx).map(|node| &mut node.task)
+    }
+
     /// Iterate over all nodes in the graph.
     pub fn iter_nodes(&self) -> impl Iterator<Item = (NodeIndex, &GraphNode<T>)> {
         self.graph.node_references()

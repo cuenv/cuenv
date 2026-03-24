@@ -73,9 +73,8 @@ pub async fn run_ci(
     let module = evaluate_module_from_cwd()?;
     let project_count = module.project_count();
     if project_count == 0 {
-        return Err(cuenv_core::Error::configuration(
-            "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
-        ));
+        tracing::info!("No cuenv projects discovered; skipping CI run.");
+        return Ok(());
     }
     cuenv_events::emit_ci_projects_discovered!(project_count);
 
@@ -100,10 +99,11 @@ pub async fn run_ci(
     };
 
     if projects.is_empty() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "No cuenv projects found under path '{}'",
-            path_filter.unwrap_or(".")
-        )));
+        tracing::info!(
+            filter = path_filter.unwrap_or("."),
+            "No projects under path filter; skipping"
+        );
+        return Ok(());
     }
 
     // Build project maps for cross-project dependency resolution and hook lookup.

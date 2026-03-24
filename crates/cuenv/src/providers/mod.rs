@@ -18,6 +18,7 @@ mod ci;
 mod codegen;
 mod detection;
 mod rules;
+pub(crate) mod rules_eval;
 
 pub use ci::CiProvider;
 pub use codegen::CodegenProvider;

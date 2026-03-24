@@ -528,12 +528,15 @@ impl CommandExecutor {
     }
 
     fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
-        let env_cue_dirs = env_file::discover_env_cue_directories(module_root, &self.package);
+        // For workspace-wide operations, consider all env.cue files regardless of
+        // package so we exercise evaluation across the full repository tree.
+        // Individual per-directory evaluations still filter by `self.package`.
+        let env_cue_dirs =
+            cuenv_core::cue::discovery::discover_all_env_cue_directories(module_root);
 
         if env_cue_dirs.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
-                "No env.cue files with package '{}' found in module: {}",
-                self.package,
+                "No env.cue files found in module: {}",
                 module_root.display()
             )));
         }

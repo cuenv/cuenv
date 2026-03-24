@@ -572,6 +572,13 @@ pub async fn execute_sync_ci(
         .collect();
 
     if target_projects.is_empty() {
+        // Fallback: when invoked at the module root and no specific project
+        // matches, do not error out. In CI we often run `cuenv sync ci` from
+        // the repo root just to ensure workflows are in sync; returning a
+        // benign message avoids a hard failure.
+        if repo_root == target_path {
+            return Ok("No CI configuration found.".to_string());
+        }
         return Err(cuenv_core::Error::configuration(format!(
             "No cuenv project found at path: {}. Run 'cuenv info' to inspect project layout or use 'cuenv sync -A' to sync all projects.",
             dir_path.display()

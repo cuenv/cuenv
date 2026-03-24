@@ -649,8 +649,20 @@ impl CommandHandler for SyncHandler {
         match &self.subcommand {
             // Specific provider: cuenv sync codegen
             Some(name) => {
+                // Special-case: `cuenv sync ci` from the module root should behave like `-A`
+                // to avoid requiring the root to be a Project. This mirrors CI usage.
+                let mut use_workspace = sync_all;
+                if !use_workspace && *name == "ci" {
+                    // When invoked as `cuenv sync ci` (no -p), prefer workspace mode.
+                    // This matches our CI usage where the root may not be a Project.
+                    if self.path == "." {
+                        tracing::info!("sync ci: switching to workspace mode at module root");
+                        use_workspace = true;
+                    }
+                }
+
                 let result = registry
-                    .sync_provider(name, path, &self.package, &options, sync_all, executor)
+                    .sync_provider(name, path, &self.package, &options, use_workspace, executor)
                     .await?;
                 Ok(result.output)
             }
