@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub mod json;
 pub mod markdown;
@@ -40,6 +41,9 @@ pub struct PipelineReport {
     pub status: PipelineStatus,
     /// Individual task reports.
     pub tasks: Vec<TaskReport>,
+    /// Resolved pipeline annotations (key-value pairs surfaced in reports).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub annotations: HashMap<String, String>,
 }
 
 impl PipelineReport {
@@ -87,6 +91,9 @@ pub struct TaskReport {
     pub cache_key: Option<String>,
     /// Output files produced.
     pub outputs: Vec<String>,
+    /// Resolved capture values from task output.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub captures: HashMap<String, String>,
 }
 
 /// Task completion status.

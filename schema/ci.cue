@@ -236,6 +236,10 @@ package schema
 	// Tasks to run - can be simple task names or matrix task objects
 	tasks?: [...#PipelineTask]
 
+	// Key-value annotations surfaced in CI reports and job summaries.
+	// Values can be literal strings or #TaskCaptureRef (resolved after execution).
+	annotations?: [string]: string | #TaskCaptureRef
+
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig
 })
