@@ -100,6 +100,9 @@ package schema
 	}
 	continueOnError?: bool | *false
 
+	// Named regex captures extracted from task stdout/stderr after execution
+	captures?: [string]: #TaskCapture
+
 	// DEPRECATED: Use runtime: dagger: { ... } instead
 	dagger?: #DaggerConfig
 }
@@ -178,6 +181,28 @@ package schema
 	task!: string
 	map?: [...#Mapping]
 })
+
+// =============================================================================
+// Task Captures (Regex Extraction from Output)
+// =============================================================================
+
+// Regex capture from task output streams.
+// The first capture group's match becomes the named value.
+#TaskCapture: close({
+	pattern!: string
+	source?:  "stdout" | "stderr" | *"stdout"
+})
+
+// Reference to a captured value, resolved at runtime by the executor.
+// Usage in annotations:
+//   annotations: "Preview URL": schema.#TaskCaptureRef & {
+//       cuenvTask: "deploy.preview", cuenvCapture: "previewUrl"
+//   }
+#TaskCaptureRef: {
+	cuenvCaptureRef: true
+	cuenvTask!:      string
+	cuenvCapture!:   string
+}
 
 // =============================================================================
 // Dagger Configuration (Containerized Execution)

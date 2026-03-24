@@ -17,9 +17,11 @@ use crate::provider::CIProvider;
 use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
+use cuenv_core::ci::AnnotationValue;
 use cuenv_core::cue::discovery::find_ancestor_env_files;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
 use cuenv_core::manifest::Project;
+use cuenv_core::tasks::captures::resolve_captures;
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use cuenv_core::tools::{
     Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolExtract,
@@ -261,6 +263,8 @@ async fn execute_project_pipeline(
     let mut pipeline_status = PipelineStatus::Success;
     let mut task_errors: Vec<(String, cuenv_core::Error)> = Vec::new();
     let project_display = project_path.display().to_string();
+    // Collect resolved captures per task for annotation resolution
+    let mut all_captures: HashMap<String, HashMap<String, String>> = HashMap::new();
 
     // Determine cache policy override based on context
     let cache_policy_override = if is_fork_pr(context) {
@@ -295,14 +299,17 @@ async fn execute_project_pipeline(
     // Merge static + hook-generated environment once per project, then reuse for all tasks.
     let hook_env = build_hook_environment(project_path, config, project_configs).await?;
 
+    // Build task index for resolving nested task names (e.g., "deploy.preview")
+    let task_index = TaskIndex::build(&config.tasks)?;
+
     // Execute tasks
     for task_name in tasks_to_run {
         let inputs_matched =
             matched_inputs_for_task(task_name, config, changed_files, project_path);
-        let outputs = config
-            .tasks
-            .get(task_name)
-            .and_then(|def| def.as_task())
+        let outputs = task_index
+            .resolve(task_name)
+            .ok()
+            .and_then(|indexed| indexed.node.as_task())
             .map(|task| task.outputs.clone())
             .unwrap_or_default();
 
@@ -322,8 +329,21 @@ async fn execute_project_pipeline(
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
 
-        let (status, exit_code, cache_key) = match result {
+        let (status, exit_code, cache_key, task_captures) = match result {
             Ok(output) => {
+                // Resolve captures from task output
+                let task_captures = task_index
+                    .resolve(task_name)
+                    .ok()
+                    .and_then(|indexed| indexed.node.as_task())
+                    .filter(|task| !task.captures.is_empty())
+                    .map(|task| resolve_captures(&task.captures, &output.stdout, &output.stderr))
+                    .unwrap_or_default();
+
+                if !task_captures.is_empty() {
+                    all_captures.insert(task_name.clone(), task_captures.clone());
+                }
+
                 if output.success {
                     cuenv_events::emit_ci_task_result!(&project_display, task_name, true);
                     (
@@ -334,6 +354,7 @@ async fn execute_project_pipeline(
                         } else {
                             Some(output.task_id)
                         },
+                        task_captures,
                     )
                 } else {
                     cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
@@ -348,7 +369,7 @@ async fn execute_project_pipeline(
                             &output.stderr,
                         ),
                     ));
-                    (TaskStatus::Failed, Some(output.exit_code), None)
+                    (TaskStatus::Failed, Some(output.exit_code), None, task_captures)
                 }
             }
             Err(e) => {
@@ -357,7 +378,7 @@ async fn execute_project_pipeline(
                 pipeline_status = PipelineStatus::Failed;
                 // Capture execution error with structured error
                 task_errors.push((project_display.clone(), e.into()));
-                (TaskStatus::Failed, None, None)
+                (TaskStatus::Failed, None, None, HashMap::new())
             }
         };
 
@@ -369,12 +390,23 @@ async fn execute_project_pipeline(
             cache_key,
             inputs_matched,
             outputs,
+            captures: task_captures,
         });
     }
 
     let completed_at = Utc::now();
     #[allow(clippy::cast_sign_loss)]
     let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
+
+    // Resolve pipeline annotations from capture refs
+    let Some(ci) = &config.ci else {
+        unreachable!("CI config already validated above");
+    };
+    let resolved_annotations = ci
+        .pipelines
+        .get(pipeline_name)
+        .map(|p| resolve_annotations(&p.annotations, &all_captures))
+        .unwrap_or_default();
 
     // Generate report
     let report = PipelineReport {
@@ -397,6 +429,7 @@ async fn execute_project_pipeline(
         duration_ms: Some(duration_ms),
         status: pipeline_status,
         tasks: tasks_reports,
+        annotations: resolved_annotations,
     };
 
     // Write reports and notify provider
@@ -456,6 +489,39 @@ async fn notify_provider(provider: &dyn CIProvider, report: &PipelineReport, pip
     if let Err(e) = provider.upload_report(report).await {
         tracing::warn!(error = %e, "Failed to post PR comment");
     }
+}
+
+/// Resolve pipeline annotation values from capture refs and literals.
+fn resolve_annotations(
+    annotations: &HashMap<String, AnnotationValue>,
+    all_captures: &HashMap<String, HashMap<String, String>>,
+) -> HashMap<String, String> {
+    annotations
+        .iter()
+        .filter_map(|(label, value)| {
+            let resolved = match value {
+                AnnotationValue::Literal(s) => Some(s.clone()),
+                AnnotationValue::CaptureRef {
+                    cuenv_capture_ref,
+                    cuenv_task,
+                    cuenv_capture,
+                } => {
+                    if !cuenv_capture_ref {
+                        tracing::warn!(
+                            label,
+                            "Annotation has cuenvCaptureRef=false, skipping"
+                        );
+                        return None;
+                    }
+                    all_captures
+                        .get(cuenv_task.as_str())
+                        .and_then(|caps| caps.get(cuenv_capture.as_str()))
+                        .cloned()
+                }
+            };
+            resolved.map(|v| (label.clone(), v))
+        })
+        .collect()
 }
 
 /// Check if this is a fork PR (should use readonly cache)
@@ -849,6 +915,7 @@ async fn compile_and_execute_ir(
         success: all_success,
         from_cache: false,
         duration_ms,
+        captures: HashMap::new(),
     })
 }
 
