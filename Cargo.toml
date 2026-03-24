@@ -119,7 +119,7 @@ glob = "0.3"
 # Testing dependencies
 proptest = "1.10"
 criterion = "0.8"
-tempfile = "3.25"
+tempfile = "3.27"
 temp-env = { version = "0.3", features = ["async_closure"] }
 
 # BDD testing dependencies
