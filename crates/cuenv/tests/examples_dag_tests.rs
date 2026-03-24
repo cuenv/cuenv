@@ -97,7 +97,7 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
         },
         ExampleExpectations {
             name: "task-output-ref",
-            min_task_count: 3, // tmpdir, work, cleanup, pipeline
+            min_task_count: 4, // tmpdir, work, cleanup, pipeline
             has_hooks: false,
             has_env: false,
             expect_eval_failure: false,

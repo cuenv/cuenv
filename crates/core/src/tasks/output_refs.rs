@@ -43,7 +43,9 @@ impl TaskOutputRef {
     pub fn parse(s: &str) -> Option<Self> {
         let rest = s.strip_prefix(OUTPUT_REF_PREFIX)?;
         // Find the last ':' to split task name from output field.
-        // Task names can contain dots and brackets but not colons.
+        // Task names may contain colons (e.g., FQDNs like "task:proj:build"),
+        // dots, and brackets. Output field names (stdout/stderr/exitCode) never
+        // contain colons, so rfind(':') reliably finds the boundary.
         let last_colon = rest.rfind(':')?;
         let task = &rest[..last_colon];
         let output_str = &rest[last_colon + 1..];
@@ -229,6 +231,17 @@ fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
         output: output_field,
     };
     Some(r.to_placeholder())
+}
+
+/// Returns `true` if any string in `args` or `env` contains an output ref placeholder.
+///
+/// Use this as a fast check to avoid cloning tasks that have no refs to resolve.
+#[must_use]
+pub fn has_output_refs(args: &[String], env: &HashMap<String, serde_json::Value>) -> bool {
+    args.iter().any(|a| a.starts_with(OUTPUT_REF_PREFIX))
+        || env
+            .values()
+            .any(|v| v.as_str().is_some_and(|s| s.starts_with(OUTPUT_REF_PREFIX)))
 }
 
 /// Context for resolving task output reference placeholders at runtime.

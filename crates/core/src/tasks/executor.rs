@@ -516,8 +516,12 @@ impl TaskExecutor {
         for (i, step) in sequence.iter().enumerate() {
             let task_name = format!("{}[{}]", prefix, i);
 
-            // For Task steps, resolve any output ref placeholders from prior steps
-            let step = if let TaskNode::Task(task) = step {
+            // For Task steps, resolve any output ref placeholders from prior steps.
+            // Only clone when placeholders are actually present to avoid
+            // unnecessary allocations in the common (no-refs) case.
+            let step = if let TaskNode::Task(task) = step
+                && super::output_refs::has_output_refs(&task.args, &task.env)
+            {
                 let mut resolved_task = (**task).clone();
                 let resolver = super::output_refs::OutputRefResolver {
                     task_name: &task_name,

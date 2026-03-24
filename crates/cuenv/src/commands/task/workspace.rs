@@ -124,7 +124,6 @@ pub fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path)
 /// 6. Builds a unified task registry keyed by FQDN
 ///
 /// Returns the global tasks and the current project's ID.
-#[allow(clippy::too_many_lines)]
 /// Result of building the global task registry.
 /// Contains the merged tasks, the current project ID, and any output ref deps
 /// with task names converted to FQDNs.
@@ -134,6 +133,7 @@ pub struct GlobalTasksResult {
     pub output_ref_deps: Vec<(String, String)>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn build_global_tasks(
     module_root: &Path,
     current_project_root: &Path,

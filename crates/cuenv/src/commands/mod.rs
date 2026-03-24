@@ -536,8 +536,7 @@ impl CommandExecutor {
 
         if env_cue_dirs.is_empty() {
             return Err(cuenv_core::Error::configuration(format!(
-                "No env.cue files with package '{}' found in module: {}",
-                self.package,
+                "No env.cue files found in module: {}",
                 module_root.display()
             )));
         }

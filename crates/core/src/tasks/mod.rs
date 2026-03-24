@@ -25,7 +25,9 @@ pub use backend::{
 pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
-pub use output_refs::{OutputRefResolver, TaskOutputField, TaskOutputRef, process_output_refs};
+pub use output_refs::{
+    OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
+};
 pub use process_registry::global_registry;
 
 use serde::{Deserialize, Serialize};
