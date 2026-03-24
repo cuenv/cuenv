@@ -74,6 +74,15 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
     execute_task_impl(&request).await
 }
 
+/// Resolved task context from either named-task or label-based resolution.
+struct TaskResolution {
+    display_name: String,
+    node: TaskNode,
+    tasks: Tasks,
+    graph_root_name: String,
+    output_ref_deps: Vec<(String, String)>,
+}
+
 /// Internal implementation of task execution.
 #[allow(clippy::too_many_lines)]
 async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String> {
@@ -302,14 +311,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         ));
     }
 
-    let display_task_name: String;
-    let task_node: TaskNode;
-    let all_tasks: Tasks;
-    let task_graph_root_name: String;
-    #[allow(clippy::useless_let_if_seq)]
-    let mut output_ref_deps: Vec<(String, String)> = vec![];
-
-    if normalized_labels.is_empty() {
+    let resolution = if normalized_labels.is_empty() {
         // Execute a named task
         let requested_task = task_name.ok_or_else(|| {
             cuenv_core::Error::configuration("task name required when no labels provided")
@@ -365,7 +367,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         let original_task_node = local_tasks.get(&canonical_task_name).ok_or_else(|| {
             cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
         })?;
-        display_task_name = canonical_task_name;
+        let display_task_name = canonical_task_name;
 
         tracing::debug!("Found task node: {:?}", original_task_node);
 
@@ -417,10 +419,13 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             }
         };
 
-        task_node = selected_task_node;
-        all_tasks = global_tasks;
-        task_graph_root_name = fqdn_name;
-        output_ref_deps = ref_deps;
+        TaskResolution {
+            display_name: display_task_name,
+            node: selected_task_node,
+            tasks: global_tasks,
+            graph_root_name: fqdn_name,
+            output_ref_deps: ref_deps,
+        }
     } else {
         // Execute tasks by label using global task registry so referenced
         // tasks (via output refs) can be pulled into the graph automatically.
@@ -435,7 +440,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             )));
         }
 
-        display_task_name = format_label_root(&normalized_labels);
+        let display_task_name = format_label_root(&normalized_labels);
         // Create a synthetic aggregator task that depends on all label-matched tasks.
         // The script is "true" (a shell no-op that always succeeds) because actual work
         // is performed by the dependsOn tasks; this task just serves as the DAG root.
@@ -462,31 +467,36 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             .insert(synthetic_fqdn.clone(), TaskNode::Task(Box::new(synthetic)));
 
         // Safety: We just inserted the synthetic task above, so it will always exist.
-        task_node = tasks_in_scope
+        let resolved_node = tasks_in_scope
             .get(&synthetic_fqdn)
             .cloned()
             .ok_or_else(|| {
                 cuenv_core::Error::execution("synthetic task missing after insertion")
             })?;
-        task_graph_root_name = synthetic_fqdn;
-        all_tasks = tasks_in_scope;
-        output_ref_deps = global.output_ref_deps;
-    }
+
+        TaskResolution {
+            display_name: display_task_name,
+            node: resolved_node,
+            tasks: tasks_in_scope,
+            graph_root_name: synthetic_fqdn,
+            output_ref_deps: global.output_ref_deps,
+        }
+    };
 
     // Build task graph for dependency-aware execution
-    tracing::debug!("Building task graph for task: {}", task_graph_root_name);
+    tracing::debug!("Building task graph for task: {}", resolution.graph_root_name);
     let mut task_graph = TaskGraph::new();
 
     if skip_dependencies {
         // When skipping dependencies, just add the target task without its dependency tree.
         // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
         tracing::debug!("Skipping dependencies - adding only the target task");
-        if let Some(TaskNode::Task(task)) = all_tasks.get(&task_graph_root_name) {
-            task_graph.add_task(&task_graph_root_name, (**task).clone())?;
+        if let Some(TaskNode::Task(task)) = resolution.tasks.get(&resolution.graph_root_name) {
+            task_graph.add_task(&resolution.graph_root_name, (**task).clone())?;
         }
     } else {
         task_graph
-            .build_for_task(&task_graph_root_name, &all_tasks)
+            .build_for_task(&resolution.graph_root_name, &resolution.tasks)
             .map_err(|e| {
                 tracing::error!("Failed to build task graph: {}", e);
                 e
@@ -496,8 +506,8 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     // Inject implicit dependency edges from task output references.
     // Output ref deps were collected during CUE JSON processing (from_raw)
     // and converted to FQDNs in build_global_tasks.
-    if !output_ref_deps.is_empty() {
-        task_graph.add_output_ref_deps(&output_ref_deps, &all_tasks)?;
+    if !resolution.output_ref_deps.is_empty() {
+        task_graph.add_output_ref_deps(&resolution.output_ref_deps, &resolution.tasks)?;
     }
 
     tracing::debug!(
@@ -538,7 +548,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         // Then apply task-specific overrides with policies and secret resolution
         let (task_env_vars, secrets) =
             cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-                display_task_name.as_str(),
+                resolution.display_name.as_str(),
                 &env_vars,
             )
             .await?;
@@ -619,16 +629,17 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         };
         let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
 
-        return execute_with_rich_tui(&tui_executor, display_task_name.as_str(), &task_graph).await;
+        return execute_with_rich_tui(&tui_executor, resolution.display_name.as_str(), &task_graph)
+            .await;
     }
 
     // Execute using the appropriate method
     let results = execute_task_with_strategy(
         &executor,
-        display_task_name.as_str(),
-        &task_node,
+        resolution.display_name.as_str(),
+        &resolution.node,
         &task_graph,
-        &all_tasks,
+        &resolution.tasks,
     )
     .await?;
 
@@ -641,7 +652,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     }
 
     // Format results
-    let output = format_task_results(results, capture_output, display_task_name.as_str());
+    let output = format_task_results(results, capture_output, resolution.display_name.as_str());
     Ok(output)
 }
 

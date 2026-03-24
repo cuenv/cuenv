@@ -185,54 +185,7 @@ impl SyncProvider for RulesSyncProvider {
 
 /// Evaluate a .rules.cue file and return the parsed configuration.
 fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<DirectoryRules> {
-    use std::fs;
-
-    // Read original .rules.cue
-    let original = fs::read_to_string(file_path).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(file_path.to_path_buf().into_boxed_path()),
-        operation: "read .rules.cue".to_string(),
-    })?;
-
-    // Force an isolated evaluation: write the content into a temporary
-    // directory as package `rules`, since the CUE loader ignores dotfiles
-    // and we don't want to unify with env.cue in the same folder.
-    let mut patched = String::new();
-    for (i, line) in original.lines().enumerate() {
-        if i == 0 && line.trim_start().starts_with("package ") {
-            patched.push_str("package rules\n");
-        } else {
-            patched.push_str(line);
-            patched.push('\n');
-        }
-    }
-    if !patched.starts_with("package ") {
-        patched = format!("package rules\n{}", original);
-    }
-
-    let tempdir = tempfile::tempdir().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: None,
-        operation: "create tempdir for .rules.cue eval".to_string(),
-    })?;
-    let temp_path = tempdir.path().join("rules_eval.cue");
-    fs::write(&temp_path, patched).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(temp_path.clone().into_boxed_path()),
-        operation: "write temp rules file".to_string(),
-    })?;
-
-    // Evaluate the isolated rules package and deserialize
-    let cfg: DirectoryRules = cuengine::evaluate_cue_package_typed(tempdir.path(), "rules")
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to parse .rules.cue [isolated-eval] at {}: {}",
-                file_path.display(),
-                e
-            ))
-        })?;
-
-    Ok(cfg)
+    crate::providers::rules_eval::evaluate_rules_file(file_path)
 }
 
 /// Sync per-directory rules (ignore files, editorconfig).

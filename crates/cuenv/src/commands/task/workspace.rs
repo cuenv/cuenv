@@ -69,25 +69,6 @@ fn set_default_project_root(node: &mut TaskNode, project_root: &Path) {
     }
 }
 
-fn normalize_node_deps(
-    _node: &mut TaskNode,
-    _id_by_root: &HashMap<PathBuf, String>,
-    _project_id_by_name: &HashMap<String, String>,
-    _self_project_id: &str,
-) {
-    // Minimal no-op normalization suitable for current CLI usage.
-}
-
-fn resolve_task_refs_in_manifest(
-    _manifest: &mut Project,
-    _discovery: &cuenv_task_discovery::TaskDiscovery,
-    _self_project_id: &str,
-    _project_id_by_name: &HashMap<String, String>,
-) {
-    // No-op: TaskRef resolution is not required for the tests added and
-    // current execution path; placeholder for future enhancement.
-}
-
 /// Context for a project during global task building.
 #[derive(Clone)]
 pub struct ProjectCtx {
@@ -187,7 +168,6 @@ pub fn build_global_tasks(
         .unwrap_or_else(|_| current_project_root.to_path_buf());
 
     // Build project contexts
-    let mut project_id_by_name: HashMap<String, String> = HashMap::new();
     let mut used_project_ids: HashSet<String> = HashSet::new();
     let mut projects: Vec<ProjectCtx> = Vec::new();
     for p in discovery.projects() {
@@ -221,13 +201,6 @@ pub fn build_global_tasks(
         }
         used_project_ids.insert(id.clone());
 
-        // Map manifest `name` (used by TaskRef: "#name:task") to this unique project id.
-        let trimmed = manifest.name.trim();
-        if !trimmed.is_empty() {
-            project_id_by_name
-                .entry(trimmed.to_string())
-                .or_insert_with(|| id.clone());
-        }
         projects.push(ProjectCtx {
             root,
             id,
@@ -247,10 +220,9 @@ pub fn build_global_tasks(
         |p| p.id.clone(),
     );
 
-    // Apply workspace contributors (auto-detected from lockfiles) and resolve TaskRefs
+    // Apply workspace contributors (auto-detected from lockfiles)
     for p in &mut projects {
         apply_workspace_contributors(&mut p.manifest, &p.root);
-        resolve_task_refs_in_manifest(&mut p.manifest, &discovery, &p.id, &project_id_by_name);
     }
 
     // Build global tasks keyed by FQDN
@@ -260,7 +232,6 @@ pub fn build_global_tasks(
         for entry in idx.list() {
             let mut node = entry.node.clone();
             set_default_project_root(&mut node, &p.root);
-            normalize_node_deps(&mut node, &id_by_root, &project_id_by_name, &p.id);
             // Rewrite output ref placeholders from bare names to FQDNs
             rewrite_output_ref_placeholders(&mut node, &p.id);
             let fqdn = task_fqdn(&p.id, &entry.name);

@@ -133,7 +133,7 @@ pub struct OutputRefResolver<'a> {
 
 **File: `crates/cuengine/bridge.go`**
 
-- `injectTaskNames()` walks the `tasks` struct and fills `_name` via `FillPath` + `cue.Hid("_name", "_")`
+- `injectTaskNames()` walks the `tasks` struct and fills `_name` via `FillPath` + `cue.Hid("_name", "github.com/cuenv/cuenv/schema")`
 - Handles named tasks (`"build"`), group children (`"check.lint"`), sequence items (`"pipeline[0]"`)
 - Called after `ctx.BuildInstance(inst)` but before JSON serialization
 
@@ -164,6 +164,5 @@ pub struct OutputRefResolver<'a> {
 
 ## Known Limitations
 
-1. **`cue.Hid("_name", "_")` package path**: Using `"_"` as the package path for hidden fields is unverified in integration tests. May need the actual CUE module package path.
-2. **Cross-project refs**: Output refs only work within a single project. CUE's reference syntax is scoped to a single file/package.
-3. **No E2E integration test**: The full CUE→Go→Rust pipeline is tested at each layer but not end-to-end.
+1. **Cross-project refs**: Output refs only work within a single project. CUE's reference syntax is scoped to a single file/package.
+2. **No E2E integration test**: The full CUE→Go→Rust pipeline is tested at each layer but not end-to-end.
