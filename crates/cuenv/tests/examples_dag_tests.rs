@@ -96,6 +96,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "task-output-ref",
+            min_task_count: 4, // tmpdir, work, cleanup, pipeline
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "task-basic",
             min_task_count: 5, // interpolate, propagate, greetAll, greetIndividual, shellExample
             has_hooks: false,

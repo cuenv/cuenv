@@ -69,7 +69,7 @@ jobs:
       run: |-
         cargo build --release -p cuenv
         echo "$(pwd)/target/release" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/target/release" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./target/release/cuenv sync -A
+        ./target/release/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: 'Run pipeline: ci'

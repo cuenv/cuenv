@@ -235,6 +235,64 @@ cuenv task greet Alice --color green
 # Output: Hello, Alice! Your favorite color is green.
 ```
 
+## Task Output References
+
+Tasks can pass their runtime stdout or stderr to other tasks using CUE's natural reference syntax. When you write `tasks.tmpdir.stdout`, CUE resolves it at evaluation time and cuenv replaces it with the actual output after the upstream task completes.
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+tasks: {
+    // Create a temp directory — stdout is the path
+    tmpdir: schema.#Task & {
+        command: "mktemp"
+        args: ["-d"]
+    }
+
+    // Use tmpdir's stdout directly in args
+    work: schema.#Task & {
+        command: "echo"
+        args: ["working in", tasks.tmpdir.stdout]
+        // No explicit dependsOn needed — auto-inferred from the reference
+    }
+
+    // Use it in environment variables too
+    process: schema.#Task & {
+        command: "ls"
+        env: TEMP_DIR: tasks.tmpdir.stdout
+    }
+}
+```
+
+Output references also work within sequences:
+
+```cue
+tasks: {
+    pipeline: schema.#TaskSequence & [
+        schema.#Task & { command: "mktemp", args: ["-d"] },
+        schema.#Task & { command: "echo", args: ["dir is:", pipeline[0].stdout] },
+    ]
+}
+```
+
+### Available Fields
+
+Each task exposes three output fields:
+
+| Field      | Type   | Description                            |
+| ---------- | ------ | -------------------------------------- |
+| `stdout`   | string | Standard output (whitespace-trimmed)   |
+| `stderr`   | string | Standard error (whitespace-trimmed)    |
+| `exitCode` | int    | Exit code (CUE-level only, not in args/env) |
+
+:::note
+`exitCode` can be used in CUE expressions but cannot be placed in `args` or `env` since those expect strings. `stdout` and `stderr` are automatically trimmed of surrounding whitespace.
+:::
+
+### Auto-Inferred Dependencies
+
+When a task references another task's output, cuenv automatically adds a dependency edge — there is no need to add an explicit `dependsOn`. The upstream task is guaranteed to complete before the downstream task starts.
+
 ## Environment Injection
 
 Tasks inherit the environment variables defined in your `env` block. You can also define task-specific environment variables:

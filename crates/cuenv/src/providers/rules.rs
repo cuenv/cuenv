@@ -237,31 +237,8 @@ impl SyncCapability for RulesProvider {
 }
 
 /// Evaluate a .rules.cue file and return the parsed configuration.
-fn evaluate_rules_file(file_path: &Path, executor: &CommandExecutor) -> Result<DirectoryRules> {
-    let dir = file_path.parent().ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "Invalid .rules.cue path: {}",
-            file_path.display()
-        ))
-    })?;
-
-    let module = executor.get_module(dir)?;
-
-    let relative_path = crate::commands::relative_path_from_root(&module.root, dir);
-    let instance = module.get(&relative_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE instance found for .rules.cue at: {}",
-            dir.display()
-        ))
-    })?;
-
-    instance.deserialize::<DirectoryRules>().map_err(|e| {
-        cuenv_core::Error::configuration(format!(
-            "Failed to parse .rules.cue at {}: {}",
-            file_path.display(),
-            e
-        ))
-    })
+fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<DirectoryRules> {
+    crate::providers::rules_eval::evaluate_rules_file(file_path)
 }
 
 /// Sync per-directory rules (ignore files, editorconfig).

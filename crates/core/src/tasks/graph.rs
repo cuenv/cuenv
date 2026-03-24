@@ -367,6 +367,61 @@ impl TaskGraph {
             .build_for_task_with_resolver(task_name, all_tasks)
             .map_err(|e| crate::Error::configuration(e.to_string()))
     }
+
+    /// Add implicit dependency edges inferred from task output references.
+    ///
+    /// Each pair `(from_task, to_task)` means `from_task` references an output
+    /// of `to_task` and therefore depends on it. This creates both:
+    /// - A `dependsOn` entry on the task data (for consistency)
+    /// - An actual petgraph edge (so topological sort / parallel groups work)
+    ///
+    /// When a referenced target task is not yet in the graph, it is added
+    /// (along with its transitive dependencies) from `all_tasks`. This is
+    /// necessary because `build_for_task` only follows explicit `dependsOn`
+    /// edges and won't discover tasks that are only referenced via output refs.
+    pub fn add_output_ref_deps(
+        &mut self,
+        deps: &[(String, String)],
+        all_tasks: &Tasks,
+    ) -> Result<()> {
+        for (from, to) in deps {
+            // Only process pairs where the source task is already in the graph.
+            // This avoids pulling in unrelated tasks (e.g., pipeline[1]→pipeline[0]
+            // when the user only asked to run "work").
+            if self.inner.get_node_index(from).is_none() {
+                continue;
+            }
+
+            // Ensure the target task is in the graph (it may not be if the
+            // only link to it is through an output reference).
+            if self.inner.get_node_index(to).is_none() {
+                self.inner
+                    .build_for_task_with_resolver(to, all_tasks)
+                    .map_err(|e| crate::Error::configuration(e.to_string()))?;
+            }
+
+            let from_idx = self.inner.get_node_index(from);
+            let to_idx = self.inner.get_node_index(to);
+
+            if let (Some(from_idx), Some(to_idx)) = (from_idx, to_idx) {
+                // Skip if this dependency already exists (e.g., user also has explicit dependsOn)
+                let already_exists = self
+                    .inner
+                    .get_task_mut(from)
+                    .is_some_and(|d| d.has_dependency(to));
+
+                if !already_exists {
+                    // Add dependency to task data for consistency
+                    if let Some(from_data) = self.inner.get_task_mut(from) {
+                        from_data.add_dependency(to.clone());
+                    }
+                    // Create actual petgraph edge (to -> from means "to must run before from")
+                    self.inner.add_edge(to_idx, from_idx);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Default for TaskGraph {
@@ -569,6 +624,110 @@ mod tests {
 
         // Should fail when trying to get parallel groups
         assert!(graph.get_parallel_groups().is_err());
+    }
+
+    // ---------------------------------------------------------------------
+    // add_output_ref_deps()
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn output_ref_deps_adds_missing_target_and_edge() {
+        // Build a task set where `work` has no explicit dependsOn, but at
+        // runtime references output from `tmpdir`. The inferred pair is
+        // (work -> tmpdir). The graph is first built only for `work`, then
+        // add_output_ref_deps() should pull in `tmpdir` and add the edge.
+        let mut tasks = Tasks::new();
+        let tmpdir = create_task("tmpdir", vec![], vec![]);
+        let work = create_task("work", vec![], vec![]);
+        tasks
+            .tasks
+            .insert("tmpdir".into(), TaskNode::Task(Box::new(tmpdir)));
+        tasks
+            .tasks
+            .insert("work".into(), TaskNode::Task(Box::new(work)));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task("work", &tasks).unwrap();
+        assert!(graph.contains_task("work"));
+        assert!(!graph.contains_task("tmpdir"));
+
+        graph
+            .add_output_ref_deps(&[("work".into(), "tmpdir".into())], &tasks)
+            .unwrap();
+
+        // tmpdir should now be present and ordered before work
+        assert!(graph.contains_task("tmpdir"));
+        let sorted = graph.topological_sort().unwrap();
+        let names: Vec<_> = sorted.iter().map(|n| n.name.as_str()).collect();
+        let pos_work = names.iter().position(|&n| n == "work").unwrap();
+        let pos_tmp = names.iter().position(|&n| n == "tmpdir").unwrap();
+        assert!(pos_tmp < pos_work, "tmpdir must precede work");
+
+        // "work" task data should have an implicit dependency recorded
+        let work_data = graph.inner.get_task_mut("work").unwrap().clone();
+        assert!(work_data.has_dependency("tmpdir"));
+    }
+
+    #[test]
+    fn output_ref_deps_skips_when_source_not_in_graph() {
+        // If the source (from) task isn't in the current graph, the pair is
+        // ignored (we shouldn't pull unrelated tasks into the graph).
+        let mut tasks = Tasks::new();
+        let a = create_task("a", vec![], vec![]);
+        let b = create_task("b", vec![], vec![]);
+        tasks.tasks.insert("a".into(), TaskNode::Task(Box::new(a)));
+        tasks.tasks.insert("b".into(), TaskNode::Task(Box::new(b)));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task("a", &tasks).unwrap();
+        assert!(graph.contains_task("a"));
+        assert!(!graph.contains_task("b"));
+
+        graph
+            .add_output_ref_deps(&[("x".into(), "b".into())], &tasks)
+            .unwrap();
+
+        // Graph should be unchanged
+        assert!(graph.contains_task("a"));
+        assert!(!graph.contains_task("b"));
+    }
+
+    #[test]
+    fn output_ref_deps_no_duplicate_for_existing_dependency() {
+        // If an explicit dependsOn already exists, add_output_ref_deps should
+        // not duplicate the dependency or add extra edges.
+        let mut tasks = Tasks::new();
+        let tmpdir = create_task("tmpdir", vec![], vec![]);
+        let work = create_task("work", vec!["tmpdir"], vec![]);
+        tasks
+            .tasks
+            .insert("tmpdir".into(), TaskNode::Task(Box::new(tmpdir)));
+        tasks
+            .tasks
+            .insert("work".into(), TaskNode::Task(Box::new(work)));
+
+        let mut graph = TaskGraph::new();
+        graph.build_for_task("work", &tasks).unwrap();
+        // Explicit edges first
+        graph.add_dependency_edges().unwrap();
+        let sorted1 = graph.topological_sort().unwrap();
+        let names1: Vec<_> = sorted1.iter().map(|n| n.name.as_str()).collect();
+        assert!(
+            names1.iter().position(|&n| n == "tmpdir").unwrap()
+                < names1.iter().position(|&n| n == "work").unwrap()
+        );
+
+        // Now apply output-ref deps; should be a no-op logically
+        graph
+            .add_output_ref_deps(&[("work".into(), "tmpdir".into())], &tasks)
+            .unwrap();
+        let sorted2 = graph.topological_sort().unwrap();
+        let names2: Vec<_> = sorted2.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names1, names2, "topology should remain unchanged");
+
+        // And "work" should still report a single dependency on tmpdir
+        let work_data = graph.inner.get_task_mut("work").unwrap().clone();
+        assert!(work_data.has_dependency("tmpdir"));
     }
 
     #[test]
