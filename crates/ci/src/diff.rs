@@ -371,6 +371,7 @@ mod tests {
             duration_ms: Some(1000),
             status: PipelineStatus::Success,
             tasks,
+            annotations: HashMap::new(),
         }
     }
 
@@ -383,6 +384,7 @@ mod tests {
             inputs_matched: inputs.into_iter().map(String::from).collect(),
             cache_key: cache_key.map(String::from),
             outputs: vec![],
+            captures: HashMap::new(),
         }
     }
 

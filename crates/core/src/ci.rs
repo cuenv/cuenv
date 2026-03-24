@@ -3,6 +3,27 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::tasks::TaskNode;
 
+// =============================================================================
+// Annotation Values (for CI report annotations)
+// =============================================================================
+
+/// A pipeline annotation value - can be a literal string or a capture reference.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum AnnotationValue {
+    /// Reference to a task capture (resolved after execution)
+    CaptureRef {
+        #[serde(rename = "cuenvCaptureRef")]
+        cuenv_capture_ref: bool,
+        #[serde(rename = "cuenvTask")]
+        cuenv_task: String,
+        #[serde(rename = "cuenvCapture")]
+        cuenv_capture: String,
+    },
+    /// Literal string value
+    Literal(String),
+}
+
 /// Workflow dispatch input definition for manual triggers
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -358,6 +379,10 @@ pub struct Pipeline {
     /// Tasks to run - can be simple task names or matrix task objects
     #[serde(default)]
     pub tasks: Vec<PipelineTask>,
+    /// Key-value annotations surfaced in CI reports and job summaries.
+    /// Values can be literal strings or capture references resolved after execution.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub annotations: HashMap<String, AnnotationValue>,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -903,6 +928,7 @@ mod tests {
                     environment: None,
                     when: None,
                     tasks: vec![],
+                    annotations: HashMap::new(),
                     derive_paths: None,
                     provider: None,
                 },
@@ -924,6 +950,7 @@ mod tests {
                     environment: None,
                     when: None,
                     tasks: vec![],
+                    annotations: HashMap::new(),
                     derive_paths: None,
                     provider: None,
                 },
@@ -999,5 +1026,49 @@ mod tests {
         assert!(pipeline.tasks[0].is_simple());
         assert!(pipeline.tasks[1].is_matrix());
         assert!(pipeline.tasks[2].is_node());
+    }
+
+    #[test]
+    fn test_annotation_value_serde_roundtrip() {
+        // Literal
+        let literal = AnnotationValue::Literal("hello".to_string());
+        let json = serde_json::to_string(&literal).unwrap();
+        let deserialized: AnnotationValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(literal, deserialized);
+
+        // CaptureRef
+        let capture_ref = AnnotationValue::CaptureRef {
+            cuenv_capture_ref: true,
+            cuenv_task: "deploy.preview".to_string(),
+            cuenv_capture: "previewUrl".to_string(),
+        };
+        let json = serde_json::to_string(&capture_ref).unwrap();
+        assert!(json.contains("cuenvCaptureRef"));
+        assert!(json.contains("cuenvTask"));
+        assert!(json.contains("cuenvCapture"));
+        let deserialized: AnnotationValue = serde_json::from_str(&json).unwrap();
+        assert_eq!(capture_ref, deserialized);
+    }
+
+    #[test]
+    fn test_pipeline_with_annotations() {
+        let json = r#"{
+            "tasks": [{"_name": "deploy"}],
+            "annotations": {
+                "Preview URL": {"cuenvCaptureRef": true, "cuenvTask": "deploy.preview", "cuenvCapture": "previewUrl"},
+                "Version": "1.0.0"
+            }
+        }"#;
+        let pipeline: Pipeline = serde_json::from_str(json).unwrap();
+        assert_eq!(pipeline.annotations.len(), 2);
+        assert!(matches!(
+            pipeline.annotations.get("Version"),
+            Some(AnnotationValue::Literal(s)) if s == "1.0.0"
+        ));
+        assert!(matches!(
+            pipeline.annotations.get("Preview URL"),
+            Some(AnnotationValue::CaptureRef { cuenv_task, cuenv_capture, .. })
+            if cuenv_task == "deploy.preview" && cuenv_capture == "previewUrl"
+        ));
     }
 }

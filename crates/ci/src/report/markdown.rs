@@ -54,6 +54,27 @@ pub fn generate_summary(report: &PipelineReport) -> String {
         md.push('\n');
     }
 
+    // Annotations (if any) - sorted by label for deterministic output
+    if !report.annotations.is_empty() {
+        let mut sorted: Vec<_> = report.annotations.iter().collect();
+        sorted.sort_by_key(|(label, _)| *label);
+
+        md.push_str("### Annotations\n\n");
+        md.push_str("| Label | Value |\n|:------|:------|\n");
+        for (label, value) in &sorted {
+            let escaped_label = escape_table_cell(label);
+            let escaped_value = escape_table_cell(value);
+            let display =
+                if escaped_value.starts_with("https://") || escaped_value.starts_with("http://") {
+                    format!("[{escaped_value}]({escaped_value})")
+                } else {
+                    escaped_value
+                };
+            let _ = writeln!(md, "| {escaped_label} | {display} |");
+        }
+        md.push('\n');
+    }
+
     // Context details
     md.push_str("### Details\n\n");
     md.push_str("| Property | Value |\n|:---------|:------|\n");
@@ -126,6 +147,11 @@ pub fn write_job_summary(report: &PipelineReport) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Escape characters that would break markdown table rendering.
+fn escape_table_cell(s: &str) -> String {
+    s.replace('|', "\\|").replace('\n', " ")
+}
+
 /// Format duration in milliseconds to a human-readable string.
 #[allow(clippy::cast_precision_loss)]
 fn format_duration(ms: u64) -> String {
@@ -145,6 +171,7 @@ mod tests {
     use super::*;
     use crate::report::{ContextReport, TaskReport};
     use chrono::Utc;
+    use std::collections::HashMap;
 
     #[test]
     fn test_generate_summary_success() {
@@ -172,7 +199,9 @@ mod tests {
                 inputs_matched: vec![],
                 cache_key: None,
                 outputs: vec![],
+                captures: HashMap::new(),
             }],
+            annotations: HashMap::new(),
         };
 
         let md = generate_summary(&report);
@@ -209,12 +238,52 @@ mod tests {
                 inputs_matched: vec![],
                 cache_key: None,
                 outputs: vec![],
+                captures: HashMap::new(),
             }],
+            annotations: HashMap::new(),
         };
 
         let md = generate_summary(&report);
         assert!(md.contains("\u{274C}")); // ❌
         assert!(md.contains("Failed"));
+    }
+
+    #[test]
+    fn test_generate_summary_with_annotations() {
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "Preview URL".to_string(),
+            "https://preview.example.workers.dev".to_string(),
+        );
+        annotations.insert("Version".to_string(), "1.2.3".to_string());
+
+        let report = PipelineReport {
+            version: "0.11.8".to_string(),
+            project: "my-project".to_string(),
+            pipeline: "pullRequest".to_string(),
+            context: ContextReport {
+                provider: "github".to_string(),
+                event: "pull_request".to_string(),
+                ref_name: "refs/pull/42/merge".to_string(),
+                base_ref: Some("main".to_string()),
+                sha: "abc123def456".to_string(),
+                changed_files: vec![],
+            },
+            started_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: Some(1000),
+            status: PipelineStatus::Success,
+            tasks: vec![],
+            annotations,
+        };
+
+        let md = generate_summary(&report);
+        assert!(md.contains("### Annotations"));
+        assert!(md.contains("Preview URL"));
+        // URLs should be auto-linked
+        assert!(md.contains("[https://preview.example.workers.dev](https://preview.example.workers.dev)"));
+        // Non-URL values should be plain
+        assert!(md.contains("| Version | 1.2.3 |"));
     }
 
     #[test]

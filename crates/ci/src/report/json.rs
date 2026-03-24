@@ -20,6 +20,7 @@ mod tests {
     use super::*;
     use crate::report::{ContextReport, PipelineStatus, TaskReport, TaskStatus};
     use chrono::Utc;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn create_test_report() -> PipelineReport {
@@ -39,6 +40,7 @@ mod tests {
             completed_at: Some(Utc::now()),
             duration_ms: Some(1234),
             status: PipelineStatus::Success,
+            annotations: HashMap::new(),
             tasks: vec![TaskReport {
                 name: "build".to_string(),
                 status: TaskStatus::Success,
@@ -47,6 +49,7 @@ mod tests {
                 inputs_matched: vec!["src/**/*.rs".to_string()],
                 cache_key: Some("abc123".to_string()),
                 outputs: vec!["target/release/binary".to_string()],
+                captures: HashMap::new(),
             }],
         }
     }
@@ -194,6 +197,7 @@ mod tests {
             inputs_matched: vec!["tests/**/*.rs".to_string()],
             cache_key: None,
             outputs: vec![],
+            captures: HashMap::new(),
         });
         report.tasks.push(TaskReport {
             name: "lint".to_string(),
@@ -203,6 +207,7 @@ mod tests {
             inputs_matched: vec![],
             cache_key: None,
             outputs: vec![],
+            captures: HashMap::new(),
         });
 
         write_report(&report, &report_path).unwrap();

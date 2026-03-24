@@ -10,6 +10,7 @@
 //! - [`TaskList`]: Sequential execution (steps run in order)
 
 pub mod backend;
+pub mod captures;
 pub mod executor;
 pub mod graph;
 pub mod index;
@@ -36,6 +37,39 @@ use std::path::Path;
 
 fn default_hermetic() -> bool {
     true
+}
+
+// =============================================================================
+// Task Captures (Regex Extraction from Output)
+// =============================================================================
+
+/// Source stream for regex capture extraction
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureSource {
+    #[default]
+    Stdout,
+    Stderr,
+}
+
+/// Regex capture definition for extracting values from task output
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCapture {
+    /// Regex pattern with capture group - first group's match becomes the value
+    pub pattern: String,
+    /// Which output stream to search (default: stdout)
+    #[serde(default)]
+    pub source: CaptureSource,
+}
+
+/// Reference to a captured value, resolved at runtime
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCaptureRef {
+    pub cuenv_capture_ref: bool,
+    pub cuenv_task: String,
+    pub cuenv_capture: String,
 }
 
 // =============================================================================
@@ -434,6 +468,10 @@ pub struct Task {
     #[serde(default, rename = "continueOnError")]
     pub continue_on_error: bool,
 
+    /// Named regex captures extracted from task stdout/stderr after execution
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub captures: HashMap<String, TaskCapture>,
+
     /// If set, this task is a reference to another project's task
     /// that should be resolved at runtime using TaskDiscovery.
     /// Format: "#project-name:task-name"
@@ -520,6 +558,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default, rename = "continueOnError")]
             continue_on_error: bool,
             #[serde(default)]
+            captures: HashMap<String, TaskCapture>,
+            #[serde(default)]
             task_ref: Option<String>,
             #[serde(default)]
             project_root: Option<std::path::PathBuf>,
@@ -562,6 +602,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             timeout: helper.timeout,
             retry: helper.retry,
             continue_on_error: helper.continue_on_error,
+            captures: helper.captures,
             task_ref: helper.task_ref,
             project_root: helper.project_root,
             source: helper.source,
@@ -732,6 +773,7 @@ impl Default for Task {
             timeout: None,
             retry: None,
             continue_on_error: false,
+            captures: HashMap::new(),
             task_ref: None,
             project_root: None,
             source: None,
