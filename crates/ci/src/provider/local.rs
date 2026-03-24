@@ -107,6 +107,7 @@ impl CIProvider for LocalProvider {
 mod tests {
     use super::*;
     use crate::report::{ContextReport, PipelineStatus};
+    use std::collections::HashMap;
 
     fn make_test_report() -> PipelineReport {
         PipelineReport {
@@ -126,6 +127,7 @@ mod tests {
             duration_ms: Some(100),
             status: PipelineStatus::Success,
             tasks: vec![],
+            annotations: HashMap::new(),
         }
     }
 

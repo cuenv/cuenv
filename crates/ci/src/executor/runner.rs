@@ -7,7 +7,7 @@
 #![allow(clippy::too_many_lines)]
 
 use crate::ir::Task as IRTask;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use thiserror::Error;
@@ -55,12 +55,14 @@ pub struct TaskOutput {
     pub from_cache: bool,
     /// Execution duration in milliseconds
     pub duration_ms: u64,
+    /// Resolved capture values extracted from output
+    pub captures: HashMap<String, String>,
 }
 
 impl TaskOutput {
     /// Create a cached result (no actual execution)
     #[must_use]
-    pub const fn from_cache(task_id: String, duration_ms: u64) -> Self {
+    pub fn from_cache(task_id: String, duration_ms: u64) -> Self {
         Self {
             task_id,
             exit_code: 0,
@@ -69,12 +71,13 @@ impl TaskOutput {
             success: true,
             from_cache: true,
             duration_ms,
+            captures: HashMap::new(),
         }
     }
 
     /// Create a dry-run result
     #[must_use]
-    pub const fn dry_run(task_id: String) -> Self {
+    pub fn dry_run(task_id: String) -> Self {
         Self {
             task_id,
             exit_code: 0,
@@ -83,6 +86,7 @@ impl TaskOutput {
             success: true,
             from_cache: false,
             duration_ms: 0,
+            captures: HashMap::new(),
         }
     }
 }
@@ -295,6 +299,7 @@ impl IRTaskRunner {
             success,
             from_cache: false,
             duration_ms,
+            captures: HashMap::new(),
         })
     }
 }
