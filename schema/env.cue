@@ -15,8 +15,17 @@ package schema
 	policies?: [...#Policy]
 })
 
+// Host environment variable passthrough for hermetic tasks.
+// Forwards a host process env var into the task environment.
+// The optional `name` field specifies which host var to read;
+// when omitted the Rust executor uses the env map key.
+#EnvPassthrough: close({
+	cuenvPassthrough: true
+	name?:           string
+})
+
 // Environment variable can be a simple value or a value with policies
-#EnvironmentVariable: string | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies
+#EnvironmentVariable: string | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies | #EnvPassthrough
 
 // We support non-string types for constraints
 // but when exported to the actual environment,

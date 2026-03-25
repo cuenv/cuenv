@@ -302,6 +302,26 @@ impl TaskExecutor {
             cmd.env(k, v);
         }
 
+        // Apply task-level env vars (plain values and passthrough from host)
+        for (key, value) in &task.env {
+            if let Some(s) = value.as_str() {
+                if let Some(host_var) = super::output_refs::parse_passthrough(s) {
+                    if let Ok(host_val) = std::env::var(host_var) {
+                        cmd.env(key, host_val);
+                    }
+                } else if !s.starts_with("cuenv:ref:") {
+                    // Plain string value — apply directly
+                    cmd.env(key, s);
+                }
+                // Output refs are resolved separately by OutputRefResolver
+            } else if let Some(n) = value.as_i64() {
+                cmd.env(key, n.to_string());
+            } else if let Some(b) = value.as_bool() {
+                cmd.env(key, b.to_string());
+            }
+            // Skip objects (secret refs etc.) — handled by project-level env resolution
+        }
+
         // Force color output even when stdout is piped (for capture mode)
         // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
         if !env_vars.contains_key("FORCE_COLOR") {
