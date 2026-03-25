@@ -95,10 +95,7 @@ schema.#Project & {
 	// Hooks & Formatters
 	// ============================================================================
 
-	hooks: onEnter: {
-		nix:   xNix.#NixFlake
-		tools: schema.#ToolsActivate
-	}
+	hooks: onEnter: nix: xNix.#NixFlake
 
 	formatters: rust: {edition: "2024"}
 
