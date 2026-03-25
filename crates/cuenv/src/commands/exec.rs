@@ -99,13 +99,21 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
                 ))
             })?;
 
-            // Handle both Project and Base
-            match instance.kind {
-                cuenv_core::InstanceKind::Project => {
-                    ManifestKind::Project(Box::new(instance.deserialize()?))
-                }
-                cuenv_core::InstanceKind::Base => {
-                    ManifestKind::Base(Box::new(instance.deserialize()?))
+            if instance.value.is_null() {
+                tracing::debug!(
+                    path = %rel_path.display(),
+                    "Instance value is null, falling back to tools-only mode"
+                );
+                ManifestKind::None
+            } else {
+                // Handle both Project and Base
+                match instance.kind {
+                    cuenv_core::InstanceKind::Project => {
+                        ManifestKind::Project(Box::new(instance.deserialize()?))
+                    }
+                    cuenv_core::InstanceKind::Base => {
+                        ManifestKind::Base(Box::new(instance.deserialize()?))
+                    }
                 }
             }
         }
