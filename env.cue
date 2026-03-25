@@ -7,6 +7,7 @@ import (
 	xBun "github.com/cuenv/cuenv/contrib/bun"
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
+	xNix "github.com/cuenv/cuenv/contrib/nix"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
 	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
@@ -94,7 +95,10 @@ schema.#Project & {
 	// Hooks & Formatters
 	// ============================================================================
 
-	hooks: onEnter: tools: schema.#ToolsActivate
+	hooks: onEnter: {
+		nix:   xNix.#NixFlake
+		tools: schema.#ToolsActivate
+	}
 
 	formatters: rust: {edition: "2024"}
 
@@ -102,8 +106,8 @@ schema.#Project & {
 	// Configuration
 	// ============================================================================
 
-	// Build cuenv from source using native Rust/Go toolchains
-	// Uses native setup instead of nix to avoid sccache env var issues
+	// Build cuenv from source using native Rust/Go toolchains.
+	// The NixFlake onEnter hook provides system tools (cc, git, etc.) for tasks.
 	config: ci: cuenv: {source: "native", version: "self"}
 
 	// ============================================================================
