@@ -399,7 +399,7 @@ schema.#Project & {
 			cue: schema.#Task & {
 				command: "bash"
 				args: ["-c", """
-					TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+					TAG=${GITHUB_REF_NAME:-$(git describe --tags --abbrev=0 2>/dev/null || echo "")}
 					if [ -z "$TAG" ]; then
 						echo "Error: No git tag found"
 						exit 1
