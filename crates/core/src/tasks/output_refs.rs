@@ -19,6 +19,10 @@ use std::collections::HashMap;
 /// Format: `cuenv:ref:<task_name>:<output_field>`
 const OUTPUT_REF_PREFIX: &str = "cuenv:ref:";
 
+/// Prefix for placeholder strings that represent host env passthrough.
+/// Format: `cuenv:passthrough:<var_name>`
+const PASSTHROUGH_PREFIX: &str = "cuenv:passthrough:";
+
 /// Which output field of a task is being referenced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskOutputField {
@@ -130,13 +134,19 @@ fn process_task_node(
                     }
                 }
 
-                // Process env map
+                // Process env map — replace output refs and passthrough objects with placeholders
                 if let Some(serde_json::Value::Object(env)) = obj.get_mut("env") {
-                    for env_val in env.values_mut() {
+                    let keys: Vec<String> = env.keys().cloned().collect();
+                    for key in keys {
+                        let Some(env_val) = env.get_mut(&key) else {
+                            continue;
+                        };
                         if let Some(placeholder) = try_extract_output_ref(env_val) {
                             if let Some(parsed) = TaskOutputRef::parse(&placeholder) {
                                 deps.push((current_task.to_string(), parsed.task.clone()));
                             }
+                            *env_val = serde_json::Value::String(placeholder);
+                        } else if let Some(placeholder) = try_extract_passthrough(env_val, &key) {
                             *env_val = serde_json::Value::String(placeholder);
                         }
                     }
@@ -199,6 +209,35 @@ fn process_task_node(
         }
         _ => {}
     }
+}
+
+/// Try to extract an `#EnvPassthrough` from a JSON value.
+/// Returns the passthrough placeholder string if the value is a passthrough object.
+/// `env_key` is the map key, used as fallback when `name` is absent.
+fn try_extract_passthrough(value: &serde_json::Value, env_key: &str) -> Option<String> {
+    let obj = value.as_object()?;
+
+    let is_passthrough = obj
+        .get("cuenvPassthrough")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    if !is_passthrough {
+        return None;
+    }
+
+    let var_name = obj
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(env_key);
+
+    Some(format!("{PASSTHROUGH_PREFIX}{var_name}"))
+}
+
+/// Parse a passthrough placeholder string, returning the host var name.
+#[must_use]
+pub fn parse_passthrough(s: &str) -> Option<&str> {
+    s.strip_prefix(PASSTHROUGH_PREFIX)
 }
 
 /// Try to extract a `#TaskOutputRef` from a JSON value.
