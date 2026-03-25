@@ -57,8 +57,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: cargo.build (darwin-arm64)
       run: cuenv task cargo.build -e production --skip-dependencies
       working-directory: .
@@ -111,8 +109,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: cargo.build (linux-x64)
       run: cuenv task cargo.build -e production --skip-dependencies
       working-directory: .
@@ -178,8 +174,6 @@ jobs:
       with:
         name: cargo-build-linux-x64
         path: dist/linux-x64
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: publish.github
       run: cuenv task publish.github -e production --skip-dependencies
       working-directory: .
@@ -225,8 +219,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: publish.cue
       run: cuenv task publish.cue -e production --skip-dependencies
       working-directory: .
@@ -273,8 +265,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: Download docs-build-artifacts
       uses: actions/download-artifact@v4
       with:
@@ -323,8 +313,6 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-    - name: Approve hooks
-      run: cuenv allow --yes
     - name: docs.build
       run: cuenv task docs.build -e production --skip-dependencies
       working-directory: .

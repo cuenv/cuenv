@@ -609,9 +609,6 @@ impl GitHubActionsEmitter {
         let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
         steps.extend(phase_steps);
 
-        // Approve hooks so onEnter hooks (e.g., NixFlake) run during task execution
-        steps.push(Step::run("cuenv allow --yes").with_name("Approve hooks"));
-
         // Download artifacts if task has artifact_downloads
         for artifact in &task.artifact_downloads {
             let download_step = Step::uses("actions/download-artifact@v4")
@@ -764,9 +761,6 @@ impl GitHubActionsEmitter {
             }
         }
 
-        // Approve hooks so onEnter hooks (e.g., NixFlake) run during task execution
-        steps.push(Step::run("cuenv allow --yes").with_name("Approve hooks"));
-
         // Build task command with --skip-dependencies
         let task_command = environment.map_or_else(
             || format!("cuenv task {} --skip-dependencies", task.id),
@@ -864,9 +858,6 @@ impl GitHubActionsEmitter {
                 // Render bootstrap and setup phase tasks
                 let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
                 steps.extend(phase_steps);
-
-                // Approve hooks so onEnter hooks (e.g., NixFlake) run during task execution
-                steps.push(Step::run("cuenv allow --yes").with_name("Approve hooks"));
 
                 // Run the task with --skip-dependencies
                 let task_command = environment.map_or_else(
