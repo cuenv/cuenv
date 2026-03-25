@@ -187,6 +187,14 @@ cuenv task test.unit
 - `examples/env-basic/env.cue` - Test configuration
 - `schema/` - CUE schema definitions
 
+## Releasing
+
+- **No `v` prefix** on tags or release titles. Use `0.27.1`, never `v0.27.1`.
+- Git tags must be annotated: `git tag -a 0.27.1 -m "message"`
+- Release commit message format: `release: 0.27.1`
+- Version lives in root `Cargo.toml` under `[workspace.package]`. All crates inherit via `version.workspace = true`. Update the workspace version and all `[workspace.dependencies]` version strings.
+- Create a GitHub release with `gh release create <tag>` using the bare version as the title.
+
 ## Troubleshooting
 
 - **Build appears frozen**: Expected, builds take 90+ seconds initially
