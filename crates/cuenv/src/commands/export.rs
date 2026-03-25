@@ -55,13 +55,6 @@ fn evaluate_project(
             ))
         })?;
 
-        if instance.value.is_null() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "CUE instance at {} evaluated to null — no project configuration available",
-                rel_path.display()
-            )));
-        }
-
         // Check if this is a Project (has name field) or Base (no name)
         return match instance.kind {
             cuenv_core::InstanceKind::Project => instance.deserialize(),
@@ -109,13 +102,6 @@ fn evaluate_project(
             rel_path.display()
         ))
     })?;
-
-    if instance.value.is_null() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "CUE instance at {} evaluated to null — no project configuration available",
-            rel_path.display()
-        )));
-    }
 
     // Check if this is a Project (has name field) or Base (no name)
     match instance.kind {
