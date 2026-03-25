@@ -160,7 +160,7 @@ rules.#DirectoryRules & {
         assert!(!result.contains("rules.#DirectoryRules"));
         assert!(result.starts_with("package rules\n"));
         assert!(result.contains("ignore:"));
-        assert!(result.contains("{"));
+        assert!(result.contains('{'));
     }
 
     #[test]
