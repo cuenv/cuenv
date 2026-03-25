@@ -358,6 +358,15 @@ impl Instance {
     /// let project: Project = instance.deserialize()?;
     /// ```
     pub fn deserialize<T: DeserializeOwned>(&self) -> crate::Result<T> {
+        if self.value.is_null() {
+            return Err(Error::configuration(format!(
+                "CUE instance at {} evaluated to null — cannot deserialize as {}. \
+                 This typically means the CUE evaluator returned no data for this path.",
+                self.path.display(),
+                std::any::type_name::<T>(),
+            )));
+        }
+
         serde_json::from_value(self.value.clone()).map_err(|fallback_error| {
             let error_detail = detailed_deserialize_error::<T>(&self.value, &fallback_error);
             Error::configuration(format!(
