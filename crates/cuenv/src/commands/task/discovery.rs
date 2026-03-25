@@ -91,13 +91,6 @@ pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) 
         ))
     })?;
 
-    if instance.value.is_null() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "CUE instance at {} evaluated to null — no project configuration available",
-            rel_path.display()
-        )));
-    }
-
     // Check if this is a Project (has name field) or Base (no name)
     match instance.kind {
         cuenv_core::InstanceKind::Project => instance.deserialize(),

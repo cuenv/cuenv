@@ -986,9 +986,16 @@ func fillTaskName(root cue.Value, taskName string, ctx *cue.Context) cue.Value {
 	if taskName == "" {
 		return root
 	}
-	// Build the path: tasks.<taskName>._name
-	namePath := cue.ParsePath("tasks." + taskName)
-	namePath = appendHiddenField(namePath)
+	// Build the path using explicit selectors to handle labels with hyphens.
+	// cue.ParsePath("tasks.eval.env-gen") would misparse "env-gen" as a
+	// subtraction expression. Using cue.Str() ensures each segment is treated
+	// as a string label.
+	sels := []cue.Selector{cue.Str("tasks")}
+	for _, part := range strings.Split(taskName, ".") {
+		sels = append(sels, cue.Str(part))
+	}
+	sels = append(sels, cue.Hid("_name", schemaPackagePath))
+	namePath := cue.MakePath(sels...)
 
 	return root.FillPath(namePath, taskName)
 }
