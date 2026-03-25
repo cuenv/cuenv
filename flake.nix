@@ -302,12 +302,12 @@
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
-          # sccache configuration for faster rebuilds
-          RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
-          SCCACHE_DIR = "$HOME/.cache/sccache";
-
           shellHook = ''
             ${setupBridge}
+
+            # sccache configuration — only set if not already provided (e.g. by CI)
+            export RUSTC_WRAPPER="''${RUSTC_WRAPPER:-${pkgs.sccache}/bin/sccache}"
+            export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
 
             # Install docs dependencies
             cd docs

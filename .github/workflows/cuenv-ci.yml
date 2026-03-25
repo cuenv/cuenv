@@ -64,7 +64,7 @@ jobs:
         cache-dependency-path: crates/cuengine/go.sum
         go-version: '1.24'
     - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Build cuenv
       run: |-
         cargo build --release -p cuenv
