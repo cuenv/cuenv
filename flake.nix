@@ -283,8 +283,6 @@
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
           gcc   # Provides cc linker for cargo
-          openssl
-          openssl.dev
           patchelf
           libgccjit
           mold  # Fast linker for faster link times
@@ -304,10 +302,6 @@
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
-          # Static-link OpenSSL to avoid runtime LD_LIBRARY_PATH issues in
-          # hermetic task environments (CI). The Nix openssl.dev package
-          # provides both headers and static libraries.
-          OPENSSL_STATIC = "1";
 
           shellHook = ''
             ${setupBridge}
@@ -346,7 +340,7 @@
             echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux ", wrangler patched, mold linker available"}"
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          LD_LIBRARY_PATH = "${pkgs.openssl.out}/lib:${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
+          LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
         });
 
         apps = {
