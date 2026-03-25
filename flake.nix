@@ -304,6 +304,10 @@
           RUST_BACKTRACE = "1";
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
+          # Static-link OpenSSL to avoid runtime LD_LIBRARY_PATH issues in
+          # hermetic task environments (CI). The Nix openssl.dev package
+          # provides both headers and static libraries.
+          OPENSSL_STATIC = "1";
 
           shellHook = ''
             ${setupBridge}
