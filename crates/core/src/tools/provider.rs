@@ -178,6 +178,18 @@ pub enum ToolSource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         extract: Vec<ToolExtract>,
     },
+    /// Pre-built binary from a Homebrew bottle on ghcr.io.
+    #[serde(rename = "brew")]
+    BrewBottle {
+        /// Homebrew formula name.
+        formula: String,
+        /// Fully-resolved blob download URL.
+        url: String,
+        /// Expected SHA256 digest of the bottle blob.
+        sha256: String,
+        /// Path to binary inside bottle relative to versioned prefix.
+        path: String,
+    },
 }
 
 /// Typed extract rule for GitHub release assets.
@@ -230,6 +242,7 @@ impl ToolSource {
             Self::Nix { .. } => "nix",
             Self::Rustup { .. } => "rustup",
             Self::Url { .. } => "url",
+            Self::BrewBottle { .. } => "brew",
         }
     }
 }
@@ -574,6 +587,14 @@ mod tests {
             extract: vec![],
         };
         assert_eq!(s.provider_type(), "url");
+
+        let s = ToolSource::BrewBottle {
+            formula: "jq".into(),
+            url: "https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc".into(),
+            sha256: "abc123".into(),
+            path: "bin/jq".into(),
+        };
+        assert_eq!(s.provider_type(), "brew");
     }
 
     #[test]
@@ -672,6 +693,39 @@ mod tests {
                 assert!(extract.is_empty());
             }
             _ => panic!("Expected URL source"),
+        }
+    }
+
+    #[test]
+    fn test_tool_source_brew_serialization() {
+        let source = ToolSource::BrewBottle {
+            formula: "jq".into(),
+            url: "https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:abc".into(),
+            sha256: "abc123".into(),
+            path: "bin/jq".into(),
+        };
+        let json = serde_json::to_string(&source).unwrap();
+        assert!(json.contains("\"type\":\"brew\""));
+        assert!(json.contains("\"formula\":\"jq\""));
+    }
+
+    #[test]
+    fn test_tool_source_brew_deserialization() {
+        let json = r#"{"type":"brew","formula":"jq","url":"https://example.com","sha256":"abc123","path":"bin/jq"}"#;
+        let source: ToolSource = serde_json::from_str(json).unwrap();
+        match source {
+            ToolSource::BrewBottle {
+                formula,
+                url,
+                sha256,
+                path,
+            } => {
+                assert_eq!(formula, "jq");
+                assert_eq!(url, "https://example.com");
+                assert_eq!(sha256, "abc123");
+                assert_eq!(path, "bin/jq");
+            }
+            _ => panic!("Expected BrewBottle source"),
         }
     }
 

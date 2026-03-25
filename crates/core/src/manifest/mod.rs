@@ -801,6 +801,16 @@ pub enum SourceConfig {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         extract: Vec<GitHubExtract>,
     },
+    /// Download pre-built binary from Homebrew bottle on ghcr.io
+    #[serde(rename = "brew")]
+    BrewBottle {
+        /// Homebrew formula name
+        formula: String,
+        /// Path to binary inside bottle relative to versioned prefix.
+        /// Defaults to "bin/{formula}" at runtime.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
 }
 
 fn default_rustup_profile() -> String {

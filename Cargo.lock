@@ -1217,6 +1217,7 @@ dependencies = [
  "cuenv-release",
  "cuenv-task-discovery",
  "cuenv-task-graph",
+ "cuenv-tools-brew",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
@@ -1603,6 +1604,22 @@ dependencies = [
  "proptest",
  "tempfile",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "cuenv-tools-brew"
+version = "0.27.1"
+dependencies = [
+ "async-trait",
+ "cuenv-core",
+ "flate2",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tokio",
  "tracing",
 ]
 

@@ -29,6 +29,9 @@ fn create_registry() -> ToolRegistry {
     // Register URL provider
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
+    // Register Homebrew bottle provider
+    registry.register(cuenv_tools_brew::BrewToolProvider::new());
+
     registry
 }
 
@@ -423,6 +426,34 @@ fn lockfile_entry_to_source(
             Some(ToolSource::Url {
                 url: url.to_string(),
                 extract,
+            })
+        }
+        "brew" => {
+            let formula = locked
+                .source
+                .get("formula")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let url = locked
+                .source
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let sha256 = locked
+                .source
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let path = locked
+                .source
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            Some(ToolSource::BrewBottle {
+                formula: formula.to_string(),
+                url: url.to_string(),
+                sha256: sha256.to_string(),
+                path: path.to_string(),
             })
         }
         _ => None,

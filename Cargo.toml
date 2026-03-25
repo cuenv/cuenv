@@ -32,6 +32,7 @@ members = [
     "crates/tools/nix",
     "crates/tools/rustup",
     "crates/tools/url",
+    "crates/tools/brew",
 ]
 
 [workspace.package]
@@ -77,6 +78,7 @@ cuenv-tools-github = { path = "crates/tools/github", version = "0.27.1" }
 cuenv-tools-nix = { path = "crates/tools/nix", version = "0.27.1" }
 cuenv-tools-rustup = { path = "crates/tools/rustup", version = "0.27.1" }
 cuenv-tools-url = { path = "crates/tools/url", version = "0.27.1" }
+cuenv-tools-brew = { path = "crates/tools/brew", version = "0.27.1" }
 schemars = "1.2.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

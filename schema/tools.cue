@@ -77,7 +77,7 @@ package schema
 }
 
 // #Source is a union of all supported tool sources
-#Source: #Oci | #GitHub | #Nix | #Rustup | #URL
+#Source: #Oci | #GitHub | #Nix | #Rustup | #URL | #BrewBottle
 
 // #Oci extracts binaries from OCI container images
 #Oci: {
@@ -162,6 +162,20 @@ package schema
 	components: [...string] | *[]
 	// Additional targets to install (e.g., "x86_64-unknown-linux-gnu")
 	targets: [...string] | *[]
+}
+
+// #BrewBottle downloads pre-built binaries from Homebrew bottles hosted on ghcr.io.
+//
+// Example:
+//   source: #BrewBottle & {
+//       formula: "jq"
+//   }
+#BrewBottle: {
+	type:     "brew"
+	formula!: string
+	// Path to binary inside bottle relative to versioned prefix.
+	// Defaults to "bin/{formula}" at runtime.
+	path?: string
 }
 
 // #URL downloads a tool from an arbitrary HTTP/HTTPS URL.

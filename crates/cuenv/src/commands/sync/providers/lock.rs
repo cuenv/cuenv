@@ -44,6 +44,9 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     // Register URL provider
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
+    // Register Homebrew bottle provider
+    registry.register(cuenv_tools_brew::BrewToolProvider::new());
+
     registry
 }
 
@@ -850,6 +853,25 @@ fn source_config_to_tool_source(
                     "type": "url",
                     "url": resolved_url,
                     "extract": resolved_extract,
+                }),
+            )
+        }
+        SourceConfig::BrewBottle { formula, path } => {
+            let binary_path = path
+                .clone()
+                .unwrap_or_else(|| format!("bin/{}", formula));
+            (
+                "brew".to_string(),
+                ToolSource::BrewBottle {
+                    formula: formula.clone(),
+                    url: String::new(),
+                    sha256: String::new(),
+                    path: binary_path.clone(),
+                },
+                serde_json::json!({
+                    "type": "brew",
+                    "formula": formula,
+                    "path": binary_path,
                 }),
             )
         }

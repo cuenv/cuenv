@@ -1072,6 +1072,34 @@ fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
                 extract,
             })
         }
+        "brew" => {
+            let formula = locked
+                .source
+                .get("formula")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let url = locked
+                .source
+                .get("url")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let sha256 = locked
+                .source
+                .get("sha256")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let path = locked
+                .source
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            Some(ToolSource::BrewBottle {
+                formula: formula.to_string(),
+                url: url.to_string(),
+                sha256: sha256.to_string(),
+                path: path.to_string(),
+            })
+        }
         _ => None,
     }
 }

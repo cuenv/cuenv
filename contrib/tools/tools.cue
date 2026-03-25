@@ -242,6 +242,35 @@ import "github.com/cuenv/cuenv/schema"
 	]
 }
 
+// #Git provides the Git version control system from Homebrew bottles.
+//
+// Usage:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: git: xTools.#Git & {version: "2.48.1"}
+//	}
+#Git: schema.#Tool & {
+	version!: string
+	source:   schema.#BrewBottle & {
+		formula: "git"
+	}
+}
+
+// #Coreutils provides GNU coreutils from Homebrew bottles.
+//
+// Usage:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: coreutils: xTools.#Coreutils & {version: "9.6"}
+//	}
+#Coreutils: schema.#Tool & {
+	version!: string
+	source:   schema.#BrewBottle & {
+		formula: "coreutils"
+		path:    "libexec/gnubin/ls"
+	}
+}
+
 // #Go provides the Go toolchain from GitHub releases.
 // Includes gofmt for formatting Go files.
 //
