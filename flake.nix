@@ -282,6 +282,7 @@
           bun
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
+          openssl.dev
           patchelf
           libgccjit
           mold  # Fast linker for faster link times
