@@ -342,7 +342,7 @@
             echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux ", wrangler patched, mold linker available"}"
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
-          LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
+          LD_LIBRARY_PATH = "${pkgs.openssl.out}/lib:${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
         });
 
         apps = {
