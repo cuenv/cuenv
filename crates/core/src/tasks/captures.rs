@@ -74,8 +74,7 @@ mod tests {
             make_capture(r"Version Preview URL: (.+)", CaptureSource::Stdout),
         )]);
 
-        let stdout =
-            "Uploading...\nVersion Preview URL: https://example.workers.dev\nDone.";
+        let stdout = "Uploading...\nVersion Preview URL: https://example.workers.dev\nDone.";
 
         let result = resolve_captures(&captures, stdout, "");
         assert_eq!(
@@ -92,10 +91,7 @@ mod tests {
         )]);
 
         let result = resolve_captures(&captures, "", "Error code: 42\nFailed.");
-        assert_eq!(
-            result.get("errorCode").map(String::as_str),
-            Some("42")
-        );
+        assert_eq!(result.get("errorCode").map(String::as_str), Some("42"));
     }
 
     #[test]

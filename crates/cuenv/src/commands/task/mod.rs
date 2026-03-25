@@ -484,7 +484,10 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     };
 
     // Build task graph for dependency-aware execution
-    tracing::debug!("Building task graph for task: {}", resolution.graph_root_name);
+    tracing::debug!(
+        "Building task graph for task: {}",
+        resolution.graph_root_name
+    );
     let mut task_graph = TaskGraph::new();
 
     if skip_dependencies {

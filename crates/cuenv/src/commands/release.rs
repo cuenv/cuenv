@@ -1239,9 +1239,9 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
     })?;
 
     // Build a new tree by updating blobs for all modified tracked files
-    let workdir = repo.workdir().ok_or_else(|| {
-        cuenv_core::Error::configuration("Cannot operate in a bare repository")
-    })?;
+    let workdir = repo
+        .workdir()
+        .ok_or_else(|| cuenv_core::Error::configuration("Cannot operate in a bare repository"))?;
 
     let mut editor = repo.edit_tree(head_tree.id).map_err(|e| {
         cuenv_core::Error::execution_with_help(
@@ -1285,7 +1285,10 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
             }
             Err(e) => {
                 return Err(cuenv_core::Error::execution_with_help(
-                    format!("Failed to read file metadata for '{}': {e}", abs_path.display()),
+                    format!(
+                        "Failed to read file metadata for '{}': {e}",
+                        abs_path.display()
+                    ),
                     "Ensure the file is accessible before running release prepare",
                 ));
             }
@@ -1293,14 +1296,19 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
 
         // Skip unchanged files using stat comparison (avoids reading+hashing every file)
         if let Ok(fs_stat) = gix::index::entry::Stat::from_fs(&fs_metadata)
-            && entry.stat.matches(&fs_stat, gix::index::entry::stat::Options::default())
+            && entry
+                .stat
+                .matches(&fs_stat, gix::index::entry::stat::Options::default())
         {
             continue;
         }
 
         let metadata = abs_path.symlink_metadata().map_err(|e| {
             cuenv_core::Error::execution_with_help(
-                format!("Failed to read file metadata for '{}': {e}", abs_path.display()),
+                format!(
+                    "Failed to read file metadata for '{}': {e}",
+                    abs_path.display()
+                ),
                 "Ensure the file is accessible before running release prepare",
             )
         })?;
@@ -1339,17 +1347,23 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
             EntryKind::Blob
         };
 
-        editor.upsert(path_str.as_ref(), kind, blob_id).map_err(|e| {
-            cuenv_core::Error::execution_with_help(
-                format!("Failed to update tree entry: {e}"),
-                "Tree editing failed",
-            )
-        })?;
+        editor
+            .upsert(path_str.as_ref(), kind, blob_id)
+            .map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to update tree entry: {e}"),
+                    "Tree editing failed",
+                )
+            })?;
     }
 
     // Walk the worktree for new (untracked) files to match `git add -A` semantics.
     // Uses ignore::WalkBuilder which respects .gitignore rules.
-    for dir_entry in ignore::WalkBuilder::new(workdir).hidden(false).build().flatten() {
+    for dir_entry in ignore::WalkBuilder::new(workdir)
+        .hidden(false)
+        .build()
+        .flatten()
+    {
         let path = dir_entry.path();
         if !path.is_file() && !path.is_symlink() {
             continue;
@@ -1405,12 +1419,14 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         };
 
         let rel_str = rel_path.to_string_lossy();
-        editor.upsert(rel_str.as_ref(), kind, blob_id).map_err(|e| {
-            cuenv_core::Error::execution_with_help(
-                format!("Failed to add new file '{rel_str}' to tree: {e}"),
-                "Tree editing failed",
-            )
-        })?;
+        editor
+            .upsert(rel_str.as_ref(), kind, blob_id)
+            .map_err(|e| {
+                cuenv_core::Error::execution_with_help(
+                    format!("Failed to add new file '{rel_str}' to tree: {e}"),
+                    "Tree editing failed",
+                )
+            })?;
     }
 
     let new_tree_id = editor.write().map_err(|e| {
@@ -1440,16 +1456,14 @@ fn create_branch_and_commit(root: &Path, branch: &str, message: &str) -> cuenv_c
         change: gix::refs::transaction::Change::Update {
             log: gix::refs::transaction::LogChange::default(),
             expected: PreviousValue::Any,
-            new: gix::refs::Target::Symbolic(
-                branch_ref
-                    .try_into()
-                    .map_err(|e: gix::validate::reference::name::Error| {
-                        cuenv_core::Error::execution_with_help(
-                            format!("Invalid branch name '{branch}': {e}"),
-                            "Use a valid git branch name",
-                        )
-                    })?,
-            ),
+            new: gix::refs::Target::Symbolic(branch_ref.try_into().map_err(
+                |e: gix::validate::reference::name::Error| {
+                    cuenv_core::Error::execution_with_help(
+                        format!("Invalid branch name '{branch}': {e}"),
+                        "Use a valid git branch name",
+                    )
+                },
+            )?),
         },
         name: "HEAD"
             .try_into()

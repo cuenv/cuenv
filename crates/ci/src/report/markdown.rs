@@ -281,7 +281,9 @@ mod tests {
         assert!(md.contains("### Annotations"));
         assert!(md.contains("Preview URL"));
         // URLs should be auto-linked
-        assert!(md.contains("[https://preview.example.workers.dev](https://preview.example.workers.dev)"));
+        assert!(md.contains(
+            "[https://preview.example.workers.dev](https://preview.example.workers.dev)"
+        ));
         // Non-URL values should be plain
         assert!(md.contains("| Version | 1.2.3 |"));
     }

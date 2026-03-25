@@ -369,7 +369,12 @@ async fn execute_project_pipeline(
                             &output.stderr,
                         ),
                     ));
-                    (TaskStatus::Failed, Some(output.exit_code), None, task_captures)
+                    (
+                        TaskStatus::Failed,
+                        Some(output.exit_code),
+                        None,
+                        task_captures,
+                    )
                 }
             }
             Err(e) => {
@@ -507,10 +512,7 @@ fn resolve_annotations(
                     cuenv_capture,
                 } => {
                     if !cuenv_capture_ref {
-                        tracing::warn!(
-                            label,
-                            "Annotation has cuenvCaptureRef=false, skipping"
-                        );
+                        tracing::warn!(label, "Annotation has cuenvCaptureRef=false, skipping");
                         return None;
                     }
                     all_captures
