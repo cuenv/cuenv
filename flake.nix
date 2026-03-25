@@ -321,10 +321,12 @@
               ${pkgs.patchelf}/bin/patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$__patchTarget"
             fi
 
-            # Use mold linker for faster linking (local dev only).
-            # In CI, mold can't handle LTO objects from some crates.
+            # Use clang+mold linker for faster linking (local dev only).
+            # In CI, clang can't handle LTO objects from some crates (alloca).
             if [ -z "''${CI:-}" ]; then
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"
               export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="clang"
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
             fi
             ''}
@@ -339,10 +341,6 @@
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
-          # Use mold linker for faster linking on Linux (local dev only).
-          # In CI, mold can't handle LTO objects from some crates, so skip it.
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
         });
 
         apps = {
