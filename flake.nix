@@ -282,6 +282,7 @@
           bun
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
+          gcc   # Provides cc linker for cargo
           openssl.dev
           patchelf
           libgccjit
