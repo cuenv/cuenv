@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn rewrites_placeholders_in_task_args_and_env() {
-        let mut task = Task {
+        let task = Task {
             command: "echo".into(),
             args: vec!["cuenv:ref:tmpdir:stdout".into()],
             env: {
