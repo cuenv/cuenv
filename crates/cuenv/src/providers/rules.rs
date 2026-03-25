@@ -386,7 +386,16 @@ fn sync_editorconfig(
         .header(CUENV_HEADER)
         .dry_run(dry_run);
 
-    for (pattern, section) in &config.sections {
+    // Sort sections deterministically: "*" (root) first, then alphabetical.
+    let mut sorted_keys: Vec<&String> = config.sections.keys().collect();
+    sorted_keys.sort_by(|a, b| match (a.as_str(), b.as_str()) {
+        ("*", _) => std::cmp::Ordering::Less,
+        (_, "*") => std::cmp::Ordering::Greater,
+        (a, b) => a.cmp(b),
+    });
+
+    for pattern in sorted_keys {
+        let section = &config.sections[pattern];
         let mut section_builder = BuilderSection::new();
 
         if let Some(ref style) = section.indent_style {

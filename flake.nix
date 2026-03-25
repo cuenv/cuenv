@@ -320,8 +320,15 @@
             if [[ -f "$__patchTarget" ]]; then
               ${pkgs.patchelf}/bin/patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$__patchTarget"
             fi
+
+            # Use mold linker for faster linking (local dev only).
+            # In CI, mold can't handle LTO objects from some crates.
+            if [ -z "''${CI:-}" ]; then
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+            fi
             ''}
-            
+
             cd ..
 
             echo "cuenv development environment ready!"
@@ -332,11 +339,10 @@
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
-          # Use mold linker for faster linking on Linux
+          # Use mold linker for faster linking on Linux (local dev only).
+          # In CI, mold can't handle LTO objects from some crates, so skip it.
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
         });
 
         apps = {
