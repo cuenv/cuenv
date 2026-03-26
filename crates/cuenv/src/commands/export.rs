@@ -625,7 +625,7 @@ pub async fn get_environment_with_hooks(
     let timeout_seconds = std::env::var("CUENV_HOOK_TIMEOUT")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(120);
+        .unwrap_or(600);
     let is_tty = std::io::stderr().is_terminal();
 
     loop {
