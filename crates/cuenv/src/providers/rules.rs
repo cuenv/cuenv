@@ -386,6 +386,8 @@ fn sync_editorconfig(
         .header(CUENV_HEADER)
         .dry_run(dry_run);
 
+    // BTreeMap ensures deterministic alphabetical ordering.
+    // "*" sorts before any letter/digit, so the root section comes first.
     for (pattern, section) in &config.sections {
         let mut section_builder = BuilderSection::new();
 

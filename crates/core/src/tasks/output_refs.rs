@@ -226,10 +226,7 @@ fn try_extract_passthrough(value: &serde_json::Value, env_key: &str) -> Option<S
         return None;
     }
 
-    let var_name = obj
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(env_key);
+    let var_name = obj.get("name").and_then(|v| v.as_str()).unwrap_or(env_key);
 
     Some(format!("{PASSTHROUGH_PREFIX}{var_name}"))
 }

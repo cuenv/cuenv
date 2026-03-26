@@ -5,7 +5,10 @@
 // Build scripts are expected to panic/expect on failure - no runtime recovery needed
 #![allow(clippy::panic, clippy::expect_used, clippy::too_many_lines)]
 
+use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,16 +19,27 @@ fn main() {
         return;
     }
 
-    // Track all Go source files and module files for rebuild detection
-    println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=bridge.go");
-    println!("cargo:rerun-if-changed=bridge_test.go");
-    println!("cargo:rerun-if-changed=bridge.h");
-    println!("cargo:rerun-if-changed=go.mod");
-    println!("cargo:rerun-if-changed=go.sum");
+    let manifest_dir =
+        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+
+    // Track all Go source files and module files for rebuild detection.
+    for path in [
+        "build.rs",
+        "bridge.go",
+        "bridge_test.go",
+        "bridge.h",
+        "go.mod",
+        "go.sum",
+    ] {
+        println!(
+            "cargo:rerun-if-changed={}",
+            manifest_dir.join(path).display()
+        );
+    }
+    println!("cargo:rerun-if-env-changed=CUE_BRIDGE_PATH");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set by cargo"));
-    let bridge_dir = PathBuf::from(".");
+    let bridge_dir = manifest_dir;
 
     // Determine target triple early for platform-specific behavior
     let target_triple = env::var("TARGET")
@@ -64,17 +78,37 @@ fn main() {
         Err(e) => println!("Go not available: {e}"),
     }
 
-    // Try to use prebuilt artifacts first (produced by Nix/flake builds)
-    let workspace_root =
-        PathBuf::from(env::var("CARGO_WORKSPACE_DIR").unwrap_or_else(|_| "../..".to_string()));
+    // Try to use prebuilt artifacts first (produced by Nix/flake builds), but
+    // force a local rebuild when the tracked Go sources changed since the last
+    // successful build in this OUT_DIR. This avoids stale prebuilt archives when
+    // iterating on bridge.go.
+    let workspace_root = env::var("CARGO_WORKSPACE_DIR").map_or_else(
+        |_| {
+            bridge_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .expect("Failed to derive workspace root from crate manifest directory")
+                .to_path_buf()
+        },
+        PathBuf::from,
+    );
+    let source_fingerprint = bridge_source_fingerprint(&bridge_dir);
+    let fingerprint_path = out_dir.join("libcue_bridge.fingerprint");
+    let sources_changed = bridge_sources_changed(&fingerprint_path, &source_fingerprint);
 
-    if !try_use_prebuilt(
-        lib_filename,
-        &bridge_dir,
-        &workspace_root,
-        &output_path,
-        &header_path,
-    ) {
+    if sources_changed {
+        println!("cargo:warning=Go bridge sources changed; rebuilding bridge from source");
+    }
+
+    if sources_changed
+        || !try_use_prebuilt(
+            lib_filename,
+            &bridge_dir,
+            &workspace_root,
+            &output_path,
+            &header_path,
+        )
+    {
         build_go_bridge(&bridge_dir, &output_path, &target_triple);
 
         // Verify the library was actually created
@@ -86,7 +120,41 @@ fn main() {
         println!("Successfully created library at: {}", output_path.display());
     }
 
+    write_bridge_fingerprint(&fingerprint_path, &source_fingerprint);
     configure_rustc_linking(&target_triple, &out_dir);
+}
+
+fn bridge_source_fingerprint(bridge_dir: &Path) -> String {
+    let mut hasher = DefaultHasher::new();
+
+    for path in tracked_go_paths(bridge_dir) {
+        path.hash(&mut hasher);
+        if let Ok(bytes) = fs::read(&path) {
+            bytes.hash(&mut hasher);
+        }
+    }
+
+    format!("{:016x}", hasher.finish())
+}
+
+fn bridge_sources_changed(fingerprint_path: &Path, source_fingerprint: &str) -> bool {
+    fs::read_to_string(fingerprint_path)
+        .map(|existing| existing != source_fingerprint)
+        .unwrap_or(false)
+}
+
+fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) {
+    fs::write(fingerprint_path, source_fingerprint)
+        .unwrap_or_else(|e| panic!("Failed to write bridge fingerprint: {e}"));
+}
+
+fn tracked_go_paths(bridge_dir: &Path) -> [PathBuf; 4] {
+    [
+        bridge_dir.join("bridge.go"),
+        bridge_dir.join("bridge_test.go"),
+        bridge_dir.join("go.mod"),
+        bridge_dir.join("go.sum"),
+    ]
 }
 
 fn try_use_prebuilt(
@@ -96,16 +164,9 @@ fn try_use_prebuilt(
     output_path: &PathBuf,
     header_path: &PathBuf,
 ) -> bool {
-    // Get modification times of all Go source files
-    // If any source is newer than a prebuilt library, we must rebuild
-    let go_sources = [
-        bridge_dir.join("bridge.go"),
-        bridge_dir.join("bridge_test.go"),
-        bridge_dir.join("go.mod"),
-        bridge_dir.join("go.sum"),
-    ];
-
-    let newest_source_time = go_sources
+    // Get modification times of all Go source files.
+    // If any source is newer than a prebuilt library, we must rebuild.
+    let newest_source_time = tracked_go_paths(bridge_dir)
         .iter()
         .filter_map(|p| p.metadata().ok())
         .filter_map(|m| m.modified().ok())

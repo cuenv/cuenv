@@ -882,6 +882,22 @@ async fn compile_and_execute_ir(
             }
         }
 
+        // Ensure the running cuenv binary is on PATH so tasks that invoke
+        // `cuenv` (e.g., ci.sync-check) can find it even when hooks replace
+        // PATH entirely (e.g., NixFlake).
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(exe_dir) = exe.parent()
+        {
+            let exe_dir_str = exe_dir.to_string_lossy();
+            if let Some(existing_path) = env.get("PATH") {
+                if !existing_path.contains(exe_dir_str.as_ref()) {
+                    env.insert("PATH".to_string(), format!("{exe_dir_str}:{existing_path}"));
+                }
+            } else {
+                env.insert("PATH".to_string(), exe_dir_str.to_string());
+            }
+        }
+
         if !env.contains_key("HOME")
             && let Ok(home) = std::env::var("HOME")
         {
