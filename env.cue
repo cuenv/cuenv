@@ -7,6 +7,7 @@ import (
 	xBun "github.com/cuenv/cuenv/contrib/bun"
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
+	xNix "github.com/cuenv/cuenv/contrib/nix"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
 	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
@@ -94,7 +95,7 @@ schema.#Project & {
 	// Hooks & Formatters
 	// ============================================================================
 
-	hooks: onEnter: tools: schema.#ToolsActivate
+	hooks: onEnter: nix: xNix.#NixFlake
 
 	formatters: rust: {edition: "2024"}
 
@@ -102,8 +103,8 @@ schema.#Project & {
 	// Configuration
 	// ============================================================================
 
-	// Build cuenv from source using native Rust/Go toolchains
-	// Uses native setup instead of nix to avoid sccache env var issues
+	// Build cuenv from source using native Rust/Go toolchains.
+	// The NixFlake onEnter hook provides system tools (cc, git, etc.) for tasks.
 	config: ci: cuenv: {source: "native", version: "self"}
 
 	// ============================================================================
@@ -139,12 +140,12 @@ schema.#Project & {
 		]
 
 		provider: github: {
-			runner: "blacksmith-8vcpu-ubuntu-2404"
+			runner: "ubuntu-latest"
 
 			runners: arch: {
-				"linux-x64":    "namespace-profile-cuenv-linux-x86"
-				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
-				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
+				"linux-x64":    "ubuntu-latest"
+				"linux-arm64":  "ubuntu-24.04-arm"
+				"darwin-arm64": "macos-latest"
 			}
 
 			cachix: name: "cuenv"

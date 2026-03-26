@@ -454,7 +454,7 @@ pub struct RulesOwners {
 pub struct EditorConfig {
     /// File-pattern specific settings.
     #[serde(flatten)]
-    pub sections: HashMap<String, EditorConfigSection>,
+    pub sections: std::collections::BTreeMap<String, EditorConfigSection>,
 }
 
 /// A section in an EditorConfig file.

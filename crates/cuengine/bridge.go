@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"unsafe"
@@ -764,9 +765,9 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			continue
 		}
 
-		// Inject _name into all tasks so that computed output ref fields
-		// (stdout, stderr, exitCode) resolve to concrete values.
-		v = injectTaskNames(v, ctx)
+		// Inject sequence item _name fields so that computed output ref fields
+		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
+		v = injectTaskNames(v)
 
 		// Check if this is a Project (has required "name" field) vs Base (no name)
 		isProject := false
@@ -900,29 +901,28 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 }
 
 // injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
-// _name field on every #Task node. This causes computed fields like stdout,
-// stderr, and exitCode (which reference _name) to resolve to concrete values.
-//
-// The function handles:
-//   - Named tasks:     tasks.build       -> _name = "build"
-//   - Group children:  tasks.check.lint  -> _name = "check.lint"
-//   - Sequence items:  tasks.pipeline[0] -> _name = "pipeline[0]"
-func injectTaskNames(v cue.Value, ctx *cue.Context) cue.Value {
+// _name field on task nodes that live inside sequences. Named tasks and group
+// children derive _name directly in schema via label aliases; sequence items
+// still need bridge-side injection because CUE does not yet support aliases on
+// list elements.
+func injectTaskNames(v cue.Value) cue.Value {
 	tasksVal := v.LookupPath(cue.ParsePath("tasks"))
 	if !tasksVal.Exists() || tasksVal.Err() != nil {
 		return v
 	}
 
-	return injectTaskNamesRecursive(v, tasksVal, "", ctx)
+	return injectTaskNamesRecursive(v, tasksVal, "")
 }
 
-// injectTaskNamesRecursive walks task nodes and fills _name at each level.
-func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string, ctx *cue.Context) cue.Value {
+// injectTaskNamesRecursive walks task nodes and fills _name for sequence items.
+func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue.Value {
 	switch node.Kind() {
 	case cue.StructKind:
 		// Check if this struct looks like a Task (has "command" or "script" field)
 		if isTaskShaped(node) {
-			root = fillTaskName(root, prefix, ctx)
+			if strings.Contains(prefix, "[") {
+				root = fillTaskName(root, prefix)
+			}
 			return root
 		}
 
@@ -941,7 +941,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string, ctx
 					if prefix != "" {
 						childPrefix = prefix + "." + label
 					}
-					root = injectTaskNamesRecursive(root, iter.Value(), childPrefix, ctx)
+					root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
 				}
 				return root
 			}
@@ -955,7 +955,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string, ctx
 			if prefix != "" {
 				childPrefix = prefix + "." + label
 			}
-			root = injectTaskNamesRecursive(root, iter.Value(), childPrefix, ctx)
+			root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
 		}
 
 	case cue.ListKind:
@@ -963,7 +963,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string, ctx
 		list, _ := node.List()
 		for i := 0; list.Next(); i++ {
 			childPrefix := fmt.Sprintf("%s[%d]", prefix, i)
-			root = injectTaskNamesRecursive(root, list.Value(), childPrefix, ctx)
+			root = injectTaskNamesRecursive(root, list.Value(), childPrefix)
 		}
 	}
 
@@ -981,35 +981,71 @@ func isTaskShaped(v cue.Value) bool {
 	return scr.Exists() && scr.Err() == nil
 }
 
-// fillTaskName fills the _name hidden field on a task at the given path.
-func fillTaskName(root cue.Value, taskName string, ctx *cue.Context) cue.Value {
+// fillTaskName fills the _name hidden field on a sequence task at the given path.
+func fillTaskName(root cue.Value, taskName string) cue.Value {
 	if taskName == "" {
 		return root
 	}
-	// Build the path using explicit selectors to handle labels with hyphens.
-	// cue.ParsePath("tasks.eval.env-gen") would misparse "env-gen" as a
-	// subtraction expression. Using cue.Str() ensures each segment is treated
-	// as a string label.
-	sels := []cue.Selector{cue.Str("tasks")}
-	for _, part := range strings.Split(taskName, ".") {
-		sels = append(sels, cue.Str(part))
+
+	namePath, ok := taskFillPath(taskName)
+	if !ok {
+		return root
 	}
-	sels = append(sels, cue.Hid("_name", schemaPackagePath))
-	namePath := cue.MakePath(sels...)
 
 	return root.FillPath(namePath, taskName)
+}
+
+// taskFillPath converts a task path like "pipeline[0]" or
+// "release-check[0].verify" into a CUE FillPath that targets tasks.<path>._name.
+func taskFillPath(taskName string) (cue.Path, bool) {
+	selectors := []cue.Selector{cue.Str("tasks")}
+
+	for i := 0; i < len(taskName); {
+		labelStart := i
+		for i < len(taskName) && taskName[i] != '.' && taskName[i] != '[' {
+			i++
+		}
+		if labelStart != i {
+			selectors = append(selectors, cue.Str(taskName[labelStart:i]))
+		}
+
+		for i < len(taskName) && taskName[i] == '[' {
+			i++
+			indexStart := i
+			for i < len(taskName) && taskName[i] != ']' {
+				i++
+			}
+			if i == len(taskName) || indexStart == i {
+				return cue.Path{}, false
+			}
+
+			index, err := strconv.Atoi(taskName[indexStart:i])
+			if err != nil || index < 0 {
+				return cue.Path{}, false
+			}
+			selectors = append(selectors, cue.Index(index))
+			i++
+		}
+
+		if i == len(taskName) {
+			break
+		}
+		if taskName[i] != '.' {
+			return cue.Path{}, false
+		}
+		i++
+		if i == len(taskName) {
+			return cue.Path{}, false
+		}
+	}
+
+	selectors = append(selectors, cue.Hid("_name", schemaPackagePath))
+	return cue.MakePath(selectors...), true
 }
 
 // schemaPackagePath is the CUE import path for the schema package.
 // Hidden fields (_name) are scoped to their defining package, so FillPath
 // needs the full package path to target them.
 const schemaPackagePath = "github.com/cuenv/cuenv/schema"
-
-// appendHiddenField appends the hidden _name selector to a CUE path.
-func appendHiddenField(base cue.Path) cue.Path {
-	sels := base.Selectors()
-	sels = append(sels, cue.Hid("_name", schemaPackagePath))
-	return cue.MakePath(sels...)
-}
 
 func main() {}

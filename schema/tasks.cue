@@ -69,20 +69,28 @@ package schema
 // Single Executable Task
 // =============================================================================
 
+// Hidden helper fields used to derive fully-qualified task names from label aliases.
+// Named tasks and group children get these from schema templates; sequence items
+// still rely on the Go bridge because CUE does not yet support aliases on list
+// elements.
 #Task: {
+	_cuenvPrefix: string | *""
+	_cuenvSelf:   string | *""
+
 	// Disallow 'type' field to prevent matching #TaskGroup pattern
 	type?: _|_
 
-	// Task name - injected by Go bridge via FillPath before JSON serialization.
-	// Optional with default so CUE evaluation succeeds even without bridge injection.
-	// The default empty string produces refs that won't match any real task at runtime.
-	_name: string | *""
+	// Fully-qualified task name used by runtime output references.
+	// For named tasks and group children this is derived in schema via label aliases.
+	// The Go bridge fills sequence item names (pipeline[0], etc.) before JSON serialization.
+	// The default empty string preserves evaluation when no name has been injected yet.
+	_name: string | *(_cuenvPrefix + _cuenvSelf)
 
 	// Runtime output references - resolve to #TaskOutputRef structs.
 	// Other tasks can reference these (e.g., tasks.tmpdir.stdout) to pass
 	// runtime outputs between tasks. Resolved by Rust executor, not CUE.
-	stdout:   #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stdout"}
-	stderr:   #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stderr"}
+	stdout: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stdout"}
+	stderr: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "stderr"}
 	exitCode: #TaskOutputRef & {cuenvTask: _name, cuenvOutput: "exitCode"}
 
 	// Command-based execution
@@ -145,6 +153,12 @@ package schema
 // =============================================================================
 
 #TaskGroup: {
+	_cuenvPrefix: string | *""
+	_cuenvSelf:   string | *""
+
+	// Fully-qualified group path used to derive child task names.
+	_name: string | *(_cuenvPrefix + _cuenvSelf)
+
 	// Type discriminator - must be "group"
 	type: "group"
 
@@ -157,8 +171,15 @@ package schema
 	// Human-readable description
 	description?: string
 
-	// Named children - all run concurrently (as direct fields)
-	{[!~"^(type|dependsOn|maxConcurrency|description)$"]: #TaskNode}
+	// Named children - all run concurrently (as direct fields).
+	// Task and group children derive their fully-qualified names from the
+	// current group's _name. Sequence children keep their name context in the
+	// bridge, which can see list indexes.
+	{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
+		_cuenvPrefix: _name + "."
+		_cuenvSelf:   childName
+	}) | #TaskSequence
+	}
 }
 
 // =============================================================================

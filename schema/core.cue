@@ -15,7 +15,13 @@ package schema
 	hooks?:   #Hooks
 	ci?:      #CI
 	release?: #Release
-	tasks?: [string]: #TaskNode
+	// Named tasks and groups derive fully-qualified runtime names from their
+	// field labels. Sequences are handled by the Go bridge because list element
+	// aliases are not implemented in CUE yet.
+	tasks?: [taskName=string]: ((#Task | #TaskGroup) & {
+		_cuenvPrefix: ""
+		_cuenvSelf:   taskName
+	}) | #TaskSequence
 	codegen?: #Codegen
 })
 
