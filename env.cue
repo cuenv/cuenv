@@ -140,12 +140,12 @@ schema.#Project & {
 		]
 
 		provider: github: {
-			runner: "blacksmith-8vcpu-ubuntu-2404"
+			runner: "ubuntu-latest"
 
 			runners: arch: {
-				"linux-x64":    "namespace-profile-cuenv-linux-x86"
-				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
-				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
+				"linux-x64":    "ubuntu-latest"
+				"linux-arm64":  "ubuntu-24.04-arm"
+				"darwin-arm64": "macos-latest"
 			}
 
 			cachix: name: "cuenv"

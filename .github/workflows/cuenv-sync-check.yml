@@ -31,7 +31,7 @@ permissions:
 jobs:
   cuenv-sync-check:
     name: cuenv-sync-check
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4
