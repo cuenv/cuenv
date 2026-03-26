@@ -93,7 +93,7 @@
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
-          vendorHash = "sha256-tHAcwRsNWNwPUkTlQT8mw3GNKsMFCMCKwdSq3KNad80=";
+          vendorHash = "sha256-UD/YJvkzTVVI2gx8LsY8DSKaNIYcDsx+RrtzgryUec8=";
           go = pkgs.go_1_24;
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
@@ -282,6 +282,7 @@
           bun
         ] ++ lib.optionals stdenv.isLinux [
           cargo-llvm-cov
+          gcc   # Provides cc linker for cargo
           patchelf
           libgccjit
           mold  # Fast linker for faster link times
@@ -302,12 +303,12 @@
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           CUE_BRIDGE_PATH = "${cue-bridge}";
 
-          # sccache configuration for faster rebuilds
-          RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
-          SCCACHE_DIR = "$HOME/.cache/sccache";
-
           shellHook = ''
             ${setupBridge}
+
+            # sccache configuration — only set if not already provided (e.g. by CI)
+            export RUSTC_WRAPPER="''${RUSTC_WRAPPER:-${pkgs.sccache}/bin/sccache}"
+            export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
 
             # Install docs dependencies
             cd docs
@@ -319,8 +320,17 @@
             if [[ -f "$__patchTarget" ]]; then
               ${pkgs.patchelf}/bin/patchelf --set-interpreter ${pkgs.glibc}/lib/ld-linux-x86-64.so.2 "$__patchTarget"
             fi
+
+            # Use clang+mold linker for faster linking (local dev only).
+            # In CI, clang can't handle LTO objects from some crates (alloca).
+            if [ -z "''${CI:-}" ]; then
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="clang"
+              export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="clang"
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=mold"
+            fi
             ''}
-            
+
             cd ..
 
             echo "cuenv development environment ready!"
@@ -331,11 +341,6 @@
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           LD_LIBRARY_PATH = "${pkgs.libgccjit}/lib:$LD_LIBRARY_PATH";
-          # Use mold linker for faster linking on Linux
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "clang";
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "-C link-arg=-fuse-ld=mold";
         });
 
         apps = {

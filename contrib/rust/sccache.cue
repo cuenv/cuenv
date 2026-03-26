@@ -44,7 +44,7 @@ import "github.com/cuenv/cuenv/schema"
 			priority:  6
 			dependsOn: ["setup-sccache"]
 			shell:     true
-			command:   "echo \"SCCACHE_DIR=${{ runner.temp }}/sccache\" >> $GITHUB_ENV"
+			command:   "echo \"SCCACHE_DIR=${{ runner.temp }}/sccache\" >> $GITHUB_ENV && echo \"RUSTC_WRAPPER=$SCCACHE_PATH\" >> $GITHUB_ENV"
 		},
 	]
 }
