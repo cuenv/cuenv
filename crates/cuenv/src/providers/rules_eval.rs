@@ -112,7 +112,8 @@ fn prepare_isolated_cue(source: &str) -> String {
         if trimmed.starts_with("rules.#") {
             // If the line is just the constraint (with optional trailing &),
             // skip it entirely
-            let without_prefix = trimmed.trim_start_matches(|c: char| c.is_alphanumeric() || c == '.' || c == '#');
+            let without_prefix =
+                trimmed.trim_start_matches(|c: char| c.is_alphanumeric() || c == '.' || c == '#');
             let remainder = without_prefix.trim();
             if remainder.is_empty() || remainder == "&" {
                 continue;

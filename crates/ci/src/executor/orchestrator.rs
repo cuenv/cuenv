@@ -891,10 +891,7 @@ async fn compile_and_execute_ir(
             let exe_dir_str = exe_dir.to_string_lossy();
             if let Some(existing_path) = env.get("PATH") {
                 if !existing_path.contains(exe_dir_str.as_ref()) {
-                    env.insert(
-                        "PATH".to_string(),
-                        format!("{exe_dir_str}:{existing_path}"),
-                    );
+                    env.insert("PATH".to_string(), format!("{exe_dir_str}:{existing_path}"));
                 }
             } else {
                 env.insert("PATH".to_string(), exe_dir_str.to_string());
