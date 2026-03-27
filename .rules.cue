@@ -12,6 +12,7 @@ rules.#DirectoryRules & {
             ".cargo",
             ".cuenv",
             ".test",
+            ".worktrees",
             "*.vsix",
             "bdd_test_runs",
             "crates/cuengine/vendor",
