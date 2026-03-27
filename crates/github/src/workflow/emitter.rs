@@ -11,7 +11,7 @@ use crate::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref}
 use cuenv_ci::emitter::{Emitter, EmitterError, EmitterResult};
 use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task, TriggerCondition};
 use indexmap::IndexMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// GitHub Actions workflow emitter
 ///
@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// | `pipeline.name` | Workflow `name:` |
 /// | `pipeline.trigger.branch` | `on.push.branches` / `on.pull_request.branches` |
 /// | `task.id` | Job key |
-/// | `task.command` | Step with `run: <task command>` |
+/// | `task.command` | Step with `run: cuenv task {task.id}` or the direct IR command |
 /// | `task.depends_on` | Job `needs:` |
 /// | `task.manual_approval` | Job with `environment:` |
 /// | `task.concurrency_group` | Job-level `concurrency:` |
@@ -51,6 +51,47 @@ pub struct GitHubActionsEmitter {
     pub approval_environment: String,
     /// Configured permissions from the manifest
     pub configured_permissions: HashMap<String, String>,
+}
+
+/// How a regular GitHub Actions job should execute its main task.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskExecution {
+    /// Run the task through `cuenv task ... --skip-dependencies`.
+    #[default]
+    Orchestrated,
+    /// Run the task's IR command directly as a GitHub Actions step.
+    Direct,
+}
+
+/// Options for building a simple GitHub Actions job.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SimpleJobOptions<'a> {
+    /// Optional environment name for orchestrated execution.
+    pub environment: Option<&'a String>,
+    /// Optional working directory for monorepo jobs.
+    pub project_path: Option<&'a str>,
+    /// Whether to run the task through cuenv or directly.
+    pub execution: TaskExecution,
+}
+
+impl<'a> SimpleJobOptions<'a> {
+    #[must_use]
+    pub fn orchestrated(environment: Option<&'a String>, project_path: Option<&'a str>) -> Self {
+        Self {
+            environment,
+            project_path,
+            execution: TaskExecution::Orchestrated,
+        }
+    }
+
+    #[must_use]
+    pub fn direct(project_path: Option<&'a str>) -> Self {
+        Self {
+            environment: None,
+            project_path,
+            execution: TaskExecution::Direct,
+        }
+    }
 }
 
 impl Default for GitHubActionsEmitter {
@@ -80,6 +121,15 @@ impl GitHubActionsEmitter {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn stage_renderer(&self) -> GitHubStageRenderer {
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
+        renderer
     }
 
     /// Create an emitter from a `GitHubConfig` manifest configuration.
@@ -487,8 +537,10 @@ impl GitHubActionsEmitter {
             let mut job = self.build_simple_job(
                 task,
                 ir,
-                ir.pipeline.environment.as_ref(),
-                None, // project_path - not used in single-project mode
+                SimpleJobOptions::orchestrated(
+                    ir.pipeline.environment.as_ref(),
+                    None, // project_path - not used in single-project mode
+                ),
             );
 
             // Apply additional job configuration from task
@@ -537,6 +589,40 @@ impl GitHubActionsEmitter {
     // Matrix and Artifact Job Building Methods
     // =========================================================================
 
+    fn skipped_setup_task_ids(
+        ir: &IntermediateRepresentation,
+        execution: TaskExecution,
+    ) -> HashSet<String> {
+        if execution != TaskExecution::Direct {
+            return HashSet::new();
+        }
+
+        let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
+        let mut skipped: HashSet<String> = setup_tasks
+            .iter()
+            .filter(|task| task.contributor.as_deref() == Some("cuenv"))
+            .map(|task| task.id.clone())
+            .collect();
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            for task in &setup_tasks {
+                if skipped.contains(&task.id) {
+                    continue;
+                }
+
+                if task.depends_on.iter().any(|dep| skipped.contains(dep)) {
+                    skipped.insert(task.id.clone());
+                    changed = true;
+                }
+            }
+        }
+
+        skipped
+    }
+
     /// Render phase tasks (bootstrap + setup) into GitHub Actions steps.
     ///
     /// Returns a tuple of:
@@ -549,28 +635,12 @@ impl GitHubActionsEmitter {
     pub fn render_phase_steps(
         &self,
         ir: &IntermediateRepresentation,
+        execution: TaskExecution,
     ) -> (Vec<Step>, IndexMap<String, String>) {
-        self.render_phase_steps_with_cuenv(ir, true)
-    }
-
-    /// Render phase tasks (bootstrap + setup) into GitHub Actions steps.
-    ///
-    /// When `include_cuenv_setup` is false, setup tasks that require a bootstrapped
-    /// cuenv binary are omitted. This allows expanded workflows whose regular tasks
-    /// execute direct IR commands to skip the expensive `nix build .#cuenv` bootstrap.
-    #[must_use]
-    pub fn render_phase_steps_with_cuenv(
-        &self,
-        ir: &IntermediateRepresentation,
-        include_cuenv_setup: bool,
-    ) -> (Vec<Step>, IndexMap<String, String>) {
-        let mut renderer = GitHubStageRenderer::new()
-            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
-        if let Some(name) = &self.cachix_name {
-            renderer = renderer.with_cachix(name.clone());
-        }
+        let renderer = self.stage_renderer();
         let mut steps = Vec::new();
         let mut secret_env_vars = IndexMap::new();
+        let skipped_setup_task_ids = Self::skipped_setup_task_ids(ir, execution);
 
         // Render bootstrap phase tasks (e.g., Nix installation)
         let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
@@ -579,7 +649,7 @@ impl GitHubActionsEmitter {
         // Render setup phase tasks (e.g., cuenv, 1Password, Cachix)
         // Also collect env vars from setup tasks that need to be passed to task steps
         for task in ir.sorted_phase_tasks(BuildStage::Setup) {
-            if !include_cuenv_setup && Self::phase_task_requires_cuenv(task) {
+            if skipped_setup_task_ids.contains(&task.id) {
                 continue;
             }
             let step = renderer.render_task(task);
@@ -623,7 +693,7 @@ impl GitHubActionsEmitter {
     /// This method creates a single job that:
     /// 1. Checks out the repository
     /// 2. Runs bootstrap/setup phase tasks (Nix, cuenv, 1Password, etc.)
-    /// 3. Runs the task with `--skip-dependencies` (since CI handles job dependencies)
+    /// 3. Runs the task either directly or with `--skip-dependencies`
     ///
     /// Use `build_matrix_jobs` for tasks with matrix configurations.
     ///
@@ -631,18 +701,15 @@ impl GitHubActionsEmitter {
     ///
     /// * `task` - IR task to build job for
     /// * `ir` - Intermediate representation containing phase tasks
-    /// * `environment` - Optional environment name for the task
-    /// * `project_path` - Optional working directory (for monorepo projects)
+    /// * `options` - Execution mode, optional environment, and working directory
     #[must_use]
     pub fn build_simple_job(
         &self,
         task: &Task,
         ir: &IntermediateRepresentation,
-        environment: Option<&String>,
-        project_path: Option<&str>,
+        options: SimpleJobOptions<'_>,
     ) -> Job {
         let mut steps = Vec::new();
-        let requires_cuenv = Self::regular_job_requires_cuenv(ir, task);
 
         // Checkout
         steps.push(
@@ -652,8 +719,7 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) =
-            self.render_phase_steps_with_cuenv(ir, requires_cuenv);
+        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir, options.execution);
         steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
@@ -665,30 +731,36 @@ impl GitHubActionsEmitter {
             steps.push(download_step);
         }
 
-        let mut renderer = GitHubStageRenderer::new()
-            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
-        if let Some(name) = &self.cachix_name {
-            renderer = renderer.with_cachix(name.clone());
-        }
+        let mut task_step = match options.execution {
+            TaskExecution::Orchestrated => {
+                let task_command = options.environment.map_or_else(
+                    || format!("cuenv task {} --skip-dependencies", task.id),
+                    |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
+                );
+                let mut step = Step::run(task_command)
+                    .with_name(task.id.clone())
+                    .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
-        let mut task_step = renderer
-            .render_task(task)
-            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+                for (key, value) in &task.env {
+                    step.env.insert(key.clone(), transform_secret_ref(value));
+                }
 
-        // Set working directory for monorepo projects
-        if task_step.run.is_some() && let Some(path) = project_path {
+                step
+            }
+            TaskExecution::Direct => self
+                .stage_renderer()
+                .render_task(task)
+                .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}"),
+        };
+
+        if task_step.run.is_some()
+            && let Some(path) = options.project_path
+        {
             task_step = task_step.with_working_directory(path);
         }
 
-        // Add secret env vars from setup stages to the task step
         for (key, value) in secret_env_vars {
             task_step.env.insert(key, transform_secret_ref(&value));
-        }
-
-        if requires_cuenv && let Some(env) = environment {
-            task_step
-                .env
-                .insert("CUENV_ENVIRONMENT".to_string(), env.clone());
         }
 
         steps.push(task_step);
@@ -775,7 +847,8 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+        let (phase_steps, secret_env_vars) =
+            self.render_phase_steps(ir, TaskExecution::Orchestrated);
         steps.extend(phase_steps);
 
         // Download artifacts from previous jobs
@@ -902,7 +975,8 @@ impl GitHubActionsEmitter {
                 );
 
                 // Render bootstrap and setup phase tasks
-                let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+                let (phase_steps, secret_env_vars) =
+                    self.render_phase_steps(ir, TaskExecution::Orchestrated);
                 steps.extend(phase_steps);
 
                 // Run the task with --skip-dependencies
@@ -1029,7 +1103,7 @@ impl Emitter for GitHubActionsEmitter {
         );
 
         // Bootstrap and setup phase steps
-        let (phase_steps, secret_env) = self.render_phase_steps(ir);
+        let (phase_steps, secret_env) = self.render_phase_steps(ir, TaskExecution::Orchestrated);
         steps.extend(phase_steps);
 
         // Main execution step: cuenv ci --pipeline <name>
@@ -1846,7 +1920,7 @@ mod tests {
         let task = make_task("build", &["cargo", "build"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
 
         assert_eq!(job.name, Some("build".to_string()));
         assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
@@ -1866,7 +1940,8 @@ mod tests {
         let ir = make_ir(vec![task.clone()]);
         let env = "production".to_string();
 
-        let job = emitter.build_simple_job(&task, &ir, Some(&env), None);
+        let job =
+            emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(Some(&env), None));
 
         // Find the task step and check command includes environment
         let task_step = job
@@ -1885,7 +1960,11 @@ mod tests {
         let task = make_task("build", &["cargo", "build"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, Some("platform/my-project"));
+        let job = emitter.build_simple_job(
+            &task,
+            &ir,
+            SimpleJobOptions::orchestrated(None, Some("platform/my-project")),
+        );
 
         // Find the task step and check working-directory is set
         let task_step = job
@@ -1897,6 +1976,119 @@ mod tests {
             task_step.unwrap().working_directory,
             Some("platform/my-project".to_string())
         );
+    }
+
+    #[test]
+    fn test_build_simple_job_direct_execution_runs_ir_command() {
+        let emitter = GitHubActionsEmitter::new();
+        let task = make_task(
+            "checks.clippy",
+            &[
+                "nix",
+                "build",
+                ".#checks.x86_64-linux.cuenv-clippy",
+                "-L",
+                "--accept-flake-config",
+            ],
+        );
+        let ir = make_ir(vec![task.clone()]);
+
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("checks.clippy"))
+            .expect("missing direct task step");
+
+        assert_eq!(
+            task_step.run.as_deref(),
+            Some("nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config")
+        );
+        assert!(
+            !task_step
+                .run
+                .as_deref()
+                .unwrap_or_default()
+                .contains("cuenv task")
+        );
+    }
+
+    #[test]
+    fn test_build_simple_job_direct_execution_preserves_shell_command() {
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("security.audit", &["echo first && echo second"]);
+        task.shell = true;
+        let ir = make_ir(vec![task.clone()]);
+
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("security.audit"))
+            .expect("missing shell task step");
+
+        assert_eq!(task_step.run.as_deref(), Some("echo first && echo second"));
+    }
+
+    #[test]
+    fn test_build_simple_job_direct_execution_skips_cuenv_setup_and_dependents() {
+        let emitter = GitHubActionsEmitter::new();
+
+        let mut bootstrap_task = make_phase_task(
+            "cuenv:contributor:nix.install",
+            &["install nix"],
+            BuildStage::Bootstrap,
+            0,
+        );
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+
+        let mut cuenv_setup = make_phase_task(
+            "cuenv:contributor:cuenv.setup",
+            &["nix build .#cuenv"],
+            BuildStage::Setup,
+            10,
+        );
+        cuenv_setup.label = Some("Setup cuenv".to_string());
+        cuenv_setup.contributor = Some("cuenv".to_string());
+
+        let mut onepassword_setup = make_phase_task(
+            "cuenv:contributor:1password.setup",
+            &["cuenv secrets setup onepassword"],
+            BuildStage::Setup,
+            20,
+        );
+        onepassword_setup.label = Some("Setup 1Password".to_string());
+        onepassword_setup.contributor = Some("1password".to_string());
+        onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
+
+        let task = make_task(
+            "checks.nextest",
+            &[
+                "nix",
+                "build",
+                ".#checks.x86_64-linux.cuenv-nextest",
+                "-L",
+                "--accept-flake-config",
+            ],
+        );
+        let ir = make_ir(vec![
+            bootstrap_task,
+            cuenv_setup,
+            onepassword_setup,
+            task.clone(),
+        ]);
+
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+        let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
+
+        assert!(step_names.contains(&"Checkout"));
+        assert!(step_names.contains(&"Install Nix"));
+        assert!(step_names.contains(&"checks.nextest"));
+        assert!(!step_names.contains(&"Setup cuenv"));
+        assert!(!step_names.contains(&"Setup 1Password"));
     }
 
     #[test]
@@ -2081,7 +2273,7 @@ mod tests {
 
         let ir = make_ir(vec![bootstrap_task, setup_task]);
 
-        let (steps, secret_env_vars) = emitter.render_phase_steps(&ir);
+        let (steps, secret_env_vars) = emitter.render_phase_steps(&ir, TaskExecution::Orchestrated);
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].name.as_deref() == Some("Install Nix"));
@@ -2105,7 +2297,7 @@ mod tests {
         let ir = make_ir(vec![task.clone()]);
 
         // project_path = None means root project, no working-directory
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
 
         let task_step = job
             .steps
@@ -2129,8 +2321,10 @@ mod tests {
         let job = emitter.build_simple_job(
             &task,
             &ir,
-            None,
-            Some("projects/rawkode.academy/platform/email-preferences"),
+            SimpleJobOptions::orchestrated(
+                None,
+                Some("projects/rawkode.academy/platform/email-preferences"),
+            ),
         );
 
         let task_step = job
@@ -2278,7 +2472,11 @@ mod tests {
         let task = make_task("test", &["cargo", "test"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, Some("my-project"));
+        let job = emitter.build_simple_job(
+            &task,
+            &ir,
+            SimpleJobOptions::orchestrated(None, Some("my-project")),
+        );
 
         // Serialize job to YAML and verify working-directory appears
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
@@ -2294,7 +2492,7 @@ mod tests {
         let task = make_task("test", &["cargo", "test"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
 
         // Serialize job to YAML and verify working-directory does NOT appear
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
