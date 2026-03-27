@@ -18,7 +18,7 @@ use rendering::{format_task_detail, get_task_cli_help, render_task_tree};
 
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
-use cuenv_core::manifest::Project;
+use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
@@ -27,6 +27,7 @@ use cuenv_core::tools::apply_resolved_tool_activation;
 
 use super::env_file::find_cue_module_root;
 use super::relative_path_from_root;
+use super::runtime_env::resolve_runtime_environment;
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
@@ -527,6 +528,12 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
+    let runtime_env_vars =
+        resolve_runtime_environment(&project_root, manifest.runtime.as_ref()).await?;
+    for (key, value) in runtime_env_vars {
+        runtime_env.set(key, value);
+    }
+
     if let Some(env) = &manifest.env {
         // First apply the base environment (static + hooks)
         for (key, value) in &base_env_vars {
@@ -562,28 +569,32 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         }
     }
 
-    // Download and activate tools from lockfile by prepending to PATH and library path.
-    // This happens automatically without requiring hook approval since tool
-    // activation is a controlled, safe operation (just adds paths to the environment).
-    // Use project_root to scope tool activation to this project only.
-    // Tool activation failures are fatal - tasks require their tools to run.
-    ensure_tools_downloaded(Some(&project_root))
-        .await
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
-    if let Some(activation_steps) =
-        resolve_tool_activation_steps(Some(&project_root)).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
-        })?
-    {
-        tracing::debug!(
-            steps = activation_steps.len(),
-            "Applying configured tool activation operations for task execution"
-        );
+    if should_activate_lockfile_tools(&manifest) {
+        // Download and activate tools from lockfile by prepending to PATH and library path.
+        // This happens automatically without requiring hook approval since tool
+        // activation is a controlled, safe operation (just adds paths to the environment).
+        // Use project_root to scope tool activation to this project only.
+        // Tool activation failures are fatal - tasks require their tools to run.
+        ensure_tools_downloaded(Some(&project_root))
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
+            })?;
+        if let Some(activation_steps) =
+            resolve_tool_activation_steps(Some(&project_root)).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
+            })?
+        {
+            tracing::debug!(
+                steps = activation_steps.len(),
+                "Applying configured tool activation operations for task execution"
+            );
 
-        for step in activation_steps {
-            let current = runtime_env.get(&step.var);
-            if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
-                runtime_env.set(step.var.clone(), new_value);
+            for step in activation_steps {
+                let current = runtime_env.get(&step.var);
+                if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
+                    runtime_env.set(step.var.clone(), new_value);
+                }
             }
         }
     }
@@ -649,6 +660,10 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     // Format results
     let output = format_task_results(results, capture_output, resolution.display_name.as_str());
     Ok(output)
+}
+
+fn should_activate_lockfile_tools(project: &Project) -> bool {
+    matches!(project.runtime, Some(Runtime::Tools(_)))
 }
 
 /// Execute task with rich TUI interface

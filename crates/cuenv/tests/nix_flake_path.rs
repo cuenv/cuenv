@@ -1,8 +1,7 @@
-//! Integration tests for NixFlake hook PATH propagation.
+//! Integration tests for Nix runtime PATH propagation.
 //!
-//! Verifies that tools provided by the Nix flake dev shell appear on PATH
-//! when using `cuenv exec` and `cuenv task`. Also documents that hook approval
-//! is required — without it, Nix tools are NOT available.
+//! Verifies that tools provided by the Nix flake dev shell appear on PATH when
+//! using `cuenv exec` and `cuenv task` via `runtime: schema.#NixRuntime`.
 
 // Integration tests can use unwrap/expect for cleaner assertions
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
@@ -13,25 +12,23 @@ use tempfile::TempDir;
 
 /// Create a test directory with a CUE module and a minimal Nix flake
 /// that puts `git` on PATH via the dev shell.
-fn create_nix_flake_test_dir() -> TempDir {
+fn create_nix_runtime_test_dir() -> TempDir {
     let temp_dir = tempfile::Builder::new()
-        .prefix("cuenv_nix_path_")
+        .prefix("cuenv_nix_runtime_")
         .tempdir()
         .expect("Failed to create temp directory");
     let path = temp_dir.path();
 
-    // CUE module
     fs::create_dir_all(path.join("cue.mod")).unwrap();
     fs::write(
         path.join("cue.mod/module.cue"),
-        "module: \"test.example/nix-path\"\nlanguage: version: \"v0.9.0\"\n",
+        "module: \"test.example/nix-runtime\"\nlanguage: version: \"v0.9.0\"\n",
     )
     .unwrap();
 
-    // Minimal flake that provides git
     let flake = r#"
 {
-  description = "cuenv nix path test";
+  description = "cuenv nix runtime test";
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.11";
   outputs = { self, nixpkgs }: let
     system = builtins.currentSystem;
@@ -45,31 +42,26 @@ fn create_nix_flake_test_dir() -> TempDir {
 "#;
     fs::write(path.join("flake.nix"), flake).unwrap();
 
-    // env.cue with NixFlake hook and a simple task
     let cue_content = r#"
 package cuenv
 
-name: "test"
+import "github.com/cuenv/cuenv/schema"
 
-hooks: onEnter: nix: {
-    order:     10
-    propagate: false
-    command:   "nix"
-    args: ["--extra-experimental-features", "nix-command flakes", "print-dev-env"]
-    source:    true
-    inputs: ["flake.nix", "flake.lock"]
-}
+schema.#Project & {
+    name: "test"
+    runtime: schema.#NixRuntime
 
-tasks: {
-    "check-git": {
-        command: "git"
-        args: ["--version"]
-        hermetic: false
-    }
-    "check-path": {
-        command: "sh"
-        args: ["-c", "which git && which cp"]
-        hermetic: false
+    tasks: {
+        "check-git": {
+            command: "git"
+            args: ["--version"]
+            hermetic: false
+        }
+        "check-path": {
+            command: "sh"
+            args: ["-c", "which git && which cp"]
+            hermetic: false
+        }
     }
 }
 "#;
@@ -108,8 +100,8 @@ fn run_cuenv(path: &std::path::Path, args: &[&str]) -> std::process::Output {
     #[allow(deprecated)]
     let mut cmd = Command::cargo_bin("cuenv").unwrap();
     cmd.current_dir(path);
-    for (k, v) in common_env(path) {
-        cmd.env(k, v);
+    for (key, value) in common_env(path) {
+        cmd.env(key, value);
     }
     for arg in args {
         cmd.arg(arg);
@@ -117,9 +109,8 @@ fn run_cuenv(path: &std::path::Path, args: &[&str]) -> std::process::Output {
     cmd.output().unwrap()
 }
 
-/// With hooks approved, `cuenv exec` should have Nix-provided git on PATH.
 #[test]
-fn test_exec_has_nix_tools_when_approved() {
+fn test_exec_has_nix_tools_from_runtime() {
     if !nix_available() {
         eprintln!("Skipping: nix not available");
         return;
@@ -129,27 +120,15 @@ fn test_exec_has_nix_tools_when_approved() {
         return;
     }
 
-    let temp_dir = create_nix_flake_test_dir();
+    let temp_dir = create_nix_runtime_test_dir();
     let path = temp_dir.path();
 
-    // Approve hooks
-    let allow_output = run_cuenv(path, &["allow", "--yes"]);
-    if allow_output.status.code() == Some(3) {
-        eprintln!("FFI not available in sandbox, skipping");
-        return;
-    }
-    assert!(
-        allow_output.status.success(),
-        "cuenv allow failed: {}",
-        String::from_utf8_lossy(&allow_output.stderr)
-    );
-
-    // Exec: check git is on PATH
     let output = run_cuenv(path, &["exec", "--", "git", "--version"]);
     if output.status.code() == Some(3) {
         eprintln!("FFI not available in sandbox, skipping");
         return;
     }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && stdout.contains("git version"),
@@ -158,9 +137,8 @@ fn test_exec_has_nix_tools_when_approved() {
     );
 }
 
-/// With hooks approved, `cuenv task` should have Nix-provided git on PATH.
 #[test]
-fn test_task_has_nix_tools_when_approved() {
+fn test_task_has_nix_tools_from_runtime() {
     if !nix_available() {
         eprintln!("Skipping: nix not available");
         return;
@@ -170,27 +148,15 @@ fn test_task_has_nix_tools_when_approved() {
         return;
     }
 
-    let temp_dir = create_nix_flake_test_dir();
+    let temp_dir = create_nix_runtime_test_dir();
     let path = temp_dir.path();
 
-    // Approve hooks
-    let allow_output = run_cuenv(path, &["allow", "--yes"]);
-    if allow_output.status.code() == Some(3) {
-        eprintln!("FFI not available in sandbox, skipping");
-        return;
-    }
-    assert!(
-        allow_output.status.success(),
-        "cuenv allow failed: {}",
-        String::from_utf8_lossy(&allow_output.stderr)
-    );
-
-    // Task: check-git should find git
     let output = run_cuenv(path, &["task", "check-git"]);
     if output.status.code() == Some(3) {
         eprintln!("FFI not available in sandbox, skipping");
         return;
     }
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         output.status.success() && stdout.contains("git version"),
@@ -199,10 +165,8 @@ fn test_task_has_nix_tools_when_approved() {
     );
 }
 
-/// Without hook approval, Nix tools are NOT on PATH.
-/// This documents the current limitation that is causing CI failures.
 #[test]
-fn test_no_nix_tools_without_approval() {
+fn test_nix_runtime_does_not_require_hook_approval() {
     if !nix_available() {
         eprintln!("Skipping: nix not available");
         return;
@@ -212,28 +176,23 @@ fn test_no_nix_tools_without_approval() {
         return;
     }
 
-    let temp_dir = create_nix_flake_test_dir();
+    let temp_dir = create_nix_runtime_test_dir();
     let path = temp_dir.path();
 
-    // Do NOT approve hooks
-
-    // Exec: try to run git — should fail or show warning about hooks
-    let output = run_cuenv(path, &["exec", "--", "git", "--version"]);
+    let output = run_cuenv(path, &["exec", "--", "sh", "-c", "which git && which cp"]);
     if output.status.code() == Some(3) {
         eprintln!("FFI not available in sandbox, skipping");
         return;
     }
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-
-    // The command should either fail (git not found) or show the hooks warning
-    // Either way, the Nix-provided git should NOT be available
-    let hooks_not_run = stderr.contains("Hooks not run");
-    let command_failed = !output.status.success();
-
     assert!(
-        hooks_not_run || command_failed,
-        "Expected hooks warning or command failure without approval.\nstdout: {}\nstderr: {stderr}",
-        String::from_utf8_lossy(&output.stdout)
+        output.status.success() && stdout.contains("/git") && stdout.contains("/cp"),
+        "Expected Nix tools on PATH without hook approval.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Hooks not run"),
+        "Runtime-backed tool acquisition should not depend on hook approval: {stderr}"
     );
 }

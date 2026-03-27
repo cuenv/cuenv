@@ -151,17 +151,79 @@ schema.#Project & {{
   runtime: schema.#ToolsRuntime & {{
     platforms: ["darwin-arm64"]
     tools: {{
-      jq: {{
-        version: "1.7.1"
-        source: schema.#GitHub & {{
-          repo: "jqlang/jq"
-          asset: "jq-{{os}}-{{arch}}"
+      rust: {{
+        version: "stable"
+        source: schema.#Rustup & {{
+          toolchain: "stable"
         }}
       }}
     }}
   }}
 }}
 "#
+    )
+}
+
+fn nix_runtime_project_env_cue(name: &str) -> String {
+    format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  name: "{name}"
+
+  runtime: schema.#NixRuntime
+}}
+"#
+    )
+}
+
+fn stale_lockfile() -> &'static str {
+    r#"version = 3
+
+[tools.jq]
+version = "1.7.1"
+
+[tools.jq.platforms.darwin-arm64]
+provider = "github"
+digest = "sha256:abc"
+
+[tools.jq.platforms.darwin-arm64.source]
+type = "github"
+repo = "jqlang/jq"
+tag = "jq-1.7.1"
+asset = "jq"
+"#
+}
+
+fn minimal_flake_lock(nar_hash: &str) -> String {
+    format!(
+        r#"{{
+  "nodes": {{
+    "nixpkgs": {{
+      "locked": {{
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "abc123",
+        "narHash": "{nar_hash}"
+      }},
+      "original": {{
+        "type": "github",
+        "owner": "NixOS",
+        "repo": "nixpkgs"
+      }}
+    }},
+    "root": {{
+      "inputs": {{
+        "nixpkgs": "nixpkgs"
+      }}
+    }}
+  }},
+  "root": "root",
+  "version": 7
+}}"#
     )
 }
 
@@ -282,22 +344,26 @@ fn sync_outside_project_errors() {
 }
 
 #[test]
-fn sync_does_not_create_lockfile_for_tools_projects() {
+fn sync_creates_lockfile_for_tools_projects() {
     let tmp = create_repo();
     let root = tmp.path();
 
     fs::write(root.join("env.cue"), tools_project_env_cue("tools-project")).unwrap();
 
-    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
+    let (stdout, stderr, success) = run_cuenv(root, &["sync"]);
     assert!(success, "sync failed: {stderr}");
     assert!(
-        !root.join("cuenv.lock").exists(),
-        "cuenv sync should not create or update cuenv.lock"
+        root.join("cuenv.lock").exists(),
+        "cuenv sync should create or update cuenv.lock"
+    );
+    assert!(
+        stdout.contains("[lock]"),
+        "sync output should include the lock provider: {stdout}"
     );
 }
 
 #[test]
-fn sync_all_does_not_create_lockfile_for_tools_projects() {
+fn sync_all_creates_lockfile_for_tools_projects() {
     let tmp = create_repo();
     let root = tmp.path();
 
@@ -311,10 +377,95 @@ fn sync_all_does_not_create_lockfile_for_tools_projects() {
     )
     .unwrap();
 
-    let (_stdout, stderr, success) = run_cuenv(root, &["sync", "-A"]);
+    let (stdout, stderr, success) = run_cuenv(root, &["sync", "-A"]);
     assert!(success, "sync -A failed: {stderr}");
     assert!(
-        !root.join("cuenv.lock").exists(),
-        "cuenv sync -A should not create or update cuenv.lock"
+        root.join("cuenv.lock").exists(),
+        "cuenv sync -A should create or update cuenv.lock"
+    );
+    assert!(
+        stdout.contains("[lock]"),
+        "sync -A output should include the lock provider: {stdout}"
+    );
+}
+
+#[test]
+fn sync_creates_runtime_lockfile_for_nix_runtime_projects() {
+    let tmp = create_repo();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("env.cue"),
+        nix_runtime_project_env_cue("nix-project"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("flake.lock"),
+        minimal_flake_lock("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+    )
+    .unwrap();
+    fs::write(root.join("cuenv.lock"), stale_lockfile()).unwrap();
+
+    let (stdout, stderr, success) = run_cuenv(root, &["sync"]);
+    assert!(success, "sync failed: {stderr}");
+
+    let lockfile = fs::read_to_string(root.join("cuenv.lock")).unwrap();
+    assert!(
+        root.join("cuenv.lock").exists(),
+        "cuenv sync should keep cuenv.lock for Nix runtime projects"
+    );
+    assert!(
+        lockfile.contains("[runtimes.\".\"]"),
+        "cuenv.lock should contain a root runtime entry: {lockfile}"
+    );
+    assert!(
+        lockfile.contains("type = \"nix\""),
+        "cuenv.lock should record the Nix runtime type: {lockfile}"
+    );
+    assert!(
+        lockfile.contains("lockfile = \"flake.lock\""),
+        "cuenv.lock should record the flake.lock path: {lockfile}"
+    );
+    assert!(
+        stdout.contains("[lock]"),
+        "sync output should include the lock provider: {stdout}"
+    );
+}
+
+#[test]
+fn sync_check_fails_when_nix_runtime_lockfile_digest_changes() {
+    let tmp = create_repo();
+    let root = tmp.path();
+
+    fs::write(
+        root.join("env.cue"),
+        nix_runtime_project_env_cue("nix-project"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("flake.lock"),
+        minimal_flake_lock("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
+    assert!(success, "initial sync failed: {stderr}");
+
+    fs::write(
+        root.join("flake.lock"),
+        minimal_flake_lock("sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
+    )
+    .unwrap();
+
+    let (stdout, stderr, success) = run_cuenv(root, &["sync", "--check"]);
+    assert!(
+        !success,
+        "sync --check should fail after flake.lock changes"
+    );
+
+    let output = format!("{stdout}{stderr}");
+    assert!(
+        output.contains("Lockfile is out of date"),
+        "sync --check should report lock drift: {output}"
     );
 }

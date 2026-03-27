@@ -269,6 +269,7 @@
           antora
           cargo-nextest
           cargo-deny
+          cargo-audit
           cargo-cyclonedx
           zig
           git

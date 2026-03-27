@@ -1,13 +1,20 @@
 //! Lockfile types for cuenv tool management.
 //!
-//! The lockfile (`cuenv.lock`) stores resolved tool digests for
-//! reproducible, hermetic builds. It supports multiple tool sources:
-//! GitHub releases, Nix flakes, and OCI images.
+//! The lockfile (`cuenv.lock`) stores resolved runtime and tool digests for
+//! reproducible, hermetic builds. It supports multiple sources:
+//! Nix flakes, GitHub releases, and OCI images.
 //!
 //! ## Structure (v3)
 //!
 //! ```toml
 //! version = 3
+//!
+//! # Runtime section - project runtime state
+//! [runtimes."."]
+//! type = "nix"
+//! flake = "."
+//! digest = "sha256:runtime..."
+//! lockfile = "flake.lock"
 //!
 //! # Tools section - multi-source tool management
 //! [tools.jq]
@@ -62,6 +69,9 @@ pub const LOCKFILE_NAME: &str = "cuenv.lock";
 pub struct Lockfile {
     /// Lockfile format version (for future migrations).
     pub version: u32,
+    /// Locked project runtimes keyed by project path.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub runtimes: BTreeMap<String, LockedRuntime>,
     /// Locked tools with per-platform resolution (v2+).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tools: BTreeMap<String, LockedTool>,
@@ -77,6 +87,7 @@ impl Default for Lockfile {
     fn default() -> Self {
         Self {
             version: LOCKFILE_VERSION,
+            runtimes: BTreeMap::new(),
             tools: BTreeMap::new(),
             tools_activation: Vec::new(),
             artifacts: Vec::new(),
@@ -148,6 +159,12 @@ impl Lockfile {
         self.tools.get(name)
     }
 
+    /// Find a locked runtime by project path.
+    #[must_use]
+    pub fn find_runtime(&self, project_path: &str) -> Option<&LockedRuntime> {
+        self.runtimes.get(project_path)
+    }
+
     /// Get all tool names.
     #[must_use]
     pub fn tool_names(&self) -> Vec<&str> {
@@ -166,6 +183,27 @@ impl Lockfile {
         })?;
 
         self.tools.insert(name, tool);
+        Ok(())
+    }
+
+    /// Add or update a runtime in the lockfile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the runtime fails validation.
+    pub fn upsert_runtime(
+        &mut self,
+        project_path: String,
+        runtime: LockedRuntime,
+    ) -> crate::Result<()> {
+        runtime.validate().map_err(|msg| {
+            crate::Error::configuration(format!(
+                "Invalid runtime for project '{}': {}",
+                project_path, msg
+            ))
+        })?;
+
+        self.runtimes.insert(project_path, runtime);
         Ok(())
     }
 
@@ -310,6 +348,52 @@ pub struct PlatformData {
     pub size: Option<u64>,
 }
 
+/// A locked project runtime keyed by project path.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum LockedRuntime {
+    /// Locked Nix runtime derived from a local flake.lock file.
+    Nix(LockedNixRuntime),
+}
+
+impl LockedRuntime {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Nix(runtime) => runtime.validate(),
+        }
+    }
+}
+
+/// Locked metadata for a Nix runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LockedNixRuntime {
+    /// Flake reference from the manifest runtime.
+    pub flake: String,
+    /// Selected shell or package output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Deterministic digest derived from the local flake.lock content.
+    pub digest: String,
+    /// Relative path to the flake.lock file used for this digest.
+    pub lockfile: String,
+}
+
+impl LockedNixRuntime {
+    fn validate(&self) -> Result<(), String> {
+        if !self.digest.starts_with("sha256:") && !self.digest.starts_with("sha512:") {
+            return Err(
+                "digest must start with 'sha256:' or 'sha512:' for Nix runtime".to_string(),
+            );
+        }
+
+        if self.lockfile.trim().is_empty() {
+            return Err("lockfile path must not be empty".to_string());
+        }
+
+        Ok(())
+    }
+}
+
 /// A locked tool with version and per-platform resolution (v2+).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockedTool {
@@ -407,6 +491,18 @@ mod tests {
     fn test_lockfile_serialization() {
         let mut lockfile = Lockfile::new();
 
+        lockfile
+            .upsert_runtime(
+                ".".to_string(),
+                LockedRuntime::Nix(LockedNixRuntime {
+                    flake: ".".to_string(),
+                    output: None,
+                    digest: "sha256:runtime123".to_string(),
+                    lockfile: "flake.lock".to_string(),
+                }),
+            )
+            .unwrap();
+
         // OCI image artifact
         lockfile.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
@@ -432,6 +528,8 @@ mod tests {
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
         assert!(toml_str.contains("version = 3"));
+        assert!(toml_str.contains("type = \"nix\""));
+        assert!(toml_str.contains("lockfile = \"flake.lock\""));
         assert!(toml_str.contains("kind = \"image\""));
         assert!(toml_str.contains("nginx:1.25-alpine"));
 
@@ -655,6 +753,48 @@ mod tests {
         let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.tools_activation.len(), 1);
         assert_eq!(parsed.tools_activation[0], lockfile.tools_activation[0]);
+    }
+
+    #[test]
+    fn test_find_runtime() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_runtime(
+                ".".to_string(),
+                LockedRuntime::Nix(LockedNixRuntime {
+                    flake: ".".to_string(),
+                    output: Some("devShells.x86_64-linux.default".to_string()),
+                    digest: "sha256:abc123".to_string(),
+                    lockfile: "flake.lock".to_string(),
+                }),
+            )
+            .unwrap();
+
+        assert!(lockfile.find_runtime(".").is_some());
+        assert!(lockfile.find_runtime("apps/api").is_none());
+    }
+
+    #[test]
+    fn test_upsert_runtime_validation_invalid_digest() {
+        let mut lockfile = Lockfile::new();
+
+        let result = lockfile.upsert_runtime(
+            ".".to_string(),
+            LockedRuntime::Nix(LockedNixRuntime {
+                flake: ".".to_string(),
+                output: None,
+                digest: "invalid".to_string(),
+                lockfile: "flake.lock".to_string(),
+            }),
+        );
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("digest must start with")
+        );
     }
 
     #[test]

@@ -617,6 +617,37 @@ pub async fn execute_hooks(
     Ok(())
 }
 
+/// Execute a single source hook and return the resulting environment.
+///
+/// This bypasses hook approval and state persistence, making it suitable for
+/// runtime-backed environment materialization where the manifest itself is the
+/// source of truth.
+pub async fn capture_source_environment(
+    hook: Hook,
+    prior_env: &HashMap<String, String>,
+    timeout_seconds: u64,
+) -> Result<HashMap<String, String>> {
+    if !hook.source.unwrap_or(false) {
+        return Err(Error::configuration(
+            "capture_source_environment requires a source hook",
+        ));
+    }
+
+    let hook_result = execute_hook_with_timeout(hook, &timeout_seconds).await?;
+    let (env_delta, removed_keys) =
+        evaluate_shell_environment(&hook_result.stdout, prior_env).await?;
+
+    let mut environment = prior_env.clone();
+    for (key, value) in env_delta {
+        environment.insert(key, value);
+    }
+    for key in removed_keys {
+        environment.remove(&key);
+    }
+
+    Ok(environment)
+}
+
 /// Detect which shell to use for environment evaluation
 async fn detect_shell() -> String {
     // Try bash first
@@ -1904,6 +1935,31 @@ export SPACE_VAR='   '
             result.stdout.contains("hello") && result.stdout.contains("world"),
             "Should contain text parts: {}",
             result.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn test_capture_source_environment_returns_resulting_env() {
+        let hook = Hook {
+            order: 100,
+            propagate: false,
+            command: "bash".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf '%s\n' 'export CUENV_RUNTIME_TEST=from_runtime'".to_string(),
+            ],
+            dir: None,
+            inputs: vec![],
+            source: Some(true),
+        };
+
+        let environment = capture_source_environment(hook, &HashMap::new(), 5)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            environment.get("CUENV_RUNTIME_TEST"),
+            Some(&"from_runtime".to_string())
         );
     }
 }
