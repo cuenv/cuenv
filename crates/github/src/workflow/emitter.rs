@@ -13,6 +13,12 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task, Tri
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhaseSetupMode {
+    IncludeCuenv,
+    SkipCuenv,
+}
+
 /// GitHub Actions workflow emitter
 ///
 /// Transforms cuenv IR into GitHub Actions workflow YAML that can be
@@ -25,7 +31,7 @@ use std::collections::HashMap;
 /// | `pipeline.name` | Workflow `name:` |
 /// | `pipeline.trigger.branch` | `on.push.branches` / `on.pull_request.branches` |
 /// | `task.id` | Job key |
-/// | `task.command` | Step with `run: cuenv task {task.id}` |
+/// | `task.command` | Step with `run: <task command>` |
 /// | `task.depends_on` | Job `needs:` |
 /// | `task.manual_approval` | Job with `environment:` |
 /// | `task.concurrency_group` | Job-level `concurrency:` |
@@ -546,9 +552,10 @@ impl GitHubActionsEmitter {
     /// This uses `GitHubStageRenderer` to properly convert phase tasks into steps,
     /// handling both `uses:` action steps and `run:` command steps.
     #[must_use]
-    pub fn render_phase_steps(
+    fn render_phase_steps(
         &self,
         ir: &IntermediateRepresentation,
+        setup_mode: PhaseSetupMode,
     ) -> (Vec<Step>, IndexMap<String, String>) {
         let mut renderer = GitHubStageRenderer::new()
             .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
@@ -565,6 +572,9 @@ impl GitHubActionsEmitter {
         // Render setup phase tasks (e.g., cuenv, 1Password, Cachix)
         // Also collect env vars from setup tasks that need to be passed to task steps
         for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            if setup_mode == PhaseSetupMode::SkipCuenv && task.id == "setup-cuenv" {
+                continue;
+            }
             let step = renderer.render_task(task);
             steps.push(step);
 
@@ -583,7 +593,7 @@ impl GitHubActionsEmitter {
     /// This method creates a single job that:
     /// 1. Checks out the repository
     /// 2. Runs bootstrap/setup phase tasks (Nix, cuenv, 1Password, etc.)
-    /// 3. Runs the task with `--skip-dependencies` (since CI handles job dependencies)
+    /// 3. Runs the IR task command directly
     ///
     /// Use `build_matrix_jobs` for tasks with matrix configurations.
     ///
@@ -611,7 +621,8 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+        let setup_mode = Self::phase_setup_mode_for_task(task);
+        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir, setup_mode);
         steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
@@ -623,15 +634,14 @@ impl GitHubActionsEmitter {
             steps.push(download_step);
         }
 
-        // Run the task
-        // Use --skip-dependencies because GitHub Actions handles job dependencies via `needs:`
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
+        // Run the task command directly from IR
+        let task_command = Self::task_command(task);
         let mut task_step = Step::run(task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+        if let Some(env) = environment {
+            task_step = task_step.with_env("CUENV_ENVIRONMENT", env);
+        }
 
         // Set working directory for monorepo projects
         if let Some(path) = project_path {
@@ -704,7 +714,7 @@ impl GitHubActionsEmitter {
     /// 1. Checks out the repository
     /// 2. Runs bootstrap/setup phase tasks
     /// 3. Downloads artifacts from previous jobs
-    /// 4. Runs the task with params and `--skip-dependencies`
+    /// 4. Runs the task command directly from IR
     ///
     /// Use this for tasks that aggregate outputs from matrix jobs (e.g., publish).
     ///
@@ -734,7 +744,8 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+        let setup_mode = Self::phase_setup_mode_for_task(task);
+        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir, setup_mode);
         steps.extend(phase_steps);
 
         // Download artifacts from previous jobs
@@ -766,15 +777,15 @@ impl GitHubActionsEmitter {
             }
         }
 
-        // Build task command with --skip-dependencies
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
+        // Run task command directly from IR
+        let task_command = Self::task_command(task);
 
         let mut task_step = Step::run(&task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+        if let Some(env) = environment {
+            task_step = task_step.with_env("CUENV_ENVIRONMENT", env);
+        }
 
         // Set working directory for monorepo projects
         if let Some(path) = project_path {
@@ -861,17 +872,18 @@ impl GitHubActionsEmitter {
                 );
 
                 // Render bootstrap and setup phase tasks
-                let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+                let setup_mode = Self::phase_setup_mode_for_task(task);
+                let (phase_steps, secret_env_vars) = self.render_phase_steps(ir, setup_mode);
                 steps.extend(phase_steps);
 
-                // Run the task with --skip-dependencies
-                let task_command = environment.map_or_else(
-                    || format!("cuenv task {} --skip-dependencies", task.id),
-                    |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-                );
+                // Run the task command directly from IR
+                let task_command = Self::task_command(task);
                 let mut task_step = Step::run(&task_command)
                     .with_name(format!("{} ({arch})", task.id))
                     .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+                if let Some(env) = environment {
+                    task_step = task_step.with_env("CUENV_ENVIRONMENT", env);
+                }
 
                 // Set working directory for monorepo projects
                 if let Some(path) = project_path {
@@ -955,6 +967,49 @@ impl GitHubActionsEmitter {
     pub const fn task_has_artifact_downloads(task: &Task) -> bool {
         !task.artifact_downloads.is_empty()
     }
+
+    #[must_use]
+    fn task_command(task: &Task) -> String {
+        if task.command.is_empty() {
+            return format!("cuenv task {} --skip-dependencies", task.id);
+        }
+        task.command_string()
+    }
+
+    #[must_use]
+    fn phase_setup_mode_for_task(task: &Task) -> PhaseSetupMode {
+        if task.command.is_empty() {
+            return PhaseSetupMode::IncludeCuenv;
+        }
+
+        if task.shell {
+            return if task
+                .command
+                .first()
+                .and_then(|cmd| cmd.split_whitespace().next())
+                .is_some_and(Self::is_cuenv_command)
+            {
+                PhaseSetupMode::IncludeCuenv
+            } else {
+                PhaseSetupMode::SkipCuenv
+            };
+        }
+
+        if task
+            .command
+            .first()
+            .is_some_and(|cmd| Self::is_cuenv_command(cmd))
+        {
+            PhaseSetupMode::IncludeCuenv
+        } else {
+            PhaseSetupMode::SkipCuenv
+        }
+    }
+
+    #[must_use]
+    fn is_cuenv_command(command: &str) -> bool {
+        command == "cuenv" || command.ends_with("/cuenv")
+    }
 }
 
 impl Emitter for GitHubActionsEmitter {
@@ -988,7 +1043,7 @@ impl Emitter for GitHubActionsEmitter {
         );
 
         // Bootstrap and setup phase steps
-        let (phase_steps, secret_env) = self.render_phase_steps(ir);
+        let (phase_steps, secret_env) = self.render_phase_steps(ir, PhaseSetupMode::IncludeCuenv);
         steps.extend(phase_steps);
 
         // Main execution step: cuenv ci --pipeline <name>
@@ -1555,7 +1610,7 @@ mod tests {
         assert!(yaml.contains("name: test-pipeline"));
         assert!(yaml.contains("jobs:"));
         assert!(yaml.contains("build:"));
-        assert!(yaml.contains("cuenv task build"));
+        assert!(yaml.contains("cargo build"));
     }
 
     #[test]
@@ -1594,7 +1649,7 @@ mod tests {
         let yaml = emitter.emit(&ir).unwrap();
 
         assert!(yaml.contains("DeterminateSystems/nix-installer-action"));
-        assert!(yaml.contains("nix build .#cuenv"));
+        assert!(!yaml.contains("nix build .#cuenv"));
     }
 
     #[test]
@@ -1827,15 +1882,17 @@ mod tests {
 
         let job = emitter.build_simple_job(&task, &ir, Some(&env), None);
 
-        // Find the task step and check command includes environment
+        // Find the task step and check environment propagation
         let task_step = job
             .steps
             .iter()
             .find(|s| s.name.as_deref() == Some("deploy"));
         assert!(task_step.is_some());
-        let run_cmd = task_step.unwrap().run.as_ref().unwrap();
-        assert!(run_cmd.contains("-e production"));
-        assert!(run_cmd.contains("--skip-dependencies"));
+        let env = &task_step.unwrap().env;
+        assert_eq!(
+            env.get("CUENV_ENVIRONMENT"),
+            Some(&"production".to_string())
+        );
     }
 
     #[test]
@@ -2040,7 +2097,8 @@ mod tests {
 
         let ir = make_ir(vec![bootstrap_task, setup_task]);
 
-        let (steps, secret_env_vars) = emitter.render_phase_steps(&ir);
+        let (steps, secret_env_vars) =
+            emitter.render_phase_steps(&ir, PhaseSetupMode::IncludeCuenv);
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].name.as_deref() == Some("Install Nix"));
@@ -2051,6 +2109,27 @@ mod tests {
             secret_env_vars.get("MY_VAR"),
             Some(&"${MY_SECRET}".to_string())
         );
+    }
+
+    #[test]
+    fn test_render_phase_steps_skip_cuenv_setup() {
+        let emitter = GitHubActionsEmitter::new();
+
+        let mut bootstrap_task =
+            make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+
+        let mut setup_task =
+            make_phase_task("setup-cuenv", &["nix build .#cuenv"], BuildStage::Setup, 10);
+        setup_task.label = Some("Setup cuenv".to_string());
+        setup_task.contributor = Some("cuenv".to_string());
+
+        let ir = make_ir(vec![bootstrap_task, setup_task]);
+        let (steps, _) = emitter.render_phase_steps(&ir, PhaseSetupMode::SkipCuenv);
+
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].name.as_deref() == Some("Install Nix"));
     }
 
     // =========================================================================

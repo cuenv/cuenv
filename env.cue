@@ -50,8 +50,8 @@ schema.#Project & {
 	// Configuration
 	// ============================================================================
 
-	// Build cuenv from the checked-out repository flake in CI.
-	// This dogfoods the current branch while keeping bootstrap on the Nix/Cachix path.
+	// Build cuenv from the checked-out repository flake where cuenv itself is required.
+	// Nix remains the source of truth for build/check execution.
 	config: ci: cuenv: {source: "nix", version: "self"}
 
 	// ============================================================================
@@ -123,12 +123,13 @@ schema.#Project & {
 			}
 
 			ci: {
+				mode: "expanded"
 				when: {
 					branch:      "main"
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: [_t.check]
+				tasks: [_t.checks]
 			}
 
 			release: {
@@ -190,6 +191,52 @@ schema.#Project & {
 			command: "nix"
 			args: ["flake", "check", "-L", "--accept-flake-config"]
 			inputs: _checkInputs
+		}
+
+		checks: {
+			type: "group"
+
+			cuenv: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-audit": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-audit", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-bdd": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-bdd", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-clippy": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-clippy", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-deny": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-deny", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-doctest": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-doctest", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			"cuenv-nextest": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
 		}
 
 		// --- Linting ---
