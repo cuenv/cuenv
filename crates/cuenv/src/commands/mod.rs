@@ -23,6 +23,8 @@ pub mod info;
 mod module_utils;
 /// Release management commands (prepare, version, publish, binaries).
 pub mod release;
+/// Runtime environment materialization for local execution paths.
+pub mod runtime_env;
 /// Secrets provider setup and management.
 pub mod secrets;
 /// Synchronization commands for codegen, CI, and other providers.

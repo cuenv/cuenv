@@ -24,7 +24,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 
 # 1Password WASM SDK
-extism = "1"
+extism = "1.21.0"
 dirs = { workspace = true }
 once_cell = "1.21"
 getrandom = "0.3"
@@ -32,6 +32,6 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls"] }
 temp-env = { workspace = true }
 tempfile = { workspace = true }

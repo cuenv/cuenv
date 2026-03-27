@@ -646,40 +646,31 @@ impl CommandHandler for SyncHandler {
             }
         }
 
-        match &self.subcommand {
-            // Specific provider: cuenv sync codegen
-            Some(name) => {
-                // Special-case: `cuenv sync ci` from the module root should behave like `-A`
-                // to avoid requiring the root to be a Project. This mirrors CI usage.
-                let mut use_workspace = sync_all;
-                if !use_workspace && *name == "ci" {
-                    // When invoked as `cuenv sync ci` (no -p), prefer workspace mode.
-                    // This matches our CI usage where the root may not be a Project.
-                    if self.path == "." {
-                        tracing::info!("sync ci: switching to workspace mode at module root");
-                        use_workspace = true;
-                    }
-                }
+        if let Some(name) = &self.subcommand {
+            // Special-case: `cuenv sync ci` from the module root should behave like `-A`
+            // to avoid requiring the root to be a Project. This mirrors CI usage.
+            let mut use_workspace = sync_all;
+            if !use_workspace && *name == "ci" && self.path == "." {
+                tracing::info!("sync ci: switching to workspace mode at module root");
+                use_workspace = true;
+            }
 
-                let result = registry
-                    .sync_provider(name, path, &self.package, &options, use_workspace, executor)
-                    .await?;
-                Ok(result.output)
-            }
-            // All providers: cuenv sync or cuenv sync -A
-            None => {
-                run_selected_sync_providers(SelectedSyncProvidersRequest {
-                    registry: &registry,
-                    provider_names: &["codegen", "ci", "rules", "git-hooks"],
-                    path,
-                    package: &self.package,
-                    options: &options,
-                    scope: &self.scope,
-                    executor,
-                })
-                .await
-            }
+            let result = registry
+                .sync_provider(name, path, &self.package, &options, use_workspace, executor)
+                .await?;
+            return Ok(result.output);
         }
+
+        run_selected_sync_providers(SelectedSyncProvidersRequest {
+            registry: &registry,
+            provider_names: &["lock", "codegen", "ci", "rules", "git-hooks"],
+            path,
+            package: &self.package,
+            options: &options,
+            scope: &self.scope,
+            executor,
+        })
+        .await
     }
 }
 

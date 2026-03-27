@@ -8,13 +8,14 @@
 
 use async_trait::async_trait;
 use clap::{Arg, Command};
+use cuenv_ci::flake::FlakeLockAnalyzer;
 use cuenv_core::Result;
 use cuenv_core::lockfile::{
-    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedTool, LockedToolPlatform, Lockfile,
-    PlatformData,
+    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedNixRuntime, LockedRuntime, LockedTool,
+    LockedToolPlatform, Lockfile, PlatformData,
 };
 use cuenv_core::manifest::{
-    Base, GitHubExtract, GitHubProviderConfig, Project, Runtime, SourceConfig, ToolSpec,
+    Base, GitHubExtract, GitHubProviderConfig, NixRuntime, Project, Runtime, SourceConfig, ToolSpec,
 };
 use cuenv_core::tools::{
     Platform as ToolPlatform, ResolvedTool, ToolExtract, ToolRegistry, ToolResolveRequest,
@@ -22,7 +23,7 @@ use cuenv_core::tools::{
 };
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::commands::CommandExecutor;
@@ -116,10 +117,7 @@ impl SyncProvider for LockSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        // Lockfiles are module-scoped (written at module root), so partial path-only
-        // resolution can silently drop tools from other projects. Always resolve tools
-        // across the full workspace for deterministic lockfile contents.
-        let output = execute_lock_sync(path, package, options, executor, true).await?;
+        let output = execute_lock_sync(path, package, options, executor, false).await?;
         Ok(SyncResult::success(output))
     }
 
@@ -142,6 +140,13 @@ struct CollectedTool {
     source: Option<SourceConfig>,
     overrides: Vec<cuenv_core::manifest::SourceOverride>,
     platforms: Vec<String>,
+}
+
+/// Collected runtime lock metadata keyed by project path.
+#[derive(Debug, Clone)]
+struct CollectedRuntime {
+    project_path: String,
+    runtime: LockedRuntime,
 }
 
 /// Key type for tool deduplication: (name, version, source_hash).
@@ -238,6 +243,8 @@ async fn execute_lock_sync(
         lockfile_path,
         image_platforms,
         all_platforms,
+        scoped_project_paths,
+        collected_runtimes,
         collected_tools,
         tools_platforms,
         collected_flakes,
@@ -253,6 +260,8 @@ async fn execute_lock_sync(
 
         let mut image_platforms: HashMap<String, Vec<String>> = HashMap::new();
         let mut all_platforms: Vec<String> = Vec::new();
+        let mut scoped_project_paths = Vec::new();
+        let mut collected_runtimes = Vec::new();
         // Use HashMap for tool deduplication: same tool in multiple projects is resolved once
         let mut tools_map: HashMap<ToolIdentityKey, CollectedTool> = HashMap::new();
         let mut tools_platforms: Vec<String> = Vec::new();
@@ -260,6 +269,8 @@ async fn execute_lock_sync(
         let mut github_config: Option<GitHubProviderConfig> = None;
 
         for instance in module.projects() {
+            scoped_project_paths.push(display_project_path(&instance.path));
+
             // Deserialize the instance to get the Project struct
             let project: Project = match instance.deserialize() {
                 Ok(p) => p,
@@ -270,6 +281,13 @@ async fn execute_lock_sync(
             };
 
             match &project.runtime {
+                Some(Runtime::Nix(nix_runtime)) => {
+                    collected_runtimes.push(collect_nix_runtime_lock(
+                        &module_root,
+                        &instance.path,
+                        nix_runtime,
+                    )?);
+                }
                 // Handle OCI runtime (legacy)
                 Some(Runtime::Oci(oci_runtime)) => {
                     // Collect platforms from this project's config
@@ -370,6 +388,8 @@ async fn execute_lock_sync(
             lockfile_path,
             image_platforms,
             all_platforms,
+            scoped_project_paths,
+            collected_runtimes,
             collected_tools,
             tools_platforms,
             collected_flakes,
@@ -404,8 +424,16 @@ async fn execute_lock_sync(
         None
     };
 
-    if image_platforms.is_empty() && collected_tools.is_empty() {
-        return Ok("No OCI artifacts or tools found in any project.".to_string());
+    if workspace
+        && image_platforms.is_empty()
+        && collected_tools.is_empty()
+        && collected_runtimes.is_empty()
+    {
+        return reconcile_empty_lockfile_state(
+            &lockfile_path,
+            existing_lockfile.as_ref(),
+            &options.mode,
+        );
     }
 
     info!(
@@ -415,6 +443,7 @@ async fn execute_lock_sync(
     );
 
     let client = OciClient::new();
+    let path_local = !workspace;
     let mut artifacts: Vec<LockedArtifact> = Vec::new();
 
     // Process OCI images
@@ -457,7 +486,17 @@ async fn execute_lock_sync(
     }
 
     // Process Tools runtime
-    let mut lockfile = seed_lockfile(existing_lockfile.as_ref());
+    let mut lockfile = seed_lockfile(existing_lockfile.as_ref(), path_local);
+
+    if path_local {
+        for project_path in &scoped_project_paths {
+            lockfile.runtimes.remove(project_path);
+        }
+    }
+
+    for runtime in &collected_runtimes {
+        lockfile.upsert_runtime(runtime.project_path.clone(), runtime.runtime.clone())?;
+    }
 
     if !collected_tools.is_empty() {
         info!(
@@ -630,8 +669,21 @@ async fn execute_lock_sync(
         }
     }
 
-    // Add legacy artifacts
-    lockfile.artifacts = artifacts;
+    if workspace {
+        lockfile.artifacts = artifacts;
+    } else {
+        for artifact in artifacts {
+            lockfile.upsert_artifact(artifact)?;
+        }
+    }
+
+    if !lockfile_has_entries(&lockfile) {
+        return reconcile_empty_lockfile_state(
+            &lockfile_path,
+            existing_lockfile.as_ref(),
+            &options.mode,
+        );
+    }
 
     if check {
         // Check mode: compare against existing lockfile
@@ -650,6 +702,13 @@ async fn execute_lock_sync(
             )),
         }
     } else {
+        if existing_lockfile
+            .as_ref()
+            .is_some_and(|existing| existing == &lockfile)
+        {
+            return Ok("Lockfile is up to date.".to_string());
+        }
+
         // Write mode: save the lockfile
         lockfile.save(&lockfile_path)?;
 
@@ -660,6 +719,7 @@ async fn execute_lock_sync(
         }
 
         let image_count = lockfile.artifacts.len();
+        let runtime_count = lockfile.runtimes.len();
         let tools_count = lockfile.tools.len();
 
         let mut summary = Vec::new();
@@ -669,6 +729,9 @@ async fn execute_lock_sync(
                 image_count,
                 all_platforms.join(", ")
             ));
+        }
+        if runtime_count > 0 {
+            summary.push(format!("{} runtimes", runtime_count));
         }
         if tools_count > 0 {
             summary.push(format!(
@@ -686,7 +749,56 @@ async fn execute_lock_sync(
     }
 }
 
-fn seed_lockfile(existing: Option<&Lockfile>) -> Lockfile {
+fn reconcile_empty_lockfile_state(
+    lockfile_path: &Path,
+    existing_lockfile: Option<&Lockfile>,
+    mode: &SyncMode,
+) -> Result<String> {
+    match mode {
+        SyncMode::Check => {
+            if existing_lockfile.is_some() {
+                return Err(cuenv_core::Error::configuration(
+                    "Lockfile is out of date. Run 'cuenv sync lock' to remove the stale lockfile.",
+                ));
+            }
+
+            Ok("Lockfile is up to date.".to_string())
+        }
+        SyncMode::DryRun => {
+            if existing_lockfile.is_some() {
+                return Ok(format!(
+                    "Would remove stale lockfile at {}",
+                    lockfile_path.display()
+                ));
+            }
+
+            Ok("Lockfile is up to date.".to_string())
+        }
+        SyncMode::Write => {
+            if existing_lockfile.is_some() {
+                std::fs::remove_file(lockfile_path).map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to remove stale lockfile at {}: {}",
+                        lockfile_path.display(),
+                        e
+                    ))
+                })?;
+                return Ok(format!(
+                    "Removed stale lockfile at {}",
+                    lockfile_path.display()
+                ));
+            }
+
+            Ok("Lockfile is up to date.".to_string())
+        }
+    }
+}
+
+fn seed_lockfile(existing: Option<&Lockfile>, preserve_existing: bool) -> Lockfile {
+    if preserve_existing {
+        return existing.cloned().unwrap_or_else(Lockfile::new);
+    }
+
     let mut lockfile = Lockfile::new();
     if let Some(existing) = existing {
         lockfile
@@ -694,6 +806,109 @@ fn seed_lockfile(existing: Option<&Lockfile>) -> Lockfile {
             .clone_from(&existing.tools_activation);
     }
     lockfile
+}
+
+fn lockfile_has_entries(lockfile: &Lockfile) -> bool {
+    !lockfile.runtimes.is_empty() || !lockfile.tools.is_empty() || !lockfile.artifacts.is_empty()
+}
+
+fn collect_nix_runtime_lock(
+    module_root: &Path,
+    instance_path: &Path,
+    runtime: &NixRuntime,
+) -> Result<CollectedRuntime> {
+    let project_root = module_root.join(instance_path);
+    let flake_root = resolve_local_flake_root(&project_root, &runtime.flake).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "Nix runtime flake '{}' is not a local path. cuenv sync requires a local flake so it can lock the checked-in flake.lock.",
+            runtime.flake
+        ))
+    })?;
+
+    let flake_lock_path = flake_root.join("flake.lock");
+    let analyzer = FlakeLockAnalyzer::from_path(&flake_lock_path).map_err(|e| {
+        cuenv_core::Error::configuration(format!(
+            "Failed to read Nix runtime lockfile for project '{}': {}",
+            display_project_path(instance_path),
+            e
+        ))
+    })?;
+
+    let analysis = analyzer.analyze();
+    if !analysis.is_pure {
+        let issues = analysis
+            .unlocked_inputs
+            .iter()
+            .map(|input| format!("{} ({})", input.name, input.reason))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(cuenv_core::Error::configuration(format!(
+            "Nix runtime flake.lock for project '{}' is not fully locked: {}",
+            display_project_path(instance_path),
+            issues
+        )));
+    }
+
+    let relative_lockfile = relative_to_module_root(module_root, &flake_lock_path);
+
+    Ok(CollectedRuntime {
+        project_path: display_project_path(instance_path),
+        runtime: LockedRuntime::Nix(LockedNixRuntime {
+            flake: runtime.flake.clone(),
+            output: runtime.output.clone(),
+            digest: analysis.locked_digest,
+            lockfile: relative_lockfile,
+        }),
+    })
+}
+
+fn display_project_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.is_empty() || path == "." {
+        ".".to_string()
+    } else {
+        path.into_owned()
+    }
+}
+
+fn relative_to_module_root(module_root: &Path, path: &Path) -> String {
+    path.strip_prefix(module_root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn resolve_local_flake_root(project_root: &Path, flake: &str) -> Option<PathBuf> {
+    let local_path = flake
+        .strip_prefix("path:")
+        .map_or_else(|| local_flake_path(flake), local_flake_path)?;
+
+    if local_path.is_absolute() {
+        Some(local_path)
+    } else {
+        Some(project_root.join(local_path))
+    }
+}
+
+fn local_flake_path(reference: &str) -> Option<PathBuf> {
+    if reference.is_empty() {
+        return Some(PathBuf::from("."));
+    }
+
+    if reference.starts_with('/')
+        || reference == "."
+        || reference == ".."
+        || reference.starts_with("./")
+        || reference.starts_with("../")
+    {
+        return Some(PathBuf::from(reference));
+    }
+
+    if reference.contains(':') {
+        return None;
+    }
+
+    Some(PathBuf::from(reference))
 }
 
 /// Check if the lockfile contains any Nix tools for the current platform.
@@ -1000,7 +1215,7 @@ mod tests {
             )]),
         });
 
-        let seeded = seed_lockfile(Some(&existing));
+        let seeded = seed_lockfile(Some(&existing), false);
 
         assert_eq!(seeded.version, LOCKFILE_VERSION);
         assert_eq!(seeded.tools_activation, existing.tools_activation);
@@ -1046,7 +1261,7 @@ mod tests {
             )]),
         });
 
-        let mut rebuilt = seed_lockfile(Some(&existing));
+        let mut rebuilt = seed_lockfile(Some(&existing), false);
         rebuilt.tools = existing.tools.clone();
         rebuilt.artifacts = existing.artifacts.clone();
 
