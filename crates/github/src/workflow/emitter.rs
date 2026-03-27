@@ -13,6 +13,32 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task, Tri
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
+/// How a task command is executed in the generated workflow.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TaskExecution {
+    /// Wrap with `cuenv task <id> --skip-dependencies`.
+    ///
+    /// Requires cuenv to be bootstrapped in CI.
+    #[default]
+    Orchestrated,
+    /// Execute the IR task's command array directly.
+    ///
+    /// Skips the cuenv setup contributor and runs the command as-is.
+    /// Use for tasks whose commands (e.g., `nix build`) do not need cuenv.
+    Direct,
+}
+
+/// Options for building a simple (non-matrix) job.
+#[derive(Debug, Clone, Default)]
+pub struct SimpleJobOptions<'a> {
+    /// Optional environment name for the task.
+    pub environment: Option<&'a String>,
+    /// Optional working directory (for monorepo projects).
+    pub project_path: Option<&'a str>,
+    /// How the task command is executed.
+    pub execution: TaskExecution,
+}
+
 /// GitHub Actions workflow emitter
 ///
 /// Transforms cuenv IR into GitHub Actions workflow YAML that can be
@@ -25,7 +51,7 @@ use std::collections::HashMap;
 /// | `pipeline.name` | Workflow `name:` |
 /// | `pipeline.trigger.branch` | `on.push.branches` / `on.pull_request.branches` |
 /// | `task.id` | Job key |
-/// | `task.command` | Step with `run: cuenv task {task.id}` |
+/// | `task.command` | Step with `run: cuenv task {task.id}` or direct command |
 /// | `task.depends_on` | Job `needs:` |
 /// | `task.manual_approval` | Job with `environment:` |
 /// | `task.concurrency_group` | Job-level `concurrency:` |
@@ -487,8 +513,11 @@ impl GitHubActionsEmitter {
             let mut job = self.build_simple_job(
                 task,
                 ir,
-                ir.pipeline.environment.as_ref(),
-                None, // project_path - not used in single-project mode
+                &SimpleJobOptions {
+                    environment: ir.pipeline.environment.as_ref(),
+                    project_path: None,
+                    execution: TaskExecution::default(),
+                },
             );
 
             // Apply additional job configuration from task
@@ -578,12 +607,58 @@ impl GitHubActionsEmitter {
         (steps, secret_env_vars)
     }
 
+    /// Render phase tasks, excluding contributors by name.
+    ///
+    /// Identical to [`render_phase_steps`] but skips setup-phase tasks whose
+    /// `contributor` field matches any entry in `excluded_contributors`.
+    /// Bootstrap-phase tasks are never excluded (Nix install, etc. are always needed).
+    #[must_use]
+    pub fn render_phase_steps_excluding(
+        &self,
+        ir: &IntermediateRepresentation,
+        excluded_contributors: &[&str],
+    ) -> (Vec<Step>, IndexMap<String, String>) {
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
+        let mut steps = Vec::new();
+        let mut secret_env_vars = IndexMap::new();
+
+        // Bootstrap phase tasks are always included (e.g., Nix installation)
+        let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
+        steps.extend(bootstrap_steps);
+
+        // Setup phase tasks, excluding specified contributors
+        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            let dominated = task
+                .contributor
+                .as_ref()
+                .is_some_and(|c| excluded_contributors.contains(&c.as_str()));
+            if dominated {
+                continue;
+            }
+            let step = renderer.render_task(task);
+            steps.push(step);
+
+            for (key, value) in &task.env {
+                secret_env_vars.insert(key.clone(), value.clone());
+            }
+        }
+
+        (steps, secret_env_vars)
+    }
+
     /// Build a simple job from an IR task (no matrix expansion).
     ///
     /// This method creates a single job that:
     /// 1. Checks out the repository
     /// 2. Runs bootstrap/setup phase tasks (Nix, cuenv, 1Password, etc.)
-    /// 3. Runs the task with `--skip-dependencies` (since CI handles job dependencies)
+    /// 3. Runs the task (orchestrated via cuenv or directly, per `options.execution`)
+    ///
+    /// When `TaskExecution::Direct`, the task's IR command array is executed as-is
+    /// and the cuenv contributor setup step is skipped (since cuenv is not needed).
     ///
     /// Use `build_matrix_jobs` for tasks with matrix configurations.
     ///
@@ -591,15 +666,13 @@ impl GitHubActionsEmitter {
     ///
     /// * `task` - IR task to build job for
     /// * `ir` - Intermediate representation containing phase tasks
-    /// * `environment` - Optional environment name for the task
-    /// * `project_path` - Optional working directory (for monorepo projects)
+    /// * `options` - Job construction options (environment, working directory, execution mode)
     #[must_use]
     pub fn build_simple_job(
         &self,
         task: &Task,
         ir: &IntermediateRepresentation,
-        environment: Option<&String>,
-        project_path: Option<&str>,
+        options: &SimpleJobOptions<'_>,
     ) -> Job {
         let mut steps = Vec::new();
 
@@ -611,7 +684,12 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+        // For direct execution, skip the cuenv contributor since we don't need cuenv
+        let (phase_steps, secret_env_vars) = if options.execution == TaskExecution::Direct {
+            self.render_phase_steps_excluding(ir, &["cuenv"])
+        } else {
+            self.render_phase_steps(ir)
+        };
         steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
@@ -624,17 +702,25 @@ impl GitHubActionsEmitter {
         }
 
         // Run the task
-        // Use --skip-dependencies because GitHub Actions handles job dependencies via `needs:`
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
+        let task_command = match options.execution {
+            TaskExecution::Direct => {
+                // Execute the IR task's command array directly
+                shell_join(&task.command)
+            }
+            TaskExecution::Orchestrated => {
+                // Wrap with cuenv task --skip-dependencies (GitHub Actions handles deps via needs:)
+                options.environment.map_or_else(
+                    || format!("cuenv task {} --skip-dependencies", task.id),
+                    |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
+                )
+            }
+        };
         let mut task_step = Step::run(task_command)
             .with_name(task.id.clone())
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
         // Set working directory for monorepo projects
-        if let Some(path) = project_path {
+        if let Some(path) = options.project_path {
             task_step = task_step.with_working_directory(path);
         }
 
@@ -1123,6 +1209,23 @@ fn sanitize_job_id(id: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .collect()
+}
+
+/// Join a command array into a shell-safe string for GitHub Actions `run:` steps.
+///
+/// Arguments containing spaces or shell metacharacters are single-quoted.
+fn shell_join(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|p| {
+            if p.contains(|c: char| c.is_whitespace() || "\"'\\$`|&;(){}".contains(c)) {
+                format!("'{}'", p.replace('\'', "'\\''"))
+            } else {
+                p.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Target platform configuration for release builds.
@@ -1805,7 +1908,7 @@ mod tests {
         let task = make_task("build", &["cargo", "build"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::default());
 
         assert_eq!(job.name, Some("build".to_string()));
         assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
@@ -1825,7 +1928,14 @@ mod tests {
         let ir = make_ir(vec![task.clone()]);
         let env = "production".to_string();
 
-        let job = emitter.build_simple_job(&task, &ir, Some(&env), None);
+        let job = emitter.build_simple_job(
+            &task,
+            &ir,
+            &SimpleJobOptions {
+                environment: Some(&env),
+                ..Default::default()
+            },
+        );
 
         // Find the task step and check command includes environment
         let task_step = job
@@ -1844,7 +1954,14 @@ mod tests {
         let task = make_task("build", &["cargo", "build"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, Some("platform/my-project"));
+        let job = emitter.build_simple_job(
+            &task,
+            &ir,
+            &SimpleJobOptions {
+                project_path: Some("platform/my-project"),
+                ..Default::default()
+            },
+        );
 
         // Find the task step and check working-directory is set
         let task_step = job
@@ -2064,7 +2181,7 @@ mod tests {
         let ir = make_ir(vec![task.clone()]);
 
         // project_path = None means root project, no working-directory
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::default());
 
         let task_step = job
             .steps
@@ -2237,7 +2354,14 @@ mod tests {
         let task = make_task("test", &["cargo", "test"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, Some("my-project"));
+        let job = emitter.build_simple_job(
+            &task,
+            &ir,
+            &SimpleJobOptions {
+                project_path: Some("my-project"),
+                ..Default::default()
+            },
+        );
 
         // Serialize job to YAML and verify working-directory appears
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");
@@ -2253,7 +2377,7 @@ mod tests {
         let task = make_task("test", &["cargo", "test"]);
         let ir = make_ir(vec![task.clone()]);
 
-        let job = emitter.build_simple_job(&task, &ir, None, None);
+        let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::default());
 
         // Serialize job to YAML and verify working-directory does NOT appear
         let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");

@@ -1173,8 +1173,8 @@ fn emit_standard_workflow(
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
     use cuenv_ci::ir::OutputType;
-    use cuenv_github::workflow::GitHubActionsEmitter;
     use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
+    use cuenv_github::workflow::{GitHubActionsEmitter, SimpleJobOptions, TaskExecution};
     use indexmap::IndexMap;
 
     let workflow_name = match &ctx.project_name {
@@ -1189,12 +1189,19 @@ fn emit_standard_workflow(
     // Only iterate over regular tasks (non-phase tasks) - phase tasks are handled internally
     let mut jobs = IndexMap::new();
     for task in ctx.regular_tasks() {
-        let mut job = emitter.build_simple_job(
-            task,
-            &ir,
-            ctx.environment.as_ref(),
-            ctx.project_path.as_deref(),
-        );
+        // Tasks whose command is not cuenv can run directly (e.g., nix build)
+        // without bootstrapping cuenv in CI
+        let execution = if task.command.first().is_some_and(|cmd| cmd != "cuenv") {
+            TaskExecution::Direct
+        } else {
+            TaskExecution::Orchestrated
+        };
+        let options = SimpleJobOptions {
+            environment: ctx.environment.as_ref(),
+            project_path: ctx.project_path.as_deref(),
+            execution,
+        };
+        let mut job = emitter.build_simple_job(task, &ir, &options);
         job.needs = task
             .depends_on
             .iter()
@@ -1278,8 +1285,11 @@ fn build_pipeline_jobs(
                     let mut job = emitter.build_simple_job(
                         ir_task,
                         ir,
-                        ctx.environment.as_ref(),
-                        ctx.project_path.as_deref(),
+                        &cuenv_github::workflow::SimpleJobOptions {
+                            environment: ctx.environment.as_ref(),
+                            project_path: ctx.project_path.as_deref(),
+                            execution: cuenv_github::workflow::TaskExecution::default(),
+                        },
                     );
                     job.needs = ir_task
                         .depends_on
@@ -1372,8 +1382,11 @@ fn build_pipeline_jobs(
         let mut job = emitter.build_simple_job(
             ir_task,
             ir,
-            ctx.environment.as_ref(),
-            ctx.project_path.as_deref(),
+            &cuenv_github::workflow::SimpleJobOptions {
+                environment: ctx.environment.as_ref(),
+                project_path: ctx.project_path.as_deref(),
+                execution: cuenv_github::workflow::TaskExecution::default(),
+            },
         );
         job.needs = ir_task
             .depends_on

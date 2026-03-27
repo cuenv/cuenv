@@ -123,12 +123,13 @@ schema.#Project & {
 			}
 
 			ci: {
+				mode: "expanded"
 				when: {
 					branch:      "main"
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: [_t.check]
+				tasks: [_t.checks]
 			}
 
 			release: {
@@ -185,11 +186,52 @@ schema.#Project & {
 			}
 		}
 
-		// --- CI Check (flake-owned lint, tests, security) ---
+		// --- CI Check (aggregate, for local use) ---
 		check: schema.#Task & {
 			command: "nix"
 			args: ["flake", "check", "-L", "--accept-flake-config"]
 			inputs: _checkInputs
+		}
+
+		// --- CI Checks (individual flake checks, for CI parallelism) ---
+		checks: {
+			type: "group"
+
+			cuenv: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-audit": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-audit", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-bdd": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-bdd", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-clippy": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-clippy", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-deny": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-deny", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-doctest": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-doctest", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+			"cuenv-nextest": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
 		}
 
 		// --- Linting ---

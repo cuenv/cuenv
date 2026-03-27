@@ -4,7 +4,8 @@
 
 - Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
-- We cannot commit any code if `cuenv task check` is not passing.
+- We cannot commit any code if `nix flake check` is not passing.
+- **Nix owns builds and checks.** All build, lint, test, and audit checks are Nix derivations defined in `flake.nix`. cuenv is for orchestration, sync, formatting, and non-build workflows.
 
 ## Project Overview
 
@@ -18,23 +19,28 @@ cuenv is a CUE-powered environment management and task orchestration system buil
 
 **CRITICAL: Build operations take significant time. Never cancel these commands.**
 
-All commands must be run through `cuenv` to ensure the nix flake environment is properly activated via hooks.
+Nix is the source of truth for all builds and checks. cuenv wraps common workflows
+for local convenience but CI runs the Nix derivations directly.
 
 ```bash
-# Build entire workspace (90+ seconds)
-cuenv task build
+# Run ALL checks (aggregate, 90+ seconds)
+nix flake check -L --accept-flake-config
 
-# Release build (45+ seconds)
-cuenv task release.build
+# Individual Nix checks (faster for iteration)
+nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-doctest -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-bdd -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-deny -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv-audit -L --accept-flake-config
+nix build .#checks.x86_64-linux.cuenv -L --accept-flake-config
 
-# Run all tests (45-60 seconds)
-cuenv task test.unit
-
-# Library tests only (30+ seconds, faster)
-cuenv exec -- cargo test --lib --workspace
-
-# Run clippy (15-20 seconds)
-cuenv task lint
+# Convenience wrappers (require cuenv in PATH via nix develop)
+cuenv task build           # debug build (90+ seconds)
+cuenv task release.build   # release build (45+ seconds)
+cuenv task test.unit       # nextest (45-60 seconds)
+cuenv exec -- cargo test --lib --workspace  # library tests only (30+ seconds)
+cuenv task lint            # clippy (15-20 seconds)
 
 # Format code
 cuenv fmt --fix
@@ -167,8 +173,7 @@ Before committing:
 
 ```bash
 cuenv fmt --fix
-cuenv task lint
-cuenv task test.unit
+nix flake check -L --accept-flake-config
 ```
 
 ## Requirements
