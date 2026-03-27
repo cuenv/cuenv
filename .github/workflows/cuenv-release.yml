@@ -21,7 +21,7 @@ permissions:
 jobs:
   cargo-build-darwin-arm64:
     name: cargo.build (darwin-arm64)
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -72,7 +72,7 @@ jobs:
         include-hidden-files: true
   cargo-build-linux-x64:
     name: cargo.build (linux-x64)
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -123,7 +123,7 @@ jobs:
         include-hidden-files: true
   publish-github:
     name: publish.github
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     needs:
     - cargo-build-darwin-arm64
     - cargo-build-linux-x64
@@ -181,7 +181,7 @@ jobs:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
     name: publish.cue
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -224,7 +224,7 @@ jobs:
         TAG: cuenv:passthrough:GITHUB_REF_NAME
   docs-deploy:
     name: docs.deploy
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     needs:
     - docs-build
     steps:
@@ -273,7 +273,7 @@ jobs:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4

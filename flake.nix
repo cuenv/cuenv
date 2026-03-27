@@ -254,35 +254,61 @@
           else if cpu == "aarch64" then "aarch64-unknown-linux-gnu.2.17"
           else throw "Unsupported Linux architecture: ${cpu}";
 
-        # Build artifacts for dependency caching
-        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
+        lockedCargoExtraArgs = "--locked";
+        workspaceAllFeaturesCargoExtraArgs = "${lockedCargoExtraArgs} --workspace --all-features";
+        workspaceDocCargoExtraArgs = "${lockedCargoExtraArgs} --workspace";
+        cuenvPackageCargoExtraArgs = "${lockedCargoExtraArgs} --package cuenv";
+
+        # Keep dependency-only derivations aligned with downstream cargo flags.
+        # Mixing workspace-wide and package-specific scopes forces Cargo to rebuild.
+        cargoArtifactsArgs = {
           src = srcArtifacts;
           preBuild = "";
           buildInputs = platformBuildInputs;
-          cargoExtraArgs = "--package cuenv";
+        };
+
+        workspaceCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+          cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
         });
 
-        checkArgs = commonArgs // {
-          inherit cargoArtifacts;
+        workspaceDocCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+          cargoExtraArgs = workspaceDocCargoExtraArgs;
+        });
+
+        cuenvCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+          cargoExtraArgs = cuenvPackageCargoExtraArgs;
+        });
+
+        workspaceCheckArgs = commonArgs // {
+          cargoArtifacts = workspaceCargoArtifacts;
           doCheck = true;
         };
 
-        clippy-check = craneLib.cargoClippy (checkArgs // {
-          cargoExtraArgs = "--locked --workspace --all-features";
+        workspaceDocCheckArgs = commonArgs // {
+          cargoArtifacts = workspaceDocCargoArtifacts;
+          doCheck = true;
+        };
+
+        cuenvCheckArgs = commonArgs // {
+          cargoArtifacts = cuenvCargoArtifacts;
+          doCheck = true;
+        };
+
+        clippy-check = craneLib.cargoClippy (workspaceCheckArgs // {
+          cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
           cargoClippyExtraArgs = "--all-targets -- -D warnings";
         });
 
-        nextest-check = craneLib.cargoNextest (checkArgs // {
-          cargoExtraArgs = "--locked";
-          cargoNextestExtraArgs = "--workspace --all-features";
+        nextest-check = craneLib.cargoNextest (workspaceCheckArgs // {
+          cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
         });
 
-        doc-test-check = craneLib.cargoDocTest (checkArgs // {
-          cargoExtraArgs = "--locked --workspace";
+        doc-test-check = craneLib.cargoDocTest (workspaceDocCheckArgs // {
+          cargoExtraArgs = workspaceDocCargoExtraArgs;
         });
 
-        bdd-check = craneLib.cargoTest (checkArgs // {
-          cargoExtraArgs = "--locked";
+        bdd-check = craneLib.cargoTest (cuenvCheckArgs // {
+          cargoExtraArgs = cuenvPackageCargoExtraArgs;
           cargoTestExtraArgs = "--test bdd";
         });
 
@@ -316,7 +342,8 @@
         # On Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
         # On macOS: Use regular cargo with deployment target env var
         cuenv = craneLib.buildPackage (commonArgs // {
-          inherit cargoArtifacts;
+          cargoArtifacts = cuenvCargoArtifacts;
+          cargoExtraArgs = cuenvPackageCargoExtraArgs;
           pname = "cuenv";
           inherit version;
           doCheck = false; # Tests run via cuenv task check, not nix build
@@ -328,7 +355,7 @@
           buildPhaseCargoCommand = ''
             export XDG_CACHE_HOME="$TMPDIR/xdg_cache"
             export CARGO_ZIGBUILD_CACHE_DIR="$TMPDIR/zigbuild_cache"
-            cargo zigbuild --release --package cuenv --target ${zigbuildTarget}
+            cargo zigbuild --release ${cuenvPackageCargoExtraArgs} --target ${zigbuildTarget}
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
@@ -339,7 +366,7 @@
           doNotPostBuildInstallCargoBinaries = true;
           buildPhaseCargoCommand = ''
             export MACOSX_DEPLOYMENT_TARGET="11.0"
-            cargo build --release --package cuenv
+            cargo build --release ${cuenvPackageCargoExtraArgs}
           '';
           installPhaseCommand = ''
             mkdir -p $out/bin
