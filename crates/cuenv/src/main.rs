@@ -45,6 +45,12 @@ const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt
 
 /// Main entry point - determines sync vs async execution path
 fn main() {
+    // Install the rustls crypto provider before any HTTP clients are created.
+    // Required because reqwest uses `rustls-no-provider` to avoid bundling aws-lc-sys.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to install default rustls crypto provider");
+
     // Set up error handling first
     // NOTE: Using eprintln! in panic hook is intentional - tracing infrastructure
     // may be corrupted during a panic, so we use the most reliable output method.
