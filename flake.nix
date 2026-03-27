@@ -4,6 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     crane.url = "github:ipetkov/crane/v0.21.1";
+    advisory-db = {
+      url = "github:RustSec/advisory-db";
+      flake = false;
+    };
     flake-utils.url = "github:numtide/flake-utils/v1.0.0";
     rust-overlay = {
       url = "github:oxalica/rust-overlay";
@@ -24,8 +28,13 @@
     accept-flake-config = true;
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, flake-schemas, ... }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs = { self, nixpkgs, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
+    let
+      systems = [
+        builtins.currentSystem
+      ];
+    in
+    flake-utils.lib.eachSystem systems (system:
       let
         pkgs = import nixpkgs {
           inherit system;
@@ -87,6 +96,19 @@
           url = "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
           hash = "sha256-hY3SBC679vUNDkpREjfUWAaQxC5mrPQhdYSuUKx+j2o=";
         };
+
+        rustsec-advisory-db = pkgs.runCommand "rustsec-advisory-db-sanitized" {
+          src = advisory-db;
+          nativeBuildInputs = with pkgs; [ findutils gnugrep ];
+        } ''
+          mkdir -p "$out"
+          cp -R "$src"/. "$out"/
+          chmod -R +w "$out"
+          while IFS= read -r -d "" file; do
+            grep -Ev '^cvss = "CVSS:4\.0/' "$file" > "$file.tmp"
+            mv "$file.tmp" "$file"
+          done < <(find "$out" -name '*.md' -print0)
+        '';
 
         # CUE bridge builder
         cue-bridge = pkgs.buildGoModule {
@@ -152,23 +174,33 @@
               isCargoSource = craneLib.filterCargoSources path type;
               # Include all files in crates/ (Rust code, Go bridge, test fixtures)
               isInCratesDir = builtins.match ".*/crates/.*" path != null || baseName == "crates";
+              isInContribDir = builtins.match ".*/contrib/.*" path != null || baseName == "contrib";
               # CUE files needed for tests (schema definitions, examples, module config)
               isCueFile = pkgs.lib.hasSuffix ".cue" path;
               isInSchemaDir = builtins.match ".*/schema/.*" path != null || baseName == "schema";
               isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
+              isInTestsDir = builtins.match ".*/_tests/.*" path != null || baseName == "_tests";
+              isInFeaturesDir = builtins.match ".*/features/.*" path != null || baseName == "features";
               isLlmsTxt = baseName == "llms.txt";
               isEnvCue = baseName == "env.cue";
+              isDenyToml = baseName == "deny.toml";
 
               # We must include the directories themselves so the filter recurses into them
               isDir = type == "directory";
-              isAllowedDir = (isInSchemaDir || isInExamplesDir || isInCueModDir) && isDir;
+              isAllowedDir =
+                (isInSchemaDir || isInExamplesDir || isInCueModDir || isInTestsDir || isInFeaturesDir || isInContribDir)
+                && isDir;
             in
             isCargoSource ||
             isInCratesDir ||
+            isInContribDir ||
             isLlmsTxt ||
             isEnvCue ||
+            isDenyToml ||
             isAllowedDir ||
+            isInTestsDir ||
+            isInFeaturesDir ||
             ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
         };
 
@@ -227,6 +259,56 @@
           cargoExtraArgs = "--package cuenv";
         });
 
+        checkArgs = commonArgs // {
+          inherit cargoArtifacts;
+          doCheck = true;
+        };
+
+        clippy-check = craneLib.cargoClippy (checkArgs // {
+          cargoExtraArgs = "--locked --workspace --all-features";
+          cargoClippyExtraArgs = "--all-targets -- -D warnings";
+        });
+
+        nextest-check = craneLib.cargoNextest (checkArgs // {
+          cargoExtraArgs = "--locked";
+          cargoNextestExtraArgs = "--workspace --all-features";
+        });
+
+        doc-test-check = craneLib.cargoDocTest (checkArgs // {
+          cargoExtraArgs = "--locked --workspace";
+        });
+
+        bdd-check = craneLib.cargoTest (checkArgs // {
+          cargoExtraArgs = "--locked";
+          cargoTestExtraArgs = "--test bdd";
+        });
+
+        deny-check = craneLib.cargoDeny {
+          inherit src version;
+          pname = "cuenv";
+          cargoDenyChecks = "bans licenses";
+        };
+
+        audit-check = craneLib.mkCargoDerivation {
+          inherit src version;
+          pname = "cuenv";
+          cargoArtifacts = null;
+          cargoVendorDir = null;
+          doInstallCargoArtifacts = false;
+          buildPhaseCargoCommand = ''
+            cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
+              --ignore yanked \
+              --ignore RUSTSEC-2023-0071 \
+              --ignore RUSTSEC-2025-0057 \
+              --ignore RUSTSEC-2025-0134 \
+              --ignore RUSTSEC-2026-0006 \
+              --ignore RUSTSEC-2026-0020 \
+              --ignore RUSTSEC-2026-0021 \
+              --ignore RUSTSEC-2026-0037
+          '';
+          nativeBuildInputs = [ pkgs.cargo-audit ];
+        };
+
         # Main package build
         # On Linux: Use cargo-zigbuild for portable glibc 2.17 binaries
         # On macOS: Use regular cargo with deployment target env var
@@ -259,6 +341,11 @@
           installPhaseCommand = ''
             mkdir -p $out/bin
             cp target/release/cuenv $out/bin/
+
+            libiconv_path="$(${pkgs.darwin.cctools}/bin/otool -L $out/bin/cuenv | awk '/libiconv\.2\.dylib/ {print $1; exit}')"
+            if [[ -n "$libiconv_path" && "$libiconv_path" == /nix/store/* ]]; then
+              ${pkgs.darwin.cctools}/bin/install_name_tool -change "$libiconv_path" /usr/lib/libiconv.2.dylib $out/bin/cuenv
+            fi
           '';
         }));
 
@@ -292,6 +379,16 @@
 
       in
       {
+        checks = {
+          inherit cuenv;
+          cuenv-audit = audit-check;
+          cuenv-bdd = bdd-check;
+          cuenv-clippy = clippy-check;
+          cuenv-deny = deny-check;
+          cuenv-doctest = doc-test-check;
+          cuenv-nextest = nextest-check;
+        };
+
         packages = {
           default = cuenv;
           inherit cuenv cue-bridge;

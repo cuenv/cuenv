@@ -10,7 +10,7 @@ import "github.com/cuenv/cuenv/schema"
 // Injects tasks:
 // - cuenv:contributor:cachix.setup: Sets up Cachix for binary caching
 //
-// This is a GitHub-specific contributor.
+// This is a GitHub-specific contributor and uses cachix/cachix-action.
 //
 // Usage:
 //
@@ -24,14 +24,14 @@ import "github.com/cuenv/cuenv/schema"
 	tasks: [{
 		id:        "cachix.setup"
 		label:     "Setup Cachix"
-		priority:  15
+		priority:  9
 		dependsOn: ["nix.install"]
-		env: {
-			CACHIX_CACHE_NAME: "${CACHIX_CACHE_NAME}"
-			CACHIX_AUTH_TOKEN: "${CACHIX_AUTH_TOKEN}"
+		provider: github: {
+			uses: "cachix/cachix-action@v17"
+			with: {
+				name:      "${CACHIX_CACHE_NAME}"
+				authToken: "${CACHIX_AUTH_TOKEN}"
+			}
 		}
-		secrets: CACHIX_AUTH_TOKEN: "CACHIX_AUTH_TOKEN"
-		command: "sh"
-		args: ["-c", ". /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && nix-env -iA cachix -f https://cachix.org/api/v1/install && cachix use ${CACHIX_CACHE_NAME}"]
 	}]
 }

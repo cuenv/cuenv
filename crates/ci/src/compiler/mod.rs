@@ -32,6 +32,12 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CachixSettings {
+    name: String,
+    auth_token_secret: String,
+}
+
 /// Compiler errors
 #[derive(Debug, Error)]
 pub enum CompilerError {
@@ -943,7 +949,7 @@ impl Compiler {
                     continue;
                 }
 
-                let task = Self::contributor_task_to_ir(contributor_task, &contributor.id);
+                let task = self.contributor_task_to_ir(contributor_task, &contributor.id);
                 ir.tasks.push(task);
             }
         }
@@ -1292,11 +1298,17 @@ impl Compiler {
     /// Creates an IR Task with contributor metadata. Contributor tasks are stored
     /// alongside regular tasks in `ir.tasks` and distinguished by their `phase` field.
     /// The phase is derived from the task's priority.
-    fn contributor_task_to_ir(contributor_task: &ContributorTask, contributor_id: &str) -> IrTask {
+    fn contributor_task_to_ir(
+        &self,
+        contributor_task: &ContributorTask,
+        contributor_id: &str,
+    ) -> IrTask {
+        let resolve_value = |value: &str| self.resolve_contributor_value(contributor_id, value);
+
         // Build command array, wrapping with `cuenv exec` if needed for tool activation
         let (command, shell) = if let Some(ref cmd) = contributor_task.command {
-            let mut cmd_vec = vec![cmd.clone()];
-            cmd_vec.extend(contributor_task.args.clone());
+            let mut cmd_vec = vec![resolve_value(cmd)];
+            cmd_vec.extend(contributor_task.args.iter().map(|arg| resolve_value(arg)));
 
             // Wrap with cuenv exec if:
             // 1. Not using a GitHub Action (provider.github) - actions handle their own setup
@@ -1324,7 +1336,7 @@ impl Compiler {
                 (cmd_vec, contributor_task.shell)
             }
         } else if let Some(ref script) = contributor_task.script {
-            (vec![script.clone()], true)
+            (vec![resolve_value(script)], true)
         } else {
             (vec![], false)
         };
@@ -1362,7 +1374,15 @@ impl Compiler {
                         serde_json::Value::Object(
                             gh.inputs
                                 .iter()
-                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .map(|(k, v)| {
+                                    let value = match v {
+                                        serde_json::Value::String(s) => {
+                                            serde_json::Value::String(resolve_value(s))
+                                        }
+                                        _ => v.clone(),
+                                    };
+                                    (k.clone(), value)
+                                })
                                 .collect(),
                         ),
                     );
@@ -1407,7 +1427,7 @@ impl Compiler {
             env: contributor_task
                 .env
                 .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
+                .map(|(k, v)| (k.clone(), resolve_value(v)))
                 .collect(),
             secrets,
             resources: None,
@@ -1430,6 +1450,74 @@ impl Compiler {
             provider_hints,
         }
     }
+
+    fn resolve_contributor_value(&self, contributor_id: &str, value: &str) -> String {
+        match contributor_id {
+            "cachix" => self.resolve_cachix_value(value),
+            _ => value.to_string(),
+        }
+    }
+
+    fn resolve_cachix_value(&self, value: &str) -> String {
+        let Some(settings) = self.cachix_settings() else {
+            return value.to_string();
+        };
+
+        if value == "${CACHIX_AUTH_TOKEN}" {
+            return format!("${{{}}}", settings.auth_token_secret);
+        }
+
+        value.replace("${CACHIX_CACHE_NAME}", &settings.name)
+    }
+
+    fn cachix_settings(&self) -> Option<CachixSettings> {
+        let mut config = self
+            .project
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_cachix_settings);
+
+        if let Some(pipeline_config) = self
+            .options
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_cachix_settings)
+        {
+            config = Some(match config {
+                Some(global) => CachixSettings {
+                    name: pipeline_config.name,
+                    auth_token_secret: if pipeline_config.auth_token_secret.is_empty() {
+                        global.auth_token_secret
+                    } else {
+                        pipeline_config.auth_token_secret
+                    },
+                },
+                None => pipeline_config,
+            });
+        }
+
+        config
+    }
+
+    fn parse_cachix_settings(value: &serde_json::Value) -> Option<CachixSettings> {
+        let github = value.as_object()?;
+        let cachix = github.get("cachix")?.as_object()?;
+        let name = cachix.get("name")?.as_str()?.to_string();
+        let auth_token_secret = cachix
+            .get("authToken")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("CACHIX_AUTH_TOKEN")
+            .to_string();
+
+        Some(CachixSettings {
+            name,
+            auth_token_secret,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1437,6 +1525,10 @@ mod tests {
     use super::*;
     use cuenv_core::ci::PipelineMode;
     use cuenv_core::tasks::{Task, TaskDependency, TaskNode};
+
+    fn test_compiler() -> Compiler {
+        Compiler::new(Project::new("test-project"))
+    }
 
     #[test]
     fn test_compile_simple_task() {
@@ -2201,7 +2293,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.id, "cuenv:contributor:test-task");
         // Commands are wrapped with cuenv exec for tool activation
@@ -2235,7 +2327,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.id, "cuenv:contributor:script-task");
         assert_eq!(ir_task.command, vec!["echo line1\necho line2"]);
@@ -2279,7 +2371,7 @@ mod tests {
             }),
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "nix");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "nix");
 
         assert_eq!(ir_task.id, "cuenv:contributor:nix.install");
         assert!(ir_task.command.is_empty()); // No command, uses action
@@ -2331,7 +2423,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.secrets.len(), 2);
         assert_eq!(ir_task.phase, Some(BuildStage::Setup));
@@ -2372,7 +2464,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "github");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "github");
 
         assert_eq!(ir_task.env.len(), 2);
         assert_eq!(ir_task.env.get("VAR1"), Some(&"value1".to_string()));
@@ -2401,7 +2493,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "bun.workspace");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "bun.workspace");
 
         assert_eq!(ir_task.id, "cuenv:contributor:bun.workspace.install");
         // Commands are wrapped with cuenv exec for tool activation
@@ -2437,7 +2529,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "cuenv");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "cuenv");
 
         assert_eq!(ir_task.id, "cuenv:contributor:cuenv.setup");
         // Should NOT be wrapped - cuenv contributor tasks set up cuenv itself
@@ -2470,7 +2562,7 @@ mod tests {
             provider: None,
         };
 
-        let ir_task = Compiler::contributor_task_to_ir(&contributor_task, "rust");
+        let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "rust");
 
         assert_eq!(ir_task.id, "cuenv:contributor:setup.rust");
         // Should NOT be wrapped - bootstrap tasks run before cuenv.setup

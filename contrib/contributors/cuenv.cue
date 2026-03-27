@@ -121,21 +121,22 @@ import "github.com/cuenv/cuenv/schema"
 	}]
 }
 
-// #CuenvNix installs cuenv via Nix flake
+// #CuenvNix builds cuenv from the checked-out repository flake.
 // Requires nix.install to have run first.
 #CuenvNix: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["nix"]
 	tasks: [{
 		id:        "cuenv.setup"
-		label:     "Setup cuenv (nix)"
+		label:     "Build cuenv (nix)"
 		priority:  10
 		dependsOn: ["nix.install"]
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-			nix profile install github:cuenv/cuenv#cuenv --accept-flake-config
-			cuenv sync ci
+			nix build .#cuenv -L --accept-flake-config
+			echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+			./result/bin/cuenv sync ci
 			"""
 	}]
 }

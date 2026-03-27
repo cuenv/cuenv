@@ -81,14 +81,40 @@ impl ActionSpec {
 /// Renders phase tasks as GitHub Actions workflow steps.
 ///
 /// Handles both action-based steps (via `ActionSpec` in provider_hints) and run-based steps.
-#[derive(Debug, Clone, Default)]
-pub struct GitHubStageRenderer;
+#[derive(Debug, Clone)]
+pub struct GitHubStageRenderer {
+    cachix_name: Option<String>,
+    cachix_auth_token_secret: String,
+}
+
+impl Default for GitHubStageRenderer {
+    fn default() -> Self {
+        Self {
+            cachix_name: None,
+            cachix_auth_token_secret: "CACHIX_AUTH_TOKEN".to_string(),
+        }
+    }
+}
 
 impl GitHubStageRenderer {
     /// Create a new GitHub stage renderer
     #[must_use]
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Configure the renderer with the Cachix cache name.
+    #[must_use]
+    pub fn with_cachix(mut self, name: impl Into<String>) -> Self {
+        self.cachix_name = Some(name.into());
+        self
+    }
+
+    /// Configure the renderer with the Cachix auth token secret name.
+    #[must_use]
+    pub fn with_cachix_auth_token_secret(mut self, secret: impl Into<String>) -> Self {
+        self.cachix_auth_token_secret = secret.into();
+        self
     }
 
     /// Render a single task to a GitHub Actions step.
@@ -103,7 +129,7 @@ impl GitHubStageRenderer {
 
             // Add action inputs (converting from serde_json::Value to serde_yaml::Value)
             for (key, value) in &action.inputs {
-                let yaml_value = json_to_yaml_value(value);
+                let yaml_value = self.json_to_yaml_value(value);
                 step.with_inputs.insert(key.clone(), yaml_value);
             }
 
@@ -132,33 +158,60 @@ impl GitHubStageRenderer {
     pub fn render_tasks(&self, tasks: &[&Task]) -> Vec<Step> {
         tasks.iter().map(|t| self.render_task(t)).collect()
     }
-}
 
-/// Convert a `serde_json::Value` to a `serde_yaml::Value`.
-fn json_to_yaml_value(json: &serde_json::Value) -> serde_yaml::Value {
-    match json {
-        serde_json::Value::Null => serde_yaml::Value::Null,
-        serde_json::Value::Bool(b) => serde_yaml::Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                serde_yaml::Value::Number(serde_yaml::Number::from(i))
-            } else if let Some(f) = n.as_f64() {
-                serde_yaml::Value::Number(serde_yaml::Number::from(f))
-            } else {
-                serde_yaml::Value::Null
+    /// Convert a `serde_json::Value` to a `serde_yaml::Value`.
+    fn json_to_yaml_value(&self, json: &serde_json::Value) -> serde_yaml::Value {
+        match json {
+            serde_json::Value::Null => serde_yaml::Value::Null,
+            serde_json::Value::Bool(b) => serde_yaml::Value::Bool(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    serde_yaml::Value::Number(serde_yaml::Number::from(i))
+                } else if let Some(f) = n.as_f64() {
+                    serde_yaml::Value::Number(serde_yaml::Number::from(f))
+                } else {
+                    serde_yaml::Value::Null
+                }
+            }
+            serde_json::Value::String(s) => serde_yaml::Value::String(self.resolve_action_input(s)),
+            serde_json::Value::Array(arr) => serde_yaml::Value::Sequence(
+                arr.iter()
+                    .map(|value| self.json_to_yaml_value(value))
+                    .collect(),
+            ),
+            serde_json::Value::Object(obj) => {
+                let mapping: serde_yaml::Mapping = obj
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            serde_yaml::Value::String(k.clone()),
+                            self.json_to_yaml_value(v),
+                        )
+                    })
+                    .collect();
+                serde_yaml::Value::Mapping(mapping)
             }
         }
-        serde_json::Value::String(s) => serde_yaml::Value::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            serde_yaml::Value::Sequence(arr.iter().map(json_to_yaml_value).collect())
+    }
+
+    fn resolve_action_input(&self, value: &str) -> String {
+        if value == "${CACHIX_CACHE_NAME}" {
+            return self
+                .cachix_name
+                .clone()
+                .unwrap_or_else(|| value.to_string());
         }
-        serde_json::Value::Object(obj) => {
-            let mapping: serde_yaml::Mapping = obj
-                .iter()
-                .map(|(k, v)| (serde_yaml::Value::String(k.clone()), json_to_yaml_value(v)))
-                .collect();
-            serde_yaml::Value::Mapping(mapping)
+
+        if value == "${CACHIX_AUTH_TOKEN}" {
+            let secret_name = if self.cachix_auth_token_secret.is_empty() {
+                "CACHIX_AUTH_TOKEN".to_string()
+            } else {
+                self.cachix_auth_token_secret.clone()
+            };
+            return transform_secret_ref(&format!("${{{secret_name}}}"));
         }
+
+        transform_secret_ref(value)
     }
 }
 
@@ -266,6 +319,30 @@ mod tests {
         );
         assert!(step.run.is_none());
         assert!(step.with_inputs.contains_key("extra-conf"));
+    }
+
+    #[test]
+    fn test_render_action_step_transforms_secret_inputs() {
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "authToken".to_string(),
+            serde_json::Value::String("${CACHIX_AUTH_TOKEN}".to_string()),
+        );
+
+        let mut task = make_test_task("setup-cachix", &[]);
+        task.label = Some("Setup Cachix".to_string());
+        task.provider_hints = Some(make_github_action_hints("cachix/cachix-action@v17", inputs));
+
+        let renderer = GitHubStageRenderer::new();
+        let step = renderer.render_task(&task);
+
+        assert_eq!(step.uses, Some("cachix/cachix-action@v17".to_string()));
+        assert_eq!(
+            step.with_inputs.get("authToken"),
+            Some(&serde_yaml::Value::String(
+                "${{ secrets.CACHIX_AUTH_TOKEN }}".to_string()
+            ))
+        );
     }
 
     #[test]
