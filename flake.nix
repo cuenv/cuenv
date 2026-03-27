@@ -31,7 +31,10 @@
   outputs = { self, nixpkgs, crane, advisory-db, flake-utils, rust-overlay, flake-schemas, ... }:
     let
       systems = [
-        builtins.currentSystem
+        "aarch64-darwin"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "x86_64-linux"
       ];
     in
     flake-utils.lib.eachSystem systems (system:
