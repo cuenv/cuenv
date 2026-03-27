@@ -20,6 +20,12 @@ let _baseInputs = [
 	"crates/**",
 ]
 
+let _checkInputs = list.Concat([
+	["flake.nix", "flake.lock"],
+	_baseInputs,
+	["_tests/**", "contrib/**", "features/**", "examples/**", "schema/**", "cue.mod/**", "deny.toml", "env.cue"],
+])
+
 schema.#Project & {
 	name: "cuenv"
 
@@ -44,9 +50,9 @@ schema.#Project & {
 	// Configuration
 	// ============================================================================
 
-	// Build cuenv from source using native Rust/Go toolchains.
-	// The repository flake is the source of truth for task tools and system inputs.
-	config: ci: cuenv: {source: "native", version: "self"}
+	// Build cuenv from the checked-out repository flake in CI.
+	// This dogfoods the current branch while keeping bootstrap on the Nix/Cachix path.
+	config: ci: cuenv: {source: "nix", version: "self"}
 
 	// ============================================================================
 	// Environment Variables
@@ -74,7 +80,8 @@ schema.#Project & {
 
 		contributors: [
 			xContributors.#Nix,
-			xContributors.#CuenvNative,
+			xContributors.#Cachix,
+			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
 			xCodecov.#Codecov,
@@ -178,11 +185,11 @@ schema.#Project & {
 			}
 		}
 
-		// --- CI Check (runs lint, tests, security) ---
+		// --- CI Check (flake-owned lint, tests, security) ---
 		check: schema.#Task & {
-			command: "echo"
-			args: ["All checks passed"]
-			dependsOn: [lint, tests, security]
+			command: "nix"
+			args: ["flake", "check", "-L", "--accept-flake-config"]
+			inputs: _checkInputs
 		}
 
 		// --- Linting ---
@@ -293,8 +300,19 @@ schema.#Project & {
 			}
 
 			build: #cargo & {
-				args: ["build", "--release", "-p", "cuenv"]
-				inputs: _baseInputs
+				script: """
+					#!/usr/bin/env bash
+					set -euo pipefail
+
+					echo "Building release artifact from flake output..."
+					nix build .#cuenv -L --accept-flake-config
+					mkdir -p target/release
+					cp result/bin/cuenv target/release/cuenv
+
+					echo "Binary at: target/release/cuenv"
+					file target/release/cuenv
+					"""
+				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
 				outputs: ["target/release/cuenv"]
 			}
 
@@ -313,29 +331,10 @@ schema.#Project & {
 			type: "group"
 
 			linux: schema.#Task & {
-				script: """
-					#!/bin/bash
-					set -euo pipefail
-					TARGET="x86_64-unknown-linux-gnu"
-
-					echo "Building Go bridge for Linux..."
-					cd crates/cuengine
-					mkdir -p ../../target/release
-					export CGO_ENABLED=1 GOOS=linux GOARCH=amd64
-					export CC="zig cc -target x86_64-linux-gnu"
-					export CXX="zig c++ -target x86_64-linux-gnu"
-					export AR="zig ar"
-					go build -buildmode=c-archive -o ../../target/release/libcue_bridge.a bridge.go
-					cp libcue_bridge.h ../../target/release/
-					cd ../..
-
-					echo "Building cuenv for Linux..."
-					cargo zigbuild --release --target $TARGET -p cuenv
-
-					echo "Binary at: target/$TARGET/release/cuenv"
-					file target/$TARGET/release/cuenv
-					"""
-				inputs: _baseInputs
+				command: "nix"
+				args: ["build", ".#cuenv", "-L", "--accept-flake-config"]
+				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
+				outputs: ["result/bin/cuenv"]
 			}
 		}
 

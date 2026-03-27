@@ -547,9 +547,14 @@ impl GitHubActionsEmitter {
     /// handling both `uses:` action steps and `run:` command steps.
     #[must_use]
     pub fn render_phase_steps(
+        &self,
         ir: &IntermediateRepresentation,
     ) -> (Vec<Step>, IndexMap<String, String>) {
-        let renderer = GitHubStageRenderer::new();
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
         let mut steps = Vec::new();
         let mut secret_env_vars = IndexMap::new();
 
@@ -606,7 +611,7 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
         steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
@@ -729,7 +734,7 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
         steps.extend(phase_steps);
 
         // Download artifacts from previous jobs
@@ -856,7 +861,7 @@ impl GitHubActionsEmitter {
                 );
 
                 // Render bootstrap and setup phase tasks
-                let (phase_steps, secret_env_vars) = Self::render_phase_steps(ir);
+                let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
                 steps.extend(phase_steps);
 
                 // Run the task with --skip-dependencies
@@ -968,7 +973,11 @@ impl Emitter for GitHubActionsEmitter {
         let triggers = self.build_triggers(ir, &workflow_filename);
         let permissions = self.build_permissions(ir);
 
-        let renderer = GitHubStageRenderer::new();
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
         let mut steps = Vec::new();
 
         // Checkout step
@@ -979,7 +988,7 @@ impl Emitter for GitHubActionsEmitter {
         );
 
         // Bootstrap and setup phase steps
-        let (phase_steps, secret_env) = Self::render_phase_steps(ir);
+        let (phase_steps, secret_env) = self.render_phase_steps(ir);
         steps.extend(phase_steps);
 
         // Main execution step: cuenv ci --pipeline <name>
@@ -1611,19 +1620,19 @@ mod tests {
         bootstrap_task.contributor = Some("nix".to_string());
         bootstrap_task.provider_hints = Some(nix_provider_hints);
 
-        let mut cachix_task = make_phase_task(
-            "setup-cachix",
-            &["nix-env -iA cachix && cachix use my-cache"],
-            BuildStage::Setup,
-            5,
-        );
+        let mut cachix_task = make_phase_task("setup-cachix", &[], BuildStage::Setup, 5);
         cachix_task.label = Some("Setup Cachix (my-cache)".to_string());
         cachix_task.contributor = Some("cachix".to_string());
         cachix_task.depends_on = vec!["install-nix".to_string()];
-        cachix_task.env.insert(
-            "CACHIX_AUTH_TOKEN".to_string(),
-            "${CACHIX_AUTH_TOKEN}".to_string(),
-        );
+        cachix_task.provider_hints = Some(serde_json::json!({
+            "github_action": {
+                "uses": "cachix/cachix-action@v17",
+                "inputs": {
+                    "name": "my-cache",
+                    "authToken": "${CACHIX_AUTH_TOKEN}"
+                }
+            }
+        }));
 
         let ir = make_ir(vec![
             bootstrap_task,
@@ -1633,8 +1642,9 @@ mod tests {
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        // Cachix uses a run command (matching CachixContributor behavior)
-        assert!(yaml.contains("cachix use my-cache"));
+        assert!(yaml.contains("cachix/cachix-action@v17"));
+        assert!(yaml.contains("name: my-cache"));
+        assert!(yaml.contains("${{ secrets.CACHIX_AUTH_TOKEN }}"));
         assert!(yaml.contains("Setup Cachix (my-cache)"));
     }
 
@@ -2013,6 +2023,8 @@ mod tests {
 
     #[test]
     fn test_render_phase_steps() {
+        let emitter = GitHubActionsEmitter::new();
+
         let mut bootstrap_task =
             make_phase_task("install-nix", &["curl ... | sh"], BuildStage::Bootstrap, 0);
         bootstrap_task.label = Some("Install Nix".to_string());
@@ -2028,7 +2040,7 @@ mod tests {
 
         let ir = make_ir(vec![bootstrap_task, setup_task]);
 
-        let (steps, secret_env_vars) = GitHubActionsEmitter::render_phase_steps(&ir);
+        let (steps, secret_env_vars) = emitter.render_phase_steps(&ir);
 
         assert_eq!(steps.len(), 2);
         assert!(steps[0].name.as_deref() == Some("Install Nix"));
