@@ -4,6 +4,7 @@
 .cache
 .cargo
 .cuenv
+.worktrees
 .test
 *.vsix
 bdd_test_runs
