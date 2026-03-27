@@ -42,7 +42,7 @@ pub use types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult, Hooks};
 pub use state::{HookExecutionState, StateManager, compute_execution_hash, compute_instance_hash};
 
 // Re-export executor
-pub use executor::{HookExecutor, execute_hooks};
+pub use executor::{HookExecutor, capture_source_environment, execute_hooks};
 
 // Re-export approval management
 pub use approval::{

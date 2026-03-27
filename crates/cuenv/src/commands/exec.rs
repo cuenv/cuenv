@@ -8,6 +8,7 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
+use super::runtime_env::resolve_runtime_environment;
 use super::sync::{SyncMode, SyncOptions, default_registry};
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use super::{CommandExecutor, relative_path_from_root};
@@ -173,6 +174,12 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             base_env_vars
         );
 
+        let runtime_env_vars =
+            resolve_runtime_environment(&directory, project.runtime.as_ref()).await?;
+        for (key, value) in runtime_env_vars {
+            runtime_env.set(key, value);
+        }
+
         // Apply base environment
         for (key, value) in &base_env_vars {
             runtime_env.set(key.clone(), value.clone());
@@ -244,28 +251,32 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor).await?;
     }
 
-    // Download and activate tools from lockfile by prepending to PATH and library path.
-    // This happens automatically without requiring hook approval since tool
-    // activation is a controlled, safe operation (just adds paths to the environment).
-    // Use the target_path to scope tool activation to this project only.
-    // Tool activation failures are fatal - commands require their tools to run.
-    ensure_tools_downloaded(Some(&target_path))
-        .await
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to download tools: {e}")))?;
-    if let Some(activation_steps) =
-        resolve_tool_activation_steps(Some(&target_path)).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
-        })?
-    {
-        tracing::debug!(
-            steps = activation_steps.len(),
-            "Applying configured tool activation operations"
-        );
+    if should_activate_lockfile_tools(project_for_hooks) {
+        // Download and activate tools from lockfile by prepending to PATH and library path.
+        // This happens automatically without requiring hook approval since tool
+        // activation is a controlled, safe operation (just adds paths to the environment).
+        // Use the target_path to scope tool activation to this project only.
+        // Tool activation failures are fatal - commands require their tools to run.
+        ensure_tools_downloaded(Some(&target_path))
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
+            })?;
+        if let Some(activation_steps) =
+            resolve_tool_activation_steps(Some(&target_path)).map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
+            })?
+        {
+            tracing::debug!(
+                steps = activation_steps.len(),
+                "Applying configured tool activation operations"
+            );
 
-        for step in activation_steps {
-            let current = runtime_env.get(&step.var);
-            if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
-                runtime_env.set(step.var.clone(), new_value);
+            for step in activation_steps {
+                let current = runtime_env.get(&step.var);
+                if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
+                    runtime_env.set(step.var.clone(), new_value);
+                }
             }
         }
     }
@@ -284,6 +295,10 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
     .await?;
 
     Ok(exit_code)
+}
+
+fn should_activate_lockfile_tools(project: Option<&Project>) -> bool {
+    project.is_none_or(|manifest| matches!(manifest.runtime, Some(Runtime::Tools(_))))
 }
 
 /// Synchronize the lockfile when runtime tools for the current project are missing or stale.

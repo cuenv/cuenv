@@ -4,12 +4,10 @@ import (
 	"list"
 
 	"github.com/cuenv/cuenv/schema"
-	xBun "github.com/cuenv/cuenv/contrib/bun"
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xNix "github.com/cuenv/cuenv/contrib/nix"
 	xRust "github.com/cuenv/cuenv/contrib/rust"
-	xTools "github.com/cuenv/cuenv/contrib/tools"
 )
 
 // Command template for cargo tasks
@@ -32,64 +30,7 @@ schema.#Project & {
 	// Runtime Configuration
 	// ============================================================================
 
-	runtime: schema.#ToolsRuntime & {
-		platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
-
-		flakes: {
-			nixpkgs: "github:NixOS/nixpkgs/nixos-unstable"
-		}
-
-		tools: {
-			// --- General CLI Tools ---
-			jq: xTools.#Jq & {version: "1.7.1"}
-			yq: xTools.#Yq & {version: "4.44.6"}
-			treefmt: xTools.#Treefmt & {version: "2.4.0"}
-			cue: xTools.#Cue & {version: "0.15.3"}
-			bun: xBun.#Bun & {version: "1.3.5"}
-
-			prettier: schema.#Tool & {
-				version: "3.7.4"
-				source: schema.#Nix & {
-					flake:   "nixpkgs"
-					package: "nodePackages.prettier"
-				}
-			}
-
-			// --- Rust Toolchain ---
-			rust: xRust.#Rust & {
-				version: "1.92.0"
-				source: profile: "default"
-				source: components: ["rust-src", "clippy", "rustfmt", "llvm-tools-preview"]
-				source: targets: [
-					"x86_64-unknown-linux-gnu",
-					"aarch64-unknown-linux-gnu",
-					"aarch64-apple-darwin",
-					"x86_64-apple-darwin",
-				]
-			}
-			"rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-22"}
-
-			// --- Cargo Extensions ---
-			"cargo-nextest": xRust.#CargoNextest & {version: "0.9.116"}
-			"cargo-deny": xRust.#CargoDeny & {version: "0.18.9"}
-			"cargo-llvm-cov": xRust.#CargoLlvmCov & {version: "0.6.21"}
-			"cargo-cyclonedx": xRust.#CargoCyclonedx & {version: "0.5.7"}
-			"cargo-zigbuild": xRust.#CargoZigbuild & {version: "0.20.1"}
-			sccache: xRust.#SccacheTool & {version: "0.12.0"}
-
-			// --- Build Tools (Nix) ---
-			zig: xRust.#Zig & {version: "nixos-unstable"}
-
-			"nixpkgs-fmt": schema.#Tool & {
-				version: "nixos-unstable"
-				source: schema.#Nix & {
-					flake:   "nixpkgs"
-					package: "nixpkgs-fmt"
-				}
-			}
-		}
-
-	}
+	runtime: schema.#NixRuntime
 
 	// ============================================================================
 	// Hooks & Formatters
@@ -104,7 +45,7 @@ schema.#Project & {
 	// ============================================================================
 
 	// Build cuenv from source using native Rust/Go toolchains.
-	// The NixFlake onEnter hook provides system tools (cc, git, etc.) for tasks.
+	// The repository flake is the source of truth for task tools and system inputs.
 	config: ci: cuenv: {source: "native", version: "self"}
 
 	// ============================================================================
@@ -278,8 +219,25 @@ schema.#Project & {
 			type: "group"
 
 			deny: #cargo & {
-				args: ["deny", "check", "bans", "licenses", "advisories"]
+				args: ["deny", "check", "bans", "licenses"]
 				inputs: list.Concat([_baseInputs, ["deny.toml"]])
+			}
+
+			audit: schema.#Task & {
+				script: """
+					#!/usr/bin/env bash
+					set -euo pipefail
+
+					audit_db="$(mktemp -d "${TMPDIR:-/tmp}/cuenv-audit-db.XXXXXX")"
+					trap 'rm -rf "$audit_db"' EXIT
+
+					git clone --quiet https://github.com/RustSec/advisory-db.git "$audit_db"
+					find "$audit_db" -name '*.md' -exec sed -E -i.bak '/^cvss = "CVSS:4\\.0\\//d' {} +
+					find "$audit_db" -name '*.bak' -delete
+
+					cargo audit --db "$audit_db" --no-fetch --deny warnings --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2025-0057 --ignore RUSTSEC-2025-0134 --ignore RUSTSEC-2026-0006 --ignore RUSTSEC-2026-0020 --ignore RUSTSEC-2026-0021 --ignore RUSTSEC-2026-0037
+					"""
+				inputs: list.Concat([_baseInputs, ["Cargo.lock"]])
 			}
 		}
 
