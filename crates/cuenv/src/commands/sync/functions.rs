@@ -1173,17 +1173,16 @@ fn simple_job_options<'a>(
     ctx: &'a PipelineContext,
     task: &cuenv_ci::ir::Task,
 ) -> cuenv_github::workflow::SimpleJobOptions<'a> {
-    if task
-        .command
-        .first()
-        .is_some_and(|command| command == "cuenv")
-    {
+    let is_direct_nix_job =
+        !ctx.is_release && task.command.first().is_some_and(|command| command == "nix");
+
+    if is_direct_nix_job {
+        cuenv_github::workflow::SimpleJobOptions::direct(ctx.project_path.as_deref())
+    } else {
         cuenv_github::workflow::SimpleJobOptions::orchestrated(
             ctx.environment.as_ref(),
             ctx.project_path.as_deref(),
         )
-    } else {
-        cuenv_github::workflow::SimpleJobOptions::direct(ctx.project_path.as_deref())
     }
 }
 

@@ -75,6 +75,7 @@ pub struct SimpleJobOptions<'a> {
 }
 
 impl<'a> SimpleJobOptions<'a> {
+    /// Build options for a simple job that should execute via `cuenv task`.
     #[must_use]
     pub fn orchestrated(environment: Option<&'a String>, project_path: Option<&'a str>) -> Self {
         Self {
@@ -84,6 +85,7 @@ impl<'a> SimpleJobOptions<'a> {
         }
     }
 
+    /// Build options for a simple job that should run the IR command directly.
     #[must_use]
     pub fn direct(project_path: Option<&'a str>) -> Self {
         Self {
@@ -663,29 +665,6 @@ impl GitHubActionsEmitter {
         }
 
         (steps, secret_env_vars)
-    }
-
-    fn task_uses_cuenv(task: &Task) -> bool {
-        task.command
-            .iter()
-            .any(|part| part == "cuenv" || part.contains("cuenv "))
-    }
-
-    fn phase_task_requires_cuenv(task: &Task) -> bool {
-        task.contributor.as_deref() == Some("cuenv")
-            || task
-                .depends_on
-                .iter()
-                .any(|dep| dep.starts_with("cuenv:contributor:"))
-            || Self::task_uses_cuenv(task)
-    }
-
-    fn regular_job_requires_cuenv(ir: &IntermediateRepresentation, task: &Task) -> bool {
-        Self::task_uses_cuenv(task)
-            || ir
-                .sorted_phase_tasks(BuildStage::Setup)
-                .iter()
-                .any(|phase_task| Self::phase_task_requires_cuenv(phase_task))
     }
 
     /// Build a simple job from an IR task (no matrix expansion).

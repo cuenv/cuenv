@@ -216,13 +216,12 @@ jobs:
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: publish.cue
-      run: "bash -c TAG=${TAG:-$(git describe --tags --abbrev=0 2>/dev/null || echo \"\")}\nif [ -z \"$TAG\" ]; then\n\techo \"Error: No git tag found\"\n\texit 1\nfi\ncue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG"
+      run: cuenv task publish.cue -e production --skip-dependencies
       working-directory: .
       env:
-        TAG: cuenv:passthrough:GITHUB_REF_NAME
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-        CUENV_ENVIRONMENT: production
   docs-deploy:
     name: docs.deploy
     runs-on: depot-ubuntu-latest
@@ -267,12 +266,11 @@ jobs:
         name: docs-build-artifacts
         path: docs/dist
     - name: docs.deploy
-      run: bash -c cd docs && npx wrangler deploy
+      run: cuenv task docs.deploy -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-        CUENV_ENVIRONMENT: production
   docs-build:
     name: docs.build
     runs-on: depot-ubuntu-latest
@@ -310,12 +308,11 @@ jobs:
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: docs.build
-      run: bash -c bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/
+      run: cuenv task docs.build -e production --skip-dependencies
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
-        CUENV_ENVIRONMENT: production
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:

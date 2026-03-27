@@ -7,6 +7,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
+use cuenv_core::http::ensure_rustls_crypto_provider;
 use cuenv_core::tools::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource,
@@ -130,6 +131,8 @@ impl Default for GitHubToolProvider {
 
 impl GitHubToolProvider {
     fn build_client() -> Client {
+        ensure_rustls_crypto_provider();
+
         let primary = catch_unwind(AssertUnwindSafe(|| {
             Client::builder().user_agent("cuenv").build()
         }));
