@@ -25,7 +25,7 @@ use std::collections::HashMap;
 /// | `pipeline.name` | Workflow `name:` |
 /// | `pipeline.trigger.branch` | `on.push.branches` / `on.pull_request.branches` |
 /// | `task.id` | Job key |
-/// | `task.command` | Step with `run: cuenv task {task.id}` |
+/// | `task.command` | Step with `run: <task command>` |
 /// | `task.depends_on` | Job `needs:` |
 /// | `task.manual_approval` | Job with `environment:` |
 /// | `task.concurrency_group` | Job-level `concurrency:` |
@@ -550,6 +550,20 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
     ) -> (Vec<Step>, IndexMap<String, String>) {
+        self.render_phase_steps_with_cuenv(ir, true)
+    }
+
+    /// Render phase tasks (bootstrap + setup) into GitHub Actions steps.
+    ///
+    /// When `include_cuenv_setup` is false, setup tasks that require a bootstrapped
+    /// cuenv binary are omitted. This allows expanded workflows whose regular tasks
+    /// execute direct IR commands to skip the expensive `nix build .#cuenv` bootstrap.
+    #[must_use]
+    pub fn render_phase_steps_with_cuenv(
+        &self,
+        ir: &IntermediateRepresentation,
+        include_cuenv_setup: bool,
+    ) -> (Vec<Step>, IndexMap<String, String>) {
         let mut renderer = GitHubStageRenderer::new()
             .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
         if let Some(name) = &self.cachix_name {
@@ -565,6 +579,9 @@ impl GitHubActionsEmitter {
         // Render setup phase tasks (e.g., cuenv, 1Password, Cachix)
         // Also collect env vars from setup tasks that need to be passed to task steps
         for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            if !include_cuenv_setup && Self::phase_task_requires_cuenv(task) {
+                continue;
+            }
             let step = renderer.render_task(task);
             steps.push(step);
 
@@ -576,6 +593,29 @@ impl GitHubActionsEmitter {
         }
 
         (steps, secret_env_vars)
+    }
+
+    fn task_uses_cuenv(task: &Task) -> bool {
+        task.command
+            .iter()
+            .any(|part| part == "cuenv" || part.contains("cuenv "))
+    }
+
+    fn phase_task_requires_cuenv(task: &Task) -> bool {
+        task.contributor.as_deref() == Some("cuenv")
+            || task
+                .depends_on
+                .iter()
+                .any(|dep| dep.starts_with("cuenv:contributor:"))
+            || Self::task_uses_cuenv(task)
+    }
+
+    fn regular_job_requires_cuenv(ir: &IntermediateRepresentation, task: &Task) -> bool {
+        Self::task_uses_cuenv(task)
+            || ir
+                .sorted_phase_tasks(BuildStage::Setup)
+                .iter()
+                .any(|phase_task| Self::phase_task_requires_cuenv(phase_task))
     }
 
     /// Build a simple job from an IR task (no matrix expansion).
@@ -602,6 +642,7 @@ impl GitHubActionsEmitter {
         project_path: Option<&str>,
     ) -> Job {
         let mut steps = Vec::new();
+        let requires_cuenv = Self::regular_job_requires_cuenv(ir, task);
 
         // Checkout
         steps.push(
@@ -611,7 +652,8 @@ impl GitHubActionsEmitter {
         );
 
         // Render bootstrap and setup phase tasks
-        let (phase_steps, secret_env_vars) = self.render_phase_steps(ir);
+        let (phase_steps, secret_env_vars) =
+            self.render_phase_steps_with_cuenv(ir, requires_cuenv);
         steps.extend(phase_steps);
 
         // Download artifacts if task has artifact_downloads
@@ -623,18 +665,18 @@ impl GitHubActionsEmitter {
             steps.push(download_step);
         }
 
-        // Run the task
-        // Use --skip-dependencies because GitHub Actions handles job dependencies via `needs:`
-        let task_command = environment.map_or_else(
-            || format!("cuenv task {} --skip-dependencies", task.id),
-            |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
-        );
-        let mut task_step = Step::run(task_command)
-            .with_name(task.id.clone())
+        let mut renderer = GitHubStageRenderer::new()
+            .with_cachix_auth_token_secret(self.cachix_auth_token_secret.clone());
+        if let Some(name) = &self.cachix_name {
+            renderer = renderer.with_cachix(name.clone());
+        }
+
+        let mut task_step = renderer
+            .render_task(task)
             .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
         // Set working directory for monorepo projects
-        if let Some(path) = project_path {
+        if task_step.run.is_some() && let Some(path) = project_path {
             task_step = task_step.with_working_directory(path);
         }
 
@@ -643,11 +685,10 @@ impl GitHubActionsEmitter {
             task_step.env.insert(key, transform_secret_ref(&value));
         }
 
-        // Add task-level env vars
-        for (key, value) in &task.env {
+        if requires_cuenv && let Some(env) = environment {
             task_step
                 .env
-                .insert(key.clone(), transform_secret_ref(value));
+                .insert("CUENV_ENVIRONMENT".to_string(), env.clone());
         }
 
         steps.push(task_step);

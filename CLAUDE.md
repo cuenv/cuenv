@@ -4,7 +4,8 @@
 
 - Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
-- We cannot commit any code if `cuenv task check` is not passing.
+- We always use Nix for builds and checks, cuenv for everything Nix isn't good at.
+- We cannot commit any code if `nix flake check -L --accept-flake-config` is not passing.
 
 ## Project Overview
 
@@ -18,29 +19,26 @@ cuenv is a CUE-powered environment management and task orchestration system buil
 
 **CRITICAL: Build operations take significant time. Never cancel these commands.**
 
-All commands must be run through `cuenv` to ensure the nix flake environment is properly activated via hooks.
+Use Nix for builds and checks. Use `cuenv` for orchestration, workflow sync, formatting, and other workflows that are not naturally expressed as Nix builds or flake checks.
 
 ```bash
-# Build entire workspace (90+ seconds)
-cuenv task build
+# Build the CLI package (45+ seconds)
+nix build .#cuenv -L --accept-flake-config
 
-# Release build (45+ seconds)
-cuenv task release.build
+# Run the full check suite (90+ seconds)
+nix flake check -L --accept-flake-config
 
-# Run all tests (45-60 seconds)
-cuenv task test.unit
+# Run the nextest flake check only
+nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
 
-# Library tests only (30+ seconds, faster)
-cuenv exec -- cargo test --lib --workspace
-
-# Run clippy (15-20 seconds)
-cuenv task lint
+# Run clippy only
+nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
 
 # Format code
 cuenv fmt --fix
 
-# Check formatting (CI mode)
-cuenv fmt
+# Sync generated CI workflows
+cuenv sync ci
 ```
 
 ## Architecture
@@ -167,8 +165,8 @@ Before committing:
 
 ```bash
 cuenv fmt --fix
-cuenv task lint
-cuenv task test.unit
+nix flake check -L --accept-flake-config
+cuenv sync ci --check
 ```
 
 ## Requirements
