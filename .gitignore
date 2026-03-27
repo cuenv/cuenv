@@ -4,8 +4,8 @@
 .cache
 .cargo
 .cuenv
-.worktrees
 .test
+.worktrees
 *.vsix
 bdd_test_runs
 crates/cuengine/vendor
