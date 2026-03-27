@@ -227,18 +227,38 @@ fn test_cachix_contributor_active_with_config() {
     // ci-cachix has cachix configuration
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
-    // Check that setup-cachix task is present
-    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
+    // Check that setup-cachix bootstrap task is present before cuenv itself is built
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
     assert!(
         setup_tasks.iter().any(|t| t.id == "setup-cachix"),
         "CachixContributor should inject 'setup-cachix' task when cachix is configured"
     );
 
-    // Verify it uses the configured cache name
+    // Verify it uses the configured cache name via the GitHub Action inputs
     let setup_cachix = setup_tasks.iter().find(|t| t.id == "setup-cachix").unwrap();
+    let provider_hints = setup_cachix
+        .provider_hints
+        .as_ref()
+        .expect("setup-cachix should have provider hints");
+    let github_action = provider_hints
+        .get("github_action")
+        .expect("setup-cachix should use a GitHub Action");
+    let inputs = github_action
+        .get("inputs")
+        .and_then(|value| value.as_object())
+        .expect("setup-cachix should define action inputs");
+
+    assert_eq!(
+        github_action.get("uses").and_then(|value| value.as_str()),
+        Some("cachix/cachix-action@v17")
+    );
     assert!(
-        setup_cachix.command[0].contains("my-project-cache"),
+        inputs.get("name").and_then(|value| value.as_str()) == Some("my-project-cache"),
         "setup-cachix should use the configured cache name"
+    );
+    assert!(
+        inputs.get("authToken").and_then(|value| value.as_str()) == Some("${CACHIX_AUTH_TOKEN}"),
+        "setup-cachix should use the default Cachix auth token secret"
     );
 }
 

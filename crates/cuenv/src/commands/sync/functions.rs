@@ -1067,7 +1067,11 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let renderer = GitHubStageRenderer::new();
+    let mut renderer = GitHubStageRenderer::new()
+        .with_cachix_auth_token_secret(emitter.cachix_auth_token_secret.clone());
+    if let Some(name) = &emitter.cachix_name {
+        renderer = renderer.with_cachix(name.clone());
+    }
 
     // Build steps for the single job
     let mut steps = Vec::new();
@@ -1076,7 +1080,7 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
 
     // Bootstrap and setup phase steps (from contributors)
-    let (phase_steps, secret_env) = GitHubActionsEmitter::render_phase_steps(&ir);
+    let (phase_steps, secret_env) = emitter.render_phase_steps(&ir);
     steps.extend(phase_steps);
 
     // Main execution step: cuenv ci --pipeline <name>
