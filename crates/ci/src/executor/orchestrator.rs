@@ -1317,11 +1317,19 @@ async fn resolve_runtime_environment(
             } else {
                 project_root.join(&devenv.path)
             };
-            // devenv print-dev-env needs to run from the devenv config directory
+            // Use `nix run nixpkgs#devenv -- print-dev-env` so devenv doesn't
+            // need to be pre-installed — Nix fetches and runs it on demand.
             return resolve_runtime_via_hook(
                 &dir,
-                "devenv",
-                vec!["print-dev-env".to_string()],
+                "nix",
+                vec![
+                    "--extra-experimental-features".to_string(),
+                    "nix-command flakes".to_string(),
+                    "run".to_string(),
+                    "nixpkgs#devenv".to_string(),
+                    "--".to_string(),
+                    "print-dev-env".to_string(),
+                ],
                 vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
                 "devenv",
                 TIMEOUT_SECONDS,
