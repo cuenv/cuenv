@@ -52,7 +52,7 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  build-cuenv-nscloud-ubuntu-22.04-amd64-4x16:
+  build-cuenv-nscloud-ubuntu-22-04-amd64-4x16:
     name: build.cuenv
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     timeout-minutes: 30
@@ -142,7 +142,7 @@ jobs:
     name: cargo.build (linux-x64)
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-nscloud-ubuntu-22.04-amd64-4x16
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -195,7 +195,7 @@ jobs:
     name: publish.github
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-nscloud-ubuntu-22.04-amd64-4x16
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     - cargo-build-darwin-arm64
     - cargo-build-linux-x64
     timeout-minutes: 30
@@ -254,7 +254,7 @@ jobs:
     name: publish.cue
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-nscloud-ubuntu-22.04-amd64-4x16
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -299,7 +299,7 @@ jobs:
     name: docs.deploy
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-nscloud-ubuntu-22.04-amd64-4x16
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     - docs-build
     steps:
     - name: Checkout
@@ -349,7 +349,7 @@ jobs:
     name: docs.build
     runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-nscloud-ubuntu-22.04-amd64-4x16
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     steps:
     - name: Checkout
       uses: actions/checkout@v4
