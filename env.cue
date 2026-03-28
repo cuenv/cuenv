@@ -88,12 +88,12 @@ schema.#Project & {
 		]
 
 		provider: github: {
-			runner: "nscloud-ubuntu-22.04-amd64-4x16"
+			runner: "cuenv-linux-x86"
 
 			runners: arch: {
-				"linux-x64":    "nscloud-ubuntu-22.04-amd64-4x16"
-				"linux-arm64":  "nscloud-ubuntu-22.04-arm64-4x16"
-				"darwin-arm64": "nscloud-macos-arm64-6x14"
+				"linux-x64":    "cuenv-linux-x86"
+				"linux-arm64":  "cuenv-linux-arm64"
+				"darwin-arm64": "cuenv-macos-arm64"
 			}
 
 			cachix: name: "cuenv"
