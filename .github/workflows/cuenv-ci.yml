@@ -50,7 +50,7 @@ permissions:
 jobs:
   build-cuenv:
     name: build.cuenv
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -83,7 +83,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-audit:
     name: checks.audit
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -114,7 +114,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-bdd:
     name: checks.bdd
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -145,7 +145,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-clippy:
     name: checks.clippy
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -176,7 +176,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-cuenv:
     name: checks.cuenv
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -207,7 +207,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-deny:
     name: checks.deny
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -238,7 +238,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-doctest:
     name: checks.doctest
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
@@ -269,7 +269,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-nextest:
     name: checks.nextest
-    runs-on: cuenv-linux-x86
+    runs-on: namespace-profile-cuenv-linux-x86
     needs:
     - build-cuenv
     steps:
