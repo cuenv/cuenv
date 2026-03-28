@@ -1317,19 +1317,13 @@ async fn resolve_runtime_environment(
             } else {
                 project_root.join(&devenv.path)
             };
-            // Use `nix run nixpkgs#devenv -- print-dev-env` so devenv doesn't
-            // need to be pre-installed — Nix fetches and runs it on demand.
+            // Ensure devenv is available, installing via nix if needed.
+            ensure_devenv_installed().await?;
+
             return resolve_runtime_via_hook(
                 &dir,
-                "nix",
-                vec![
-                    "--extra-experimental-features".to_string(),
-                    "nix-command flakes".to_string(),
-                    "run".to_string(),
-                    "nixpkgs#devenv".to_string(),
-                    "--".to_string(),
-                    "print-dev-env".to_string(),
-                ],
+                "devenv",
+                vec!["print-dev-env".to_string()],
                 vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
                 "devenv",
                 TIMEOUT_SECONDS,
@@ -1367,4 +1361,42 @@ async fn resolve_runtime_via_hook(
                 "Failed to acquire {label} runtime environment: {e}"
             ))
         })
+}
+
+/// Install devenv via `nix profile install` if it's not already on PATH.
+async fn ensure_devenv_installed() -> std::result::Result<(), ExecutorError> {
+    // Check if devenv is already available
+    if tokio::process::Command::new("devenv")
+        .arg("version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    tracing::info!("devenv not found in CI, installing via nix profile install");
+    let output = tokio::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "profile",
+            "install",
+            "nixpkgs#devenv",
+        ])
+        .output()
+        .await
+        .map_err(|e| {
+            ExecutorError::Compilation(format!("Failed to install devenv: {e}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ExecutorError::Compilation(format!(
+            "Failed to install devenv: {stderr}"
+        )));
+    }
+
+    Ok(())
 }
