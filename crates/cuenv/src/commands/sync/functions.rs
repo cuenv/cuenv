@@ -1222,13 +1222,17 @@ fn inject_cuenv_bootstrap_jobs(
     let mut bootstrap_jobs = IndexMap::<String, cuenv_github::workflow::schema::Job>::new();
 
     for (key, runs_on) in runners {
-        let bootstrap_job_id = if multiple_runners {
-            format!("build-cuenv-{}", runner_suffix(&runs_on))
+        let (bootstrap_job_id, display_name) = if multiple_runners {
+            let suffix = runner_suffix(&runs_on);
+            (
+                format!("build-cuenv-{suffix}"),
+                format!("build.cuenv ({suffix})"),
+            )
         } else {
-            "build-cuenv".to_string()
+            ("build-cuenv".to_string(), "build.cuenv".to_string())
         };
 
-        let Some(job) = emitter.build_cuenv_bootstrap_job(ir, runs_on) else {
+        let Some(job) = emitter.build_cuenv_bootstrap_job(ir, runs_on, &display_name) else {
             return;
         };
 
