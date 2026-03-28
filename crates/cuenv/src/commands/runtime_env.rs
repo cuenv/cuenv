@@ -59,20 +59,14 @@ async fn resolve_devenv_runtime_environment(
         project_root.join(&runtime.path)
     };
 
-    // Use `nix run nixpkgs#devenv -- print-dev-env` so devenv doesn't
-    // need to be pre-installed — Nix fetches and runs it on demand.
+    // Ensure devenv is available, installing via nix if needed.
+    ensure_devenv_installed().await?;
+
     let hook = Hook {
         order: 10,
         propagate: false,
-        command: "nix".to_string(),
-        args: vec![
-            "--extra-experimental-features".to_string(),
-            "nix-command flakes".to_string(),
-            "run".to_string(),
-            "nixpkgs#devenv".to_string(),
-            "--".to_string(),
-            "print-dev-env".to_string(),
-        ],
+        command: "devenv".to_string(),
+        args: vec!["print-dev-env".to_string()],
         dir: Some(devenv_dir.to_string_lossy().to_string()),
         inputs: vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
         source: Some(true),
@@ -85,6 +79,43 @@ async fn resolve_devenv_runtime_environment(
                 "Failed to acquire devenv runtime environment: {e}"
             ))
         })
+}
+
+/// Install devenv via `nix profile install` if it's not already on PATH.
+async fn ensure_devenv_installed() -> Result<()> {
+    if tokio::process::Command::new("devenv")
+        .arg("version")
+        .output()
+        .await
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    tracing::info!("devenv not found, installing via nix profile install");
+    let output = tokio::process::Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command flakes",
+            "profile",
+            "install",
+            "nixpkgs#devenv",
+        ])
+        .output()
+        .await
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to install devenv: {e}"))
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(cuenv_core::Error::configuration(format!(
+            "Failed to install devenv: {stderr}"
+        )));
+    }
+
+    Ok(())
 }
 
 fn nix_print_dev_env_args(runtime: &NixRuntime) -> Vec<String> {
