@@ -19,9 +19,9 @@ permissions:
   contents: write
   id-token: write
 jobs:
-  build-cuenv-depot-macos-latest:
+  build-cuenv-nscloud-macos-arm64-6x14:
     name: build.cuenv
-    runs-on: depot-macos-latest
+    runs-on: nscloud-macos-arm64-6x14
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -52,9 +52,9 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  build-cuenv-depot-ubuntu-latest:
+  build-cuenv-nscloud-ubuntu-22-04-amd64-4x16:
     name: build.cuenv
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -87,9 +87,9 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   cargo-build-darwin-arm64:
     name: cargo.build (darwin-arm64)
-    runs-on: depot-macos-latest
+    runs-on: nscloud-macos-arm64-6x14
     needs:
-    - build-cuenv-depot-macos-latest
+    - build-cuenv-nscloud-macos-arm64-6x14
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -140,9 +140,9 @@ jobs:
         include-hidden-files: true
   cargo-build-linux-x64:
     name: cargo.build (linux-x64)
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-depot-ubuntu-latest
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     timeout-minutes: 60
     steps:
     - name: Checkout
@@ -193,9 +193,9 @@ jobs:
         include-hidden-files: true
   publish-github:
     name: publish.github
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-depot-ubuntu-latest
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     - cargo-build-darwin-arm64
     - cargo-build-linux-x64
     timeout-minutes: 30
@@ -252,9 +252,9 @@ jobs:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-cue:
     name: publish.cue
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-depot-ubuntu-latest
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -297,9 +297,9 @@ jobs:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
     name: docs.deploy
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-depot-ubuntu-latest
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     - docs-build
     steps:
     - name: Checkout
@@ -347,9 +347,9 @@ jobs:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     needs:
-    - build-cuenv-depot-ubuntu-latest
+    - build-cuenv-nscloud-ubuntu-22-04-amd64-4x16
     steps:
     - name: Checkout
       uses: actions/checkout@v4
