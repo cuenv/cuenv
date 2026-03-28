@@ -10,6 +10,7 @@
 #![allow(clippy::expect_used)]
 
 use cuenv_1password::secrets::{core, wasm};
+use cuenv_core::http::ensure_rustls_crypto_provider;
 use std::path::PathBuf;
 
 /// 1Password WASM SDK URL (pinned to v0.3.1)
@@ -43,6 +44,7 @@ fn ensure_wasm_available() -> PathBuf {
     eprintln!("Downloading 1Password WASM SDK to {}...", path.display());
 
     // Download using reqwest blocking client
+    ensure_rustls_crypto_provider();
     let response = reqwest::blocking::get(ONEPASSWORD_WASM_URL).expect("Should download WASM");
     assert!(
         response.status().is_success(),

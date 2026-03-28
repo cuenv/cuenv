@@ -1,7 +1,7 @@
 //! Integration tests for task and exec commands
 
 // Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::print_stderr, clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::print_stderr, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::ffi::OsStr;
 use std::fs;
@@ -41,6 +41,19 @@ language: version: "v0.9.0"
 "#,
     )
     .unwrap();
+}
+
+/// Find a binary by name in the current PATH, returning its absolute path.
+/// This avoids hardcoding paths like `/usr/bin/printenv` which don't exist in Nix sandboxes.
+fn find_in_path(name: &str) -> String {
+    let path_var = std::env::var("PATH").unwrap_or_default();
+    for dir in path_var.split(':') {
+        let candidate = std::path::PathBuf::from(dir).join(name);
+        if candidate.is_file() {
+            return candidate.to_string_lossy().to_string();
+        }
+    }
+    panic!("Could not find `{name}` in PATH");
 }
 
 /// Helper to run cuenv command and capture output
@@ -1198,13 +1211,14 @@ env: {
     fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 
     // Run printenv PATH via exec - use absolute path since PATH is hermetic
+    let printenv = find_in_path("printenv");
     let (stdout, _stderr, success) = run_cuenv(&[
         "exec",
         "-p",
         temp_dir.path().to_str().unwrap(),
         "--package",
         "test",
-        "/usr/bin/printenv",
+        &printenv,
         "PATH",
     ]);
 
@@ -1239,20 +1253,23 @@ fn test_task_hermetic_path_no_host_pollution() {
 
     // Create a project with a task that prints PATH
     // Use absolute path since PATH is hermetic
-    let cue_content = r#"package test
+    let printenv = find_in_path("printenv");
+    let cue_content = format!(
+        r#"package test
 
 name: "test"
 
-env: {
+env: {{
     PATH: "/cuenv/tools/bin"
-}
+}}
 
-tasks: {
-    show_path: {
-        command: "/usr/bin/printenv"
+tasks: {{
+    show_path: {{
+        command: "{printenv}"
         args: ["PATH"]
-    }
-}"#;
+    }}
+}}"#
+    );
 
     fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
 

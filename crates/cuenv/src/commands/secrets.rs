@@ -1,6 +1,7 @@
 //! Secrets provider setup commands
 
 use crate::cli::{CliError, SecretsProvider};
+use cuenv_core::http::ensure_rustls_crypto_provider;
 
 /// Default WASM URL for 1Password SDK v0.3.1
 const ONEPASSWORD_WASM_URL: &str =
@@ -51,6 +52,7 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     println!("Source: {url}");
 
     // Download the WASM file
+    ensure_rustls_crypto_provider();
     let response = reqwest::blocking::get(url)
         .map_err(|e| CliError::config(format!("Failed to download WASM: {e}")))?;
 

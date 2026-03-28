@@ -4,6 +4,7 @@
 .cache
 .cargo
 .cuenv
+.worktrees
 .test
 .worktrees
 *.vsix
