@@ -657,6 +657,7 @@ impl GitHubActionsEmitter {
         &self,
         ir: &IntermediateRepresentation,
         runs_on: RunsOn,
+        name: &str,
     ) -> Option<Job> {
         if !self.build_cuenv {
             return None;
@@ -693,7 +694,7 @@ impl GitHubActionsEmitter {
         }
 
         Some(Job {
-            name: Some("build.cuenv".to_string()),
+            name: Some(name.to_string()),
             runs_on,
             needs: Vec::new(),
             if_condition: None,
@@ -2201,7 +2202,7 @@ mod tests {
         ]);
 
         let job = emitter
-            .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()))
+            .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()), "build.cuenv")
             .expect("expected cuenv bootstrap job");
         let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
 
@@ -2229,7 +2230,7 @@ mod tests {
 
         assert!(
             emitter
-                .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()))
+                .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()), "build.cuenv")
                 .is_none()
         );
     }
