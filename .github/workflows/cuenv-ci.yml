@@ -48,9 +48,44 @@ permissions:
   pull-requests: write
   id-token: write
 jobs:
+  build-cuenv:
+    name: build.cuenv
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
+    - name: Build cuenv (nix)
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        nix build .#cuenv -L --accept-flake-config
+        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+        ./result/bin/cuenv sync ci
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-audit:
     name: checks.audit
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -80,6 +115,8 @@ jobs:
   checks-bdd:
     name: checks.bdd
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -109,6 +146,8 @@ jobs:
   checks-clippy:
     name: checks.clippy
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -138,6 +177,8 @@ jobs:
   checks-cuenv:
     name: checks.cuenv
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -167,6 +208,8 @@ jobs:
   checks-deny:
     name: checks.deny
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -196,6 +239,8 @@ jobs:
   checks-doctest:
     name: checks.doctest
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -225,6 +270,8 @@ jobs:
   checks-nextest:
     name: checks.nextest
     runs-on: depot-ubuntu-latest
+    needs:
+    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4

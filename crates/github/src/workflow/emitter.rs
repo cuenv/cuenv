@@ -625,6 +625,88 @@ impl GitHubActionsEmitter {
         skipped
     }
 
+    fn cuenv_setup_task_ids(ir: &IntermediateRepresentation) -> HashSet<String> {
+        ir.sorted_phase_tasks(BuildStage::Setup)
+            .iter()
+            .filter(|task| task.contributor.as_deref() == Some("cuenv"))
+            .map(|task| task.id.clone())
+            .collect()
+    }
+
+    fn should_include_in_cuenv_bootstrap(
+        task: &Task,
+        skipped_setup_task_ids: &HashSet<String>,
+        cuenv_setup_task_ids: &HashSet<String>,
+    ) -> bool {
+        !skipped_setup_task_ids.contains(&task.id) || cuenv_setup_task_ids.contains(&task.id)
+    }
+
+    /// Build a dedicated job that warms the shared cache by building cuenv first.
+    ///
+    /// The job renders:
+    /// 1. Checkout
+    /// 2. Bootstrap phase tasks (Nix install, etc.)
+    /// 3. Setup tasks required before cuenv
+    /// 4. The cuenv setup task itself
+    ///
+    /// Setup tasks that depend on cuenv (for example 1Password setup) are
+    /// intentionally excluded. They still run in the downstream jobs that need
+    /// them.
+    #[must_use]
+    pub fn build_cuenv_bootstrap_job(
+        &self,
+        ir: &IntermediateRepresentation,
+        runs_on: RunsOn,
+    ) -> Option<Job> {
+        if !self.build_cuenv {
+            return None;
+        }
+
+        let cuenv_setup_task_ids = Self::cuenv_setup_task_ids(ir);
+        if cuenv_setup_task_ids.is_empty() {
+            return None;
+        }
+
+        let renderer = self.stage_renderer();
+        let skipped_setup_task_ids = Self::skipped_setup_task_ids(ir, TaskExecution::Direct);
+        let mut steps = Vec::new();
+
+        steps.push(
+            Step::uses("actions/checkout@v4")
+                .with_name("Checkout")
+                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
+        );
+
+        let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
+        steps.extend(bootstrap_steps);
+
+        for task in ir.sorted_phase_tasks(BuildStage::Setup) {
+            if !Self::should_include_in_cuenv_bootstrap(
+                task,
+                &skipped_setup_task_ids,
+                &cuenv_setup_task_ids,
+            ) {
+                continue;
+            }
+
+            steps.push(renderer.render_task(task));
+        }
+
+        Some(Job {
+            name: Some("build.cuenv".to_string()),
+            runs_on,
+            needs: Vec::new(),
+            if_condition: None,
+            strategy: None,
+            environment: None,
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: Some(30),
+            steps,
+        })
+    }
+
     /// Render phase tasks (bootstrap + setup) into GitHub Actions steps.
     ///
     /// Returns a tuple of:
@@ -2068,6 +2150,88 @@ mod tests {
         assert!(step_names.contains(&"checks.nextest"));
         assert!(!step_names.contains(&"Setup cuenv"));
         assert!(!step_names.contains(&"Setup 1Password"));
+    }
+
+    #[test]
+    fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents() {
+        let emitter = GitHubActionsEmitter::new();
+
+        let mut bootstrap_task = make_phase_task(
+            "cuenv:contributor:nix.install",
+            &["install nix"],
+            BuildStage::Bootstrap,
+            0,
+        );
+        bootstrap_task.label = Some("Install Nix".to_string());
+        bootstrap_task.contributor = Some("nix".to_string());
+
+        let mut cachix_setup = make_phase_task(
+            "cuenv:contributor:cachix.setup",
+            &["setup cachix"],
+            BuildStage::Setup,
+            5,
+        );
+        cachix_setup.label = Some("Setup Cachix".to_string());
+        cachix_setup.contributor = Some("cachix".to_string());
+
+        let mut cuenv_setup = make_phase_task(
+            "cuenv:contributor:cuenv.setup",
+            &["nix build .#cuenv"],
+            BuildStage::Setup,
+            10,
+        );
+        cuenv_setup.label = Some("Build cuenv (nix)".to_string());
+        cuenv_setup.contributor = Some("cuenv".to_string());
+
+        let mut onepassword_setup = make_phase_task(
+            "cuenv:contributor:1password.setup",
+            &["cuenv secrets setup onepassword"],
+            BuildStage::Setup,
+            20,
+        );
+        onepassword_setup.label = Some("Setup 1Password".to_string());
+        onepassword_setup.contributor = Some("1password".to_string());
+        onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
+
+        let ir = make_ir(vec![
+            bootstrap_task,
+            cachix_setup,
+            cuenv_setup,
+            onepassword_setup,
+        ]);
+
+        let job = emitter
+            .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()))
+            .expect("expected cuenv bootstrap job");
+        let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
+
+        assert!(step_names.contains(&"Checkout"));
+        assert!(step_names.contains(&"Install Nix"));
+        assert!(step_names.contains(&"Setup Cachix"));
+        assert!(step_names.contains(&"Build cuenv (nix)"));
+        assert!(!step_names.contains(&"Setup 1Password"));
+    }
+
+    #[test]
+    fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
+        let emitter = GitHubActionsEmitter::new().without_cuenv_build();
+
+        let mut cuenv_setup = make_phase_task(
+            "cuenv:contributor:cuenv.setup",
+            &["nix build .#cuenv"],
+            BuildStage::Setup,
+            10,
+        );
+        cuenv_setup.label = Some("Build cuenv (nix)".to_string());
+        cuenv_setup.contributor = Some("cuenv".to_string());
+
+        let ir = make_ir(vec![cuenv_setup]);
+
+        assert!(
+            emitter
+                .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()))
+                .is_none()
+        );
     }
 
     #[test]
