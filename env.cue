@@ -88,12 +88,12 @@ schema.#Project & {
 		]
 
 		provider: github: {
-			runner: "cuenv-linux-x86"
+			runner: "namespace-profile-cuenv-linux-x86"
 
 			runners: arch: {
-				"linux-x64":    "cuenv-linux-x86"
-				"linux-arm64":  "cuenv-linux-arm64"
-				"darwin-arm64": "cuenv-macos-arm64"
+				"linux-x64":    "namespace-profile-cuenv-linux-x86"
+				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
+				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
 			cachix: name: "cuenv"
