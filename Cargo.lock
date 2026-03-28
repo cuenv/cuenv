@@ -1274,6 +1274,7 @@ version = "0.28.2"
 dependencies = [
  "async-trait",
  "chrono",
+ "cuenv-core",
  "cuenv-secrets",
  "dirs 6.0.0",
  "extism",
@@ -1428,6 +1429,7 @@ dependencies = [
  "petgraph 0.8.3",
  "proptest",
  "regex",
+ "rustls 0.23.35",
  "serde",
  "serde_json",
  "serde_path_to_error",

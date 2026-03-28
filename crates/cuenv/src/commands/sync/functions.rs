@@ -1054,6 +1054,7 @@ fn emit_release_workflow(
 fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<(String, String)>> {
     use cuenv_ci::ir::BuildStage;
     use cuenv_github::workflow::GitHubActionsEmitter;
+    use cuenv_github::workflow::TaskExecution;
     use cuenv_github::workflow::schema::{
         Concurrency, Environment, Job, PermissionLevel, Permissions, Step, Workflow,
     };
@@ -1080,7 +1081,7 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
 
     // Bootstrap and setup phase steps (from contributors)
-    let (phase_steps, secret_env) = emitter.render_phase_steps(&ir);
+    let (phase_steps, secret_env) = emitter.render_phase_steps(&ir, TaskExecution::Orchestrated);
     steps.extend(phase_steps);
 
     // Main execution step: cuenv ci --pipeline <name>
@@ -1164,10 +1165,109 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     Ok(vec![(filename, yaml)])
 }
 
+fn runner_key(runs_on: &cuenv_github::workflow::schema::RunsOn) -> String {
+    match runs_on {
+        cuenv_github::workflow::schema::RunsOn::Label(label) => format!("label:{label}"),
+        cuenv_github::workflow::schema::RunsOn::Labels(labels) => {
+            format!("labels:{}", labels.join("|"))
+        }
+    }
+}
+
+fn runner_suffix(runs_on: &cuenv_github::workflow::schema::RunsOn) -> String {
+    let raw = match runs_on {
+        cuenv_github::workflow::schema::RunsOn::Label(label) => label.clone(),
+        cuenv_github::workflow::schema::RunsOn::Labels(labels) => labels.join("-"),
+    };
+
+    raw.to_lowercase()
+        .replace(' ', "-")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
+}
+
+fn prepend_need(job: &mut cuenv_github::workflow::schema::Job, dependency: &str) {
+    if job.needs.iter().any(|need| need == dependency) {
+        return;
+    }
+
+    let mut needs = Vec::with_capacity(job.needs.len() + 1);
+    needs.push(dependency.to_string());
+    needs.extend(job.needs.clone());
+    job.needs = needs;
+}
+
+fn inject_cuenv_bootstrap_jobs(
+    jobs: &mut indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
+    ir: &cuenv_ci::ir::IntermediateRepresentation,
+    emitter: &cuenv_github::workflow::GitHubActionsEmitter,
+) {
+    use cuenv_github::workflow::schema::RunsOn;
+    use indexmap::IndexMap;
+
+    if jobs.is_empty() {
+        return;
+    }
+
+    let mut runners = IndexMap::<String, RunsOn>::new();
+    for job in jobs.values() {
+        runners
+            .entry(runner_key(&job.runs_on))
+            .or_insert_with(|| job.runs_on.clone());
+    }
+
+    let multiple_runners = runners.len() > 1;
+    let mut runner_bootstrap_jobs = IndexMap::<String, String>::new();
+    let mut bootstrap_jobs = IndexMap::<String, cuenv_github::workflow::schema::Job>::new();
+
+    for (key, runs_on) in runners {
+        let bootstrap_job_id = if multiple_runners {
+            format!("build-cuenv-{}", runner_suffix(&runs_on))
+        } else {
+            "build-cuenv".to_string()
+        };
+
+        let Some(job) = emitter.build_cuenv_bootstrap_job(ir, runs_on) else {
+            return;
+        };
+
+        runner_bootstrap_jobs.insert(key, bootstrap_job_id.clone());
+        bootstrap_jobs.insert(bootstrap_job_id, job);
+    }
+
+    for job in jobs.values_mut() {
+        if let Some(bootstrap_job_id) = runner_bootstrap_jobs.get(&runner_key(&job.runs_on)) {
+            prepend_need(job, bootstrap_job_id);
+        }
+    }
+
+    let existing_jobs = std::mem::take(jobs);
+    jobs.extend(bootstrap_jobs);
+    jobs.extend(existing_jobs);
+}
+
 /// Emit a standard workflow using the `GitHubActionsEmitter`.
 ///
 /// Builds jobs directly using `build_simple_job` which supports `project_path`
 /// for setting working-directory in monorepo workflows.
+fn simple_job_options<'a>(
+    ctx: &'a PipelineContext,
+    task: &cuenv_ci::ir::Task,
+) -> cuenv_github::workflow::SimpleJobOptions<'a> {
+    let is_direct_nix_job =
+        !ctx.is_release && task.command.first().is_some_and(|command| command == "nix");
+
+    if is_direct_nix_job {
+        cuenv_github::workflow::SimpleJobOptions::direct(ctx.project_path.as_deref())
+    } else {
+        cuenv_github::workflow::SimpleJobOptions::orchestrated(
+            ctx.environment.as_ref(),
+            ctx.project_path.as_deref(),
+        )
+    }
+}
+
 fn emit_standard_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
@@ -1189,12 +1289,7 @@ fn emit_standard_workflow(
     // Only iterate over regular tasks (non-phase tasks) - phase tasks are handled internally
     let mut jobs = IndexMap::new();
     for task in ctx.regular_tasks() {
-        let mut job = emitter.build_simple_job(
-            task,
-            &ir,
-            ctx.environment.as_ref(),
-            ctx.project_path.as_deref(),
-        );
+        let mut job = emitter.build_simple_job(task, &ir, simple_job_options(ctx, task));
         job.needs = task
             .depends_on
             .iter()
@@ -1202,6 +1297,8 @@ fn emit_standard_workflow(
             .collect();
         jobs.insert(task.id.replace(['.', ' '], "-"), job);
     }
+
+    inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter);
 
     // Build permissions based on task requirements
     let has_deployments = ctx.tasks.iter().any(|t| t.deployment);
@@ -1275,12 +1372,8 @@ fn build_pipeline_jobs(
             cuenv_core::ci::PipelineTask::Simple(_) | cuenv_core::ci::PipelineTask::Node(_) => {
                 if let Some(ir_task) = ctx.tasks.iter().find(|t| t.id == task_name) {
                     // Use emitter method directly
-                    let mut job = emitter.build_simple_job(
-                        ir_task,
-                        ir,
-                        ctx.environment.as_ref(),
-                        ctx.project_path.as_deref(),
-                    );
+                    let mut job =
+                        emitter.build_simple_job(ir_task, ir, simple_job_options(ctx, ir_task));
                     job.needs = ir_task
                         .depends_on
                         .iter()
@@ -1369,12 +1462,7 @@ fn build_pipeline_jobs(
         }
 
         // Use emitter method directly
-        let mut job = emitter.build_simple_job(
-            ir_task,
-            ir,
-            ctx.environment.as_ref(),
-            ctx.project_path.as_deref(),
-        );
+        let mut job = emitter.build_simple_job(ir_task, ir, simple_job_options(ctx, ir_task));
         job.needs = ir_task
             .depends_on
             .iter()
@@ -1534,6 +1622,8 @@ fn emit_matrix_workflow(
     );
 
     let jobs = build_pipeline_jobs(&expanded_tasks, ctx, &ir, &emitter);
+    let mut jobs = jobs;
+    inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter);
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
