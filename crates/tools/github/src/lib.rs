@@ -23,6 +23,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "macos")]
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use tar::Archive;
 #[cfg(target_os = "macos")]
 use tempfile::Builder;
@@ -120,7 +121,7 @@ struct Asset {
 /// Fetches binaries from GitHub Releases, supporting template expansion
 /// for platform-specific asset names.
 pub struct GitHubToolProvider {
-    client: Client,
+    client: OnceLock<std::result::Result<Client, String>>,
 }
 
 impl Default for GitHubToolProvider {
@@ -130,7 +131,7 @@ impl Default for GitHubToolProvider {
 }
 
 impl GitHubToolProvider {
-    fn build_client() -> Client {
+    fn build_client() -> std::result::Result<Client, String> {
         ensure_rustls_crypto_provider();
 
         let primary = catch_unwind(AssertUnwindSafe(|| {
@@ -138,13 +139,13 @@ impl GitHubToolProvider {
         }));
 
         match primary {
-            Ok(Ok(client)) => client,
+            Ok(Ok(client)) => Ok(client),
             Ok(Err(primary_err)) => Client::builder()
                 .user_agent("cuenv")
                 .no_proxy()
                 .build()
-                .unwrap_or_else(|fallback_err| {
-                    panic!(
+                .map_err(|fallback_err| {
+                    format!(
                         "Failed to create GitHub HTTP client: primary={primary_err}; fallback={fallback_err}"
                     )
                 }),
@@ -152,9 +153,18 @@ impl GitHubToolProvider {
                 .user_agent("cuenv")
                 .no_proxy()
                 .build()
-                .expect(
-                    "Failed to create GitHub HTTP client after system proxy discovery panicked",
-                ),
+                .map_err(|fallback_err| {
+                    format!(
+                        "Failed to create GitHub HTTP client after system proxy discovery panicked: fallback={fallback_err}"
+                    )
+                }),
+        }
+    }
+
+    fn client(&self) -> Result<&Client> {
+        match self.client.get_or_init(Self::build_client) {
+            Ok(client) => Ok(client),
+            Err(error) => Err(cuenv_core::Error::tool_resolution(error.clone())),
         }
     }
 
@@ -162,7 +172,7 @@ impl GitHubToolProvider {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            client: Self::build_client(),
+            client: OnceLock::new(),
         }
     }
 
@@ -206,8 +216,9 @@ impl GitHubToolProvider {
 
         let effective_token = Self::get_effective_token(token);
         let is_authenticated = effective_token.is_some();
+        let client = self.client()?;
 
-        let mut request = self.client.get(&url);
+        let mut request = client.get(&url);
         if let Some(token) = effective_token {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
@@ -301,8 +312,9 @@ impl GitHubToolProvider {
 
         let effective_token = Self::get_effective_token(token);
         let is_authenticated = effective_token.is_some();
+        let client = self.client()?;
 
-        let mut request = self.client.get(url);
+        let mut request = client.get(url);
         if let Some(token) = effective_token {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
@@ -1268,6 +1280,12 @@ mod tests {
     fn test_provider_default() {
         let provider = GitHubToolProvider::default();
         assert_eq!(provider.name(), "github");
+    }
+
+    #[test]
+    fn test_provider_new_defers_client_initialization() {
+        let provider = GitHubToolProvider::new();
+        assert!(provider.client.get().is_none());
     }
 
     #[test]
