@@ -648,6 +648,19 @@ pub async fn capture_source_environment(
     Ok(environment)
 }
 
+/// Resolve the absolute path to the `env` command by searching PATH.
+/// Falls back to `/usr/bin/env` if not found (best-effort for non-Nix environments).
+fn find_env_command() -> String {
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join("env");
+        if candidate.is_file() {
+            return candidate.to_string_lossy().into_owned();
+        }
+    }
+    "/usr/bin/env".to_string()
+}
+
 /// Detect which shell to use for environment evaluation
 async fn detect_shell() -> String {
     // Try bash first
@@ -712,10 +725,12 @@ async fn evaluate_shell_environment(
 
     debug!("Using shell: {}", shell);
 
+    let env_cmd = find_env_command();
+
     // First, get the environment before running the script
     let mut cmd_before = Command::new(&shell);
     cmd_before.arg("-c");
-    cmd_before.arg("/usr/bin/env -0");
+    cmd_before.arg(format!("{env_cmd} -0"));
     cmd_before.stdout(Stdio::piped());
     cmd_before.stderr(Stdio::piped());
     // Inject prior hooks' environment so the baseline reflects accumulated state
@@ -767,7 +782,7 @@ async fn evaluate_shell_environment(
     cmd.arg("-c");
 
     let script = format!(
-        "{}\necho -ne '\\0{}\\0'; /usr/bin/env -0",
+        "{}\necho -ne '\\0{}\\0'; {env_cmd} -0",
         filtered_script, DELIMITER
     );
     cmd.arg(script);

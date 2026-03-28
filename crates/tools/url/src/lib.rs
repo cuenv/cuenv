@@ -8,6 +8,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
+use cuenv_core::http::ensure_rustls_crypto_provider;
 use cuenv_core::tools::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource,
@@ -18,6 +19,7 @@ use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tar::Archive;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
@@ -27,7 +29,7 @@ use tracing::{debug, info};
 /// Downloads binaries or archives from any URL, supporting template expansion
 /// for platform-specific asset names and paths.
 pub struct UrlToolProvider {
-    client: Client,
+    client: OnceLock<std::result::Result<Client, String>>,
 }
 
 impl Default for UrlToolProvider {
@@ -37,19 +39,21 @@ impl Default for UrlToolProvider {
 }
 
 impl UrlToolProvider {
-    fn build_client() -> Client {
+    fn build_client() -> std::result::Result<Client, String> {
+        ensure_rustls_crypto_provider();
+
         let primary = catch_unwind(AssertUnwindSafe(|| {
             Client::builder().user_agent("cuenv").build()
         }));
 
         match primary {
-            Ok(Ok(client)) => client,
+            Ok(Ok(client)) => Ok(client),
             Ok(Err(primary_err)) => Client::builder()
                 .user_agent("cuenv")
                 .no_proxy()
                 .build()
-                .unwrap_or_else(|fallback_err| {
-                    panic!(
+                .map_err(|fallback_err| {
+                    format!(
                         "Failed to create URL HTTP client: primary={primary_err}; fallback={fallback_err}"
                     )
                 }),
@@ -57,7 +61,18 @@ impl UrlToolProvider {
                 .user_agent("cuenv")
                 .no_proxy()
                 .build()
-                .expect("Failed to create URL HTTP client after system proxy discovery panicked"),
+                .map_err(|fallback_err| {
+                    format!(
+                        "Failed to create URL HTTP client after system proxy discovery panicked: fallback={fallback_err}"
+                    )
+                }),
+        }
+    }
+
+    fn client(&self) -> Result<&Client> {
+        match self.client.get_or_init(Self::build_client) {
+            Ok(client) => Ok(client),
+            Err(error) => Err(cuenv_core::Error::tool_resolution(error.clone())),
         }
     }
 
@@ -65,7 +80,7 @@ impl UrlToolProvider {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            client: Self::build_client(),
+            client: OnceLock::new(),
         }
     }
 
@@ -94,8 +109,9 @@ impl UrlToolProvider {
     /// Download a resource from a URL.
     async fn download_url(&self, url: &str) -> Result<Vec<u8>> {
         debug!(%url, "Downloading URL asset");
+        let client = self.client()?;
 
-        let response = self.client.get(url).send().await.map_err(|e| {
+        let response = client.get(url).send().await.map_err(|e| {
             cuenv_core::Error::tool_resolution(format!("Failed to download from '{}': {}", url, e))
         })?;
 
@@ -1026,6 +1042,12 @@ mod tests {
     fn test_provider_name() {
         let provider = UrlToolProvider::new();
         assert_eq!(provider.name(), "url");
+    }
+
+    #[test]
+    fn test_provider_new_defers_client_initialization() {
+        let provider = UrlToolProvider::new();
+        assert!(provider.client.get().is_none());
     }
 
     #[test]
