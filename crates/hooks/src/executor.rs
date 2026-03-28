@@ -651,9 +651,9 @@ pub async fn capture_source_environment(
 /// Resolve the absolute path to the `env` command by searching PATH.
 /// Falls back to `/usr/bin/env` if not found (best-effort for non-Nix environments).
 fn find_env_command() -> String {
-    let path_var = std::env::var("PATH").unwrap_or_default();
-    for dir in path_var.split(':') {
-        let candidate = std::path::PathBuf::from(dir).join("env");
+    let path_var = std::env::var_os("PATH").unwrap_or_default();
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join("env");
         if candidate.is_file() {
             return candidate.to_string_lossy().into_owned();
         }

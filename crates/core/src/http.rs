@@ -12,7 +12,21 @@ static RUSTLS_PROVIDER_INSTALLED: OnceLock<()> = OnceLock::new();
 pub fn ensure_rustls_crypto_provider() {
     RUSTLS_PROVIDER_INSTALLED.get_or_init(|| {
         if rustls::crypto::CryptoProvider::get_default().is_none() {
-            let _ = rustls::crypto::ring::default_provider().install_default();
+            if rustls::crypto::ring::default_provider()
+                .install_default()
+                .is_err()
+            {
+                panic!(
+                    "Failed to install rustls crypto provider. \
+                     cuenv requires a working rustls provider when built with `rustls-no-provider`."
+                );
+            }
+            if rustls::crypto::CryptoProvider::get_default().is_none() {
+                panic!(
+                    "rustls crypto provider is still missing after installation attempt. \
+                     Another incompatible provider may have been installed earlier in the process."
+                );
+            }
         }
     });
 }

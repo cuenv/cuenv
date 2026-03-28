@@ -799,7 +799,7 @@ impl GitHubActionsEmitter {
                     |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
                 );
                 let mut step = Step::run(task_command)
-                    .with_name(task.id.clone())
+                    .with_name(task.label())
                     .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
 
                 for (key, value) in &task.env {
