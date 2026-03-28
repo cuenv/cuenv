@@ -118,6 +118,14 @@ pub struct Base {
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatters: Option<Formatters>,
+
+    /// Runtime configuration (devenv, nix, tools, etc.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+
+    /// Hooks configuration
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<Hooks>,
 }
 
 // ============================================================================
