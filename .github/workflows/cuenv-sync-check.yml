@@ -31,7 +31,7 @@ permissions:
 jobs:
   cuenv-sync-check:
     name: cuenv-sync-check
-    runs-on: depot-ubuntu-latest
+    runs-on: nscloud-ubuntu-22.04-amd64-4x16
     steps:
     - name: Checkout
       uses: actions/checkout@v4

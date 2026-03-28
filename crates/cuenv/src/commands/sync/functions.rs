@@ -1181,7 +1181,7 @@ fn runner_suffix(runs_on: &cuenv_github::workflow::schema::RunsOn) -> String {
     };
 
     raw.to_lowercase()
-        .replace(' ', "-")
+        .replace(['.', ' '], "-")
         .chars()
         .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
         .collect()
