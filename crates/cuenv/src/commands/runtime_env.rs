@@ -59,11 +59,20 @@ async fn resolve_devenv_runtime_environment(
         project_root.join(&runtime.path)
     };
 
+    // Use `nix run nixpkgs#devenv -- print-dev-env` so devenv doesn't
+    // need to be pre-installed — Nix fetches and runs it on demand.
     let hook = Hook {
         order: 10,
         propagate: false,
-        command: "devenv".to_string(),
-        args: vec!["print-dev-env".to_string()],
+        command: "nix".to_string(),
+        args: vec![
+            "--extra-experimental-features".to_string(),
+            "nix-command flakes".to_string(),
+            "run".to_string(),
+            "nixpkgs#devenv".to_string(),
+            "--".to_string(),
+            "print-dev-env".to_string(),
+        ],
         dir: Some(devenv_dir.to_string_lossy().to_string()),
         inputs: vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
         source: Some(true),
