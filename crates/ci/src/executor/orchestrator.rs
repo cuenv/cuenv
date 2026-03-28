@@ -30,8 +30,8 @@ use cuenv_core::tools::{
 };
 use cuenv_core::{DryRun, Result};
 use cuenv_hooks::{
-    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager, compute_instance_hash,
-    execute_hooks,
+    ExecutionStatus, Hook, HookExecutionConfig, HookExecutionState, StateManager,
+    capture_source_environment, compute_instance_hash, execute_hooks,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -853,6 +853,19 @@ async fn compile_and_execute_ir(
     let mut all_success = true;
     let mut last_exit_code = 0;
 
+    // Resolve runtime environment (devenv/nix) if configured on the project.
+    // This runs `devenv print-dev-env` or `nix print-dev-env` and captures the
+    // resulting environment variables (PATH, etc.) so tasks execute within the
+    // correct runtime.
+    let runtime_env =
+        resolve_runtime_environment(project_root, config.runtime.as_ref()).await?;
+    if !runtime_env.is_empty() {
+        tracing::info!(
+            vars = runtime_env.len(),
+            "Resolved runtime environment for CI task execution"
+        );
+    }
+
     // Ensure tools are downloaded before getting activation paths.
     // Tool activation failures are fatal.
     ensure_tools_downloaded(project_root).await?;
@@ -866,8 +879,11 @@ async fn compile_and_execute_ir(
 
     for ir_task in &ir.tasks {
         // Build environment with explicit precedence:
-        // task env > resolved project env > hook/static env.
+        // task env > resolved project env > runtime env > hook/static env.
         let mut env: BTreeMap<String, String> = hook_env.clone();
+        for (key, value) in &runtime_env {
+            env.insert(key.clone(), value.clone());
+        }
         for (key, value) in &resolved_env {
             env.insert(key.clone(), value.clone());
         }
@@ -1262,4 +1278,85 @@ async fn ensure_tools_downloaded(project_root: &Path) -> std::result::Result<(),
     }
 
     Ok(())
+}
+
+/// Resolve environment variables provided by the project's configured runtime.
+///
+/// Supports `Runtime::Nix` (runs `nix print-dev-env`) and `Runtime::Devenv`
+/// (runs `devenv print-dev-env`). Other runtime types return an empty map.
+async fn resolve_runtime_environment(
+    project_root: &Path,
+    runtime: Option<&cuenv_core::manifest::Runtime>,
+) -> std::result::Result<HashMap<String, String>, ExecutorError> {
+    use cuenv_core::manifest::Runtime;
+
+    const TIMEOUT_SECONDS: u64 = 600;
+
+    let (command, args, inputs, label) = match runtime {
+        Some(Runtime::Nix(nix)) => {
+            let mut args = vec![
+                "--extra-experimental-features".to_string(),
+                "nix-command flakes".to_string(),
+                "print-dev-env".to_string(),
+            ];
+            let target = match &nix.output {
+                Some(output) => format!("{}#{}", nix.flake, output),
+                None => nix.flake.clone(),
+            };
+            args.push(target);
+            (
+                "nix".to_string(),
+                args,
+                vec!["flake.nix".to_string(), "flake.lock".to_string()],
+                "Nix",
+            )
+        }
+        Some(Runtime::Devenv(devenv)) => {
+            let dir = if devenv.path.is_empty() || devenv.path == "." {
+                project_root.to_path_buf()
+            } else {
+                project_root.join(&devenv.path)
+            };
+            // devenv print-dev-env needs to run from the devenv config directory
+            return resolve_runtime_via_hook(
+                &dir,
+                "devenv",
+                vec!["print-dev-env".to_string()],
+                vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
+                "devenv",
+                TIMEOUT_SECONDS,
+            )
+            .await;
+        }
+        _ => return Ok(HashMap::new()),
+    };
+
+    resolve_runtime_via_hook(project_root, &command, args, inputs, label, TIMEOUT_SECONDS).await
+}
+
+async fn resolve_runtime_via_hook(
+    work_dir: &Path,
+    command: &str,
+    args: Vec<String>,
+    inputs: Vec<String>,
+    label: &str,
+    timeout: u64,
+) -> std::result::Result<HashMap<String, String>, ExecutorError> {
+    let hook = Hook {
+        order: 10,
+        propagate: false,
+        command: command.to_string(),
+        args,
+        dir: Some(work_dir.to_string_lossy().to_string()),
+        inputs,
+        source: Some(true),
+    };
+
+    capture_source_environment(hook, &HashMap::new(), timeout)
+        .await
+        .map_err(|e| {
+            ExecutorError::Compilation(format!(
+                "Failed to acquire {label} runtime environment: {e}"
+            ))
+        })
 }

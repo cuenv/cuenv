@@ -1,5 +1,5 @@
 use cuenv_core::Result;
-use cuenv_core::manifest::{NixRuntime, Runtime};
+use cuenv_core::manifest::{DevenvRuntime, NixRuntime, Runtime};
 use cuenv_hooks::{Hook, capture_source_environment};
 use std::collections::HashMap;
 use std::path::Path;
@@ -18,6 +18,9 @@ pub async fn resolve_runtime_environment(
     match runtime {
         Some(Runtime::Nix(nix_runtime)) => {
             resolve_nix_runtime_environment(project_root, nix_runtime).await
+        }
+        Some(Runtime::Devenv(devenv_runtime)) => {
+            resolve_devenv_runtime_environment(project_root, devenv_runtime).await
         }
         _ => Ok(HashMap::new()),
     }
@@ -42,6 +45,35 @@ async fn resolve_nix_runtime_environment(
         .map_err(|e| {
             cuenv_core::Error::configuration(format!(
                 "Failed to acquire Nix runtime environment: {e}"
+            ))
+        })
+}
+
+async fn resolve_devenv_runtime_environment(
+    project_root: &Path,
+    runtime: &DevenvRuntime,
+) -> Result<HashMap<String, String>> {
+    let devenv_dir = if runtime.path.is_empty() || runtime.path == "." {
+        project_root.to_path_buf()
+    } else {
+        project_root.join(&runtime.path)
+    };
+
+    let hook = Hook {
+        order: 10,
+        propagate: false,
+        command: "devenv".to_string(),
+        args: vec!["print-dev-env".to_string()],
+        dir: Some(devenv_dir.to_string_lossy().to_string()),
+        inputs: vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
+        source: Some(true),
+    };
+
+    capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
+        .await
+        .map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to acquire devenv runtime environment: {e}"
             ))
         })
 }
@@ -80,6 +112,17 @@ mod tests {
                 ".",
             ]
         );
+    }
+
+    #[test]
+    fn devenv_runtime_from_cue_defaults_to_current_dir() {
+        // When deserialized from CUE/JSON via the Runtime enum, serde default gives "."
+        let runtime: Runtime =
+            serde_json::from_str(r#"{"type":"devenv"}"#).unwrap();
+        match runtime {
+            Runtime::Devenv(devenv) => assert_eq!(devenv.path, "."),
+            _ => panic!("Expected Devenv runtime"),
+        }
     }
 
     #[test]
