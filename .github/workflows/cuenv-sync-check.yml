@@ -36,7 +36,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/nix-installer-action@v22
       with:
         extra-conf: accept-flake-config = true
     - name: Setup sccache
