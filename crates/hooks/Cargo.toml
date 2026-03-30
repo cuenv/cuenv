@@ -35,7 +35,7 @@ sha2 = { workspace = true }
 chrono = { workspace = true }
 
 # Process management
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 # Error handling
 thiserror = "2.0"
