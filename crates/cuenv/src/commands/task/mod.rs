@@ -27,7 +27,7 @@ use cuenv_core::tools::apply_resolved_tool_activation;
 
 use super::env_file::find_cue_module_root;
 use super::relative_path_from_root;
-use super::runtime_env::resolve_runtime_environment;
+use cuenv_core::runtime::resolve_runtime;
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
@@ -528,11 +528,8 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
-    let runtime_env_vars =
-        resolve_runtime_environment(&project_root, manifest.runtime.as_ref()).await?;
-    for (key, value) in runtime_env_vars {
-        runtime_env.set(key, value);
-    }
+    let resolved = resolve_runtime(&project_root, manifest.runtime.as_ref()).await?;
+    runtime_env.apply_runtime(&resolved);
 
     if let Some(env) = &manifest.env {
         // First apply the base environment (static + hooks)

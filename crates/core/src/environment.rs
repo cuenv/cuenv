@@ -389,6 +389,18 @@ impl Environment {
         self.vars.insert(key, value);
     }
 
+    /// Apply a resolved runtime environment.
+    ///
+    /// Sets all variables from the runtime, then prepends any PATH directories.
+    pub fn apply_runtime(&mut self, runtime_env: &crate::runtime::RuntimeEnvironment) {
+        for (key, value) in &runtime_env.vars {
+            self.set(key.clone(), value.clone());
+        }
+        if let Some(path) = runtime_env.merged_path(self.get("PATH")) {
+            self.set("PATH".to_string(), path);
+        }
+    }
+
     /// Check if an environment variable exists
     pub fn contains(&self, key: &str) -> bool {
         self.vars.contains_key(key)
@@ -499,113 +511,8 @@ impl Environment {
     /// Returns the full path if found, or the original command if not found
     /// (letting the spawn fail with a proper error).
     pub fn resolve_command(&self, command: &str) -> String {
-        // If command is already an absolute path, use it directly
-        if command.starts_with('/') {
-            tracing::debug!(command = %command, "Command is already absolute path");
-            return command.to_string();
-        }
-
-        // Get the PATH from this environment, falling back to system PATH
-        let path_value = self
-            .vars
-            .get("PATH")
-            .cloned()
-            .or_else(|| env::var("PATH").ok())
-            .unwrap_or_default();
-
-        tracing::debug!(
-            command = %command,
-            env_has_path = self.vars.contains_key("PATH"),
-            path_len = path_value.len(),
-            "Resolving command in PATH"
-        );
-
-        // Search for the command in each PATH directory
-        for dir in path_value.split(':') {
-            if dir.is_empty() {
-                continue;
-            }
-            let candidate = std::path::Path::new(dir).join(command);
-            if candidate.is_file() {
-                // Check if it's executable (on Unix)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(metadata) = std::fs::metadata(&candidate) {
-                        let permissions = metadata.permissions();
-                        if permissions.mode() & 0o111 != 0 {
-                            tracing::debug!(
-                                command = %command,
-                                resolved = %candidate.display(),
-                                "Command resolved to path"
-                            );
-                            return candidate.to_string_lossy().to_string();
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    tracing::debug!(
-                        command = %command,
-                        resolved = %candidate.display(),
-                        "Command resolved to path"
-                    );
-                    return candidate.to_string_lossy().to_string();
-                }
-            }
-        }
-
-        // Command not found in environment PATH - try system PATH as fallback
-        // This is necessary when the environment has tool paths but not system paths,
-        // since we still need to find system commands like echo, bash, etc.
-        if self.vars.contains_key("PATH")
-            && let Ok(system_path) = env::var("PATH")
-        {
-            tracing::debug!(
-                command = %command,
-                "Command not found in env PATH, trying system PATH"
-            );
-            for dir in system_path.split(':') {
-                if dir.is_empty() {
-                    continue;
-                }
-                let candidate = std::path::Path::new(dir).join(command);
-                if candidate.is_file() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if let Ok(metadata) = std::fs::metadata(&candidate) {
-                            let permissions = metadata.permissions();
-                            if permissions.mode() & 0o111 != 0 {
-                                tracing::debug!(
-                                    command = %command,
-                                    resolved = %candidate.display(),
-                                    "Command resolved from system PATH"
-                                );
-                                return candidate.to_string_lossy().to_string();
-                            }
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        tracing::debug!(
-                            command = %command,
-                            resolved = %candidate.display(),
-                            "Command resolved from system PATH"
-                        );
-                        return candidate.to_string_lossy().to_string();
-                    }
-                }
-            }
-        }
-
-        // Command not found in any PATH, return original (spawn will fail with proper error)
-        tracing::warn!(
-            command = %command,
-            env_path_set = self.vars.contains_key("PATH"),
-            "Command not found in PATH, returning original"
-        );
-        command.to_string()
+        let env_path = self.vars.get("PATH").map(String::as_str);
+        resolve_command_in_path(command, env_path)
     }
 
     /// Iterate over environment variables
@@ -811,6 +718,93 @@ impl Environment {
 
         Ok((resolved, all_secrets))
     }
+}
+
+/// Resolve a command to its full path by searching a PATH string.
+///
+/// When spawning a child process with a custom environment, the OS resolves the
+/// executable against the **parent** process's PATH, not the child's. This
+/// function searches `env_path` (the child's PATH) first, falls back to the
+/// system PATH, and returns the absolute path if found — or the original
+/// command name so the spawn fails with a descriptive error.
+pub fn resolve_command_in_path(command: &str, env_path: Option<&str>) -> String {
+    if command.starts_with('/') {
+        tracing::debug!(command = %command, "Command is already absolute path");
+        return command.to_string();
+    }
+
+    let system_path;
+    let path_value = match env_path {
+        Some(p) => p,
+        None => {
+            system_path = env::var("PATH").unwrap_or_default();
+            &system_path
+        }
+    };
+
+    tracing::debug!(
+        command = %command,
+        env_has_path = env_path.is_some(),
+        path_len = path_value.len(),
+        "Resolving command in PATH"
+    );
+
+    if let Some(resolved) = find_executable_in_path(command, path_value) {
+        return resolved;
+    }
+
+    // Not found in env PATH — try system PATH as fallback so system commands
+    // (echo, bash, etc.) are still reachable.
+    if env_path.is_some()
+        && let Ok(sys_path) = env::var("PATH")
+    {
+        tracing::debug!(
+            command = %command,
+            "Command not found in env PATH, trying system PATH"
+        );
+        if let Some(resolved) = find_executable_in_path(command, &sys_path) {
+            return resolved;
+        }
+    }
+
+    tracing::warn!(
+        command = %command,
+        env_path_set = env_path.is_some(),
+        "Command not found in PATH, returning original"
+    );
+    command.to_string()
+}
+
+/// Search for an executable in a colon-separated PATH string.
+fn find_executable_in_path(command: &str, path: &str) -> Option<String> {
+    for dir in path.split(':') {
+        if dir.is_empty() {
+            continue;
+        }
+        let candidate = std::path::Path::new(dir).join(command);
+        if candidate.is_file() && is_executable(&candidate) {
+            tracing::debug!(
+                command = %command,
+                resolved = %candidate.display(),
+                "Command resolved to path"
+            );
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &std::path::Path) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -1399,5 +1393,97 @@ mod tests {
         assert!(resolved.contains("secret_value"));
         assert!(resolved.contains("-suffix"));
         assert_eq!(secrets.len(), 1);
+    }
+
+    #[test]
+    fn apply_runtime_sets_vars() {
+        let mut env = Environment::new();
+        let runtime_env = crate::runtime::RuntimeEnvironment {
+            vars: HashMap::from([("FOO".to_string(), "bar".to_string())]),
+            path_prepend: vec![],
+        };
+        env.apply_runtime(&runtime_env);
+        assert_eq!(env.get("FOO"), Some("bar"));
+    }
+
+    #[test]
+    fn apply_runtime_prepends_path_to_existing() {
+        let mut env = Environment::new();
+        env.set("PATH".to_string(), "/usr/bin".to_string());
+        let runtime_env = crate::runtime::RuntimeEnvironment {
+            vars: HashMap::new(),
+            path_prepend: vec![std::path::PathBuf::from("/nix/bin")],
+        };
+        env.apply_runtime(&runtime_env);
+        assert_eq!(env.get("PATH"), Some("/nix/bin:/usr/bin"));
+    }
+
+    #[test]
+    fn apply_runtime_sets_path_when_empty() {
+        let mut env = Environment::new();
+        let runtime_env = crate::runtime::RuntimeEnvironment {
+            vars: HashMap::new(),
+            path_prepend: vec![std::path::PathBuf::from("/nix/bin")],
+        };
+        env.apply_runtime(&runtime_env);
+        assert_eq!(env.get("PATH"), Some("/nix/bin"));
+    }
+
+    #[test]
+    fn apply_runtime_prepends_multiple_dirs_in_order() {
+        let mut env = Environment::new();
+        env.set("PATH".to_string(), "/usr/bin".to_string());
+        let runtime_env = crate::runtime::RuntimeEnvironment {
+            vars: HashMap::new(),
+            path_prepend: vec![
+                std::path::PathBuf::from("/first"),
+                std::path::PathBuf::from("/second"),
+            ],
+        };
+        env.apply_runtime(&runtime_env);
+        assert_eq!(env.get("PATH"), Some("/first:/second:/usr/bin"));
+    }
+
+    #[test]
+    fn resolve_command_absolute_path_passthrough() {
+        let result = resolve_command_in_path("/usr/bin/env", None);
+        assert_eq!(result, "/usr/bin/env");
+    }
+
+    #[test]
+    fn resolve_command_absolute_path_ignores_env_path() {
+        let result = resolve_command_in_path("/usr/bin/env", Some("/nonexistent"));
+        assert_eq!(result, "/usr/bin/env");
+    }
+
+    #[test]
+    fn resolve_command_not_found_returns_original() {
+        let result = resolve_command_in_path(
+            "this_command_definitely_does_not_exist_cuenv_test",
+            Some("/nonexistent/path"),
+        );
+        assert_eq!(result, "this_command_definitely_does_not_exist_cuenv_test");
+    }
+
+    #[test]
+    fn resolve_command_none_path_uses_system_path() {
+        // `sh` should be resolvable on any Unix system via the system PATH
+        let result = resolve_command_in_path("sh", None);
+        assert!(result.starts_with('/'), "Expected absolute path, got: {result}");
+        assert!(result.ends_with("/sh"), "Expected path ending in /sh, got: {result}");
+    }
+
+    #[test]
+    fn resolve_command_falls_back_to_system_path() {
+        // Provide an env_path that doesn't contain `sh`; system PATH should be used as fallback
+        let result = resolve_command_in_path("sh", Some("/nonexistent/path"));
+        assert!(
+            result.starts_with('/'),
+            "Expected absolute path from system PATH fallback, got: {result}"
+        );
+        assert!(
+            result.ends_with("/sh"),
+            "Expected path ending in /sh, got: {result}"
+        );
     }
 }

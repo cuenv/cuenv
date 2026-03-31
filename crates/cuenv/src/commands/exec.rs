@@ -8,7 +8,7 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
-use super::runtime_env::resolve_runtime_environment;
+use cuenv_core::runtime::resolve_runtime;
 use super::sync::{SyncMode, SyncOptions, default_registry};
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use super::{CommandExecutor, relative_path_from_root};
@@ -174,11 +174,8 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             base_env_vars
         );
 
-        let runtime_env_vars =
-            resolve_runtime_environment(&directory, project.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
+        let resolved = resolve_runtime(&directory, project.runtime.as_ref()).await?;
+        runtime_env.apply_runtime(&resolved);
 
         // Apply base environment
         for (key, value) in &base_env_vars {
@@ -211,11 +208,8 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         // For Base: resolve runtime environment + secrets, no hooks
         tracing::debug!("Using Base configuration");
 
-        let runtime_env_vars =
-            resolve_runtime_environment(&directory, base.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
+        let resolved = resolve_runtime(&directory, base.runtime.as_ref()).await?;
+        runtime_env.apply_runtime(&resolved);
 
         if let Some(env) = &env_config {
             let env_vars = if let Some(env_name) = request.environment_override {

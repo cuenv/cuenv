@@ -167,9 +167,16 @@ impl IRTaskRunner {
             c
         } else {
             // Direct mode: execve
-            tracing::debug!(cmd = ?task.command, "Running in direct mode");
+            // Resolve the command against the task's env PATH, because
+            // Command::new looks up executables in the parent process PATH,
+            // not the child's environment.
+            let resolved_cmd = cuenv_core::environment::resolve_command_in_path(
+                &task.command[0],
+                env.get("PATH").map(String::as_str),
+            );
+            tracing::debug!(cmd = ?task.command, resolved = %resolved_cmd, "Running in direct mode");
 
-            let mut c = Command::new(&task.command[0]);
+            let mut c = Command::new(&resolved_cmd);
             if task.command.len() > 1 {
                 c.args(&task.command[1..]);
             }
