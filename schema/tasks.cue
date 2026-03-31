@@ -55,7 +55,7 @@ package schema
 // =============================================================================
 
 // Interpreter for script-based tasks
-#ScriptShell: "bash" | "sh" | "zsh" | "fish" | "powershell" | "pwsh" | "python" | "node" | "ruby" | "perl"
+#ScriptShell: "bash" | "sh" | "zsh" | "fish" | "nu" | "powershell" | "pwsh" | "python" | "node" | "ruby" | "perl"
 
 // Shell options (for bash-like shells)
 #ShellOptions: {
