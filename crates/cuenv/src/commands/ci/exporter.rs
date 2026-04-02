@@ -97,6 +97,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
             environment: collected.environment,
             requires_onepassword: false,
             project_name: None,
+            project_path: None,
             trigger: None,
             pipeline_tasks: vec![],
             pipeline_task_defs: vec![],
