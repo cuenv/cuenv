@@ -242,58 +242,10 @@ impl TaskExecutor {
         cuenv_events::emit_task_started!(name, cmd_str, false);
 
         // Build command - handle script mode vs command mode
-        let mut cmd = if let Some(script) = &task.script {
-            // Script mode: use shell to execute the script
-            let (shell_cmd, shell_flag) = if let Some(shell) = &task.shell {
-                (
-                    shell.command.clone().unwrap_or_else(|| "bash".to_string()),
-                    shell.flag.clone().unwrap_or_else(|| "-c".to_string()),
-                )
-            } else {
-                // Default to bash for scripts
-                ("bash".to_string(), "-c".to_string())
-            };
-
-            let resolved_shell = self.config.environment.resolve_command(&shell_cmd);
-            let mut cmd = Command::new(&resolved_shell);
-            cmd.arg(&shell_flag);
-            cmd.arg(script);
-            cmd
-        } else {
-            // Command mode: existing behavior
-            let resolved_command = self.config.environment.resolve_command(&task.command);
-
-            if let Some(shell) = &task.shell {
-                if let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag) {
-                    let resolved_shell = self.config.environment.resolve_command(shell_command);
-                    let mut cmd = Command::new(&resolved_shell);
-                    cmd.arg(shell_flag);
-                    if task.args.is_empty() {
-                        cmd.arg(&resolved_command);
-                    } else {
-                        let full_command = if task.command.is_empty() {
-                            task.args.join(" ")
-                        } else {
-                            format!("{} {}", resolved_command, task.args.join(" "))
-                        };
-                        cmd.arg(full_command);
-                    }
-                    cmd
-                } else {
-                    let mut cmd = Command::new(&resolved_command);
-                    for arg in &task.args {
-                        cmd.arg(arg);
-                    }
-                    cmd
-                }
-            } else {
-                let mut cmd = Command::new(&resolved_command);
-                for arg in &task.args {
-                    cmd.arg(arg);
-                }
-                cmd
-            }
-        };
+        let command_spec =
+            task.command_spec(|command| self.config.environment.resolve_command(command))?;
+        let mut cmd = Command::new(&command_spec.program);
+        cmd.args(&command_spec.args);
 
         // Set working directory and environment (hermetic - no host PATH pollution)
         cmd.current_dir(&workdir);
@@ -1049,6 +1001,97 @@ mod tests {
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
+    }
+
+    #[tokio::test]
+    async fn test_execute_script_task() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            script: Some("echo hello from script".to_string()),
+            ..Default::default()
+        };
+
+        let result = executor.execute_task("script", &task).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("hello from script"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_script_task_with_shell_options() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            script: Some("false\necho should-not-run".to_string()),
+            script_shell: Some(super::super::ScriptShell::Bash),
+            shell_options: Some(super::super::ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let result = executor
+            .execute_task("script.failfast", &task)
+            .await
+            .unwrap();
+
+        assert!(!result.success);
+        assert_eq!(result.exit_code, Some(1));
+        assert!(!result.stdout.contains("should-not-run"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_script_task_rejects_pipefail_for_sh() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            script: Some("echo hello".to_string()),
+            script_shell: Some(super::super::ScriptShell::Sh),
+            shell_options: Some(super::super::ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let err = executor.execute_task("script.sh", &task).await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("shellOptions.pipefail with unsupported script shell 'sh'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_script_task_rejects_unsupported_shell_options() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            script: Some("console.log('hello')".to_string()),
+            script_shell: Some(super::super::ScriptShell::Node),
+            shell_options: Some(super::super::ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let err = executor
+            .execute_task("script.node", &task)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.to_string().contains("unsupported script shell 'node'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]
