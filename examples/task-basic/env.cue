@@ -48,10 +48,14 @@ tasks: {
 		}
 	}
 
-	// Shell Task with explicit scriptShell
+	// Script task with an explicit scriptShell
 	shellExample: schema.#Task & {
+		script: """
+			echo "Hello from Bash"
+			"""
 		scriptShell: "bash"
-		command: "echo"
-		args: ["Hello from Bash"]
+		shellOptions: {
+			errexit: true
+		}
 	}
 }

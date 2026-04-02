@@ -73,11 +73,15 @@ tasks: {
         args: ["NAME"]
     }
 
-    // Shell-specific task
+    // Script task with an explicit shell
     shell_example: schema.#Task & {
-        shell: schema.#Bash
-        command: "echo"
-        args: ["Running in Bash"]
+        script: """
+            echo "Running in Bash"
+            """
+        scriptShell: "bash"
+        shellOptions: {
+            errexit: true
+        }
     }
 }
 ```
