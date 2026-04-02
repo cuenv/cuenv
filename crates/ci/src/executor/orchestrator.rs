@@ -30,8 +30,8 @@ use cuenv_core::tools::{
 };
 use cuenv_core::{DryRun, Result};
 use cuenv_hooks::{
-    ExecutionStatus, Hook, HookExecutionConfig, HookExecutionState, StateManager,
-    capture_source_environment, compute_instance_hash, execute_hooks,
+    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager,
+    compute_instance_hash, execute_hooks,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -858,7 +858,9 @@ async fn compile_and_execute_ir(
     // resulting environment variables (PATH, etc.) so tasks execute within the
     // correct runtime.
     let runtime_env =
-        resolve_runtime_environment(project_root, config.runtime.as_ref()).await?;
+        cuenv_core::runtime::resolve_runtime_environment(project_root, config.runtime.as_ref())
+            .await
+            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     if !runtime_env.is_empty() {
         tracing::info!(
             vars = runtime_env.len(),
@@ -1278,134 +1280,4 @@ async fn ensure_tools_downloaded(project_root: &Path) -> std::result::Result<(),
     }
 
     Ok(())
-}
-
-/// Resolve environment variables provided by the project's configured runtime.
-///
-/// Supports `Runtime::Nix` (runs `nix print-dev-env`) and `Runtime::Devenv`
-/// (runs `devenv print-dev-env`). Other runtime types return an empty map.
-async fn resolve_runtime_environment(
-    project_root: &Path,
-    runtime: Option<&cuenv_core::manifest::Runtime>,
-) -> std::result::Result<HashMap<String, String>, ExecutorError> {
-    use cuenv_core::manifest::Runtime;
-
-    const TIMEOUT_SECONDS: u64 = 600;
-
-    let (command, args, inputs, label) = match runtime {
-        Some(Runtime::Nix(nix)) => {
-            let mut args = vec![
-                "--extra-experimental-features".to_string(),
-                "nix-command flakes".to_string(),
-                "print-dev-env".to_string(),
-            ];
-            let target = match &nix.output {
-                Some(output) => format!("{}#{}", nix.flake, output),
-                None => nix.flake.clone(),
-            };
-            args.push(target);
-            (
-                "nix".to_string(),
-                args,
-                vec!["flake.nix".to_string(), "flake.lock".to_string()],
-                "Nix",
-            )
-        }
-        Some(Runtime::Devenv(devenv)) => {
-            let dir = if devenv.path.is_empty() || devenv.path == "." {
-                project_root.to_path_buf()
-            } else {
-                project_root.join(&devenv.path)
-            };
-            let devenv_cmd = resolve_devenv_command().await?;
-
-            return resolve_runtime_via_hook(
-                &dir,
-                &devenv_cmd,
-                vec!["print-dev-env".to_string()],
-                vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
-                "devenv",
-                TIMEOUT_SECONDS,
-            )
-            .await;
-        }
-        _ => return Ok(HashMap::new()),
-    };
-
-    resolve_runtime_via_hook(project_root, &command, args, inputs, label, TIMEOUT_SECONDS).await
-}
-
-async fn resolve_runtime_via_hook(
-    work_dir: &Path,
-    command: &str,
-    args: Vec<String>,
-    inputs: Vec<String>,
-    label: &str,
-    timeout: u64,
-) -> std::result::Result<HashMap<String, String>, ExecutorError> {
-    let hook = Hook {
-        order: 10,
-        propagate: false,
-        command: command.to_string(),
-        args,
-        dir: Some(work_dir.to_string_lossy().to_string()),
-        inputs,
-        source: Some(true),
-    };
-
-    capture_source_environment(hook, &HashMap::new(), timeout)
-        .await
-        .map_err(|e| {
-            ExecutorError::Compilation(format!(
-                "Failed to acquire {label} runtime environment: {e}"
-            ))
-        })
-}
-
-/// Resolve devenv command path, installing via `nix profile install` if needed.
-///
-/// Returns the command string to invoke devenv — either `"devenv"` if already
-/// on PATH, or the absolute path to the nix profile binary after installation.
-async fn resolve_devenv_command() -> std::result::Result<String, ExecutorError> {
-    if tokio::process::Command::new("devenv")
-        .arg("version")
-        .output()
-        .await
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Ok("devenv".to_string());
-    }
-
-    tracing::info!("devenv not found in CI, installing via nix profile install");
-    let output = tokio::process::Command::new("nix")
-        .args([
-            "--extra-experimental-features",
-            "nix-command flakes",
-            "profile",
-            "install",
-            "nixpkgs#devenv",
-        ])
-        .output()
-        .await
-        .map_err(|e| {
-            ExecutorError::Compilation(format!("Failed to install devenv: {e}"))
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(ExecutorError::Compilation(format!(
-            "Failed to install devenv: {stderr}"
-        )));
-    }
-
-    // Return absolute path so we don't need to mutate the process PATH
-    if let Ok(home) = std::env::var("HOME") {
-        let devenv_path = format!("{home}/.nix-profile/bin/devenv");
-        if std::path::Path::new(&devenv_path).exists() {
-            return Ok(devenv_path);
-        }
-    }
-
-    Ok("devenv".to_string())
 }
