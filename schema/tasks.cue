@@ -61,7 +61,7 @@ package schema
 #ShellOptions: {
 	errexit?:  bool | *true  // -e: exit on error
 	nounset?:  bool | *true  // -u: error on undefined vars
-	pipefail?: bool | *true  // -o pipefail: fail on pipe errors
+	pipefail?: bool | *true  // -o pipefail: fail on pipe errors (bash/zsh only)
 	xtrace?:   bool | *false // -x: debug/trace mode
 }
 

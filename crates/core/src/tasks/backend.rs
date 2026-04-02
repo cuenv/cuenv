@@ -64,25 +64,12 @@ impl TaskBackend for HostBackend {
             "Executing task on host"
         );
 
-        // Resolve command path using the environment's PATH
-        let resolved_command = ctx.environment.resolve_command(&ctx.task.command);
+        let command_spec = ctx
+            .task
+            .command_spec(|command| ctx.environment.resolve_command(command))?;
 
-        // Build command
-        let mut cmd = if let Some(shell) = &ctx.task.shell {
-            let mut c = Command::new(shell.command.as_deref().unwrap_or("bash"));
-            if let Some(flag) = &shell.flag {
-                c.arg(flag);
-            } else {
-                c.arg("-c");
-            }
-            // Append the task command string to the shell invocation
-            c.arg(&ctx.task.command);
-            c
-        } else {
-            let mut c = Command::new(resolved_command);
-            c.args(&ctx.task.args);
-            c
-        };
+        let mut cmd = Command::new(&command_spec.program);
+        cmd.args(&command_spec.args);
 
         // Set working directory
         cmd.current_dir(ctx.project_root);
