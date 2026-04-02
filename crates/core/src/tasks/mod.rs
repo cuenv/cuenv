@@ -118,6 +118,31 @@ impl ScriptShell {
     pub fn supports_shell_options(&self) -> bool {
         matches!(self, ScriptShell::Bash | ScriptShell::Sh | ScriptShell::Zsh)
     }
+
+    /// Parse a shell enum from an executable path or bare command name.
+    #[must_use]
+    pub(crate) fn from_command(command: &str) -> Option<Self> {
+        let file_name = Path::new(command)
+            .file_name()?
+            .to_str()?
+            .to_ascii_lowercase();
+        let normalized = file_name.strip_suffix(".exe").unwrap_or(&file_name);
+
+        match normalized {
+            "bash" => Some(Self::Bash),
+            "sh" => Some(Self::Sh),
+            "zsh" => Some(Self::Zsh),
+            "fish" => Some(Self::Fish),
+            "nu" => Some(Self::Nu),
+            "powershell" => Some(Self::Powershell),
+            "pwsh" => Some(Self::Pwsh),
+            "python" => Some(Self::Python),
+            "node" => Some(Self::Node),
+            "ruby" => Some(Self::Ruby),
+            "perl" => Some(Self::Perl),
+            _ => None,
+        }
+    }
 }
 
 /// Shell options for bash-like shells
@@ -184,6 +209,23 @@ pub struct Shell {
     pub command: Option<String>,
     /// Flag for command execution (e.g., "-c", "--command")
     pub flag: Option<String>,
+}
+
+/// A fully-resolved process invocation for a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskCommandSpec {
+    /// Executable path or command name to spawn.
+    pub program: String,
+    /// Command-line arguments for the program.
+    pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct EffectiveScriptShell {
+    command: String,
+    flag: String,
+    display_name: String,
+    supports_shell_options: bool,
 }
 
 /// Mapping of external output to local workspace path
@@ -812,6 +854,46 @@ impl Task {
             .unwrap_or("No description provided")
     }
 
+    /// Build the executable invocation for this task using the provided command resolver.
+    pub(crate) fn command_spec<F>(&self, mut resolve_command: F) -> crate::Result<TaskCommandSpec>
+    where
+        F: FnMut(&str) -> String,
+    {
+        if let Some(script) = &self.script {
+            let shell = self.effective_script_shell();
+            let script = self.prepare_script(script, &shell)?;
+
+            return Ok(TaskCommandSpec {
+                program: resolve_command(&shell.command),
+                args: vec![shell.flag, script],
+            });
+        }
+
+        let resolved_command = resolve_command(&self.command);
+
+        if let Some(shell) = &self.shell
+            && let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag)
+        {
+            let full_command = if self.args.is_empty() {
+                resolved_command
+            } else if self.command.is_empty() {
+                self.args.join(" ")
+            } else {
+                format!("{} {}", resolved_command, self.args.join(" "))
+            };
+
+            return Ok(TaskCommandSpec {
+                program: resolve_command(shell_command),
+                args: vec![shell_flag.clone(), full_command],
+            });
+        }
+
+        Ok(TaskCommandSpec {
+            program: resolved_command,
+            args: self.args.clone(),
+        })
+    }
+
     /// Returns an iterator over local path/glob inputs.
     pub fn iter_path_inputs(&self) -> impl Iterator<Item = &String> {
         self.inputs.iter().filter_map(Input::as_path)
@@ -846,6 +928,64 @@ impl Task {
         let mut inputs = self.collect_path_inputs_with_prefix(prefix);
         inputs.extend(self.collect_project_destinations_with_prefix(prefix));
         inputs
+    }
+
+    fn effective_script_shell(&self) -> EffectiveScriptShell {
+        if let Some(script_shell) = self.script_shell {
+            let (command, flag) = script_shell.command_and_flag();
+
+            return EffectiveScriptShell {
+                command: command.to_string(),
+                flag: flag.to_string(),
+                display_name: command.to_string(),
+                supports_shell_options: script_shell.supports_shell_options(),
+            };
+        }
+
+        if let Some(shell) = &self.shell {
+            let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
+            let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
+            let supports_shell_options = ScriptShell::from_command(&command)
+                .is_some_and(|script_shell| script_shell.supports_shell_options());
+
+            return EffectiveScriptShell {
+                display_name: command.clone(),
+                command,
+                flag,
+                supports_shell_options,
+            };
+        }
+
+        let default_shell = ScriptShell::default();
+        let (command, flag) = default_shell.command_and_flag();
+
+        EffectiveScriptShell {
+            command: command.to_string(),
+            flag: flag.to_string(),
+            display_name: command.to_string(),
+            supports_shell_options: default_shell.supports_shell_options(),
+        }
+    }
+
+    fn prepare_script(&self, script: &str, shell: &EffectiveScriptShell) -> crate::Result<String> {
+        let Some(shell_options) = self.shell_options else {
+            return Ok(script.to_string());
+        };
+
+        if !shell.supports_shell_options {
+            return Err(crate::Error::configuration(format!(
+                "Task uses shellOptions with unsupported script shell '{}'. \
+                 Use scriptShell 'bash', 'sh', or 'zsh'.",
+                shell.display_name
+            )));
+        }
+
+        let set_commands = shell_options.to_set_commands();
+        if set_commands.is_empty() {
+            return Ok(script.to_string());
+        }
+
+        Ok(format!("{set_commands}{script}"))
     }
 }
 
@@ -1394,12 +1534,26 @@ mod tests {
     #[test]
     fn test_script_shell_command_and_flag() {
         assert_eq!(ScriptShell::Bash.command_and_flag(), ("bash", "-c"));
+        assert_eq!(ScriptShell::Nu.command_and_flag(), ("nu", "-c"));
         assert_eq!(ScriptShell::Python.command_and_flag(), ("python", "-c"));
         assert_eq!(ScriptShell::Node.command_and_flag(), ("node", "-e"));
         assert_eq!(
             ScriptShell::Powershell.command_and_flag(),
             ("powershell", "-Command")
         );
+    }
+
+    #[test]
+    fn test_script_shell_from_command() {
+        assert_eq!(
+            ScriptShell::from_command("/usr/bin/nu"),
+            Some(ScriptShell::Nu)
+        );
+        assert_eq!(
+            ScriptShell::from_command("pwsh.exe"),
+            Some(ScriptShell::Pwsh)
+        );
+        assert_eq!(ScriptShell::from_command("custom-shell"), None);
     }
 
     #[test]
@@ -1431,6 +1585,61 @@ mod tests {
             xtrace: false,
         };
         assert_eq!(no_opts.to_set_commands(), "");
+    }
+
+    #[test]
+    fn test_task_command_spec_uses_script_shell() {
+        let task = Task {
+            script: Some("echo hello".to_string()),
+            script_shell: Some(ScriptShell::Nu),
+            ..Default::default()
+        };
+
+        let spec = task
+            .command_spec(|command| format!("resolved:{command}"))
+            .unwrap();
+
+        assert_eq!(spec.program, "resolved:nu");
+        assert_eq!(spec.args, vec!["-c".to_string(), "echo hello".to_string()]);
+    }
+
+    #[test]
+    fn test_task_command_spec_prepends_shell_options() {
+        let task = Task {
+            script: Some("echo hello".to_string()),
+            shell_options: Some(ShellOptions {
+                errexit: true,
+                nounset: false,
+                pipefail: false,
+                xtrace: true,
+            }),
+            ..Default::default()
+        };
+
+        let spec = task.command_spec(str::to_string).unwrap();
+
+        assert_eq!(spec.program, "bash");
+        assert_eq!(
+            spec.args,
+            vec!["-c".to_string(), "set -e -x\necho hello".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_task_command_spec_rejects_shell_options_for_unsupported_shell() {
+        let task = Task {
+            script: Some("console.log('hello')".to_string()),
+            script_shell: Some(ScriptShell::Node),
+            shell_options: Some(ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let err = task.command_spec(str::to_string).unwrap_err();
+
+        assert!(
+            err.to_string().contains("unsupported script shell 'node'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

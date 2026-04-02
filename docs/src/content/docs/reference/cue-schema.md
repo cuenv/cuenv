@@ -255,7 +255,7 @@ tasks: {
 | `args`           | `[...(string \| #TaskOutputRef)]`                 | No       | Command arguments                        |
 | `script`         | `string`                                          | No*      | Multi-line script (alternative to cmd)   |
 | `scriptShell`    | `#ScriptShell`                                    | No       | Shell for script execution (default: bash) |
-| `shellOptions`   | `#ShellOptions`                                   | No       | Shell options (errexit, pipefail, etc.)  |
+| `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`, `sh`, or `zsh` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
 | `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
@@ -270,7 +270,7 @@ tasks: {
 
 *Either `command` or `script` should be provided.
 
-**Script Shells:** `bash`, `sh`, `zsh`, `fish`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
+**Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 ### #TaskGroup
 
