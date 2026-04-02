@@ -8,7 +8,6 @@
 //! 3. **No-module mode**: When outside a CUE module, runs commands with just the runtime
 //!    tools from any available lockfile.
 
-use super::runtime_env::resolve_runtime_environment;
 use super::sync::{SyncMode, SyncOptions, default_registry};
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use super::{CommandExecutor, relative_path_from_root};
@@ -16,6 +15,7 @@ use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
+use cuenv_core::runtime::resolve_runtime_environment;
 use cuenv_core::tasks::execute_command_with_redaction;
 use cuenv_core::tools::apply_resolved_tool_activation;
 use std::path::Path;

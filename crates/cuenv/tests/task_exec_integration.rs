@@ -1,7 +1,12 @@
 //! Integration tests for task and exec commands
 
 // Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::print_stderr, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::print_stderr,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic
+)]
 
 use std::ffi::OsStr;
 use std::fs;
