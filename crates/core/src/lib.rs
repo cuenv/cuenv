@@ -53,6 +53,7 @@ pub mod module;
 pub mod owners;
 pub mod paths;
 pub mod rules;
+pub mod runtime;
 pub mod secrets;
 pub mod shell;
 pub mod sync;
