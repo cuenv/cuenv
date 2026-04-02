@@ -2099,6 +2099,7 @@ mod tests {
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
+                project_path: None,
                 trigger: None,
                 pipeline_tasks: vec![],
                 pipeline_task_defs: vec![],

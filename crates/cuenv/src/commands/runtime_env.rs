@@ -59,13 +59,12 @@ async fn resolve_devenv_runtime_environment(
         project_root.join(&runtime.path)
     };
 
-    // Ensure devenv is available, installing via nix if needed.
-    ensure_devenv_installed().await?;
+    let devenv_cmd = resolve_devenv_command().await?;
 
     let hook = Hook {
         order: 10,
         propagate: false,
-        command: "devenv".to_string(),
+        command: devenv_cmd,
         args: vec!["print-dev-env".to_string()],
         dir: Some(devenv_dir.to_string_lossy().to_string()),
         inputs: vec!["devenv.nix".to_string(), "devenv.lock".to_string()],
@@ -81,8 +80,11 @@ async fn resolve_devenv_runtime_environment(
         })
 }
 
-/// Install devenv via `nix profile install` if it's not already on PATH.
-async fn ensure_devenv_installed() -> Result<()> {
+/// Resolve devenv command path, installing via `nix profile install` if needed.
+///
+/// Returns the command string to invoke devenv — either `"devenv"` if already
+/// on PATH, or the absolute path to the nix profile binary after installation.
+async fn resolve_devenv_command() -> Result<String> {
     if tokio::process::Command::new("devenv")
         .arg("version")
         .output()
@@ -90,7 +92,7 @@ async fn ensure_devenv_installed() -> Result<()> {
         .map(|o| o.status.success())
         .unwrap_or(false)
     {
-        return Ok(());
+        return Ok("devenv".to_string());
     }
 
     tracing::info!("devenv not found, installing via nix profile install");
@@ -115,18 +117,15 @@ async fn ensure_devenv_installed() -> Result<()> {
         )));
     }
 
-    // Add nix profile bin to PATH so devenv is findable in this process
+    // Return absolute path so we don't need to mutate the process PATH
     if let Ok(home) = std::env::var("HOME") {
-        let profile_bin = format!("{home}/.nix-profile/bin");
-        if let Ok(current_path) = std::env::var("PATH") {
-            if !current_path.contains(&profile_bin) {
-                // SAFETY: single-threaded at this point in bootstrap
-                unsafe { std::env::set_var("PATH", format!("{profile_bin}:{current_path}")); }
-            }
+        let devenv_path = format!("{home}/.nix-profile/bin/devenv");
+        if std::path::Path::new(&devenv_path).exists() {
+            return Ok(devenv_path);
         }
     }
 
-    Ok(())
+    Ok("devenv".to_string())
 }
 
 fn nix_print_dev_env_args(runtime: &NixRuntime) -> Vec<String> {

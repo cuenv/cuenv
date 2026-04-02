@@ -878,6 +878,7 @@ impl PipelineContext {
                 environment: self.environment.clone(),
                 requires_onepassword: false,
                 project_name: self.project_name.clone(),
+                project_path: self.project_path.clone(),
                 trigger: Some(self.trigger.clone()),
                 pipeline_tasks: self
                     .pipeline_tasks
@@ -1043,123 +1044,15 @@ fn emit_release_workflow(
     Ok(vec![(filename, yaml)])
 }
 
-/// Emit a thin mode workflow.
-///
-/// Thin mode generates a single-job workflow that delegates execution to cuenv:
-/// 1. Bootstrap phase steps (from contributors)
-/// 2. Setup phase steps (from contributors)
-/// 3. Main execution: `cuenv ci --pipeline <name>`
-/// 4. Success phase steps (if: success())
-/// 5. Failure phase steps (if: failure())
+/// Emit a thin mode workflow by delegating to the GitHub Actions emitter.
 fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<(String, String)>> {
-    use cuenv_ci::ir::BuildStage;
     use cuenv_github::workflow::GitHubActionsEmitter;
-    use cuenv_github::workflow::TaskExecution;
-    use cuenv_github::workflow::schema::{
-        Concurrency, Environment, Job, PermissionLevel, Permissions, Step, Workflow,
-    };
-    use cuenv_github::workflow::stage_renderer::{GitHubStageRenderer, transform_secret_ref};
-    use indexmap::IndexMap;
-
-    let workflow_name = match &ctx.project_name {
-        Some(project) => format!("{project}-{pipeline_name}"),
-        None => pipeline_name.to_string(),
-    };
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let mut renderer = GitHubStageRenderer::new()
-        .with_cachix_auth_token_secret(emitter.cachix_auth_token_secret.clone());
-    if let Some(name) = &emitter.cachix_name {
-        renderer = renderer.with_cachix(name.clone());
-    }
 
-    // Build steps for the single job
-    let mut steps = Vec::new();
-
-    // Checkout step
-    steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
-
-    // Bootstrap and setup phase steps (from contributors)
-    let (phase_steps, secret_env) = emitter.render_phase_steps(&ir, TaskExecution::Orchestrated);
-    steps.extend(phase_steps);
-
-    // Main execution step: cuenv ci --pipeline <name>
-    let cuenv_command = if let Some(ref project_path) = ctx.project_path {
-        format!("cuenv ci --pipeline {pipeline_name} --path {project_path}")
-    } else {
-        format!("cuenv ci --pipeline {pipeline_name}")
-    };
-
-    let mut main_step = Step::run(&cuenv_command)
-        .with_name(format!("Run pipeline: {pipeline_name}"))
-        .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
-
-    if let Some(env) = &ctx.environment {
-        main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
-    }
-
-    // Pass secret env vars from setup tasks to main step (e.g., OP_SERVICE_ACCOUNT_TOKEN)
-    // Transform ${VAR} to ${{ secrets.VAR }} format for GitHub Actions
-    for (key, value) in secret_env {
-        main_step = main_step.with_env(key, transform_secret_ref(&value));
-    }
-
-    steps.push(main_step);
-
-    // Success phase steps (from contributors)
-    for task in ir.sorted_phase_tasks(BuildStage::Success) {
-        let mut step = renderer.render_task(task);
-        step.if_condition = Some("success()".to_string());
-        steps.push(step);
-    }
-
-    // Failure phase steps (from contributors)
-    for task in ir.sorted_phase_tasks(BuildStage::Failure) {
-        let mut step = renderer.render_task(task);
-        step.if_condition = Some("failure()".to_string());
-        steps.push(step);
-    }
-
-    // Build the single job
-    let job = Job {
-        name: Some(workflow_name.clone()),
-        runs_on: emitter.runner_as_runs_on(),
-        needs: Vec::new(),
-        if_condition: None,
-        strategy: None,
-        environment: ctx.environment.clone().map(Environment::Name),
-        env: IndexMap::new(),
-        concurrency: None,
-        continue_on_error: None,
-        timeout_minutes: None,
-        steps,
-    };
-
-    let mut jobs = IndexMap::new();
-    jobs.insert(sanitize_workflow_name(&workflow_name), job);
-
-    let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
-
-    let workflow = Workflow {
-        name: workflow_name,
-        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
-        concurrency: Some(Concurrency {
-            group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
-            cancel_in_progress: Some(true),
-        }),
-        permissions: Some(Permissions {
-            contents: Some(PermissionLevel::Read),
-            checks: Some(PermissionLevel::Write),
-            pull_requests: Some(PermissionLevel::Write),
-            ..Default::default()
-        }),
-        env: IndexMap::new(),
-        jobs,
-    };
-
-    let yaml = workflow.to_yaml().map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to serialize workflow: {e}"))
+    let (filename, yaml) = emitter.emit_thin_workflow(&ir).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to emit thin workflow: {e}"))
     })?;
 
     Ok(vec![(filename, yaml)])
@@ -1276,9 +1169,8 @@ fn emit_standard_workflow(
     pipeline_name: &str,
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
-    use cuenv_ci::ir::OutputType;
     use cuenv_github::workflow::GitHubActionsEmitter;
-    use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
+    use cuenv_github::workflow::schema::{Concurrency, Workflow};
     use indexmap::IndexMap;
 
     let workflow_name = match &ctx.project_name {
@@ -1304,43 +1196,16 @@ fn emit_standard_workflow(
 
     inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter);
 
-    // Build permissions based on task requirements
-    let has_deployments = ctx.tasks.iter().any(|t| t.deployment);
-    let has_outputs = ctx.tasks.iter().any(|t| {
-        t.outputs
-            .iter()
-            .any(|o| o.output_type == OutputType::Orchestrator)
-    });
-
-    let base_permissions = Permissions {
-        contents: Some(if has_deployments {
-            PermissionLevel::Write
-        } else {
-            PermissionLevel::Read
-        }),
-        checks: Some(PermissionLevel::Write),
-        pull_requests: Some(PermissionLevel::Write),
-        packages: if has_outputs {
-            Some(PermissionLevel::Write)
-        } else {
-            None
-        },
-        ..Default::default()
-    };
-
-    // Apply configured permissions from the manifest
-    let permissions = emitter.apply_configured_permissions(base_permissions);
-
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
     let workflow = Workflow {
         name: workflow_name.clone(),
-        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
+        on: emitter.build_triggers(&ir, &filename),
         concurrency: Some(Concurrency {
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
         }),
-        permissions: Some(permissions),
+        permissions: Some(emitter.build_permissions(&ir)),
         env: IndexMap::new(),
         jobs,
     };
@@ -1603,7 +1468,7 @@ fn emit_matrix_workflow(
     ctx: &PipelineContext,
 ) -> Result<Vec<(String, String)>> {
     use cuenv_github::workflow::GitHubActionsEmitter;
-    use cuenv_github::workflow::schema::{Concurrency, PermissionLevel, Permissions, Workflow};
+    use cuenv_github::workflow::schema::{Concurrency, Workflow};
 
     let workflow_name = match &ctx.project_name {
         Some(project) => format!("{project}-{pipeline_name}"),
@@ -1633,16 +1498,12 @@ fn emit_matrix_workflow(
 
     let workflow = Workflow {
         name: workflow_name.clone(),
-        on: build_workflow_triggers(&ctx.trigger, &filename, &emitter),
+        on: emitter.build_triggers(&ir, &filename),
         concurrency: Some(Concurrency {
             group: "${{ github.workflow }}-${{ github.head_ref || github.ref }}".to_string(),
             cancel_in_progress: Some(true),
         }),
-        permissions: Some(Permissions {
-            contents: Some(PermissionLevel::Write),
-            id_token: Some(PermissionLevel::Write),
-            ..Default::default()
-        }),
+        permissions: Some(emitter.build_permissions(&ir)),
         env: indexmap::IndexMap::new(),
         jobs,
     };
@@ -1651,112 +1512,6 @@ fn emit_matrix_workflow(
     })?;
 
     Ok(vec![(filename, yaml)])
-}
-
-/// Build workflow triggers from the trigger condition.
-///
-/// Adds the workflow file itself to the paths if paths are non-empty,
-/// ensuring workflows trigger when their own definition changes.
-fn build_workflow_triggers(
-    trigger: &cuenv_ci::ir::TriggerCondition,
-    workflow_filename: &str,
-    _emitter: &cuenv_github::workflow::GitHubActionsEmitter,
-) -> cuenv_github::workflow::schema::WorkflowTriggers {
-    use cuenv_github::workflow::schema::{
-        PullRequestTrigger, PushTrigger, ReleaseTrigger, ScheduleTrigger, WorkflowDispatchTrigger,
-        WorkflowInput, WorkflowTriggers,
-    };
-
-    // Add workflow file to paths so changes to the workflow itself trigger a run
-    let paths = if trigger.paths.is_empty() {
-        Vec::new()
-    } else {
-        let workflow_path = format!(".github/workflows/{workflow_filename}");
-        let mut paths = trigger.paths.clone();
-        if !paths.contains(&workflow_path) {
-            paths.push(workflow_path);
-            paths.sort();
-        }
-        paths
-    };
-
-    let push = if trigger.branches.is_empty() {
-        None
-    } else {
-        Some(PushTrigger {
-            branches: trigger.branches.clone(),
-            paths: paths.clone(),
-            paths_ignore: trigger.paths_ignore.clone(),
-            ..Default::default()
-        })
-    };
-
-    let pull_request = if trigger.pull_request == Some(true) {
-        Some(PullRequestTrigger {
-            branches: trigger.branches.clone(),
-            paths,
-            paths_ignore: trigger.paths_ignore.clone(),
-            ..Default::default()
-        })
-    } else {
-        None
-    };
-
-    let release = if trigger.release.is_empty() {
-        None
-    } else {
-        Some(ReleaseTrigger {
-            types: trigger.release.clone(),
-        })
-    };
-
-    let schedule = if trigger.scheduled.is_empty() {
-        None
-    } else {
-        Some(
-            trigger
-                .scheduled
-                .iter()
-                .map(|cron| ScheduleTrigger { cron: cron.clone() })
-                .collect(),
-        )
-    };
-
-    let workflow_dispatch = trigger.manual.as_ref().and_then(|m| {
-        if !m.enabled && m.inputs.is_empty() {
-            return None;
-        }
-        Some(WorkflowDispatchTrigger {
-            inputs: m
-                .inputs
-                .iter()
-                .map(|(k, v)| {
-                    (
-                        k.clone(),
-                        WorkflowInput {
-                            description: v.description.clone(),
-                            required: Some(v.required),
-                            default: v.default.clone(),
-                            input_type: v.input_type.clone(),
-                            options: if v.options.is_empty() {
-                                None
-                            } else {
-                                Some(v.options.clone())
-                            },
-                        },
-                    )
-                })
-                .collect(),
-        })
-    });
-
-    WorkflowTriggers {
-        push,
-        pull_request,
-        release,
-        workflow_dispatch,
-        schedule,
-    }
 }
 
 /// Sanitize a workflow name for use as a filename.

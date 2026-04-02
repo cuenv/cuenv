@@ -154,6 +154,46 @@ impl GitHubCIProvider {
         info!("Got {} changed files from GitHub API", files.len());
         Ok(files)
     }
+
+    /// Get changed files for a push event using the GitHub Compare API.
+    ///
+    /// Uses `GET /repos/{owner}/{repo}/compare/{base}...{head}` to determine
+    /// which files changed between the before and after SHAs of the push.
+    /// This works regardless of clone depth and handles multi-commit pushes.
+    async fn get_push_files_from_api(&self, before_sha: &str) -> Result<Vec<PathBuf>> {
+        debug!(
+            "Fetching push changed files from GitHub Compare API: {before_sha}...{}",
+            &self.context.sha
+        );
+        let octocrab = self.octocrab()?;
+
+        let comparison = octocrab
+            .commits(&self.owner, &self.repo)
+            .compare(before_sha, &self.context.sha)
+            .send()
+            .await
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to get push files from Compare API: {e}"
+                ))
+            })?;
+
+        let comparison_files = comparison.files.ok_or_else(|| {
+            cuenv_core::Error::configuration(
+                "GitHub Compare API response missing 'files' field".to_string(),
+            )
+        })?;
+        let files: Vec<PathBuf> = comparison_files
+            .into_iter()
+            .map(|f| PathBuf::from(f.filename))
+            .collect();
+
+        info!(
+            "Got {} changed files from GitHub Compare API",
+            files.len()
+        );
+        Ok(files)
+    }
 }
 
 #[async_trait]
@@ -200,10 +240,21 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
+        // Strategy 2: Push event - use GitHub Compare API (no git history needed)
+        if let Some(before_sha) = Self::get_before_sha() {
+            debug!("Push event detected, using Compare API: {before_sha}...{}", &self.context.sha);
+            match self.get_push_files_from_api(&before_sha).await {
+                Ok(files) => return Ok(files),
+                Err(e) => {
+                    warn!("Failed to get push files from Compare API: {e}. Falling back to git diff.");
+                }
+            }
+        }
+
         let is_shallow = Self::is_shallow_clone();
         debug!("Shallow clone detected: {is_shallow}");
 
-        // Strategy 2: Pull Request - use git diff with base_ref (fallback if API fails)
+        // Strategy 3: Pull Request - use git diff with base_ref (fallback if API fails)
         if let Some(base) = &self.context.base_ref
             && !base.is_empty()
         {
@@ -218,9 +269,9 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 3: Push event with valid GITHUB_BEFORE
+        // Strategy 4: Push event with valid GITHUB_BEFORE - git diff fallback
         if let Some(before_sha) = Self::get_before_sha() {
-            debug!("Push event detected, GITHUB_BEFORE: {before_sha}");
+            debug!("Push event git diff fallback, GITHUB_BEFORE: {before_sha}");
 
             if is_shallow {
                 Self::fetch_ref(&before_sha);
@@ -231,13 +282,13 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 4: Try comparing against parent commit
+        // Strategy 5: Try comparing against parent commit
         if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
             debug!("Using HEAD^ comparison");
             return Ok(files);
         }
 
-        // Strategy 5: Fall back to all tracked files
+        // Strategy 6: Fall back to all tracked files
         warn!(
             "Could not determine changed files (shallow clone: {is_shallow}). \
              Running all tasks. For better performance, consider: \
