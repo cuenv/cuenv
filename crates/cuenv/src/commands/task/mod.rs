@@ -27,10 +27,10 @@ use cuenv_core::tools::apply_resolved_tool_activation;
 
 use super::env_file::find_cue_module_root;
 use super::relative_path_from_root;
-use super::runtime_env::resolve_runtime_environment;
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
+use cuenv_core::runtime::resolve_runtime_environment;
 
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]

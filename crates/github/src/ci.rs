@@ -188,10 +188,7 @@ impl GitHubCIProvider {
             .map(|f| PathBuf::from(f.filename))
             .collect();
 
-        info!(
-            "Got {} changed files from GitHub Compare API",
-            files.len()
-        );
+        info!("Got {} changed files from GitHub Compare API", files.len());
         Ok(files)
     }
 }
@@ -242,11 +239,16 @@ impl CIProvider for GitHubCIProvider {
 
         // Strategy 2: Push event - use GitHub Compare API (no git history needed)
         if let Some(before_sha) = Self::get_before_sha() {
-            debug!("Push event detected, using Compare API: {before_sha}...{}", &self.context.sha);
+            debug!(
+                "Push event detected, using Compare API: {before_sha}...{}",
+                &self.context.sha
+            );
             match self.get_push_files_from_api(&before_sha).await {
                 Ok(files) => return Ok(files),
                 Err(e) => {
-                    warn!("Failed to get push files from Compare API: {e}. Falling back to git diff.");
+                    warn!(
+                        "Failed to get push files from Compare API: {e}. Falling back to git diff."
+                    );
                 }
             }
         }

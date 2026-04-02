@@ -1,5 +1,5 @@
-use cuenv_core::Result;
-use cuenv_core::manifest::{DevenvRuntime, NixRuntime, Runtime};
+use crate::Result;
+use crate::manifest::{DevenvRuntime, NixRuntime, Runtime};
 use cuenv_hooks::{Hook, capture_source_environment};
 use std::collections::HashMap;
 use std::path::Path;
@@ -7,6 +7,9 @@ use std::path::Path;
 const RUNTIME_ENV_TIMEOUT_SECONDS: u64 = 600;
 
 /// Resolve environment variables provided by the configured runtime.
+///
+/// Supports `Runtime::Nix` (runs `nix print-dev-env`) and `Runtime::Devenv`
+/// (runs `devenv print-dev-env`). Other runtime types return an empty map.
 ///
 /// # Errors
 ///
@@ -43,9 +46,7 @@ async fn resolve_nix_runtime_environment(
     capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
         .await
         .map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to acquire Nix runtime environment: {e}"
-            ))
+            crate::Error::configuration(format!("Failed to acquire Nix runtime environment: {e}"))
         })
 }
 
@@ -74,7 +75,7 @@ async fn resolve_devenv_runtime_environment(
     capture_source_environment(hook, &HashMap::new(), RUNTIME_ENV_TIMEOUT_SECONDS)
         .await
         .map_err(|e| {
-            cuenv_core::Error::configuration(format!(
+            crate::Error::configuration(format!(
                 "Failed to acquire devenv runtime environment: {e}"
             ))
         })
@@ -106,13 +107,11 @@ async fn resolve_devenv_command() -> Result<String> {
         ])
         .output()
         .await
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to install devenv: {e}"))
-        })?;
+        .map_err(|e| crate::Error::configuration(format!("Failed to install devenv: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(cuenv_core::Error::configuration(format!(
+        return Err(crate::Error::configuration(format!(
             "Failed to install devenv: {stderr}"
         )));
     }
@@ -167,8 +166,7 @@ mod tests {
     #[test]
     fn devenv_runtime_from_cue_defaults_to_current_dir() {
         // When deserialized from CUE/JSON via the Runtime enum, serde default gives "."
-        let runtime: Runtime =
-            serde_json::from_str(r#"{"type":"devenv"}"#).unwrap();
+        let runtime: Runtime = serde_json::from_str(r#"{"type":"devenv"}"#).unwrap();
         match runtime {
             Runtime::Devenv(devenv) => assert_eq!(devenv.path, "."),
             _ => panic!("Expected Devenv runtime"),

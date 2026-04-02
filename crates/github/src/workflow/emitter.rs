@@ -2226,7 +2226,11 @@ mod tests {
         ]);
 
         let job = emitter
-            .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()), "build.cuenv")
+            .build_cuenv_bootstrap_job(
+                &ir,
+                RunsOn::Label("ubuntu-latest".to_string()),
+                "build.cuenv",
+            )
             .expect("expected cuenv bootstrap job");
         let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
 
@@ -2254,7 +2258,11 @@ mod tests {
 
         assert!(
             emitter
-                .build_cuenv_bootstrap_job(&ir, RunsOn::Label("ubuntu-latest".to_string()), "build.cuenv")
+                .build_cuenv_bootstrap_job(
+                    &ir,
+                    RunsOn::Label("ubuntu-latest".to_string()),
+                    "build.cuenv"
+                )
                 .is_none()
         );
     }
