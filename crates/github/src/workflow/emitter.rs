@@ -263,6 +263,24 @@ impl GitHubActionsEmitter {
         self
     }
 
+    /// Emit a thin mode workflow, returning the filename and YAML content.
+    ///
+    /// This is the primary entry point for thin workflow generation. It builds
+    /// a single-job workflow that delegates task execution to `cuenv ci`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EmitterError::Serialization` if YAML serialization fails.
+    pub fn emit_thin_workflow(
+        &self,
+        ir: &IntermediateRepresentation,
+    ) -> EmitterResult<(String, String)> {
+        let workflow_name = Self::build_workflow_name(ir);
+        let filename = format!("{}.yml", sanitize_filename(&workflow_name));
+        let yaml = self.emit_thin(ir)?;
+        Ok((filename, yaml))
+    }
+
     /// Emit multiple workflow files for projects with multiple pipelines.
     ///
     /// Returns a map of filename to YAML content.
@@ -318,7 +336,8 @@ impl GitHubActionsEmitter {
     }
 
     /// Build workflow triggers from IR
-    fn build_triggers(
+    #[must_use]
+    pub fn build_triggers(
         &self,
         ir: &IntermediateRepresentation,
         workflow_filename: &str,
@@ -473,7 +492,8 @@ impl GitHubActionsEmitter {
     }
 
     /// Build permissions based on task requirements and configured permissions
-    fn build_permissions(&self, ir: &IntermediateRepresentation) -> Permissions {
+    #[must_use]
+    pub fn build_permissions(&self, ir: &IntermediateRepresentation) -> Permissions {
         let has_deployments = ir.tasks.iter().any(|t| t.deployment);
         let has_outputs = ir.tasks.iter().any(|t| {
             t.outputs
@@ -1170,7 +1190,10 @@ impl Emitter for GitHubActionsEmitter {
 
         // Main execution step: cuenv ci --pipeline <name>
         let pipeline_name = &ir.pipeline.name;
-        let cuenv_command = format!("cuenv ci --pipeline {pipeline_name}");
+        let cuenv_command = ir.pipeline.project_path.as_ref().map_or_else(
+            || format!("cuenv ci --pipeline {pipeline_name}"),
+            |path| format!("cuenv ci --pipeline {pipeline_name} --path {path}"),
+        );
 
         let mut main_step = Step::run(&cuenv_command)
             .with_name(format!("Run pipeline: {pipeline_name}"))
@@ -1654,6 +1677,7 @@ mod tests {
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
+                project_path: None,
                 trigger: None,
                 pipeline_tasks: vec![],
                 pipeline_task_defs: vec![],

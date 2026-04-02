@@ -178,11 +178,14 @@ impl GitHubCIProvider {
                 ))
             })?;
 
-        let files: Vec<PathBuf> = comparison
-            .files
-            .unwrap_or_default()
-            .iter()
-            .map(|f| PathBuf::from(&f.filename))
+        let comparison_files = comparison.files.ok_or_else(|| {
+            cuenv_core::Error::configuration(
+                "GitHub Compare API response missing 'files' field".to_string(),
+            )
+        })?;
+        let files: Vec<PathBuf> = comparison_files
+            .into_iter()
+            .map(|f| PathBuf::from(f.filename))
             .collect();
 
         info!(
@@ -239,7 +242,7 @@ impl CIProvider for GitHubCIProvider {
 
         // Strategy 2: Push event - use GitHub Compare API (no git history needed)
         if let Some(before_sha) = Self::get_before_sha() {
-            debug!("Push event detected, using Compare API: {before_sha}..{}", &self.context.sha);
+            debug!("Push event detected, using Compare API: {before_sha}...{}", &self.context.sha);
             match self.get_push_files_from_api(&before_sha).await {
                 Ok(files) => return Ok(files),
                 Err(e) => {

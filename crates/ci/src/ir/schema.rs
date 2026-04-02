@@ -42,6 +42,7 @@ impl IntermediateRepresentation {
                 environment: None,
                 requires_onepassword: false,
                 project_name: None,
+                project_path: None,
                 trigger: None,
                 pipeline_tasks: Vec::new(),
                 pipeline_task_defs: Vec::new(),
@@ -100,6 +101,10 @@ pub struct PipelineMetadata {
     /// Project name (for monorepo prefixing)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_name: Option<String>,
+
+    /// Relative path to project directory (for working-directory in monorepos)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 
     /// Trigger conditions
     #[serde(skip_serializing_if = "Option::is_none")]
