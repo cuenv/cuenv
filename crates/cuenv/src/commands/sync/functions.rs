@@ -1077,8 +1077,12 @@ fn emit_thin_workflow(pipeline_name: &str, ctx: &PipelineContext) -> Result<Vec<
     // Build steps for the single job
     let mut steps = Vec::new();
 
-    // Checkout step
-    steps.push(Step::uses("actions/checkout@v4").with_name("Checkout"));
+    // Checkout step - fetch-depth: 2 ensures HEAD^ exists for change detection
+    steps.push(
+        Step::uses("actions/checkout@v4")
+            .with_name("Checkout")
+            .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
+    );
 
     // Bootstrap and setup phase steps (from contributors)
     let (phase_steps, secret_env) = emitter.render_phase_steps(&ir, TaskExecution::Orchestrated);

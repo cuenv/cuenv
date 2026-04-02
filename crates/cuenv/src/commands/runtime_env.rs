@@ -118,11 +118,11 @@ async fn ensure_devenv_installed() -> Result<()> {
     // Add nix profile bin to PATH so devenv is findable in this process
     if let Ok(home) = std::env::var("HOME") {
         let profile_bin = format!("{home}/.nix-profile/bin");
-        if let Ok(current_path) = std::env::var("PATH") {
-            if !current_path.contains(&profile_bin) {
-                // SAFETY: single-threaded at this point in bootstrap
-                unsafe { std::env::set_var("PATH", format!("{profile_bin}:{current_path}")); }
-            }
+        if let Ok(current_path) = std::env::var("PATH")
+            && !current_path.contains(&profile_bin)
+        {
+            // SAFETY: single-threaded at this point in bootstrap
+            unsafe { std::env::set_var("PATH", format!("{profile_bin}:{current_path}")); }
         }
     }
 
