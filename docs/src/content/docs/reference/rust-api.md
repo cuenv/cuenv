@@ -198,7 +198,7 @@ Represents a single executable command.
 | `args`            | `Vec<String>`                        | Command arguments                                   |
 | `script`          | `Option<String>`                     | Multi-line script (alternative to command)          |
 | `script_shell`    | `Option<ScriptShell>`                | Shell for script execution (default: bash)          |
-| `shell_options`   | `Option<ShellOptions>`               | POSIX shell options for `bash`, `sh`, or `zsh`      |
+| `shell_options`   | `Option<ShellOptions>`               | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                 |
 | `depends_on`      | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)    |
 | `inputs`          | `Vec<Input>`                         | Files/globs or task output references               |

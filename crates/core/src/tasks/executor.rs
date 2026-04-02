@@ -1031,7 +1031,7 @@ mod tests {
         let executor = TaskExecutor::new(config);
         let task = Task {
             script: Some("false\necho should-not-run".to_string()),
-            script_shell: Some(super::super::ScriptShell::Sh),
+            script_shell: Some(super::super::ScriptShell::Bash),
             shell_options: Some(super::super::ShellOptions::default()),
             ..Default::default()
         };
@@ -1044,6 +1044,29 @@ mod tests {
         assert!(!result.success);
         assert_eq!(result.exit_code, Some(1));
         assert!(!result.stdout.contains("should-not-run"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_script_task_rejects_pipefail_for_sh() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            script: Some("echo hello".to_string()),
+            script_shell: Some(super::super::ScriptShell::Sh),
+            shell_options: Some(super::super::ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let err = executor.execute_task("script.sh", &task).await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("shellOptions.pipefail with unsupported script shell 'sh'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[tokio::test]

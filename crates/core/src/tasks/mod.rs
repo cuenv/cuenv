@@ -119,6 +119,12 @@ impl ScriptShell {
         matches!(self, ScriptShell::Bash | ScriptShell::Sh | ScriptShell::Zsh)
     }
 
+    /// Returns true if this shell supports `set -o pipefail`.
+    #[must_use]
+    pub fn supports_pipefail(&self) -> bool {
+        matches!(self, ScriptShell::Bash | ScriptShell::Zsh)
+    }
+
     /// Parse a shell enum from an executable path or bare command name.
     #[must_use]
     pub(crate) fn from_command(command: &str) -> Option<Self> {
@@ -154,7 +160,7 @@ pub struct ShellOptions {
     /// -u: error on undefined vars (default: true)
     #[serde(default = "default_true")]
     pub nounset: bool,
-    /// -o pipefail: fail on pipe errors (default: true)
+    /// -o pipefail: fail on pipe errors (default: true, requires bash or zsh)
     #[serde(default = "default_true")]
     pub pipefail: bool,
     /// -x: debug/trace mode (default: false)
@@ -226,6 +232,7 @@ struct EffectiveScriptShell {
     flag: String,
     display_name: String,
     supports_shell_options: bool,
+    supports_pipefail: bool,
 }
 
 /// Mapping of external output to local workspace path
@@ -869,16 +876,15 @@ impl Task {
             });
         }
 
-        let resolved_command = resolve_command(&self.command);
-
         if let Some(shell) = &self.shell
             && let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag)
         {
-            let full_command = if self.args.is_empty() {
-                resolved_command
-            } else if self.command.is_empty() {
+            let full_command = if self.command.is_empty() {
                 self.args.join(" ")
+            } else if self.args.is_empty() {
+                resolve_command(&self.command)
             } else {
+                let resolved_command = resolve_command(&self.command);
                 format!("{} {}", resolved_command, self.args.join(" "))
             };
 
@@ -889,7 +895,7 @@ impl Task {
         }
 
         Ok(TaskCommandSpec {
-            program: resolved_command,
+            program: resolve_command(&self.command),
             args: self.args.clone(),
         })
     }
@@ -939,20 +945,28 @@ impl Task {
                 flag: flag.to_string(),
                 display_name: command.to_string(),
                 supports_shell_options: script_shell.supports_shell_options(),
+                supports_pipefail: script_shell.supports_pipefail(),
             };
         }
 
         if let Some(shell) = &self.shell {
             let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
             let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
-            let supports_shell_options = ScriptShell::from_command(&command)
-                .is_some_and(|script_shell| script_shell.supports_shell_options());
+            let (supports_shell_options, supports_pipefail) = ScriptShell::from_command(&command)
+                .map(|script_shell| {
+                    (
+                        script_shell.supports_shell_options(),
+                        script_shell.supports_pipefail(),
+                    )
+                })
+                .unwrap_or((false, false));
 
             return EffectiveScriptShell {
                 display_name: command.clone(),
                 command,
                 flag,
                 supports_shell_options,
+                supports_pipefail,
             };
         }
 
@@ -964,6 +978,7 @@ impl Task {
             flag: flag.to_string(),
             display_name: command.to_string(),
             supports_shell_options: default_shell.supports_shell_options(),
+            supports_pipefail: default_shell.supports_pipefail(),
         }
     }
 
@@ -976,6 +991,14 @@ impl Task {
             return Err(crate::Error::configuration(format!(
                 "Task uses shellOptions with unsupported script shell '{}'. \
                  Use scriptShell 'bash', 'sh', or 'zsh'.",
+                shell.display_name
+            )));
+        }
+
+        if shell_options.pipefail && !shell.supports_pipefail {
+            return Err(crate::Error::configuration(format!(
+                "Task uses shellOptions.pipefail with unsupported script shell '{}'. \
+                 Disable pipefail or use scriptShell 'bash' or 'zsh'.",
                 shell.display_name
             )));
         }
@@ -1626,6 +1649,24 @@ mod tests {
     }
 
     #[test]
+    fn test_task_command_spec_rejects_pipefail_for_sh() {
+        let task = Task {
+            script: Some("echo hello".to_string()),
+            script_shell: Some(ScriptShell::Sh),
+            shell_options: Some(ShellOptions::default()),
+            ..Default::default()
+        };
+
+        let err = task.command_spec(str::to_string).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("shellOptions.pipefail with unsupported script shell 'sh'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_task_command_spec_rejects_shell_options_for_unsupported_shell() {
         let task = Task {
             script: Some("console.log('hello')".to_string()),
@@ -1640,6 +1681,30 @@ mod tests {
             err.to_string().contains("unsupported script shell 'node'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn test_task_command_spec_does_not_resolve_empty_command_for_shell_wrapper() {
+        let task = Task {
+            args: vec!["echo".to_string(), "hello".to_string()],
+            shell: Some(Shell {
+                command: Some("bash".to_string()),
+                flag: Some("-c".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let mut resolved_commands = Vec::new();
+        let spec = task
+            .command_spec(|command| {
+                resolved_commands.push(command.to_string());
+                format!("resolved:{command}")
+            })
+            .unwrap();
+
+        assert_eq!(resolved_commands, vec!["bash".to_string()]);
+        assert_eq!(spec.program, "resolved:bash");
+        assert_eq!(spec.args, vec!["-c".to_string(), "echo hello".to_string()]);
     }
 
     #[test]
