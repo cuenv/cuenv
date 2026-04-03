@@ -43,8 +43,6 @@ pub struct GitHubActionsEmitter {
     pub cachix_name: Option<String>,
     /// Cachix auth token secret name
     pub cachix_auth_token_secret: String,
-    /// Default paths to ignore in triggers
-    pub default_paths_ignore: Vec<String>,
     /// Include cuenv build step (via nix build)
     pub build_cuenv: bool,
     /// Environment name for manual approval tasks
@@ -104,13 +102,6 @@ impl Default for GitHubActionsEmitter {
             use_cachix: false,
             cachix_name: None,
             cachix_auth_token_secret: "CACHIX_AUTH_TOKEN".to_string(),
-            default_paths_ignore: vec![
-                "docs/**".to_string(),
-                "examples/**".to_string(),
-                "*.md".to_string(),
-                "LICENSE".to_string(),
-                ".vscode/**".to_string(),
-            ],
             build_cuenv: true,
             approval_environment: "production".to_string(),
             configured_permissions: HashMap::new(),
@@ -153,11 +144,6 @@ impl GitHubActionsEmitter {
             if let Some(auth_token) = &cachix.auth_token {
                 emitter.cachix_auth_token_secret.clone_from(auth_token);
             }
-        }
-
-        // Apply paths ignore
-        if let Some(paths_ignore) = &config.paths_ignore {
-            emitter.default_paths_ignore.clone_from(paths_ignore);
         }
 
         // Apply configured permissions
@@ -239,13 +225,6 @@ impl GitHubActionsEmitter {
     #[must_use]
     pub fn with_cachix_auth_token_secret(mut self, secret: impl Into<String>) -> Self {
         self.cachix_auth_token_secret = secret.into();
-        self
-    }
-
-    /// Set default paths to ignore in triggers
-    #[must_use]
-    pub fn with_paths_ignore(mut self, paths: Vec<String>) -> Self {
-        self.default_paths_ignore = paths;
         self
     }
 
@@ -371,11 +350,6 @@ impl GitHubActionsEmitter {
         Some(PushTrigger {
             branches: trigger.branches.clone(),
             paths,
-            paths_ignore: if trigger.paths_ignore.is_empty() {
-                self.default_paths_ignore.clone()
-            } else {
-                trigger.paths_ignore.clone()
-            },
             ..Default::default()
         })
     }
@@ -395,11 +369,6 @@ impl GitHubActionsEmitter {
             Some(PullRequestTrigger {
                 branches: trigger.branches.clone(),
                 paths,
-                paths_ignore: if trigger.paths_ignore.is_empty() {
-                    self.default_paths_ignore.clone()
-                } else {
-                    trigger.paths_ignore.clone()
-                },
                 ..Default::default()
             })
         } else {
@@ -2748,6 +2717,28 @@ mod tests {
         assert_eq!(
             workflow_path_count, 2,
             "Workflow path should appear in both push and PR triggers. Got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_workflow_never_emits_paths_ignore() {
+        let emitter = GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build();
+
+        let mut ir = make_ir(vec![make_task("build", &["cargo", "build"])]);
+        ir.pipeline.trigger = Some(TriggerCondition {
+            branches: vec!["main".to_string()],
+            paths: vec!["src/**".to_string()],
+            pull_request: Some(true),
+            ..Default::default()
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        assert!(
+            !yaml.contains("paths-ignore:"),
+            "Workflow should only emit positive path filters. Got:\n{yaml}"
         );
     }
 

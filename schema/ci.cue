@@ -42,7 +42,6 @@ package schema
 	trustedPublishing?: close({
 		cratesIo?: bool // Enable trusted publishing for crates.io
 	})
-	pathsIgnore?: [...string]
 	permissions?: [string]: string
 })
 

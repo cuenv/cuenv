@@ -445,10 +445,6 @@ impl Compiler {
             Vec::new()
         };
 
-        // Note: paths_ignore is platform-specific (e.g., GitHub's paths-ignore).
-        // It should be populated by the platform emitter, not the abstract compiler.
-        let paths_ignore = Vec::new();
-
         TriggerCondition {
             branches,
             pull_request,
@@ -456,7 +452,6 @@ impl Compiler {
             release,
             manual,
             paths,
-            paths_ignore,
         }
     }
 

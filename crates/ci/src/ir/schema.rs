@@ -146,10 +146,6 @@ pub struct TriggerCondition {
     /// Path patterns derived from task inputs (triggers on these paths)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
-
-    /// Path patterns to ignore (from provider config)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub paths_ignore: Vec<String>,
 }
 
 /// Manual trigger (`workflow_dispatch`) configuration

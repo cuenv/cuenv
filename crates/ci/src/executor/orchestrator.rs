@@ -30,8 +30,8 @@ use cuenv_core::tools::{
 };
 use cuenv_core::{DryRun, Result};
 use cuenv_hooks::{
-    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager,
-    compute_instance_hash, execute_hooks,
+    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager, compute_instance_hash,
+    execute_hooks,
 };
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};

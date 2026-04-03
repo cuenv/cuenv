@@ -1525,9 +1525,9 @@ fn sanitize_workflow_name(name: &str) -> String {
 
 /// Build GitHub Actions trigger condition from pipeline config.
 fn build_github_trigger_condition(
-    pipeline_name: &str,
+    _pipeline_name: &str,
     pipeline: &cuenv_core::ci::Pipeline,
-    ci_config: &cuenv_core::ci::CI,
+    _ci_config: &cuenv_core::ci::CI,
 ) -> cuenv_ci::ir::TriggerCondition {
     use cuenv_ci::ir::{ManualTriggerConfig, TriggerCondition, WorkflowDispatchInputDef};
     use cuenv_core::ci::ManualTrigger;
@@ -1573,11 +1573,6 @@ fn build_github_trigger_condition(
         },
     });
 
-    let paths_ignore = ci_config
-        .github_config_for_pipeline(pipeline_name)
-        .paths_ignore
-        .unwrap_or_default();
-
     TriggerCondition {
         branches,
         pull_request,
@@ -1585,7 +1580,6 @@ fn build_github_trigger_condition(
         release,
         manual,
         paths: Vec::new(),
-        paths_ignore,
     }
 }
 
