@@ -90,10 +90,6 @@ pub struct PushTrigger {
     /// Path patterns that must be matched to trigger
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
-
-    /// Path patterns to ignore
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub paths_ignore: Vec<String>,
 }
 
 /// Pull request event trigger configuration.
@@ -111,10 +107,6 @@ pub struct PullRequestTrigger {
     /// Path patterns that must be matched to trigger
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
-
-    /// Path patterns to ignore
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub paths_ignore: Vec<String>,
 }
 
 /// Release event trigger configuration.
