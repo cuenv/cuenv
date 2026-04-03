@@ -98,14 +98,6 @@ schema.#Project & {
 
 			cachix: name: "cuenv"
 
-			pathsIgnore: [
-				"docs/**",
-				"examples/**",
-				"*.md",
-				"LICENSE",
-				".vscode/**",
-			]
-
 			artifacts: {
 				paths: [".cuenv/reports/"]
 				ifNoFilesFound: "ignore"

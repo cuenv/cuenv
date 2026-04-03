@@ -23,8 +23,6 @@ pub struct GitHubConfig {
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
     pub trusted_publishing: Option<TrustedPublishingConfig>,
-    /// Paths to ignore for trigger conditions
-    pub paths_ignore: Option<Vec<String>>,
     /// Workflow permissions
     pub permissions: Option<HashMap<String, String>>,
 }
@@ -103,7 +101,6 @@ impl GitHubConfigExt for CI {
                     .trusted_publishing
                     .clone()
                     .or(global.trusted_publishing),
-                paths_ignore: pipeline.paths_ignore.clone().or(global.paths_ignore),
                 permissions: pipeline.permissions.clone().or(global.permissions),
             },
             None => global,
@@ -183,7 +180,6 @@ mod tests {
         assert!(config.cachix.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
-        assert!(config.paths_ignore.is_none());
         assert!(config.permissions.is_none());
     }
 
@@ -221,8 +217,7 @@ mod tests {
             "runner": "ubuntu-latest",
             "cachix": {
                 "name": "test-cache"
-            },
-            "pathsIgnore": ["*.md", "docs/*"]
+            }
         });
         let config: GitHubConfig = serde_json::from_value(json).unwrap();
         assert_eq!(
@@ -230,7 +225,6 @@ mod tests {
             Some(StringOrVec::String("ubuntu-latest".to_string()))
         );
         assert!(config.cachix.is_some());
-        assert_eq!(config.paths_ignore.as_ref().unwrap().len(), 2);
     }
 
     #[test]
