@@ -14,7 +14,6 @@ pub mod captures;
 pub mod executor;
 pub mod graph;
 pub mod index;
-pub mod io;
 pub mod output_refs;
 pub mod process_registry;
 

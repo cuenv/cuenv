@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-cache"
+name = "cuenv-cas"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,43 +9,25 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Content-addressed task caching for cuenv"
+description = "Content-addressed store and action cache for cuenv, modelled on the Bazel Remote Execution API"
 
 [features]
 default = []
 
 [dependencies]
-# Serialization
-serde = { version = "1.0", features = ["derive"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
-
-# Hashing
 sha2 = { workspace = true }
 hex = "0.4"
-
-# Time handling
 chrono = { workspace = true }
-
-# Error handling
-thiserror = "2.0"
+thiserror = { workspace = true }
 miette = { workspace = true }
-
-# Path resolution
-dirs = { workspace = true }
-
-# File operations
-walkdir = "2.5"
-tar = "0.4"
-zstd = { version = "0.13", features = ["zstdmt"] }
-
-# Logging
 tracing = { workspace = true }
-
-# Secret redaction
-cuenv-events = { workspace = true }
+walkdir = "2.5"
+tempfile = { workspace = true }
 
 [dev-dependencies]
-tempfile = { workspace = true }
+proptest = { workspace = true }
 
 [lints]
 workspace = true
