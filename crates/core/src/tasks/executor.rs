@@ -5,6 +5,7 @@
 //! - Host execution; isolation/caching is delegated to other backends
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
+use super::cache::{RecordInput, TaskCacheConfig};
 use super::process_registry::global_registry;
 use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::OutputCapture;
@@ -82,6 +83,10 @@ pub struct ExecutorConfig {
     pub backend_config: Option<BackendConfig>,
     /// CLI backend selection override
     pub cli_backend: Option<String>,
+    /// Optional task-result caching infrastructure (CAS + action cache + VCS hasher).
+    /// When `None`, the executor behaves exactly as it did before content-addressed
+    /// caching was wired in: tasks always run, nothing is persisted, nothing is read.
+    pub cache: Option<TaskCacheConfig>,
 }
 
 impl Default for ExecutorConfig {
@@ -98,6 +103,7 @@ impl Default for ExecutorConfig {
             show_cache_path: false,
             backend_config: None,
             cli_backend: None,
+            cache: None,
         }
     }
 }
@@ -134,14 +140,45 @@ impl TaskExecutor {
         Self { config, backend }
     }
 
-    /// Execute a single task
+    /// Execute a single task, consulting the action cache when configured.
+    ///
+    /// Flow:
+    /// 1. If a [`TaskCacheConfig`] is set and the task declares `inputs`,
+    ///    build the [`cuenv_cas::Action`] envelope and look it up in the
+    ///    action cache. On a hit, materialize cached outputs into the
+    ///    workdir and return without spawning anything.
+    /// 2. Otherwise dispatch to the configured backend (host or dagger).
+    /// 3. On a successful miss, persist outputs + result to the cache so
+    ///    the next invocation hits.
     #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
-        // Delegate execution to the configured backend.
-        // The backend implementation handles the specific execution details.
+        // Cache plumbing — None means no caching, behave as before.
+        // We compute the action digest up front so we can reuse it on the
+        // record path without re-walking the inputs.
+        let cache_handle: Option<(TaskCacheConfig, cuenv_cas::Digest, PathBuf)> =
+            if let Some(cache) = self.config.cache.clone() {
+                let workdir = self.workdir_for_task(task);
+                match super::cache::build_action(task, name, &self.config.environment, &cache)
+                    .await?
+                {
+                    Some((_, action_digest)) => {
+                        // Cache lookup. On a hit, short-circuit execution.
+                        if let Some(cached) = super::cache::lookup(&cache, &action_digest, task)? {
+                            tracing::debug!(task = %name, "action cache hit");
+                            return self.return_cache_hit(name, task, &cache, &workdir, &cached);
+                        }
+                        tracing::debug!(task = %name, "action cache miss");
+                        Some((cache, action_digest, workdir))
+                    }
+                    None => None,
+                }
+            } else {
+                None
+            };
 
-        // If using Dagger backend, execute in a containerized context.
-        if self.backend.name() == "dagger" {
+        // Real execution. Both backends produce the same `TaskResult`.
+        let start = std::time::Instant::now();
+        let result = if self.backend.name() == "dagger" {
             let ctx = super::backend::TaskExecutionContext {
                 name,
                 task,
@@ -149,11 +186,108 @@ impl TaskExecutor {
                 project_root: &self.config.project_root,
                 capture_output: self.config.capture_output,
             };
-            return self.backend.execute(&ctx).await;
+            self.backend.execute(&ctx).await?
+        } else {
+            self.execute_task_non_hermetic(name, task).await?
+        };
+        let duration_ms = start.elapsed().as_millis();
+
+        // Persist on successful miss. Cache writes are best-effort: a write
+        // failure logs but does not fail the user's task.
+        if let Some((cache, action_digest, workdir)) = cache_handle
+            && super::cache::effective_policy(task).mode.allows_write()
+            && result.exit_code == Some(0)
+            && let Err(e) = super::cache::record(RecordInput {
+                cache: &cache,
+                action_digest: &action_digest,
+                workdir: &workdir,
+                task,
+                stdout: &result.stdout,
+                stderr: &result.stderr,
+                exit_code: 0,
+                duration_ms,
+            })
+        {
+            tracing::warn!(task = %name, error = %e, "cache write failed");
         }
 
-        // Host backend runs tasks directly in the workspace.
-        self.execute_task_non_hermetic(name, task).await
+        Ok(result)
+    }
+
+    /// Reproduce a [`TaskResult`] from a cache hit and emit the same
+    /// lifecycle events the executor would emit on a normal run, so
+    /// downstream renderers (CLI / TUI / JSON) see no behavioral
+    /// difference between a cached and an uncached task.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "thin glue function, splitting hurts readability"
+    )]
+    fn return_cache_hit(
+        &self,
+        name: &str,
+        task: &Task,
+        cache: &TaskCacheConfig,
+        workdir: &Path,
+        cached: &cuenv_cas::ActionResult,
+    ) -> Result<TaskResult> {
+        let (stdout, stderr, exit_code) = super::cache::materialize_hit(cache, workdir, cached)?;
+        let success = exit_code == 0;
+
+        let cmd_str = if let Some(script) = &task.script {
+            format!("[script: {} bytes] (cached)", script.len())
+        } else if task.command.is_empty() {
+            format!("{} (cached)", task.args.join(" "))
+        } else {
+            format!("{} {} (cached)", task.command, task.args.join(" "))
+        };
+        cuenv_events::emit_task_started!(name, cmd_str, false);
+        cuenv_events::emit_task_completed!(name, success, exit_code, 0_u64);
+
+        Ok(TaskResult {
+            name: name.to_string(),
+            exit_code: Some(exit_code),
+            stdout,
+            stderr,
+            success,
+        })
+    }
+
+    /// Compute the working directory the executor would use for a task.
+    ///
+    /// Extracted from `execute_task_non_hermetic` so that the cache wrapper
+    /// in `execute_task` can resolve outputs against the same path the
+    /// task itself ran in.
+    fn workdir_for_task(&self, task: &Task) -> PathBuf {
+        if let Some(ref dir) = task.directory {
+            self.config
+                .cue_module_root
+                .as_ref()
+                .unwrap_or(&self.config.project_root)
+                .join(dir)
+        } else if let Some(ref project_root) = task.project_root {
+            project_root.clone()
+        } else if let Some(ref source) = task.source {
+            if let Some(dir) = source.directory() {
+                self.config
+                    .cue_module_root
+                    .as_ref()
+                    .unwrap_or(&self.config.project_root)
+                    .join(dir)
+            } else {
+                self.config
+                    .cue_module_root
+                    .clone()
+                    .unwrap_or_else(|| self.config.project_root.clone())
+            }
+        } else if !task.hermetic {
+            if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
+                find_workspace_root(manager, &self.config.project_root)
+            } else {
+                self.config.project_root.clone()
+            }
+        } else {
+            self.config.project_root.clone()
+        }
     }
 
     /// Execute a task non-hermetically (directly in workspace/project root)
@@ -178,49 +312,8 @@ impl TaskExecutor {
             )));
         }
 
-        // Determine working directory (in priority order):
-        // 1. Explicit directory field on task (relative to cue.mod root)
-        // 2. TaskRef project_root (from resolution)
-        // 3. Source file directory (from _source metadata)
-        // 4. Install tasks (hermetic: false with workspaces) run from workspace root
-        // 5. Default to project root
-        let workdir = if let Some(ref dir) = task.directory {
-            // Explicit directory override: resolve relative to cue.mod root or project root
-            self.config
-                .cue_module_root
-                .as_ref()
-                .unwrap_or(&self.config.project_root)
-                .join(dir)
-        } else if let Some(ref project_root) = task.project_root {
-            // TaskRef tasks run in their original project directory
-            project_root.clone()
-        } else if let Some(ref source) = task.source {
-            // Default: run in the directory of the source file
-            if let Some(dir) = source.directory() {
-                self.config
-                    .cue_module_root
-                    .as_ref()
-                    .unwrap_or(&self.config.project_root)
-                    .join(dir)
-            } else {
-                // Source is at root (e.g., "env.cue"), use cue_module_root if available
-                // This ensures tasks defined in root env.cue run from module root,
-                // even when invoked from a subdirectory
-                self.config
-                    .cue_module_root
-                    .clone()
-                    .unwrap_or_else(|| self.config.project_root.clone())
-            }
-        } else if !task.hermetic {
-            // For non-hermetic tasks, detect package manager from command to find workspace root
-            if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
-                find_workspace_root(manager, &self.config.project_root)
-            } else {
-                self.config.project_root.clone()
-            }
-        } else {
-            self.config.project_root.clone()
-        };
+        // Determine working directory (in priority order: see `workdir_for_task`).
+        let workdir = self.workdir_for_task(task);
 
         tracing::info!(
             task = %name,

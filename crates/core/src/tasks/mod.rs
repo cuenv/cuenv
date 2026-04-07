@@ -10,6 +10,7 @@
 //! - [`TaskList`]: Sequential execution (steps run in order)
 
 pub mod backend;
+pub mod cache;
 pub mod captures;
 pub mod executor;
 pub mod graph;
@@ -36,6 +37,51 @@ use std::path::Path;
 
 fn default_hermetic() -> bool {
     true
+}
+
+// =============================================================================
+// Task Cache Policy
+// =============================================================================
+
+/// Cache mode for task result caching.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskCacheMode {
+    /// Never read or write cache entries.
+    #[default]
+    Never,
+    /// Read from cache only.
+    Read,
+    /// Write to cache only.
+    Write,
+    /// Read from and write to cache.
+    ReadWrite,
+}
+
+impl TaskCacheMode {
+    /// Returns true when this mode allows cache reads.
+    #[must_use]
+    pub const fn allows_read(self) -> bool {
+        matches!(self, Self::Read | Self::ReadWrite)
+    }
+
+    /// Returns true when this mode allows cache writes.
+    #[must_use]
+    pub const fn allows_write(self) -> bool {
+        matches!(self, Self::Write | Self::ReadWrite)
+    }
+}
+
+/// Cache policy controls for a single task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCachePolicy {
+    /// Cache mode for the task. Default is `never`.
+    #[serde(default)]
+    pub mode: TaskCacheMode,
+    /// Maximum age for cache reads (for example: "1h", "30m", "infinite").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_age: Option<String>,
 }
 
 // =============================================================================
@@ -493,6 +539,10 @@ pub struct Task {
     #[serde(default)]
     pub outputs: Vec<String>,
 
+    /// Task result cache policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<TaskCachePolicy>,
+
     /// Description of the task
     #[serde(default)]
     pub description: Option<String>,
@@ -596,6 +646,8 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             outputs: Vec<String>,
             #[serde(default)]
+            cache: Option<TaskCachePolicy>,
+            #[serde(default)]
             description: Option<String>,
             #[serde(default)]
             params: Option<TaskParams>,
@@ -646,6 +698,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             depends_on: helper.depends_on,
             inputs: helper.inputs,
             outputs: helper.outputs,
+            cache: helper.cache,
             description: helper.description,
             params: helper.params,
             labels: helper.labels,
@@ -817,6 +870,7 @@ impl Default for Task {
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
+            cache: None,
             description: None,
             params: None,
             labels: vec![],
@@ -851,6 +905,12 @@ impl Task {
     /// Returns an iterator over dependency task names.
     pub fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.depends_on.iter().map(|d| d.task_name())
+    }
+
+    /// Returns the effective cache policy for this task.
+    #[must_use]
+    pub fn cache_policy(&self) -> TaskCachePolicy {
+        self.cache.clone().unwrap_or_default()
     }
 
     /// Returns the description, or a default if not set.
@@ -1317,6 +1377,34 @@ mod tests {
         assert!(task.command.is_empty()); // No command
         assert_eq!(task.script, Some("echo hello".to_string()));
         assert_eq!(task.inputs.len(), 1);
+    }
+
+    #[test]
+    fn test_task_cache_policy_defaults_to_never() {
+        let task = Task {
+            command: "echo".to_string(),
+            ..Default::default()
+        };
+
+        let policy = task.cache_policy();
+        assert_eq!(policy.mode, TaskCacheMode::Never);
+        assert!(policy.max_age.is_none());
+    }
+
+    #[test]
+    fn test_task_cache_policy_deserialization() {
+        let json = r#"{
+            "command": "echo",
+            "cache": {
+                "mode": "read-write",
+                "maxAge": "1h"
+            }
+        }"#;
+
+        let task: Task = serde_json::from_str(json).unwrap();
+        let policy = task.cache_policy();
+        assert_eq!(policy.mode, TaskCacheMode::ReadWrite);
+        assert_eq!(policy.max_age, Some("1h".to_string()));
     }
 
     #[test]

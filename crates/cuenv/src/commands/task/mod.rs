@@ -18,12 +18,16 @@ use rendering::{format_task_detail, get_task_cli_help, render_task_tree};
 
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
+use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::{Project, Runtime};
+use cuenv_core::tasks::cache::TaskCacheConfig;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
     BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
 };
 use cuenv_core::tools::apply_resolved_tool_activation;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use super::env_file::find_cue_module_root;
 use super::relative_path_from_root;
@@ -44,10 +48,180 @@ fn get_dagger_factory() -> Option<BackendFactory> {
     None
 }
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::export::get_environment_with_hooks;
 use tracing::instrument;
+
+/// Resolve the on-disk root for the local CAS + action cache.
+///
+/// Resolution order:
+/// 1. `$CUENV_CACHE_DIR` (explicit override)
+/// 2. `$XDG_CACHE_HOME/cuenv` or the platform default
+/// 3. `<project>/.cuenv-cache`
+fn resolve_cache_root(project_root: &Path) -> PathBuf {
+    if let Some(env) = std::env::var_os("CUENV_CACHE_DIR")
+        && !env.is_empty()
+    {
+        return PathBuf::from(env);
+    }
+    if let Some(d) = dirs::cache_dir() {
+        return d.join("cuenv");
+    }
+    project_root.join(".cuenv-cache")
+}
+
+/// Construct the [`TaskCacheConfig`] used by the executor.
+///
+/// Returns `None` if the local CAS or action cache cannot be opened (e.g.
+/// permissions). In that case the executor falls back to the no-cache code
+/// path so the user's command still works — degraded, not broken.
+fn build_task_cache(
+    project_root: &Path,
+    runtime_identity: RuntimeCacheIdentity,
+) -> Option<TaskCacheConfig> {
+    let root = resolve_cache_root(project_root);
+    let cas = match cuenv_cas::LocalCas::open(&root) {
+        Ok(c) => Arc::new(c) as Arc<dyn cuenv_cas::Cas>,
+        Err(e) => {
+            tracing::warn!(error = %e, root = %root.display(), "task cache disabled: cannot open CAS");
+            return None;
+        }
+    };
+    let action_cache = match cuenv_cas::LocalActionCache::open(&root) {
+        Ok(ac) => Arc::new(ac) as Arc<dyn cuenv_cas::ActionCache>,
+        Err(e) => {
+            tracing::warn!(error = %e, root = %root.display(), "task cache disabled: cannot open action cache");
+            return None;
+        }
+    };
+    let vcs_hasher =
+        Arc::new(cuenv_vcs::WalkHasher::new(project_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+    Some(TaskCacheConfig {
+        cas,
+        action_cache,
+        vcs_hasher,
+        cuenv_version: env!("CARGO_PKG_VERSION").to_string(),
+        runtime_identity_properties: runtime_identity.properties,
+        cache_disabled_reason: runtime_identity.cache_disabled_reason,
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeCacheIdentity {
+    properties: BTreeMap<String, String>,
+    cache_disabled_reason: Option<String>,
+}
+
+fn resolve_runtime_cache_identity(
+    module_root: &Path,
+    project_root: &Path,
+    runtime: Option<&Runtime>,
+) -> RuntimeCacheIdentity {
+    let mut identity = RuntimeCacheIdentity::default();
+    let Some(runtime) = runtime else {
+        return identity;
+    };
+
+    match runtime {
+        Runtime::Nix(nix_runtime) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "nix".to_string());
+
+            let lockfile_path = module_root.join(LOCKFILE_NAME);
+            let lockfile = match Lockfile::load(&lockfile_path) {
+                Ok(Some(lockfile)) => lockfile,
+                Ok(None) => {
+                    identity.cache_disabled_reason = Some(format!(
+                        "runtime is nix but {} is missing",
+                        lockfile_path.display()
+                    ));
+                    return identity;
+                }
+                Err(e) => {
+                    identity.cache_disabled_reason = Some(format!(
+                        "runtime is nix but {} could not be read: {}",
+                        lockfile_path.display(),
+                        e
+                    ));
+                    return identity;
+                }
+            };
+
+            let project_path = relative_path_from_root(module_root, project_root);
+            let project_key = project_path.to_string_lossy().into_owned();
+            let Some(locked_runtime) = lockfile.find_runtime(&project_key) else {
+                identity.cache_disabled_reason = Some(format!(
+                    "runtime is nix but lockfile has no runtime entry for project '{}'",
+                    project_key
+                ));
+                return identity;
+            };
+
+            let LockedRuntime::Nix(locked_nix) = locked_runtime;
+
+            if locked_nix.flake != nix_runtime.flake || locked_nix.output != nix_runtime.output {
+                identity.cache_disabled_reason = Some(format!(
+                    "runtime lock mismatch for project '{}': expected flake='{}' output='{}', got flake='{}' output='{}'",
+                    project_key,
+                    nix_runtime.flake,
+                    nix_runtime.output.as_deref().unwrap_or(""),
+                    locked_nix.flake,
+                    locked_nix.output.as_deref().unwrap_or("")
+                ));
+                return identity;
+            }
+
+            identity
+                .properties
+                .insert("runtime.nix.digest".to_string(), locked_nix.digest.clone());
+            identity
+                .properties
+                .insert("runtime.nix.flake".to_string(), locked_nix.flake.clone());
+            if let Some(output) = &locked_nix.output {
+                identity
+                    .properties
+                    .insert("runtime.nix.output".to_string(), output.clone());
+            }
+            identity.properties.insert(
+                "runtime.nix.lockfile".to_string(),
+                locked_nix.lockfile.clone(),
+            );
+            identity
+        }
+        Runtime::Devenv(_) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "devenv".to_string());
+            identity
+        }
+        Runtime::Container(_) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "container".to_string());
+            identity
+        }
+        Runtime::Dagger(_) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "dagger".to_string());
+            identity
+        }
+        Runtime::Oci(_) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "oci".to_string());
+            identity
+        }
+        Runtime::Tools(_) => {
+            identity
+                .properties
+                .insert("runtime.kind".to_string(), "tools".to_string());
+            identity
+        }
+    }
+}
 
 /// Execute a task using the new structured request API.
 ///
@@ -599,6 +773,21 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         }
     }
 
+    // Build the task cache (CAS + ActionCache + VcsHasher) once and share it
+    // between the regular and TUI executor configs. Cache writes are
+    // best-effort, so failure to open the local store degrades to "no
+    // caching" rather than aborting the user's command.
+    let module_root = cue_module_root.as_deref().unwrap_or(project_root.as_path());
+    let runtime_identity = resolve_runtime_cache_identity(
+        module_root,
+        project_root.as_path(),
+        manifest.runtime.as_ref(),
+    );
+    if let Some(reason) = &runtime_identity.cache_disabled_reason {
+        tracing::warn!(reason, "task cache disabled for this invocation");
+    }
+    let task_cache = build_task_cache(&project_root, runtime_identity);
+
     // Create executor with environment
     let config = ExecutorConfig {
         capture_output,
@@ -612,6 +801,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         show_cache_path,
         backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
         cli_backend: backend.map(ToString::to_string),
+        cache: task_cache.clone(),
     };
 
     let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
@@ -632,6 +822,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             show_cache_path,
             backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
             cli_backend: backend.map(ToString::to_string),
+            cache: task_cache.clone(),
         };
         let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
 

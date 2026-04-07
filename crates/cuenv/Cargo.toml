@@ -40,6 +40,8 @@ name = "bdd"
 harness = false
 
 [dependencies]
+cuenv-cas = { workspace = true }
+cuenv-vcs = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
 cuenv-hooks = { workspace = true }
