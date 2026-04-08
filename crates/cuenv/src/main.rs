@@ -178,7 +178,9 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
             | cli::Commands::Sync { .. }
-            | cli::Commands::Runtime { .. } => true,
+            | cli::Commands::Runtime { .. }
+            | cli::Commands::Up { .. }
+            | cli::Commands::Down { .. } => true,
             // Tools commands - download/activate need async, list is sync
             cli::Commands::Tools { subcommand } => match subcommand {
                 cli::ToolsCommands::Download | cli::ToolsCommands::Activate => true,
@@ -937,6 +939,36 @@ async fn execute_command_safe(
         }
         Command::ToolsList => {
             return commands::tools::execute_tools_list();
+        }
+        Command::Up {
+            path,
+            package,
+            services,
+            labels,
+        } => {
+            let options = commands::up::UpOptions {
+                path,
+                package,
+                services,
+                labels,
+            };
+            return commands::up::execute_up(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Up command failed: {e}")));
+        }
+        Command::Down {
+            path,
+            package,
+            services,
+        } => {
+            let options = commands::down::DownOptions {
+                path,
+                package,
+                services,
+            };
+            return commands::down::execute_down(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Down command failed: {e}")));
         }
         // Info command needs special handling for json_format and output
         Command::Info {

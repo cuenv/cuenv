@@ -12,7 +12,7 @@
 
 use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent,
-    Stream, SystemEvent, TaskEvent,
+    ServiceEvent, Stream, SystemEvent, TaskEvent,
 };
 use crate::metadata::correlation_id;
 use crate::redaction::redact;
@@ -81,6 +81,10 @@ struct CuenvEventVisitor {
     sequential: Option<bool>,
     task_count: Option<usize>,
 
+    // Service event fields
+    service_name: Option<String>,
+    after_ms: Option<u64>,
+
     // CI event fields
     provider: Option<String>,
     event_type_ci: Option<String>,
@@ -123,6 +127,8 @@ impl CuenvEventVisitor {
             duration_ms: None,
             sequential: None,
             task_count: None,
+            service_name: None,
+            after_ms: None,
             provider: None,
             event_type_ci: None,
             ref_name: None,
@@ -188,6 +194,35 @@ impl CuenvEventVisitor {
                 name: self.task_name?,
                 success: self.success?,
                 duration_ms: self.duration_ms.unwrap_or(0),
+            }),
+
+            // Service events
+            "service.pending" => EventCategory::Service(ServiceEvent::Pending {
+                name: self.service_name?,
+            }),
+            "service.starting" => EventCategory::Service(ServiceEvent::Starting {
+                name: self.service_name?,
+                command: self.command.unwrap_or_default(),
+            }),
+            "service.output" => EventCategory::Service(ServiceEvent::Output {
+                name: self.service_name?,
+                stream: self.stream.unwrap_or(Stream::Stdout),
+                line: content?,
+            }),
+            "service.ready" => EventCategory::Service(ServiceEvent::Ready {
+                name: self.service_name?,
+                after_ms: self.after_ms.unwrap_or(0),
+            }),
+            "service.stopping" => EventCategory::Service(ServiceEvent::Stopping {
+                name: self.service_name?,
+            }),
+            "service.stopped" => EventCategory::Service(ServiceEvent::Stopped {
+                name: self.service_name?,
+                exit_code: self.exit_code,
+            }),
+            "service.failed" => EventCategory::Service(ServiceEvent::Failed {
+                name: self.service_name?,
+                error: error?,
             }),
 
             // CI events
@@ -280,6 +315,7 @@ impl Visit for CuenvEventVisitor {
         match field.name() {
             "event_type" => self.event_type = Some(value.to_string()),
             "task_name" | "name" => self.task_name = Some(value.to_string()),
+            "service_name" => self.service_name = Some(value.to_string()),
             "command" | "cmd" => self.command = Some(value.to_string()),
             "cache_key" => self.cache_key = Some(value.to_string()),
             "content" => self.content = Some(value.to_string()),
@@ -310,6 +346,7 @@ impl Visit for CuenvEventVisitor {
         match field.name() {
             "exit_code" => self.exit_code = Some(value as i32),
             "duration_ms" => self.duration_ms = Some(value as u64),
+            "after_ms" => self.after_ms = Some(value as u64),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value as u64),
@@ -320,6 +357,7 @@ impl Visit for CuenvEventVisitor {
     fn record_u64(&mut self, field: &Field, value: u64) {
         match field.name() {
             "duration_ms" => self.duration_ms = Some(value),
+            "after_ms" => self.after_ms = Some(value),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value),
@@ -360,16 +398,18 @@ impl Visit for CuenvEventVisitor {
             // Fallback: try to extract string fields from debug formatting
             // When tracing uses Display formatting (%), it wraps values in a DisplayValue
             // which then gets passed to record_debug instead of record_str
-            "event_type" | "task_name" | "name" | "command" | "cmd" | "content" | "cache_key"
-            | "stream" => {
+            "event_type" | "task_name" | "service_name" | "name" | "command" | "cmd" | "content"
+            | "cache_key" | "stream" | "error" => {
                 // Remove surrounding quotes if present (debug format adds them for strings)
                 let cleaned = value_str.trim_matches('"');
                 match field.name() {
                     "event_type" => self.event_type = Some(cleaned.to_string()),
                     "task_name" | "name" => self.task_name = Some(cleaned.to_string()),
+                    "service_name" => self.service_name = Some(cleaned.to_string()),
                     "command" | "cmd" => self.command = Some(cleaned.to_string()),
                     "content" => self.content = Some(cleaned.to_string()),
                     "cache_key" => self.cache_key = Some(cleaned.to_string()),
+                    "error" => self.error = Some(cleaned.to_string()),
                     "stream" => {
                         self.stream = match cleaned {
                             "stdout" => Some(Stream::Stdout),

@@ -2,6 +2,8 @@
 pub mod changeset_picker;
 /// CI pipeline integration and generation commands.
 pub mod ci;
+/// Tear down running services.
+pub mod down;
 /// Environment management commands (print, load, status, etc.).
 pub mod env;
 /// CUE module and env.cue file discovery utilities.
@@ -35,6 +37,8 @@ pub mod task_list;
 pub mod task_picker;
 /// Tools command for multi-source tool management.
 pub mod tools;
+/// Bring up long-running services.
+pub mod up;
 /// Version information and display.
 pub mod version;
 
@@ -346,6 +350,26 @@ pub enum Command {
     ToolsActivate,
     /// List configured tools.
     ToolsList,
+    /// Bring up long-running services defined in CUE configuration.
+    Up {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Specific service names to bring up (empty = all).
+        services: Vec<String>,
+        /// Label filters to select services by labels.
+        labels: Vec<String>,
+    },
+    /// Tear down running services.
+    Down {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Specific service names to bring down (empty = all).
+        services: Vec<String>,
+    },
 }
 
 /// Executes CLI commands with centralized module evaluation and event handling.
@@ -905,7 +929,9 @@ impl CommandExecutor {
             | Command::RuntimeOciActivate
             | Command::ToolsDownload
             | Command::ToolsActivate
-            | Command::ToolsList => Ok(()),
+            | Command::ToolsList
+            | Command::Up { .. }
+            | Command::Down { .. } => Ok(()),
         }
     }
 
