@@ -26,6 +26,7 @@ fn build_executor(workspace: &std::path::Path, cache_root: &std::path::Path) -> 
         cas: cas.clone(),
         action_cache: action_cache.clone(),
         vcs_hasher,
+        vcs_hasher_root: workspace.to_path_buf(),
         cuenv_version: "test".to_string(),
         runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,

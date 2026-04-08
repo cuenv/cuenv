@@ -164,7 +164,7 @@ impl TaskExecutor {
                     environment: &self.config.environment,
                     cache: &cache,
                     workdir: &workdir,
-                    project_root: &self.config.project_root,
+                    project_root: self.project_root_for_task(task),
                     module_root: self
                         .config
                         .cue_module_root
@@ -256,6 +256,8 @@ impl TaskExecutor {
             format!("{} {} (cached)", task.command, task.args.join(" "))
         };
         cuenv_events::emit_task_started!(name, cmd_str, false);
+        emit_cached_output_events(name, "stdout", &stdout);
+        emit_cached_output_events(name, "stderr", &stderr);
         cuenv_events::emit_task_completed!(
             name,
             success,
@@ -308,6 +310,12 @@ impl TaskExecutor {
         } else {
             self.config.project_root.clone()
         }
+    }
+
+    fn project_root_for_task<'a>(&'a self, task: &'a Task) -> &'a Path {
+        task.project_root
+            .as_deref()
+            .unwrap_or(&self.config.project_root)
     }
 
     /// Execute a task non-hermetically (directly in workspace/project root)
@@ -796,6 +804,12 @@ struct CacheHitInput<'a> {
     cached: &'a cuenv_cas::ActionResult,
 }
 
+fn emit_cached_output_events(name: &str, stream: &'static str, content: &str) {
+    for line in content.lines() {
+        cuenv_events::emit_task_output!(name, stream, line);
+    }
+}
+
 fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
     let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
 
@@ -1042,7 +1056,13 @@ pub async fn execute_command_with_redaction(
 mod tests {
     use super::*;
     use crate::tasks::TaskDependency;
+    use crate::tasks::cache::TaskCacheConfig;
+    use cuenv_cas::{LocalActionCache, LocalCas};
+    use cuenv_events::{CuenvEventLayer, EventCategory, TaskEvent};
+    use cuenv_vcs::WalkHasher;
     use tempfile::TempDir;
+    use tokio::sync::mpsc;
+    use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]
     async fn test_executor_config_default() {
@@ -1392,6 +1412,70 @@ mod tests {
         let consumer = results.iter().find(|r| r.name == "consumer").unwrap();
         assert!(consumer.success);
         assert!(consumer.stdout.contains("ok"));
+    }
+
+    #[tokio::test]
+    async fn test_cache_hit_replays_task_output_events() {
+        let workspace = TempDir::new().unwrap();
+        let cache_root = TempDir::new().unwrap();
+        std::fs::write(workspace.path().join("input.txt"), "v1").unwrap();
+
+        let cache = TaskCacheConfig {
+            cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
+            action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
+            vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
+            vcs_hasher_root: workspace.path().to_path_buf(),
+            cuenv_version: "test".to_string(),
+            runtime_identity_properties: std::collections::BTreeMap::new(),
+            cache_disabled_reason: None,
+        };
+        let executor = TaskExecutor::new(ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            project_root: workspace.path().to_path_buf(),
+            cache: Some(cache),
+            ..Default::default()
+        });
+        let task = Task {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "printf 'hello\\n' && cat input.txt > out.txt".to_string(),
+            ],
+            inputs: vec![super::super::Input::Path("input.txt".to_string())],
+            outputs: vec!["out.txt".to_string()],
+            cache: Some(super::super::TaskCachePolicy {
+                mode: super::super::TaskCacheMode::ReadWrite,
+                max_age: None,
+            }),
+            ..Task::default()
+        };
+
+        executor.execute_task("cached", &task).await.unwrap();
+        std::fs::remove_file(workspace.path().join("out.txt")).unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let result = executor.execute_task("cached", &task).await.unwrap();
+        assert!(result.success);
+
+        let mut saw_output = false;
+        while let Ok(event) = rx.try_recv() {
+            if let EventCategory::Task(TaskEvent::Output { name, content, .. }) = event.category
+                && name == "cached"
+                && content == "hello"
+            {
+                saw_output = true;
+                break;
+            }
+        }
+
+        assert!(
+            saw_output,
+            "expected cached task output event to be replayed"
+        );
     }
 
     #[test]

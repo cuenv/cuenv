@@ -36,6 +36,8 @@ pub struct TaskCacheConfig {
     pub action_cache: Arc<dyn ActionCache>,
     /// Strategy for resolving and hashing input files.
     pub vcs_hasher: Arc<dyn VcsHasher>,
+    /// Root path the shared [`VcsHasher`] resolves inputs against.
+    pub vcs_hasher_root: PathBuf,
     /// cuenv binary version, baked into every action digest. Bumping this
     /// invalidates all cache entries on upgrade.
     pub cuenv_version: String,
@@ -50,6 +52,7 @@ impl std::fmt::Debug for TaskCacheConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TaskCacheConfig")
             .field("vcs_hasher", &self.vcs_hasher.name())
+            .field("vcs_hasher_root", &self.vcs_hasher_root)
             .field("cuenv_version", &self.cuenv_version)
             .field(
                 "runtime_identity_properties",
@@ -90,8 +93,10 @@ pub struct BuildActionInput<'a> {
 ///
 /// # Errors
 ///
-/// Propagates failures from the [`VcsHasher`], task command resolution, and
-/// canonical encoding.
+/// Propagates failures from task command resolution and canonical encoding.
+///
+/// Input hashing failures degrade to `Ok(None)` so cache eligibility never
+/// changes whether the task itself is runnable.
 pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action, Digest)>> {
     let BuildActionInput {
         task,
@@ -131,11 +136,10 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
         }
     }
 
-    let hashed = cache
-        .vcs_hasher
-        .resolve_and_hash(&patterns)
-        .await
-        .map_err(|e| crate::Error::configuration(format!("input hashing failed: {e}")))?;
+    let Some(hashed) = resolve_hashed_inputs(cache, &patterns, project_root, task_name).await?
+    else {
+        return Ok(None);
+    };
     if hashed.is_empty() {
         tracing::debug!(
             task = %task_name,
@@ -200,6 +204,57 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
         .map_err(|e| crate::Error::configuration(format!("action digest: {e}")))?;
 
     Ok(Some((action, action_digest)))
+}
+
+async fn resolve_hashed_inputs(
+    cache: &TaskCacheConfig,
+    patterns: &[String],
+    project_root: &Path,
+    task_name: &str,
+) -> Result<Option<Vec<HashedInput>>> {
+    let prefixed_patterns =
+        match prefix_patterns_for_hasher_root(patterns, project_root, &cache.vcs_hasher_root) {
+            Ok(prefixed_patterns) => prefixed_patterns,
+            Err(error) => {
+                tracing::warn!(
+                    task = %task_name,
+                    project_root = %project_root.display(),
+                    hasher_root = %cache.vcs_hasher_root.display(),
+                    error = %error,
+                    "skipping cache: cannot map task inputs to cache hasher root"
+                );
+                return Ok(None);
+            }
+        };
+
+    let hashed = match cache.vcs_hasher.resolve_and_hash(&prefixed_patterns).await {
+        Ok(hashed) => hashed,
+        Err(error) => {
+            tracing::warn!(
+                task = %task_name,
+                error = %error,
+                "skipping cache: input hashing failed"
+            );
+            return Ok(None);
+        }
+    };
+
+    let rebased =
+        match rebase_hashed_inputs_for_project_root(hashed, project_root, &cache.vcs_hasher_root) {
+            Ok(rebased) => rebased,
+            Err(error) => {
+                tracing::warn!(
+                    task = %task_name,
+                    project_root = %project_root.display(),
+                    hasher_root = %cache.vcs_hasher_root.display(),
+                    error = %error,
+                    "skipping cache: hashed inputs escaped task project root"
+                );
+                return Ok(None);
+            }
+        };
+
+    Ok(Some(rebased))
 }
 
 /// Query the action cache for a previous result.
@@ -513,6 +568,72 @@ fn build_input_root_digest(hashed: &[HashedInput]) -> Result<Digest> {
     Ok(digest)
 }
 
+fn prefix_patterns_for_hasher_root(
+    patterns: &[String],
+    project_root: &Path,
+    hasher_root: &Path,
+) -> Result<Vec<String>> {
+    let prefix = project_root.strip_prefix(hasher_root).map_err(|e| {
+        crate::Error::configuration(format!(
+            "project root '{}' is not under cache hasher root '{}': {e}",
+            project_root.display(),
+            hasher_root.display()
+        ))
+    })?;
+
+    if prefix.as_os_str().is_empty() {
+        return Ok(patterns.to_vec());
+    }
+
+    Ok(patterns
+        .iter()
+        .map(|pattern| {
+            let trimmed = pattern.trim();
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                path_to_forward_slashes(&prefix.join(trimmed))
+            }
+        })
+        .collect())
+}
+
+fn rebase_hashed_inputs_for_project_root(
+    hashed: Vec<HashedInput>,
+    project_root: &Path,
+    hasher_root: &Path,
+) -> Result<Vec<HashedInput>> {
+    let prefix = project_root.strip_prefix(hasher_root).map_err(|e| {
+        crate::Error::configuration(format!(
+            "project root '{}' is not under cache hasher root '{}': {e}",
+            project_root.display(),
+            hasher_root.display()
+        ))
+    })?;
+
+    if prefix.as_os_str().is_empty() {
+        return Ok(hashed);
+    }
+
+    hashed
+        .into_iter()
+        .map(|input| {
+            let relative_path = input.relative_path.strip_prefix(prefix).map_err(|e| {
+                crate::Error::configuration(format!(
+                    "hashed input '{}' is not under task project root '{}': {e}",
+                    input.relative_path.display(),
+                    project_root.display()
+                ))
+            })?;
+
+            Ok(HashedInput {
+                relative_path: relative_path.to_path_buf(),
+                ..input
+            })
+        })
+        .collect()
+}
+
 fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) -> String {
     if let Ok(relative) = workdir.strip_prefix(project_root) {
         return path_to_forward_slashes(relative);
@@ -662,6 +783,7 @@ mod tests {
             cas: Arc::new(LocalCas::open(root).unwrap()),
             action_cache: Arc::new(LocalActionCache::open(root).unwrap()),
             vcs_hasher: Arc::new(WalkHasher::new(root)),
+            vcs_hasher_root: root.to_path_buf(),
             cuenv_version: "test-version".to_string(),
             runtime_identity_properties: BTreeMap::new(),
             cache_disabled_reason: None,
@@ -776,6 +898,71 @@ mod tests {
         .unwrap();
 
         assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn build_action_hashes_inputs_relative_to_task_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let workspace_root = tmp.path();
+        let nested_project_root = workspace_root.join("packages/app");
+        fs::create_dir_all(nested_project_root.join("src")).unwrap();
+        fs::create_dir_all(workspace_root.join("src")).unwrap();
+        fs::write(workspace_root.join("src/input.txt"), "workspace-root").unwrap();
+        fs::write(nested_project_root.join("src/input.txt"), "nested-project").unwrap();
+
+        let cache = make_cache(workspace_root);
+        let task = make_task("echo", &["hi"], &["src/input.txt"], &[]);
+        let env = Environment::new();
+
+        let (_, first) = build_action_for_test(BuildActionInput {
+            task: &task,
+            task_name: "nested",
+            environment: &env,
+            cache: &cache,
+            workdir: &nested_project_root,
+            project_root: &nested_project_root,
+            module_root: workspace_root,
+        })
+        .await
+        .unwrap();
+
+        fs::write(
+            workspace_root.join("src/input.txt"),
+            "workspace-root-updated",
+        )
+        .unwrap();
+        let (_, second) = build_action_for_test(BuildActionInput {
+            task: &task,
+            task_name: "nested",
+            environment: &env,
+            cache: &cache,
+            workdir: &nested_project_root,
+            project_root: &nested_project_root,
+            module_root: workspace_root,
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(first, second);
+
+        fs::write(
+            nested_project_root.join("src/input.txt"),
+            "nested-project-updated",
+        )
+        .unwrap();
+        let (_, third) = build_action_for_test(BuildActionInput {
+            task: &task,
+            task_name: "nested",
+            environment: &env,
+            cache: &cache,
+            workdir: &nested_project_root,
+            project_root: &nested_project_root,
+            module_root: workspace_root,
+        })
+        .await
+        .unwrap();
+
+        assert_ne!(first, third);
     }
 
     #[tokio::test]
@@ -998,6 +1185,27 @@ mod tests {
             module_root: tmp.path(),
         })
         .await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn build_action_returns_none_when_explicit_input_is_missing() {
+        let tmp = TempDir::new().unwrap();
+        let cache = make_cache(tmp.path());
+        let task = make_task("echo", &["hi"], &["missing.txt"], &[]);
+        let env = Environment::new();
+
+        let result = build_action_for_test(BuildActionInput {
+            task: &task,
+            task_name: "missing",
+            environment: &env,
+            cache: &cache,
+            workdir: tmp.path(),
+            project_root: tmp.path(),
+            module_root: tmp.path(),
+        })
+        .await;
+
         assert!(result.is_none());
     }
 
