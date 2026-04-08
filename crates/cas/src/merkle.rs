@@ -46,8 +46,7 @@ pub fn materialize_input_tree(
     let bytes = cas.get(root_digest)?;
     let dir: Directory = serde_json::from_slice(&bytes)
         .map_err(|e| Error::serialization(format!("decode Directory: {e}")))?;
-    fs::create_dir_all(destination)
-        .map_err(|e| Error::io(e, destination, "create_dir_all"))?;
+    fs::create_dir_all(destination).map_err(|e| Error::io(e, destination, "create_dir_all"))?;
     materialize_directory(cas, &dir, destination)
 }
 

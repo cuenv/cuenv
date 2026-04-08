@@ -99,6 +99,47 @@ impl LocalCas {
         self.root.join("tmp")
     }
 
+    fn verify_bytes(digest: &Digest, bytes: &[u8]) -> Result<()> {
+        let actual = Digest::of_bytes(bytes);
+        if &actual != digest {
+            return Err(Error::digest_mismatch(
+                digest.to_resource(),
+                actual.to_resource(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_file(path: &Path, digest: &Digest) -> Result<()> {
+        let mut file = fs::File::open(path).map_err(|e| Error::io(e, path, "open"))?;
+        let mut hasher = Sha256::new();
+        let mut size: u64 = 0;
+        let mut buffer: Box<[u8]> = vec![0u8; 64 * 1024].into_boxed_slice();
+
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|e| Error::io(e, path, "read"))?;
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+            size += count as u64;
+        }
+
+        let actual = Digest {
+            hash: hex::encode(hasher.finalize()),
+            size_bytes: size,
+        };
+        if &actual != digest {
+            return Err(Error::digest_mismatch(
+                digest.to_resource(),
+                actual.to_resource(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Atomically rename `src` into `dst`, tolerating the case where another
     /// writer populated the same digest concurrently.
     fn install(src: &Path, dst: &Path) -> Result<()> {
@@ -136,12 +177,7 @@ impl Cas for LocalCas {
         let path = self.blob_path(digest);
         match fs::read(&path) {
             Ok(bytes) => {
-                if bytes.len() as u64 != digest.size_bytes {
-                    return Err(Error::digest_mismatch(
-                        format!("size={}", digest.size_bytes),
-                        format!("size={}", bytes.len()),
-                    ));
-                }
+                Self::verify_bytes(digest, &bytes)?;
                 Ok(bytes)
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -159,13 +195,8 @@ impl Cas for LocalCas {
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
-        // Prefer hardlink (same filesystem, zero-copy). Fall back to copy.
-        if fs::hard_link(&src, destination).is_ok() {
-            return Ok(());
-        }
-        fs::copy(&src, destination)
-            .map(|_| ())
-            .map_err(|e| Error::io(e, destination, "copy"))
+        fs::copy(&src, destination).map_err(|e| Error::io(e, destination, "copy"))?;
+        Self::verify_file(destination, digest)
     }
 
     fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
@@ -217,14 +248,8 @@ impl Cas for LocalCas {
             return Ok(digest);
         }
 
-        // Pass 2: materialize into place. Hardlink is cheap when the source
-        // is on the same filesystem; otherwise copy via tempfile + install.
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
-        }
-        if fs::hard_link(source, &dst).is_ok() {
-            trace!(digest = %digest, "CAS put_file: hardlinked");
-            return Ok(digest);
         }
         let tmp_dir = self.tmp_dir();
         let tmp = tempfile::NamedTempFile::new_in(&tmp_dir)
@@ -288,6 +313,43 @@ mod tests {
         let dst = tmp.path().join("out/file.bin");
         cas.get_to_file(&digest, &dst).unwrap();
         assert_eq!(fs::read(&dst).unwrap(), b"materialize me");
+    }
+
+    #[test]
+    fn get_detects_corrupted_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let digest = cas.put_bytes(b"immutable").unwrap();
+        fs::write(cas.blob_path(&digest), b"mutated").unwrap();
+
+        let err = cas.get(&digest).unwrap_err();
+        assert!(matches!(err, Error::DigestMismatch { .. }));
+    }
+
+    #[test]
+    fn mutating_materialized_file_does_not_corrupt_cas_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let digest = cas.put_bytes(b"original").unwrap();
+        let dst = tmp.path().join("out/file.bin");
+
+        cas.get_to_file(&digest, &dst).unwrap();
+        fs::write(&dst, b"modified").unwrap();
+
+        assert_eq!(cas.get(&digest).unwrap(), b"original");
+    }
+
+    #[test]
+    fn mutating_source_after_put_file_does_not_corrupt_cas_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let src = tmp.path().join("src.txt");
+        fs::write(&src, b"from disk").unwrap();
+
+        let digest = cas.put_file(&src).unwrap();
+        fs::write(&src, b"changed later").unwrap();
+
+        assert_eq!(cas.get(&digest).unwrap(), b"from disk");
     }
 
     #[test]

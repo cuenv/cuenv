@@ -15,8 +15,7 @@ use proptest::prelude::*;
 use std::collections::BTreeMap;
 
 fn digest_strategy() -> impl Strategy<Value = Digest> {
-    ("[a-f0-9]{64}", 0u64..10_000)
-        .prop_map(|(hash, size_bytes)| Digest { hash, size_bytes })
+    ("[a-f0-9]{64}", 0u64..10_000).prop_map(|(hash, size_bytes)| Digest { hash, size_bytes })
 }
 
 fn env_key_strategy() -> impl Strategy<Value = String> {
@@ -39,12 +38,14 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         platform_strategy(),
         "[0-9]+\\.[0-9]+\\.[0-9]+".prop_map(String::from),
     )
-        .prop_map(|(command_digest, input_root_digest, platform, cuenv_version)| Action {
-            command_digest,
-            input_root_digest,
-            platform,
-            cuenv_version,
-        })
+        .prop_map(
+            |(command_digest, input_root_digest, platform, cuenv_version)| Action {
+                command_digest,
+                input_root_digest,
+                platform,
+                cuenv_version,
+            },
+        )
 }
 
 proptest! {

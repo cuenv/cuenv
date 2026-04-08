@@ -13,7 +13,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 use walkdir::WalkDir;
 
 /// Workspace-rooted walker that streams SHA-256 over every matched file.
@@ -43,7 +43,9 @@ impl WalkHasher {
         let mut buf: Box<[u8]> = vec![0u8; 64 * 1024].into_boxed_slice();
         let mut size: u64 = 0;
         loop {
-            let n = file.read(&mut buf).map_err(|e| Error::io(e, path, "read"))?;
+            let n = file
+                .read(&mut buf)
+                .map_err(|e| Error::io(e, path, "read"))?;
             if n == 0 {
                 break;
             }
@@ -107,10 +109,18 @@ impl WalkHasher {
                         absolute_path: canonical_or_abs(&abs),
                         sha256: hash,
                         size,
+                        is_executable: is_executable(&abs)?,
                     });
                 }
             } else {
-                warn!(path = %raw, "Explicit input file not found; skipping");
+                return Err(Error::io(
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("explicit input file '{raw}' not found"),
+                    ),
+                    &abs,
+                    "open",
+                ));
             }
         }
 
@@ -120,11 +130,19 @@ impl WalkHasher {
                 debug!(dir = %base_dir, "Directory does not exist, skipping");
                 continue;
             }
-            for entry in WalkDir::new(&walk_root)
-                .follow_links(true)
-                .into_iter()
-                .filter_map(std::result::Result::ok)
-            {
+            for entry in WalkDir::new(&walk_root).follow_links(true) {
+                let entry = entry.map_err(|e| {
+                    let path = e.path().unwrap_or(walk_root.as_path());
+                    Error::io(
+                        std::io::Error::new(
+                            e.io_error()
+                                .map_or(std::io::ErrorKind::Other, std::io::Error::kind),
+                            format!("walkdir error under {}: {e}", walk_root.display()),
+                        ),
+                        path,
+                        "walkdir",
+                    )
+                })?;
                 let path = entry.path();
                 if path.is_dir() {
                     continue;
@@ -140,6 +158,7 @@ impl WalkHasher {
                         absolute_path: canonical_or_abs(path),
                         sha256: hash,
                         size,
+                        is_executable: is_executable(path)?,
                     });
                 }
             }
@@ -194,6 +213,19 @@ fn canonical_or_abs(p: &Path) -> PathBuf {
                 .join(p)
         }
     })
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> Result<bool> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(|e| Error::io(e, path, "metadata"))?;
+    Ok(metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_path: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 /// Extract the literal-prefix of a glob pattern.
@@ -261,18 +293,21 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("a.txt"), "content").unwrap();
         let hasher = WalkHasher::new(tmp.path());
-        let inputs = hasher
-            .resolve_sync(&[String::new(), "  ".into()])
-            .unwrap();
+        let inputs = hasher.resolve_sync(&[String::new(), "  ".into()]).unwrap();
         assert!(inputs.is_empty());
     }
 
     #[test]
-    fn missing_file_is_skipped_not_errored() {
+    fn missing_file_errors() {
         let tmp = TempDir::new().unwrap();
         let hasher = WalkHasher::new(tmp.path());
-        let inputs = hasher.resolve_sync(&["nonexistent.txt".into()]).unwrap();
-        assert!(inputs.is_empty());
+        let err = hasher
+            .resolve_sync(&["nonexistent.txt".into()])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound
+        ));
     }
 
     #[test]
@@ -320,10 +355,7 @@ mod tests {
         let hasher = WalkHasher::new(tmp.path());
         let inputs = hasher.resolve_sync(&["a".into()]).unwrap();
         assert_eq!(inputs.len(), 1);
-        assert_eq!(
-            inputs[0].relative_path,
-            PathBuf::from("a/b/c/deep.txt")
-        );
+        assert_eq!(inputs[0].relative_path, PathBuf::from("a/b/c/deep.txt"));
     }
 
     #[test]
@@ -335,6 +367,30 @@ mod tests {
         let hasher = WalkHasher::new(tmp.path());
         let inputs = hasher.resolve_sync(&["a[12].txt".into()]).unwrap();
         assert_eq!(inputs.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn walkdir_errors_are_not_silently_dropped() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = TempDir::new().unwrap();
+        let unreadable = tmp.path().join("restricted");
+        fs::create_dir_all(&unreadable).unwrap();
+        fs::write(unreadable.join("secret.txt"), "secret").unwrap();
+
+        let mut permissions = fs::metadata(&unreadable).unwrap().permissions();
+        permissions.set_mode(0o000);
+        fs::set_permissions(&unreadable, permissions).unwrap();
+
+        let hasher = WalkHasher::new(tmp.path());
+        let err = hasher.resolve_sync(&["restricted".into()]).unwrap_err();
+
+        let mut cleanup_permissions = fs::metadata(&unreadable).unwrap().permissions();
+        cleanup_permissions.set_mode(0o755);
+        fs::set_permissions(&unreadable, cleanup_permissions).unwrap();
+
+        assert!(err.to_string().contains("walkdir"));
     }
 
     #[test]
@@ -349,10 +405,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("x.txt"), "x").unwrap();
         let hasher = WalkHasher::new(tmp.path());
-        let inputs = hasher
-            .resolve_and_hash(&["*.txt".into()])
-            .await
-            .unwrap();
+        let inputs = hasher.resolve_and_hash(&["*.txt".into()]).await.unwrap();
         assert_eq!(inputs.len(), 1);
     }
 

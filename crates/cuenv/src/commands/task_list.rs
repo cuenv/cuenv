@@ -146,11 +146,10 @@ pub fn build_task_list(
 
 /// Collect task names that have cached results.
 ///
-/// The legacy `cuenv_cache` crate has been removed; the new `cuenv_cas`
-/// action cache hasn't been wired into the executor yet (see Phase 1c of
-/// the CAS migration), so no task currently has a recorded cache entry.
-/// Once the executor starts writing `ActionResult` records, this function
-/// will be restored to query the action cache by task identity.
+/// The legacy `cuenv_cache` crate has been removed. Although the executor now
+/// writes `ActionResult` records to `cuenv_cas`, `task list` still lacks a
+/// stable task-name to action-digest mapping, so cache markers are not
+/// implemented here yet.
 fn collect_cached_tasks(_tasks: &[&IndexedTask], _project_root: &Path) -> HashSet<String> {
     HashSet::new()
 }

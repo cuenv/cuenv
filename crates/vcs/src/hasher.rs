@@ -16,6 +16,8 @@ pub struct HashedInput {
     pub sha256: String,
     /// File size in bytes.
     pub size: u64,
+    /// Whether the file is executable when materialized.
+    pub is_executable: bool,
 }
 
 /// A pluggable strategy for resolving glob patterns and hashing the matched

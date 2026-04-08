@@ -5,7 +5,7 @@
 //! - Host execution; isolation/caching is delegated to other backends
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
-use super::cache::{RecordInput, TaskCacheConfig};
+use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 use super::process_registry::global_registry;
 use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::OutputCapture;
@@ -158,14 +158,32 @@ impl TaskExecutor {
         let cache_handle: Option<(TaskCacheConfig, cuenv_cas::Digest, PathBuf)> =
             if let Some(cache) = self.config.cache.clone() {
                 let workdir = self.workdir_for_task(task);
-                match super::cache::build_action(task, name, &self.config.environment, &cache)
-                    .await?
+                match super::cache::build_action(BuildActionInput {
+                    task,
+                    task_name: name,
+                    environment: &self.config.environment,
+                    cache: &cache,
+                    workdir: &workdir,
+                    project_root: &self.config.project_root,
+                    module_root: self
+                        .config
+                        .cue_module_root
+                        .as_deref()
+                        .unwrap_or(&self.config.project_root),
+                })
+                .await?
                 {
                     Some((_, action_digest)) => {
                         // Cache lookup. On a hit, short-circuit execution.
                         if let Some(cached) = super::cache::lookup(&cache, &action_digest, task)? {
                             tracing::debug!(task = %name, "action cache hit");
-                            return self.return_cache_hit(name, task, &cache, &workdir, &cached);
+                            return self.return_cache_hit(CacheHitInput {
+                                name,
+                                task,
+                                cache: &cache,
+                                workdir: &workdir,
+                                cached: &cached,
+                            });
                         }
                         tracing::debug!(task = %name, "action cache miss");
                         Some((cache, action_digest, workdir))
@@ -218,18 +236,15 @@ impl TaskExecutor {
     /// lifecycle events the executor would emit on a normal run, so
     /// downstream renderers (CLI / TUI / JSON) see no behavioral
     /// difference between a cached and an uncached task.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin glue function, splitting hurts readability"
-    )]
-    fn return_cache_hit(
-        &self,
-        name: &str,
-        task: &Task,
-        cache: &TaskCacheConfig,
-        workdir: &Path,
-        cached: &cuenv_cas::ActionResult,
-    ) -> Result<TaskResult> {
+    fn return_cache_hit(&self, input: CacheHitInput<'_>) -> Result<TaskResult> {
+        let CacheHitInput {
+            name,
+            task,
+            cache,
+            workdir,
+            cached,
+        } = input;
+
         let (stdout, stderr, exit_code) = super::cache::materialize_hit(cache, workdir, cached)?;
         let success = exit_code == 0;
 
@@ -241,7 +256,12 @@ impl TaskExecutor {
             format!("{} {} (cached)", task.command, task.args.join(" "))
         };
         cuenv_events::emit_task_started!(name, cmd_str, false);
-        cuenv_events::emit_task_completed!(name, success, exit_code, 0_u64);
+        cuenv_events::emit_task_completed!(
+            name,
+            success,
+            exit_code,
+            cached.execution_metadata.duration_ms
+        );
 
         Ok(TaskResult {
             name: name.to_string(),
@@ -766,6 +786,14 @@ impl TaskExecutor {
         // Share the backend across clones to preserve container cache for Dagger chaining
         Self::with_shared_backend(self.config.clone(), self.backend.clone())
     }
+}
+
+struct CacheHitInput<'a> {
+    name: &'a str,
+    task: &'a Task,
+    cache: &'a TaskCacheConfig,
+    workdir: &'a Path,
+    cached: &'a cuenv_cas::ActionResult,
 }
 
 fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {

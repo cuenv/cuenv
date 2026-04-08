@@ -174,7 +174,9 @@ mod tests {
         let a = Action {
             command_digest: Digest::of_bytes(b"cmd"),
             input_root_digest: Digest::of_bytes(b"root"),
-            platform: Platform { properties: a_props },
+            platform: Platform {
+                properties: a_props,
+            },
             cuenv_version: "0.30.8".into(),
         };
 
@@ -183,7 +185,9 @@ mod tests {
         b_props.insert("arch".into(), "x86_64".into());
         b_props.insert("os".into(), "linux".into());
         let b = Action {
-            platform: Platform { properties: b_props },
+            platform: Platform {
+                properties: b_props,
+            },
             ..a.clone()
         };
 
