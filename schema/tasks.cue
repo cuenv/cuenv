@@ -66,6 +66,19 @@ package schema
 }
 
 // =============================================================================
+// Task Cache Policy
+// =============================================================================
+
+#TaskCacheMode: "never" | "read" | "write" | "read-write"
+
+#TaskCachePolicy: {
+	// Cache mode (default: never)
+	mode?: #TaskCacheMode | *"never"
+	// Maximum age for cache reads, e.g. "30m", "1h", "infinite"
+	maxAge?: string
+}
+
+// =============================================================================
 // Single Executable Task
 // =============================================================================
 
@@ -123,6 +136,9 @@ package schema
 
 	// Output files/patterns for caching
 	outputs?: [...string]
+
+	// Per-task task-result cache policy
+	cache?: #TaskCachePolicy
 
 	// Human-readable description
 	description?: string

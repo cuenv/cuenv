@@ -1,0 +1,33 @@
+[package]
+name = "cuenv-vcs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Pluggable input-file hashing for cuenv (VCS-aware when possible)"
+
+[features]
+default = []
+
+[dependencies]
+serde = { workspace = true }
+sha2 = { workspace = true }
+hex = "0.4"
+thiserror = { workspace = true }
+miette = { workspace = true }
+tracing = { workspace = true }
+walkdir = "2.5"
+globset = "0.4"
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

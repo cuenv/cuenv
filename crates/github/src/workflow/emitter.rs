@@ -324,8 +324,8 @@ impl GitHubActionsEmitter {
         let trigger = ir.pipeline.trigger.as_ref();
 
         WorkflowTriggers {
-            push: self.build_push_trigger(trigger, workflow_filename),
-            pull_request: self.build_pr_trigger(trigger, workflow_filename),
+            push: Self::build_push_trigger(trigger, workflow_filename),
+            pull_request: Self::build_pr_trigger(trigger, workflow_filename),
             release: Self::build_release_trigger(trigger),
             workflow_dispatch: Self::build_manual_trigger(trigger),
             schedule: Self::build_schedule_trigger(trigger),
@@ -334,7 +334,6 @@ impl GitHubActionsEmitter {
 
     /// Build push trigger from IR trigger condition
     fn build_push_trigger(
-        &self,
         trigger: Option<&TriggerCondition>,
         workflow_filename: &str,
     ) -> Option<PushTrigger> {
@@ -356,7 +355,6 @@ impl GitHubActionsEmitter {
 
     /// Build pull request trigger from IR trigger condition
     fn build_pr_trigger(
-        &self,
         trigger: Option<&TriggerCondition>,
         workflow_filename: &str,
     ) -> Option<PullRequestTrigger> {
