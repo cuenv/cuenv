@@ -1196,7 +1196,7 @@ dependencies = [
  "cuengine",
  "cuenv-bitbucket",
  "cuenv-buildkite",
- "cuenv-cache",
+ "cuenv-cas",
  "cuenv-ci",
  "cuenv-codegen",
  "cuenv-codeowners",
@@ -1216,6 +1216,7 @@ dependencies = [
  "cuenv-tools-oci",
  "cuenv-tools-rustup",
  "cuenv-tools-url",
+ "cuenv-vcs",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "futures",
@@ -1298,23 +1299,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "cuenv-cache"
+name = "cuenv-cas"
 version = "0.30.8"
 dependencies = [
  "chrono",
- "cuenv-events",
- "dirs 6.0.0",
  "hex",
  "miette",
+ "proptest",
  "serde",
  "serde_json",
  "sha2",
- "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",
  "walkdir",
- "zstd",
 ]
 
 [[package]]
@@ -1392,11 +1390,12 @@ dependencies = [
  "chrono",
  "cucumber",
  "cuenv-1password",
- "cuenv-cache",
+ "cuenv-cas",
  "cuenv-events",
  "cuenv-hooks",
  "cuenv-secrets",
  "cuenv-task-graph",
+ "cuenv-vcs",
  "cuenv-workspaces",
  "dirs 6.0.0",
  "eyre",
@@ -1421,6 +1420,7 @@ dependencies = [
  "tokio-test",
  "toml 0.8.23",
  "tracing",
+ "tracing-subscriber",
  "walkdir",
 ]
 
@@ -1685,6 +1685,23 @@ dependencies = [
  "tokio",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "cuenv-vcs"
+version = "0.30.8"
+dependencies = [
+ "async-trait",
+ "globset",
+ "hex",
+ "miette",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "walkdir",
 ]
 
 [[package]]

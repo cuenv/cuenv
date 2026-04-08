@@ -34,8 +34,9 @@ futures = "0.3"
 cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
-cuenv-cache = { workspace = true }
 cuenv-task-graph = { workspace = true }
+cuenv-cas = { workspace = true }
+cuenv-vcs = { workspace = true }
 
 # Dependencies for task caching and graph
 dirs = { workspace = true }
@@ -61,3 +62,4 @@ tokio-test = { workspace = true }
 eyre = "0.6"
 temp-env = { workspace = true }
 proptest = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -4,7 +4,6 @@
 //! The `TaskListData` structure captures all information about available tasks,
 //! while `TaskListFormatter` implementations handle different output formats.
 
-use cuenv_cache::tasks as task_cache;
 use cuenv_core::tasks::{IndexedTask, TaskNode as CoreTaskNode};
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
@@ -145,35 +144,14 @@ pub fn build_task_list(
     }
 }
 
-/// Build tree nodes from a flat list of tasks
-/// Collect task names that have cached results
+/// Collect task names that have cached results.
 ///
-/// Queries the cache index to determine which tasks have valid cached
-/// results available. This is used to mark tasks in the display output.
-fn collect_cached_tasks(tasks: &[&IndexedTask], project_root: &Path) -> HashSet<String> {
-    let mut cached = HashSet::new();
-
-    // Batch load the index once for the whole project
-    let project_cache_keys = match task_cache::get_project_cache_keys(project_root, None) {
-        Ok(Some(keys)) => keys,
-        Ok(None) => return cached,
-        Err(e) => {
-            // Log warning but proceed with empty cache (graceful degradation)
-            // Note: tracing might not be initialized in all contexts, but is the standard way here
-            tracing::warn!("Failed to load task cache index: {}", e);
-            return cached;
-        }
-    };
-
-    for task in tasks {
-        if let Some(cache_key) = project_cache_keys.get(&task.name) {
-            // Check if the specific cache entry actually exists on disk
-            if task_cache::lookup(cache_key, None).is_some() {
-                cached.insert(task.name.clone());
-            }
-        }
-    }
-    cached
+/// The legacy `cuenv_cache` crate has been removed. Although the executor now
+/// writes `ActionResult` records to `cuenv_cas`, `task list` still lacks a
+/// stable task-name to action-digest mapping, so cache markers are not
+/// implemented here yet.
+fn collect_cached_tasks(_tasks: &[&IndexedTask], _project_root: &Path) -> HashSet<String> {
+    HashSet::new()
 }
 
 // Intermediate structure for building the tree
