@@ -145,6 +145,7 @@ impl CliRenderer {
     }
 
     fn render_service(&self, event: &ServiceEvent) {
+        let _ = &self.config; // Silence unused_self - config may be used for service rendering options later
         match event {
             ServiceEvent::Pending { name } => {
                 eprintln!("> [{name}] pending (waiting for dependencies)");

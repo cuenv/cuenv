@@ -1,18 +1,19 @@
 //! Stub implementation of the `cuenv down` command.
 //!
 //! This module provides the initial skeleton for tearing down services.
-//! In v1, this emits lifecycle events without actually stopping processes.
+//! The real implementation will delegate to `cuenv_services::SessionManager`
+//! for process teardown.
 
 use cuenv_events::{emit_service_stopping, emit_service_stopped, emit_stdout};
 
 /// Options for the `cuenv down` command.
-pub struct DownOptions<'a> {
+pub struct DownOptions {
     /// Path to directory containing CUE files.
-    pub path: &'a str,
+    pub path: String,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: String,
     /// Optional list of service names to bring down (empty = all).
-    pub services: &'a [String],
+    pub services: Vec<String>,
 }
 
 /// Execute the stub `cuenv down` command.
@@ -23,7 +24,7 @@ pub struct DownOptions<'a> {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation or session state reading fails.
-pub fn execute_down(options: &DownOptions<'_>) -> cuenv_core::Result<String> {
+pub fn execute_down(options: &DownOptions) -> cuenv_core::Result<String> {
     emit_stdout!(format!(
         "cuenv down: tearing down services in {} (package: {})",
         options.path, options.package
@@ -49,9 +50,9 @@ mod tests {
     #[test]
     fn test_down_options_default() {
         let options = DownOptions {
-            path: ".",
-            package: "cuenv",
-            services: &[],
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec![],
         };
         assert_eq!(options.path, ".");
         assert_eq!(options.package, "cuenv");
@@ -61,9 +62,9 @@ mod tests {
     #[test]
     fn test_execute_down_stub_no_services() {
         let options = DownOptions {
-            path: ".",
-            package: "cuenv",
-            services: &[],
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec![],
         };
         let result = execute_down(&options);
         assert!(result.is_ok());
@@ -74,11 +75,10 @@ mod tests {
 
     #[test]
     fn test_execute_down_stub_with_services() {
-        let services = vec!["db".to_string(), "api".to_string()];
         let options = DownOptions {
-            path: ".",
-            package: "cuenv",
-            services: &services,
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec!["db".to_string(), "api".to_string()],
         };
         let result = execute_down(&options);
         assert!(result.is_ok());

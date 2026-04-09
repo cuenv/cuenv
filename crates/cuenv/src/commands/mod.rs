@@ -39,6 +39,12 @@ pub mod task_picker;
 pub mod tools;
 /// Bring up long-running services.
 pub mod up;
+/// View service logs.
+pub mod logs;
+/// List running services and their status.
+pub mod ps;
+/// Restart one or more services.
+pub mod restart;
 /// Version information and display.
 pub mod version;
 
@@ -368,6 +374,37 @@ pub enum Command {
         /// CUE package name to evaluate.
         package: String,
         /// Specific service names to bring down (empty = all).
+        services: Vec<String>,
+    },
+    /// View service logs.
+    Logs {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Specific service names to view logs for (empty = all).
+        services: Vec<String>,
+        /// Follow log output.
+        follow: bool,
+        /// Number of lines to show.
+        lines: usize,
+    },
+    /// List running services and their status.
+    Ps {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Output format (table or json).
+        output_format: String,
+    },
+    /// Restart one or more services.
+    Restart {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Service names to restart.
         services: Vec<String>,
     },
 }
@@ -931,7 +968,10 @@ impl CommandExecutor {
             | Command::ToolsActivate
             | Command::ToolsList
             | Command::Up { .. }
-            | Command::Down { .. } => Ok(()),
+            | Command::Down { .. }
+            | Command::Logs { .. }
+            | Command::Ps { .. }
+            | Command::Restart { .. } => Ok(()),
         }
     }
 

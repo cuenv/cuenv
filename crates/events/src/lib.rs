@@ -301,6 +301,61 @@ macro_rules! emit_service_failed {
     };
 }
 
+/// Emit a service readiness timeout event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_ready_timeout!("db", 60000_u64);
+/// ```
+#[macro_export]
+macro_rules! emit_service_ready_timeout {
+    ($name:expr, $after_ms:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.ready_timeout",
+            service_name = %$name,
+            after_ms = $after_ms,
+        )
+    };
+}
+
+/// Emit a service restarting event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_restarting!("api", "crashed", 2_u32);
+/// ```
+#[macro_export]
+macro_rules! emit_service_restarting {
+    ($name:expr, $reason:expr, $attempt:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.restarting",
+            service_name = %$name,
+            reason = %$reason,
+            attempt = $attempt,
+        )
+    };
+}
+
+/// Emit a service file watch event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_watch!("api", &["src/main.rs".to_string()]);
+/// ```
+#[macro_export]
+macro_rules! emit_service_watch {
+    ($name:expr, $changed:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.watch",
+            service_name = %$name,
+            changed = ?$changed,
+        )
+    };
+}
+
 // CI Events
 
 /// Emit a CI context detected event.
@@ -636,6 +691,9 @@ mod tests {
             emit_service_starting!("db", "postgres -D /data");
             emit_service_output!("db", "stdout", "ready to accept connections");
             emit_service_ready!("db", 1200_u64);
+            emit_service_ready_timeout!("db", 60000_u64);
+            emit_service_restarting!("api", "crashed", 2_u32);
+            emit_service_watch!("api", &["src/main.rs".to_string()]);
             emit_service_stopping!("db");
             emit_service_stopped!("db", Some(0));
             emit_service_failed!("api", "readiness timeout");

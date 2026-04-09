@@ -12,7 +12,7 @@
 
 use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent,
-    ServiceEvent, Stream, SystemEvent, TaskEvent,
+    RestartReason, ServiceEvent, Stream, SystemEvent, TaskEvent,
 };
 use crate::metadata::correlation_id;
 use crate::redaction::redact;
@@ -84,6 +84,8 @@ struct CuenvEventVisitor {
     // Service event fields
     service_name: Option<String>,
     after_ms: Option<u64>,
+    attempt: Option<u32>,
+    changed: Option<Vec<String>>,
 
     // CI event fields
     provider: Option<String>,
@@ -129,6 +131,8 @@ impl CuenvEventVisitor {
             task_count: None,
             service_name: None,
             after_ms: None,
+            attempt: None,
+            changed: None,
             provider: None,
             event_type_ci: None,
             ref_name: None,
@@ -223,6 +227,23 @@ impl CuenvEventVisitor {
             "service.failed" => EventCategory::Service(ServiceEvent::Failed {
                 name: self.service_name?,
                 error: error?,
+            }),
+            "service.ready_timeout" => EventCategory::Service(ServiceEvent::ReadyTimeout {
+                name: self.service_name?,
+                after_ms: self.after_ms.unwrap_or(0),
+            }),
+            "service.restarting" => EventCategory::Service(ServiceEvent::Restarting {
+                name: self.service_name?,
+                reason: match self.reason.as_deref() {
+                    Some("watch" | "watch_triggered") => RestartReason::WatchTriggered,
+                    Some("manual") => RestartReason::Manual,
+                    _ => RestartReason::Crashed,
+                },
+                attempt: self.attempt.unwrap_or(0),
+            }),
+            "service.watch" => EventCategory::Service(ServiceEvent::Watch {
+                name: self.service_name?,
+                changed: self.changed.clone().unwrap_or_default(),
             }),
 
             // CI events
@@ -347,6 +368,7 @@ impl Visit for CuenvEventVisitor {
             "exit_code" => self.exit_code = Some(value as i32),
             "duration_ms" => self.duration_ms = Some(value as u64),
             "after_ms" => self.after_ms = Some(value as u64),
+            "attempt" => self.attempt = Some(value as u32),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value as u64),
@@ -358,6 +380,7 @@ impl Visit for CuenvEventVisitor {
         match field.name() {
             "duration_ms" => self.duration_ms = Some(value),
             "after_ms" => self.after_ms = Some(value),
+            "attempt" => self.attempt = Some(value as u32),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value),
@@ -395,11 +418,16 @@ impl Visit for CuenvEventVisitor {
                     self.options = Some(options);
                 }
             }
+            "changed" => {
+                if let Ok(changed) = serde_json::from_str::<Vec<String>>(&value_str) {
+                    self.changed = Some(changed);
+                }
+            }
             // Fallback: try to extract string fields from debug formatting
             // When tracing uses Display formatting (%), it wraps values in a DisplayValue
             // which then gets passed to record_debug instead of record_str
             "event_type" | "task_name" | "service_name" | "name" | "command" | "cmd" | "content"
-            | "cache_key" | "stream" | "error" => {
+            | "cache_key" | "stream" | "error" | "reason" => {
                 // Remove surrounding quotes if present (debug format adds them for strings)
                 let cleaned = value_str.trim_matches('"');
                 match field.name() {
@@ -410,6 +438,7 @@ impl Visit for CuenvEventVisitor {
                     "content" => self.content = Some(cleaned.to_string()),
                     "cache_key" => self.cache_key = Some(cleaned.to_string()),
                     "error" => self.error = Some(cleaned.to_string()),
+                    "reason" => self.reason = Some(cleaned.to_string()),
                     "stream" => {
                         self.stream = match cleaned {
                             "stdout" => Some(Stream::Stdout),

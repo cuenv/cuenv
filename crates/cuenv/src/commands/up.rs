@@ -1,21 +1,21 @@
 //! Stub implementation of the `cuenv up` command.
 //!
 //! This module provides the initial skeleton for bringing up services defined
-//! in the project's CUE configuration. In v1, this walks the mixed task/service
-//! graph and emits lifecycle events without actually supervising processes.
+//! in the project's CUE configuration. The real implementation will delegate
+//! to `cuenv_services::ServiceController` for process supervision.
 
 use cuenv_events::{emit_service_pending, emit_service_starting, emit_service_stopped, emit_stdout};
 
 /// Options for the `cuenv up` command.
-pub struct UpOptions<'a> {
+pub struct UpOptions {
     /// Path to directory containing CUE files.
-    pub path: &'a str,
+    pub path: String,
     /// CUE package name to evaluate.
-    pub package: &'a str,
+    pub package: String,
     /// Optional list of service names to bring up (empty = all).
-    pub services: &'a [String],
+    pub services: Vec<String>,
     /// Optional label filters.
-    pub labels: &'a [String],
+    pub labels: Vec<String>,
 }
 
 /// Execute the stub `cuenv up` command.
@@ -27,7 +27,7 @@ pub struct UpOptions<'a> {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation or graph construction fails.
-pub fn execute_up(options: &UpOptions<'_>) -> cuenv_core::Result<String> {
+pub fn execute_up(options: &UpOptions) -> cuenv_core::Result<String> {
     emit_stdout!(format!(
         "cuenv up: evaluating services in {} (package: {})",
         options.path, options.package
@@ -35,11 +35,11 @@ pub fn execute_up(options: &UpOptions<'_>) -> cuenv_core::Result<String> {
 
     // Stub: emit synthetic lifecycle events for demonstration.
     // The real implementation will evaluate the CUE module, build a mixed
-    // task/service graph, and run the supervisor loop.
+    // task/service graph, and run the supervisor loop via cuenv-services.
     if options.services.is_empty() {
         emit_stdout!("cuenv up: no service names specified — would bring up all services");
     } else {
-        for svc in options.services {
+        for svc in &options.services {
             emit_service_pending!(svc);
             emit_service_starting!(svc, "(stub — no process spawned)");
             emit_service_stopped!(svc, Some(0));
@@ -63,10 +63,10 @@ mod tests {
     #[test]
     fn test_up_options_default() {
         let options = UpOptions {
-            path: ".",
-            package: "cuenv",
-            services: &[],
-            labels: &[],
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec![],
+            labels: vec![],
         };
         assert_eq!(options.path, ".");
         assert_eq!(options.package, "cuenv");
@@ -77,10 +77,10 @@ mod tests {
     #[test]
     fn test_execute_up_stub_no_services() {
         let options = UpOptions {
-            path: ".",
-            package: "cuenv",
-            services: &[],
-            labels: &[],
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec![],
+            labels: vec![],
         };
         let result = execute_up(&options);
         assert!(result.is_ok());
@@ -91,12 +91,11 @@ mod tests {
 
     #[test]
     fn test_execute_up_stub_with_services() {
-        let services = vec!["db".to_string(), "api".to_string()];
         let options = UpOptions {
-            path: ".",
-            package: "cuenv",
-            services: &services,
-            labels: &[],
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            services: vec!["db".to_string(), "api".to_string()],
+            labels: vec![],
         };
         let result = execute_up(&options);
         assert!(result.is_ok());

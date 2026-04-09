@@ -11,7 +11,7 @@ use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
 use crate::tasks::Task;
-use crate::tasks::{Input, Mapping, ProjectReference, TaskNode};
+use crate::tasks::{Input, Mapping, ProjectReference, ScriptShell, ShellOptions, TaskDependency, TaskNode};
 use cuenv_hooks::{Hook, Hooks};
 
 /// A hook step to run as part of task dependencies.
@@ -856,6 +856,262 @@ pub enum GitHubExtract {
 }
 
 // ============================================================================
+// Service Types
+// ============================================================================
+
+/// Long-running supervised process definition.
+///
+/// Services live alongside tasks on a project but execute under different
+/// rules: they must reach a readiness state, are kept alive across the
+/// session, restart according to policy, and tear down on `cuenv down`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Service {
+    /// Type discriminator — always `"service"`.
+    #[serde(rename = "type")]
+    pub service_type: String,
+
+    /// Command to execute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+
+    /// Command arguments (may contain output refs).
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
+
+    /// Inline script (alternative to command).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+
+    /// Shell interpreter for script mode.
+    #[serde(default, rename = "scriptShell", skip_serializing_if = "Option::is_none")]
+    pub script_shell: Option<ScriptShell>,
+
+    /// Shell options (errexit, nounset, pipefail, xtrace).
+    #[serde(default, rename = "shellOptions", skip_serializing_if = "Option::is_none")]
+    pub shell_options: Option<ShellOptions>,
+
+    /// Environment variables (same shape as Task).
+    #[serde(default)]
+    pub env: HashMap<String, serde_json::Value>,
+
+    /// Working directory override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+
+    /// Dependencies — may reference tasks OR services.
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<TaskDependency>,
+
+    /// Labels for discovery via ServiceMatcher.
+    #[serde(default)]
+    pub labels: Vec<String>,
+
+    /// Human-readable description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Runtime override for this service.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<Runtime>,
+
+    /// Readiness probe (single probe per service).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness: Option<Readiness>,
+
+    /// Restart policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<RestartPolicy>,
+
+    /// File watcher for restart-on-change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<ServiceWatch>,
+
+    /// Log handling configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<ServiceLogs>,
+
+    /// Shutdown behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown: Option<Shutdown>,
+
+    /// Hard kill if startup-to-ready exceeds this duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+}
+
+/// Readiness probe — discriminated by `kind` field.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "kind")]
+pub enum Readiness {
+    /// TCP port connectivity check.
+    #[serde(rename = "port")]
+    Port(ReadinessPort),
+    /// HTTP endpoint check.
+    #[serde(rename = "http")]
+    Http(ReadinessHttp),
+    /// Regex match on service output.
+    #[serde(rename = "log")]
+    Log(ReadinessLog),
+    /// External command check (exit 0 = ready).
+    #[serde(rename = "command")]
+    Command(ReadinessCommand),
+    /// Simple delay before considering ready.
+    #[serde(rename = "delay")]
+    Delay(ReadinessDelay),
+}
+
+/// Common readiness probe fields.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ReadinessCommon {
+    /// Time between probe attempts (e.g., "500ms").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<String>,
+    /// Max time to reach ready (e.g., "60s").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+    /// Initial delay before first probe (e.g., "0s").
+    #[serde(default, rename = "initialDelay", skip_serializing_if = "Option::is_none")]
+    pub initial_delay: Option<String>,
+}
+
+/// TCP port readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReadinessPort {
+    /// Common probe settings.
+    #[serde(flatten)]
+    pub common: ReadinessCommon,
+    /// TCP port on localhost.
+    pub port: u16,
+    /// Host to connect to (default: 127.0.0.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// HTTP readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReadinessHttp {
+    /// Common probe settings.
+    #[serde(flatten)]
+    pub common: ReadinessCommon,
+    /// URL to check.
+    pub url: String,
+    /// Expected status codes (default: 2xx).
+    #[serde(default, rename = "expectStatus", skip_serializing_if = "Option::is_none")]
+    pub expect_status: Option<Vec<u16>>,
+    /// HTTP method (default: GET).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+}
+
+/// Log pattern readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReadinessLog {
+    /// Common probe settings.
+    #[serde(flatten)]
+    pub common: ReadinessCommon,
+    /// Regex pattern — first match declares ready.
+    pub pattern: String,
+    /// Which stream to watch (default: "either").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// External command readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReadinessCommand {
+    /// Common probe settings.
+    #[serde(flatten)]
+    pub common: ReadinessCommon,
+    /// Command to run (exit 0 = ready).
+    pub command: String,
+    /// Command arguments.
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// Simple delay readiness probe.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReadinessDelay {
+    /// Duration to wait before considering ready.
+    pub delay: String,
+}
+
+/// Restart policy for services.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RestartPolicy {
+    /// Restart mode (default: "onFailure").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Exponential backoff between restarts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff: Option<BackoffConfig>,
+    /// Max restarts within the sliding window (default: 5).
+    #[serde(default, rename = "maxRestarts", skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+    /// Sliding window for restart counting (default: "60s").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+}
+
+/// Exponential backoff configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackoffConfig {
+    /// Initial delay (default: "1s").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<String>,
+    /// Maximum delay (default: "30s").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<String>,
+    /// Backoff multiplier (default: 2.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub factor: Option<f64>,
+}
+
+/// File watcher configuration for services.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServiceWatch {
+    /// Glob patterns relative to project root.
+    pub paths: Vec<String>,
+    /// Patterns to ignore (gitignore syntax).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Vec<String>>,
+    /// Debounce window (default: "200ms").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debounce: Option<String>,
+    /// Action on change (default: "restart").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+    /// Tasks to re-run before restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild: Option<Vec<TaskDependency>>,
+}
+
+/// Service log configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServiceLogs {
+    /// Stream prefix shown in multiplexed output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    /// ANSI color hint for renderers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    /// Persist to file (default: true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub persist: Option<bool>,
+}
+
+/// Shutdown behavior for services.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Shutdown {
+    /// Signal to send (default: "SIGTERM").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal: Option<String>,
+    /// Grace period before SIGKILL (default: "10s").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<String>,
+}
+
+// ============================================================================
 // Project Type
 // ============================================================================
 
@@ -884,6 +1140,10 @@ pub struct Project {
     /// Tasks configuration
     #[serde(default)]
     pub tasks: HashMap<String, TaskNode>,
+
+    /// Services configuration — long-running supervised processes.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub services: HashMap<String, Service>,
 
     /// Codegen configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
