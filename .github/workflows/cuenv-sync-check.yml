@@ -39,7 +39,7 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/nix-installer-action@v22
       with:
         extra-conf: accept-flake-config = true
     - name: Setup sccache
