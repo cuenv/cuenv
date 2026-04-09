@@ -17,6 +17,9 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: write
+  checks: write
+  pull-requests: write
+  packages: write
   id-token: write
 jobs:
   build-cuenv-namespace-profile-cuenv-macos-arm64:
