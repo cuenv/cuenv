@@ -13,7 +13,8 @@ package schema
 	_cuenvSelf:   string | *""
 	_name: string | *(_cuenvPrefix + _cuenvSelf)
 
-	// Type discriminator — required so #Service never matches #Task
+	// Type discriminator — provided by #Service, users should not need
+	// to repeat this field in each service block.
 	type: "service"
 
 	// Command-based execution (mutually exclusive with script)

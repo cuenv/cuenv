@@ -867,7 +867,7 @@ pub enum GitHubExtract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Service {
     /// Type discriminator — always `"service"`.
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default = "default_service_type")]
     pub service_type: String,
 
     /// Command to execute.
@@ -937,6 +937,10 @@ pub struct Service {
     /// Hard kill if startup-to-ready exceeds this duration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+}
+
+fn default_service_type() -> String {
+    "service".to_string()
 }
 
 /// Readiness probe — discriminated by `kind` field.
@@ -1330,6 +1334,17 @@ mod tests {
     use super::*;
     use crate::tasks::{TaskDependency, TaskGroup, TaskNode};
     use crate::test_utils::create_test_hook;
+
+    #[test]
+    fn test_service_type_defaults_to_service_when_omitted() {
+        let service: Service = serde_json::from_value(serde_json::json!({
+            "command": "echo",
+            "args": ["hello"]
+        }))
+        .expect("service should deserialize without explicit type");
+
+        assert_eq!(service.service_type, "service");
+    }
 
     #[test]
     fn test_expand_cross_project_references() {
