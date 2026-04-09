@@ -870,6 +870,7 @@ mod tests {
             codegen: None,
             formatters: None,
             runtime: None,
+            services: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -913,6 +914,7 @@ mod tests {
             codegen: None,
             formatters: None,
             runtime: None,
+            services: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -935,6 +937,7 @@ mod tests {
             codegen: None,
             formatters: None,
             runtime: None,
+            services: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);

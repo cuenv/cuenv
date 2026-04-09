@@ -40,6 +40,12 @@ pub struct ContributorContext {
 
     /// All commands used by tasks in the project (for command-based activation)
     pub task_commands: HashSet<String>,
+
+    /// Commands used by services in the project (for service command-based activation)
+    pub service_commands: HashSet<String>,
+
+    /// Whether the project has any services defined
+    pub has_services: bool,
 }
 
 impl ContributorContext {
@@ -62,6 +68,19 @@ impl ContributorContext {
     pub fn with_task_commands(mut self, tasks: &HashMap<String, TaskNode>) -> Self {
         for node in tasks.values() {
             collect_commands_from_node(node, &mut self.task_commands);
+        }
+        self
+    }
+
+    /// Add service commands from a project's services
+    pub fn with_services(mut self, services: &HashMap<String, crate::manifest::Service>) -> Self {
+        self.has_services = !services.is_empty();
+        for service in services.values() {
+            if let Some(ref cmd) = service.command
+                && let Some(cmd_name) = cuenv_workspaces::command_name(cmd)
+            {
+                self.service_commands.insert(cmd_name);
+            }
         }
         self
     }
@@ -121,6 +140,14 @@ pub struct ContributorActivation {
     /// Command detection for auto-association (active if any task uses these commands)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
+
+    /// Service command detection (active if any service uses these commands)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_command: Vec<String>,
+
+    /// Service presence (active if project has any services defined)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_service: Option<bool>,
 }
 
 /// Auto-association rules for contributors
@@ -292,6 +319,25 @@ impl<'a> ContributorEngine<'a> {
             if !has_match {
                 return false;
             }
+        }
+
+        // Check service command usage (OR within, AND with other conditions)
+        if !when.service_command.is_empty() {
+            let has_match = when
+                .service_command
+                .iter()
+                .any(|cmd| self.context.service_commands.contains(cmd));
+            if !has_match {
+                return false;
+            }
+        }
+
+        // Check service presence
+        if when.has_service == Some(true) && !self.context.has_services {
+            return false;
+        }
+        if when.has_service == Some(false) && self.context.has_services {
+            return false;
         }
 
         true
@@ -722,6 +768,7 @@ mod tests {
             workspace_member: Some("bun".to_string()),
             workspace_root: None,
             task_commands: ["test-cmd".to_string()].into_iter().collect(),
+            ..Default::default()
         };
 
         // Create a user task that uses the matching command
@@ -758,6 +805,7 @@ mod tests {
             workspace_member: Some("bun".to_string()),
             workspace_root: None,
             task_commands: ["test-cmd".to_string()].into_iter().collect(),
+            ..Default::default()
         };
 
         let user_task = Task {
@@ -922,6 +970,7 @@ mod tests {
             workspace_member: Some("bun".to_string()),
             workspace_root: None,
             task_commands: ["test-cmd".to_string()].into_iter().collect(),
+            ..Default::default()
         };
 
         // Create a user task that already has the dependency
@@ -962,6 +1011,7 @@ mod tests {
             workspace_member: Some("bun".to_string()),
             workspace_root: None,
             task_commands: ["test-cmd".to_string()].into_iter().collect(),
+            ..Default::default()
         };
 
         // Task with a command that is NOT an exact match

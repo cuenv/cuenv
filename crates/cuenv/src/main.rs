@@ -178,7 +178,12 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
             | cli::Commands::Sync { .. }
-            | cli::Commands::Runtime { .. } => true,
+            | cli::Commands::Runtime { .. }
+            | cli::Commands::Up { .. }
+            | cli::Commands::Down { .. }
+            | cli::Commands::Logs { .. }
+            | cli::Commands::Ps { .. }
+            | cli::Commands::Restart { .. } => true,
             // Tools commands - download/activate need async, list is sync
             cli::Commands::Tools { subcommand } => match subcommand {
                 cli::ToolsCommands::Download | cli::ToolsCommands::Activate => true,
@@ -937,6 +942,82 @@ async fn execute_command_safe(
         }
         Command::ToolsList => {
             return commands::tools::execute_tools_list();
+        }
+        Command::Up {
+            path,
+            package,
+            services,
+            labels,
+        } => {
+            let options = commands::up::UpOptions {
+                path: path.clone(),
+                package: package.clone(),
+                services: services.clone(),
+                labels: labels.clone(),
+            };
+            return commands::up::execute_up(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Up command failed: {e}")));
+        }
+        Command::Down {
+            path,
+            package,
+            services,
+        } => {
+            let options = commands::down::DownOptions {
+                path: path.clone(),
+                package: package.clone(),
+                services: services.clone(),
+            };
+            return commands::down::execute_down(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Down command failed: {e}")));
+        }
+        Command::Logs {
+            path,
+            package,
+            services,
+            follow,
+            lines,
+        } => {
+            let options = commands::logs::LogsOptions {
+                path: path.clone(),
+                package: package.clone(),
+                services: services.clone(),
+                follow: *follow,
+                lines: *lines,
+            };
+            return commands::logs::execute_logs(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Logs command failed: {e}")));
+        }
+        Command::Ps {
+            path,
+            package,
+            output_format,
+        } => {
+            let options = commands::ps::PsOptions {
+                path: path.clone(),
+                package: package.clone(),
+                output_format: output_format.clone(),
+            };
+            return commands::ps::execute_ps(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Ps command failed: {e}")));
+        }
+        Command::Restart {
+            path,
+            package,
+            services,
+        } => {
+            let options = commands::restart::RestartOptions {
+                path: path.clone(),
+                package: package.clone(),
+                services: services.clone(),
+            };
+            return commands::restart::execute_restart(&options)
+                .map(|_| ())
+                .map_err(|e| CliError::eval(format!("Restart command failed: {e}")));
         }
         // Info command needs special handling for json_format and output
         Command::Info {

@@ -1,0 +1,38 @@
+[package]
+name = "cuenv-services"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Service supervision, readiness probes, and process management for cuenv"
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-events = { workspace = true }
+cuenv-task-graph = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+notify = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+sha2 = { workspace = true }
+hex = "0.4"
+regex = { workspace = true }
+glob = { workspace = true }
+async-trait = "0.1"
+thiserror = "2.0"
+miette = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }

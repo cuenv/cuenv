@@ -75,6 +75,8 @@ impl EventSource {
 pub enum EventCategory {
     /// Task execution lifecycle events.
     Task(TaskEvent),
+    /// Service lifecycle events.
+    Service(ServiceEvent),
     /// CI pipeline events.
     Ci(CiEvent),
     /// Command lifecycle events.
@@ -150,6 +152,93 @@ pub enum TaskEvent {
         /// Duration in milliseconds.
         duration_ms: u64,
     },
+}
+
+/// Service lifecycle events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", content = "data")]
+pub enum ServiceEvent {
+    /// Service is pending — deps not yet ready.
+    Pending {
+        /// Service name.
+        name: String,
+    },
+    /// Service is starting — spawned, awaiting readiness probe.
+    Starting {
+        /// Service name.
+        name: String,
+        /// Command being executed.
+        command: String,
+    },
+    /// Service produced output.
+    Output {
+        /// Service name.
+        name: String,
+        /// Output stream.
+        stream: Stream,
+        /// Output content (single line).
+        line: String,
+    },
+    /// Service is ready — probe satisfied.
+    Ready {
+        /// Service name.
+        name: String,
+        /// Time in ms from `Starting` to `Ready`.
+        after_ms: u64,
+    },
+    /// Service readiness timed out.
+    ReadyTimeout {
+        /// Service name.
+        name: String,
+        /// Time in ms before timeout.
+        after_ms: u64,
+    },
+    /// Service is restarting.
+    Restarting {
+        /// Service name.
+        name: String,
+        /// Reason for the restart.
+        reason: RestartReason,
+        /// Restart attempt number.
+        attempt: u32,
+    },
+    /// Service is stopping.
+    Stopping {
+        /// Service name.
+        name: String,
+    },
+    /// Service has stopped.
+    Stopped {
+        /// Service name.
+        name: String,
+        /// Process exit code, if available.
+        exit_code: Option<i32>,
+    },
+    /// Service has failed.
+    Failed {
+        /// Service name.
+        name: String,
+        /// Error description.
+        error: String,
+    },
+    /// File watcher detected changes for a service.
+    Watch {
+        /// Service name.
+        name: String,
+        /// Paths that changed.
+        changed: Vec<String>,
+    },
+}
+
+/// Reason a service is being restarted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RestartReason {
+    /// Service process crashed (non-zero exit).
+    Crashed,
+    /// File watcher triggered restart.
+    WatchTriggered,
+    /// Manual restart via `cuenv restart`.
+    Manual,
 }
 
 /// CI pipeline events.
@@ -620,6 +709,9 @@ mod tests {
             EventCategory::Task(TaskEvent::CacheMiss {
                 name: "test".to_string(),
             }),
+            EventCategory::Service(ServiceEvent::Pending {
+                name: "db".to_string(),
+            }),
             EventCategory::Ci(CiEvent::ProjectsDiscovered { count: 1 }),
             EventCategory::Command(CommandEvent::Started {
                 command: "sync".to_string(),
@@ -665,5 +757,108 @@ mod tests {
         );
         let debug_str = format!("{event:?}");
         assert!(debug_str.contains("CuenvEvent"));
+    }
+
+    #[test]
+    fn test_service_event_pending() {
+        let event = ServiceEvent::Pending {
+            name: "db".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Pending"));
+        assert!(json.contains("db"));
+    }
+
+    #[test]
+    fn test_service_event_starting() {
+        let event = ServiceEvent::Starting {
+            name: "db".to_string(),
+            command: "postgres -D /data".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Starting"));
+        assert!(json.contains("postgres"));
+    }
+
+    #[test]
+    fn test_service_event_ready() {
+        let event = ServiceEvent::Ready {
+            name: "db".to_string(),
+            after_ms: 1200,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Ready"));
+        assert!(json.contains("1200"));
+    }
+
+    #[test]
+    fn test_service_event_restarting() {
+        let event = ServiceEvent::Restarting {
+            name: "api".to_string(),
+            reason: RestartReason::WatchTriggered,
+            attempt: 2,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Restarting"));
+        assert!(json.contains("WatchTriggered"));
+    }
+
+    #[test]
+    fn test_service_event_stopped() {
+        let event = ServiceEvent::Stopped {
+            name: "web".to_string(),
+            exit_code: Some(0),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Stopped"));
+    }
+
+    #[test]
+    fn test_service_event_failed() {
+        let event = ServiceEvent::Failed {
+            name: "api".to_string(),
+            error: "readiness timeout".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Failed"));
+        assert!(json.contains("readiness timeout"));
+    }
+
+    #[test]
+    fn test_service_event_watch() {
+        let event = ServiceEvent::Watch {
+            name: "api".to_string(),
+            changed: vec!["src/main.rs".to_string()],
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Watch"));
+        assert!(json.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_service_event_output() {
+        let event = ServiceEvent::Output {
+            name: "db".to_string(),
+            stream: Stream::Stdout,
+            line: "ready to accept connections".to_string(),
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Output"));
+        assert!(json.contains("ready to accept connections"));
+    }
+
+    #[test]
+    fn test_restart_reason_serialization() {
+        let reasons = vec![
+            RestartReason::Crashed,
+            RestartReason::WatchTriggered,
+            RestartReason::Manual,
+        ];
+        for reason in reasons {
+            let json = serde_json::to_string(&reason).unwrap();
+            let parsed: RestartReason = serde_json::from_str(&json).unwrap();
+            let json2 = serde_json::to_string(&parsed).unwrap();
+            assert_eq!(json, json2);
+        }
     }
 }

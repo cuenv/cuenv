@@ -47,7 +47,7 @@ pub mod renderers;
 pub use bus::{EventBus, EventReceiver, EventSender, SendError};
 pub use event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent,
-    Stream, SystemEvent, TaskEvent,
+    RestartReason, ServiceEvent, Stream, SystemEvent, TaskEvent,
 };
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
@@ -170,6 +170,188 @@ macro_rules! emit_task_group_completed {
             task_name = %$name,
             success = $success,
             duration_ms = $duration_ms,
+        )
+    };
+}
+
+// Service Events
+
+/// Emit a service pending event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_pending!("db");
+/// ```
+#[macro_export]
+macro_rules! emit_service_pending {
+    ($name:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.pending",
+            service_name = %$name,
+        )
+    };
+}
+
+/// Emit a service starting event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_starting!("db", "postgres -D /data");
+/// ```
+#[macro_export]
+macro_rules! emit_service_starting {
+    ($name:expr, $command:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.starting",
+            service_name = %$name,
+            command = %$command,
+        )
+    };
+}
+
+/// Emit a service output event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_output!("db", "stdout", "ready to accept connections");
+/// ```
+#[macro_export]
+macro_rules! emit_service_output {
+    ($name:expr, $stream:expr, $line:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.output",
+            service_name = %$name,
+            stream = $stream,
+            content = %$line,
+        )
+    };
+}
+
+/// Emit a service ready event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_ready!("db", 1200_u64);
+/// ```
+#[macro_export]
+macro_rules! emit_service_ready {
+    ($name:expr, $after_ms:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.ready",
+            service_name = %$name,
+            after_ms = $after_ms,
+        )
+    };
+}
+
+/// Emit a service stopping event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_stopping!("db");
+/// ```
+#[macro_export]
+macro_rules! emit_service_stopping {
+    ($name:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.stopping",
+            service_name = %$name,
+        )
+    };
+}
+
+/// Emit a service stopped event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_stopped!("db", Some(0));
+/// ```
+#[macro_export]
+macro_rules! emit_service_stopped {
+    ($name:expr, $exit_code:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.stopped",
+            service_name = %$name,
+            exit_code = ?$exit_code,
+        )
+    };
+}
+
+/// Emit a service failed event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_failed!("db", "readiness timeout");
+/// ```
+#[macro_export]
+macro_rules! emit_service_failed {
+    ($name:expr, $error:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.failed",
+            service_name = %$name,
+            error = %$error,
+        )
+    };
+}
+
+/// Emit a service readiness timeout event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_ready_timeout!("db", 60000_u64);
+/// ```
+#[macro_export]
+macro_rules! emit_service_ready_timeout {
+    ($name:expr, $after_ms:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.ready_timeout",
+            service_name = %$name,
+            after_ms = $after_ms,
+        )
+    };
+}
+
+/// Emit a service restarting event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_restarting!("api", "crashed", 2_u32);
+/// ```
+#[macro_export]
+macro_rules! emit_service_restarting {
+    ($name:expr, $reason:expr, $attempt:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.restarting",
+            service_name = %$name,
+            reason = %$reason,
+            attempt = $attempt,
+        )
+    };
+}
+
+/// Emit a service file watch event.
+///
+/// # Example
+/// ```rust,ignore
+/// emit_service_watch!("api", &["src/main.rs".to_string()]);
+/// ```
+#[macro_export]
+macro_rules! emit_service_watch {
+    ($name:expr, $changed:expr) => {
+        ::tracing::info!(
+            target: "cuenv::service",
+            event_type = "service.watch",
+            service_name = %$name,
+            changed = ?$changed,
         )
     };
 }
@@ -499,6 +681,22 @@ mod tests {
             emit_shutdown!();
             emit_stdout!("hello");
             emit_stderr!("error");
+        });
+    }
+
+    #[tokio::test]
+    async fn test_service_macros_compile() {
+        with_test_subscriber(|| {
+            emit_service_pending!("db");
+            emit_service_starting!("db", "postgres -D /data");
+            emit_service_output!("db", "stdout", "ready to accept connections");
+            emit_service_ready!("db", 1200_u64);
+            emit_service_ready_timeout!("db", 60000_u64);
+            emit_service_restarting!("api", "crashed", 2_u32);
+            emit_service_watch!("api", &["src/main.rs".to_string()]);
+            emit_service_stopping!("db");
+            emit_service_stopped!("db", Some(0));
+            emit_service_failed!("api", "readiness timeout");
         });
     }
 }

@@ -195,6 +195,12 @@ package schema
 
 	// Environment name matching (active only in these environments)
 	environment?: [...string]
+
+	// Service command detection (active if any service uses these commands)
+	serviceCommand?: [...string]
+
+	// Service presence (active if project has any services defined)
+	hasService?: bool
 })
 
 // Contributor definition

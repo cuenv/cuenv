@@ -456,6 +456,14 @@ pub struct ActivationCondition {
     /// Environment name matching (active only in these environments)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environment: Vec<String>,
+
+    /// Service command detection (active if any service uses these commands)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub service_command: Vec<String>,
+
+    /// Service presence (active if project has any services defined)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub has_service: Option<bool>,
 }
 
 /// Secret reference for contributor tasks
