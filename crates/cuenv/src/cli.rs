@@ -760,6 +760,141 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: ToolsCommands,
     },
+    /// Bring up long-running services.
+    #[command(about = "Bring up long-running services defined in CUE configuration")]
+    Up {
+        /// Service names to bring up (default: all).
+        #[arg(help = "Service names to bring up (default: all)")]
+        services: Vec<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Filter services by label (repeatable).
+        #[arg(
+            long = "label",
+            short = 'l',
+            action = clap::ArgAction::Append,
+            help = "Filter services by label (repeatable)",
+            value_name = "LABEL"
+        )]
+        labels: Vec<String>,
+    },
+    /// Tear down running services.
+    #[command(about = "Tear down running services")]
+    Down {
+        /// Service names to bring down (default: all).
+        #[arg(help = "Service names to bring down (default: all)")]
+        services: Vec<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    /// View service logs.
+    #[command(about = "View service logs")]
+    Logs {
+        /// Service names to view logs for (default: all).
+        #[arg(help = "Service names to view logs for (default: all)")]
+        services: Vec<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Follow log output.
+        #[arg(long, short = 'f', help = "Follow log output")]
+        follow: bool,
+        /// Number of lines to show.
+        #[arg(
+            long,
+            short = 'n',
+            help = "Number of lines to show",
+            default_value = "100"
+        )]
+        lines: usize,
+    },
+    /// List running services.
+    #[command(about = "List running services and their status")]
+    Ps {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Output format (table or json).
+        #[arg(
+            long,
+            help = "Output format",
+            default_value = "table",
+            rename_all = "kebab-case"
+        )]
+        output_format: String,
+    },
+    /// Restart a service.
+    #[command(about = "Restart one or more services")]
+    Restart {
+        /// Service names to restart.
+        #[arg(required = true, help = "Service names to restart")]
+        services: Vec<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
 }
 
 /// Sync subcommands for generating different types of files.
@@ -1297,7 +1432,12 @@ impl Commands {
             | Self::Sync { package, .. }
             | Self::Allow { package, .. }
             | Self::Deny { package, .. }
-            | Self::Export { package, .. } => package,
+            | Self::Export { package, .. }
+            | Self::Up { package, .. }
+            | Self::Down { package, .. }
+            | Self::Logs { package, .. }
+            | Self::Ps { package, .. }
+            | Self::Restart { package, .. } => package,
 
             // Nested env subcommands with --package
             Self::Env { subcommand } => match subcommand {
@@ -1681,6 +1821,57 @@ impl Commands {
                 ToolsCommands::Download => Command::ToolsDownload,
                 ToolsCommands::Activate => Command::ToolsActivate,
                 ToolsCommands::List => Command::ToolsList,
+            },
+            Self::Up {
+                services,
+                path,
+                package,
+                labels,
+            } => Command::Up {
+                path,
+                package,
+                services,
+                labels,
+            },
+            Self::Down {
+                services,
+                path,
+                package,
+            } => Command::Down {
+                path,
+                package,
+                services,
+            },
+            Self::Logs {
+                services,
+                path,
+                package,
+                follow,
+                lines,
+            } => Command::Logs {
+                path,
+                package,
+                services,
+                follow,
+                lines,
+            },
+            Self::Ps {
+                path,
+                package,
+                output_format,
+            } => Command::Ps {
+                path,
+                package,
+                output_format,
+            },
+            Self::Restart {
+                services,
+                path,
+                package,
+            } => Command::Restart {
+                path,
+                package,
+                services,
             },
         }
     }

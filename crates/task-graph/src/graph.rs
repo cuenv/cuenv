@@ -10,6 +10,30 @@ use petgraph::visit::IntoNodeReferences;
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
+/// Discriminator for the kind of node in a mixed task/service graph.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub enum NodeKind {
+    /// A one-shot task that runs to completion.
+    Task,
+    /// A long-running service supervised by `cuenv up`.
+    Service,
+}
+
+impl Default for NodeKind {
+    fn default() -> Self {
+        Self::Task
+    }
+}
+
+impl std::fmt::Display for NodeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Task => write!(f, "task"),
+            Self::Service => write!(f, "service"),
+        }
+    }
+}
+
 /// A node in the task graph.
 #[derive(Debug, Clone)]
 pub struct GraphNode<T> {
@@ -17,6 +41,8 @@ pub struct GraphNode<T> {
     pub name: String,
     /// The task data.
     pub task: T,
+    /// Whether this node is a task or a service.
+    pub kind: NodeKind,
 }
 
 /// Task graph for dependency resolution and execution ordering.
@@ -60,11 +86,38 @@ impl<T: TaskNodeData> TaskGraph<T> {
         let node = GraphNode {
             name: name.to_string(),
             task,
+            kind: NodeKind::Task,
         };
 
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
         debug!("Added task node '{}'", name);
+
+        Ok(node_index)
+    }
+
+    /// Add a single service node to the graph.
+    ///
+    /// Behaves identically to [`add_task`](Self::add_task) but marks the node
+    /// as [`NodeKind::Service`] so the executor can branch on it.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible, but returns `Result` for API consistency.
+    pub fn add_service(&mut self, name: &str, task: T) -> Result<NodeIndex> {
+        if let Some(&node) = self.name_to_node.get(name) {
+            return Ok(node);
+        }
+
+        let node = GraphNode {
+            name: name.to_string(),
+            task,
+            kind: NodeKind::Service,
+        };
+
+        let node_index = self.graph.add_node(node);
+        self.name_to_node.insert(name.to_string(), node_index);
+        debug!("Added service node '{}'", name);
 
         Ok(node_index)
     }
@@ -1366,5 +1419,86 @@ mod tests {
         assert_eq!(closure.len(), 2);
         assert!(closure.contains("A"));
         assert!(closure.contains("B"));
+    }
+
+    // ========================================================================
+    // NodeKind tests
+    // ========================================================================
+
+    #[test]
+    fn test_node_kind_default() {
+        let kind = NodeKind::default();
+        assert_eq!(kind, NodeKind::Task);
+    }
+
+    #[test]
+    fn test_node_kind_display() {
+        assert_eq!(NodeKind::Task.to_string(), "task");
+        assert_eq!(NodeKind::Service.to_string(), "service");
+    }
+
+    #[test]
+    fn test_node_kind_equality() {
+        assert_eq!(NodeKind::Task, NodeKind::Task);
+        assert_eq!(NodeKind::Service, NodeKind::Service);
+        assert_ne!(NodeKind::Task, NodeKind::Service);
+    }
+
+    #[test]
+    fn test_add_task_sets_kind() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+
+        let node = graph.get_node_by_name("build").unwrap();
+        assert_eq!(node.kind, NodeKind::Task);
+    }
+
+    #[test]
+    fn test_add_service_sets_kind() {
+        let mut graph = TaskGraph::new();
+        graph.add_service("db", TestTask::new(&[])).unwrap();
+
+        let node = graph.get_node_by_name("db").unwrap();
+        assert_eq!(node.kind, NodeKind::Service);
+    }
+
+    #[test]
+    fn test_mixed_graph_tasks_and_services() {
+        let mut graph = TaskGraph::new();
+
+        // Add a task and a service
+        graph.add_task("build", TestTask::new(&[])).unwrap();
+        graph
+            .add_service("db", TestTask::new(&["build"]))
+            .unwrap();
+        graph.add_dependency_edges().unwrap();
+
+        assert_eq!(graph.task_count(), 2);
+        assert!(!graph.has_cycles());
+
+        // Verify kinds
+        let build_node = graph.get_node_by_name("build").unwrap();
+        assert_eq!(build_node.kind, NodeKind::Task);
+
+        let db_node = graph.get_node_by_name("db").unwrap();
+        assert_eq!(db_node.kind, NodeKind::Service);
+
+        // Verify topological order
+        let sorted = graph.topological_sort().unwrap();
+        let positions: HashMap<String, usize> = sorted
+            .iter()
+            .enumerate()
+            .map(|(i, node)| (node.name.clone(), i))
+            .collect();
+        assert!(positions["build"] < positions["db"]);
+    }
+
+    #[test]
+    fn test_add_service_deduplication() {
+        let mut graph = TaskGraph::new();
+        let idx1 = graph.add_service("db", TestTask::new(&[])).unwrap();
+        let idx2 = graph.add_service("db", TestTask::new(&[])).unwrap();
+        assert_eq!(idx1, idx2);
+        assert_eq!(graph.task_count(), 1);
     }
 }

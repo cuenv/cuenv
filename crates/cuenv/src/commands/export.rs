@@ -1095,6 +1095,7 @@ mod tests {
             codegen: None,
             runtime: None,
             formatters: None,
+            services: HashMap::new(),
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -1127,6 +1128,7 @@ mod tests {
             codegen: None,
             runtime: None,
             formatters: None,
+            services: HashMap::new(),
         };
 
         let hook_env = HashMap::from([

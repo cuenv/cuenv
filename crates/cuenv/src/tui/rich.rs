@@ -262,7 +262,8 @@ impl RichTui {
                 }
             }
             // These event categories are not relevant for the TUI display
-            EventCategory::Ci(_)
+            EventCategory::Service(_)
+            | EventCategory::Ci(_)
             | EventCategory::Interactive(_)
             | EventCategory::System(_)
             | EventCategory::Output(_) => {}
