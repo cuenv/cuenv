@@ -67,11 +67,7 @@ package schema
 // Readiness Probes
 // =============================================================================
 
-#Readiness: #ReadinessPort
-	| #ReadinessHttp
-	| #ReadinessLog
-	| #ReadinessCommand
-	| #ReadinessDelay
+#Readiness: #ReadinessPort | #ReadinessHttp | #ReadinessLog | #ReadinessCommand | #ReadinessDelay
 
 #ReadinessCommon: {
 	// Time between probe attempts
