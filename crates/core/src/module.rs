@@ -14,14 +14,20 @@ use crate::Error;
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
 
-/// Strip known task reference prefixes from a reference path to get the canonical task name.
+/// Strip known dependency reference prefixes from a reference path.
 ///
-/// The CUE bridge exports raw reference paths which may include:
-/// - Direct task references: "tasks.build", "tasks.ci.deploy"
-/// - Let binding aliases: "_t.build", "_tasks.deploy"
-fn strip_tasks_prefix(path: &str) -> &str {
-    const TASK_PREFIXES: &[&str] = &["tasks.", "_tasks.", "_t."];
-    for prefix in TASK_PREFIXES {
+/// The CUE bridge exports raw reference paths which may include task or
+/// service prefixes, including common let-binding aliases.
+fn strip_dependency_prefix(path: &str) -> &str {
+    const DEP_PREFIXES: &[&str] = &[
+        "tasks.",
+        "_tasks.",
+        "_t.",
+        "services.",
+        "_services.",
+        "_s.",
+    ];
+    for prefix in DEP_PREFIXES {
         if let Some(stripped) = path.strip_prefix(prefix) {
             return stripped;
         }
@@ -86,7 +92,7 @@ fn enrich_task_refs_recursive(
                 };
                 let meta_key = format!("{}/{}", instance_path, task_path);
                 if let Some(reference) = references.get(&meta_key) {
-                    let task_name = strip_tasks_prefix(reference).to_string();
+                    let task_name = strip_dependency_prefix(reference).to_string();
                     match task_value {
                         serde_json::Value::Object(task_obj) => {
                             // Skip if _name already set
@@ -154,7 +160,7 @@ fn enrich_task_ref_array(
         let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
         if let Some(reference) = references.get(&meta_key) {
             // CUE ReferencePath already provides canonical path - just strip prefix
-            let task_name = strip_tasks_prefix(reference).to_string();
+            let task_name = strip_dependency_prefix(reference).to_string();
 
             match element {
                 serde_json::Value::Object(obj) => {
@@ -876,25 +882,31 @@ mod tests {
     }
 
     // ==========================================================================
-    // strip_tasks_prefix tests
+    // strip_dependency_prefix tests
     // ==========================================================================
 
     #[test]
-    fn test_strip_tasks_prefix() {
+    fn test_strip_dependency_prefix() {
         // Standard tasks prefix
-        assert_eq!(strip_tasks_prefix("tasks.build"), "build");
-        assert_eq!(strip_tasks_prefix("tasks.ci.deploy"), "ci.deploy");
+        assert_eq!(strip_dependency_prefix("tasks.build"), "build");
+        assert_eq!(strip_dependency_prefix("tasks.ci.deploy"), "ci.deploy");
 
         // Common _t alias (used in env.cue for scope conflict avoidance)
-        assert_eq!(strip_tasks_prefix("_t.cargo.build"), "cargo.build");
-        assert_eq!(strip_tasks_prefix("_t.release.publish"), "release.publish");
+        assert_eq!(strip_dependency_prefix("_t.cargo.build"), "cargo.build");
+        assert_eq!(strip_dependency_prefix("_t.release.publish"), "release.publish");
 
         // Hidden _tasks alias
-        assert_eq!(strip_tasks_prefix("_tasks.internal"), "internal");
+        assert_eq!(strip_dependency_prefix("_tasks.internal"), "internal");
+
+        // Service prefixes
+        assert_eq!(strip_dependency_prefix("services.db"), "db");
+        assert_eq!(strip_dependency_prefix("services.api.http"), "api.http");
+        assert_eq!(strip_dependency_prefix("_s.db"), "db");
+        assert_eq!(strip_dependency_prefix("_services.cache"), "cache");
 
         // No prefix (already canonical)
-        assert_eq!(strip_tasks_prefix("build"), "build");
-        assert_eq!(strip_tasks_prefix("ci.deploy"), "ci.deploy");
+        assert_eq!(strip_dependency_prefix("build"), "build");
+        assert_eq!(strip_dependency_prefix("ci.deploy"), "ci.deploy");
     }
 
     #[derive(Debug, Clone, Copy)]
@@ -1040,6 +1052,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_service_depends_on_canonicalizes_task_and_service_references() {
+        let instance = json!({
+            "name": "service-contract",
+            "tasks": {
+                "migrate": {
+                    "command": "echo",
+                    "args": ["migrate"]
+                }
+            },
+            "services": {
+                "db": {
+                    "type": "service",
+                    "command": "echo",
+                    "args": ["db"]
+                },
+                "seed": {
+                    "type": "service",
+                    "command": "echo",
+                    "args": ["seed"],
+                    "dependsOn": ["placeholder-a", "placeholder-b"]
+                }
+            }
+        });
+
+        let mut references = ReferenceMap::new();
+        references.insert(
+            "./services.seed.dependsOn[0]".to_string(),
+            "services.db".to_string(),
+        );
+        references.insert(
+            "./services.seed.dependsOn[1]".to_string(),
+            "tasks.migrate".to_string(),
+        );
+
+        let project = deserialize_project_with_references(instance, references);
+        let seed = project
+            .services
+            .get("seed")
+            .expect("seed service should exist");
+
+        let dep_names: Vec<&str> = seed.depends_on.iter().map(|d| d.task_name()).collect();
+        assert_eq!(dep_names, vec!["db", "migrate"]);
     }
 
     #[test]
