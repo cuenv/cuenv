@@ -955,8 +955,8 @@ async fn execute_command_safe(
                 services: services.clone(),
                 labels: labels.clone(),
             };
-            return commands::up::execute_up(&options)
-                .map(|_| ())
+            return commands::up::execute_up(&options, executor)
+                .await
                 .map_err(|e| CliError::eval(format!("Up command failed: {e}")));
         }
         Command::Down {
