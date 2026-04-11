@@ -1058,6 +1058,22 @@ pub struct ReadinessDelay {
     pub delay: String,
 }
 
+impl Readiness {
+    /// Access the common probe fields shared by all readiness types.
+    ///
+    /// Returns `None` for `Delay`, which has no common fields.
+    #[must_use]
+    pub fn common_fields(&self) -> Option<&ReadinessCommon> {
+        match self {
+            Self::Port(p) => Some(&p.common),
+            Self::Http(h) => Some(&h.common),
+            Self::Log(l) => Some(&l.common),
+            Self::Command(c) => Some(&c.common),
+            Self::Delay(_) => None,
+        }
+    }
+}
+
 /// Restart policy for services.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RestartPolicy {

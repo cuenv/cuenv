@@ -231,13 +231,33 @@ impl ServiceController {
 
         if !self.shutdown.is_cancelled() {
             emit_stdout!("All services are up. Press Ctrl-C to stop.");
-            // Block until shutdown
-            self.shutdown.cancelled().await;
+            // Monitor for runtime failures alongside shutdown signal
+            loop {
+                tokio::select! {
+                    () = self.shutdown.cancelled() => break,
+                    result = supervisor_handles.join_next() => {
+                        match result {
+                            Some(Ok((name, SupervisorResult::Failed(msg)))) => {
+                                emit_stdout!(format!("Service '{name}' failed at runtime: {msg}"));
+                                self.shutdown.cancel();
+                                break;
+                            }
+                            Some(Ok((_, SupervisorResult::Stopped))) => {}
+                            Some(Err(e)) => {
+                                emit_stdout!(format!("Service supervisor panicked: {e}"));
+                                self.shutdown.cancel();
+                                break;
+                            }
+                            None => break, // All supervisors exited
+                        }
+                    }
+                }
+            }
         }
 
         emit_stdout!("Shutting down services...");
 
-        // Wait for all supervisors to finish (they respond to shutdown token)
+        // Wait for remaining supervisors to finish
         let mut runtime_failures: Vec<(String, String)> = Vec::new();
         while let Some(result) = supervisor_handles.join_next().await {
             match result {
