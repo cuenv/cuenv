@@ -41,9 +41,8 @@ impl ServiceWatcher {
     ) -> crate::Result<Self> {
         let (notify_tx, notify_rx) = std_mpsc::channel();
 
-        let mut watcher = RecommendedWatcher::new(notify_tx, Config::default()).map_err(|e| {
-            crate::Error::session(format!("failed to create file watcher: {e}"))
-        })?;
+        let mut watcher = RecommendedWatcher::new(notify_tx, Config::default())
+            .map_err(|e| crate::Error::session(format!("failed to create file watcher: {e}")))?;
 
         // Resolve and watch paths
         let mut resolved_paths = Vec::new();
@@ -94,9 +93,7 @@ impl ServiceWatcher {
                         for path in event.paths {
                             // Check ignore patterns
                             let path_str = path.to_string_lossy();
-                            let ignored = ignore_globs
-                                .iter()
-                                .any(|g| g.matches(&path_str));
+                            let ignored = ignore_globs.iter().any(|g| g.matches(&path_str));
 
                             if !ignored && !pending.contains(&path) {
                                 pending.push(path);

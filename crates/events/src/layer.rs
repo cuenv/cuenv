@@ -426,8 +426,8 @@ impl Visit for CuenvEventVisitor {
             // Fallback: try to extract string fields from debug formatting
             // When tracing uses Display formatting (%), it wraps values in a DisplayValue
             // which then gets passed to record_debug instead of record_str
-            "event_type" | "task_name" | "service_name" | "name" | "command" | "cmd" | "content"
-            | "cache_key" | "stream" | "error" | "reason" => {
+            "event_type" | "task_name" | "service_name" | "name" | "command" | "cmd"
+            | "content" | "cache_key" | "stream" | "error" | "reason" => {
                 // Remove surrounding quotes if present (debug format adds them for strings)
                 let cleaned = value_str.trim_matches('"');
                 match field.name() {

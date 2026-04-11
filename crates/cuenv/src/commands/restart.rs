@@ -27,9 +27,8 @@ pub struct RestartOptions {
 /// Returns an error if no session exists or the services can't be found.
 pub fn execute_restart(options: &RestartOptions) -> cuenv_core::Result<String> {
     let project_path = Path::new(&options.path);
-    let session = SessionManager::load(project_path).map_err(|e| {
-        cuenv_core::Error::execution(format!("Failed to load session: {e}"))
-    })?;
+    let session = SessionManager::load(project_path)
+        .map_err(|e| cuenv_core::Error::execution(format!("Failed to load session: {e}")))?;
 
     if !session.is_alive() {
         return Err(cuenv_core::Error::execution(
