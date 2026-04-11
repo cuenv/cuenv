@@ -47,14 +47,12 @@ impl HttpProbe {
 
         let default_port: u16 = if scheme == "https" { 443 } else { 80 };
 
-        let (host, port) = host_port
-            .rfind(':')
-            .map_or((host_port, default_port), |i| {
-                let port_str = &host_port[i + 1..];
-                port_str
-                    .parse()
-                    .map_or((host_port, default_port), |p| (&host_port[..i], p))
-            });
+        let (host, port) = host_port.rfind(':').map_or((host_port, default_port), |i| {
+            let port_str = &host_port[i + 1..];
+            port_str
+                .parse()
+                .map_or((host_port, default_port), |p| (&host_port[..i], p))
+        });
 
         Some((host.to_string(), port, path.to_string()))
     }

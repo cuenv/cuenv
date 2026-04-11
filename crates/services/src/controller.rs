@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
@@ -17,7 +17,7 @@ use cuenv_events::{emit_service_pending, emit_stdout};
 use cuenv_task_graph::{NodeKind, TaskGraph};
 
 use crate::session::SessionManager;
-use crate::supervisor::{ServiceSupervisor, SupervisorResult};
+use crate::supervisor::{ReadinessOutcome, ServiceSupervisor, SupervisorConfig, SupervisorResult};
 
 /// Configuration for the service controller.
 pub struct ControllerConfig {
@@ -66,11 +66,7 @@ pub fn build_mixed_graph(
 
     // Add service nodes
     for (name, service) in services {
-        let deps: Vec<String> = service
-            .depends_on
-            .iter()
-            .map(|d| d.name.clone())
-            .collect();
+        let deps: Vec<String> = service.depends_on.iter().map(|d| d.name.clone()).collect();
         let mixed = MixedNode { dependencies: deps };
         graph.add_service(name, mixed)?;
     }
@@ -84,16 +80,12 @@ pub fn build_mixed_graph(
 /// Collect dependency names from a task node.
 fn collect_task_deps(node: &cuenv_core::tasks::TaskNode) -> Vec<String> {
     match node {
-        cuenv_core::tasks::TaskNode::Task(task) => task
-            .depends_on
-            .iter()
-            .map(|d| d.name.clone())
-            .collect(),
-        cuenv_core::tasks::TaskNode::Group(group) => group
-            .depends_on
-            .iter()
-            .map(|d| d.name.clone())
-            .collect(),
+        cuenv_core::tasks::TaskNode::Task(task) => {
+            task.depends_on.iter().map(|d| d.name.clone()).collect()
+        }
+        cuenv_core::tasks::TaskNode::Group(group) => {
+            group.depends_on.iter().map(|d| d.name.clone()).collect()
+        }
         cuenv_core::tasks::TaskNode::Sequence(_) => Vec::new(),
     }
 }
@@ -121,20 +113,25 @@ impl ServiceController {
     ///
     /// # Errors
     ///
-    /// Returns an error if graph traversal fails or a service fails fatally.
+    /// Returns an error if graph traversal fails or a service fails fatally
+    /// during startup.
     pub async fn execute_up(
         &self,
         graph: &TaskGraph<MixedNode>,
         services: &HashMap<String, Service>,
         session: Arc<SessionManager>,
     ) -> crate::Result<()> {
-        let parallel_groups = graph.get_parallel_groups().map_err(cuenv_core::Error::from)?;
+        let parallel_groups = graph
+            .get_parallel_groups()
+            .map_err(cuenv_core::Error::from)?;
         let mut supervisor_handles: JoinSet<(String, SupervisorResult)> = JoinSet::new();
+        let mut startup_failures: Vec<(String, String)> = Vec::new();
 
-        for (group_idx, group) in parallel_groups.iter().enumerate() {
+        'groups: for (group_idx, group) in parallel_groups.iter().enumerate() {
             debug!(group = group_idx, nodes = group.len(), "Processing group");
 
-            let mut service_readiness: Vec<(String, Arc<Notify>)> = Vec::new();
+            let mut service_readiness: Vec<(String, watch::Receiver<ReadinessOutcome>)> =
+                Vec::new();
 
             for node in group {
                 match node.kind {
@@ -148,23 +145,21 @@ impl ServiceController {
                         emit_service_pending!(&node.name);
 
                         if let Some(service) = services.get(&node.name) {
-                            let ready_notify = Arc::new(Notify::new());
-                            service_readiness.push((
-                                node.name.clone(),
-                                Arc::clone(&ready_notify),
-                            ));
+                            let (readiness_tx, readiness_rx) =
+                                watch::channel(ReadinessOutcome::Pending);
+                            service_readiness.push((node.name.clone(), readiness_rx));
 
-                            let supervisor = ServiceSupervisor::new(
-                                node.name.clone(),
-                                service.clone(),
-                                self.config.project_root.clone(),
-                                Arc::clone(&session),
-                            );
+                            let supervisor = ServiceSupervisor::new(SupervisorConfig {
+                                name: node.name.clone(),
+                                service: service.clone(),
+                                project_root: self.config.project_root.clone(),
+                                session: Arc::clone(&session),
+                            });
 
                             let shutdown = self.shutdown.clone();
                             let name = node.name.clone();
                             supervisor_handles.spawn(async move {
-                                let result = supervisor.run(shutdown, ready_notify).await;
+                                let result = supervisor.run(shutdown, readiness_tx).await;
                                 (name, result)
                             });
                         }
@@ -172,34 +167,98 @@ impl ServiceController {
                 }
             }
 
-            // Wait for all services in this group to become ready
-            for (name, notify) in &service_readiness {
+            // Wait for all services in this group to become ready (or fail)
+            for (name, mut readiness_rx) in service_readiness {
                 debug!(service = %name, "Waiting for readiness");
-                tokio::select! {
-                    () = notify.notified() => {
-                        debug!(service = %name, "Service ready");
-                    }
-                    () = self.shutdown.cancelled() => {
-                        debug!("Shutdown during readiness wait");
-                        break;
+                loop {
+                    tokio::select! {
+                        result = readiness_rx.changed() => {
+                            if result.is_err() {
+                                // Sender dropped — supervisor crashed before signaling
+                                let msg = "supervisor exited before signaling readiness".to_string();
+                                emit_stdout!(format!("Service '{name}' failed: {msg}"));
+                                startup_failures.push((name.clone(), msg));
+                                break;
+                            }
+                            match readiness_rx.borrow().clone() {
+                                ReadinessOutcome::Pending => continue,
+                                ReadinessOutcome::Ready => {
+                                    debug!(service = %name, "Service ready");
+                                    break;
+                                }
+                                ReadinessOutcome::Failed(msg) => {
+                                    emit_stdout!(format!("Service '{name}' failed during startup: {msg}"));
+                                    startup_failures.push((name.clone(), msg));
+                                    break;
+                                }
+                            }
+                        }
+                        () = self.shutdown.cancelled() => {
+                            debug!("Shutdown during readiness wait");
+                            break 'groups;
+                        }
                     }
                 }
             }
 
-            if self.shutdown.is_cancelled() {
+            if self.shutdown.is_cancelled() || !startup_failures.is_empty() {
                 break;
             }
         }
 
+        if !startup_failures.is_empty() {
+            // Cancel all supervisors on startup failure
+            self.shutdown.cancel();
+
+            // Drain remaining supervisor handles
+            while let Some(result) = supervisor_handles.join_next().await {
+                if let Ok((name, SupervisorResult::Failed(msg))) = result {
+                    debug!(service = %name, error = %msg, "Supervisor failed during shutdown");
+                }
+            }
+
+            let names: Vec<&str> = startup_failures.iter().map(|(n, _)| n.as_str()).collect();
+            let details: Vec<String> = startup_failures
+                .iter()
+                .map(|(n, m)| format!("{n}: {m}"))
+                .collect();
+            return Err(crate::Error::ServiceFailed {
+                name: names.join(", "),
+                message: details.join("; "),
+                help: Some("Check service logs with `cuenv logs <service>`".into()),
+            });
+        }
+
         if !self.shutdown.is_cancelled() {
             emit_stdout!("All services are up. Press Ctrl-C to stop.");
-            // Block until shutdown
-            self.shutdown.cancelled().await;
+            // Monitor for runtime failures alongside shutdown signal
+            loop {
+                tokio::select! {
+                    () = self.shutdown.cancelled() => break,
+                    result = supervisor_handles.join_next() => {
+                        match result {
+                            Some(Ok((name, SupervisorResult::Failed(msg)))) => {
+                                emit_stdout!(format!("Service '{name}' failed at runtime: {msg}"));
+                                self.shutdown.cancel();
+                                break;
+                            }
+                            Some(Ok((_, SupervisorResult::Stopped))) => {}
+                            Some(Err(e)) => {
+                                emit_stdout!(format!("Service supervisor panicked: {e}"));
+                                self.shutdown.cancel();
+                                break;
+                            }
+                            None => break, // All supervisors exited
+                        }
+                    }
+                }
+            }
         }
 
         emit_stdout!("Shutting down services...");
 
-        // Wait for all supervisors to finish (they respond to shutdown token)
+        // Wait for remaining supervisors to finish
+        let mut runtime_failures: Vec<(String, String)> = Vec::new();
         while let Some(result) = supervisor_handles.join_next().await {
             match result {
                 Ok((name, SupervisorResult::Stopped)) => {
@@ -207,11 +266,27 @@ impl ServiceController {
                 }
                 Ok((name, SupervisorResult::Failed(msg))) => {
                     debug!(service = %name, error = %msg, "Supervisor failed");
+                    runtime_failures.push((name, msg));
                 }
                 Err(e) => {
                     debug!(error = %e, "Supervisor task panicked");
+                    runtime_failures
+                        .push(("unknown".to_string(), format!("supervisor panicked: {e}")));
                 }
             }
+        }
+
+        if !runtime_failures.is_empty() {
+            let names: Vec<&str> = runtime_failures.iter().map(|(n, _)| n.as_str()).collect();
+            let details: Vec<String> = runtime_failures
+                .iter()
+                .map(|(n, m)| format!("{n}: {m}"))
+                .collect();
+            return Err(crate::Error::ServiceFailed {
+                name: names.join(", "),
+                message: details.join("; "),
+                help: None,
+            });
         }
 
         Ok(())

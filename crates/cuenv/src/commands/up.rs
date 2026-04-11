@@ -38,72 +38,72 @@ pub struct UpOptions {
 ///
 /// Returns an error if CUE evaluation, graph construction, or service
 /// supervision fails.
-pub async fn execute_up(
-    options: &UpOptions,
-    executor: &CommandExecutor,
-) -> cuenv_core::Result<()> {
-    let target_path = Path::new(&options.path).canonicalize().map_err(|e| {
-        cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(&options.path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        }
-    })?;
+pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuenv_core::Result<()> {
+    let target_path =
+        Path::new(&options.path)
+            .canonicalize()
+            .map_err(|e| cuenv_core::Error::Io {
+                source: e,
+                path: Some(Path::new(&options.path).to_path_buf().into_boxed_path()),
+                operation: "canonicalize path".to_string(),
+            })?;
 
     emit_stdout!(format!(
         "cuenv up: evaluating services in {} (package: {})",
         options.path, options.package
     ));
 
-    // Evaluate CUE and deserialize project
-    let module = executor.get_module(&target_path)?;
-    let relative_path = relative_path_from_root(&module.root, &target_path);
+    // Evaluate CUE and deserialize project.
+    //
+    // The module guard holds a MutexGuard (not Send), so we must extract
+    // everything we need and drop it before any .await point.
+    let (filtered_services, graph, session) = {
+        let module = executor.get_module(&target_path)?;
+        let relative_path = relative_path_from_root(&module.root, &target_path);
 
-    let instance = module.get(&relative_path).ok_or_else(|| {
-        cuenv_core::Error::configuration(format!(
-            "No CUE instance found at path: {} (relative: {})",
-            target_path.display(),
-            relative_path.display()
-        ))
-    })?;
+        let instance = module.get(&relative_path).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "No CUE instance found at path: {} (relative: {})",
+                target_path.display(),
+                relative_path.display()
+            ))
+        })?;
 
-    let project: Project = instance.deserialize()?;
+        let project: Project = instance.deserialize()?;
 
-    if project.services.is_empty() {
-        emit_stdout!("cuenv up: no services defined in configuration");
-        return Ok(());
-    }
+        if project.services.is_empty() {
+            emit_stdout!("cuenv up: no services defined in configuration");
+            return Ok(());
+        }
 
-    // Filter services by name and/or label
-    let filtered_services = filter_services(
-        &project.services,
-        &options.services,
-        &options.labels,
-    );
+        let filtered_services =
+            filter_services(&project.services, &options.services, &options.labels);
 
-    if filtered_services.is_empty() {
-        emit_stdout!("cuenv up: no services match the specified filters");
-        return Ok(());
-    }
+        if filtered_services.is_empty() {
+            emit_stdout!("cuenv up: no services match the specified filters");
+            return Ok(());
+        }
 
-    emit_stdout!(format!(
-        "cuenv up: starting {} service(s): {}",
-        filtered_services.len(),
-        filtered_services
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
+        emit_stdout!(format!(
+            "cuenv up: starting {} service(s): {}",
+            filtered_services.len(),
+            filtered_services
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
 
-    // Build mixed task/service dependency graph
-    let graph = build_mixed_graph(&project.tasks, &filtered_services)
-        .map_err(|e| cuenv_core::Error::execution(format!("Failed to build service graph: {e}")))?;
+        let graph = build_mixed_graph(&project.tasks, &filtered_services).map_err(|e| {
+            cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
+        })?;
 
-    // Create session
-    let session = SessionManager::create(&target_path, &project.name).map_err(|e| {
-        cuenv_core::Error::execution(format!("Failed to create session: {e}"))
-    })?;
+        let session = SessionManager::create(&target_path, &project.name)
+            .map_err(|e| cuenv_core::Error::execution(format!("Failed to create session: {e}")))?;
+
+        (filtered_services, graph, session)
+    };
+    // ModuleGuard is now dropped — safe to .await below
 
     // Set up shutdown signal
     let shutdown = CancellationToken::new();

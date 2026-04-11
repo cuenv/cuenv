@@ -4,7 +4,7 @@
 //! The real implementation will delegate to `cuenv_services::SessionManager`
 //! for process teardown.
 
-use cuenv_events::{emit_service_stopping, emit_service_stopped, emit_stdout};
+use cuenv_events::{emit_service_stopped, emit_service_stopping, emit_stdout};
 
 /// Options for the `cuenv down` command.
 pub struct DownOptions {
@@ -68,9 +68,7 @@ mod tests {
         };
         let result = execute_down(&options);
         assert!(result.is_ok());
-        assert!(result
-            .as_ref()
-            .is_ok_and(|s| s.contains("stub complete")));
+        assert!(result.as_ref().is_ok_and(|s| s.contains("stub complete")));
     }
 
     #[test]
