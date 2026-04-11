@@ -305,7 +305,9 @@ mod tests {
 
         // Append log
         session.append_log("db", "starting postgres").unwrap();
-        session.append_log("db", "ready to accept connections").unwrap();
+        session
+            .append_log("db", "ready to accept connections")
+            .unwrap();
         let log_content = fs::read_to_string(session.log_path("db")).unwrap();
         assert!(log_content.contains("starting postgres"));
         assert!(log_content.contains("ready to accept connections"));

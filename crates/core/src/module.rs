@@ -19,14 +19,7 @@ pub type ReferenceMap = HashMap<String, String>;
 /// The CUE bridge exports raw reference paths which may include task or
 /// service prefixes, including common let-binding aliases.
 fn strip_dependency_prefix(path: &str) -> &str {
-    const DEP_PREFIXES: &[&str] = &[
-        "tasks.",
-        "_tasks.",
-        "_t.",
-        "services.",
-        "_services.",
-        "_s.",
-    ];
+    const DEP_PREFIXES: &[&str] = &["tasks.", "_tasks.", "_t.", "services.", "_services.", "_s."];
     for prefix in DEP_PREFIXES {
         if let Some(stripped) = path.strip_prefix(prefix) {
             return stripped;
@@ -893,7 +886,10 @@ mod tests {
 
         // Common _t alias (used in env.cue for scope conflict avoidance)
         assert_eq!(strip_dependency_prefix("_t.cargo.build"), "cargo.build");
-        assert_eq!(strip_dependency_prefix("_t.release.publish"), "release.publish");
+        assert_eq!(
+            strip_dependency_prefix("_t.release.publish"),
+            "release.publish"
+        );
 
         // Hidden _tasks alias
         assert_eq!(strip_dependency_prefix("_tasks.internal"), "internal");
