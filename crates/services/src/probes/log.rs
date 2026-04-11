@@ -70,6 +70,11 @@ impl LogProbe {
         false
     }
 
+    /// Reset the matched state so the probe can be reused across restarts.
+    pub async fn reset(&self) {
+        *self.matched.lock().await = false;
+    }
+
     /// Get a clone of the matched flag for sharing with the probe runner.
     #[must_use]
     pub fn matched_flag(&self) -> Arc<Mutex<bool>> {
@@ -101,7 +106,9 @@ mod tests {
     #[tokio::test]
     async fn test_log_probe_ready_on_match() {
         let probe = LogProbe::new("listening on .*:8080", "either".to_string()).unwrap();
-        probe.feed_line("server listening on 0.0.0.0:8080", "stdout").await;
+        probe
+            .feed_line("server listening on 0.0.0.0:8080", "stdout")
+            .await;
         assert!(matches!(probe.check().await, ProbeOutcome::Ready));
     }
 
@@ -114,6 +121,17 @@ mod tests {
         // Feed on stdout — should match
         probe.feed_line("ready", "stdout").await;
         assert!(matches!(probe.check().await, ProbeOutcome::Ready));
+    }
+
+    #[tokio::test]
+    async fn test_log_probe_reset() {
+        let probe = LogProbe::new("ready", "either".to_string()).unwrap();
+        probe.feed_line("ready", "stdout").await;
+        assert!(matches!(probe.check().await, ProbeOutcome::Ready));
+
+        // After reset, probe should be NotReady again
+        probe.reset().await;
+        assert!(matches!(probe.check().await, ProbeOutcome::NotReady));
     }
 
     #[test]

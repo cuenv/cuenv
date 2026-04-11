@@ -26,6 +26,11 @@ package schema
 	scriptShell?:  #ScriptShell | *"bash"
 	shellOptions?: #ShellOptions
 
+	// Enforce mutual exclusivity: command and script cannot both be set.
+	if command != _|_ if script != _|_ {
+		_commandScriptConflict: "command and script are mutually exclusive" & _|_
+	}
+
 	// Environment variables (same shape as #Task)
 	env?: [string]: #EnvironmentVariable | #TaskOutputRef
 

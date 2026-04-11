@@ -153,11 +153,7 @@ impl CliRenderer {
             ServiceEvent::Starting { name, command } => {
                 eprintln!("> [{name}] starting: {command}");
             }
-            ServiceEvent::Output {
-                name,
-                stream,
-                line,
-            } => match stream {
+            ServiceEvent::Output { name, stream, line } => match stream {
                 Stream::Stdout => {
                     println!("[{name}] {line}");
                 }
@@ -191,10 +187,7 @@ impl CliRenderer {
                 eprintln!("> [{name}] FAILED: {error}");
             }
             ServiceEvent::Watch { name, changed } => {
-                eprintln!(
-                    "> [{name}] files changed: {}",
-                    changed.join(", ")
-                );
+                eprintln!("> [{name}] files changed: {}", changed.join(", "));
             }
         }
     }

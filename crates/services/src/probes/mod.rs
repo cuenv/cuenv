@@ -61,10 +61,7 @@ pub enum ProbeLoopResult {
 }
 
 /// Run a probe in a polling loop with the given configuration.
-pub async fn run_probe_loop(
-    probe: &dyn ProbeRunner,
-    config: &ProbeLoopConfig,
-) -> ProbeLoopResult {
+pub async fn run_probe_loop(probe: &dyn ProbeRunner, config: &ProbeLoopConfig) -> ProbeLoopResult {
     let start = Instant::now();
 
     // Initial delay
@@ -138,7 +135,10 @@ pub fn create_probe(
                 h.common.timeout.as_deref(),
                 h.common.initial_delay.as_deref(),
             )?;
-            let expected = h.expect_status.clone().unwrap_or_else(|| vec![200, 201, 202, 203, 204, 205, 206]);
+            let expected = h
+                .expect_status
+                .clone()
+                .unwrap_or_else(|| vec![200, 201, 202, 203, 204, 205, 206]);
             let method = h.method.clone().unwrap_or_else(|| "GET".to_string());
             let runner = http::HttpProbe::new(h.url.clone(), expected, method);
             Ok((Box::new(runner), config))

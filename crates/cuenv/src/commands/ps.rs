@@ -24,9 +24,8 @@ pub struct PsOptions {
 /// Returns an error if no session exists or state files can't be read.
 pub fn execute_ps(options: &PsOptions) -> cuenv_core::Result<String> {
     let project_path = Path::new(&options.path);
-    let session = SessionManager::load(project_path).map_err(|e| {
-        cuenv_core::Error::execution(format!("Failed to load session: {e}"))
-    })?;
+    let session = SessionManager::load(project_path)
+        .map_err(|e| cuenv_core::Error::execution(format!("Failed to load session: {e}")))?;
 
     let services = session
         .list_services()
@@ -38,9 +37,8 @@ pub fn execute_ps(options: &PsOptions) -> cuenv_core::Result<String> {
     }
 
     if options.output_format == "json" {
-        let json = serde_json::to_string_pretty(&services).map_err(|e| {
-            cuenv_core::Error::execution(format!("Failed to serialize: {e}"))
-        })?;
+        let json = serde_json::to_string_pretty(&services)
+            .map_err(|e| cuenv_core::Error::execution(format!("Failed to serialize: {e}")))?;
         emit_stdout!(json);
     } else {
         // Table format
