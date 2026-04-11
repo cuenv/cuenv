@@ -11,7 +11,9 @@ use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
 use crate::tasks::Task;
-use crate::tasks::{Input, Mapping, ProjectReference, ScriptShell, ShellOptions, TaskDependency, TaskNode};
+use crate::tasks::{
+    Input, Mapping, ProjectReference, ScriptShell, ShellOptions, TaskDependency, TaskNode,
+};
 use cuenv_hooks::{Hook, Hooks};
 
 /// A hook step to run as part of task dependencies.
@@ -883,11 +885,19 @@ pub struct Service {
     pub script: Option<String>,
 
     /// Shell interpreter for script mode.
-    #[serde(default, rename = "scriptShell", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "scriptShell",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub script_shell: Option<ScriptShell>,
 
     /// Shell options (errexit, nounset, pipefail, xtrace).
-    #[serde(default, rename = "shellOptions", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "shellOptions",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub shell_options: Option<ShellOptions>,
 
     /// Environment variables (same shape as Task).
@@ -974,7 +984,11 @@ pub struct ReadinessCommon {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
     /// Initial delay before first probe (e.g., "0s").
-    #[serde(default, rename = "initialDelay", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "initialDelay",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub initial_delay: Option<String>,
 }
 
@@ -1000,7 +1014,11 @@ pub struct ReadinessHttp {
     /// URL to check.
     pub url: String,
     /// Expected status codes (default: 2xx).
-    #[serde(default, rename = "expectStatus", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "expectStatus",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expect_status: Option<Vec<u16>>,
     /// HTTP method (default: GET).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1050,7 +1068,11 @@ pub struct RestartPolicy {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backoff: Option<BackoffConfig>,
     /// Max restarts within the sliding window (default: 5).
-    #[serde(default, rename = "maxRestarts", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "maxRestarts",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub max_restarts: Option<u32>,
     /// Sliding window for restart counting (default: "60s").
     #[serde(default, skip_serializing_if = "Option::is_none")]

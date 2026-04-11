@@ -22,9 +22,15 @@ pub mod handler;
 pub mod hooks;
 /// Project information and metadata display.
 pub mod info;
+/// View service logs.
+pub mod logs;
 mod module_utils;
+/// List running services and their status.
+pub mod ps;
 /// Release management commands (prepare, version, publish, binaries).
 pub mod release;
+/// Restart one or more services.
+pub mod restart;
 /// Secrets provider setup and management.
 pub mod secrets;
 /// Synchronization commands for codegen, CI, and other providers.
@@ -39,12 +45,6 @@ pub mod task_picker;
 pub mod tools;
 /// Bring up long-running services.
 pub mod up;
-/// View service logs.
-pub mod logs;
-/// List running services and their status.
-pub mod ps;
-/// Restart one or more services.
-pub mod restart;
 /// Version information and display.
 pub mod version;
 

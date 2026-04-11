@@ -134,14 +134,8 @@ mod tests {
 
     #[test]
     fn test_compound() {
-        assert_eq!(
-            parse_duration("1m30s").unwrap(),
-            Duration::from_secs(90)
-        );
-        assert_eq!(
-            parse_duration("1h30m").unwrap(),
-            Duration::from_secs(5400)
-        );
+        assert_eq!(parse_duration("1m30s").unwrap(), Duration::from_secs(90));
+        assert_eq!(parse_duration("1h30m").unwrap(), Duration::from_secs(5400));
     }
 
     #[test]

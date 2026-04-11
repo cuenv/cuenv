@@ -1468,9 +1468,7 @@ mod tests {
 
         // Add a task and a service
         graph.add_task("build", TestTask::new(&[])).unwrap();
-        graph
-            .add_service("db", TestTask::new(&["build"]))
-            .unwrap();
+        graph.add_service("db", TestTask::new(&["build"])).unwrap();
         graph.add_dependency_edges().unwrap();
 
         assert_eq!(graph.task_count(), 2);

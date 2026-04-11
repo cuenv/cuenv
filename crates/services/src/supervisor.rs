@@ -9,9 +9,9 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use cuenv_core::manifest::Service;
 use cuenv_events::{
@@ -31,6 +31,21 @@ pub enum SupervisorResult {
     /// Service stopped normally (cuenv down / Ctrl-C).
     Stopped,
     /// Service failed and exhausted restart attempts.
+    Failed(String),
+}
+
+/// Signal sent from the supervisor to the controller during startup.
+///
+/// The controller waits for a non-`Pending` value before proceeding
+/// to the next dependency group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadinessOutcome {
+    /// Still starting — not yet determined.
+    Pending,
+    /// Readiness probe passed.
+    Ready,
+    /// Service failed fatally during startup (exhausted restarts, probe
+    /// error, spawn failure). Contains the error message.
     Failed(String),
 }
 
@@ -64,6 +79,18 @@ impl ExponentialBackoff {
     }
 }
 
+/// Configuration for constructing a [`ServiceSupervisor`].
+pub struct SupervisorConfig {
+    /// Service name.
+    pub name: String,
+    /// Service definition from CUE.
+    pub service: Service,
+    /// Project root directory.
+    pub project_root: PathBuf,
+    /// Shared session manager.
+    pub session: Arc<SessionManager>,
+}
+
 /// Supervisor for a single service.
 pub struct ServiceSupervisor {
     name: String,
@@ -73,19 +100,14 @@ pub struct ServiceSupervisor {
 }
 
 impl ServiceSupervisor {
-    /// Create a new supervisor.
+    /// Create a new supervisor from configuration.
     #[must_use]
-    pub fn new(
-        name: String,
-        service: Service,
-        project_root: PathBuf,
-        session: Arc<SessionManager>,
-    ) -> Self {
+    pub fn new(config: SupervisorConfig) -> Self {
         Self {
-            name,
-            service,
-            project_root,
-            session,
+            name: config.name,
+            service: config.service,
+            project_root: config.project_root,
+            session: config.session,
         }
     }
 
@@ -94,18 +116,19 @@ impl ServiceSupervisor {
     /// Spawns the service process, runs readiness probes, handles restarts,
     /// and responds to file watcher events. Returns when the service reaches
     /// a terminal state or the shutdown token is cancelled.
+    ///
+    /// The `readiness_tx` watch channel is used to signal the controller
+    /// when this service becomes ready or fails permanently during startup.
     pub async fn run(
         &self,
         shutdown: CancellationToken,
-        ready_notify: Arc<Notify>,
+        readiness_tx: watch::Sender<ReadinessOutcome>,
     ) -> SupervisorResult {
         let restart_policy = self.service.restart.as_ref();
         let mode = restart_policy
             .and_then(|r| r.mode.as_deref())
             .unwrap_or("onFailure");
-        let max_restarts = restart_policy
-            .and_then(|r| r.max_restarts)
-            .unwrap_or(5);
+        let max_restarts = restart_policy.and_then(|r| r.max_restarts).unwrap_or(5);
         let window = restart_policy
             .and_then(|r| r.window.as_deref())
             .and_then(|w| parse_duration(w).ok())
@@ -126,7 +149,7 @@ impl ServiceSupervisor {
 
         let mut restart_history: VecDeque<Instant> = VecDeque::new();
         let mut attempt: u32 = 0;
-        let mut _ever_ready = false;
+        let mut has_signaled_readiness = false;
 
         // Set up file watcher if configured
         let (watch_tx, mut watch_rx) = mpsc::channel::<WatchEvent>(16);
@@ -137,14 +160,7 @@ impl ServiceSupervisor {
                 .and_then(|d| parse_duration(d).ok())
                 .unwrap_or(Duration::from_millis(200));
             let ignore = w.ignore.clone().unwrap_or_default();
-            ServiceWatcher::start(
-                &self.project_root,
-                &w.paths,
-                &ignore,
-                debounce,
-                watch_tx,
-            )
-            .ok()
+            ServiceWatcher::start(&self.project_root, &w.paths, &ignore, debounce, watch_tx).ok()
         });
 
         loop {
@@ -161,15 +177,16 @@ impl ServiceSupervisor {
                     window.as_secs()
                 );
                 emit_service_failed!(&self.name, &msg);
-                self.update_state(ServiceLifecycle::Failed, None, None, Some(&msg))
-                    .ok();
+                self.log_state_update(ServiceLifecycle::Failed, None, None, Some(&msg));
+                if !has_signaled_readiness {
+                    let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
+                }
                 return SupervisorResult::Failed(msg);
             }
 
             // Spawn the service process
             emit_service_starting!(&self.name, self.command_display());
-            self.update_state(ServiceLifecycle::Starting, None, None, None)
-                .ok();
+            self.log_state_update(ServiceLifecycle::Starting, None, None, None);
 
             let spawn_result = self.spawn_process().await;
             let mut child = match spawn_result {
@@ -177,32 +194,29 @@ impl ServiceSupervisor {
                 Err(e) => {
                     let msg = format!("failed to spawn: {e}");
                     emit_service_failed!(&self.name, &msg);
-                    self.update_state(ServiceLifecycle::Failed, None, None, Some(&msg))
-                        .ok();
+                    self.log_state_update(ServiceLifecycle::Failed, None, None, Some(&msg));
+                    if !has_signaled_readiness {
+                        let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
+                    }
                     return SupervisorResult::Failed(msg);
                 }
             };
 
             let pid = child.id();
-            self.update_state(ServiceLifecycle::Starting, pid, None, None)
-                .ok();
+            self.log_state_update(ServiceLifecycle::Starting, pid, None, None);
 
             // Set up output streaming
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
 
             // Create log probe if needed
-            let log_probe = self
-                .service
-                .readiness
-                .as_ref()
-                .and_then(|r| match r {
-                    cuenv_core::manifest::Readiness::Log(l) => {
-                        let source = l.source.clone().unwrap_or("either".to_string());
-                        LogProbe::new(&l.pattern, source).ok()
-                    }
-                    _ => None,
-                });
+            let log_probe = self.service.readiness.as_ref().and_then(|r| match r {
+                cuenv_core::manifest::Readiness::Log(l) => {
+                    let source = l.source.clone().unwrap_or("either".to_string());
+                    LogProbe::new(&l.pattern, source).ok()
+                }
+                _ => None,
+            });
 
             let log_probe = Arc::new(log_probe);
 
@@ -274,11 +288,12 @@ impl ServiceSupervisor {
             };
 
             if ready {
-                _ever_ready = true;
                 backoff.reset();
-                self.update_state(ServiceLifecycle::Ready, pid, None, None)
-                    .ok();
-                ready_notify.notify_one();
+                self.log_state_update(ServiceLifecycle::Ready, pid, None, None);
+                if !has_signaled_readiness {
+                    let _ = readiness_tx.send(ReadinessOutcome::Ready);
+                    has_signaled_readiness = true;
+                }
             }
 
             // Wait for process exit, shutdown, or watch event
@@ -310,9 +325,7 @@ impl ServiceSupervisor {
                 h.abort();
             }
 
-            let exit_code = exit_status
-                .ok()
-                .and_then(|s| s.code());
+            let exit_code = exit_status.ok().and_then(|s| s.code());
             emit_service_stopped!(&self.name, exit_code);
 
             // Decide whether to restart
@@ -330,8 +343,7 @@ impl ServiceSupervisor {
                 restart_history.push_back(Instant::now());
                 attempt += 1;
                 emit_service_restarting!(&self.name, "crashed", attempt);
-                self.update_state(ServiceLifecycle::Restarting, None, None, None)
-                    .ok();
+                self.log_state_update(ServiceLifecycle::Restarting, None, None, None);
 
                 let delay = backoff.next_delay();
                 debug!(
@@ -348,12 +360,13 @@ impl ServiceSupervisor {
                         exit_code.map_or("signal".to_string(), |c| c.to_string())
                     );
                     emit_service_failed!(&self.name, &msg);
-                    self.update_state(ServiceLifecycle::Failed, None, exit_code, Some(&msg))
-                        .ok();
+                    self.log_state_update(ServiceLifecycle::Failed, None, exit_code, Some(&msg));
+                    if !has_signaled_readiness {
+                        let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
+                    }
                     return SupervisorResult::Failed(msg);
                 }
-                self.update_state(ServiceLifecycle::Stopped, None, exit_code, None)
-                    .ok();
+                self.log_state_update(ServiceLifecycle::Stopped, None, exit_code, None);
                 return SupervisorResult::Stopped;
             }
         }
@@ -435,7 +448,10 @@ impl ServiceSupervisor {
             let _ = child.kill().await;
         }
 
-        emit_service_stopped!(&self.name, child.try_wait().ok().flatten().and_then(|s| s.code()));
+        emit_service_stopped!(
+            &self.name,
+            child.try_wait().ok().flatten().and_then(|s| s.code())
+        );
     }
 
     fn resolve_command(&self) -> (String, Vec<String>) {
@@ -447,11 +463,7 @@ impl ServiceSupervisor {
                 .map_or(("bash", "-c"), |s| s.command_and_flag());
             (cmd.to_string(), vec![flag.to_string(), script.clone()])
         } else {
-            let command = self
-                .service
-                .command
-                .clone()
-                .unwrap_or_default();
+            let command = self.service.command.clone().unwrap_or_default();
             let args: Vec<String> = self
                 .service
                 .args
@@ -478,6 +490,24 @@ impl ServiceSupervisor {
             } else {
                 format!("{} {}", cmd, args.join(" "))
             }
+        }
+    }
+
+    /// Update state with a warning log on failure (instead of silently swallowing).
+    fn log_state_update(
+        &self,
+        lifecycle: ServiceLifecycle,
+        pid: Option<u32>,
+        exit_code: Option<i32>,
+        error: Option<&str>,
+    ) {
+        if let Err(e) = self.update_state(lifecycle, pid, exit_code, error) {
+            warn!(
+                service = %self.name,
+                lifecycle = %lifecycle,
+                error = %e,
+                "Failed to persist service state"
+            );
         }
     }
 
