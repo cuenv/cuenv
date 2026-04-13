@@ -95,7 +95,7 @@ sha2 = { workspace = true }
 walkdir = "2.5"
 dirs = { workspace = true }
 ctrlc = "3.5"
-similar = "2.7"
+similar = "3.1"
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tempfile = { workspace = true }
