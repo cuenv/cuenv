@@ -73,82 +73,63 @@ impl<T: TaskNodeData> TaskGraph<T> {
         }
     }
 
-    /// Add a single task to the graph.
+    /// Add a node to the graph with the given kind.
     ///
-    /// If a task with the same name already exists, returns the existing node index.
-    ///
-    /// # Errors
-    ///
-    /// Currently infallible, but returns `Result` for API consistency.
-    pub fn add_task(&mut self, name: &str, task: T) -> Result<NodeIndex> {
-        // Check if task already exists
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
+    /// If a node with the same name and kind already exists, returns the
+    /// existing node index. If a node with the same name but a *different*
+    /// kind exists, returns a [`DuplicateNodeName`](Error::DuplicateNodeName)
+    /// error.
+    fn add_node_with_kind(&mut self, name: &str, task: T, kind: NodeKind) -> Result<NodeIndex> {
+        if let Some(&existing) = self.name_to_node.get(name) {
+            let existing_kind = self.graph[existing].kind;
+            if existing_kind != kind {
+                return Err(Error::DuplicateNodeName {
+                    name: name.to_string(),
+                    existing_kind: existing_kind.to_string(),
+                    new_kind: kind.to_string(),
+                });
+            }
+            return Ok(existing);
         }
 
         let node = GraphNode {
             name: name.to_string(),
             task,
-            kind: NodeKind::Task,
+            kind,
         };
 
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added task node '{}'", name);
+        debug!("Added {kind} node '{name}'");
 
         Ok(node_index)
+    }
+
+    /// Add a single task to the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a node with the same name but different kind exists.
+    pub fn add_task(&mut self, name: &str, task: T) -> Result<NodeIndex> {
+        self.add_node_with_kind(name, task, NodeKind::Task)
     }
 
     /// Add a single service node to the graph.
     ///
-    /// Behaves identically to [`add_task`](Self::add_task) but marks the node
-    /// as [`NodeKind::Service`] so the executor can branch on it.
-    ///
     /// # Errors
     ///
-    /// Currently infallible, but returns `Result` for API consistency.
+    /// Returns an error if a node with the same name but different kind exists.
     pub fn add_service(&mut self, name: &str, task: T) -> Result<NodeIndex> {
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
-        }
-
-        let node = GraphNode {
-            name: name.to_string(),
-            task,
-            kind: NodeKind::Service,
-        };
-
-        let node_index = self.graph.add_node(node);
-        self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added service node '{}'", name);
-
-        Ok(node_index)
+        self.add_node_with_kind(name, task, NodeKind::Service)
     }
 
     /// Add a single image node to the graph.
     ///
-    /// Behaves identically to [`add_task`](Self::add_task) but marks the node
-    /// as [`NodeKind::Image`] so the executor can branch on it.
-    ///
     /// # Errors
     ///
-    /// Currently infallible, but returns `Result` for API consistency.
+    /// Returns an error if a node with the same name but different kind exists.
     pub fn add_image(&mut self, name: &str, task: T) -> Result<NodeIndex> {
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
-        }
-
-        let node = GraphNode {
-            name: name.to_string(),
-            task,
-            kind: NodeKind::Image,
-        };
-
-        let node_index = self.graph.add_node(node);
-        self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added image node '{}'", name);
-
-        Ok(node_index)
+        self.add_node_with_kind(name, task, NodeKind::Image)
     }
 
     /// Get a mutable reference to a task node by index.

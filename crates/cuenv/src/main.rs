@@ -144,6 +144,7 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             // (shell prompt integration requires sub-10ms response time)
             cli::Commands::Version { .. }
             | cli::Commands::Info { .. }
+            | cli::Commands::Build { .. }
             | cli::Commands::Completions { .. }
             | cli::Commands::Changeset { .. }
             | cli::Commands::Secrets { .. }

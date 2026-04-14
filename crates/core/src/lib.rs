@@ -461,6 +461,13 @@ impl From<cuenv_task_graph::Error> for Error {
                 ))
             }
             cuenv_task_graph::Error::TopologicalSortFailed { .. } => None,
+            cuenv_task_graph::Error::DuplicateNodeName {
+                name,
+                existing_kind,
+                new_kind,
+            } => Some(format!(
+                "Rename the {new_kind} '{name}' to avoid collision with the existing {existing_kind}"
+            )),
         };
         Error::TaskGraph {
             message: err.to_string(),
