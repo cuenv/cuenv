@@ -1509,4 +1509,39 @@ mod tests {
         assert_eq!(idx1, idx2);
         assert_eq!(graph.task_count(), 1);
     }
+
+    #[test]
+    fn test_duplicate_node_name_across_kinds() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("api", TestTask::new(&[])).unwrap();
+
+        let err = graph
+            .add_image("api", TestTask::new(&[]))
+            .expect_err("should reject image with same name as task");
+        assert!(
+            matches!(err, Error::DuplicateNodeName { ref name, .. } if name == "api"),
+            "expected DuplicateNodeName error, got: {err}"
+        );
+
+        // Reverse direction: image first, then task
+        let mut graph2 = TaskGraph::new();
+        graph2.add_image("worker", TestTask::new(&[])).unwrap();
+
+        let err2 = graph2
+            .add_service("worker", TestTask::new(&[]))
+            .expect_err("should reject service with same name as image");
+        assert!(
+            matches!(err2, Error::DuplicateNodeName { ref name, .. } if name == "worker"),
+            "expected DuplicateNodeName error, got: {err2}"
+        );
+    }
+
+    #[test]
+    fn test_add_image_deduplication() {
+        let mut graph = TaskGraph::new();
+        let idx1 = graph.add_image("api", TestTask::new(&[])).unwrap();
+        let idx2 = graph.add_image("api", TestTask::new(&[])).unwrap();
+        assert_eq!(idx1, idx2);
+        assert_eq!(graph.task_count(), 1);
+    }
 }
