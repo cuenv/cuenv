@@ -6,6 +6,7 @@
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We always use Nix for builds and checks, cuenv for everything Nix isn't good at.
 - We cannot commit any code if `nix flake check -L --accept-flake-config` is not passing.
+- Always update ./docs for all work
 
 ## Project Overview
 
