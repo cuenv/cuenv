@@ -290,8 +290,7 @@ fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
 #[must_use]
 pub fn has_output_refs(args: &[String], env: &HashMap<String, serde_json::Value>) -> bool {
     let has_ref = |s: &str| s.starts_with(OUTPUT_REF_PREFIX) || s.starts_with(IMAGE_REF_PREFIX);
-    args.iter().any(|a| has_ref(a))
-        || env.values().any(|v| v.as_str().is_some_and(has_ref))
+    args.iter().any(|a| has_ref(a)) || env.values().any(|v| v.as_str().is_some_and(has_ref))
 }
 
 /// Context for resolving task output reference placeholders at runtime.

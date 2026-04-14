@@ -32,10 +32,7 @@ pub struct BuildOptions {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation or deserialization fails.
-pub fn execute_build(
-    options: &BuildOptions,
-    executor: &CommandExecutor,
-) -> cuenv_core::Result<()> {
+pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuenv_core::Result<()> {
     let target_path =
         Path::new(&options.path)
             .canonicalize()
@@ -106,7 +103,9 @@ pub fn execute_build(
         ));
     }
 
-    emit_stdout!("\ncuenv build: execution backends not yet implemented — schema validated successfully");
+    emit_stdout!(
+        "\ncuenv build: execution backends not yet implemented — schema validated successfully"
+    );
     Ok(())
 }
 
@@ -120,8 +119,7 @@ fn filter_images(
         .iter()
         .filter(|(name, image)| {
             let name_match = names.is_empty() || names.contains(name);
-            let label_match =
-                labels.is_empty() || labels.iter().any(|l| image.labels.contains(l));
+            let label_match = labels.is_empty() || labels.iter().any(|l| image.labels.contains(l));
             name_match && label_match
         })
         .map(|(name, image)| (name.clone(), image.clone()))

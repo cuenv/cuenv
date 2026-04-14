@@ -997,7 +997,11 @@ pub struct ContainerImage {
     pub dockerfile: String,
 
     /// Build arguments (values may be literal strings or image output refs).
-    #[serde(default, rename = "buildArgs", skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        rename = "buildArgs",
+        skip_serializing_if = "HashMap::is_empty"
+    )]
     pub build_args: HashMap<String, serde_json::Value>,
 
     /// Target stage for multi-stage builds.
