@@ -25,14 +25,19 @@ tasks: {...}
 
 **Fields:**
 
-| Field        | Type                 | Required | Description                       |
-| ------------ | -------------------- | -------- | --------------------------------- |
-| `config`     | `#Config`            | No       | Global configuration options      |
-| `env`        | `#Env`               | No       | Environment variable definitions  |
-| `hooks`      | `#Hooks`             | No       | Shell hooks for onEnter/onExit    |
-| `name`       | `string`             | Yes      | Project name (used by `#TaskRef`) |
-| `tasks`      | `{[string]: #Tasks}` | No       | Task definitions                  |
-| `workspaces` | `#Workspaces`        | No       | Workspace configuration           |
+| Field        | Type                          | Required | Description                          |
+| ------------ | ----------------------------- | -------- | ------------------------------------ |
+| `config`     | `#Config`                     | No       | Global configuration options         |
+| `env`        | `#Env`                        | No       | Environment variable definitions     |
+| `hooks`      | `#Hooks`                      | No       | Shell hooks for onEnter/onExit       |
+| `name`       | `string`                      | Yes      | Project name (used by `#TaskRef`)    |
+| `tasks`      | `{[string]: #Task}`           | No       | Task definitions                     |
+| `services`   | `{[string]: #Service}`        | No       | Long-running supervised processes    |
+| `images`     | `{[string]: #ContainerImage}` | No       | Container image build definitions    |
+| `ci`         | `#CI`                         | No       | CI pipeline configuration            |
+| `runtime`    | `#Runtime`                    | No       | Default runtime for tasks            |
+| `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
+| `release`    | `#Release`                    | No       | Release management configuration     |
 
 ### #Base
 
@@ -346,6 +351,87 @@ tasks: {
 | `project` | `string`        | Path to external project      |
 | `task`    | `string`        | Task name in external project |
 | `map`     | `[...#Mapping]` | Output mappings               |
+
+## Container Images
+
+### #ContainerImage
+
+Declarative container image builds as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume.
+
+```cue
+images: {
+    api: schema.#ContainerImage & {
+        context:    "."
+        dockerfile: "Dockerfile"
+        tags: ["latest", "v1.0.0"]
+        registry: "ghcr.io/myorg"
+        inputs: ["src/**", "Dockerfile"]
+        description: "API server image"
+    }
+}
+```
+
+**Fields:**
+
+| Field         | Type                                   | Required | Default        | Description                              |
+| ------------- | -------------------------------------- | -------- | -------------- | ---------------------------------------- |
+| `context`     | `string`                               | Yes      | -              | Build context directory                  |
+| `dockerfile`  | `string`                               | No       | `"Dockerfile"` | Dockerfile path relative to context      |
+| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments                          |
+| `target`      | `string`                               | No       | -              | Multi-stage build target                 |
+| `tags`        | `[...string]`                          | No       | -              | Image tags                               |
+| `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
+| `repository`  | `string`                               | No       | -              | Repository name (defaults to image name) |
+| `platform`    | `[...string]`                          | No       | -              | Target platforms for multi-arch builds   |
+| `dependsOn`   | `[...#TaskNode \| #ContainerImage]`     | No       | -              | Dependencies on tasks or other images    |
+| `labels`      | `[...string]`                          | No       | -              | Labels for discovery                     |
+| `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
+| `description` | `string`                               | No       | -              | Human-readable description               |
+
+#### Output References
+
+Images produce two output references resolved at runtime after the image is built:
+
+| Reference | Description                                      |
+| --------- | ------------------------------------------------ |
+| `.ref`    | Full image reference (e.g., `ghcr.io/myorg/api@sha256:...`) |
+| `.digest` | Content digest of the built image                |
+
+Use these in downstream tasks:
+
+```cue
+tasks: {
+    deploy: schema.#Task & {
+        dependsOn: [images.api]
+        env: IMAGE: images.api.ref
+    }
+}
+```
+
+#### Image Chains
+
+Images can depend on other images for multi-layer builds:
+
+```cue
+images: {
+    base: schema.#ContainerImage & {
+        context: "docker/base"
+    }
+    api: schema.#ContainerImage & {
+        context: "."
+        dependsOn: [images.base]
+        buildArgs: BASE_IMAGE: images.base.ref
+    }
+}
+```
+
+#### CLI
+
+```bash
+cuenv build              # List all images
+cuenv build api          # Build specific image
+cuenv build --label ci   # Build images matching label
+```
 
 ## Hooks
 

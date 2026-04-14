@@ -118,6 +118,37 @@ Labels are defined in your CUE task configuration and allow grouping related tas
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
 :::
 
+### `cuenv build`
+
+Build container images defined in CUE configuration.
+
+```bash
+cuenv build [NAMES...] [OPTIONS]
+```
+
+**Arguments:**
+
+- `[NAMES]`: Image names to build. If not provided, lists available images.
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-l, --label <LABEL>`: Filter images by label (repeatable).
+
+**Examples:**
+
+```bash
+# List all images
+cuenv build
+
+# Build a specific image
+cuenv build api
+
+# Build images matching a label
+cuenv build --label ci
+```
+
 ### `cuenv exec`
 
 Execute a command with CUE environment variables.
