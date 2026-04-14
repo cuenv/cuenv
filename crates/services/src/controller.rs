@@ -54,6 +54,7 @@ impl cuenv_task_graph::TaskNodeData for MixedNode {
 pub fn build_mixed_graph(
     tasks: &HashMap<String, cuenv_core::tasks::TaskNode>,
     services: &HashMap<String, Service>,
+    images: &HashMap<String, cuenv_core::manifest::ContainerImage>,
 ) -> crate::Result<TaskGraph<MixedNode>> {
     let mut graph = TaskGraph::new();
 
@@ -69,6 +70,13 @@ pub fn build_mixed_graph(
         let deps: Vec<String> = service.depends_on.iter().map(|d| d.name.clone()).collect();
         let mixed = MixedNode { dependencies: deps };
         graph.add_service(name, mixed)?;
+    }
+
+    // Add image nodes
+    for (name, image) in images {
+        let deps: Vec<String> = image.depends_on.iter().map(|d| d.name.clone()).collect();
+        let mixed = MixedNode { dependencies: deps };
+        graph.add_image(name, mixed)?;
     }
 
     // Resolve dependency edges
@@ -163,6 +171,12 @@ impl ServiceController {
                                 (name, result)
                             });
                         }
+                    }
+                    NodeKind::Image => {
+                        // Image nodes participate in the DAG for dependency
+                        // ordering but are not executed by the service
+                        // controller. Execution backends are future work.
+                        debug!(image = %node.name, "Image node (pre-satisfied)");
                     }
                 }
             }

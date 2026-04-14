@@ -760,6 +760,37 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: ToolsCommands,
     },
+    /// Build container images defined in CUE configuration.
+    #[command(about = "Build container images defined in CUE configuration")]
+    Build {
+        /// Image names to build (default: list all).
+        #[arg(help = "Image names to build (default: list all)")]
+        names: Vec<String>,
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Filter images by label (repeatable).
+        #[arg(
+            long = "label",
+            short = 'l',
+            action = clap::ArgAction::Append,
+            help = "Filter images by label (repeatable)",
+            value_name = "LABEL"
+        )]
+        labels: Vec<String>,
+    },
     /// Bring up long-running services.
     #[command(about = "Bring up long-running services defined in CUE configuration")]
     Up {
@@ -1433,6 +1464,7 @@ impl Commands {
             | Self::Allow { package, .. }
             | Self::Deny { package, .. }
             | Self::Export { package, .. }
+            | Self::Build { package, .. }
             | Self::Up { package, .. }
             | Self::Down { package, .. }
             | Self::Logs { package, .. }
@@ -1821,6 +1853,17 @@ impl Commands {
                 ToolsCommands::Download => Command::ToolsDownload,
                 ToolsCommands::Activate => Command::ToolsActivate,
                 ToolsCommands::List => Command::ToolsList,
+            },
+            Self::Build {
+                names,
+                path,
+                package,
+                labels,
+            } => Command::Build {
+                path,
+                package,
+                names,
+                labels,
             },
             Self::Up {
                 services,

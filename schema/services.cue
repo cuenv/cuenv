@@ -39,7 +39,7 @@ package schema
 
 	// Dependencies — may reference tasks OR services. Tasks must complete;
 	// services must become ready before this service starts.
-	dependsOn?: [...(#TaskNode | #Service)]
+	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
 
 	// Labels for discovery via #ServiceMatcher (mirrors #TaskMatcher)
 	labels?: [...string]

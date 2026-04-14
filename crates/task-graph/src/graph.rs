@@ -17,6 +17,8 @@ pub enum NodeKind {
     Task,
     /// A long-running service supervised by `cuenv up`.
     Service,
+    /// A container image build managed by `cuenv build`.
+    Image,
 }
 
 impl Default for NodeKind {
@@ -30,6 +32,7 @@ impl std::fmt::Display for NodeKind {
         match self {
             Self::Task => write!(f, "task"),
             Self::Service => write!(f, "service"),
+            Self::Image => write!(f, "image"),
         }
     }
 }
@@ -70,56 +73,63 @@ impl<T: TaskNodeData> TaskGraph<T> {
         }
     }
 
-    /// Add a single task to the graph.
+    /// Add a node to the graph with the given kind.
     ///
-    /// If a task with the same name already exists, returns the existing node index.
-    ///
-    /// # Errors
-    ///
-    /// Currently infallible, but returns `Result` for API consistency.
-    pub fn add_task(&mut self, name: &str, task: T) -> Result<NodeIndex> {
-        // Check if task already exists
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
+    /// If a node with the same name and kind already exists, returns the
+    /// existing node index. If a node with the same name but a *different*
+    /// kind exists, returns a [`DuplicateNodeName`](Error::DuplicateNodeName)
+    /// error.
+    fn add_node_with_kind(&mut self, name: &str, task: T, kind: NodeKind) -> Result<NodeIndex> {
+        if let Some(&existing) = self.name_to_node.get(name) {
+            let existing_kind = self.graph[existing].kind;
+            if existing_kind != kind {
+                return Err(Error::DuplicateNodeName {
+                    name: name.to_string(),
+                    existing_kind: existing_kind.to_string(),
+                    new_kind: kind.to_string(),
+                });
+            }
+            return Ok(existing);
         }
 
         let node = GraphNode {
             name: name.to_string(),
             task,
-            kind: NodeKind::Task,
+            kind,
         };
 
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added task node '{}'", name);
+        debug!("Added {kind} node '{name}'");
 
         Ok(node_index)
     }
 
-    /// Add a single service node to the graph.
-    ///
-    /// Behaves identically to [`add_task`](Self::add_task) but marks the node
-    /// as [`NodeKind::Service`] so the executor can branch on it.
+    /// Add a single task to the graph.
     ///
     /// # Errors
     ///
-    /// Currently infallible, but returns `Result` for API consistency.
+    /// Returns an error if a node with the same name but different kind exists.
+    pub fn add_task(&mut self, name: &str, task: T) -> Result<NodeIndex> {
+        self.add_node_with_kind(name, task, NodeKind::Task)
+    }
+
+    /// Add a single service node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a node with the same name but different kind exists.
     pub fn add_service(&mut self, name: &str, task: T) -> Result<NodeIndex> {
-        if let Some(&node) = self.name_to_node.get(name) {
-            return Ok(node);
-        }
+        self.add_node_with_kind(name, task, NodeKind::Service)
+    }
 
-        let node = GraphNode {
-            name: name.to_string(),
-            task,
-            kind: NodeKind::Service,
-        };
-
-        let node_index = self.graph.add_node(node);
-        self.name_to_node.insert(name.to_string(), node_index);
-        debug!("Added service node '{}'", name);
-
-        Ok(node_index)
+    /// Add a single image node to the graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a node with the same name but different kind exists.
+    pub fn add_image(&mut self, name: &str, task: T) -> Result<NodeIndex> {
+        self.add_node_with_kind(name, task, NodeKind::Image)
     }
 
     /// Get a mutable reference to a task node by index.
@@ -1496,6 +1506,41 @@ mod tests {
         let mut graph = TaskGraph::new();
         let idx1 = graph.add_service("db", TestTask::new(&[])).unwrap();
         let idx2 = graph.add_service("db", TestTask::new(&[])).unwrap();
+        assert_eq!(idx1, idx2);
+        assert_eq!(graph.task_count(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_node_name_across_kinds() {
+        let mut graph = TaskGraph::new();
+        graph.add_task("api", TestTask::new(&[])).unwrap();
+
+        let err = graph
+            .add_image("api", TestTask::new(&[]))
+            .expect_err("should reject image with same name as task");
+        assert!(
+            matches!(err, Error::DuplicateNodeName { ref name, .. } if name == "api"),
+            "expected DuplicateNodeName error, got: {err}"
+        );
+
+        // Reverse direction: image first, then task
+        let mut graph2 = TaskGraph::new();
+        graph2.add_image("worker", TestTask::new(&[])).unwrap();
+
+        let err2 = graph2
+            .add_service("worker", TestTask::new(&[]))
+            .expect_err("should reject service with same name as image");
+        assert!(
+            matches!(err2, Error::DuplicateNodeName { ref name, .. } if name == "worker"),
+            "expected DuplicateNodeName error, got: {err2}"
+        );
+    }
+
+    #[test]
+    fn test_add_image_deduplication() {
+        let mut graph = TaskGraph::new();
+        let idx1 = graph.add_image("api", TestTask::new(&[])).unwrap();
+        let idx2 = graph.add_image("api", TestTask::new(&[])).unwrap();
         assert_eq!(idx1, idx2);
         assert_eq!(graph.task_count(), 1);
     }

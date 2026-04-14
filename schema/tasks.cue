@@ -125,8 +125,8 @@ package schema
 	// declared inputs available. When false, task runs directly in the workspace.
 	hermetic?: bool | *true
 
-	// Dependencies - reference other tasks directly for compile-time validation
-	dependsOn?: [...#TaskNode]
+	// Dependencies - reference other tasks or images for compile-time validation
+	dependsOn?: [...(#TaskNode | #ContainerImage)]
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]

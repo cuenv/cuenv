@@ -207,6 +207,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             has_env: false,
             expect_eval_failure: false,
         },
+        ExampleExpectations {
+            name: "container-image",
+            min_task_count: 1, // codegen
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
     ]
 }
 

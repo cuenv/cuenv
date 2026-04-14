@@ -33,6 +33,16 @@ pub enum Error {
         /// Reason for the failure.
         reason: String,
     },
+
+    /// A node name is used by different kinds (e.g., task and image both named "api").
+    DuplicateNodeName {
+        /// The colliding name.
+        name: String,
+        /// The kind of the existing node.
+        existing_kind: String,
+        /// The kind of the new node being added.
+        new_kind: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -54,6 +64,16 @@ impl fmt::Display for Error {
             }
             Self::TopologicalSortFailed { reason } => {
                 write!(f, "Failed to sort tasks topologically: {reason}")
+            }
+            Self::DuplicateNodeName {
+                name,
+                existing_kind,
+                new_kind,
+            } => {
+                write!(
+                    f,
+                    "Node name '{name}' is already used by a {existing_kind}; cannot add as {new_kind}"
+                )
             }
         }
     }
