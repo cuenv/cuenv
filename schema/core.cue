@@ -31,6 +31,13 @@ package schema
 		_cuenvPrefix: ""
 		_cuenvSelf:   svcName
 	}
+	// Container image builds — declarative image definitions that
+	// participate in the task DAG and produce output references
+	// (ref, digest) consumable by tasks and other images.
+	images?: [imageName=string]: #ContainerImage & {
+		_cuenvPrefix: ""
+		_cuenvSelf:   imageName
+	}
 	codegen?: #Codegen
 })
 

@@ -94,7 +94,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
                 .join(", ")
         ));
 
-        let graph = build_mixed_graph(&project.tasks, &filtered_services).map_err(|e| {
+        let graph = build_mixed_graph(&project.tasks, &filtered_services, &project.images).map_err(|e| {
             cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
         })?;
 

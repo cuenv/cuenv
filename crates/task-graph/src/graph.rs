@@ -17,6 +17,8 @@ pub enum NodeKind {
     Task,
     /// A long-running service supervised by `cuenv up`.
     Service,
+    /// A container image build managed by `cuenv build`.
+    Image,
 }
 
 impl Default for NodeKind {
@@ -30,6 +32,7 @@ impl std::fmt::Display for NodeKind {
         match self {
             Self::Task => write!(f, "task"),
             Self::Service => write!(f, "service"),
+            Self::Image => write!(f, "image"),
         }
     }
 }
@@ -118,6 +121,32 @@ impl<T: TaskNodeData> TaskGraph<T> {
         let node_index = self.graph.add_node(node);
         self.name_to_node.insert(name.to_string(), node_index);
         debug!("Added service node '{}'", name);
+
+        Ok(node_index)
+    }
+
+    /// Add a single image node to the graph.
+    ///
+    /// Behaves identically to [`add_task`](Self::add_task) but marks the node
+    /// as [`NodeKind::Image`] so the executor can branch on it.
+    ///
+    /// # Errors
+    ///
+    /// Currently infallible, but returns `Result` for API consistency.
+    pub fn add_image(&mut self, name: &str, task: T) -> Result<NodeIndex> {
+        if let Some(&node) = self.name_to_node.get(name) {
+            return Ok(node);
+        }
+
+        let node = GraphNode {
+            name: name.to_string(),
+            task,
+            kind: NodeKind::Image,
+        };
+
+        let node_index = self.graph.add_node(node);
+        self.name_to_node.insert(name.to_string(), node_index);
+        debug!("Added image node '{}'", name);
 
         Ok(node_index)
     }

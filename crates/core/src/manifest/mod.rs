@@ -953,6 +953,98 @@ fn default_service_type() -> String {
     "service".to_string()
 }
 
+// ============================================================================
+// Container Image Types
+// ============================================================================
+
+/// Output reference for a container image (ref or digest).
+///
+/// Mirrors [`TaskOutputRef`] but for image build outputs. The executor
+/// resolves these at runtime after the image is built.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageOutputRef {
+    #[serde(rename = "cuenvOutputRef")]
+    pub cuenv_output_ref: bool,
+    #[serde(rename = "cuenvImage")]
+    pub cuenv_image: String,
+    #[serde(rename = "cuenvOutput")]
+    pub cuenv_output: String,
+}
+
+/// Container image build definition.
+///
+/// Declares a container image as a first-class project artifact. Images
+/// participate in the task DAG and produce output references (`.ref`,
+/// `.digest`) that downstream tasks can consume.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContainerImage {
+    /// Type discriminator — always `"image"`.
+    #[serde(rename = "type", default = "default_image_type")]
+    pub image_type: String,
+
+    /// Image reference output — resolved at runtime after build.
+    #[serde(rename = "ref")]
+    pub ref_output: ImageOutputRef,
+
+    /// Image digest output — resolved at runtime after build.
+    pub digest: ImageOutputRef,
+
+    /// Build context directory (required).
+    pub context: String,
+
+    /// Dockerfile path relative to context.
+    #[serde(default = "default_dockerfile")]
+    pub dockerfile: String,
+
+    /// Build arguments (values may be literal strings or image output refs).
+    #[serde(default, rename = "buildArgs", skip_serializing_if = "HashMap::is_empty")]
+    pub build_args: HashMap<String, serde_json::Value>,
+
+    /// Target stage for multi-stage builds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+
+    /// Image tags (e.g., `["latest", "v1.0.0"]`).
+    #[serde(default)]
+    pub tags: Vec<String>,
+
+    /// Registry to push to (omit for local-only builds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<String>,
+
+    /// Repository name (defaults to image name if omitted).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
+
+    /// Target platforms for multi-arch builds.
+    #[serde(default)]
+    pub platform: Vec<String>,
+
+    /// Dependencies on tasks or other images.
+    #[serde(default, rename = "dependsOn")]
+    pub depends_on: Vec<TaskDependency>,
+
+    /// Labels for discovery.
+    #[serde(default)]
+    pub labels: Vec<String>,
+
+    /// Input files/patterns for cache key derivation.
+    #[serde(default)]
+    pub inputs: Vec<Input>,
+
+    /// Human-readable description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+fn default_image_type() -> String {
+    "image".to_string()
+}
+
+fn default_dockerfile() -> String {
+    "Dockerfile".to_string()
+}
+
 /// Readiness probe — discriminated by `kind` field.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind")]
@@ -1186,6 +1278,10 @@ pub struct Project {
     /// Services configuration — long-running supervised processes.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub services: HashMap<String, Service>,
+
+    /// Container image build definitions.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub images: HashMap<String, ContainerImage>,
 
     /// Codegen configuration for code generation
     #[serde(skip_serializing_if = "Option::is_none")]
