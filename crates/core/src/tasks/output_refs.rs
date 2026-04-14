@@ -19,6 +19,10 @@ use std::collections::HashMap;
 /// Format: `cuenv:ref:<task_name>:<output_field>`
 const OUTPUT_REF_PREFIX: &str = "cuenv:ref:";
 
+/// Prefix for placeholder strings that represent image output references.
+/// Format: `cuenv:image-ref:<image_name>:<ref|digest>`
+const IMAGE_REF_PREFIX: &str = "cuenv:image-ref:";
+
 /// Prefix for placeholder strings that represent host env passthrough.
 /// Format: `cuenv:passthrough:<var_name>`
 const PASSTHROUGH_PREFIX: &str = "cuenv:passthrough:";
@@ -237,7 +241,7 @@ pub fn parse_passthrough(s: &str) -> Option<&str> {
     s.strip_prefix(PASSTHROUGH_PREFIX)
 }
 
-/// Try to extract a `#TaskOutputRef` from a JSON value.
+/// Try to extract a `#TaskOutputRef` or `#ImageOutputRef` from a JSON value.
 /// Returns the placeholder string if the value is a ref object, None otherwise.
 fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
     let obj = value.as_object()?;
@@ -252,21 +256,32 @@ fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
         return None;
     }
 
-    let task = obj.get("cuenvTask")?.as_str()?;
-    let output = obj.get("cuenvOutput")?.as_str()?;
+    // Task output ref: { cuenvOutputRef: true, cuenvTask: "...", cuenvOutput: "stdout"|"stderr"|"exitCode" }
+    if let Some(task) = obj.get("cuenvTask").and_then(|v| v.as_str()) {
+        let output = obj.get("cuenvOutput")?.as_str()?;
+        let output_field = match output {
+            "stdout" => TaskOutputField::Stdout,
+            "stderr" => TaskOutputField::Stderr,
+            "exitCode" => TaskOutputField::ExitCode,
+            _ => return None,
+        };
+        let r = TaskOutputRef {
+            task: task.to_string(),
+            output: output_field,
+        };
+        return Some(r.to_placeholder());
+    }
 
-    let output_field = match output {
-        "stdout" => TaskOutputField::Stdout,
-        "stderr" => TaskOutputField::Stderr,
-        "exitCode" => TaskOutputField::ExitCode,
-        _ => return None,
-    };
+    // Image output ref: { cuenvOutputRef: true, cuenvImage: "...", cuenvOutput: "ref"|"digest" }
+    if let Some(image) = obj.get("cuenvImage").and_then(|v| v.as_str()) {
+        let output = obj.get("cuenvOutput")?.as_str()?;
+        if output != "ref" && output != "digest" {
+            return None;
+        }
+        return Some(format!("{IMAGE_REF_PREFIX}{image}:{output}"));
+    }
 
-    let r = TaskOutputRef {
-        task: task.to_string(),
-        output: output_field,
-    };
-    Some(r.to_placeholder())
+    None
 }
 
 /// Returns `true` if any string in `args` or `env` contains an output ref placeholder.
@@ -274,10 +289,8 @@ fn try_extract_output_ref(value: &serde_json::Value) -> Option<String> {
 /// Use this as a fast check to avoid cloning tasks that have no refs to resolve.
 #[must_use]
 pub fn has_output_refs(args: &[String], env: &HashMap<String, serde_json::Value>) -> bool {
-    args.iter().any(|a| a.starts_with(OUTPUT_REF_PREFIX))
-        || env
-            .values()
-            .any(|v| v.as_str().is_some_and(|s| s.starts_with(OUTPUT_REF_PREFIX)))
+    let has_ref = |s: &str| s.starts_with(OUTPUT_REF_PREFIX) || s.starts_with(IMAGE_REF_PREFIX);
+    args.iter().any(|a| has_ref(a)) || env.values().any(|v| v.as_str().is_some_and(has_ref))
 }
 
 /// Context for resolving task output reference placeholders at runtime.

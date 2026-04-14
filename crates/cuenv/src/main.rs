@@ -144,6 +144,7 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             // (shell prompt integration requires sub-10ms response time)
             cli::Commands::Version { .. }
             | cli::Commands::Info { .. }
+            | cli::Commands::Build { .. }
             | cli::Commands::Completions { .. }
             | cli::Commands::Changeset { .. }
             | cli::Commands::Secrets { .. }
@@ -942,6 +943,21 @@ async fn execute_command_safe(
         }
         Command::ToolsList => {
             return commands::tools::execute_tools_list();
+        }
+        Command::Build {
+            path,
+            package,
+            names,
+            labels,
+        } => {
+            let options = commands::build::BuildOptions {
+                path: path.clone(),
+                package: package.clone(),
+                names: names.clone(),
+                labels: labels.clone(),
+            };
+            return commands::build::execute_build(&options, executor)
+                .map_err(|e| CliError::eval(format!("Build command failed: {e}")));
         }
         Command::Up {
             path,

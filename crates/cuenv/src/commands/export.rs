@@ -1096,6 +1096,7 @@ mod tests {
             runtime: None,
             formatters: None,
             services: HashMap::new(),
+            images: HashMap::new(),
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -1129,6 +1130,7 @@ mod tests {
             runtime: None,
             formatters: None,
             services: HashMap::new(),
+            images: HashMap::new(),
         };
 
         let hook_env = HashMap::from([

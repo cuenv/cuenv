@@ -118,6 +118,137 @@ Labels are defined in your CUE task configuration and allow grouping related tas
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
 :::
 
+### `cuenv build`
+
+Build container images defined in CUE configuration.
+
+```bash
+cuenv build [NAMES...] [OPTIONS]
+```
+
+**Arguments:**
+
+- `[NAMES]`: Image names to build. If not provided, lists available images.
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-l, --label <LABEL>`: Filter images by label (repeatable).
+
+**Examples:**
+
+```bash
+# List all images
+cuenv build
+
+# Build a specific image
+cuenv build api
+
+# Build images matching a label
+cuenv build --label ci
+```
+
+### `cuenv up`
+
+Bring up long-running services defined in CUE configuration.
+
+```bash
+cuenv up [SERVICES...] [OPTIONS]
+```
+
+**Arguments:**
+
+- `[SERVICES]`: Service names to bring up. If not provided, starts all services.
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-l, --label <LABEL>`: Filter services by label (repeatable).
+
+Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
+
+**Examples:**
+
+```bash
+# Start all services
+cuenv up
+
+# Start specific services
+cuenv up api db
+
+# Start services matching a label
+cuenv up --label backend
+```
+
+### `cuenv down`
+
+Tear down running services.
+
+```bash
+cuenv down [SERVICES...] [OPTIONS]
+```
+
+**Arguments:**
+
+- `[SERVICES]`: Service names to stop. If not provided, stops all services.
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+
+### `cuenv ps`
+
+List running services and their status.
+
+```bash
+cuenv ps [OPTIONS]
+```
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-o, --output <FORMAT>`: Output format (table, json). Default: `table`
+
+### `cuenv logs`
+
+View service logs.
+
+```bash
+cuenv logs [SERVICES...] [OPTIONS]
+```
+
+**Arguments:**
+
+- `[SERVICES]`: Service names to view logs for. If not provided, shows all.
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+- `-f, --follow`: Follow log output (stream in real-time).
+- `-n, --lines <N>`: Number of lines to show. Default: `50`
+
+### `cuenv restart`
+
+Restart one or more services.
+
+```bash
+cuenv restart <SERVICES...> [OPTIONS]
+```
+
+**Arguments:**
+
+- `<SERVICES>`: Service names to restart (required).
+
+**Options:**
+
+- `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+- `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
+
 ### `cuenv exec`
 
 Execute a command with CUE environment variables.

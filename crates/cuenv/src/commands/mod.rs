@@ -1,3 +1,5 @@
+/// Build container images defined in CUE configuration.
+pub mod build;
 /// Interactive changeset picker for selecting changes to include.
 pub mod changeset_picker;
 /// CI pipeline integration and generation commands.
@@ -356,6 +358,17 @@ pub enum Command {
     ToolsActivate,
     /// List configured tools.
     ToolsList,
+    /// Build container images defined in CUE configuration.
+    Build {
+        /// Path to the CUE module or project directory.
+        path: String,
+        /// CUE package name to evaluate.
+        package: String,
+        /// Image names to build (empty = list all).
+        names: Vec<String>,
+        /// Label filters to select images by labels.
+        labels: Vec<String>,
+    },
     /// Bring up long-running services defined in CUE configuration.
     Up {
         /// Path to the CUE module or project directory.
@@ -967,6 +980,7 @@ impl CommandExecutor {
             | Command::ToolsDownload
             | Command::ToolsActivate
             | Command::ToolsList
+            | Command::Build { .. }
             | Command::Up { .. }
             | Command::Down { .. }
             | Command::Logs { .. }

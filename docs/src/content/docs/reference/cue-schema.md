@@ -25,14 +25,19 @@ tasks: {...}
 
 **Fields:**
 
-| Field        | Type                 | Required | Description                       |
-| ------------ | -------------------- | -------- | --------------------------------- |
-| `config`     | `#Config`            | No       | Global configuration options      |
-| `env`        | `#Env`               | No       | Environment variable definitions  |
-| `hooks`      | `#Hooks`             | No       | Shell hooks for onEnter/onExit    |
-| `name`       | `string`             | Yes      | Project name (used by `#TaskRef`) |
-| `tasks`      | `{[string]: #Tasks}` | No       | Task definitions                  |
-| `workspaces` | `#Workspaces`        | No       | Workspace configuration           |
+| Field        | Type                          | Required | Description                          |
+| ------------ | ----------------------------- | -------- | ------------------------------------ |
+| `config`     | `#Config`                     | No       | Global configuration options         |
+| `env`        | `#Env`                        | No       | Environment variable definitions     |
+| `hooks`      | `#Hooks`                      | No       | Shell hooks for onEnter/onExit       |
+| `name`       | `string`                      | Yes      | Project name (used by `#TaskRef`)    |
+| `tasks`      | `{[string]: #Task}`           | No       | Task definitions                     |
+| `services`   | `{[string]: #Service}`        | No       | Long-running supervised processes    |
+| `images`     | `{[string]: #ContainerImage}` | No       | Container image build definitions    |
+| `ci`         | `#CI`                         | No       | CI pipeline configuration            |
+| `runtime`    | `#Runtime`                    | No       | Default runtime for tasks            |
+| `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
+| `release`    | `#Release`                    | No       | Release management configuration     |
 
 ### #Base
 
@@ -346,6 +351,264 @@ tasks: {
 | `project` | `string`        | Path to external project      |
 | `task`    | `string`        | Task name in external project |
 | `map`     | `[...#Mapping]` | Output mappings               |
+
+## Services
+
+### #Service
+
+Long-running supervised processes that live alongside tasks on a project. Services must reach a readiness state, are kept alive across the session, restart according to policy, and tear down on `cuenv down`.
+
+```cue
+services: {
+    api: schema.#Service & {
+        command: "go run ./cmd/api"
+        readiness: { kind: "http", url: "http://localhost:8080/health" }
+        restart: { mode: "onFailure" }
+        watch: {
+            paths: ["src/**/*.go"]
+            rebuild: [tasks.build]
+        }
+        description: "API server"
+    }
+    db: schema.#Service & {
+        command: "postgres"
+        args: ["-D", "/var/lib/postgresql/data"]
+        readiness: { kind: "port", port: 5432 }
+    }
+}
+```
+
+**Fields:**
+
+| Field         | Type                              | Required | Description                                   |
+| ------------- | --------------------------------- | -------- | --------------------------------------------- |
+| `command`     | `string`                          | No*      | Command to execute                            |
+| `args`        | `[...string]`                     | No       | Command arguments                             |
+| `script`      | `string`                          | No*      | Inline script (mutually exclusive with command)|
+| `scriptShell` | `#ScriptShell`                    | No       | Shell interpreter for script mode             |
+| `shellOptions`| `#ShellOptions`                   | No       | Shell options (errexit, nounset, etc.)        |
+| `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
+| `dir`         | `string`                          | No       | Working directory override                    |
+| `dependsOn`   | `[...(#TaskNode \| #Service)]`     | No       | Dependencies on tasks or other services       |
+| `labels`      | `[...string]`                     | No       | Labels for discovery                          |
+| `description` | `string`                          | No       | Human-readable description                    |
+| `runtime`     | `#Runtime`                        | No       | Runtime override                              |
+| `readiness`   | `#Readiness`                      | No       | Readiness probe                               |
+| `restart`     | `#RestartPolicy`                  | No       | Restart policy                                |
+| `watch`       | `#Watch`                          | No       | File watcher for restart-on-change            |
+| `logs`        | `#ServiceLogs`                    | No       | Log handling configuration                    |
+| `shutdown`    | `#Shutdown`                       | No       | Shutdown behavior                             |
+| `timeout`     | `string`                          | No       | Hard kill if startup exceeds this duration    |
+
+\* One of `command` or `script` must be provided.
+
+### #Readiness
+
+Readiness probes determine when a service is ready to accept work. Discriminated by the `kind` field.
+
+**Port probe** — TCP connection check:
+
+```cue
+readiness: {
+    kind: "port"
+    port: 8080
+    host: "127.0.0.1"  // default
+}
+```
+
+**HTTP probe** — HTTP request check:
+
+```cue
+readiness: {
+    kind: "http"
+    url: "http://localhost:8080/health"
+    expectStatus: [200]  // default: 2xx
+    method: "GET"        // default
+}
+```
+
+**Log probe** — regex match on stdout/stderr:
+
+```cue
+readiness: {
+    kind: "log"
+    pattern: "Server started on port \\d+"
+    source: "either"  // "stdout", "stderr", or "either" (default)
+}
+```
+
+**Command probe** — exit 0 = ready:
+
+```cue
+readiness: {
+    kind: "command"
+    command: "pg_isready"
+    args: ["-h", "localhost"]
+}
+```
+
+**Delay probe** — fixed sleep (escape hatch):
+
+```cue
+readiness: {
+    kind: "delay"
+    delay: "5s"
+}
+```
+
+All probes (except delay) support common timing fields:
+
+| Field          | Type     | Default  | Description                          |
+| -------------- | -------- | -------- | ------------------------------------ |
+| `interval`     | `string` | `500ms`  | Time between probe attempts          |
+| `timeout`      | `string` | `60s`    | Max time to reach ready              |
+| `initialDelay` | `string` | `0s`     | Initial delay before first attempt   |
+
+### #RestartPolicy
+
+Controls how services restart after exit.
+
+```cue
+restart: {
+    mode: "onFailure"  // never | onFailure | always | unlessStopped
+    backoff: {
+        initial: "1s"
+        max:     "30s"
+        factor:  2.0
+    }
+    maxRestarts: 5
+    window: "60s"
+}
+```
+
+| Field         | Type     | Default       | Description                              |
+| ------------- | -------- | ------------- | ---------------------------------------- |
+| `mode`        | `string` | `onFailure`   | Restart mode                             |
+| `backoff`     | object   | -             | Exponential backoff config               |
+| `maxRestarts` | `int`    | `5`           | Max restarts within sliding window       |
+| `window`      | `string` | `60s`         | Sliding window for restart counting      |
+
+### #Watch
+
+File watcher that triggers service restarts on file changes.
+
+```cue
+watch: {
+    paths: ["src/**/*.go", "go.mod"]
+    ignore: ["*_test.go"]
+    debounce: "200ms"
+    on: "restart"
+    rebuild: [tasks.build]
+}
+```
+
+| Field      | Type            | Default   | Description                                  |
+| ---------- | --------------- | --------- | -------------------------------------------- |
+| `paths`    | `[...string]`   | -         | Glob patterns relative to project root       |
+| `ignore`   | `[...string]`   | -         | Patterns to ignore (gitignore syntax)        |
+| `debounce` | `string`        | `200ms`   | Debounce window for batched changes          |
+| `on`       | `string`        | `restart` | Action on change (`restart`)                 |
+| `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
+
+### #Shutdown
+
+Controls how services are stopped.
+
+| Field     | Type     | Default   | Description                          |
+| --------- | -------- | --------- | ------------------------------------ |
+| `signal`  | `string` | `SIGTERM` | Signal to send (SIGTERM, SIGINT, SIGHUP, SIGQUIT) |
+| `timeout` | `string` | `10s`     | Grace period before SIGKILL          |
+
+### #ServiceLogs
+
+Log handling configuration for services.
+
+| Field     | Type     | Default        | Description                              |
+| --------- | -------- | -------------- | ---------------------------------------- |
+| `prefix`  | `string` | service name   | Stream prefix in multiplexed output      |
+| `color`   | `string` | auto           | ANSI color hint (red, green, yellow, blue, magenta, cyan, white) |
+| `persist` | `bool`   | `true`         | Persist logs to `.cuenv/run/<project>/logs/` |
+
+## Container Images
+
+### #ContainerImage
+
+Declarative container image builds as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume.
+
+```cue
+images: {
+    api: schema.#ContainerImage & {
+        context:    "."
+        dockerfile: "Dockerfile"
+        tags: ["latest", "v1.0.0"]
+        registry: "ghcr.io/myorg"
+        inputs: ["src/**", "Dockerfile"]
+        description: "API server image"
+    }
+}
+```
+
+**Fields:**
+
+| Field         | Type                                   | Required | Default        | Description                              |
+| ------------- | -------------------------------------- | -------- | -------------- | ---------------------------------------- |
+| `context`     | `string`                               | Yes      | -              | Build context directory                  |
+| `dockerfile`  | `string`                               | No       | `"Dockerfile"` | Dockerfile path relative to context      |
+| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments                          |
+| `target`      | `string`                               | No       | -              | Multi-stage build target                 |
+| `tags`        | `[...string]`                          | No       | -              | Image tags                               |
+| `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
+| `repository`  | `string`                               | No       | -              | Repository name (defaults to image name) |
+| `platform`    | `[...string]`                          | No       | -              | Target platforms for multi-arch builds   |
+| `dependsOn`   | `[...#TaskNode \| #ContainerImage]`     | No       | -              | Dependencies on tasks or other images    |
+| `labels`      | `[...string]`                          | No       | -              | Labels for discovery                     |
+| `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
+| `description` | `string`                               | No       | -              | Human-readable description               |
+
+#### Output References
+
+Images produce two output references resolved at runtime after the image is built:
+
+| Reference | Description                                      |
+| --------- | ------------------------------------------------ |
+| `.ref`    | Full image reference (e.g., `ghcr.io/myorg/api@sha256:...`) |
+| `.digest` | Content digest of the built image                |
+
+Use these in downstream tasks:
+
+```cue
+tasks: {
+    deploy: schema.#Task & {
+        dependsOn: [images.api]
+        env: IMAGE: images.api.ref
+    }
+}
+```
+
+#### Image Chains
+
+Images can depend on other images for multi-layer builds:
+
+```cue
+images: {
+    base: schema.#ContainerImage & {
+        context: "docker/base"
+    }
+    api: schema.#ContainerImage & {
+        context: "."
+        dependsOn: [images.base]
+        buildArgs: BASE_IMAGE: images.base.ref
+    }
+}
+```
+
+#### CLI
+
+```bash
+cuenv build              # List all images
+cuenv build api          # Build specific image
+cuenv build --label ci   # Build images matching label
+```
 
 ## Hooks
 
