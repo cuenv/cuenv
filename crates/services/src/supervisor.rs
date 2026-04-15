@@ -504,7 +504,7 @@ impl ServiceSupervisor {
     }
 
     async fn spawn_process(&self) -> crate::Result<tokio::process::Child> {
-        let (program, args) = self.resolve_command();
+        let (program, args) = self.resolve_command()?;
 
         let working_dir = self
             .service
@@ -532,15 +532,26 @@ impl ServiceSupervisor {
         // dedicated `cuenv __supervise` wrapper there (see commands::supervise).
         #[cfg(unix)]
         {
+            #[expect(
+                unsafe_code,
+                reason = "pre_exec runs in the forked child; setpgid/prctl are async-signal-safe and affect only the child"
+            )]
+            // SAFETY: The pre_exec hook runs in the forked child before
+            // exec. Both setpgid(0, 0) and prctl(PR_SET_PDEATHSIG, ...)
+            // are async-signal-safe and affect only the calling
+            // process. Return values are checked and converted to
+            // io::Error on failure so the spawn fails cleanly rather
+            // than starting a mis-configured child.
             unsafe {
                 cmd.pre_exec(|| {
-                    libc::setpgid(0, 0);
+                    if libc::setpgid(0, 0) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
                     #[cfg(target_os = "linux")]
                     {
-                        // SAFETY: PR_SET_PDEATHSIG affects only the calling
-                        // process; the value SIGKILL is a valid signal number
-                        // and prctl does not retain the pointer argument.
-                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
                     }
                     Ok(())
                 });
@@ -611,7 +622,7 @@ impl ServiceSupervisor {
         );
     }
 
-    fn resolve_command(&self) -> (String, Vec<String>) {
+    fn resolve_command(&self) -> crate::Result<(String, Vec<String>)> {
         use cuenv_core::manifest::Entrypoint;
         match &self.service.entrypoint {
             Entrypoint::Task(task) => {
@@ -620,9 +631,9 @@ impl ServiceSupervisor {
                         .script_shell
                         .as_ref()
                         .map_or(("bash", "-c"), |s| s.command_and_flag());
-                    (cmd.to_string(), vec![flag.to_string(), script.clone()])
+                    Ok((cmd.to_string(), vec![flag.to_string(), script.clone()]))
                 } else {
-                    (task.command.clone(), task.args.to_vec())
+                    Ok((task.command.clone(), task.args.to_vec()))
                 }
             }
             Entrypoint::Script(s) => {
@@ -630,15 +641,30 @@ impl ServiceSupervisor {
                     .script_shell
                     .as_ref()
                     .map_or(("bash", "-c"), |sh| sh.command_and_flag());
-                (cmd.to_string(), vec![flag.to_string(), s.script.clone()])
+                Ok((cmd.to_string(), vec![flag.to_string(), s.script.clone()]))
             }
             Entrypoint::Command(c) => {
-                let args: Vec<String> = c
-                    .args
-                    .iter()
-                    .filter_map(|a| a.as_str().map(String::from))
-                    .collect();
-                (c.command.clone(), args)
+                // Command.args may contain #TaskOutputRef values per the
+                // schema, but those must be resolved upstream before a
+                // service can spawn. If any non-string value remains,
+                // refuse to start rather than silently dropping it.
+                let mut args = Vec::with_capacity(c.args.len());
+                for (idx, a) in c.args.iter().enumerate() {
+                    match a.as_str() {
+                        Some(s) => args.push(s.to_string()),
+                        None => {
+                            return Err(crate::Error::service_failed(
+                                &self.name,
+                                format!(
+                                    "entrypoint.args[{idx}] is not a string ({}); \
+                                     task-output references must be resolved before launch",
+                                    a
+                                ),
+                            ));
+                        }
+                    }
+                }
+                Ok((c.command.clone(), args))
             }
         }
     }
@@ -659,7 +685,19 @@ impl ServiceSupervisor {
                 format!("script: {}", &s.script[..s.script.len().min(60)])
             }
             Entrypoint::Command(c) => {
-                let args: Vec<&str> = c.args.iter().filter_map(|a| a.as_str()).collect();
+                // For display, render non-string args (e.g., unresolved
+                // TaskOutputRefs) via their JSON form rather than
+                // silently dropping them, so operators see the full
+                // command line.
+                let args: Vec<String> = c
+                    .args
+                    .iter()
+                    .map(|a| {
+                        a.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| a.to_string())
+                    })
+                    .collect();
                 if args.is_empty() {
                     c.command.clone()
                 } else {

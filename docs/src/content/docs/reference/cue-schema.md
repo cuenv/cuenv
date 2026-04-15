@@ -419,22 +419,22 @@ services: {
 
 ### #Command and #Script
 
-The building blocks that compose `#Task` and `Service.entrypoint`:
+Reusable base shapes for invocation-style execution. `#Task` exposes the same fields directly; these base types are primarily consumed by `Service.entrypoint`.
 
 ```cue
 #Command: {
     command: string
-    args?:   [...string]
+    args?:   [...(string | #TaskOutputRef)]
 }
 
 #Script: {
-    script:       string
-    scriptShell?: #ScriptShell
+    script:        string
+    scriptShell?:  #ScriptShell | *"bash"
     shellOptions?: #ShellOptions
 }
 ```
 
-A `#Task` embeds `{ #Command } | { #Script }` for structural mutual exclusivity: a task has either a `command` or a `script`, never both.
+`#Task` carries both `command`/`args` and `script`/`scriptShell`/`shellOptions` as optional fields; CUE evaluation rejects configurations that supply both a command and a script.
 
 `Service.entrypoint` accepts any of `#Task`, `#Script`, or `#Command`. Using a task lets a service reuse an existing task definition (including its `args`, `env`, and working directory).
 

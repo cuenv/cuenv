@@ -23,8 +23,10 @@ package schema
 	// supply a `command` and a `script` at the same time.
 	entrypoint: #Task | #Script | #Command
 
-	// Environment variables (same shape as #Task)
-	env?: [string]: #EnvironmentVariable | #TaskOutputRef
+	// Environment variables. Unlike #Task, services do not accept
+	// #TaskOutputRef values here: services start fresh on each `up` and
+	// cannot depend on previously-produced task outputs at launch time.
+	env?: [string]: #EnvironmentVariable
 
 	// Working directory override
 	dir?: string

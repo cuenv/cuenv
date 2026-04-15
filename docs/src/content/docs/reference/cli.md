@@ -166,7 +166,7 @@ cuenv up [SERVICES...] [OPTIONS]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-l, --label <LABEL>`: Filter services by label (repeatable).
-- `-e, --environment <NAME>`: Select an environment (e.g., `test`, `production`). Project-level env values for that environment are merged into each service's env (service-level entries win).
+- `-e, --env <NAME>` *(global)*: Select an environment (e.g., `test`, `production`). Project-level env values for that environment are merged into each service's env (service-level entries win).
 
 Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
 

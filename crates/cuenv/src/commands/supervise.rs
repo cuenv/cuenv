@@ -4,11 +4,22 @@
 //! `PR_SET_PDEATHSIG`. macOS has no equivalent, so we spawn services
 //! through this thin wrapper instead: it monitors its own parent
 //! (cuenv `up`) via `kqueue` + `EVFILT_PROC` + `NOTE_EXIT`, and on
-//! parent death it kills the wrapped child's process group.
+//! parent death it kills its own process group (which the service
+//! inherits), cleanly terminating the whole subtree.
 //!
 //! The wrapper also forwards catchable signals (SIGTERM, SIGINT, SIGHUP,
-//! SIGQUIT) to the child's process group so `cuenv stop` and Ctrl-C
-//! continue to work through the extra process hop.
+//! SIGQUIT) to the child pid so `cuenv stop` and Ctrl-C continue to
+//! work through the extra process hop.
+//!
+//! # Process-group layout
+//!
+//! The outer supervisor (`cuenv_services::supervisor::spawn_process`)
+//! calls `setpgid(0, 0)` on the wrapper, so the wrapper is a process
+//! group leader with `pgid == wrapper_pid`. The wrapper does NOT set
+//! a new pgid on the service child — the service inherits the
+//! wrapper's pgid. This keeps both processes in a single group so that
+//! `kill(-wrapper_pid, SIGTERM)` from `cuenv stop` naturally reaches
+//! both the wrapper and the service.
 //!
 //! # Usage
 //!
@@ -18,28 +29,29 @@
 
 #![cfg(unix)]
 
-use std::os::unix::process::CommandExt;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 /// Exit code used when the wrapper fails before the child is spawned.
 const EXIT_WRAPPER_ERROR: i32 = 127;
 
-/// Global for signal forwarder: the pid of the child process group leader.
+/// Global for signal forwarder: the pid of the supervised child.
 static FORWARD_PID: AtomicI32 = AtomicI32::new(0);
 
-/// Signal handler that forwards the received signal to the child's
-/// process group recorded in `FORWARD_PID`.
+/// Signal handler that forwards the received signal to the child pid
+/// recorded in `FORWARD_PID`. Uses a positive pid so we target only
+/// the service process (redundant when the signal arrived via a pgid
+/// broadcast, but correct when the wrapper is signalled directly).
 extern "C" fn forward_signal(sig: libc::c_int) {
     let pid = FORWARD_PID.load(Ordering::SeqCst);
     if pid > 0 {
         #[expect(
             unsafe_code,
-            reason = "kill(2) is async-signal-safe and targets the child's process group"
+            reason = "kill(2) is async-signal-safe; positive pid targets a single process"
         )]
-        // SAFETY: kill() is documented as async-signal-safe. A negative
-        // pid targets the process group identified by abs(pid).
+        // SAFETY: kill() is documented as async-signal-safe. A positive
+        // pid targets exactly that process.
         unsafe {
-            libc::kill(-pid, sig);
+            libc::kill(pid, sig);
         }
     }
 }
@@ -53,14 +65,18 @@ extern "C" fn forward_signal(sig: libc::c_int) {
 /// Returns the exit code to propagate.
 #[must_use]
 pub fn run(argv: &[String]) -> i32 {
+    // Initialize a minimal tracing subscriber so diagnostic output from
+    // this hidden helper goes through the tracing pipeline rather than
+    // directly to stderr. Failing to init is not fatal — another
+    // subscriber may already be set.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .without_time()
+        .try_init();
+
     let Some((program, rest)) = argv.split_first() else {
-        // NOTE: stderr is acceptable for a hidden, pre-event-system
-        // helper subcommand; clippy::print_stderr is explicitly
-        // allowed in this tiny internal path.
-        #[allow(clippy::print_stderr)]
-        {
-            eprintln!("cuenv __supervise: missing command");
-        }
+        tracing::error!("cuenv __supervise: missing command");
         return EXIT_WRAPPER_ERROR;
     };
     let program = program.clone();
@@ -78,28 +94,15 @@ pub fn run(argv: &[String]) -> i32 {
     let mut cmd = std::process::Command::new(&program);
     cmd.args(&child_args);
 
-    // Put the child into its own process group so signal forwarding
-    // can target it as a group.
-    #[expect(
-        unsafe_code,
-        reason = "pre_exec hook runs in the forked child before exec; setpgid is async-signal-safe"
-    )]
-    // SAFETY: setpgid(0, 0) is signal/async-safe and has no side effects
-    // outside the child process.
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
+    // Deliberately do NOT call setpgid(0, 0) here: the service must
+    // inherit the wrapper's pgid so that `kill(-wrapper_pid, sig)` from
+    // the outer supervisor reaches both processes in a single group
+    // broadcast. See module-level doc for the pgid layout.
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("cuenv __supervise: failed to spawn {program}: {e}");
-            }
+            tracing::error!("cuenv __supervise: failed to spawn {program}: {e}");
             return EXIT_WRAPPER_ERROR;
         }
     };
@@ -113,7 +116,7 @@ pub fn run(argv: &[String]) -> i32 {
     // on macOS where PR_SET_PDEATHSIG does not exist.
     spawn_parent_watcher(parent_pid, child_pid);
 
-    // Forward catchable signals to the child's process group.
+    // Forward catchable signals to the child.
     spawn_signal_forwarder(child_pid);
 
     // Wait for the child.
@@ -123,12 +126,30 @@ pub fn run(argv: &[String]) -> i32 {
     }
 }
 
+/// Kill the wrapper's process group, which includes the wrapper itself,
+/// the supervised child, and any descendants of the child. Called when
+/// the outer parent dies and we must cleanly tear down the whole
+/// subtree.
+fn kill_group() {
+    #[expect(
+        unsafe_code,
+        reason = "getpid/kill on our own pgid are safe; SIGKILL terminates the whole group"
+    )]
+    // SAFETY: getpid() cannot fail. The wrapper is its own pgid leader
+    // (ensured by the outer supervisor's setpgid(0, 0) pre_exec), so
+    // -getpid() == -pgid and targets exactly our group.
+    unsafe {
+        let pgid = libc::getpid();
+        libc::kill(-pgid, libc::SIGKILL);
+    }
+}
+
 // ------------------------------------------------------------------
 // macOS: kqueue-based parent-death watcher
 // ------------------------------------------------------------------
 
 #[cfg(target_os = "macos")]
-fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
+fn spawn_parent_watcher(parent_pid: libc::pid_t, _child_pid: libc::pid_t) {
     std::thread::spawn(move || {
         #[expect(
             unsafe_code,
@@ -140,6 +161,11 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
         unsafe {
             let kq = libc::kqueue();
             if kq < 0 {
+                tracing::warn!(
+                    "cuenv __supervise: kqueue() failed (errno {}); killing group",
+                    std::io::Error::last_os_error()
+                );
+                kill_group();
                 return;
             }
 
@@ -151,15 +177,19 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
 
             let mut event: libc::kevent = std::mem::zeroed();
             let n = libc::kevent(kq, &change, 1, &mut event, 1, std::ptr::null());
-
-            // Whether we got a real event or kevent failed, the parent
-            // is either dead or unobservable — kill the child group
-            // either way. If we cannot watch the parent, we must not
-            // leave the child orphaned.
-            if n >= 0 {
-                libc::kill(-child_pid, libc::SIGKILL);
+            if n < 0 {
+                tracing::warn!(
+                    "cuenv __supervise: kevent() failed (errno {}); killing group",
+                    std::io::Error::last_os_error()
+                );
             }
+
+            // Whether we observed the parent's NOTE_EXIT or kevent
+            // failed, the parent is either dead or unobservable — kill
+            // the whole group either way. If we cannot watch the
+            // parent, we must not leave the child orphaned.
             libc::close(kq);
+            kill_group();
         }
     });
 }
@@ -170,7 +200,7 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
 // ------------------------------------------------------------------
 
 #[cfg(target_os = "linux")]
-fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
+fn spawn_parent_watcher(parent_pid: libc::pid_t, _child_pid: libc::pid_t) {
     std::thread::spawn(move || {
         loop {
             #[expect(
@@ -181,14 +211,7 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
             // does not send a signal.
             let alive = unsafe { libc::kill(parent_pid, 0) } == 0;
             if !alive {
-                #[expect(
-                    unsafe_code,
-                    reason = "negative pid targets the child process group"
-                )]
-                // SAFETY: negative pid = kill process group.
-                unsafe {
-                    libc::kill(-child_pid, libc::SIGKILL);
-                }
+                kill_group();
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
@@ -201,7 +224,7 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
 // ------------------------------------------------------------------
 
 #[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
-fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
+fn spawn_parent_watcher(parent_pid: libc::pid_t, _child_pid: libc::pid_t) {
     std::thread::spawn(move || {
         loop {
             #[expect(
@@ -212,14 +235,7 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, child_pid: libc::pid_t) {
             // does not send a signal.
             let alive = unsafe { libc::kill(parent_pid, 0) } == 0;
             if !alive {
-                #[expect(
-                    unsafe_code,
-                    reason = "negative pid targets the child process group"
-                )]
-                // SAFETY: negative pid = kill process group.
-                unsafe {
-                    libc::kill(-child_pid, libc::SIGKILL);
-                }
+                kill_group();
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(500));

@@ -154,9 +154,14 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
 
 /// Configure cuenv as a process supervisor for its service subtree.
 ///
-/// On Linux, promotes the process to a subreaper (so orphaned descendants
-/// re-parent here instead of pid 1) and spawns a background tokio task
-/// that periodically reaps zombies with `waitpid(-1, WNOHANG)`.
+/// On Linux, promotes the process to a subreaper so that orphaned
+/// descendants re-parent to cuenv instead of drifting to pid 1. Direct
+/// children of cuenv (the supervised services) are reaped via
+/// `tokio::process::Child::wait`; we intentionally do not run a
+/// `waitpid(-1, _, WNOHANG)` loop here because it would race with and
+/// steal exit statuses from the per-service waiters. Orphans that
+/// re-parent to cuenv will accumulate as zombies until process exit,
+/// which is acceptable for the lifetime of `cuenv up`.
 ///
 /// On other platforms this is a no-op; the per-service `__supervise`
 /// wrapper handles reaping for its own subtree on macOS.
@@ -172,22 +177,6 @@ fn install_process_supervisor() {
         unsafe {
             libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1);
         }
-
-        tokio::spawn(async {
-            loop {
-                #[expect(
-                    unsafe_code,
-                    reason = "waitpid(-1, _, WNOHANG) is non-blocking and only reaps exited descendants"
-                )]
-                // SAFETY: waitpid(-1, _, WNOHANG) is always safe; it
-                // never blocks and only collects already-exited
-                // descendants. The returned status is discarded.
-                unsafe {
-                    while libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) > 0 {}
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        });
     }
 }
 
