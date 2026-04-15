@@ -27,8 +27,6 @@
 //! cuenv __supervise <program> [args...]
 //! ```
 
-#![cfg(unix)]
-
 use std::sync::atomic::{AtomicI32, Ordering};
 
 /// Exit code used when the wrapper fails before the child is spawned.
