@@ -25,6 +25,31 @@ use crate::probes::{self, ProbeLoopResult, log::LogProbe};
 use crate::session::{ServiceState, SessionManager};
 use crate::watcher::{ServiceWatcher, WatchEvent};
 
+/// Wrap the invocation with `cuenv __supervise` on platforms that need
+/// it for orphan prevention.
+///
+/// On Linux the child is already covered by `PR_SET_PDEATHSIG`, so we
+/// return the original (program, args) unchanged.
+///
+/// On macOS the `__supervise` wrapper watches the parent cuenv process
+/// via `kqueue` and kills the child's process group on parent death.
+fn wrap_with_supervisor(program: String, args: Vec<String>) -> (String, Vec<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(exe) = std::env::current_exe() {
+            let mut new_args = Vec::with_capacity(args.len() + 2);
+            new_args.push("__supervise".to_string());
+            new_args.push(program);
+            new_args.extend(args);
+            return (exe.to_string_lossy().into_owned(), new_args);
+        }
+        // If we cannot locate our own executable, fall through to a
+        // direct spawn — degrading gracefully is preferable to failing.
+    }
+    let _ = (cfg!(target_os = "macos"),); // touch cfg to silence unused-warning lint variants
+    (program, args)
+}
+
 /// Result of supervisor execution.
 #[derive(Debug)]
 pub enum SupervisorResult {
@@ -488,28 +513,54 @@ impl ServiceSupervisor {
             .map(|d| self.project_root.join(d))
             .unwrap_or_else(|| self.project_root.clone());
 
+        // On macOS, route the child through `cuenv __supervise` so it
+        // gets killed if cuenv itself dies ungracefully. Linux uses
+        // PR_SET_PDEATHSIG in pre_exec below and skips the wrapper.
+        let (program, args) = wrap_with_supervisor(program, args);
+
         let mut cmd = Command::new(&program);
         cmd.args(&args)
             .current_dir(&working_dir)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
 
-        // Set up process group on Unix
+        // Set up process group on Unix so `cuenv stop <service>` can
+        // target a single service's pgid. On Linux, also ask the kernel
+        // to deliver SIGKILL to the child if cuenv itself dies for any
+        // reason (including SIGKILL), so services cannot be orphaned.
+        // macOS has no PR_SET_PDEATHSIG equivalent — we rely on a
+        // dedicated `cuenv __supervise` wrapper there (see commands::supervise).
         #[cfg(unix)]
         {
             unsafe {
                 cmd.pre_exec(|| {
                     libc::setpgid(0, 0);
+                    #[cfg(target_os = "linux")]
+                    {
+                        // SAFETY: PR_SET_PDEATHSIG affects only the calling
+                        // process; the value SIGKILL is a valid signal number
+                        // and prctl does not retain the pointer argument.
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                    }
                     Ok(())
                 });
             }
         }
 
-        // Apply environment variables
-        for (key, value) in &self.service.env {
-            if let Some(s) = value.as_str() {
-                cmd.env(key, s);
-            }
+        // Resolve environment variables (including secrets) and apply to
+        // the child process. Resolved secret values are registered with the
+        // event system so they get redacted from service log output.
+        let (resolved_env, secrets) =
+            cuenv_core::environment::Environment::resolve_for_service_with_secrets(
+                &self.name,
+                &self.service.env,
+            )
+            .await?;
+        if !secrets.is_empty() {
+            cuenv_events::register_secrets(secrets.into_iter());
+        }
+        for (key, value) in resolved_env {
+            cmd.env(key, value);
         }
 
         let child = cmd.spawn()?;
@@ -561,40 +612,59 @@ impl ServiceSupervisor {
     }
 
     fn resolve_command(&self) -> (String, Vec<String>) {
-        if let Some(ref script) = self.service.script {
-            let (cmd, flag) = self
-                .service
-                .script_shell
-                .as_ref()
-                .map_or(("bash", "-c"), |s| s.command_and_flag());
-            (cmd.to_string(), vec![flag.to_string(), script.clone()])
-        } else {
-            let command = self.service.command.clone().unwrap_or_default();
-            let args: Vec<String> = self
-                .service
-                .args
-                .iter()
-                .filter_map(|a| a.as_str().map(String::from))
-                .collect();
-            (command, args)
+        use cuenv_core::manifest::Entrypoint;
+        match &self.service.entrypoint {
+            Entrypoint::Task(task) => {
+                if let Some(ref script) = task.script {
+                    let (cmd, flag) = task
+                        .script_shell
+                        .as_ref()
+                        .map_or(("bash", "-c"), |s| s.command_and_flag());
+                    (cmd.to_string(), vec![flag.to_string(), script.clone()])
+                } else {
+                    (task.command.clone(), task.args.to_vec())
+                }
+            }
+            Entrypoint::Script(s) => {
+                let (cmd, flag) = s
+                    .script_shell
+                    .as_ref()
+                    .map_or(("bash", "-c"), |sh| sh.command_and_flag());
+                (cmd.to_string(), vec![flag.to_string(), s.script.clone()])
+            }
+            Entrypoint::Command(c) => {
+                let args: Vec<String> = c
+                    .args
+                    .iter()
+                    .filter_map(|a| a.as_str().map(String::from))
+                    .collect();
+                (c.command.clone(), args)
+            }
         }
     }
 
     fn command_display(&self) -> String {
-        if let Some(ref script) = self.service.script {
-            format!("script: {}", &script[..script.len().min(60)])
-        } else {
-            let cmd = self.service.command.as_deref().unwrap_or("(none)");
-            let args: Vec<&str> = self
-                .service
-                .args
-                .iter()
-                .filter_map(|a| a.as_str())
-                .collect();
-            if args.is_empty() {
-                cmd.to_string()
-            } else {
-                format!("{} {}", cmd, args.join(" "))
+        use cuenv_core::manifest::Entrypoint;
+        match &self.service.entrypoint {
+            Entrypoint::Task(task) => {
+                if let Some(ref script) = task.script {
+                    format!("script: {}", &script[..script.len().min(60)])
+                } else if task.args.is_empty() {
+                    task.command.clone()
+                } else {
+                    format!("{} {}", task.command, task.args.join(" "))
+                }
+            }
+            Entrypoint::Script(s) => {
+                format!("script: {}", &s.script[..s.script.len().min(60)])
+            }
+            Entrypoint::Command(c) => {
+                let args: Vec<&str> = c.args.iter().filter_map(|a| a.as_str()).collect();
+                if args.is_empty() {
+                    c.command.clone()
+                } else {
+                    format!("{} {}", c.command, args.join(" "))
+                }
             }
         }
     }

@@ -361,7 +361,10 @@ Long-running supervised processes that live alongside tasks on a project. Servic
 ```cue
 services: {
     api: schema.#Service & {
-        command: "go run ./cmd/api"
+        entrypoint: {
+            command: "go"
+            args:    ["run", "./cmd/api"]
+        }
         readiness: { kind: "http", url: "http://localhost:8080/health" }
         restart: { mode: "onFailure" }
         watch: {
@@ -371,9 +374,27 @@ services: {
         description: "API server"
     }
     db: schema.#Service & {
-        command: "postgres"
-        args: ["-D", "/var/lib/postgresql/data"]
+        entrypoint: {
+            command: "postgres"
+            args:    ["-D", "/var/lib/postgresql/data"]
+        }
         readiness: { kind: "port", port: 5432 }
+    }
+    // A service whose entrypoint is a task reuses that task's command/script.
+    worker: schema.#Service & {
+        entrypoint: tasks.worker
+        readiness:  { kind: "log", pattern: "worker ready" }
+    }
+    // Inline script form.
+    migrator: schema.#Service & {
+        entrypoint: {
+            script: """
+                set -eu
+                psql -f /migrations/001_init.sql
+                """
+            scriptShell: "bash"
+        }
+        readiness: { kind: "log", pattern: "migration complete" }
     }
 }
 ```
@@ -382,11 +403,7 @@ services: {
 
 | Field         | Type                              | Required | Description                                   |
 | ------------- | --------------------------------- | -------- | --------------------------------------------- |
-| `command`     | `string`                          | No*      | Command to execute                            |
-| `args`        | `[...string]`                     | No       | Command arguments                             |
-| `script`      | `string`                          | No*      | Inline script (mutually exclusive with command)|
-| `scriptShell` | `#ScriptShell`                    | No       | Shell interpreter for script mode             |
-| `shellOptions`| `#ShellOptions`                   | No       | Shell options (errexit, nounset, etc.)        |
+| `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
 | `dependsOn`   | `[...(#TaskNode \| #Service)]`     | No       | Dependencies on tasks or other services       |
@@ -400,7 +417,26 @@ services: {
 | `shutdown`    | `#Shutdown`                       | No       | Shutdown behavior                             |
 | `timeout`     | `string`                          | No       | Hard kill if startup exceeds this duration    |
 
-\* One of `command` or `script` must be provided.
+### #Command and #Script
+
+The building blocks that compose `#Task` and `Service.entrypoint`:
+
+```cue
+#Command: {
+    command: string
+    args?:   [...string]
+}
+
+#Script: {
+    script:       string
+    scriptShell?: #ScriptShell
+    shellOptions?: #ShellOptions
+}
+```
+
+A `#Task` embeds `{ #Command } | { #Script }` for structural mutual exclusivity: a task has either a `command` or a `script`, never both.
+
+`Service.entrypoint` accepts any of `#Task`, `#Script`, or `#Command`. Using a task lets a service reuse an existing task definition (including its `args`, `env`, and working directory).
 
 ### #Readiness
 

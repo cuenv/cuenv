@@ -17,19 +17,11 @@ package schema
 	// to repeat this field in each service block.
 	type: "service"
 
-	// Command-based execution (mutually exclusive with script)
-	command?: string
-	args?: [...(string | #TaskOutputRef)]
-
-	// Script-based execution
-	script?:       string
-	scriptShell?:  #ScriptShell | *"bash"
-	shellOptions?: #ShellOptions
-
-	// Enforce mutual exclusivity: command and script cannot both be set.
-	if command != _|_ if script != _|_ {
-		_commandScriptConflict: "command and script are mutually exclusive" & _|_
-	}
+	// How the service runs. A full #Task (to reuse an existing task
+	// definition), an inline #Script, or an inline #Command. CUE's
+	// disjunction enforces structural mutual exclusivity — you cannot
+	// supply a `command` and a `script` at the same time.
+	entrypoint: #Task | #Script | #Command
 
 	// Environment variables (same shape as #Task)
 	env?: [string]: #EnvironmentVariable | #TaskOutputRef
