@@ -8,6 +8,7 @@ rules.#DirectoryRules & {
     // Ignore patterns for generated ignore files
     ignore: {
         git: [
+            "_tests",
             ".cache",
             ".cargo",
             ".cuenv",

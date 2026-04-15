@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use cuenv_core::environment::EnvValue;
 use cuenv_core::manifest::{Project, Service};
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController, build_mixed_graph};
@@ -27,6 +28,8 @@ pub struct UpOptions {
     pub services: Vec<String>,
     /// Optional label filters.
     pub labels: Vec<String>,
+    /// Optional environment name to apply (e.g., "test", "production").
+    pub environment: Option<String>,
 }
 
 /// Execute the `cuenv up` command.
@@ -39,6 +42,11 @@ pub struct UpOptions {
 /// Returns an error if CUE evaluation, graph construction, or service
 /// supervision fails.
 pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuenv_core::Result<()> {
+    // Become a subreaper so that any descendants orphaned by a service
+    // crash or double-fork are re-parented to cuenv and can be reaped
+    // here instead of drifting to pid 1.
+    install_process_supervisor();
+
     let target_path =
         Path::new(&options.path)
             .canonicalize()
@@ -76,12 +84,28 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             return Ok(());
         }
 
-        let filtered_services =
+        let mut filtered_services =
             filter_services(&project.services, &options.services, &options.labels);
 
         if filtered_services.is_empty() {
             emit_stdout!("cuenv up: no services match the specified filters");
             return Ok(());
+        }
+
+        // Propagate the project-level environment (selected by `-e` if set)
+        // into each service's env map so secrets, interpolation, and policy
+        // filtering all apply in `supervisor::spawn_process`. Per-service
+        // env entries take precedence over the project env.
+        if let Some(env) = &project.env {
+            let project_env_vars = match options.environment.as_deref() {
+                Some(name) => env.for_environment(name),
+                None => env.base.clone(),
+            };
+            if !project_env_vars.is_empty() {
+                for service in filtered_services.values_mut() {
+                    merge_project_env_into_service(&project_env_vars, &mut service.env);
+                }
+            }
         }
 
         emit_stdout!(format!(
@@ -128,6 +152,47 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
         .map_err(|e| cuenv_core::Error::execution(format!("Service controller failed: {e}")))
 }
 
+/// Configure cuenv as a process supervisor for its service subtree.
+///
+/// On Linux, promotes the process to a subreaper so that orphaned
+/// descendants re-parent to cuenv instead of drifting to pid 1. Direct
+/// children of cuenv (the supervised services) are reaped via
+/// `tokio::process::Child::wait`; we intentionally do not run a
+/// `waitpid(-1, _, WNOHANG)` loop here because it would race with and
+/// steal exit statuses from the per-service waiters. Orphans that
+/// re-parent to cuenv will accumulate as zombies until process exit,
+/// which is acceptable for the lifetime of `cuenv up`.
+///
+/// On other platforms this is a no-op; the per-service `__supervise`
+/// wrapper handles reaping for its own subtree on macOS.
+fn install_process_supervisor() {
+    #[cfg(target_os = "linux")]
+    {
+        #[expect(
+            unsafe_code,
+            reason = "PR_SET_CHILD_SUBREAPER affects only the calling process"
+        )]
+        // SAFETY: PR_SET_CHILD_SUBREAPER affects only the calling
+        // process. A non-zero value enables the behaviour.
+        unsafe {
+            libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1);
+        }
+    }
+}
+
+/// Merge project-level environment variables into a service's env map.
+/// Service-level entries win over project-level entries.
+fn merge_project_env_into_service(
+    project_env: &HashMap<String, EnvValue>,
+    service_env: &mut HashMap<String, EnvValue>,
+) {
+    for (key, value) in project_env {
+        service_env
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+}
+
 /// Filter services by name and label.
 fn filter_services(
     all_services: &HashMap<String, Service>,
@@ -157,11 +222,35 @@ mod tests {
             package: "cuenv".to_string(),
             services: vec![],
             labels: vec![],
+            environment: None,
         };
         assert_eq!(options.path, ".");
         assert_eq!(options.package, "cuenv");
         assert!(options.services.is_empty());
         assert!(options.labels.is_empty());
+        assert!(options.environment.is_none());
+    }
+
+    #[test]
+    fn test_merge_project_env_into_service_preserves_service_values() {
+        let mut project_env = HashMap::new();
+        project_env.insert("A".to_string(), EnvValue::String("project-a".to_string()));
+        project_env.insert("B".to_string(), EnvValue::String("project-b".to_string()));
+
+        let mut service_env = HashMap::new();
+        service_env.insert("B".to_string(), EnvValue::String("service-b".to_string()));
+
+        merge_project_env_into_service(&project_env, &mut service_env);
+
+        assert_eq!(
+            service_env.get("A"),
+            Some(&EnvValue::String("project-a".to_string()))
+        );
+        // Service value wins over project value.
+        assert_eq!(
+            service_env.get("B"),
+            Some(&EnvValue::String("service-b".to_string()))
+        );
     }
 
     #[test]

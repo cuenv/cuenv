@@ -10,6 +10,7 @@ use crate::config::Config;
 use crate::environment::Env;
 use crate::module::Instance;
 use crate::secrets::Secret;
+use crate::environment::EnvValue;
 use crate::tasks::Task;
 use crate::tasks::{
     Input, Mapping, ProjectReference, ScriptShell, ShellOptions, TaskDependency, TaskNode,
@@ -861,6 +862,64 @@ pub enum GitHubExtract {
 // Service Types
 // ============================================================================
 
+/// Structured command invocation: a program plus its arguments.
+///
+/// Shared base type for tasks and service entrypoints. Arguments may be
+/// literal strings or runtime task output references.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Command {
+    /// Program to execute.
+    pub command: String,
+
+    /// Arguments (may contain output refs).
+    #[serde(default)]
+    pub args: Vec<serde_json::Value>,
+}
+
+/// Inline script invocation: a script body interpreted by a shell.
+///
+/// Shared base type for tasks and service entrypoints.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Script {
+    /// Script body.
+    pub script: String,
+
+    /// Shell interpreter (defaults to bash on the CUE side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script_shell: Option<ScriptShell>,
+
+    /// Shell options (errexit, nounset, pipefail, xtrace).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell_options: Option<ShellOptions>,
+}
+
+/// How a [`Service`] is executed.
+///
+/// Either:
+/// - a full [`Task`] (lets a service reuse an existing task definition),
+/// - an inline [`Script`], or
+/// - an inline [`Command`].
+///
+/// Deserialized as an untagged enum, with the most specific variant
+/// (`Task`) attempted first.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum Entrypoint {
+    /// Full task reference (or inline task) reused as a service entrypoint.
+    Task(Box<Task>),
+    /// Inline script.
+    Script(Script),
+    /// Inline command.
+    Command(Command),
+}
+
+impl Default for Entrypoint {
+    fn default() -> Self {
+        Entrypoint::Command(Command::default())
+    }
+}
+
 /// Long-running supervised process definition.
 ///
 /// Services live alongside tasks on a project but execute under different
@@ -872,37 +931,13 @@ pub struct Service {
     #[serde(rename = "type", default = "default_service_type")]
     pub service_type: String,
 
-    /// Command to execute.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-
-    /// Command arguments (may contain output refs).
+    /// How the service process is launched.
     #[serde(default)]
-    pub args: Vec<serde_json::Value>,
-
-    /// Inline script (alternative to command).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-
-    /// Shell interpreter for script mode.
-    #[serde(
-        default,
-        rename = "scriptShell",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub script_shell: Option<ScriptShell>,
-
-    /// Shell options (errexit, nounset, pipefail, xtrace).
-    #[serde(
-        default,
-        rename = "shellOptions",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub shell_options: Option<ShellOptions>,
+    pub entrypoint: Entrypoint,
 
     /// Environment variables (same shape as Task).
     #[serde(default)]
-    pub env: HashMap<String, serde_json::Value>,
+    pub env: HashMap<String, EnvValue>,
 
     /// Working directory override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -947,6 +982,25 @@ pub struct Service {
     /// Hard kill if startup-to-ready exceeds this duration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<String>,
+}
+
+impl Service {
+    /// Return the primary program name for workspace-detection heuristics
+    /// (bun, cargo, etc.). Scripts have no single program.
+    #[must_use]
+    pub fn primary_command(&self) -> Option<&str> {
+        match &self.entrypoint {
+            Entrypoint::Task(task) => {
+                if task.command.is_empty() {
+                    None
+                } else {
+                    Some(task.command.as_str())
+                }
+            }
+            Entrypoint::Command(cmd) => Some(cmd.command.as_str()),
+            Entrypoint::Script(_) => None,
+        }
+    }
 }
 
 fn default_service_type() -> String {
@@ -1476,12 +1530,45 @@ mod tests {
     #[test]
     fn test_service_type_defaults_to_service_when_omitted() {
         let service: Service = serde_json::from_value(serde_json::json!({
-            "command": "echo",
-            "args": ["hello"]
+            "entrypoint": { "command": "echo", "args": ["hello"] }
         }))
         .expect("service should deserialize without explicit type");
 
         assert_eq!(service.service_type, "service");
+    }
+
+    #[test]
+    fn test_service_entrypoint_command_variant() {
+        let service: Service = serde_json::from_value(serde_json::json!({
+            "entrypoint": { "command": "echo", "args": ["hi"] }
+        }))
+        .expect("should deserialize command entrypoint");
+
+        // Task is tried first and matches (Task accepts any {command,args})
+        // so the command variant here is shaped like a Task with just command+args.
+        match &service.entrypoint {
+            Entrypoint::Task(task) => {
+                assert_eq!(task.command, "echo");
+            }
+            Entrypoint::Command(cmd) => assert_eq!(cmd.command, "echo"),
+            Entrypoint::Script(_) => panic!("expected Task or Command, got Script"),
+        }
+    }
+
+    #[test]
+    fn test_service_entrypoint_script_variant() {
+        let service: Service = serde_json::from_value(serde_json::json!({
+            "entrypoint": { "script": "echo hi" }
+        }))
+        .expect("should deserialize script entrypoint");
+
+        match &service.entrypoint {
+            Entrypoint::Task(task) => {
+                assert_eq!(task.script.as_deref(), Some("echo hi"));
+            }
+            Entrypoint::Script(s) => assert_eq!(s.script, "echo hi"),
+            Entrypoint::Command(_) => panic!("expected Task or Script, got Command"),
+        }
     }
 
     #[test]

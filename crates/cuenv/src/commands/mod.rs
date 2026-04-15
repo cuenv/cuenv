@@ -45,6 +45,9 @@ pub mod task_list;
 pub mod task_picker;
 /// Tools command for multi-source tool management.
 pub mod tools;
+/// Hidden process-babysitter subcommand (`cuenv __supervise`).
+#[cfg(unix)]
+pub mod supervise;
 /// Bring up long-running services.
 pub mod up;
 /// Version information and display.
@@ -379,6 +382,8 @@ pub enum Command {
         services: Vec<String>,
         /// Label filters to select services by labels.
         labels: Vec<String>,
+        /// Optional environment name to apply to service env vars.
+        environment: Option<String>,
     },
     /// Tear down running services.
     Down {

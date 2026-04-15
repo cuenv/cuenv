@@ -73,6 +73,17 @@ fn main() {
 
     // Check for special internal commands that always need async
     let args: Vec<String> = std::env::args().collect();
+
+    // Hidden process-babysitter wrapper (primarily for macOS where
+    // PR_SET_PDEATHSIG is unavailable). Exits directly without touching
+    // the main CLI machinery.
+    #[cfg(unix)]
+    if args.len() > 1 && args[1] == "__supervise" {
+        let rest: Vec<String> = args.iter().skip(2).cloned().collect();
+        let code = commands::supervise::run(&rest);
+        std::process::exit(code);
+    }
+
     if args.len() > 1 && (args[1] == "__hook-supervisor" || args[1] == "__coordinator") {
         // For supervisor, detach from controlling terminal if on Unix
         // This is done here instead of via pre_exec in the parent to avoid
@@ -964,12 +975,14 @@ async fn execute_command_safe(
             package,
             services,
             labels,
+            environment,
         } => {
             let options = commands::up::UpOptions {
                 path: path.clone(),
                 package: package.clone(),
                 services: services.clone(),
                 labels: labels.clone(),
+                environment: environment.clone(),
             };
             return commands::up::execute_up(&options, executor)
                 .await

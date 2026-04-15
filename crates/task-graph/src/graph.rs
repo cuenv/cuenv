@@ -11,20 +11,15 @@ use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 /// Discriminator for the kind of node in a mixed task/service graph.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+#[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
 pub enum NodeKind {
     /// A one-shot task that runs to completion.
+    #[default]
     Task,
     /// A long-running service supervised by `cuenv up`.
     Service,
     /// A container image build managed by `cuenv build`.
     Image,
-}
-
-impl Default for NodeKind {
-    fn default() -> Self {
-        Self::Task
-    }
 }
 
 impl std::fmt::Display for NodeKind {

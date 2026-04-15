@@ -676,6 +676,33 @@ impl Environment {
         Self::resolve_filtered_with_secrets(&accessible).await
     }
 
+    /// Build and resolve environment for a service, also returning secret values.
+    ///
+    /// Services use the same 3-phase secret resolution pipeline as tasks
+    /// (collect, resolve in parallel via `SecretRegistry` + `JoinSet`,
+    /// reassemble). Access policies are checked against the service name
+    /// just as they are checked against task names for tasks.
+    ///
+    /// Returns `(resolved_env_vars, secret_values)` where `secret_values`
+    /// contains the resolved values of any secrets for log redaction.
+    pub async fn resolve_for_service_with_secrets(
+        service_name: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        tracing::debug!(
+            service = service_name,
+            env_count = env_vars.len(),
+            "resolve_for_service_with_secrets"
+        );
+
+        let accessible: Vec<_> = env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_task(service_name))
+            .collect();
+
+        Self::resolve_filtered_with_secrets(&accessible).await
+    }
+
     /// Build environment for exec command, filtering based on policies
     pub fn build_for_exec(
         command: &str,
