@@ -76,7 +76,7 @@ impl ContributorContext {
     pub fn with_services(mut self, services: &HashMap<String, crate::manifest::Service>) -> Self {
         self.has_services = !services.is_empty();
         for service in services.values() {
-            if let Some(ref cmd) = service.command
+            if let Some(cmd) = service.primary_command()
                 && let Some(cmd_name) = cuenv_workspaces::command_name(cmd)
             {
                 self.service_commands.insert(cmd_name);

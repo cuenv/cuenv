@@ -1875,6 +1875,7 @@ impl Commands {
                 package,
                 services,
                 labels,
+                environment,
             },
             Self::Down {
                 services,

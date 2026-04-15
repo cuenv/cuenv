@@ -166,8 +166,13 @@ cuenv up [SERVICES...] [OPTIONS]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-l, --label <LABEL>`: Filter services by label (repeatable).
+- `-e, --env <NAME>` *(global)*: Select an environment (e.g., `test`, `production`). Project-level env values for that environment are merged into each service's env (service-level entries win).
 
 Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
+
+On Linux, `cuenv up` promotes itself to a subreaper (`PR_SET_CHILD_SUBREAPER`) and installs `PR_SET_PDEATHSIG=SIGKILL` on each service so orphaned descendants are either reaped by cuenv or killed when cuenv exits. On macOS, services are spawned through a hidden `cuenv __supervise` wrapper that watches the parent via `kqueue`/`NOTE_EXIT` and forwards signals to the service's process group.
+
+Secrets referenced by a service's `env` (including values inherited from the project-level environment) are resolved in parallel before the service starts and registered with the event system for redaction.
 
 **Examples:**
 
@@ -180,6 +185,9 @@ cuenv up api db
 
 # Start services matching a label
 cuenv up --label backend
+
+# Start services with the "test" environment applied
+cuenv up -e test
 ```
 
 ### `cuenv down`

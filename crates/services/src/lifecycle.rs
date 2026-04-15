@@ -8,10 +8,11 @@ use std::fmt;
 use crate::Error;
 
 /// Lifecycle states for a supervised service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ServiceLifecycle {
     /// Waiting for dependencies to be satisfied.
+    #[default]
     Pending,
     /// Process spawned, awaiting readiness probe.
     Starting,
@@ -91,12 +92,6 @@ impl fmt::Display for ServiceLifecycle {
             Self::Stopped => write!(f, "stopped"),
             Self::Failed => write!(f, "failed"),
         }
-    }
-}
-
-impl Default for ServiceLifecycle {
-    fn default() -> Self {
-        Self::Pending
     }
 }
 
