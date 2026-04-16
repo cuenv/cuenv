@@ -168,13 +168,13 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, _child_pid: libc::pid_t) {
             }
 
             let mut change: libc::kevent = std::mem::zeroed();
-            change.ident = parent_pid as usize;
+            change.ident = usize::try_from(parent_pid).expect("pid fits in usize");
             change.filter = libc::EVFILT_PROC;
             change.flags = libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT;
             change.fflags = libc::NOTE_EXIT;
 
             let mut event: libc::kevent = std::mem::zeroed();
-            let n = libc::kevent(kq, &change, 1, &mut event, 1, std::ptr::null());
+            let n = libc::kevent(kq, &raw const change, 1, &raw mut event, 1, std::ptr::null());
             if n < 0 {
                 tracing::warn!(
                     "cuenv __supervise: kevent() failed (errno {}); killing group",

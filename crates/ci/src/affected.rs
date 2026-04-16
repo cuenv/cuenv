@@ -16,17 +16,14 @@ pub fn compute_affected_tasks(
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
 
-    // 1. Identify directly affected tasks (file changes in this project)
-    for task_name in pipeline_tasks {
-        if is_task_directly_affected(task_name, config, changed_files, project_root) {
-            affected.insert(task_name.clone());
-        }
-    }
-
-    // 2. Transitive dependencies
-    // We need to check dependencies recursively including cross-project ones
-    // Build task index once for resolving nested task names
+    // Build task index for resolving nested task names
     let Ok(index) = TaskIndex::build(&config.tasks) else {
+        // Without an index we can only do direct checks on pipeline tasks
+        for task_name in pipeline_tasks {
+            if is_task_directly_affected(task_name, config, changed_files, project_root) {
+                affected.insert(task_name.clone());
+            }
+        }
         return pipeline_tasks
             .iter()
             .filter(|t| affected.contains(*t))
@@ -34,10 +31,22 @@ pub fn compute_affected_tasks(
             .collect();
     };
 
+    // Expand pipeline tasks to the full DAG so every dependency is evaluated
+    let all_dag_tasks = collect_dag_tasks(pipeline_tasks, &index);
+
+    // 1. Identify directly affected tasks across the entire DAG
+    for task_name in &all_dag_tasks {
+        if is_task_directly_affected(task_name, config, changed_files, project_root) {
+            affected.insert(task_name.clone());
+        }
+    }
+
+    // 2. Propagate affected status through dependencies (fix-point loop)
+    // A task is transitively affected if any of its dependencies are affected.
     let mut changed = true;
     while changed {
         changed = false;
-        for task_name in pipeline_tasks {
+        for task_name in &all_dag_tasks {
             if affected.contains(task_name) {
                 continue;
             }
@@ -48,24 +57,18 @@ pub fn compute_affected_tasks(
             {
                 for dep in &task.depends_on {
                     let dep_name = dep.task_name();
-                    // Internal dependency
-                    if !dep_name.starts_with('#') {
-                        if affected.contains(dep_name) {
-                            affected.insert(task_name.clone());
-                            changed = true;
-                            break;
-                        }
-                        continue;
-                    }
+                    let dep_affected = if dep_name.starts_with('#') {
+                        check_external_dependency(
+                            dep_name,
+                            all_projects,
+                            changed_files,
+                            &mut visited_external_cache,
+                        )
+                    } else {
+                        affected.contains(dep_name)
+                    };
 
-                    // External dependency (#project:task) - no longer supported
-                    // Keeping check for safety but this path shouldn't be hit
-                    if check_external_dependency(
-                        dep_name,
-                        all_projects,
-                        changed_files,
-                        &mut visited_external_cache,
-                    ) {
+                    if dep_affected {
                         affected.insert(task_name.clone());
                         changed = true;
                         break;
@@ -75,12 +78,43 @@ pub fn compute_affected_tasks(
         }
     }
 
-    // Return in pipeline order
+    // Return in pipeline order, filtered to pipeline tasks only.
+    // The executor handles dependency resolution when running each task.
     pipeline_tasks
         .iter()
         .filter(|t| affected.contains(*t))
         .cloned()
         .collect()
+}
+
+/// Walk the dependency graph from `roots` and collect every task reachable
+/// through `depends_on`, including the roots themselves.
+fn collect_dag_tasks(roots: &[String], index: &TaskIndex) -> Vec<String> {
+    let mut visited = HashSet::new();
+    let mut queue = std::collections::VecDeque::new();
+
+    for root in roots {
+        if visited.insert(root.clone()) {
+            queue.push_back(root.clone());
+        }
+    }
+
+    while let Some(task_name) = queue.pop_front() {
+        if let Ok(entry) = index.resolve(&task_name)
+            && let Some(task) = entry.node.as_task()
+        {
+            for dep in &task.depends_on {
+                let dep_name = dep.task_name();
+                // Only follow internal dependencies; external (#project:task) are
+                // handled separately during propagation.
+                if !dep_name.starts_with('#') && visited.insert(dep_name.to_string()) {
+                    queue.push_back(dep_name.to_string());
+                }
+            }
+        }
+    }
+
+    visited.into_iter().collect()
 }
 
 #[must_use]
@@ -875,5 +909,94 @@ mod tests {
             check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
 
         assert!(!result);
+    }
+
+    // ==========================================================================
+    // DAG expansion and non-pipeline dependency tests
+    // ==========================================================================
+
+    #[test]
+    fn test_compute_affected_tasks_non_pipeline_dep() {
+        // Pipeline only lists deploy, but deploy depends on build.
+        // build's inputs match changed files -> deploy should be affected.
+        let build_task = make_task(vec!["src/**"], vec![]);
+        let deploy_task = make_task(vec!["dist/**"], vec!["build"]);
+        let project = make_project(vec![("build", build_task), ("deploy", deploy_task)]);
+        let changed_files = vec![PathBuf::from("src/app.vue")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert_eq!(
+            affected,
+            vec!["deploy"],
+            "deploy should be affected via its non-pipeline build dependency"
+        );
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_deep_non_pipeline_chain() {
+        // Pipeline: [deploy], DAG: deploy -> build -> generateTypes
+        // Only generateTypes inputs match -> deploy should still be affected.
+        let gen_task = make_task(vec!["schema/**"], vec![]);
+        let build_task = make_task(vec!["dist/**"], vec!["generateTypes"]);
+        let deploy_task = make_task(vec!["release/**"], vec!["build"]);
+        let project = make_project(vec![
+            ("generateTypes", gen_task),
+            ("build", build_task),
+            ("deploy", deploy_task),
+        ]);
+        let changed_files = vec![PathBuf::from("schema/types.graphql")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert_eq!(
+            affected,
+            vec!["deploy"],
+            "deploy should be affected via generateTypes -> build -> deploy chain"
+        );
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_non_pipeline_dep_no_match() {
+        // Pipeline: [deploy], DAG: deploy -> build
+        // Neither deploy nor build inputs match -> deploy should NOT be affected.
+        let build_task = make_task(vec!["src/**"], vec![]);
+        let deploy_task = make_task(vec!["dist/**"], vec!["build"]);
+        let project = make_project(vec![("build", build_task), ("deploy", deploy_task)]);
+        let changed_files = vec![PathBuf::from("docs/readme.md")];
+        let root = Path::new(".");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert!(
+            affected.is_empty(),
+            "deploy should not be affected when no DAG inputs match"
+        );
     }
 }
