@@ -49,6 +49,19 @@ Project + Pipeline -> Compiler -> Fixed-point iteration -> IR
 
 The compiler applies contributors in a loop until no contributor reports modifications (stable state).
 
+### Affected Task Detection
+
+When `cuenv ci` runs a pipeline, it determines which tasks are **affected** by the changed files (detected via `git diff` against the base ref). The full dependency graph is walked so that every task reachable from the pipeline tasks is evaluated:
+
+1. The pipeline's task list is expanded to include all transitive dependencies (the full DAG).
+2. Each task in the DAG is checked for direct affect — its `inputs` patterns are matched against changed files.
+3. Affected status propagates upward through `dependsOn`: if any dependency is affected, the dependent task is also affected.
+4. Tasks with **no inputs** are always considered affected (safe default).
+
+Only affected pipeline tasks are executed. The executor handles running each task's full dependency chain.
+
+For release events, all tasks run unconditionally (no affected-file filtering).
+
 ## Task Priority and Ordering
 
 Contributors use **priority** values to determine task ordering. Lower values run first:
