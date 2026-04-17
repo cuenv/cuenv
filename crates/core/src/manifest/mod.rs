@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
+use crate::environment::EnvValue;
 use crate::module::Instance;
 use crate::secrets::Secret;
-use crate::environment::EnvValue;
 use crate::tasks::Task;
 use crate::tasks::{
     Input, Mapping, ProjectReference, ScriptShell, ShellOptions, TaskDependency, TaskNode,

@@ -35,6 +35,9 @@ pub mod release;
 pub mod restart;
 /// Secrets provider setup and management.
 pub mod secrets;
+/// Hidden process-babysitter subcommand (`cuenv __supervise`).
+#[cfg(unix)]
+pub mod supervise;
 /// Synchronization commands for codegen, CI, and other providers.
 pub mod sync;
 /// Task execution and orchestration commands.
@@ -45,9 +48,6 @@ pub mod task_list;
 pub mod task_picker;
 /// Tools command for multi-source tool management.
 pub mod tools;
-/// Hidden process-babysitter subcommand (`cuenv __supervise`).
-#[cfg(unix)]
-pub mod supervise;
 /// Bring up long-running services.
 pub mod up;
 /// Version information and display.
