@@ -342,7 +342,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GH_TOKEN: cuenv:passthrough:HOMEBREW_TAP_TOKEN
         TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:

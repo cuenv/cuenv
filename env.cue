@@ -67,7 +67,6 @@ schema.#Project & {
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
 			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
 			VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
-			HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
 		}
 	}
 
@@ -413,7 +412,7 @@ schema.#Project & {
 				dependsOn: [_t.publish.github]
 				env: {
 					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
-					GH_TOKEN: schema.#EnvPassthrough & {name: "HOMEBREW_TAP_TOKEN"}
+					GH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
 				}
 				command: "bash"
 				args: ["-c", """
@@ -463,7 +462,14 @@ schema.#Project & {
 					  end
 
 					  def install
-					    bin.install "cuenv"
+					    binary = if OS.mac? && Hardware::CPU.arm?
+					      "cuenv-darwin-arm64"
+					    elsif OS.linux? && Hardware::CPU.intel?
+					      "cuenv-linux-x64"
+					    else
+					      odie "Unsupported platform"
+					    end
+					    bin.install binary => "cuenv"
 					  end
 
 					  test do
@@ -474,7 +480,7 @@ schema.#Project & {
 					)
 
 					# Push to tap repo
-					ENCODED=$(echo "$FORMULA" | base64)
+					ENCODED=$(printf '%s' "$FORMULA" | base64 | tr -d '\n')
 					EXISTING_SHA=$(gh api "repos/${TAP_REPO}/contents/Formula/cuenv.rb" --jq '.sha' 2>/dev/null || echo "")
 
 					if [ -n "$EXISTING_SHA" ]; then
