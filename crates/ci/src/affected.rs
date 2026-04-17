@@ -13,30 +13,52 @@ pub fn compute_affected_tasks(
     config: &Project,
     all_projects: &HashMap<String, (PathBuf, Project)>,
 ) -> Vec<String> {
+    tracing::trace!(
+        project_root = %project_root.display(),
+        pipeline_tasks = ?pipeline_tasks,
+        changed_files = ?changed_files,
+        "Computing affected tasks for CI pipeline"
+    );
+
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
 
     // Build task index for resolving nested task names
     let Ok(index) = TaskIndex::build(&config.tasks) else {
+        tracing::trace!("Failed to build task index; falling back to direct pipeline checks");
         // Without an index we can only do direct checks on pipeline tasks
         for task_name in pipeline_tasks {
             if is_task_directly_affected(task_name, config, changed_files, project_root) {
+                tracing::trace!(
+                    task = task_name,
+                    "Marked pipeline task affected during fallback"
+                );
                 affected.insert(task_name.clone());
             }
         }
-        return pipeline_tasks
+        let fallback_result: Vec<String> = pipeline_tasks
             .iter()
             .filter(|t| affected.contains(*t))
             .cloned()
             .collect();
+        tracing::trace!(affected_tasks = ?fallback_result, "Affected task computation complete");
+        return fallback_result;
     };
 
     // Expand pipeline tasks to the full DAG so every dependency is evaluated
     let all_dag_tasks = collect_dag_tasks(pipeline_tasks, &index);
+    tracing::trace!(all_dag_tasks = ?all_dag_tasks, "Expanded pipeline task DAG");
 
     // 1. Identify directly affected tasks across the entire DAG
     for task_name in &all_dag_tasks {
-        if is_task_directly_affected(task_name, config, changed_files, project_root) {
+        let directly_affected =
+            is_task_directly_affected(task_name, config, changed_files, project_root);
+        tracing::trace!(
+            task = task_name,
+            directly_affected,
+            "Evaluated direct task affect"
+        );
+        if directly_affected {
             affected.insert(task_name.clone());
         }
     }
@@ -68,7 +90,19 @@ pub fn compute_affected_tasks(
                         affected.contains(dep_name)
                     };
 
+                    tracing::trace!(
+                        task = task_name,
+                        dependency = dep_name,
+                        dep_affected,
+                        "Evaluated dependency while propagating affected status"
+                    );
+
                     if dep_affected {
+                        tracing::trace!(
+                            task = task_name,
+                            dependency = dep_name,
+                            "Marked task transitively affected via dependency"
+                        );
                         affected.insert(task_name.clone());
                         changed = true;
                         break;
@@ -80,11 +114,13 @@ pub fn compute_affected_tasks(
 
     // Return in pipeline order, filtered to pipeline tasks only.
     // The executor handles dependency resolution when running each task.
-    pipeline_tasks
+    let result: Vec<String> = pipeline_tasks
         .iter()
         .filter(|t| affected.contains(*t))
         .cloned()
-        .collect()
+        .collect();
+    tracing::trace!(affected_tasks = ?result, "Affected task computation complete");
+    result
 }
 
 /// Walk the dependency graph from `roots` and collect every task reachable
@@ -455,6 +491,65 @@ mod tests {
 
         // Only build should be returned (test not in pipeline)
         assert_eq!(affected, vec!["build"]);
+    }
+
+    #[test]
+    fn test_compute_affected_tasks_deploy_pipeline_with_absolute_project_root() {
+        let generate_types = make_task(
+            vec![
+                "../package.json",
+                "../bun.lock",
+                "package.json",
+                "wrangler.jsonc",
+            ],
+            vec![],
+        );
+        let build = make_task(
+            vec![
+                "../package.json",
+                "../bun.lock",
+                "package.json",
+                "astro.config.mjs",
+                "tsconfig.json",
+                "wrangler.jsonc",
+                "src/**",
+                "public/**",
+            ],
+            vec!["generateTypes"],
+        );
+        let deploy = make_task(vec!["wrangler.jsonc", "dist/**"], vec!["build"]);
+
+        let project = make_project(vec![
+            ("generateTypes", generate_types),
+            ("build", build),
+            ("deploy", deploy),
+        ]);
+        let changed_files = vec![PathBuf::from("chat/src/components/chat/ChatEditor.vue")];
+        let root = Path::new("/repo/chat");
+        let pipeline_tasks = vec!["deploy".to_string()];
+        let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
+
+        let affected = compute_affected_tasks(
+            &changed_files,
+            &pipeline_tasks,
+            root,
+            &project,
+            &all_projects,
+        );
+
+        assert_eq!(affected, vec!["deploy"]);
+    }
+
+    #[test]
+    fn test_matched_inputs_for_task_with_absolute_project_root() {
+        let task = make_task(vec!["src/**", "public/**"], vec![]);
+        let project = make_project(vec![("build", task)]);
+        let changed_files = vec![PathBuf::from("chat/src/components/chat/ChatEditor.vue")];
+        let root = Path::new("/repo/chat");
+
+        let matched = matched_inputs_for_task("build", &project, &changed_files, root);
+
+        assert_eq!(matched, vec!["src/**".to_string()]);
     }
 
     #[test]
