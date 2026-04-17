@@ -67,6 +67,7 @@ schema.#Project & {
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
 			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
 			VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
+			HOMEBREW_TAP_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/homebrew-tap/password"}
 		}
 	}
 
@@ -156,6 +157,7 @@ schema.#Project & {
 						}
 					},
 					_t.publish.cue,
+					_t.publish.homebrew,
 					_t.docs.deploy,
 				]
 			}
@@ -405,6 +407,84 @@ schema.#Project & {
 					cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
 					"""]
 				inputs: ["cue.mod/**", "schema/**"]
+			}
+
+			homebrew: schema.#Task & {
+				dependsOn: [_t.publish.github]
+				env: {
+					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+					GH_TOKEN: schema.#EnvPassthrough & {name: "HOMEBREW_TAP_TOKEN"}
+				}
+				command: "bash"
+				args: ["-c", """
+					set -euo pipefail
+
+					TAG=${TAG:-$(git describe --tags --abbrev=0 2>/dev/null || echo "")}
+					if [ -z "$TAG" ]; then
+						echo "Error: No git tag found"
+						exit 1
+					fi
+
+					REPO="cuenv/cuenv"
+					TAP_REPO="cuenv/homebrew-tap"
+					DARWIN_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-darwin-arm64"
+					LINUX_X64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-linux-x64"
+
+					# Download and checksum
+					TMPDIR=$(mktemp -d)
+					trap 'rm -rf "$TMPDIR"' EXIT
+
+					gh release download "$TAG" -R "$REPO" -p "cuenv-darwin-arm64" -D "$TMPDIR"
+					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-x64" -D "$TMPDIR"
+
+					DARWIN_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-darwin-arm64" | awk '{print $1}')
+					LINUX_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-x64" | awk '{print $1}')
+
+					# Generate formula
+					FORMULA=$(cat <<RUBY
+					class Cuenv < Formula
+					  desc "Modern application build toolchain with typed environments and CUE-powered task orchestration"
+					  homepage "https://github.com/cuenv/cuenv"
+					  version "${TAG}"
+					  license "AGPL-3.0-or-later"
+
+					  on_macos do
+					    on_arm do
+					      url "${DARWIN_ARM64_URL}"
+					      sha256 "${DARWIN_SHA256}"
+					    end
+					  end
+
+					  on_linux do
+					    on_intel do
+					      url "${LINUX_X64_URL}"
+					      sha256 "${LINUX_SHA256}"
+					    end
+					  end
+
+					  def install
+					    bin.install "cuenv"
+					  end
+
+					  test do
+					    assert_match version.to_s, shell_output("#{bin}/cuenv --version")
+					  end
+					end
+					RUBY
+					)
+
+					# Push to tap repo
+					ENCODED=$(echo "$FORMULA" | base64)
+					EXISTING_SHA=$(gh api "repos/${TAP_REPO}/contents/Formula/cuenv.rb" --jq '.sha' 2>/dev/null || echo "")
+
+					if [ -n "$EXISTING_SHA" ]; then
+						gh api -X PUT "repos/${TAP_REPO}/contents/Formula/cuenv.rb" -f message="bump: cuenv ${TAG}" -f content="$ENCODED" -f sha="$EXISTING_SHA" -f branch="main"
+					else
+						gh api -X PUT "repos/${TAP_REPO}/contents/Formula/cuenv.rb" -f message="bump: cuenv ${TAG}" -f content="$ENCODED" -f branch="main"
+					fi
+
+					echo "Homebrew formula updated to ${TAG}"
+					"""]
 			}
 		}
 
