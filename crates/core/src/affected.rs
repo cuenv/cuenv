@@ -36,12 +36,10 @@ pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) ->
         // Normalize the file path relative to project root
         let relative_path = normalize_path(file, project_root);
 
-        if is_simple_path {
+        let matched = if is_simple_path {
             // Check if the pattern is a prefix of the file path
             let pattern_path = Path::new(pattern);
-            if relative_path.starts_with(pattern_path) {
-                return true;
-            }
+            relative_path.starts_with(pattern_path)
         } else {
             // Use glob matching for patterns with wildcards
             let Ok(glob) = Glob::new(pattern) else {
@@ -51,9 +49,20 @@ pub fn matches_pattern(files: &[PathBuf], project_root: &Path, pattern: &str) ->
             let Ok(set) = GlobSetBuilder::new().add(glob).build() else {
                 continue;
             };
-            if set.is_match(&relative_path) {
-                return true;
-            }
+            set.is_match(&relative_path)
+        };
+
+        tracing::trace!(
+            file = %file.display(),
+            normalized = %relative_path.display(),
+            project_root = %project_root.display(),
+            pattern,
+            matched,
+            "Compared changed file against affected pattern"
+        );
+
+        if matched {
+            return true;
         }
     }
 
@@ -96,23 +105,68 @@ pub fn build_glob_set<'a>(patterns: impl Iterator<Item = &'a str>) -> Option<Glo
 fn normalize_path(file: &Path, project_root: &Path) -> PathBuf {
     // If root is "." or empty, use file as-is
     if project_root == Path::new(".") || project_root.as_os_str().is_empty() {
+        tracing::trace!(
+            file = %file.display(),
+            project_root = %project_root.display(),
+            normalized = %file.display(),
+            "Project root is current directory; using file path as-is"
+        );
         return file.to_path_buf();
     }
 
-    // If file is already relative (e.g., from git diff), check if it starts with project root
-    if file.is_relative() {
-        // Try to strip the project root prefix from the file
-        if let Ok(stripped) = file.strip_prefix(project_root) {
-            return stripped.to_path_buf();
+    if let Some(stripped) = strip_project_root_prefix(file, project_root) {
+        tracing::trace!(
+            file = %file.display(),
+            project_root = %project_root.display(),
+            normalized = %stripped.display(),
+            "Normalized changed file relative to project root"
+        );
+        return stripped;
+    }
+
+    tracing::trace!(
+        file = %file.display(),
+        project_root = %project_root.display(),
+        normalized = %file.display(),
+        "Could not normalize changed file against project root; using original path"
+    );
+    file.to_path_buf()
+}
+
+fn strip_project_root_prefix(file: &Path, project_root: &Path) -> Option<PathBuf> {
+    if let Ok(stripped) = file.strip_prefix(project_root) {
+        return Some(stripped.to_path_buf());
+    }
+
+    if file.is_relative() && project_root.is_absolute() {
+        return strip_relative_file_with_absolute_project_root(file, project_root);
+    }
+
+    None
+}
+
+fn strip_relative_file_with_absolute_project_root(
+    file: &Path,
+    project_root: &Path,
+) -> Option<PathBuf> {
+    let root_components: Vec<_> = project_root.components().collect();
+
+    for suffix_start in 0..root_components.len() {
+        let candidate: PathBuf = root_components[suffix_start..]
+            .iter()
+            .map(|component| component.as_os_str())
+            .collect();
+
+        if candidate.as_os_str().is_empty() || candidate.is_absolute() {
+            continue;
         }
-        // File is relative but doesn't start with project root - use as-is
-        return file.to_path_buf();
+
+        if file.starts_with(&candidate) {
+            return file.strip_prefix(&candidate).ok().map(Path::to_path_buf);
+        }
     }
 
-    // File is absolute - strip the project root prefix
-    file.strip_prefix(project_root)
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|_| file.to_path_buf())
+    None
 }
 
 /// Trait for types that can determine if they are affected by file changes.
@@ -207,6 +261,34 @@ mod tests {
 
         let normalized = normalize_path(file, root);
         assert_eq!(normalized, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative_file_with_absolute_project_root() {
+        let file = Path::new("chat/src/lib.rs");
+        let root = Path::new("/repo/chat");
+
+        let normalized = normalize_path(file, root);
+        assert_eq!(normalized, PathBuf::from("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative_file_with_nested_absolute_project_root() {
+        let file = Path::new("infrastructure/waddle.cloud/src/main.rs");
+        let root = Path::new("/repo/infrastructure/waddle.cloud");
+
+        let normalized = normalize_path(file, root);
+        assert_eq!(normalized, PathBuf::from("src/main.rs"));
+    }
+
+    #[test]
+    fn test_matches_pattern_with_absolute_project_root() {
+        let files = vec![PathBuf::from("chat/src/app.rs")];
+        let root = Path::new("/repo/chat");
+
+        assert!(matches_pattern(&files, root, "src"));
+        assert!(matches_pattern(&files, root, "src/app.rs"));
+        assert!(matches_pattern(&files, root, "src/**"));
     }
 
     #[test]

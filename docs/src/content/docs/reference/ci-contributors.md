@@ -55,8 +55,9 @@ When `cuenv ci` runs a pipeline, it determines which tasks are **affected** by t
 
 1. The pipeline's task list is expanded to include all transitive dependencies (the full DAG).
 2. Each task in the DAG is checked for direct affect — its `inputs` patterns are matched against changed files.
-3. Affected status propagates upward through `dependsOn`: if any dependency is affected, the dependent task is also affected.
-4. Tasks with **no inputs** are always considered affected (safe default).
+3. Changed file paths are normalized before matching so repo-relative paths from CI providers still match project-relative task inputs, even when the project root is an absolute subdirectory path.
+4. Affected status propagates upward through `dependsOn`: if any dependency is affected, the dependent task is also affected.
+5. Tasks with **no inputs** are always considered affected (safe default).
 
 Only affected pipeline tasks are executed. The executor handles running each task's full dependency chain.
 
