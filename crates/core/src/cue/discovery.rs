@@ -280,6 +280,7 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
 #[must_use]
 pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
     let mut directories = Vec::new();
+    let mut entries_visited: u64 = 0;
 
     let walker = WalkBuilder::new(module_root)
         .follow_links(false)
@@ -287,6 +288,7 @@ pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
         .build();
 
     for result in walker {
+        entries_visited += 1;
         let Ok(entry) = result else { continue };
         let path = entry.path();
         if !is_env_cue_file(path) {
@@ -295,9 +297,17 @@ pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
         if let Some(dir) = path.parent()
             && let Ok(canonical) = dir.canonicalize()
         {
+            tracing::debug!(dir = %canonical.display(), "discovered env.cue directory");
             directories.push(canonical);
         }
     }
+
+    tracing::info!(
+        module_root = %module_root.display(),
+        entries_visited,
+        discovered = directories.len(),
+        "discover_all_env_cue_directories complete"
+    );
 
     directories
 }

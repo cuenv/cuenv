@@ -621,9 +621,15 @@ impl CommandExecutor {
         }
 
         let package = &self.package;
+        tracing::info!(
+            env_cue_dirs = env_cue_dirs.len(),
+            rayon_threads = rayon::current_num_threads(),
+            "evaluate_workspace_module fan-out"
+        );
         let results: Vec<_> = env_cue_dirs
             .par_iter()
             .map(|dir| {
+                tracing::debug!(dir = %dir.display(), "cuengine::evaluate_module begin");
                 let options = ModuleEvalOptions {
                     recursive: false,
                     with_references: true,
