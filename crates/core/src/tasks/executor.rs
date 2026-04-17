@@ -295,6 +295,8 @@ impl TaskExecutor {
                     .as_ref()
                     .unwrap_or(&self.config.project_root)
                     .join(dir)
+            } else if let Some(ref project_root) = task.project_root {
+                project_root.clone()
             } else {
                 self.config
                     .cue_module_root
