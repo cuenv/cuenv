@@ -279,9 +279,53 @@ pub fn evaluate_module(
     let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
     let c_options = options_to_cstring(options)?;
 
-    let json_str = call_ffi_eval_module(&c_module_root, &c_package, &c_options)?;
-    let envelope = parse_bridge_envelope(&json_str)?;
-    let module_result = process_bridge_response(envelope, module_root)?;
+    // Run the blocking FFI call in a worker thread so we can enforce a timeout.
+    // A pathological CUE evaluation (e.g. exponential unification from a deeply
+    // disjunctive schema) can allocate unbounded Go-side memory. If it does not
+    // complete within the timeout we surface an error rather than letting a
+    // hung evaluator consume the host. The worker thread is detached: we cannot
+    // safely abort an in-flight Go call, but returning an error allows the
+    // caller to fail fast and exit the process.
+    let timeout = std::time::Duration::from_secs(10);
+    let module_root_owned = module_root.to_path_buf();
+    let span = tracing::Span::current();
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Result<ModuleResult>>(1);
+
+    std::thread::spawn(move || {
+        let _entered = span.enter();
+        let result = (|| {
+            let json_str = call_ffi_eval_module(&c_module_root, &c_package, &c_options)?;
+            let envelope = parse_bridge_envelope(&json_str)?;
+            process_bridge_response(envelope, &module_root_owned)
+        })();
+        let _ = tx.send(result);
+    });
+
+    let module_result = match rx.recv_timeout(timeout) {
+        Ok(inner) => inner?,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            tracing::error!(
+                timeout_secs = timeout.as_secs(),
+                module_root = %module_root.display(),
+                package_name,
+                "CUE evaluation timed out"
+            );
+            return Err(Error::ffi(
+                "cue_eval_module",
+                format!(
+                    "CUE evaluation timed out after {}s for module {}",
+                    timeout.as_secs(),
+                    module_root.display()
+                ),
+            ));
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            return Err(Error::ffi(
+                "cue_eval_module",
+                "CUE evaluation worker thread disconnected unexpectedly".to_string(),
+            ));
+        }
+    };
 
     let total_duration = start_time.elapsed();
     tracing::info!(
