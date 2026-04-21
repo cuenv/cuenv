@@ -253,7 +253,13 @@ cuenv release version
 
 # See publish order
 cuenv release publish --dry-run
+
+# Publish crates in dependency order
+cuenv release publish
 ```
+
+Avoid `cargo publish --workspace` for cuenv releases. Workspace crates can have publish-time
+dependency ordering constraints that `cuenv release publish` handles explicitly.
 
 ## IDE Setup
 
