@@ -10,8 +10,8 @@
 #![allow(clippy::expect_used)]
 
 use cuenv_1password::secrets::{core, wasm};
-use cuenv_core::http::ensure_rustls_crypto_provider;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 /// 1Password WASM SDK URL (pinned to v0.3.1)
 const ONEPASSWORD_WASM_URL: &str =
@@ -19,6 +19,19 @@ const ONEPASSWORD_WASM_URL: &str =
 
 /// Minimum expected size for the 1Password WASM file (5 MB)
 const MIN_WASM_SIZE: u64 = 5_000_000;
+static RUSTLS_PROVIDER_INSTALLED: OnceLock<()> = OnceLock::new();
+
+fn ensure_rustls_crypto_provider() {
+    RUSTLS_PROVIDER_INSTALLED.get_or_init(|| {
+        if rustls::crypto::CryptoProvider::get_default().is_none()
+            && rustls::crypto::ring::default_provider()
+                .install_default()
+                .is_err()
+        {
+            panic!("Failed to install rustls crypto provider");
+        }
+    });
+}
 
 /// Ensure WASM is available, downloading if necessary.
 /// Uses atomic file operations to handle concurrent test execution safely.

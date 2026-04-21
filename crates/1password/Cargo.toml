@@ -31,8 +31,8 @@ getrandom = "0.3"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 [dev-dependencies]
-cuenv-core = { workspace = true }
 tokio-test = { workspace = true }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
 temp-env = { workspace = true }
 tempfile = { workspace = true }
+rustls = { workspace = true }
