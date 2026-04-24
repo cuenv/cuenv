@@ -27,7 +27,15 @@ import "github.com/cuenv/cuenv/schema"
 		label:    "Setup cuenv"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		script: "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync ci"
+		script: """
+			arch="$(uname -m)"
+			case "$arch" in
+			  x86_64|amd64) cuenv_asset="cuenv-linux-x64" ;;
+			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
+			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+			esac
+			curl -sSL -o /usr/local/bin/cuenv "https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync ci
+			"""
 	}]
 }
 
@@ -41,7 +49,15 @@ import "github.com/cuenv/cuenv/schema"
 		label:    "Setup cuenv (release)"
 		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
-		script: "curl -sSL -o /usr/local/bin/cuenv https://github.com/cuenv/cuenv/releases/latest/download/cuenv-linux-x64 && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A"
+		script: """
+			arch="$(uname -m)"
+			case "$arch" in
+			  x86_64|amd64) cuenv_asset="cuenv-linux-x64" ;;
+			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
+			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
+			esac
+			curl -sSL -o /usr/local/bin/cuenv "https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A
+			"""
 	}]
 }
 

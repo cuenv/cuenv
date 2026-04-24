@@ -60,6 +60,12 @@ Pre-built binaries will be available once cuenv reaches stable release.
 
 Download pre-built binaries from the [releases page](https://github.com/cuenv/cuenv/releases).
 
+Release assets are published for:
+
+- `cuenv-darwin-arm64`
+- `cuenv-linux-x64`
+- `cuenv-linux-arm64`
+
 ### Method 5: From Source
 
 Build from source for the latest development features:

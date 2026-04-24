@@ -117,6 +117,10 @@ env: {
     // Boolean (converted to string when exported)
     DEBUG: true
 
+    // Host environment passthrough for task execution
+    GITHUB_ACTOR: schema.#EnvPassthrough
+    TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
+
     // Secret reference
     API_KEY: schema.#Secret & {
         command: "op"
@@ -132,6 +136,10 @@ env: {
     }
 }
 ```
+
+`#EnvPassthrough` forwards a variable from the process running cuenv into the task environment.
+Use it for CI-provided context such as GitHub Actions actor and ref values. When `name` is omitted,
+cuenv reads the host variable with the same name as the env key.
 
 ### #Environment
 
@@ -1222,6 +1230,50 @@ when: {
     release: ["published"]               // Run on release events
 }
 ```
+
+### Example: GitHub Packages Publishing
+
+Generated GitHub Actions workflows seed standard GitHub context into cuenv execution steps. Publishing
+tasks should still explicitly opt in to the values they consume with `#EnvPassthrough`:
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+let #GitHubPublishEnv = {
+    GITHUB_TOKEN:    schema.#EnvPassthrough
+    GITHUB_ACTOR:   schema.#EnvPassthrough
+    GITHUB_REF_TYPE: schema.#EnvPassthrough
+    GITHUB_REF_NAME: schema.#EnvPassthrough
+}
+
+ci: {
+    providers: ["github"]
+    provider: github: permissions: packages: "write"
+}
+
+tasks: {
+    publish: schema.#Task & {
+        env: #GitHubPublishEnv
+        command: "bash"
+        args: ["-c", """
+            set -euo pipefail
+
+            : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+            : "${GITHUB_ACTOR:?GITHUB_ACTOR is required}"
+
+            echo "actor_present=yes ref_type=${GITHUB_REF_TYPE:-unset} ref_name=${GITHUB_REF_NAME:-unset}"
+            oras version
+
+            echo "$GITHUB_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+            # existing publish commands here
+        """]
+    }
+}
+```
+
+No custom contributor is needed for this pattern. For local test runs, export the same variables
+yourself or the shell guards will fail before registry login.
 
 ### Example: Multi-Provider Configuration
 

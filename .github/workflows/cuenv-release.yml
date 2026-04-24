@@ -55,6 +55,39 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  build-cuenv-namespace-profile-cuenv-linux-arm64:
+    name: build.cuenv (namespace-profile-cuenv-linux-arm64)
+    runs-on: namespace-profile-cuenv-linux-arm64
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
+    - name: Build cuenv (nix)
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        nix build .#cuenv -L --accept-flake-config
+        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+        ./result/bin/cuenv sync ci
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   build-cuenv-namespace-profile-cuenv-linux-x86:
     name: build.cuenv (namespace-profile-cuenv-linux-x86)
     runs-on: namespace-profile-cuenv-linux-x86
@@ -141,6 +174,59 @@ jobs:
         path: target/release/cuenv
         if-no-files-found: ignore
         include-hidden-files: true
+  cargo-build-linux-arm64:
+    name: cargo.build (linux-arm64)
+    runs-on: namespace-profile-cuenv-linux-arm64
+    needs:
+    - build-cuenv-namespace-profile-cuenv-linux-arm64
+    timeout-minutes: 60
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@v16
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.9
+      env:
+        RUSTC_WRAPPER: sccache
+        SCCACHE_DIR: ${{ runner.temp }}/sccache
+    - name: Export sccache environment
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
+    - name: Setup Cachix
+      uses: cachix/cachix-action@v17
+      with:
+        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        name: cuenv
+    - name: Build cuenv (nix)
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        nix build .#cuenv -L --accept-flake-config
+        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+        ./result/bin/cuenv sync ci
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Setup 1Password
+      run: cuenv exec -- cuenv secrets setup onepassword
+      env:
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: cargo.build (linux-arm64)
+      run: cuenv task cargo.build -e production --skip-dependencies
+      working-directory: .
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        CUENV_ARCH: linux-arm64
+        OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: cargo-build-linux-arm64
+        path: target/release/cuenv
+        if-no-files-found: ignore
+        include-hidden-files: true
   cargo-build-linux-x64:
     name: cargo.build (linux-x64)
     runs-on: namespace-profile-cuenv-linux-x86
@@ -200,6 +286,7 @@ jobs:
     needs:
     - build-cuenv-namespace-profile-cuenv-linux-x86
     - cargo-build-darwin-arm64
+    - cargo-build-linux-arm64
     - cargo-build-linux-x64
     timeout-minutes: 30
     steps:
@@ -240,6 +327,11 @@ jobs:
       with:
         name: cargo-build-darwin-arm64
         path: dist/darwin-arm64
+    - name: Download cargo-build-linux-arm64
+      uses: actions/download-artifact@v4
+      with:
+        name: cargo-build-linux-arm64
+        path: dist/linux-arm64
     - name: Download cargo-build-linux-x64
       uses: actions/download-artifact@v4
       with:
