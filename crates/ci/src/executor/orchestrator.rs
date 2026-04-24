@@ -444,6 +444,28 @@ async fn execute_project_pipeline(
     Ok((pipeline_status, task_errors))
 }
 
+/// Apply task-level environment variables to the merged task environment.
+///
+/// Task env has the highest precedence. Passthrough placeholders intentionally
+/// read from the host process at execution time so CI-provided values such as
+/// GitHub Actions context variables remain available inside hermetic tasks.
+fn apply_task_env(env: &mut BTreeMap<String, String>, task_env: &BTreeMap<String, String>) {
+    for (key, value) in task_env {
+        if let Some(host_var) = cuenv_core::tasks::output_refs::parse_passthrough(value) {
+            match std::env::var(host_var) {
+                Ok(host_value) => {
+                    env.insert(key.clone(), host_value);
+                }
+                Err(_) => {
+                    env.remove(key);
+                }
+            }
+        } else if !value.starts_with("cuenv:ref:") {
+            env.insert(key.clone(), value.clone());
+        }
+    }
+}
+
 /// Write pipeline report to disk
 fn write_pipeline_report(
     report: &PipelineReport,
@@ -889,9 +911,7 @@ async fn compile_and_execute_ir(
         for (key, value) in &resolved_env {
             env.insert(key.clone(), value.clone());
         }
-        for (key, value) in &ir_task.env {
-            env.insert(key.clone(), value.clone());
-        }
+        apply_task_env(&mut env, &ir_task.env);
 
         for step in &activation_steps {
             let current = env.get(&step.var).map(String::as_str);
@@ -1280,4 +1300,50 @@ async fn ensure_tools_downloaded(project_root: &Path) -> std::result::Result<(),
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_task_env;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn task_env_passthrough_reads_host_environment() {
+        temp_env::with_var("CUENV_TEST_GITHUB_ACTOR", Some("octocat"), || {
+            let mut env = BTreeMap::from([("GITHUB_ACTOR".to_string(), "lower".to_string())]);
+            let task_env = BTreeMap::from([(
+                "GITHUB_ACTOR".to_string(),
+                "cuenv:passthrough:CUENV_TEST_GITHUB_ACTOR".to_string(),
+            )]);
+
+            apply_task_env(&mut env, &task_env);
+
+            assert_eq!(env.get("GITHUB_ACTOR"), Some(&"octocat".to_string()));
+        });
+    }
+
+    #[test]
+    fn missing_task_env_passthrough_unsets_lower_precedence_value() {
+        temp_env::with_var_unset("CUENV_TEST_MISSING_ACTOR", || {
+            let mut env = BTreeMap::from([("GITHUB_ACTOR".to_string(), "lower".to_string())]);
+            let task_env = BTreeMap::from([(
+                "GITHUB_ACTOR".to_string(),
+                "cuenv:passthrough:CUENV_TEST_MISSING_ACTOR".to_string(),
+            )]);
+
+            apply_task_env(&mut env, &task_env);
+
+            assert!(!env.contains_key("GITHUB_ACTOR"));
+        });
+    }
+
+    #[test]
+    fn literal_task_env_overrides_lower_precedence_value() {
+        let mut env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "main".to_string())]);
+        let task_env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "release".to_string())]);
+
+        apply_task_env(&mut env, &task_env);
+
+        assert_eq!(env.get("GITHUB_REF_NAME"), Some(&"release".to_string()));
+    }
 }
