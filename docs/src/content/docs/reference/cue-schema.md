@@ -1173,6 +1173,7 @@ ci: {
     provider: github: {
         runner: "ubuntu-latest"
         cachix: name: "my-cache"
+        flakehub: name: "owner/flake"
     }
 
     // Pipeline definitions
@@ -1222,6 +1223,7 @@ pipelines: {
 
 | Field         | Type                 | Required | Description                                       |
 | ------------- | -------------------- | -------- | ------------------------------------------------- |
+| `name`        | `string`             | No       | Human-readable generated workflow name            |
 | `providers`   | `[...#CIProvider]`   | No       | Override global providers (completely replaces)   |
 | `mode`        | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"   |
 | `environment` | `string`             | No       | Environment for secret resolution                 |
@@ -1246,6 +1248,45 @@ when: {
     release: ["published"]               // Run on release events
 }
 ```
+
+### GitHub Provider Options
+
+GitHub provider configuration can be set globally under `ci.provider.github` or per-pipeline under
+`ci.pipelines.<name>.provider.github`. Per-pipeline values override global values for that pipeline.
+
+```cue
+ci: pipelines: publish: {
+    name: "Publish tags to FlakeHub"
+    when: {
+        tag: "v?[0-9]+.[0-9]+.[0-9]+*"
+        manual: tag: {
+            description: "The existing tag to publish to FlakeHub"
+            required:    true
+            type:        "string"
+        }
+    }
+    provider: github: {
+        checkout: {
+            uses:               "actions/checkout@v6"
+            persistCredentials: false
+            ref:                "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+        }
+        flakehub: {
+            name:               "owner/flake"
+            visibility:         "public"
+            tag:                "${{ inputs.tag }}"
+            includeOutputPaths: true
+        }
+        permissions: {
+            "id-token": "write"
+            contents:   "read"
+        }
+    }
+}
+```
+
+`checkout` customizes the generated `actions/checkout` step. `flakehub` activates the FlakeHub
+contributor and maps to `DeterminateSystems/flakehub-push@main`.
 
 ### Example: GitHub Packages Publishing
 

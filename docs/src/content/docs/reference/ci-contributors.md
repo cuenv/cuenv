@@ -102,7 +102,7 @@ runtime: schema.#NixFlake & {
 }
 ```
 
-**ActionSpec:** Uses `DeterminateSystems/nix-installer-action@v16` on GitHub Actions.
+**ActionSpec:** Uses `DeterminateSystems/determinate-nix-action@v3` on GitHub Actions.
 
 ---
 
@@ -130,7 +130,7 @@ The source and version are configured via `config.ci.cuenv`:
 | `release` (default) | `latest` or `0.17.0` | Download pre-built binary from GitHub Releases                    | No           |
 | `git`               | `self` (default)     | Build from current checkout via `nix build .#cuenv`               | Yes          |
 | `git`               | `0.17.0`             | Clone specific tag and build via nix                              | Yes          |
-| `nix`               | `self`               | Build from current checkout + Cachix                              | Yes          |
+| `nix`               | `self`               | Build from current checkout via Nix                               | Yes          |
 | `nix`               | `0.17.0`             | Install via `nix profile install github:cuenv/cuenv/0.17.0#cuenv` | Yes          |
 | `homebrew`          | (ignored)            | Install via `brew install cuenv/cuenv/cuenv`                      | **No**       |
 
@@ -160,7 +160,7 @@ config: ci: cuenv: {
     version: "self"
 }
 
-// Option 4: Nix mode - install specific version with Cachix
+// Option 4: Nix mode - install specific version with Nix
 config: ci: cuenv: {
     source: "nix"
     version: "0.19.0"
@@ -257,6 +257,62 @@ ci: {
 
 ---
 
+### FlakeHubContributor
+
+Publishes tagged flakes to FlakeHub.
+
+**Activation:** `ci.provider.github.flakehub` is configured
+
+**Phase:** Success (priority 50)
+
+**Task ID:** `flakehub.publish`
+
+**GitHub Action:** `DeterminateSystems/flakehub-push@main`
+
+**Configuration Example:**
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "my-project"
+
+ci: {
+    contributors: [contributors.#Nix, contributors.#CuenvNix, contributors.#FlakeHub]
+    pipelines: publish: {
+        name: "Publish tags to FlakeHub"
+        when: {
+            tag: "v?[0-9]+.[0-9]+.[0-9]+*"
+            manual: tag: {
+                description: "The existing tag to publish to FlakeHub"
+                required:    true
+                type:        "string"
+            }
+        }
+        provider: github: {
+            checkout: {
+                uses:               "actions/checkout@v6"
+                persistCredentials: false
+                ref:                "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+            }
+            flakehub: {
+                name:               "owner/flake"
+                visibility:         "public"
+                tag:                "${{ inputs.tag }}"
+                includeOutputPaths: true
+            }
+            permissions: {
+                "id-token": "write"
+                contents:   "read"
+            }
+        }
+    }
+}
+```
+
+---
+
 ### GhModelsContributor
 
 Installs the GitHub Models CLI extension for LLM evaluation tasks.
@@ -310,6 +366,7 @@ ci: contributors: [
     contributors.#Nix,
     contributors.#Cuenv,
     contributors.#Cachix,
+    contributors.#FlakeHub,
 ]
 ```
 
@@ -318,7 +375,7 @@ ci: contributors: [
 | Set                    | Contributors                                 |
 | ---------------------- | -------------------------------------------- |
 | `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`             |
-| `#GitHubContributors`  | `#Cachix`, `#GhModels`, `#TrustedPublishing` |
+| `#GitHubContributors`  | `#Cachix`, `#FlakeHub`, `#GhModels`, `#TrustedPublishing` |
 | `#DefaultContributors` | All of the above                             |
 
 ## Activation Conditions

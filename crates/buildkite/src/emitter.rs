@@ -404,6 +404,7 @@ mod tests {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                display_name: None,
                 mode: PipelineMode::Expanded,
                 environment: None,
                 requires_onepassword: false,

@@ -17,8 +17,12 @@ pub struct GitHubConfig {
     pub runner: Option<StringOrVec>,
     /// Runner mapping for matrix dimensions
     pub runners: Option<RunnerMapping>,
+    /// Checkout step configuration
+    pub checkout: Option<CheckoutConfig>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
+    /// FlakeHub publishing configuration
+    pub flakehub: Option<FlakeHubConfig>,
     /// Enable Namespace persistent Nix store caching
     ///
     /// When true, the `#NamespaceCache` contributor injects
@@ -47,6 +51,21 @@ pub struct TrustedPublishingConfig {
     pub crates_io: Option<bool>,
 }
 
+/// Checkout step configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutConfig {
+    /// GitHub Action reference for checkout.
+    pub uses: Option<String>,
+    /// Fetch depth for checkout.
+    pub fetch_depth: Option<u32>,
+    /// Whether checkout should persist Git credentials.
+    pub persist_credentials: Option<bool>,
+    /// Ref to check out.
+    #[serde(rename = "ref")]
+    pub checkout_ref: Option<String>,
+}
+
 /// Cachix caching configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -57,6 +76,20 @@ pub struct CachixConfig {
     pub auth_token: Option<String>,
     /// Push filter pattern
     pub push_filter: Option<String>,
+}
+
+/// FlakeHub publishing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlakeHubConfig {
+    /// FlakeHub flake name, e.g. "cuenv/cuenv".
+    pub name: String,
+    /// Flake visibility.
+    pub visibility: Option<String>,
+    /// Tag expression or literal.
+    pub tag: Option<String>,
+    /// Include output paths in FlakeHub publishing.
+    pub include_output_paths: Option<bool>,
 }
 
 /// Artifact upload configuration.
@@ -101,7 +134,9 @@ impl GitHubConfigExt for CI {
             Some(pipeline) => GitHubConfig {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
+                checkout: pipeline.checkout.clone().or(global.checkout),
                 cachix: pipeline.cachix.clone().or(global.cachix),
+                flakehub: pipeline.flakehub.clone().or(global.flakehub),
                 namespace_cache: pipeline.namespace_cache.or(global.namespace_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
@@ -184,7 +219,9 @@ mod tests {
         let config = GitHubConfig::default();
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
+        assert!(config.checkout.is_none());
         assert!(config.cachix.is_none());
+        assert!(config.flakehub.is_none());
         assert!(config.namespace_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());

@@ -259,6 +259,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "my-pipeline".to_string(),
+                display_name: None,
                 mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
@@ -283,6 +284,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
+                display_name: None,
                 mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,

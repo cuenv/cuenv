@@ -7,7 +7,6 @@ import (
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xNix "github.com/cuenv/cuenv/contrib/nix"
-	xRust "github.com/cuenv/cuenv/contrib/rust"
 )
 
 // Command template for cargo tasks
@@ -62,7 +61,6 @@ schema.#Project & {
 		CLOUDFLARE_ACCOUNT_ID: "0aeb879de8e3cdde5fb3d413025222ce"
 
 		environment: production: {
-			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
 			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
 			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
@@ -80,11 +78,10 @@ schema.#Project & {
 
 		contributors: [
 			xContributors.#Nix,
-			xContributors.#Cachix,
+			xContributors.#FlakeHub,
 			xContributors.#NamespaceCache,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
-			xRust.#Sccache,
 			xCodecov.#Codecov,
 		]
 
@@ -96,8 +93,6 @@ schema.#Project & {
 				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
-
-			cachix: name: "cuenv"
 
 			namespaceCache: true
 
@@ -162,6 +157,35 @@ schema.#Project & {
 					_t.publish.homebrew,
 					_t.docs.deploy,
 				]
+			}
+
+			"publish-flakehub": {
+				name: "Publish tags to FlakeHub"
+				when: {
+					tag: "v?[0-9]+.[0-9]+.[0-9]+*"
+					manual: tag: {
+						description: "The existing tag to publish to FlakeHub"
+						required:    true
+						type:        "string"
+					}
+				}
+				provider: github: {
+					checkout: {
+						uses:               "actions/checkout@v6"
+						persistCredentials: false
+						ref:                "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+					}
+					flakehub: {
+						visibility:         "public"
+						name:               "cuenv/cuenv"
+						tag:                "${{ inputs.tag }}"
+						includeOutputPaths: true
+					}
+					permissions: {
+						"id-token": "write"
+						contents:   "read"
+					}
+				}
 			}
 		}
 	}

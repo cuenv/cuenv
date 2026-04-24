@@ -93,6 +93,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
         version: "1.5".to_string(),
         pipeline: PipelineMetadata {
             name: pipeline_name.to_string(),
+            display_name: None,
             mode: PipelineMode::default(),
             environment: collected.environment,
             requires_onepassword: false,

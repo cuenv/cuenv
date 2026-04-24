@@ -21,8 +21,8 @@ use crate::ir::{
     Task as IrTask, TaskCondition, TriggerCondition, WorkflowDispatchInputDef,
 };
 use cuenv_core::ci::{
-    CI, Contributor, ContributorTask, ManualTrigger, Pipeline, PipelineTask, SecretRef,
-    TaskCondition as CueTaskCondition,
+    CI, Contributor, ContributorTask, ManualTrigger, Pipeline, PipelineTask, ProviderConfig,
+    SecretRef, TaskCondition as CueTaskCondition,
 };
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
@@ -36,6 +36,14 @@ use uuid::Uuid;
 struct CachixSettings {
     name: String,
     auth_token_secret: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlakeHubSettings {
+    name: String,
+    visibility: String,
+    tag: String,
+    include_output_paths: bool,
 }
 
 /// Compiler errors
@@ -317,6 +325,8 @@ impl Compiler {
 
         // Set pipeline context from options (enables environment-aware contributors)
         if let Some(ref pipeline) = self.options.pipeline {
+            ir.pipeline.display_name.clone_from(&pipeline.name);
+            ir.pipeline.mode = pipeline.mode;
             ir.pipeline.environment.clone_from(&pipeline.environment);
             ir.pipeline.pipeline_tasks = pipeline
                 .tasks
@@ -394,6 +404,12 @@ impl Compiler {
             .map(cuenv_core::ci::StringOrVec::to_vec)
             .unwrap_or_default();
 
+        // Extract tag patterns
+        let tags = when
+            .and_then(|w| w.tag.as_ref())
+            .map(cuenv_core::ci::StringOrVec::to_vec)
+            .unwrap_or_default();
+
         // Extract pull_request setting
         let pull_request = when.and_then(|w| w.pull_request);
 
@@ -447,6 +463,7 @@ impl Compiler {
 
         TriggerCondition {
             branches,
+            tags,
             pull_request,
             scheduled,
             release,
@@ -1164,9 +1181,6 @@ impl Compiler {
         let Some(ref ci) = self.project.ci else {
             return false;
         };
-        let Some(ref provider) = ci.provider else {
-            return false;
-        };
 
         for path in paths {
             let parts: Vec<&str> = path.split('.').collect();
@@ -1174,32 +1188,39 @@ impl Compiler {
                 continue;
             }
 
-            // Get the top-level provider config (e.g., "github")
-            let Some(config) = provider.get(parts[0]) else {
-                continue;
-            };
-
-            // Navigate the path
-            let mut current = config;
-            let mut found = true;
-            for part in &parts[1..] {
-                match current.get(*part) {
-                    Some(value) if !value.is_null() => {
-                        current = value;
-                    }
-                    _ => {
-                        found = false;
-                        break;
-                    }
-                }
-            }
-
-            if found {
+            if Self::provider_config_path_exists(ci.provider.as_ref(), &parts)
+                || self
+                    .options
+                    .pipeline
+                    .as_ref()
+                    .and_then(|pipeline| pipeline.provider.as_ref())
+                    .is_some_and(|provider| {
+                        Self::provider_config_path_exists(Some(provider), &parts)
+                    })
+            {
                 return true;
             }
         }
 
         false
+    }
+
+    fn provider_config_path_exists(provider: Option<&ProviderConfig>, parts: &[&str]) -> bool {
+        let Some(provider) = provider else {
+            return false;
+        };
+        let Some(mut current) = provider.get(parts[0]) else {
+            return false;
+        };
+
+        for part in &parts[1..] {
+            match current.get(*part) {
+                Some(value) if !value.is_null() => current = value,
+                _ => return false,
+            }
+        }
+
+        true
     }
 
     /// Check if any pipeline task uses the specified command
@@ -1372,7 +1393,14 @@ impl Compiler {
                                 .map(|(k, v)| {
                                     let value = match v {
                                         serde_json::Value::String(s) => {
-                                            serde_json::Value::String(resolve_value(s))
+                                            let resolved = resolve_value(s);
+                                            if contributor_id == "flakehub"
+                                                && k == "include-output-paths"
+                                            {
+                                                serde_json::Value::Bool(resolved == "true")
+                                            } else {
+                                                serde_json::Value::String(resolved)
+                                            }
                                         }
                                         _ => v.clone(),
                                     };
@@ -1449,8 +1477,70 @@ impl Compiler {
     fn resolve_contributor_value(&self, contributor_id: &str, value: &str) -> String {
         match contributor_id {
             "cachix" => self.resolve_cachix_value(value),
+            "flakehub" => self.resolve_flakehub_value(value),
             _ => value.to_string(),
         }
+    }
+
+    fn resolve_flakehub_value(&self, value: &str) -> String {
+        let Some(settings) = self.flakehub_settings() else {
+            return value.to_string();
+        };
+
+        match value {
+            "${FLAKEHUB_NAME}" => settings.name,
+            "${FLAKEHUB_VISIBILITY}" => settings.visibility,
+            "${FLAKEHUB_TAG}" => settings.tag,
+            "${FLAKEHUB_INCLUDE_OUTPUT_PATHS}" => settings.include_output_paths.to_string(),
+            _ => value.to_string(),
+        }
+    }
+
+    fn flakehub_settings(&self) -> Option<FlakeHubSettings> {
+        if let Some(pipeline_config) = self
+            .options
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_flakehub_settings)
+        {
+            return Some(pipeline_config);
+        }
+
+        self.project
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_flakehub_settings)
+    }
+
+    fn parse_flakehub_settings(value: &serde_json::Value) -> Option<FlakeHubSettings> {
+        let github = value.as_object()?;
+        let flakehub = github.get("flakehub")?.as_object()?;
+        let name = flakehub.get("name")?.as_str()?.to_string();
+        let visibility = flakehub
+            .get("visibility")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("public")
+            .to_string();
+        let tag = flakehub
+            .get("tag")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("${{ inputs.tag }}")
+            .to_string();
+        let include_output_paths = flakehub
+            .get("includeOutputPaths")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+
+        Some(FlakeHubSettings {
+            name,
+            visibility,
+            tag,
+            include_output_paths,
+        })
     }
 
     fn resolve_cachix_value(&self, value: &str) -> String {
@@ -2090,6 +2180,7 @@ mod tests {
             version: "1.5".to_string(),
             pipeline: crate::ir::PipelineMetadata {
                 name: "test".to_string(),
+                display_name: None,
                 mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
@@ -2361,7 +2452,7 @@ mod tests {
             condition: None,
             provider: Some(TaskProviderConfig {
                 github: Some(GitHubActionConfig {
-                    uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
+                    uses: "DeterminateSystems/determinate-nix-action@v3".to_string(),
                     inputs,
                 }),
             }),
@@ -2379,8 +2470,108 @@ mod tests {
         let github_action = hints.get("github_action").unwrap();
         assert_eq!(
             github_action.get("uses").and_then(|v| v.as_str()),
-            Some("DeterminateSystems/nix-installer-action@v16")
+            Some("DeterminateSystems/determinate-nix-action@v3")
         );
+    }
+
+    #[test]
+    fn test_flakehub_contributor_values_resolve_from_pipeline_config() {
+        use cuenv_core::ci::{GitHubActionConfig, Pipeline, TaskProviderConfig};
+
+        let project = Project::new("test");
+        let pipeline = Pipeline {
+            provider: Some(
+                serde_json::from_value(serde_json::json!({
+                    "github": {
+                        "flakehub": {
+                            "name": "cuenv/cuenv",
+                            "visibility": "public",
+                            "tag": "${{ inputs.tag }}",
+                            "includeOutputPaths": true
+                        }
+                    }
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+        let compiler = Compiler::with_options(
+            project,
+            CompilerOptions {
+                pipeline: Some(pipeline),
+                ..Default::default()
+            },
+        );
+
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert(
+            "name".to_string(),
+            serde_json::Value::String("${FLAKEHUB_NAME}".to_string()),
+        );
+        inputs.insert(
+            "visibility".to_string(),
+            serde_json::Value::String("${FLAKEHUB_VISIBILITY}".to_string()),
+        );
+        inputs.insert(
+            "tag".to_string(),
+            serde_json::Value::String("${FLAKEHUB_TAG}".to_string()),
+        );
+        inputs.insert(
+            "include-output-paths".to_string(),
+            serde_json::Value::String("${FLAKEHUB_INCLUDE_OUTPUT_PATHS}".to_string()),
+        );
+
+        let contributor_task = ContributorTask {
+            id: "flakehub.publish".to_string(),
+            label: Some("Publish tags to FlakeHub".to_string()),
+            description: None,
+            command: None,
+            args: vec![],
+            script: None,
+            shell: false,
+            env: HashMap::default(),
+            secrets: HashMap::default(),
+            inputs: vec![],
+            outputs: vec![],
+            hermetic: false,
+            depends_on: vec![],
+            priority: 50,
+            condition: Some(CueTaskCondition::OnSuccess),
+            provider: Some(TaskProviderConfig {
+                github: Some(GitHubActionConfig {
+                    uses: "DeterminateSystems/flakehub-push@main".to_string(),
+                    inputs,
+                }),
+            }),
+        };
+
+        let ir_task = compiler.contributor_task_to_ir(&contributor_task, "flakehub");
+        let github_action = ir_task
+            .provider_hints
+            .as_ref()
+            .and_then(|hints| hints.get("github_action"))
+            .unwrap();
+        let inputs = github_action.get("inputs").unwrap();
+
+        assert_eq!(
+            inputs.get("name").and_then(|v| v.as_str()),
+            Some("cuenv/cuenv")
+        );
+        assert_eq!(
+            inputs.get("visibility").and_then(|v| v.as_str()),
+            Some("public")
+        );
+        assert_eq!(
+            inputs.get("tag").and_then(|v| v.as_str()),
+            Some("${{ inputs.tag }}")
+        );
+        assert_eq!(
+            inputs
+                .get("include-output-paths")
+                .and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(ir_task.phase, Some(BuildStage::Success));
     }
 
     #[test]

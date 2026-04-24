@@ -408,8 +408,8 @@ fn test_nix_contributor_provides_github_action_hints() {
     assert!(
         uses.as_str()
             .unwrap()
-            .contains("DeterminateSystems/nix-installer-action"),
-        "provider_hints.github_action.uses should contain DeterminateSystems/nix-installer-action"
+            .contains("DeterminateSystems/determinate-nix-action"),
+        "provider_hints.github_action.uses should contain DeterminateSystems/determinate-nix-action"
     );
 }
 
@@ -537,8 +537,7 @@ fn test_namespace_cache_contributor_active_with_config() {
 
     let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-namespace-cache");
-    let project =
-        load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
 
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 
@@ -558,8 +557,7 @@ fn test_namespace_cache_contributor_provides_github_action_hints() {
 
     let examples_dir = getexamples_dir();
     let example_path = examples_dir.join("ci-namespace-cache");
-    let project =
-        load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
 
     let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
 

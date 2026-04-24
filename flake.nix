@@ -19,10 +19,6 @@
   nixConfig = {
     extra-substituters = [
       "https://cache.nixos.org"
-      "https://cuenv.cachix.org"
-    ];
-    extra-trusted-public-keys = [
-      "cuenv.cachix.org-1:zPi7E3HNNHEYzsDwSMGXk0pvEeWzdrb/09B/JozulHw="
     ];
     experimental-features = [ "nix-command" "flakes" ];
     accept-flake-config = true;
@@ -434,10 +430,6 @@
           shellHook = ''
             ${setupBridge}
 
-            # sccache configuration — only set if not already provided (e.g. by CI)
-            export RUSTC_WRAPPER="''${RUSTC_WRAPPER:-${pkgs.sccache}/bin/sccache}"
-            export SCCACHE_DIR="''${SCCACHE_DIR:-$HOME/.cache/sccache}"
-
             # Install docs dependencies
             cd docs
             bun install
@@ -464,7 +456,6 @@
             echo "cuenv development environment ready!"
             echo "Prebuilt CUE bridge available at: ${cue-bridge}"
             echo "Crane-based build system active"
-            echo "sccache enabled (RUSTC_WRAPPER set)"
             echo "Docs dependencies installed${pkgs.lib.optionalString pkgs.stdenv.isLinux ", wrangler patched, mold linker available"}"
           '';
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
