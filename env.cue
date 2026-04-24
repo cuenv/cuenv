@@ -81,6 +81,7 @@ schema.#Project & {
 		contributors: [
 			xContributors.#Nix,
 			xContributors.#Cachix,
+			xContributors.#NamespaceCache,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xRust.#Sccache,
@@ -97,6 +98,8 @@ schema.#Project & {
 			}
 
 			cachix: name: "cuenv"
+
+			namespaceCache: true
 
 			artifacts: {
 				paths: [".cuenv/reports/"]

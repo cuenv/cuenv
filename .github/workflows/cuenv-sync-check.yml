@@ -42,6 +42,10 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
+    - name: Setup Namespace Cache
+      uses: namespacelabs/nscloud-cache-action@v1
+      with:
+        cache: nix
     - name: Setup sccache
       uses: mozilla-actions/sccache-action@v0.0.9
       env:

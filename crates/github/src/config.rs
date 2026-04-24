@@ -19,6 +19,12 @@ pub struct GitHubConfig {
     pub runners: Option<RunnerMapping>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
+    /// Enable Namespace persistent Nix store caching
+    ///
+    /// When true, the `#NamespaceCache` contributor injects
+    /// `namespacelabs/nscloud-cache-action@v1` into the workflow.
+    /// Requires running on Namespace Cloud runners with cache volumes.
+    pub namespace_cache: Option<bool>,
     /// Artifact upload configuration
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
@@ -96,6 +102,7 @@ impl GitHubConfigExt for CI {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
+                namespace_cache: pipeline.namespace_cache.or(global.namespace_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
                     .trusted_publishing
@@ -178,6 +185,7 @@ mod tests {
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
         assert!(config.cachix.is_none());
+        assert!(config.namespace_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
         assert!(config.permissions.is_none());
@@ -297,5 +305,37 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TrustedPublishingConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.crates_io, Some(true));
+    }
+
+    #[test]
+    fn test_namespace_cache_config_serde() {
+        let json = serde_json::json!({
+            "runner": "namespace-profile-cuenv-linux-x86",
+            "namespaceCache": true
+        });
+        let config: GitHubConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.namespace_cache, Some(true));
+
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(serialized.contains("namespaceCache"));
+    }
+
+    #[test]
+    fn test_namespace_cache_config_merge() {
+        let ci = CI {
+            provider: Some(
+                serde_json::from_value(serde_json::json!({
+                    "github": {
+                        "runner": "ubuntu-latest",
+                        "namespaceCache": true
+                    }
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+
+        let config = ci.github_config_for_pipeline("any");
+        assert_eq!(config.namespace_cache, Some(true));
     }
 }

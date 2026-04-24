@@ -526,3 +526,98 @@ fn test_codecov_contributor_inactive_without_labels() {
         "CodecovContributor should NOT inject task when no test/coverage labels"
     );
 }
+
+// ============================================================================
+// Namespace Cache Contributor Tests
+// ============================================================================
+
+#[test]
+fn test_namespace_cache_contributor_active_with_config() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-namespace-cache");
+    let project =
+        load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
+
+    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+
+    // Check that namespace-cache.setup bootstrap task is present
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+    assert!(
+        bootstrap_tasks
+            .iter()
+            .any(|t| t.id == "cuenv:contributor:namespace-cache.setup"),
+        "NamespaceCacheContributor should inject 'namespace-cache.setup' task when namespaceCache is configured"
+    );
+}
+
+#[test]
+fn test_namespace_cache_contributor_provides_github_action_hints() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-namespace-cache");
+    let project =
+        load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
+
+    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+
+    // NamespaceCacheContributor should provide provider_hints for GitHub Actions
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+    let cache_setup = bootstrap_tasks
+        .iter()
+        .find(|t| t.id == "cuenv:contributor:namespace-cache.setup")
+        .expect("namespace-cache.setup task should exist");
+
+    assert!(
+        cache_setup.provider_hints.is_some(),
+        "namespace-cache.setup should have provider_hints for GitHub Actions"
+    );
+
+    let hints = cache_setup.provider_hints.as_ref().unwrap();
+    let github_action = hints
+        .get("github_action")
+        .expect("Should have github_action key");
+    let uses = github_action.get("uses").expect("Should have uses field");
+    assert_eq!(
+        uses.as_str().unwrap(),
+        "namespacelabs/nscloud-cache-action@v1",
+        "namespace-cache.setup should use namespacelabs/nscloud-cache-action@v1"
+    );
+
+    let inputs = github_action
+        .get("inputs")
+        .and_then(|v| v.as_object())
+        .expect("namespace-cache.setup should have action inputs");
+    assert_eq!(
+        inputs.get("cache").and_then(|v| v.as_str()),
+        Some("nix"),
+        "namespace-cache.setup should cache the Nix store"
+    );
+}
+
+#[test]
+fn test_namespace_cache_contributor_inactive_without_config() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-pipeline");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
+
+    // ci-pipeline has no namespaceCache configuration
+    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+
+    // Check that namespace-cache.setup task is NOT present
+    let setup_tasks: Vec<_> = ir
+        .sorted_phase_tasks(BuildStage::Bootstrap)
+        .into_iter()
+        .chain(ir.sorted_phase_tasks(BuildStage::Setup))
+        .collect();
+    assert!(
+        !setup_tasks
+            .iter()
+            .any(|t| t.id == "cuenv:contributor:namespace-cache.setup"),
+        "NamespaceCacheContributor should NOT inject task when namespaceCache is not configured"
+    );
+}

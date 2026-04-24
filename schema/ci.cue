@@ -34,6 +34,9 @@ package schema
 		authToken?:  string
 		pushFilter?: string
 	})
+	// Enable Namespace persistent Nix store caching via namespacelabs/nscloud-cache-action.
+	// Requires running on Namespace Cloud runners with cache volumes configured.
+	namespaceCache?: bool
 	artifacts?: close({
 		paths?:          [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"
