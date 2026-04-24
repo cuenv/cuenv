@@ -7,7 +7,6 @@ import (
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xNix "github.com/cuenv/cuenv/contrib/nix"
-	xRust "github.com/cuenv/cuenv/contrib/rust"
 )
 
 // Command template for cargo tasks
@@ -62,7 +61,6 @@ schema.#Project & {
 		CLOUDFLARE_ACCOUNT_ID: "0aeb879de8e3cdde5fb3d413025222ce"
 
 		environment: production: {
-			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
 			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
 			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
@@ -80,23 +78,22 @@ schema.#Project & {
 
 		contributors: [
 			xContributors.#Nix,
-			xContributors.#Cachix,
+			xContributors.#FlakeHubCache,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
-			xRust.#Sccache,
 			xCodecov.#Codecov,
 		]
 
 		provider: github: {
-			runner: "namespace-profile-cuenv-linux-x86"
+			runner: "ubuntu-latest"
 
 			runners: arch: {
-				"linux-x64":    "namespace-profile-cuenv-linux-x86"
-				"linux-arm64":  "namespace-profile-cuenv-linux-arm64"
-				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
+				"linux-x64":    "ubuntu-latest"
+				"linux-arm64":  "ubuntu-24.04-arm"
+				"darwin-arm64": "macos-latest"
 			}
 
-			cachix: name: "cuenv"
+			flakehubCache: true
 
 			artifacts: {
 				paths: [".cuenv/reports/"]

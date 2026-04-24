@@ -50,7 +50,7 @@ permissions:
 jobs:
   build-cuenv:
     name: build.cuenv
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
     - name: Checkout
@@ -58,21 +58,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -83,7 +73,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-audit:
     name: checks.audit
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -92,21 +82,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.audit
       run: nix build .#checks.x86_64-linux.cuenv-audit -L --accept-flake-config
       working-directory: .
@@ -117,7 +97,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-bdd:
     name: checks.bdd
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -126,21 +106,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.bdd
       run: nix build .#checks.x86_64-linux.cuenv-bdd -L --accept-flake-config
       working-directory: .
@@ -151,7 +121,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-clippy:
     name: checks.clippy
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -160,21 +130,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.clippy
       run: nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
       working-directory: .
@@ -185,7 +145,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-cuenv:
     name: checks.cuenv
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -194,21 +154,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.cuenv
       run: nix build .#checks.x86_64-linux.cuenv -L --accept-flake-config
       working-directory: .
@@ -219,7 +169,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-deny:
     name: checks.deny
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -228,21 +178,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.deny
       run: nix build .#checks.x86_64-linux.cuenv-deny -L --accept-flake-config
       working-directory: .
@@ -253,7 +193,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-doctest:
     name: checks.doctest
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -262,21 +202,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.doctest
       run: nix build .#checks.x86_64-linux.cuenv-doctest -L --accept-flake-config
       working-directory: .
@@ -287,7 +217,7 @@ jobs:
         GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-nextest:
     name: checks.nextest
-    runs-on: namespace-profile-cuenv-linux-x86
+    runs-on: ubuntu-latest
     needs:
     - build-cuenv
     steps:
@@ -296,21 +226,11 @@ jobs:
       with:
         fetch-depth: 2
     - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
-      with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@main
     - name: checks.nextest
       run: nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
       working-directory: .

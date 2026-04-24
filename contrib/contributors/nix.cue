@@ -23,7 +23,7 @@ import "github.com/cuenv/cuenv/schema"
 		priority: 0
 		script:   "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none"
 		provider: github: {
-			uses: "DeterminateSystems/nix-installer-action@v16"
+			uses: "DeterminateSystems/determinate-nix-action@v3"
 			with: "extra-conf": "accept-flake-config = true"
 		}
 	}]
