@@ -125,6 +125,19 @@ impl GitHubActionsEmitter {
         renderer
     }
 
+    fn add_github_context_env(step: &mut Step) {
+        for (key, value) in [
+            ("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}"),
+            ("GITHUB_ACTOR", "${{ github.actor }}"),
+            ("GITHUB_REF_TYPE", "${{ github.ref_type }}"),
+            ("GITHUB_REF_NAME", "${{ github.ref_name }}"),
+        ] {
+            step.env
+                .entry(key.to_string())
+                .or_insert_with(|| value.to_string());
+        }
+    }
+
     /// Create an emitter from a `GitHubConfig` manifest configuration.
     ///
     /// This applies all configuration from the CUE manifest to the emitter.
@@ -786,9 +799,8 @@ impl GitHubActionsEmitter {
                     || format!("cuenv task {} --skip-dependencies", task.id),
                     |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
                 );
-                let mut step = Step::run(task_command)
-                    .with_name(task.label())
-                    .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+                let mut step = Step::run(task_command).with_name(task.label());
+                Self::add_github_context_env(&mut step);
 
                 for (key, value) in &task.env {
                     step.env.insert(key.clone(), transform_secret_ref(value));
@@ -796,10 +808,11 @@ impl GitHubActionsEmitter {
 
                 step
             }
-            TaskExecution::Direct => self
-                .stage_renderer()
-                .render_task(task)
-                .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}"),
+            TaskExecution::Direct => {
+                let mut step = self.stage_renderer().render_task(task);
+                Self::add_github_context_env(&mut step);
+                step
+            }
         };
 
         if task_step.run.is_some()
@@ -935,9 +948,8 @@ impl GitHubActionsEmitter {
             |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
         );
 
-        let mut task_step = Step::run(&task_command)
-            .with_name(task.id.clone())
-            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+        let mut task_step = Step::run(&task_command).with_name(task.id.clone());
+        Self::add_github_context_env(&mut task_step);
 
         // Set working directory for monorepo projects
         if let Some(path) = project_path {
@@ -947,6 +959,12 @@ impl GitHubActionsEmitter {
         // Add params as environment variables
         for (key, value) in &task.params {
             task_step.env.insert(key.to_uppercase(), value.clone());
+        }
+
+        for (key, value) in &task.env {
+            task_step
+                .env
+                .insert(key.clone(), transform_secret_ref(value));
         }
 
         // Add secret env vars from setup stages to the task step
@@ -1033,9 +1051,9 @@ impl GitHubActionsEmitter {
                     || format!("cuenv task {} --skip-dependencies", task.id),
                     |env| format!("cuenv task {} -e {} --skip-dependencies", task.id, env),
                 );
-                let mut task_step = Step::run(&task_command)
-                    .with_name(format!("{} ({arch})", task.id))
-                    .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+                let mut task_step =
+                    Step::run(&task_command).with_name(format!("{} ({arch})", task.id));
+                Self::add_github_context_env(&mut task_step);
 
                 // Set working directory for monorepo projects
                 if let Some(path) = project_path {
@@ -1044,6 +1062,12 @@ impl GitHubActionsEmitter {
 
                 // Add arch as an environment variable for the task
                 task_step.env.insert("CUENV_ARCH".to_string(), arch.clone());
+
+                for (key, value) in &task.env {
+                    task_step
+                        .env
+                        .insert(key.clone(), transform_secret_ref(value));
+                }
 
                 // Add secret env vars from setup stages to the task step
                 for (key, value) in &secret_env_vars {
@@ -1162,9 +1186,9 @@ impl Emitter for GitHubActionsEmitter {
             |path| format!("cuenv ci --pipeline {pipeline_name} --path {path}"),
         );
 
-        let mut main_step = Step::run(&cuenv_command)
-            .with_name(format!("Run pipeline: {pipeline_name}"))
-            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+        let mut main_step =
+            Step::run(&cuenv_command).with_name(format!("Run pipeline: {pipeline_name}"));
+        Self::add_github_context_env(&mut main_step);
 
         if let Some(env) = &ir.pipeline.environment {
             main_step = main_step.with_env("CUENV_ENVIRONMENT", env.clone());
@@ -1593,9 +1617,8 @@ impl ReleaseWorkflowBuilder {
             || "cuenv release binaries --publish-only".to_string(),
             |env| format!("cuenv release binaries --publish-only -e {env}"),
         );
-        let mut publish_step = Step::run(&publish_cmd)
-            .with_name("Publish release")
-            .with_env("GITHUB_TOKEN", "${{ secrets.GITHUB_TOKEN }}");
+        let mut publish_step = Step::run(&publish_cmd).with_name("Publish release");
+        GitHubActionsEmitter::add_github_context_env(&mut publish_step);
 
         if has_1password {
             publish_step.env.insert(
@@ -1709,6 +1732,25 @@ mod tests {
             condition: None,
             provider_hints: None,
         }
+    }
+
+    fn assert_github_context_env(step: &Step) {
+        assert_eq!(
+            step.env.get("GITHUB_TOKEN"),
+            Some(&"${{ secrets.GITHUB_TOKEN }}".to_string())
+        );
+        assert_eq!(
+            step.env.get("GITHUB_ACTOR"),
+            Some(&"${{ github.actor }}".to_string())
+        );
+        assert_eq!(
+            step.env.get("GITHUB_REF_TYPE"),
+            Some(&"${{ github.ref_type }}".to_string())
+        );
+        assert_eq!(
+            step.env.get("GITHUB_REF_NAME"),
+            Some(&"${{ github.ref_name }}".to_string())
+        );
     }
 
     #[test]
@@ -1984,6 +2026,40 @@ mod tests {
         let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_ref()).collect();
         assert!(step_names.contains(&&"Checkout".to_string()));
         assert!(step_names.contains(&&"build".to_string()));
+
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("build"))
+            .unwrap();
+        assert_github_context_env(task_step);
+    }
+
+    #[test]
+    fn test_build_simple_job_preserves_explicit_task_env() {
+        let emitter = GitHubActionsEmitter::new();
+        let mut task = make_task("publish", &["./publish.sh"]);
+        task.env.insert(
+            "GITHUB_ACTOR".to_string(),
+            "cuenv:passthrough:GITHUB_ACTOR".to_string(),
+        );
+        let ir = make_ir(vec![task.clone()]);
+
+        let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
+        let task_step = job
+            .steps
+            .iter()
+            .find(|s| s.name.as_deref() == Some("publish"))
+            .unwrap();
+
+        assert_eq!(
+            task_step.env.get("GITHUB_ACTOR"),
+            Some(&"cuenv:passthrough:GITHUB_ACTOR".to_string())
+        );
+        assert_eq!(
+            task_step.env.get("GITHUB_TOKEN"),
+            Some(&"${{ secrets.GITHUB_TOKEN }}".to_string())
+        );
     }
 
     #[test]
@@ -2354,6 +2430,7 @@ mod tests {
             task_step.unwrap().env.get("VERSION"),
             Some(&"1.0.0".to_string())
         );
+        assert_github_context_env(task_step.unwrap());
     }
 
     #[test]
