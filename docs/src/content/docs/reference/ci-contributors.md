@@ -102,7 +102,7 @@ runtime: schema.#NixFlake & {
 }
 ```
 
-**ActionSpec:** Uses `DeterminateSystems/nix-installer-action@v16` on GitHub Actions.
+**ActionSpec:** Uses `DeterminateSystems/determinate-nix-action@v3` on GitHub Actions.
 
 ---
 
@@ -130,7 +130,7 @@ The source and version are configured via `config.ci.cuenv`:
 | `release` (default) | `latest` or `0.17.0` | Download pre-built binary from GitHub Releases                    | No           |
 | `git`               | `self` (default)     | Build from current checkout via `nix build .#cuenv`               | Yes          |
 | `git`               | `0.17.0`             | Clone specific tag and build via nix                              | Yes          |
-| `nix`               | `self`               | Build from current checkout + Cachix                              | Yes          |
+| `nix`               | `self`               | Build from current checkout via Nix                               | Yes          |
 | `nix`               | `0.17.0`             | Install via `nix profile install github:cuenv/cuenv/0.17.0#cuenv` | Yes          |
 | `homebrew`          | (ignored)            | Install via `brew install cuenv/cuenv/cuenv`                      | **No**       |
 
@@ -252,6 +252,46 @@ ci: {
             tasks: ["build"]
         },
     ]
+}
+```
+
+---
+
+### FlakeHubCacheContributor
+
+Configures FlakeHub Cache for Nix binary caching on GitHub Actions.
+
+**Activation:** `ci.provider.github.flakehubCache` is enabled
+
+**Phase:** Setup (priority 5)
+
+**Task ID:** `setup-flakehub-cache`
+
+**Dependencies:** `install-nix`
+
+**Configuration Example:**
+
+```cue
+import (
+    "github.com/cuenv/cuenv/schema"
+    contributors "github.com/cuenv/cuenv/contrib/contributors"
+)
+
+schema.#Project
+
+name: "my-project"
+runtime: schema.#NixRuntime
+
+ci: {
+    providers: ["github"]
+    contributors: [
+        contributors.#Nix,
+        contributors.#FlakeHubCache,
+    ]
+    provider: github: {
+        runner:        "ubuntu-latest"
+        flakehubCache: true
+    }
 }
 ```
 
