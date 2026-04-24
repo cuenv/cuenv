@@ -23,13 +23,15 @@ static RUSTLS_PROVIDER_INSTALLED: OnceLock<()> = OnceLock::new();
 
 fn ensure_rustls_crypto_provider() {
     RUSTLS_PROVIDER_INSTALLED.get_or_init(|| {
-        if rustls::crypto::CryptoProvider::get_default().is_none()
-            && rustls::crypto::ring::default_provider()
+        let provider_installed = rustls::crypto::CryptoProvider::get_default().is_some()
+            || rustls::crypto::ring::default_provider()
                 .install_default()
-                .is_err()
-        {
-            panic!("Failed to install rustls crypto provider");
-        }
+                .is_ok();
+
+        assert!(
+            provider_installed,
+            "Failed to install rustls crypto provider"
+        );
     });
 }
 

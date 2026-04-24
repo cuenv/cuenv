@@ -141,7 +141,7 @@ schema.#Project & {
 				tasks: [
 					{
 						task:   _t.cargo.build
-						matrix: arch: ["linux-x64", "darwin-arm64"]
+						matrix: arch: ["linux-x64", "linux-arm64", "darwin-arm64"]
 					},
 					{
 						task: _t.publish.github
@@ -428,6 +428,7 @@ schema.#Project & {
 					TAP_REPO="cuenv/homebrew-tap"
 					DARWIN_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-darwin-arm64"
 					LINUX_X64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-linux-x64"
+					LINUX_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-linux-arm64"
 
 					# Download and checksum
 					TMPDIR=$(mktemp -d)
@@ -435,9 +436,11 @@ schema.#Project & {
 
 					gh release download "$TAG" -R "$REPO" -p "cuenv-darwin-arm64" -D "$TMPDIR"
 					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-x64" -D "$TMPDIR"
+					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-arm64" -D "$TMPDIR"
 
 					DARWIN_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-darwin-arm64" | awk '{print $1}')
-					LINUX_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-x64" | awk '{print $1}')
+					LINUX_X64_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-x64" | awk '{print $1}')
+					LINUX_ARM64_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-arm64" | awk '{print $1}')
 
 					# Generate formula
 					FORMULA=$(cat <<RUBY
@@ -457,7 +460,12 @@ schema.#Project & {
 					  on_linux do
 					    on_intel do
 					      url "${LINUX_X64_URL}"
-					      sha256 "${LINUX_SHA256}"
+					      sha256 "${LINUX_X64_SHA256}"
+					    end
+
+					    on_arm do
+					      url "${LINUX_ARM64_URL}"
+					      sha256 "${LINUX_ARM64_SHA256}"
 					    end
 					  end
 
@@ -466,6 +474,8 @@ schema.#Project & {
 					      "cuenv-darwin-arm64"
 					    elsif OS.linux? && Hardware::CPU.intel?
 					      "cuenv-linux-x64"
+					    elsif OS.linux? && Hardware::CPU.arm?
+					      "cuenv-linux-arm64"
 					    else
 					      odie "Unsupported platform"
 					    end
