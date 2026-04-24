@@ -12,6 +12,7 @@
 pub mod backend;
 pub mod cache;
 pub mod captures;
+pub(crate) mod env;
 pub mod executor;
 pub mod graph;
 pub mod index;

@@ -141,6 +141,20 @@ env: {
 Use it for CI-provided context such as GitHub Actions actor and ref values. When `name` is omitted,
 cuenv reads the host variable with the same name as the env key.
 
+Task-level `env` accepts the same value forms, including secret refs. For GitHub Actions tasks that
+need to write outside the current repository, prefer a task-local `GH_TOKEN` secret because the
+GitHub CLI reads `GH_TOKEN` before the repository-scoped `GITHUB_TOKEN`:
+
+```cue
+tasks: publish: schema.#Task & {
+    env: GH_TOKEN: schema.#OnePasswordRef & {
+        ref: "op://vault/github-token/password"
+    }
+    command: "gh"
+    args: ["api", "-X", "PUT", "repos/org/other-repo/contents/file"]
+}
+```
+
 ### #Environment
 
 Environment variable naming constraint: must match `^[A-Z][A-Z0-9_]*$` (uppercase with underscores).

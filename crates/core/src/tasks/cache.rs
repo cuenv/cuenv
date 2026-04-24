@@ -154,20 +154,9 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
     for (key, value) in &resolved {
         environment_variables.insert(key.clone(), value.clone());
     }
-    for (key, value) in &task.env {
-        if let Some(string_value) = value.as_str() {
-            if let Some(host) = super::output_refs::parse_passthrough(string_value) {
-                if let Ok(host_value) = std::env::var(host) {
-                    environment_variables.insert(key.clone(), host_value);
-                }
-            } else if !string_value.starts_with("cuenv:ref:") {
-                environment_variables.insert(key.clone(), string_value.to_string());
-            }
-        } else if let Some(number) = value.as_i64() {
-            environment_variables.insert(key.clone(), number.to_string());
-        } else if let Some(boolean) = value.as_bool() {
-            environment_variables.insert(key.clone(), boolean.to_string());
-        }
+    let (task_env, _) = super::env::resolve_task_env(task_name, &task.env).await?;
+    for (key, value) in task_env {
+        environment_variables.insert(key, value);
     }
 
     let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
