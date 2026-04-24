@@ -377,24 +377,11 @@ impl TaskExecutor {
             cmd.env(k, v);
         }
 
-        // Apply task-level env vars (plain values and passthrough from host)
-        for (key, value) in &task.env {
-            if let Some(s) = value.as_str() {
-                if let Some(host_var) = super::output_refs::parse_passthrough(s) {
-                    if let Ok(host_val) = std::env::var(host_var) {
-                        cmd.env(key, host_val);
-                    }
-                } else if !s.starts_with("cuenv:ref:") {
-                    // Plain string value — apply directly
-                    cmd.env(key, s);
-                }
-                // Output refs are resolved separately by OutputRefResolver
-            } else if let Some(n) = value.as_i64() {
-                cmd.env(key, n.to_string());
-            } else if let Some(b) = value.as_bool() {
-                cmd.env(key, b.to_string());
-            }
-            // Skip objects (secret refs etc.) — handled by project-level env resolution
+        // Apply task-level env vars, including secrets resolved at execution time.
+        let (task_env, secrets) = super::env::resolve_task_env(name, &task.env).await?;
+        cuenv_events::register_secrets(secrets);
+        for (key, value) in task_env {
+            cmd.env(key, value);
         }
 
         // Force color output even when stdout is piped (for capture mode)
@@ -1062,6 +1049,7 @@ mod tests {
     use cuenv_cas::{LocalActionCache, LocalCas};
     use cuenv_events::{CuenvEventLayer, EventCategory, TaskEvent};
     use cuenv_vcs::WalkHasher;
+    use std::collections::HashMap;
     use tempfile::TempDir;
     use tokio::sync::mpsc;
     use tracing_subscriber::layer::SubscriberExt;
@@ -1127,6 +1115,69 @@ mod tests {
         let result = executor.execute_task("test", &task).await.unwrap();
         assert!(result.success);
         assert!(result.stdout.contains("test_value"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_task_secret_environment() {
+        let config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            command: "printenv".to_string(),
+            args: vec!["GH_TOKEN".to_string()],
+            env: HashMap::from([(
+                "GH_TOKEN".to_string(),
+                serde_json::json!({
+                    "resolver": "exec",
+                    "command": "echo",
+                    "args": ["tap-token"]
+                }),
+            )]),
+            description: Some("Print task secret env task".to_string()),
+            ..Default::default()
+        };
+
+        let result = executor.execute_task("test", &task).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.stdout.trim(), "tap-token");
+    }
+
+    #[tokio::test]
+    async fn test_task_secret_gh_token_is_available_with_github_token() {
+        let mut config = ExecutorConfig {
+            capture_output: OutputCapture::Capture,
+            ..Default::default()
+        };
+        config
+            .environment
+            .set("GITHUB_TOKEN".to_string(), "repo-token".to_string());
+        let executor = TaskExecutor::new(config);
+        let task = Task {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                r#"test "$GH_TOKEN" = "tap-token" && test "$GITHUB_TOKEN" = "repo-token" && echo ok"#
+                    .to_string(),
+            ],
+            env: HashMap::from([(
+                "GH_TOKEN".to_string(),
+                serde_json::json!({
+                    "resolver": "exec",
+                    "command": "echo",
+                    "args": ["tap-token"]
+                }),
+            )]),
+            description: Some("Verify GitHub CLI token precedence env".to_string()),
+            ..Default::default()
+        };
+
+        let result = executor.execute_task("test", &task).await.unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.stdout.trim(), "ok");
     }
 
     #[tokio::test]

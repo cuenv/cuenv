@@ -80,21 +80,11 @@ impl TaskBackend for HostBackend {
             cmd.env(k, v);
         }
 
-        // Apply task-level env vars (plain values and passthrough from host)
-        for (key, value) in &ctx.task.env {
-            if let Some(s) = value.as_str() {
-                if let Some(host_var) = super::output_refs::parse_passthrough(s) {
-                    if let Ok(host_val) = std::env::var(host_var) {
-                        cmd.env(key, host_val);
-                    }
-                } else if !s.starts_with("cuenv:ref:") {
-                    cmd.env(key, s);
-                }
-            } else if let Some(n) = value.as_i64() {
-                cmd.env(key, n.to_string());
-            } else if let Some(b) = value.as_bool() {
-                cmd.env(key, b.to_string());
-            }
+        // Apply task-level env vars, including secrets resolved at execution time.
+        let (task_env, secrets) = super::env::resolve_task_env(ctx.name, &ctx.task.env).await?;
+        cuenv_events::register_secrets(secrets);
+        for (key, value) in task_env {
+            cmd.env(key, value);
         }
 
         // Execute - always capture output for consistent behavior
