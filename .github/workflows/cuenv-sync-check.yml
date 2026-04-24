@@ -66,3 +66,6 @@ jobs:
       run: cuenv ci --pipeline sync-check --path .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}

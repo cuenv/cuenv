@@ -165,6 +165,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         CUENV_ARCH: darwin-arm64
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
@@ -218,6 +221,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         CUENV_ARCH: linux-arm64
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
@@ -271,6 +277,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         CUENV_ARCH: linux-x64
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
@@ -342,6 +351,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         PATHS: dist/**/*
         TAG: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
@@ -388,6 +400,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   publish-homebrew:
@@ -434,6 +449,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         TAG: cuenv:passthrough:GITHUB_REF_NAME
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-deploy:
@@ -485,6 +503,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
   docs-build:
     name: docs.build
@@ -529,6 +550,9 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
