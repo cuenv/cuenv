@@ -1,6 +1,6 @@
 //! Task-level environment variable handling.
 
-use crate::environment::EnvValue;
+use crate::environment::{EnvValue, Environment};
 use crate::{Error, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,7 +14,7 @@ pub(crate) async fn resolve_task_env(
     task_env: &HashMap<String, Value>,
 ) -> Result<(HashMap<String, String>, Vec<String>)> {
     let mut resolved = HashMap::new();
-    let mut secrets = Vec::new();
+    let mut deferred = HashMap::new();
 
     for (key, value) in task_env {
         if let Some(string_value) = value.as_str() {
@@ -29,38 +29,67 @@ pub(crate) async fn resolve_task_env(
             resolved.insert(key.clone(), number.to_string());
         } else if let Some(boolean) = value.as_bool() {
             resolved.insert(key.clone(), boolean.to_string());
-        } else if let Some(host_var) = passthrough_object_host_var(value, key) {
-            if let Ok(host_value) = std::env::var(host_var) {
-                resolved.insert(key.clone(), host_value);
-            }
+        } else if let Some(host_value) = passthrough_object_value(value, key) {
+            resolved.insert(key.clone(), host_value);
         } else {
             let env_value: EnvValue = serde_json::from_value(value.clone()).map_err(|e| {
                 Error::configuration(format!(
                     "Invalid environment value for task '{task_name}' variable '{key}': {e}"
                 ))
             })?;
-
-            if env_value.is_accessible_by_task(task_name) {
-                let (value, mut resolved_secrets) = env_value.resolve_with_secrets().await?;
-                resolved.insert(key.clone(), value);
-                secrets.append(&mut resolved_secrets);
-            }
+            deferred.insert(key.clone(), env_value);
         }
     }
+
+    if deferred.is_empty() {
+        return Ok((resolved, Vec::new()));
+    }
+
+    let (deferred_resolved, secrets) =
+        Environment::resolve_for_task_with_secrets(task_name, &deferred).await?;
+    resolved.extend(deferred_resolved);
 
     Ok((resolved, secrets))
 }
 
-fn passthrough_object_host_var<'a>(value: &'a Value, env_key: &'a str) -> Option<&'a str> {
-    let obj = value.as_object()?;
-    let is_passthrough = obj
-        .get("cuenvPassthrough")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+fn passthrough_object_value(value: &Value, env_key: &str) -> Option<String> {
+    let placeholder = super::output_refs::try_extract_passthrough(value, env_key)?;
+    let host_var = super::output_refs::parse_passthrough(&placeholder)?;
+    std::env::var(host_var).ok()
+}
 
-    if !is_passthrough {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn resolve_task_env_supports_passthrough_and_secret_values() {
+        let home = std::env::var("HOME").unwrap();
+
+        let task_env = HashMap::from([
+            ("PLAIN".to_string(), json!("literal")),
+            (
+                "FROM_HOST".to_string(),
+                json!({
+                    "cuenvPassthrough": true,
+                    "name": "HOME"
+                }),
+            ),
+            (
+                "SECRET".to_string(),
+                json!({
+                    "resolver": "exec",
+                    "command": "echo",
+                    "args": ["resolved-secret"]
+                }),
+            ),
+        ]);
+
+        let (resolved, secrets) = resolve_task_env("publish", &task_env).await.unwrap();
+        assert_eq!(resolved.get("PLAIN"), Some(&"literal".to_string()));
+        assert_eq!(resolved.get("FROM_HOST"), Some(&home));
+        assert_eq!(resolved.get("SECRET"), Some(&"resolved-secret".to_string()));
+        assert_eq!(secrets, vec!["resolved-secret".to_string()]);
     }
-
-    Some(obj.get("name").and_then(Value::as_str).unwrap_or(env_key))
 }
