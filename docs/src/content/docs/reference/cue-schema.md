@@ -155,6 +155,8 @@ tasks: publish: schema.#Task & {
 }
 ```
 
+Task-level environment entries are resolved at execution time. Tasks that define task-local `env`
+entries are therefore excluded from task-result caching.
 ### #Environment
 
 Environment variable naming constraint: must match `^[A-Z][A-Z0-9_]*$` (uppercase with underscores).

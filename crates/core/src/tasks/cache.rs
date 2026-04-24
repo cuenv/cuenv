@@ -149,14 +149,18 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
     }
     let input_root_digest = build_input_root_digest(&hashed)?;
 
+    if !task.env.is_empty() {
+        tracing::debug!(
+            task = %task_name,
+            "skipping cache: task defines task-level environment entries resolved at execution time"
+        );
+        return Ok(None);
+    }
+
     let mut environment_variables = BTreeMap::new();
     let resolved = environment.merge_with_system_hermetic();
     for (key, value) in &resolved {
         environment_variables.insert(key.clone(), value.clone());
-    }
-    let (task_env, _) = super::env::resolve_task_env(task_name, &task.env).await?;
-    for (key, value) in task_env {
-        environment_variables.insert(key, value);
     }
 
     let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
@@ -887,6 +891,41 @@ mod tests {
         .unwrap();
 
         assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn build_action_returns_none_when_task_has_task_level_env() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+        let side_effect = tmp.path().join("side-effect.txt");
+        let cache = make_cache(tmp.path());
+        let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+        task.env.insert(
+            "GH_TOKEN".to_string(),
+            serde_json::json!({
+                "resolver": "exec",
+                "command": "sh",
+                "args": [
+                    "-c",
+                    format!("echo touched > {}", side_effect.display())
+                ]
+            }),
+        );
+        let env = Environment::new();
+
+        let result = build_action_for_test(BuildActionInput {
+            task: &task,
+            task_name: "task-env",
+            environment: &env,
+            cache: &cache,
+            workdir: tmp.path(),
+            project_root: tmp.path(),
+            module_root: tmp.path(),
+        })
+        .await;
+
+        assert!(result.is_none());
+        assert!(!side_effect.exists());
     }
 
     #[tokio::test]
