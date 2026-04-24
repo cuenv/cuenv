@@ -852,6 +852,7 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
 /// Collected pipeline context from project discovery.
 struct PipelineContext {
     is_release: bool,
+    display_name: Option<String>,
     /// Pipeline generation mode (thin vs expanded)
     mode: cuenv_core::ci::PipelineMode,
     github_config: cuenv_github::config::GitHubConfig,
@@ -868,12 +869,24 @@ struct PipelineContext {
 }
 
 impl PipelineContext {
+    fn workflow_name(&self, pipeline_name: &str) -> String {
+        if let Some(display_name) = &self.display_name {
+            return display_name.clone();
+        }
+
+        self.project_name.as_ref().map_or_else(
+            || pipeline_name.to_string(),
+            |project| format!("{project}-{pipeline_name}"),
+        )
+    }
+
     /// Build an IntermediateRepresentation from this context.
     fn to_ir(&self, pipeline_name: &str) -> cuenv_ci::ir::IntermediateRepresentation {
         cuenv_ci::ir::IntermediateRepresentation {
             version: "1.5".to_string(),
             pipeline: cuenv_ci::ir::PipelineMetadata {
                 name: pipeline_name.to_string(),
+                display_name: self.display_name.clone(),
                 mode: self.mode,
                 environment: self.environment.clone(),
                 requires_onepassword: false,
@@ -1007,6 +1020,7 @@ fn build_project_pipeline_context(
 
     Ok(PipelineContext {
         is_release,
+        display_name: pipeline.name.clone(),
         mode: pipeline.mode,
         github_config: ci.github_config_for_pipeline(pipeline_name),
         trigger,
@@ -1031,10 +1045,7 @@ fn emit_release_workflow(
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
     let workflow = ReleaseWorkflowBuilder::new(emitter).build(&ir);
 
-    let workflow_name = match &ir.pipeline.project_name {
-        Some(project) => format!("{project}-{}", ir.pipeline.name),
-        None => ir.pipeline.name.clone(),
-    };
+    let workflow_name = ctx.workflow_name(pipeline_name);
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
     let yaml = workflow.to_yaml().map_err(|e| {
@@ -1173,10 +1184,7 @@ fn emit_standard_workflow(
     use cuenv_github::workflow::schema::{Concurrency, Workflow};
     use indexmap::IndexMap;
 
-    let workflow_name = match &ctx.project_name {
-        Some(project) => format!("{project}-{pipeline_name}"),
-        None => pipeline_name.to_string(),
-    };
+    let workflow_name = ctx.workflow_name(pipeline_name);
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
@@ -1470,10 +1478,7 @@ fn emit_matrix_workflow(
     use cuenv_github::workflow::GitHubActionsEmitter;
     use cuenv_github::workflow::schema::{Concurrency, Workflow};
 
-    let workflow_name = match &ctx.project_name {
-        Some(project) => format!("{project}-{pipeline_name}"),
-        None => pipeline_name.to_string(),
-    };
+    let workflow_name = ctx.workflow_name(pipeline_name);
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
@@ -1539,6 +1544,11 @@ fn build_github_trigger_condition(
         .map(cuenv_core::ci::StringOrVec::to_vec)
         .unwrap_or_default();
 
+    let tags = when
+        .and_then(|w| w.tag.as_ref())
+        .map(cuenv_core::ci::StringOrVec::to_vec)
+        .unwrap_or_default();
+
     let pull_request = when.and_then(|w| w.pull_request);
 
     let scheduled = when
@@ -1575,6 +1585,7 @@ fn build_github_trigger_condition(
 
     TriggerCondition {
         branches,
+        tags,
         pull_request,
         scheduled,
         release,

@@ -17,8 +17,18 @@ pub struct GitHubConfig {
     pub runner: Option<StringOrVec>,
     /// Runner mapping for matrix dimensions
     pub runners: Option<RunnerMapping>,
+    /// Checkout step configuration
+    pub checkout: Option<CheckoutConfig>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
+    /// FlakeHub publishing configuration
+    pub flakehub: Option<FlakeHubConfig>,
+    /// Enable Namespace persistent Nix store caching
+    ///
+    /// When true, the `#NamespaceCache` contributor injects
+    /// `namespacelabs/nscloud-cache-action@v1` into the workflow.
+    /// Requires running on Namespace Cloud runners with cache volumes.
+    pub namespace_cache: Option<bool>,
     /// Artifact upload configuration
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
@@ -41,6 +51,21 @@ pub struct TrustedPublishingConfig {
     pub crates_io: Option<bool>,
 }
 
+/// Checkout step configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutConfig {
+    /// GitHub Action reference for checkout.
+    pub uses: Option<String>,
+    /// Fetch depth for checkout.
+    pub fetch_depth: Option<u32>,
+    /// Whether checkout should persist Git credentials.
+    pub persist_credentials: Option<bool>,
+    /// Ref to check out.
+    #[serde(rename = "ref")]
+    pub checkout_ref: Option<String>,
+}
+
 /// Cachix caching configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -51,6 +76,20 @@ pub struct CachixConfig {
     pub auth_token: Option<String>,
     /// Push filter pattern
     pub push_filter: Option<String>,
+}
+
+/// FlakeHub publishing configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FlakeHubConfig {
+    /// FlakeHub flake name, e.g. "cuenv/cuenv".
+    pub name: String,
+    /// Flake visibility.
+    pub visibility: Option<String>,
+    /// Tag expression or literal.
+    pub tag: Option<String>,
+    /// Include output paths in FlakeHub publishing.
+    pub include_output_paths: Option<bool>,
 }
 
 /// Artifact upload configuration.
@@ -95,7 +134,10 @@ impl GitHubConfigExt for CI {
             Some(pipeline) => GitHubConfig {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
+                checkout: pipeline.checkout.clone().or(global.checkout),
                 cachix: pipeline.cachix.clone().or(global.cachix),
+                flakehub: pipeline.flakehub.clone().or(global.flakehub),
+                namespace_cache: pipeline.namespace_cache.or(global.namespace_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
                     .trusted_publishing
@@ -177,7 +219,10 @@ mod tests {
         let config = GitHubConfig::default();
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
+        assert!(config.checkout.is_none());
         assert!(config.cachix.is_none());
+        assert!(config.flakehub.is_none());
+        assert!(config.namespace_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
         assert!(config.permissions.is_none());
@@ -297,5 +342,37 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TrustedPublishingConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.crates_io, Some(true));
+    }
+
+    #[test]
+    fn test_namespace_cache_config_serde() {
+        let json = serde_json::json!({
+            "runner": "namespace-profile-cuenv-linux-x86",
+            "namespaceCache": true
+        });
+        let config: GitHubConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(config.namespace_cache, Some(true));
+
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(serialized.contains("namespaceCache"));
+    }
+
+    #[test]
+    fn test_namespace_cache_config_merge() {
+        let ci = CI {
+            provider: Some(
+                serde_json::from_value(serde_json::json!({
+                    "github": {
+                        "runner": "ubuntu-latest",
+                        "namespaceCache": true
+                    }
+                }))
+                .unwrap(),
+            ),
+            ..Default::default()
+        };
+
+        let config = ci.github_config_for_pipeline("any");
+        assert_eq!(config.namespace_cache, Some(true));
     }
 }

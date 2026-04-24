@@ -29,11 +29,26 @@ package schema
 	runners?: close({
 		arch?: [string]: string
 	})
+	checkout?: close({
+		uses?:               string
+		fetchDepth?:         int
+		persistCredentials?: bool
+		ref?:                string
+	})
 	cachix?: close({
 		name!:       string
 		authToken?:  string
 		pushFilter?: string
 	})
+	flakehub?: close({
+		name!:               string
+		visibility?:         "public" | "private" | *"public"
+		tag?:                string | *"${{ inputs.tag }}"
+		includeOutputPaths?: bool | *true
+	})
+	// Enable Namespace persistent Nix store caching via namespacelabs/nscloud-cache-action.
+	// Requires running on Namespace Cloud runners with cache volumes configured.
+	namespaceCache?: bool
 	artifacts?: close({
 		paths?:          [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"
@@ -228,6 +243,9 @@ package schema
 #CIProvider: "github" | "buildkite" | "gitlab"
 
 #Pipeline: close({
+	// Human-readable workflow name. Defaults to the pipeline key.
+	name?: string
+
 	// Generation mode for this pipeline (default: "thin")
 	mode?: #PipelineMode | *"thin"
 

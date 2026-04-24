@@ -366,6 +366,9 @@ pub enum PipelineMode {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
+    /// Human-readable workflow name. Defaults to the pipeline key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     /// Generation mode for this pipeline (default: thin)
     #[serde(default)]
     pub mode: PipelineMode,
@@ -931,6 +934,7 @@ mod tests {
             pipelines: BTreeMap::from([(
                 "ci".to_string(),
                 Pipeline {
+                    name: None,
                     providers: vec![],
                     mode: PipelineMode::default(),
                     environment: None,
@@ -953,6 +957,7 @@ mod tests {
             pipelines: BTreeMap::from([(
                 "release".to_string(),
                 Pipeline {
+                    name: None,
                     providers: vec!["buildkite".to_string()],
                     mode: PipelineMode::default(),
                     environment: None,

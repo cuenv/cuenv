@@ -15,6 +15,8 @@
 //
 // GitHub-Specific Contributors:
 //   - #Cachix: Configures Cachix for Nix binary caching
+//   - #FlakeHub: Publishes tagged flakes to FlakeHub
+//   - #NamespaceCache: Caches the Nix store using Namespace persistent cache volumes
 //   - #GhModels: Installs GitHub Models CLI extension
 //   - #TrustedPublishing: Enables OIDC-based crates.io authentication
 //
@@ -29,6 +31,8 @@
 //	    contributors.#NpmWorkspace,
 //	    contributors.#OnePassword,
 //	    contributors.#Cachix,
+//	    contributors.#FlakeHub,
+//	    contributors.#NamespaceCache,
 //	    contributors.#GhModels,
 //	    contributors.#TrustedPublishing,
 //	]
@@ -63,6 +67,8 @@ import (
 // These are only evaluated when using GitHub Actions as the CI provider.
 #GitHubContributors: [...schema.#Contributor] & [
 	#Cachix,
+	#FlakeHub,
+	#NamespaceCache,
 	#GhModels,
 	#TrustedPublishing,
 ]

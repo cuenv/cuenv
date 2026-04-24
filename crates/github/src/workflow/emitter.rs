@@ -13,6 +13,8 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task, Tri
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
+use crate::config::CheckoutConfig;
+
 /// GitHub Actions workflow emitter
 ///
 /// Transforms cuenv IR into GitHub Actions workflow YAML that can be
@@ -49,6 +51,8 @@ pub struct GitHubActionsEmitter {
     pub approval_environment: String,
     /// Configured permissions from the manifest
     pub configured_permissions: HashMap<String, String>,
+    /// Checkout step configuration
+    pub checkout: CheckoutConfig,
 }
 
 /// How a regular GitHub Actions job should execute its main task.
@@ -105,6 +109,7 @@ impl Default for GitHubActionsEmitter {
             build_cuenv: true,
             approval_environment: "production".to_string(),
             configured_permissions: HashMap::new(),
+            checkout: CheckoutConfig::default(),
         }
     }
 }
@@ -157,6 +162,10 @@ impl GitHubActionsEmitter {
             if let Some(auth_token) = &cachix.auth_token {
                 emitter.cachix_auth_token_secret.clone_from(auth_token);
             }
+        }
+
+        if let Some(checkout) = &config.checkout {
+            emitter.checkout.clone_from(checkout);
         }
 
         // Apply configured permissions
@@ -301,10 +310,47 @@ impl GitHubActionsEmitter {
 
     /// Build the workflow name, prefixing with project name if available (for monorepo support)
     fn build_workflow_name(ir: &IntermediateRepresentation) -> String {
+        if let Some(display_name) = &ir.pipeline.display_name {
+            return display_name.clone();
+        }
+
         ir.pipeline.project_name.as_ref().map_or_else(
             || ir.pipeline.name.clone(),
             |project| format!("{}-{}", project, ir.pipeline.name),
         )
+    }
+
+    fn checkout_step(&self, fetch_depth: u32) -> Step {
+        let has_custom_checkout = self.checkout != CheckoutConfig::default();
+        let mut step = Step::uses(
+            self.checkout
+                .uses
+                .clone()
+                .unwrap_or_else(|| "actions/checkout@v4".to_string()),
+        )
+        .with_name("Checkout");
+
+        if let Some(configured_fetch_depth) = self.checkout.fetch_depth {
+            step = step.with_input(
+                "fetch-depth",
+                serde_yaml::Value::Number(configured_fetch_depth.into()),
+            );
+        } else if !has_custom_checkout {
+            step = step.with_input("fetch-depth", serde_yaml::Value::Number(fetch_depth.into()));
+        }
+
+        if let Some(persist_credentials) = self.checkout.persist_credentials {
+            step = step.with_input(
+                "persist-credentials",
+                serde_yaml::Value::Bool(persist_credentials),
+            );
+        }
+
+        if let Some(checkout_ref) = &self.checkout.checkout_ref {
+            step = step.with_input("ref", serde_yaml::Value::String(checkout_ref.clone()));
+        }
+
+        step
     }
 
     /// Build a workflow from the IR
@@ -352,8 +398,8 @@ impl GitHubActionsEmitter {
     ) -> Option<PushTrigger> {
         let trigger = trigger?;
 
-        // Only emit push trigger if we have branch conditions
-        if trigger.branches.is_empty() {
+        // Only emit push trigger if we have branch or tag conditions
+        if trigger.branches.is_empty() && trigger.tags.is_empty() {
             return None;
         }
 
@@ -361,8 +407,8 @@ impl GitHubActionsEmitter {
 
         Some(PushTrigger {
             branches: trigger.branches.clone(),
+            tags: trigger.tags.clone(),
             paths,
-            ..Default::default()
         })
     }
 
@@ -672,11 +718,7 @@ impl GitHubActionsEmitter {
         let skipped_setup_task_ids = Self::skipped_setup_task_ids(ir, TaskExecution::Direct);
         let mut steps = Vec::new();
 
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.checkout_step(2));
 
         let bootstrap_steps = renderer.render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap));
         steps.extend(bootstrap_steps);
@@ -774,11 +816,7 @@ impl GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.checkout_step(2));
 
         // Render bootstrap and setup phase tasks
         let (phase_steps, secret_env_vars) = self.render_phase_steps(ir, options.execution);
@@ -902,11 +940,7 @@ impl GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout with full history for releases
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(self.checkout_step(0));
 
         // Render bootstrap and setup phase tasks
         let (phase_steps, secret_env_vars) =
@@ -1035,11 +1069,7 @@ impl GitHubActionsEmitter {
                 let mut steps = Vec::new();
 
                 // Checkout with full history for releases
-                steps.push(
-                    Step::uses("actions/checkout@v4")
-                        .with_name("Checkout")
-                        .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-                );
+                steps.push(self.checkout_step(0));
 
                 // Render bootstrap and setup phase tasks
                 let (phase_steps, secret_env_vars) =
@@ -1169,11 +1199,7 @@ impl Emitter for GitHubActionsEmitter {
         let mut steps = Vec::new();
 
         // Checkout step
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(2.into())),
-        );
+        steps.push(self.checkout_step(2));
 
         // Bootstrap and setup phase steps
         let (phase_steps, secret_env) = self.render_phase_steps(ir, TaskExecution::Orchestrated);
@@ -1463,11 +1489,7 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(self.emitter.checkout_step(0));
 
         // Check IR phase tasks for Nix setup
         let has_install_nix = ir
@@ -1476,7 +1498,7 @@ impl ReleaseWorkflowBuilder {
             .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
+                Step::uses("DeterminateSystems/determinate-nix-action@v3")
                     .with_name("Install Nix")
                     .with_input(
                         "extra-conf",
@@ -1554,11 +1576,7 @@ impl ReleaseWorkflowBuilder {
         let mut steps = Vec::new();
 
         // Checkout
-        steps.push(
-            Step::uses("actions/checkout@v4")
-                .with_name("Checkout")
-                .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
-        );
+        steps.push(self.emitter.checkout_step(0));
 
         // Check IR phase tasks for Nix setup
         let has_install_nix = ir
@@ -1567,7 +1585,7 @@ impl ReleaseWorkflowBuilder {
             .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
+                Step::uses("DeterminateSystems/determinate-nix-action@v3")
                     .with_name("Install Nix")
                     .with_input(
                         "extra-conf",
@@ -1663,6 +1681,7 @@ mod tests {
             version: "1.4".to_string(),
             pipeline: PipelineMetadata {
                 name: "test-pipeline".to_string(),
+                display_name: None,
                 mode: PipelineMode::Expanded,
                 environment: None,
                 requires_onepassword: false,
@@ -1775,7 +1794,7 @@ mod tests {
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let provider_hints = serde_json::json!({
             "github_action": {
-                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "uses": "DeterminateSystems/determinate-nix-action@v3",
                 "inputs": {
                     "extra-conf": "accept-flake-config = true"
                 }
@@ -1803,7 +1822,7 @@ mod tests {
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        assert!(yaml.contains("DeterminateSystems/nix-installer-action"));
+        assert!(yaml.contains("DeterminateSystems/determinate-nix-action"));
         assert!(yaml.contains("nix build .#cuenv"));
     }
 
@@ -1816,7 +1835,7 @@ mod tests {
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let nix_provider_hints = serde_json::json!({
             "github_action": {
-                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "uses": "DeterminateSystems/determinate-nix-action@v3",
                 "inputs": {
                     "extra-conf": "accept-flake-config = true"
                 }
@@ -2815,6 +2834,55 @@ mod tests {
             !yaml.contains("paths-ignore:"),
             "Workflow should only emit positive path filters. Got:\n{yaml}"
         );
+    }
+
+    #[test]
+    fn test_workflow_emits_tag_push_trigger() {
+        let emitter = GitHubActionsEmitter::new()
+            .without_nix()
+            .without_cuenv_build();
+
+        let mut ir = make_ir(vec![make_task("publish", &["echo", "publish"])]);
+        ir.pipeline.trigger = Some(TriggerCondition {
+            tags: vec!["v?[0-9]+.[0-9]+.[0-9]+*".to_string()],
+            ..Default::default()
+        });
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        assert!(yaml.contains("push:"));
+        assert!(yaml.contains("tags:"));
+        assert!(yaml.contains("v?[0-9]+.[0-9]+.[0-9]+*"));
+    }
+
+    #[test]
+    fn test_workflow_uses_display_name_and_checkout_config() {
+        let emitter = GitHubActionsEmitter {
+            checkout: crate::config::CheckoutConfig {
+                uses: Some("actions/checkout@v6".to_string()),
+                fetch_depth: None,
+                persist_credentials: Some(false),
+                checkout_ref: Some(
+                    "${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+                        .to_string(),
+                ),
+            },
+            ..GitHubActionsEmitter::new()
+                .without_nix()
+                .without_cuenv_build()
+        };
+
+        let mut ir = make_ir(vec![make_task("publish", &["echo", "publish"])]);
+        ir.pipeline.display_name = Some("Publish tags to FlakeHub".to_string());
+
+        let yaml = emitter.emit(&ir).unwrap();
+
+        assert!(yaml.contains("name: Publish tags to FlakeHub"));
+        assert!(yaml.contains("uses: actions/checkout@v6"));
+        assert!(yaml.contains("persist-credentials: false"));
+        assert!(yaml.contains(
+            "ref: ${{ (inputs.tag != null) && format('refs/tags/{0}', inputs.tag) || '' }}"
+        ));
     }
 
     #[test]

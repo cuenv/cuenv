@@ -38,6 +38,7 @@ impl IntermediateRepresentation {
             version: IR_VERSION.to_string(),
             pipeline: PipelineMetadata {
                 name: pipeline_name.into(),
+                display_name: None,
                 mode: PipelineMode::default(),
                 environment: None,
                 requires_onepassword: false,
@@ -86,6 +87,10 @@ pub struct PipelineMetadata {
     /// Pipeline name
     pub name: String,
 
+    /// Human-readable workflow display name
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
     /// Generation mode (thin or expanded)
     #[serde(default)]
     pub mode: PipelineMode,
@@ -126,6 +131,10 @@ pub struct TriggerCondition {
     /// Branch patterns to trigger on
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub branches: Vec<String>,
+
+    /// Tag patterns to trigger on
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
 
     /// Enable pull request triggers
     #[serde(skip_serializing_if = "Option::is_none")]
