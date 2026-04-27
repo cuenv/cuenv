@@ -313,6 +313,8 @@ ci: contributors: [
 ]
 ```
 
+For release pipelines, prefer Nix and Cachix as the reliable build cache path. Avoid adding contributors that depend on GitHub's cache service to release jobs unless the setup step is explicitly non-fatal.
+
 **Available Contributors:**
 
 | Set                    | Contributors                                 |

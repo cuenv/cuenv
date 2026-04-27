@@ -35,13 +35,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -68,13 +61,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -101,13 +87,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -136,13 +115,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -189,13 +161,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -242,13 +207,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -298,13 +256,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -359,13 +310,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -405,13 +349,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -451,13 +388,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
@@ -500,13 +430,6 @@ jobs:
       uses: DeterminateSystems/nix-installer-action@v16
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup sccache
-      uses: mozilla-actions/sccache-action@v0.0.9
-      env:
-        RUSTC_WRAPPER: sccache
-        SCCACHE_DIR: ${{ runner.temp }}/sccache
-    - name: Export sccache environment
-      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> $GITHUB_ENV && echo "RUSTC_WRAPPER=$SCCACHE_PATH" >> $GITHUB_ENV
     - name: Setup Cachix
       uses: cachix/cachix-action@v17
       with:
