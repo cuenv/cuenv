@@ -248,7 +248,7 @@ cuenv changeset status
 # Preview version changes
 cuenv release version --dry-run
 
-# Apply version changes (updates Cargo.toml, generates changelog)
+# Apply version changes (updates Cargo.toml, Cargo.lock, and changelogs)
 cuenv release version
 
 # See publish order
@@ -260,6 +260,11 @@ cuenv release publish
 
 Avoid `cargo publish --workspace` for cuenv releases. Workspace crates can have publish-time
 dependency ordering constraints that `cuenv release publish` handles explicitly.
+
+When applying a manual patch release outside the release tooling, keep the root
+`[workspace.package]` version and every internal `[workspace.dependencies]`
+version in `Cargo.toml` on the same semver value, then refresh `Cargo.lock` so
+all workspace crate package entries match.
 
 ## IDE Setup
 
