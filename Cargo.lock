@@ -480,9 +480,9 @@ dependencies = [
 
 [[package]]
 name = "cargo-platform"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87a0c0e6148f11f01f32650a2ea02d532b2ad4e81d8bd41e6e565b5adc5e6082"
+checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
 dependencies = [
  "serde",
  "serde_core",
@@ -547,9 +547,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.60"
+version = "1.2.61"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43c5703da9466b66a946814e1adf53ea2c90f10063b86290cc9eb67ce3478a20"
+checksum = "d16d90359e986641506914ba71350897565610e87ce0ad9e6f28569db3dd5c6d"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -953,9 +953,9 @@ dependencies = [
 
 [[package]]
 name = "crc-catalog"
-version = "2.4.0"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19d374276b40fb8bbdee95aef7c7fa6b5316ec764510eb64b8dd0e2ed0d7e7f5"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32fast"
@@ -1162,7 +1162,7 @@ dependencies = [
 
 [[package]]
 name = "cuengine"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "cc",
  "criterion",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -1231,7 +1231,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "reqwest 0.13.2",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -1252,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-1password"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1263,7 +1263,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "reqwest 0.13.2",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "serde",
  "serde_json",
  "temp-env",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-bitbucket"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "cuenv-codeowners",
  "cuenv-core",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-buildkite"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-ci",
@@ -1301,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-cas"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "chrono",
  "hex",
@@ -1318,7 +1318,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ci"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-codegen"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "clap",
  "cuengine",
@@ -1375,7 +1375,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-codeowners"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "schemars",
  "serde",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-core"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-recursion",
  "async-trait",
@@ -1409,7 +1409,7 @@ dependencies = [
  "petgraph 0.8.3",
  "proptest",
  "regex",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "serde",
  "serde_json",
  "serde_path_to_error",
@@ -1427,7 +1427,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-dagger"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1438,7 +1438,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-editorconfig"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "serde",
  "tempfile",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-events"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1461,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-github"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1482,7 +1482,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-gitlab"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "cuenv-codeowners",
  "cuenv-core",
@@ -1492,7 +1492,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-homebrew"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1504,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-hooks"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -1525,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-ignore"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "gix",
  "serde",
@@ -1536,7 +1536,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-release"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "chrono",
  "cuenv-core",
@@ -1565,7 +1565,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-secrets"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "futures",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-services"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-discovery"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "cuenv-core",
  "regex",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-task-graph"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "criterion",
  "petgraph 0.8.3",
@@ -1632,7 +1632,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-github"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1650,7 +1650,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-nix"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1664,7 +1664,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-oci"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-rustup"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1698,7 +1698,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-tools-url"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "cuenv-core",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-vcs"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "async-trait",
  "globset",
@@ -1733,7 +1733,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-workspaces"
-version = "0.41.0"
+version = "0.41.1"
 dependencies = [
  "cargo-lock",
  "cargo_toml",
@@ -3288,9 +3288,9 @@ dependencies = [
 
 [[package]]
 name = "gix-trace"
-version = "0.1.18"
+version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f69a13643b8437d4ca6845e08143e847a36ca82903eed13303475d0ae8b162e0"
+checksum = "6f23569e55f2ffaf958617353b9734a7d52a7c19c439eeaa5e3efc217fd2270e"
 
 [[package]]
 name = "gix-transport"
@@ -3340,9 +3340,9 @@ dependencies = [
 
 [[package]]
 name = "gix-utils"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "befcdbdfb1238d2854591f760a48711bed85e72d80a10e8f2f93f656746ef7c5"
+checksum = "4e477b4f07a6e8da4ba791c53c858102959703c60d70f199932010d5b94adb2c"
 dependencies = [
  "fastrand",
  "unicode-normalization",
@@ -3751,7 +3751,7 @@ dependencies = [
  "hyper 1.9.0",
  "hyper-util",
  "log",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-native-certs",
  "tokio",
  "tokio-rustls 0.26.4",
@@ -4156,9 +4156,9 @@ dependencies = [
 
 [[package]]
 name = "jiff"
-version = "0.2.23"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a3546dc96b6d42c5f24902af9e2538e82e39ad350b0c766eb3fbf2d8f3d8359"
+checksum = "f00b5dbd620d61dfdcb6007c9c1f6054ebd75319f163d886a9055cec1155073d"
 dependencies = [
  "jiff-static",
  "jiff-tzdb-platform",
@@ -4171,9 +4171,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.23"
+version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a8c8b344124222efd714b73bb41f8b5120b27a7cc1c75593a6ff768d9d05aa4"
+checksum = "e000de030ff8022ea1da3f466fbb0f3a809f5e51ed31f6dd931c35181ad8e6d7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4362,9 +4362,9 @@ dependencies = [
 
 [[package]]
 name = "leb128"
-version = "0.2.5"
+version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "884e2677b40cc8c339eaefcb701c32ef1fd2493d71118dc0ca4b6a736c93bd67"
+checksum = "6cc46bac87ef8093eed6f272babb833b6443374399985ac8ed28471ee0918545"
 
 [[package]]
 name = "leb128fmt"
@@ -4374,9 +4374,9 @@ checksum = "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
 
 [[package]]
 name = "libc"
-version = "0.2.185"
+version = "0.2.186"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
+checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "libm"
@@ -4927,9 +4927,9 @@ dependencies = [
 
 [[package]]
 name = "octocrab"
-version = "0.49.7"
+version = "0.49.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63f6687a23731011d0117f9f4c3cdabaa7b5e42ca671f42b5cc0657c492540e3"
+checksum = "4ddbc3bb87e8c680febf16f56855bbd8b44a38e18c913334213ab34908e71a09"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5576,7 +5576,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "socket2 0.6.3",
  "thiserror 2.0.18",
  "tokio",
@@ -5596,7 +5596,7 @@ dependencies = [
  "rand 0.9.4",
  "ring",
  "rustc-hash",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.18",
@@ -5989,7 +5989,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -6030,7 +6030,7 @@ dependencies = [
  "log",
  "percent-encoding",
  "pin-project-lite",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
@@ -6181,15 +6181,15 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.38"
+version = "0.23.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
+checksum = "7c2c118cb077cca2822033836dfb1b975355dfb784b5e8da48f7b6c5db74e60e"
 dependencies = [
  "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.12",
+ "rustls-webpki 0.103.13",
  "subtle",
  "zeroize",
 ]
@@ -6217,9 +6217,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be040f8b0a225e40375822a563fa9524378b9d63112f53e19ffff34df5d33fdd"
+checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
 dependencies = [
  "web-time",
  "zeroize",
@@ -6236,10 +6236,10 @@ dependencies = [
  "jni",
  "log",
  "once_cell",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-native-certs",
  "rustls-platform-verifier-android",
- "rustls-webpki 0.103.12",
+ "rustls-webpki 0.103.13",
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
@@ -6264,9 +6264,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.12"
+version = "0.103.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
+checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -7294,7 +7294,7 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "tokio",
 ]
 
@@ -7424,7 +7424,7 @@ dependencies = [
  "indexmap",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
- "winnow 1.0.1",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -7433,7 +7433,7 @@ version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
- "winnow 1.0.1",
+ "winnow 1.0.2",
 ]
 
 [[package]]
@@ -7599,9 +7599,9 @@ dependencies = [
 
 [[package]]
 name = "typenum"
-version = "1.19.0"
+version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
+checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
 
 [[package]]
 name = "ucd-trie"
@@ -7705,7 +7705,7 @@ dependencies = [
  "flate2",
  "log",
  "percent-encoding",
- "rustls 0.23.38",
+ "rustls 0.23.39",
  "rustls-pki-types",
  "ureq-proto",
  "utf8-zero",
@@ -7851,11 +7851,11 @@ dependencies = [
 
 [[package]]
 name = "wasip2"
-version = "1.0.2+wasi-0.2.9"
+version = "1.0.3+wasi-0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9517f9239f02c069db75e65f174b3da828fe5f5b945c4dd26bd25d89c03ebcf5"
+checksum = "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.57.1",
 ]
 
 [[package]]
@@ -7864,7 +7864,7 @@ version = "0.4.0+wasi-0.3.0-rc-2026-01-06"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
 dependencies = [
- "wit-bindgen",
+ "wit-bindgen 0.51.0",
 ]
 
 [[package]]
@@ -9010,9 +9010,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.1"
+version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09dac053f1cd375980747450bfc7250c264eaae0583872e845c0c7cd578872b5"
+checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
 dependencies = [
  "memchr",
 ]
@@ -9045,6 +9045,12 @@ checksum = "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
 dependencies = [
  "wit-bindgen-rust-macro",
 ]
+
+[[package]]
+name = "wit-bindgen"
+version = "0.57.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "wit-bindgen-core"
