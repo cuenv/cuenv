@@ -38,6 +38,7 @@ tasks: {...}
 | `runtime`    | `#Runtime`                    | No       | Default runtime for tasks            |
 | `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
 | `release`    | `#Release`                    | No       | Release management configuration     |
+| `vcs`        | `{[#VcsDependencyName]: #VcsDependency}` | No       | Cuenv-managed Git dependencies       |
 
 ### #Base
 
@@ -911,6 +912,32 @@ workspaces: {
 - `yarn-classic`
 - `bun`
 - `cargo`
+
+## VCS Dependencies
+
+Top-level Git dependencies managed by `cuenv sync vcs`.
+
+```cue
+vcs: {
+    mylib: {
+        url:       "https://github.com/example/mylib.git"
+        reference: "main"
+        vendor:    true
+        path:      "vendor/mylib"
+    }
+}
+```
+
+**Fields:**
+
+VCS dependency names must match `#VcsDependencyName`: ASCII letters, digits, `_`, `-`, and `.`, with no leading `.` and no `..`.
+
+| Field       | Type     | Required | Description                                      |
+| ----------- | -------- | -------- | ------------------------------------------------ |
+| `url`       | `string` | Yes      | Git repository URL                               |
+| `reference` | `string` | No       | Branch, tag, or commit-ish. Default: `HEAD`      |
+| `vendor`    | `bool`   | Yes      | Track a snapshot (`true`) or local checkout      |
+| `path`      | `string` | Yes      | Repository-relative materialization path         |
 
 ## Runtimes
 

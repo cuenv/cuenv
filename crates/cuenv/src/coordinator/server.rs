@@ -34,7 +34,7 @@ pub struct CoordinatorConfig {
 impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
-            idle_timeout: Duration::from_secs(300), // 5 minutes
+            idle_timeout: Duration::new(300, 0),
             max_clients: 64,
             heartbeat_interval: Duration::from_secs(30),
             event_buffer_size: 1000,

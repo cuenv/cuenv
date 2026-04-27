@@ -112,9 +112,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-bdd:
     name: checks.bdd
     runs-on: namespace-profile-cuenv-linux-x86
@@ -146,9 +143,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-clippy:
     name: checks.clippy
     runs-on: namespace-profile-cuenv-linux-x86
@@ -180,9 +174,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-cuenv:
     name: checks.cuenv
     runs-on: namespace-profile-cuenv-linux-x86
@@ -214,9 +205,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-deny:
     name: checks.deny
     runs-on: namespace-profile-cuenv-linux-x86
@@ -248,9 +236,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-doctest:
     name: checks.doctest
     runs-on: namespace-profile-cuenv-linux-x86
@@ -282,9 +267,6 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-nextest:
     name: checks.nextest
     runs-on: namespace-profile-cuenv-linux-x86
@@ -316,6 +298,3 @@ jobs:
       working-directory: .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_ACTOR: ${{ github.actor }}
-        GITHUB_REF_TYPE: ${{ github.ref_type }}
-        GITHUB_REF_NAME: ${{ github.ref_name }}

@@ -80,7 +80,9 @@ impl SyncRegistry {
 
         for provider in &self.providers {
             let result = if all_projects {
-                provider.sync_workspace(package, options, executor).await
+                provider
+                    .sync_workspace(path, package, options, executor)
+                    .await
             } else {
                 provider.sync_path(path, package, options, executor).await
             };
@@ -133,7 +135,9 @@ impl SyncRegistry {
         })?;
 
         if all_projects {
-            provider.sync_workspace(package, options, executor).await
+            provider
+                .sync_workspace(path, package, options, executor)
+                .await
         } else {
             provider.sync_path(path, package, options, executor).await
         }

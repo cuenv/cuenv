@@ -64,6 +64,7 @@ impl SyncProvider for CodegenSyncProvider {
 
     async fn sync_workspace(
         &self,
+        _path: &Path,
         package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,

@@ -112,6 +112,74 @@ schema.#Project & {
 }
 
 #[test]
+fn vcs_dependency_name_accepts_safe_names() {
+    let tmp = create_test_dir();
+    let root = tmp.path();
+    write_local_cuenv_module(root);
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  vcs: {
+    "lib.core-1": {
+      url: "https://github.com/example/lib.git"
+      vendor: true
+      path: "vendor/lib"
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let project = evaluate_cue_package_typed::<Project>(root, "cuenv")
+        .expect("schema should accept safe VCS dependency names");
+    assert!(project.vcs.contains_key("lib.core-1"));
+}
+
+#[test]
+fn vcs_dependency_name_rejects_runtime_invalid_names() {
+    for name in [".lib", "lib..core"] {
+        let tmp = create_test_dir();
+        let root = tmp.path();
+        write_local_cuenv_module(root);
+
+        fs::write(
+            root.join("env.cue"),
+            format!(
+                r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  name: "app"
+  vcs: {{
+    "{name}": {{
+      url: "https://github.com/example/lib.git"
+      vendor: true
+      path: "vendor/lib"
+    }}
+  }}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
+        assert!(
+            res.is_err(),
+            "schema should reject VCS dependency name {name}"
+        );
+    }
+}
+
+#[test]
 fn base_can_be_composed_standalone() {
     let tmp = create_test_dir();
     let root = tmp.path();

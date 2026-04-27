@@ -872,6 +872,7 @@ mod tests {
             runtime: None,
             services: std::collections::HashMap::new(),
             images: std::collections::HashMap::new(),
+            vcs: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -917,6 +918,7 @@ mod tests {
             runtime: None,
             services: std::collections::HashMap::new(),
             images: std::collections::HashMap::new(),
+            vcs: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);
@@ -941,6 +943,7 @@ mod tests {
             runtime: None,
             services: std::collections::HashMap::new(),
             images: std::collections::HashMap::new(),
+            vcs: std::collections::HashMap::new(),
         };
 
         let hooks = extract_hooks_from_config(&config);
