@@ -7,7 +7,6 @@ import (
 	xCodecov "github.com/cuenv/cuenv/contrib/codecov"
 	xContributors "github.com/cuenv/cuenv/contrib/contributors"
 	xNix "github.com/cuenv/cuenv/contrib/nix"
-	xRust "github.com/cuenv/cuenv/contrib/rust"
 )
 
 // Command template for cargo tasks
@@ -83,7 +82,6 @@ schema.#Project & {
 			xContributors.#Cachix,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
-			xRust.#Sccache,
 			xCodecov.#Codecov,
 		]
 
