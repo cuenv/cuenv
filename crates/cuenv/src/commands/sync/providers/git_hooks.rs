@@ -76,6 +76,7 @@ impl SyncProvider for GitHooksSyncProvider {
 
     async fn sync_workspace(
         &self,
+        _path: &Path,
         _package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,

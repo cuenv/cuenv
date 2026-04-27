@@ -240,19 +240,15 @@ fn run_event_loop(
                     KeyCode::Up | KeyCode::Char('k') => picker.select_previous(),
                     KeyCode::Down | KeyCode::Char('j') => picker.select_next(),
                     KeyCode::Char(' ') => picker.cycle_bump(),
-                    KeyCode::Tab | KeyCode::Enter => {
-                        if picker.has_selections() {
-                            picker.next_phase();
-                        }
+                    KeyCode::Tab | KeyCode::Enter if picker.has_selections() => {
+                        picker.next_phase();
                     }
                     _ => {}
                 },
                 Phase::Summary => match key.code {
                     KeyCode::Esc => picker.previous_phase(),
-                    KeyCode::Enter => {
-                        if !picker.summary.trim().is_empty() {
-                            picker.next_phase();
-                        }
+                    KeyCode::Enter if !picker.summary.trim().is_empty() => {
+                        picker.next_phase();
                     }
                     KeyCode::Char(c) => picker.summary.push(c),
                     KeyCode::Backspace => {

@@ -206,15 +206,11 @@ impl RichTui {
                 }
 
                 // Output scrolling (when in selected mode)
-                KeyCode::PageUp => {
-                    if self.state.output_mode == OutputMode::Selected {
-                        self.state.output_scroll = self.state.output_scroll.saturating_sub(10);
-                    }
+                KeyCode::PageUp if self.state.output_mode == OutputMode::Selected => {
+                    self.state.output_scroll = self.state.output_scroll.saturating_sub(10);
                 }
-                KeyCode::PageDown => {
-                    if self.state.output_mode == OutputMode::Selected {
-                        self.state.output_scroll += 10;
-                    }
+                KeyCode::PageDown if self.state.output_mode == OutputMode::Selected => {
+                    self.state.output_scroll += 10;
                 }
 
                 _ => {}

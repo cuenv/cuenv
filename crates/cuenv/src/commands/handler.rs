@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
+use cuenv_core::cue::discovery::find_cue_module_root;
 use cuenv_events::{emit_stderr, emit_stdout};
 
 use crate::cli::{ShellType, StatusFormat};
@@ -543,7 +544,6 @@ async fn run_selected_sync_providers(request: SelectedSyncProvidersRequest<'_>) 
     let mut outputs = Vec::new();
     let mut had_error = false;
     let sync_all = request.scope == &SyncScope::Workspace;
-
     for name in request.provider_names {
         let result = request
             .registry
@@ -579,6 +579,15 @@ async fn run_selected_sync_providers(request: SelectedSyncProvidersRequest<'_>) 
     } else {
         Ok(combined)
     }
+}
+
+fn is_module_root(path: &std::path::Path) -> Result<bool> {
+    let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
+        source: e,
+        path: Some(path.to_path_buf().into_boxed_path()),
+        operation: "canonicalize path".to_string(),
+    })?;
+    Ok(find_cue_module_root(&target_path).is_some_and(|module_root| module_root == target_path))
 }
 
 #[async_trait]
@@ -633,7 +642,7 @@ impl CommandHandler for SyncHandler {
                     return Err(project_error(path));
                 }
 
-                return run_selected_sync_providers(SelectedSyncProvidersRequest {
+                let rules_output = run_selected_sync_providers(SelectedSyncProvidersRequest {
                     registry: &registry,
                     provider_names: &["rules"],
                     path,
@@ -642,16 +651,25 @@ impl CommandHandler for SyncHandler {
                     scope: &self.scope,
                     executor,
                 })
-                .await;
+                .await?;
+                let vcs_output = registry
+                    .sync_provider("vcs", path, &self.package, &options, false, executor)
+                    .await?
+                    .output;
+                return Ok([rules_output, vcs_output]
+                    .into_iter()
+                    .filter(|output| !output.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"));
             }
         }
 
         if let Some(name) = &self.subcommand {
-            // Special-case: `cuenv sync ci` from the module root should behave like `-A`
-            // to avoid requiring the root to be a Project. This mirrors CI usage.
+            // Special-case root-scoped providers from the module root should behave
+            // like `-A` to avoid requiring the root to be a Project.
             let mut use_workspace = sync_all;
-            if !use_workspace && *name == "ci" && self.path == "." {
-                tracing::info!("sync ci: switching to workspace mode at module root");
+            if !use_workspace && matches!(name.as_str(), "ci" | "vcs") && is_module_root(path)? {
+                tracing::info!("sync {name}: switching to workspace mode at module root");
                 use_workspace = true;
             }
 
@@ -663,7 +681,7 @@ impl CommandHandler for SyncHandler {
 
         run_selected_sync_providers(SelectedSyncProvidersRequest {
             registry: &registry,
-            provider_names: &["lock", "codegen", "ci", "rules", "git-hooks"],
+            provider_names: &["rules", "vcs", "lock", "codegen", "ci", "git-hooks"],
             path,
             package: &self.package,
             options: &options,
@@ -695,5 +713,22 @@ impl ShellInitHandler {
             success: true,
             output,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn module_root_detection_does_not_require_root_env_file() {
+        let dir = tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("cue.mod")).expect("cue.mod");
+        std::fs::create_dir_all(dir.path().join("services/api")).expect("project dir");
+        std::fs::write(dir.path().join("services/api/env.cue"), "package cuenv\n")
+            .expect("env.cue");
+
+        assert!(is_module_root(dir.path()).expect("module root detection"));
     }
 }

@@ -586,8 +586,7 @@ pub async fn get_environment_with_hooks(
     // When foreground hooks are requested, we always run them synchronously,
     // ignoring any cached state from previous background executions.
     let foreground_hooks = std::env::var("CUENV_FOREGROUND_HOOKS")
-        .map(|v| v == "1" || v.to_lowercase() == "true")
-        .unwrap_or(false);
+        .is_ok_and(|v| v == "1" || v.to_lowercase() == "true");
 
     if foreground_hooks {
         info!(
@@ -1097,6 +1096,7 @@ mod tests {
             formatters: None,
             services: HashMap::new(),
             images: HashMap::new(),
+            vcs: HashMap::new(),
         };
 
         let vars = extract_static_env_vars(&cfg);
@@ -1131,6 +1131,7 @@ mod tests {
             formatters: None,
             services: HashMap::new(),
             images: HashMap::new(),
+            vcs: HashMap::new(),
         };
 
         let hook_env = HashMap::from([

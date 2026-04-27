@@ -732,7 +732,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
 
         // Register resolved secrets for global redaction in the events system.
         // This ensures they're redacted from ALL output, not just this task's output.
-        cuenv_events::register_secrets(secrets.into_iter());
+        cuenv_events::register_secrets(secrets);
 
         for (key, value) in task_env_vars {
             runtime_env.set(key, value);

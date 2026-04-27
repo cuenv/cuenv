@@ -129,6 +129,29 @@ pub struct Base {
     /// Hooks configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
+
+    /// Cuenv-managed VCS dependencies.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vcs: HashMap<String, VcsDependency>,
+}
+
+/// A cuenv-managed Git dependency.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VcsDependency {
+    /// Git repository URL.
+    pub url: String,
+    /// Branch, tag, or commit-ish to resolve.
+    #[serde(default = "default_vcs_reference")]
+    pub reference: String,
+    /// Whether to materialize a tracked source snapshot.
+    pub vendor: bool,
+    /// Repository-relative materialization path.
+    pub path: String,
+}
+
+fn default_vcs_reference() -> String {
+    "HEAD".to_string()
 }
 
 // ============================================================================
@@ -1324,6 +1347,10 @@ pub struct Project {
     /// Hooks configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hooks: Option<Hooks>,
+
+    /// Cuenv-managed VCS dependencies.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vcs: HashMap<String, VcsDependency>,
 
     /// CI configuration
     #[serde(skip_serializing_if = "Option::is_none")]

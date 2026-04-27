@@ -6,15 +6,19 @@ package schema
 	formatters?: #Formatters
 	runtime?:    #Runtime
 	hooks?:      #Hooks
+	vcs?:        [#VcsDependencyName]: #VcsDependency
 })
 
 #ProjectName: string & =~"^[a-zA-Z0-9._-]+$"
+
+#VcsDependencyName: string & =~"^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$" & !~"\\.\\."
 
 #Project: close({
 	#Base
 	name!:    #ProjectName
 	runtime?: #Runtime
 	hooks?:   #Hooks
+	vcs?:     [#VcsDependencyName]: #VcsDependency
 	ci?:      #CI
 	release?: #Release
 	// Named tasks and groups derive fully-qualified runtime names from their
