@@ -1199,7 +1199,7 @@ ci: {
     // Provider-specific configuration
     provider: github: {
         runner: "ubuntu-latest"
-        cachix: name: "my-cache"
+        flakehubCache: true
     }
 
     // Pipeline definitions

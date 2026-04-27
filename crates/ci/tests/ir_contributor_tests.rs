@@ -282,6 +282,68 @@ fn test_cachix_contributor_inactive_without_config() {
 }
 
 // ============================================================================
+// FlakeHub Cache Contributor Tests
+// ============================================================================
+
+#[test]
+fn test_flakehub_cache_contributor_active_with_config() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-flakehub-cache");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-flakehub-cache");
+
+    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+    let setup_flakehub_cache = setup_tasks
+        .iter()
+        .find(|t| t.id == "setup-flakehub-cache")
+        .expect("FlakeHubCacheContributor should inject 'setup-flakehub-cache'");
+
+    assert_eq!(
+        setup_flakehub_cache.contributor.as_deref(),
+        Some("flakehub-cache")
+    );
+    assert!(
+        setup_flakehub_cache
+            .depends_on
+            .contains(&"install-nix".to_string()),
+        "setup-flakehub-cache should depend on install-nix"
+    );
+
+    let provider_hints = setup_flakehub_cache
+        .provider_hints
+        .as_ref()
+        .expect("setup-flakehub-cache should have provider hints");
+    let github_action = provider_hints
+        .get("github_action")
+        .expect("setup-flakehub-cache should use a GitHub Action");
+
+    assert_eq!(
+        github_action.get("uses").and_then(|value| value.as_str()),
+        Some("DeterminateSystems/flakehub-cache-action@main")
+    );
+}
+
+#[test]
+fn test_flakehub_cache_contributor_inactive_without_config() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-pipeline");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
+
+    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+
+    let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
+    assert!(
+        !setup_tasks.iter().any(|t| t.id == "setup-flakehub-cache"),
+        "FlakeHubCacheContributor should NOT inject task when no FlakeHub Cache config"
+    );
+}
+
+// ============================================================================
 // GH Models Contributor Tests
 // ============================================================================
 

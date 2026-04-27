@@ -34,6 +34,8 @@ package schema
 		authToken?:  string
 		pushFilter?: string
 	})
+	// Enable FlakeHub Cache for Nix builds on GitHub Actions.
+	flakehubCache?: bool
 	artifacts?: close({
 		paths?:          [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"
