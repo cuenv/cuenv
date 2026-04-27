@@ -67,6 +67,7 @@ impl SyncProvider for CiSyncProvider {
 
     async fn sync_workspace(
         &self,
+        _path: &Path,
         package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,

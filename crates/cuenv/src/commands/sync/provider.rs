@@ -100,6 +100,7 @@ pub trait SyncProvider: Send + Sync {
     /// Called when running `cuenv sync <provider> -A` or `cuenv sync -A`.
     async fn sync_workspace(
         &self,
+        path: &Path,
         package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,

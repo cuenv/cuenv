@@ -83,6 +83,7 @@ impl SyncProvider for RulesSyncProvider {
 
     async fn sync_workspace(
         &self,
+        _path: &Path,
         _package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
@@ -444,6 +445,7 @@ fn find_repo_root(start: &Path) -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use tempfile::tempdir;
 
     #[test]
@@ -478,6 +480,47 @@ mod tests {
         assert!(
             msg.contains("CODEOWNERS file not found"),
             "expected missing-file error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn sync_ignore_files_preserves_vcs_gitignore_section() {
+        let temp = tempdir().expect("tempdir");
+        let mut ignore = HashMap::new();
+        ignore.insert(
+            "git".to_string(),
+            IgnoreValue::Patterns(vec!["target/".to_string()]),
+        );
+        let vcs_block = "# BEGIN cuenv vcs\nvendor/lib/\n.cuenv/vcs/cache/\n# END cuenv vcs\n";
+        let generated = IgnoreFile::new("git")
+            .patterns(vec!["target/".to_string()])
+            .header(CUENV_HEADER)
+            .generate();
+        std::fs::write(
+            temp.path().join(".gitignore"),
+            format!("{}\n\n{}", generated.trim_end(), vcs_block),
+        )
+        .expect("write gitignore");
+
+        let dry_run_output = sync_ignore_files(temp.path(), &ignore, true).expect("dry-run sync");
+        assert!(
+            dry_run_output.contains(".gitignore: Unchanged"),
+            "expected VCS block preservation to avoid .gitignore drift, got: {dry_run_output}"
+        );
+
+        ignore.insert(
+            "git".to_string(),
+            IgnoreValue::Patterns(vec!["target/".to_string(), "dist/".to_string()]),
+        );
+        sync_ignore_files(temp.path(), &ignore, false).expect("write sync");
+        let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
+        assert!(
+            content.contains(vcs_block.trim_end()),
+            "expected VCS block to be preserved, got: {content}"
+        );
+        assert!(
+            content.contains("dist/"),
+            "expected rules provider update to be applied, got: {content}"
         );
     }
 }

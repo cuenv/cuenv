@@ -7,7 +7,7 @@
 //! ## Structure (v3)
 //!
 //! ```toml
-//! version = 3
+//! version = 4
 //!
 //! # Runtime section - project runtime state
 //! [runtimes."."]
@@ -56,10 +56,11 @@
 use crate::tools::ToolActivationStep;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::io::Write;
+use std::path::{Component, Path};
 
 /// Current lockfile format version.
-pub const LOCKFILE_VERSION: u32 = 3;
+pub const LOCKFILE_VERSION: u32 = 4;
 
 /// Filename for the lockfile.
 pub const LOCKFILE_NAME: &str = "cuenv.lock";
@@ -78,6 +79,9 @@ pub struct Lockfile {
     /// Tool activation operations shared by CLI/CI execution paths (v3+).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools_activation: Vec<ToolActivationStep>,
+    /// Locked VCS dependencies (v4+).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vcs: BTreeMap<String, LockedVcsDependency>,
     /// Legacy OCI artifacts (for backward compatibility with v1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<LockedArtifact>,
@@ -90,6 +94,7 @@ impl Default for Lockfile {
             runtimes: BTreeMap::new(),
             tools: BTreeMap::new(),
             tools_activation: Vec::new(),
+            vcs: BTreeMap::new(),
             artifacts: Vec::new(),
         }
     }
@@ -107,8 +112,22 @@ impl Lockfile {
     /// Returns `None` if the file doesn't exist.
     /// Returns an error if the file exists but is invalid.
     pub fn load(path: &Path) -> crate::Result<Option<Self>> {
-        if !path.exists() {
-            return Ok(None);
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(crate::Error::configuration(format!(
+                    "Refusing to read symlinked lockfile at {}",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(crate::Error::configuration(format!(
+                    "Failed to inspect lockfile at {}: {}",
+                    path.display(),
+                    e
+                )));
+            }
         }
 
         let content = std::fs::read_to_string(path)
@@ -129,18 +148,63 @@ impl Lockfile {
                 lockfile.version, LOCKFILE_VERSION
             )));
         }
+        lockfile.validate().map_err(|msg| {
+            crate::Error::configuration(format!("Invalid lockfile at {}: {}", path.display(), msg))
+        })?;
 
         Ok(Some(lockfile))
     }
 
     /// Save the lockfile to a TOML file.
     pub fn save(&self, path: &Path) -> crate::Result<()> {
+        self.validate().map_err(|msg| {
+            crate::Error::configuration(format!("Refusing to write invalid lockfile: {msg}"))
+        })?;
+
         let content = toml::to_string_pretty(self).map_err(|e| {
             crate::Error::configuration(format!("Failed to serialize lockfile: {}", e))
         })?;
 
-        std::fs::write(path, content)
+        if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Err(crate::Error::configuration(format!(
+                "Refusing to write symlinked lockfile at {}",
+                path.display()
+            )));
+        }
+
+        let temp_path = path.with_file_name(format!(
+            ".{}.tmp-{}-{}",
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("cuenv.lock"),
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| crate::Error::configuration(e.to_string()))?
+                .as_nanos()
+        ));
+        let mut temp_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
             .map_err(|e| crate::Error::configuration(format!("Failed to write lockfile: {}", e)))?;
+        temp_file
+            .write_all(content.as_bytes())
+            .map_err(|e| crate::Error::configuration(format!("Failed to write lockfile: {}", e)))?;
+        temp_file
+            .sync_all()
+            .map_err(|e| crate::Error::configuration(format!("Failed to sync lockfile: {}", e)))?;
+        drop(temp_file);
+        std::fs::rename(&temp_path, path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            crate::Error::configuration(format!("Failed to replace lockfile: {}", e))
+        })?;
+        let parent = lockfile_parent_for_sync(path);
+        std::fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|e| {
+                crate::Error::configuration(format!("Failed to sync lockfile directory: {}", e))
+            })?;
 
         Ok(())
     }
@@ -163,6 +227,12 @@ impl Lockfile {
     #[must_use]
     pub fn find_runtime(&self, project_path: &str) -> Option<&LockedRuntime> {
         self.runtimes.get(project_path)
+    }
+
+    /// Find a locked VCS dependency by name.
+    #[must_use]
+    pub fn find_vcs(&self, name: &str) -> Option<&LockedVcsDependency> {
+        self.vcs.get(name)
     }
 
     /// Get all tool names.
@@ -204,6 +274,24 @@ impl Lockfile {
         })?;
 
         self.runtimes.insert(project_path, runtime);
+        Ok(())
+    }
+
+    /// Add or update a VCS dependency in the lockfile.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the dependency fails validation.
+    pub fn upsert_vcs(
+        &mut self,
+        name: String,
+        dependency: LockedVcsDependency,
+    ) -> crate::Result<()> {
+        dependency.validate().map_err(|msg| {
+            crate::Error::configuration(format!("Invalid VCS dependency '{}': {}", name, msg))
+        })?;
+
+        self.vcs.insert(name, dependency);
         Ok(())
     }
 
@@ -274,6 +362,15 @@ impl Lockfile {
             self.artifacts.push(artifact);
         }
 
+        Ok(())
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, dependency) in &self.vcs {
+            dependency
+                .validate()
+                .map_err(|msg| format!("invalid VCS dependency '{}': {}", name, msg))?;
+        }
         Ok(())
     }
 }
@@ -451,6 +548,94 @@ pub struct LockedToolPlatform {
     pub dependencies: Vec<String>,
 }
 
+/// A locked cuenv-managed VCS dependency.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LockedVcsDependency {
+    /// Git repository URL.
+    pub url: String,
+    /// Requested branch, tag, or commit-ish.
+    pub reference: String,
+    /// Resolved commit SHA.
+    pub commit: String,
+    /// Tree object SHA for the resolved commit.
+    pub tree: String,
+    /// Whether the materialized dependency is a tracked source snapshot.
+    pub vendor: bool,
+    /// Repository-relative materialization path.
+    pub path: String,
+}
+
+impl LockedVcsDependency {
+    fn validate(&self) -> Result<(), String> {
+        if self.url.trim().is_empty() {
+            return Err("url must not be empty".to_string());
+        }
+        if self.reference.trim().is_empty() {
+            return Err("reference must not be empty".to_string());
+        }
+        if !is_git_object_id(&self.commit) {
+            return Err("commit must be a hexadecimal Git object ID".to_string());
+        }
+        if !is_git_object_id(&self.tree) {
+            return Err("tree must be a hexadecimal Git object ID".to_string());
+        }
+        if self.path.trim().is_empty() {
+            return Err("path must not be empty".to_string());
+        }
+        validate_locked_vcs_path(&self.path)?;
+        Ok(())
+    }
+}
+
+fn is_git_object_id(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
+    let rel = Path::new(path);
+    if rel.is_absolute() || path.trim().is_empty() {
+        return Err("path must be relative".to_string());
+    }
+    let mut components = Vec::new();
+    for component in rel.components() {
+        let Component::Normal(value) = component else {
+            return Err("path must not contain '.', '..', or prefixes".to_string());
+        };
+        let value = value.to_string_lossy();
+        if value.is_empty()
+            || value == "."
+            || value == ".."
+            || value.contains('\\')
+            || value.chars().any(|c| {
+                c.is_control()
+                    || matches!(
+                        c,
+                        '*' | '?' | '[' | ']' | '!' | '#' | ' ' | '\t' | '\n' | '\r'
+                    )
+            })
+        {
+            return Err("path contains unsafe components".to_string());
+        }
+        components.push(value.into_owned());
+    }
+    if components.is_empty() {
+        return Err("path must not target the repository root".to_string());
+    }
+    if components.iter().any(|component| component == ".git")
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "cache".to_string()])
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "tmp".to_string()])
+    {
+        return Err("path targets cuenv or git internals".to_string());
+    }
+    Ok(())
+}
+
+fn lockfile_parent_for_sync(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
 /// Get the current platform string.
 ///
 /// Format: `{os}-{arch}` where:
@@ -527,7 +712,7 @@ mod tests {
         });
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
-        assert!(toml_str.contains("version = 3"));
+        assert!(toml_str.contains("version = 4"));
         assert!(toml_str.contains("type = \"nix\""));
         assert!(toml_str.contains("lockfile = \"flake.lock\""));
         assert!(toml_str.contains("kind = \"image\""));
@@ -720,7 +905,7 @@ mod tests {
             .unwrap();
 
         let toml_str = toml::to_string_pretty(&lockfile).unwrap();
-        assert!(toml_str.contains("version = 3"));
+        assert!(toml_str.contains("version = 4"));
         assert!(toml_str.contains("[tools.jq]"));
         assert!(toml_str.contains("provider = \"github\""));
         assert!(toml_str.contains("digest = \"sha256:abc123\""));
@@ -772,6 +957,53 @@ mod tests {
 
         assert!(lockfile.find_runtime(".").is_some());
         assert!(lockfile.find_runtime("apps/api").is_none());
+    }
+
+    #[test]
+    fn test_vcs_serialization() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "mylib".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/example/mylib.git".to_string(),
+                    reference: "main".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: true,
+                    path: "vendor/mylib".to_string(),
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("version = 4"));
+        assert!(toml_str.contains("[vcs.mylib]"));
+        assert!(toml_str.contains("reference = \"main\""));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.find_vcs("mylib").unwrap().path, "vendor/mylib");
+    }
+
+    #[test]
+    fn test_lockfile_parent_for_sync_handles_relative_path() {
+        assert_eq!(
+            lockfile_parent_for_sync(Path::new("cuenv.lock")),
+            Path::new(".")
+        );
+        assert_eq!(
+            lockfile_parent_for_sync(Path::new("nested/cuenv.lock")),
+            Path::new("nested")
+        );
+    }
+
+    #[test]
+    fn test_vcs_path_rejects_internal_paths() {
+        assert!(validate_locked_vcs_path(".git/hooks").is_err());
+        assert!(validate_locked_vcs_path("vendor/.git/hooks").is_err());
+        assert!(validate_locked_vcs_path(".cuenv/vcs/cache/lib").is_err());
+        assert!(validate_locked_vcs_path(".cuenv/vcs/tmp/lib").is_err());
+        assert!(validate_locked_vcs_path("vendor/lib").is_ok());
     }
 
     #[test]

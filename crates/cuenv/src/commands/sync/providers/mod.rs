@@ -5,12 +5,14 @@ mod codegen;
 mod git_hooks;
 mod lock;
 mod rules;
+mod vcs;
 
 pub use ci::CiSyncProvider;
 pub use codegen::CodegenSyncProvider;
 pub use git_hooks::GitHooksSyncProvider;
 pub use lock::LockSyncProvider;
 pub use rules::RulesSyncProvider;
+pub use vcs::VcsSyncProvider;
 
 use super::registry::SyncRegistry;
 
@@ -21,6 +23,7 @@ pub fn default_registry() -> SyncRegistry {
     registry.register(CodegenSyncProvider);
     registry.register(CiSyncProvider);
     registry.register(RulesSyncProvider);
+    registry.register(VcsSyncProvider);
     registry.register(LockSyncProvider);
     registry.register(GitHooksSyncProvider);
     registry

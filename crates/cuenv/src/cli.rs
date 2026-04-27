@@ -1047,6 +1047,51 @@ pub enum SyncCommands {
         #[arg(long, help = "Filter to specific provider (github, buildkite)")]
         provider: Option<String>,
     },
+    /// Sync VCS dependencies from CUE configuration.
+    #[command(about = "Sync VCS dependencies from CUE configuration")]
+    Vcs {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Show what would be synced without writing files.
+        #[arg(long, help = "Show what would be synced without writing files")]
+        dry_run: bool,
+        /// Check if VCS dependencies are in sync without making changes.
+        #[arg(
+            long,
+            help = "Check if VCS dependencies are in sync without making changes"
+        )]
+        check: bool,
+        /// Sync VCS dependencies for all projects in the workspace.
+        #[arg(
+            long = "all",
+            short = 'A',
+            help = "Sync VCS dependencies for all projects in the workspace"
+        )]
+        all: bool,
+        /// Force re-resolution of VCS refs. Use without arguments to update all, or specify names.
+        #[arg(
+            long = "update",
+            short = 'u',
+            help = "Force re-resolution of VCS refs. Use -u to update all, or -u mylib to update specific dependencies.",
+            num_args = 0..,
+            value_name = "NAMES",
+            default_missing_value = ""
+        )]
+        update: Option<Vec<String>>,
+    },
 }
 
 /// Secrets subcommands for managing secret providers.
@@ -1460,7 +1505,6 @@ impl Commands {
             | Self::Task { package, .. }
             | Self::Exec { package, .. }
             | Self::Fmt { package, .. }
-            | Self::Sync { package, .. }
             | Self::Allow { package, .. }
             | Self::Deny { package, .. }
             | Self::Export { package, .. }
@@ -1479,6 +1523,20 @@ impl Commands {
                 | EnvCommands::Inspect { package, .. }
                 | EnvCommands::Check { package, .. }
                 | EnvCommands::List { package, .. } => package,
+            },
+
+            Self::Sync {
+                subcommand,
+                package,
+                ..
+            } => match subcommand {
+                Some(
+                    SyncCommands::Lock { package, .. }
+                    | SyncCommands::Codegen { package, .. }
+                    | SyncCommands::Ci { package, .. }
+                    | SyncCommands::Vcs { package, .. },
+                ) if package != "cuenv" => package,
+                Some(_) | None => package,
             },
 
             // Commands that don't use CUE evaluation or have no package param
@@ -1729,10 +1787,10 @@ impl Commands {
 
                 // Helper to convert bools to SyncMode
                 let to_mode = |dry_run: bool, check: bool| {
-                    if dry_run {
-                        SyncMode::DryRun
-                    } else if check {
+                    if check {
                         SyncMode::Check
+                    } else if dry_run {
+                        SyncMode::DryRun
                     } else {
                         SyncMode::Write
                     }
@@ -1744,6 +1802,20 @@ impl Commands {
                         SyncScope::Workspace
                     } else {
                         SyncScope::Path
+                    }
+                };
+                let effective_sub_path = |sub_path: String| {
+                    if sub_path == "." {
+                        path.clone()
+                    } else {
+                        sub_path
+                    }
+                };
+                let effective_sub_package = |sub_package: String| {
+                    if sub_package == "cuenv" {
+                        package.clone()
+                    } else {
+                        sub_package
                     }
                 };
 
@@ -1774,9 +1846,9 @@ impl Commands {
                             .map(|tools| tools.into_iter().filter(|t| !t.is_empty()).collect());
                         (
                             Some("lock".to_string()),
-                            sub_path,
-                            sub_package,
-                            to_mode(sub_dry_run, sub_check),
+                            effective_sub_path(sub_path),
+                            effective_sub_package(sub_package),
+                            to_mode(dry_run || sub_dry_run, check || sub_check),
                             to_scope(sub_all || all),
                             false,
                             None,
@@ -1792,9 +1864,9 @@ impl Commands {
                         all: sub_all,
                     }) => (
                         Some("codegen".to_string()),
-                        sub_path,
-                        sub_package,
-                        to_mode(sub_dry_run, sub_check),
+                        effective_sub_path(sub_path),
+                        effective_sub_package(sub_package),
+                        to_mode(dry_run || sub_dry_run, check || sub_check),
                         to_scope(sub_all || all),
                         codegen_diff,
                         None,
@@ -1809,14 +1881,36 @@ impl Commands {
                         provider,
                     }) => (
                         Some("ci".to_string()),
-                        sub_path,
-                        sub_package,
-                        to_mode(sub_dry_run, sub_check),
+                        effective_sub_path(sub_path),
+                        effective_sub_package(sub_package),
+                        to_mode(dry_run || sub_dry_run, check || sub_check),
                         to_scope(sub_all || all),
                         false,
                         provider,
                         None, // update_tools only applies to lock
                     ),
+                    Some(SyncCommands::Vcs {
+                        path: sub_path,
+                        package: sub_package,
+                        dry_run: sub_dry_run,
+                        check: sub_check,
+                        all: sub_all,
+                        update: sub_update,
+                    }) => {
+                        let update_tools = sub_update.map(|names| {
+                            names.into_iter().filter(|name| !name.is_empty()).collect()
+                        });
+                        (
+                            Some("vcs".to_string()),
+                            effective_sub_path(sub_path),
+                            effective_sub_package(sub_package),
+                            to_mode(dry_run || sub_dry_run, check || sub_check),
+                            to_scope(sub_all || all),
+                            false,
+                            None,
+                            update_tools,
+                        )
+                    }
                     None => (
                         None,
                         path,

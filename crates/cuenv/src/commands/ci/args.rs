@@ -68,9 +68,7 @@ impl CiArgs {
     #[must_use]
     pub fn effective_jobs(&self) -> usize {
         if self.jobs == 0 {
-            std::thread::available_parallelism()
-                .map(std::num::NonZero::get)
-                .unwrap_or(1)
+            std::thread::available_parallelism().map_or(1, std::num::NonZero::get)
         } else {
             self.jobs
         }

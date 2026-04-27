@@ -44,6 +44,7 @@ export default defineConfig({
 						{ label: 'Secrets', slug: 'how-to/secrets' },
 						{ label: 'Nix', slug: 'how-to/nix' },
 						{ label: 'Tools', slug: 'how-to/tools' },
+						{ label: 'VCS dependencies', slug: 'how-to/vcs-dependencies' },
 						{ label: 'Troubleshooting', slug: 'how-to/troubleshooting' },
 						{ label: 'Develop cuenv', slug: 'how-to/develop-cuenv' },
 						{ label: 'Contribute', slug: 'how-to/contribute' },

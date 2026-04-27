@@ -446,9 +446,10 @@ cuenv sync [OPTIONS] [SUBCOMMAND]
 
 **Subcommands:**
 
-- `ignore`: Generate ignore files only (.gitignore, .dockerignore, etc.)
-- `codeowners`: Sync CODEOWNERS file from CUE configuration
+- `lock`: Resolve tools, artifacts, and runtimes into `cuenv.lock`
 - `codegen`: Sync files from CUE codegen configurations
+- `ci`: Sync CI workflow files from CUE configuration
+- `vcs`: Sync cuenv-managed Git dependencies
 
 **Example:**
 
@@ -456,8 +457,8 @@ cuenv sync [OPTIONS] [SUBCOMMAND]
 # Run all sync operations
 cuenv sync
 
-# Generate only ignore files
-cuenv sync ignore
+# Resolve lockfile state only
+cuenv sync lock
 
 # Preview what would be generated
 cuenv sync --dry-run
@@ -465,11 +466,14 @@ cuenv sync --dry-run
 # Check if all files are in sync (for CI)
 cuenv sync --check
 
-# Sync CODEOWNERS file
-cuenv sync codeowners
-
 # Sync codegen with diff output
 cuenv sync codegen --diff
+
+# Sync VCS dependencies
+cuenv sync vcs
+
+# Update locked VCS refs
+cuenv sync vcs --update
 
 # Sync from a specific directory
 cuenv sync --path ./project

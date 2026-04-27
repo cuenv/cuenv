@@ -123,6 +123,7 @@ impl SyncProvider for LockSyncProvider {
 
     async fn sync_workspace(
         &self,
+        _path: &Path,
         package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
@@ -429,6 +430,28 @@ async fn execute_lock_sync(
         && collected_tools.is_empty()
         && collected_runtimes.is_empty()
     {
+        let lockfile = seed_lockfile(existing_lockfile.as_ref(), false);
+        if lockfile_has_entries(&lockfile) {
+            return match options.mode {
+                SyncMode::Check => {
+                    if existing_lockfile.as_ref() == Some(&lockfile) {
+                        Ok("Lockfile is up to date.".to_string())
+                    } else {
+                        Err(cuenv_core::Error::configuration(
+                            "Lockfile is out of date. Run 'cuenv sync lock' to update generated lockfile sections.",
+                        ))
+                    }
+                }
+                SyncMode::DryRun => Ok(format!(
+                    "Would update lockfile at {}",
+                    lockfile_path.display()
+                )),
+                SyncMode::Write => {
+                    lockfile.save(&lockfile_path)?;
+                    Ok(format!("Updated lockfile at {}", lockfile_path.display()))
+                }
+            };
+        }
         return reconcile_empty_lockfile_state(
             &lockfile_path,
             existing_lockfile.as_ref(),
@@ -804,12 +827,16 @@ fn seed_lockfile(existing: Option<&Lockfile>, preserve_existing: bool) -> Lockfi
         lockfile
             .tools_activation
             .clone_from(&existing.tools_activation);
+        lockfile.vcs.clone_from(&existing.vcs);
     }
     lockfile
 }
 
 fn lockfile_has_entries(lockfile: &Lockfile) -> bool {
-    !lockfile.runtimes.is_empty() || !lockfile.tools.is_empty() || !lockfile.artifacts.is_empty()
+    !lockfile.runtimes.is_empty()
+        || !lockfile.tools.is_empty()
+        || !lockfile.vcs.is_empty()
+        || !lockfile.artifacts.is_empty()
 }
 
 fn collect_nix_runtime_lock(
@@ -1170,7 +1197,7 @@ fn compute_tool_digest(resolved: &ResolvedTool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::lockfile::{LOCKFILE_VERSION, LockedToolPlatform};
+    use cuenv_core::lockfile::{LOCKFILE_VERSION, LockedToolPlatform, LockedVcsDependency};
     use cuenv_core::manifest::SourceConfig;
     use cuenv_core::tools::{
         Arch, Os, ToolActivationOperation, ToolActivationSource, ToolActivationStep,
@@ -1214,11 +1241,23 @@ mod tests {
                 },
             )]),
         });
+        existing.vcs.insert(
+            "lib".to_string(),
+            LockedVcsDependency {
+                url: "https://example.com/lib.git".to_string(),
+                reference: "main".to_string(),
+                commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                vendor: true,
+                path: "vendor/lib".to_string(),
+            },
+        );
 
         let seeded = seed_lockfile(Some(&existing), false);
 
         assert_eq!(seeded.version, LOCKFILE_VERSION);
         assert_eq!(seeded.tools_activation, existing.tools_activation);
+        assert_eq!(seeded.vcs, existing.vcs);
         assert!(seeded.tools.is_empty());
         assert!(seeded.artifacts.is_empty());
     }
