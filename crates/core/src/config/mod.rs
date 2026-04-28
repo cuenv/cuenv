@@ -133,7 +133,7 @@ pub enum CuenvSource {
     Artifact,
     /// Build from git checkout (requires Nix)
     Git,
-    /// Install via Nix flake (auto-configures Cachix)
+    /// Install via Nix flake (uses the configured Nix cache contributor)
     Nix,
     /// Install via Homebrew tap (no Nix required)
     Homebrew,

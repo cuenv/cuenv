@@ -61,7 +61,6 @@ schema.#Project & {
 		CLOUDFLARE_ACCOUNT_ID: "0aeb879de8e3cdde5fb3d413025222ce"
 
 		environment: production: {
-			CACHIX_AUTH_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cachix/password"}
 			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
 			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
@@ -78,8 +77,7 @@ schema.#Project & {
 		providers: ["github"]
 
 		contributors: [
-			xContributors.#Nix,
-			xContributors.#Cachix,
+			xContributors.#FlakeHubCache,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
@@ -94,7 +92,7 @@ schema.#Project & {
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
-			cachix: name: "cuenv"
+			flakehubCache: {}
 
 			artifacts: {
 				paths: [".cuenv/reports/"]

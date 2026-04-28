@@ -19,10 +19,6 @@
   nixConfig = {
     extra-substituters = [
       "https://cache.nixos.org"
-      "https://cuenv.cachix.org"
-    ];
-    extra-trusted-public-keys = [
-      "cuenv.cachix.org-1:zPi7E3HNNHEYzsDwSMGXk0pvEeWzdrb/09B/JozulHw="
     ];
     experimental-features = [ "nix-command" "flakes" ];
     accept-flake-config = true;

@@ -19,6 +19,8 @@ pub struct GitHubConfig {
     pub runners: Option<RunnerMapping>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
+    /// FlakeHub Cache configuration for Nix caching
+    pub flakehub_cache: Option<FlakeHubCacheConfig>,
     /// Artifact upload configuration
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
@@ -51,6 +53,16 @@ pub struct CachixConfig {
     pub auth_token: Option<String>,
     /// Push filter pattern
     pub push_filter: Option<String>,
+}
+
+/// FlakeHub Cache configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FlakeHubCacheConfig {
+    /// Flake name on FlakeHub. Empty or omitted enables action auto-detection.
+    pub flake_name: Option<String>,
+    /// GitHub Actions cache fallback behavior.
+    pub use_gha_cache: Option<String>,
 }
 
 /// Artifact upload configuration.
@@ -96,6 +108,7 @@ impl GitHubConfigExt for CI {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
+                flakehub_cache: pipeline.flakehub_cache.clone().or(global.flakehub_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
                     .trusted_publishing
@@ -178,6 +191,7 @@ mod tests {
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
         assert!(config.cachix.is_none());
+        assert!(config.flakehub_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
         assert!(config.permissions.is_none());
@@ -194,6 +208,20 @@ mod tests {
         let config = ArtifactsConfig::default();
         assert!(config.paths.is_none());
         assert!(config.if_no_files_found.is_none());
+    }
+
+    #[test]
+    fn test_flakehub_cache_config_serde() {
+        let config = FlakeHubCacheConfig {
+            flake_name: Some("cuenv/cuenv".to_string()),
+            use_gha_cache: Some("disabled".to_string()),
+        };
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("cuenv/cuenv"));
+        assert!(json.contains("disabled"));
+
+        let parsed: FlakeHubCacheConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.flake_name, Some("cuenv/cuenv".to_string()));
     }
 
     #[test]

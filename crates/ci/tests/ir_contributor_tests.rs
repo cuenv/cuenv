@@ -281,6 +281,59 @@ fn test_cachix_contributor_inactive_without_config() {
     );
 }
 
+#[test]
+fn test_flakehub_cache_contributor_active_with_config() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("ci-flakehub-cache");
+    let project = load_example_manifest(&example_path).expect("Failed to load ci-flakehub-cache");
+
+    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+
+    let install_nix = bootstrap_tasks
+        .iter()
+        .find(|task| task.id == "nix.install")
+        .expect("FlakeHubCache contributor should inject nix.install");
+    let install_hints = install_nix
+        .provider_hints
+        .as_ref()
+        .expect("nix.install should have provider hints");
+    let install_action = install_hints
+        .get("github_action")
+        .expect("nix.install should use a GitHub Action");
+    assert_eq!(
+        install_action.get("uses").and_then(|value| value.as_str()),
+        Some("DeterminateSystems/determinate-nix-action@v3")
+    );
+
+    let setup_flakehub = bootstrap_tasks
+        .iter()
+        .find(|task| task.id == "flakehubCache.setup")
+        .expect("FlakeHubCache contributor should inject flakehubCache.setup");
+    let provider_hints = setup_flakehub
+        .provider_hints
+        .as_ref()
+        .expect("flakehubCache.setup should have provider hints");
+    let github_action = provider_hints
+        .get("github_action")
+        .expect("flakehubCache.setup should use a GitHub Action");
+    let inputs = github_action
+        .get("inputs")
+        .and_then(|value| value.as_object())
+        .expect("flakehubCache.setup should define action inputs");
+
+    assert_eq!(
+        github_action.get("uses").and_then(|value| value.as_str()),
+        Some("DeterminateSystems/flakehub-cache-action@v3")
+    );
+    assert!(
+        inputs.get("use-gha-cache").and_then(|value| value.as_str()) == Some("disabled"),
+        "FlakeHub Cache should disable GitHub Actions cache fallback by default"
+    );
+}
+
 // ============================================================================
 // GH Models Contributor Tests
 // ============================================================================
@@ -408,8 +461,8 @@ fn test_nix_contributor_provides_github_action_hints() {
     assert!(
         uses.as_str()
             .unwrap()
-            .contains("DeterminateSystems/nix-installer-action"),
-        "provider_hints.github_action.uses should contain DeterminateSystems/nix-installer-action"
+            .contains("DeterminateSystems/determinate-nix-action"),
+        "provider_hints.github_action.uses should contain DeterminateSystems/determinate-nix-action"
     );
 }
 

@@ -46,7 +46,7 @@ package schema
 	// - "native": Build using native Rust/Go toolchains (no Nix)
 	// - "artifact": Use pre-built artifact from earlier CI job
 	// - "git": Build from git checkout (requires Nix)
-	// - "nix": Install via Nix flake (auto-configures Cachix)
+	// - "nix": Install via Nix flake (uses the configured Nix cache contributor)
 	// - "homebrew": Install via Homebrew tap (no Nix required)
 	// - "release": Download pre-built binary from GitHub Releases (default)
 	source?: "native" | "artifact" | "git" | "nix" | "homebrew" | *"release"
