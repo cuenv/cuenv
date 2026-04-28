@@ -38,6 +38,12 @@ struct CachixSettings {
     auth_token_secret: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FlakeHubCacheSettings {
+    flake_name: String,
+    use_gha_cache: String,
+}
+
 /// Compiler errors
 #[derive(Debug, Error)]
 pub enum CompilerError {
@@ -1447,8 +1453,13 @@ impl Compiler {
     }
 
     fn resolve_contributor_value(&self, contributor_id: &str, value: &str) -> String {
+        if value.contains("${FLAKEHUB_CACHE_") {
+            return self.resolve_flakehub_cache_value(value);
+        }
+
         match contributor_id {
             "cachix" => self.resolve_cachix_value(value),
+            "flakehubCache" => self.resolve_flakehub_cache_value(value),
             _ => value.to_string(),
         }
     }
@@ -1511,6 +1522,69 @@ impl Compiler {
         Some(CachixSettings {
             name,
             auth_token_secret,
+        })
+    }
+
+    fn resolve_flakehub_cache_value(&self, value: &str) -> String {
+        let Some(settings) = self.flakehub_cache_settings() else {
+            return value.to_string();
+        };
+
+        value
+            .replace("${FLAKEHUB_CACHE_FLAKE_NAME}", &settings.flake_name)
+            .replace("${FLAKEHUB_CACHE_USE_GHA_CACHE}", &settings.use_gha_cache)
+    }
+
+    fn flakehub_cache_settings(&self) -> Option<FlakeHubCacheSettings> {
+        let mut config = self
+            .project
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_flakehub_cache_settings);
+
+        if let Some(pipeline_config) = self
+            .options
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.provider.as_ref())
+            .and_then(|provider| provider.get("github"))
+            .and_then(Self::parse_flakehub_cache_settings)
+        {
+            config = Some(match config {
+                Some(global) => FlakeHubCacheSettings {
+                    flake_name: if pipeline_config.flake_name.is_empty() {
+                        global.flake_name
+                    } else {
+                        pipeline_config.flake_name
+                    },
+                    use_gha_cache: pipeline_config.use_gha_cache,
+                },
+                None => pipeline_config,
+            });
+        }
+
+        config
+    }
+
+    fn parse_flakehub_cache_settings(value: &serde_json::Value) -> Option<FlakeHubCacheSettings> {
+        let github = value.as_object()?;
+        let flakehub_cache = github.get("flakehubCache")?.as_object()?;
+        let flake_name = flakehub_cache
+            .get("flakeName")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let use_gha_cache = flakehub_cache
+            .get("useGhaCache")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("disabled")
+            .to_string();
+
+        Some(FlakeHubCacheSettings {
+            flake_name,
+            use_gha_cache,
         })
     }
 }
@@ -2361,7 +2435,7 @@ mod tests {
             condition: None,
             provider: Some(TaskProviderConfig {
                 github: Some(GitHubActionConfig {
-                    uses: "DeterminateSystems/nix-installer-action@v16".to_string(),
+                    uses: "DeterminateSystems/determinate-nix-action@v3".to_string(),
                     inputs,
                 }),
             }),
@@ -2379,7 +2453,7 @@ mod tests {
         let github_action = hints.get("github_action").unwrap();
         assert_eq!(
             github_action.get("uses").and_then(|v| v.as_str()),
-            Some("DeterminateSystems/nix-installer-action@v16")
+            Some("DeterminateSystems/determinate-nix-action@v3")
         );
     }
 

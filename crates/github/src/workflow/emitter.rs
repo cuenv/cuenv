@@ -1476,8 +1476,8 @@ impl ReleaseWorkflowBuilder {
             .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
-                    .with_name("Install Nix")
+                Step::uses("DeterminateSystems/determinate-nix-action@v3")
+                    .with_name("Install Determinate Nix")
                     .with_input(
                         "extra-conf",
                         serde_yaml::Value::String("accept-flake-config = true".to_string()),
@@ -1567,8 +1567,8 @@ impl ReleaseWorkflowBuilder {
             .any(|t| t.id == "install-nix");
         if has_install_nix {
             steps.push(
-                Step::uses("DeterminateSystems/nix-installer-action@v16")
-                    .with_name("Install Nix")
+                Step::uses("DeterminateSystems/determinate-nix-action@v3")
+                    .with_name("Install Determinate Nix")
                     .with_input(
                         "extra-conf",
                         serde_yaml::Value::String("accept-flake-config = true".to_string()),
@@ -1775,7 +1775,7 @@ mod tests {
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let provider_hints = serde_json::json!({
             "github_action": {
-                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "uses": "DeterminateSystems/determinate-nix-action@v3",
                 "inputs": {
                     "extra-conf": "accept-flake-config = true"
                 }
@@ -1803,7 +1803,7 @@ mod tests {
 
         let yaml = emitter.emit(&ir).unwrap();
 
-        assert!(yaml.contains("DeterminateSystems/nix-installer-action"));
+        assert!(yaml.contains("DeterminateSystems/determinate-nix-action"));
         assert!(yaml.contains("nix build .#cuenv"));
     }
 
@@ -1816,7 +1816,7 @@ mod tests {
         // Build provider_hints for GitHub Actions (matching NixContributor)
         let nix_provider_hints = serde_json::json!({
             "github_action": {
-                "uses": "DeterminateSystems/nix-installer-action@v16",
+                "uses": "DeterminateSystems/determinate-nix-action@v3",
                 "inputs": {
                     "extra-conf": "accept-flake-config = true"
                 }

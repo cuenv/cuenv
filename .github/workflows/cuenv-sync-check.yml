@@ -38,15 +38,15 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Nix
-      uses: DeterminateSystems/nix-installer-action@v16
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
-    - name: Setup Cachix
-      uses: cachix/cachix-action@v17
+    - name: Setup FlakeHub Cache
+      uses: DeterminateSystems/flakehub-cache-action@v3
       with:
-        authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-        name: cuenv
+        flakehub-flake-name: ''
+        use-gha-cache: disabled
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -59,3 +59,6 @@ jobs:
       run: cuenv ci --pipeline sync-check --path .
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}

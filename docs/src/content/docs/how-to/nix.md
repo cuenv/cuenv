@@ -304,7 +304,17 @@ Nix evaluation can be slow on first run. Tips:
 
 2. **Enable the nix-daemon** for better caching
 
-3. **Use cachix** for custom binary caches:
+3. **Use a project binary cache** for custom builds. In GitHub Actions, cuenv can generate setup for FlakeHub Cache or Cachix:
+
+   ```cue
+   ci: {
+     contributors: [contributors.#FlakeHubCache]
+     provider: github: flakehubCache: {}
+   }
+   ```
+
+   Cachix remains supported for projects that use it:
+
    ```bash
    cachix use my-cache
    ```
@@ -372,10 +382,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v25
+      - uses: DeterminateSystems/determinate-nix-action@v3
         with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
+          extra-conf: accept-flake-config = true
+      - uses: DeterminateSystems/flakehub-cache-action@v3
+        with:
+          use-gha-cache: disabled
       - run: nix develop --command cuenv task ci
 ```
 

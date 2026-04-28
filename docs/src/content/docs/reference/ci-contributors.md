@@ -44,7 +44,7 @@ The cuenv CI compiler uses a **contributor system** to inject platform-specific 
 Project + Pipeline -> Compiler -> Fixed-point iteration -> IR
                                         ^
                                         |
-                          Contributors (Nix, Cuenv, 1Password, Cachix, GH Models)
+                          Contributors (Nix, Cuenv, 1Password, Cachix/FlakeHub Cache, GH Models)
 ```
 
 The compiler applies contributors in a loop until no contributor reports modifications (stable state).
@@ -79,7 +79,7 @@ Tasks with `condition: "on_failure"` are placed in the Failure stage regardless 
 
 ### NixContributor
 
-Installs Nix using the Determinate Systems installer.
+Installs Determinate Nix.
 
 **Activation:** Project has a Nix-based runtime (`runtime.nix` or `runtime.devenv`)
 
@@ -90,7 +90,10 @@ Installs Nix using the Determinate Systems installer.
 **Configuration Example:**
 
 ```cue
-import "github.com/cuenv/cuenv/schema"
+import (
+    "github.com/cuenv/cuenv/schema"
+    contributors "github.com/cuenv/cuenv/contrib/contributors"
+)
 
 schema.#Project
 
@@ -102,7 +105,7 @@ runtime: schema.#NixFlake & {
 }
 ```
 
-**ActionSpec:** Uses `DeterminateSystems/nix-installer-action@v16` on GitHub Actions.
+**ActionSpec:** Uses `DeterminateSystems/determinate-nix-action@v3` on GitHub Actions.
 
 ---
 
@@ -130,7 +133,7 @@ The source and version are configured via `config.ci.cuenv`:
 | `release` (default) | `latest` or `0.17.0` | Download pre-built binary from GitHub Releases                    | No           |
 | `git`               | `self` (default)     | Build from current checkout via `nix build .#cuenv`               | Yes          |
 | `git`               | `0.17.0`             | Clone specific tag and build via nix                              | Yes          |
-| `nix`               | `self`               | Build from current checkout + Cachix                              | Yes          |
+| `nix`               | `self`               | Build from current checkout with configured Nix cache contributor  | Yes          |
 | `nix`               | `0.17.0`             | Install via `nix profile install github:cuenv/cuenv/0.17.0#cuenv` | Yes          |
 | `homebrew`          | (ignored)            | Install via `brew install cuenv/cuenv/cuenv`                      | **No**       |
 
@@ -160,7 +163,7 @@ config: ci: cuenv: {
     version: "self"
 }
 
-// Option 4: Nix mode - install specific version with Cachix
+// Option 4: Nix mode - install specific version via Nix
 config: ci: cuenv: {
     source: "nix"
     version: "0.19.0"
@@ -207,6 +210,57 @@ ci: pipelines: [
     },
 ]
 ```
+
+---
+
+### FlakeHubCacheContributor
+
+Configures FlakeHub Cache for Nix binary caching.
+
+**Activation:** `ci.provider.github.flakehubCache` is configured
+
+**Phase:** Bootstrap (priorities 0 and 9)
+
+**Task IDs:** `install-nix`, `setup-flakehub-cache`
+
+**Dependencies:** `setup-flakehub-cache` depends on `install-nix`
+
+**Permissions:** GitHub workflows need `id-token: write` and `contents: read`.
+
+**Configuration Example:**
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "my-project"
+
+runtime: schema.#NixFlake & {
+    flake:  "."
+    output: "devShells.x86_64-linux.default"
+}
+
+ci: {
+    contributors: [contributors.#FlakeHubCache]
+    provider: github: flakehubCache: {
+        // Optional; omit to let the action auto-detect the FlakeHub flake
+        // flakeName: "my-org/my-project"
+
+        // Defaults to "disabled" so only FlakeHub Cache is used
+        useGhaCache: "disabled"
+    }
+    pipelines: [
+        {
+            name:  "build"
+            provider: github: permissions: "id-token": "write"
+            tasks: ["build"]
+        },
+    ]
+}
+```
+
+Use this instead of `#Nix` for workflows that should install Determinate Nix and use FlakeHub Cache. Keep using `#Cachix` when a project is backed by Cachix.
 
 ---
 
@@ -310,18 +364,19 @@ ci: contributors: [
     contributors.#Nix,
     contributors.#Cuenv,
     contributors.#Cachix,
+    contributors.#FlakeHubCache,
 ]
 ```
 
-For release pipelines, prefer Nix and Cachix as the reliable build cache path. Avoid adding contributors that depend on GitHub's cache service to release jobs unless the setup step is explicitly non-fatal.
+For release pipelines, use the Nix cache contributor your project is configured for. `#FlakeHubCache` is OIDC-based and disables GitHub Actions cache fallback by default; `#Cachix` remains available for projects backed by Cachix.
 
 **Available Contributors:**
 
-| Set                    | Contributors                                 |
-| ---------------------- | -------------------------------------------- |
-| `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`             |
-| `#GitHubContributors`  | `#Cachix`, `#GhModels`, `#TrustedPublishing` |
-| `#DefaultContributors` | All of the above                             |
+| Set                    | Contributors                                                |
+| ---------------------- | ----------------------------------------------------------- |
+| `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`                            |
+| `#GitHubContributors`  | `#Cachix`, `#FlakeHubCache`, `#GhModels`, `#TrustedPublishing` |
+| `#DefaultContributors` | All of the above                                            |
 
 ## Activation Conditions
 
@@ -342,7 +397,7 @@ Contributors use activation conditions to determine when they should inject task
     secretsProvider?: [...("onepassword" | "aws" | "vault")]
 
     // Active if these provider config paths are set
-    providerConfig?: [...string]  // e.g., ["github.cachix", "github.trustedPublishing.cratesIo"]
+    providerConfig?: [...string]  // e.g., ["github.flakehubCache", "github.cachix", "github.trustedPublishing.cratesIo"]
 
     // Active if any pipeline task uses these commands
     taskCommand?: [...string]  // e.g., ["gh", "models"]

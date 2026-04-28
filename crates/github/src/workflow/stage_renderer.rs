@@ -305,7 +305,7 @@ mod tests {
         let mut task = make_test_task("install-nix", &["curl", "-L", "https://install.nix"]);
         task.label = Some("Install Nix".to_string());
         task.provider_hints = Some(make_github_action_hints(
-            "DeterminateSystems/nix-installer-action@v16",
+            "DeterminateSystems/determinate-nix-action@v3",
             inputs,
         ));
 
@@ -315,7 +315,7 @@ mod tests {
         assert_eq!(step.name, Some("Install Nix".to_string()));
         assert_eq!(
             step.uses,
-            Some("DeterminateSystems/nix-installer-action@v16".to_string())
+            Some("DeterminateSystems/determinate-nix-action@v3".to_string())
         );
         assert!(step.run.is_none());
         assert!(step.with_inputs.contains_key("extra-conf"));
