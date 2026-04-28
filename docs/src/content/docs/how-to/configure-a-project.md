@@ -19,6 +19,20 @@ Common organization patterns include:
 - Splitting large sections into files such as `tasks.cue` or directories like `.cuenv/`
 - Importing shared packages from elsewhere in your CUE module (for example `import "github.com/myorg/common"`)
 
+### Module Compatibility
+
+cuenv records the CLI version used to sync a project in `cue.mod/module.cue`:
+
+```cue
+custom: "github.com/cuenv/cuenv": {
+    version: "0.41.1"
+}
+```
+
+This field is tool metadata supported by CUE modules. `language.version` remains the CUE language version and should not be used for cuenv compatibility.
+
+When a cuenv command operates on a CUE module, it checks this marker before evaluation. Missing, older, or equal versions are accepted. If the marker is newer than the running CLI, cuenv exits and asks you to upgrade the CLI. Run `cuenv sync` with a current CLI to add or refresh the marker.
+
 ### Basic Structure
 
 ```cue
