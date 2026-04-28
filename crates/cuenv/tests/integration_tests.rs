@@ -123,6 +123,25 @@ env: {
     (temp_dir, path_str)
 }
 
+fn create_git_test_env_with_cuenv_version(
+    version: &str,
+) -> (tempfile::TempDir, String, std::path::PathBuf) {
+    let (temp_dir, path_str) = create_git_test_env();
+    let module_file = temp_dir.path().join("cue.mod/module.cue");
+    fs::write(
+        &module_file,
+        format!(
+            r#"module: "test.example/sync"
+language: version: "v0.14.1"
+custom: "github.com/cuenv/cuenv": version: "{version}"
+"#
+        ),
+    )
+    .expect("Failed to write module.cue with cuenv version");
+
+    (temp_dir, path_str, module_file)
+}
+
 #[test]
 fn test_version_command_basic() {
     let result = run_cuenv_command(&["version"]);
@@ -556,6 +575,91 @@ fn test_sync_command_dry_run_reports_provider_status() {
             );
         }
         Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
+    }
+}
+
+#[test]
+fn test_cue_command_fails_when_module_requires_newer_cuenv() {
+    let (_temp_dir, test_path, _module_file) = create_git_test_env_with_cuenv_version("999.0.0");
+    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "cuenv"]);
+
+    match result {
+        Ok((stdout, stderr, success)) => {
+            assert!(
+                !success,
+                "Command should fail when module requires newer cuenv"
+            );
+            let combined = format!("{stdout}{stderr}");
+            assert!(combined.contains("Project requires cuenv 999.0.0"));
+            assert!(combined.contains("Upgrade cuenv"));
+        }
+        Err(e) => panic!("Failed to run cuenv env print: {e}"),
+    }
+}
+
+#[test]
+fn test_sync_dry_run_reports_missing_marker_without_writing() {
+    let (temp_dir, test_path) = create_git_test_env();
+    let module_file = temp_dir.path().join("cue.mod/module.cue");
+    let before = fs::read_to_string(&module_file).expect("module.cue");
+    let result = run_cuenv_command(&[
+        "sync",
+        "--path",
+        &test_path,
+        "--package",
+        "cuenv",
+        "--dry-run",
+    ]);
+
+    match result {
+        Ok((stdout, stderr, success)) => {
+            assert!(success, "sync --dry-run should succeed: {stderr}");
+            assert!(stdout.contains("module.cue cuenv version marker missing"));
+            assert!(stdout.contains(EXPECTED_VERSION));
+            let after = fs::read_to_string(&module_file).expect("module.cue after dry-run");
+            assert_eq!(before, after, "dry-run must not update module.cue");
+        }
+        Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
+    }
+}
+
+#[test]
+fn test_sync_check_fails_when_marker_missing() {
+    let (_temp_dir, test_path) = create_git_test_env();
+    let result = run_cuenv_command(&[
+        "sync",
+        "--path",
+        &test_path,
+        "--package",
+        "cuenv",
+        "--check",
+    ]);
+
+    match result {
+        Ok((stdout, stderr, success)) => {
+            assert!(!success, "sync --check should fail for missing marker");
+            let combined = format!("{stdout}{stderr}");
+            assert!(combined.contains("module.cue cuenv version marker missing"));
+        }
+        Err(e) => panic!("Failed to run cuenv sync --check: {e}"),
+    }
+}
+
+#[test]
+fn test_sync_writes_current_marker() {
+    let (temp_dir, test_path) = create_git_test_env();
+    let module_file = temp_dir.path().join("cue.mod/module.cue");
+    let result = run_cuenv_command(&["sync", "--path", &test_path, "--package", "cuenv"]);
+
+    match result {
+        Ok((_stdout, stderr, success)) => {
+            assert!(success, "sync should succeed: {stderr}");
+            let module = fs::read_to_string(&module_file).expect("module.cue after sync");
+            assert!(module.contains("custom: {"));
+            assert!(module.contains("\"github.com/cuenv/cuenv\": {"));
+            assert!(module.contains(&format!("version: \"{EXPECTED_VERSION}\"")));
+        }
+        Err(e) => panic!("Failed to run cuenv sync: {e}"),
     }
 }
 

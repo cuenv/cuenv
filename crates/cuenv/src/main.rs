@@ -290,9 +290,69 @@ fn run_sync(cli: cli::Cli) -> i32 {
     }
 }
 
+fn ensure_command_module_compatibility(command: &Command) -> Result<(), CliError> {
+    if !should_precheck_command_module_compatibility(command) {
+        return Ok(());
+    }
+
+    let Some(path) = cue_module_command_path(command) else {
+        return Ok(());
+    };
+    commands::module_version::ensure_compatible_for_path(path).map_err(CliError::from)
+}
+
+fn should_precheck_command_module_compatibility(command: &Command) -> bool {
+    matches!(command, Command::Info { .. })
+}
+
+fn cue_module_command_path(command: &Command) -> Option<&str> {
+    match command {
+        Command::Info { path, .. } => path.as_deref().or(Some(".")),
+        Command::Version { .. }
+        | Command::EnvPrint { .. }
+        | Command::EnvList { .. }
+        | Command::EnvLoad { .. }
+        | Command::EnvStatus { .. }
+        | Command::EnvCheck { .. }
+        | Command::EnvInspect { .. }
+        | Command::Allow { .. }
+        | Command::Deny { .. }
+        | Command::Export { .. }
+        | Command::Exec { .. }
+        | Command::Task { .. }
+        | Command::Sync { .. }
+        | Command::Fmt { .. }
+        | Command::Build { .. }
+        | Command::Up { .. }
+        | Command::Down { .. }
+        | Command::Logs { .. }
+        | Command::Ps { .. }
+        | Command::Restart { .. }
+        | Command::Ci { .. }
+        | Command::ShellInit { .. }
+        | Command::Tui
+        | Command::Web { .. }
+        | Command::Completions { .. }
+        | Command::ChangesetAdd { .. }
+        | Command::ChangesetStatus { .. }
+        | Command::ChangesetFromCommits { .. }
+        | Command::ReleasePrepare { .. }
+        | Command::ReleaseVersion { .. }
+        | Command::ReleasePublish { .. }
+        | Command::ReleaseBinaries { .. }
+        | Command::SecretsSetup { .. }
+        | Command::RuntimeOciActivate
+        | Command::ToolsDownload
+        | Command::ToolsActivate
+        | Command::ToolsList => None,
+    }
+}
+
 /// Execute commands synchronously (no tokio runtime)
 #[allow(clippy::too_many_lines)] // Command dispatcher naturally has many cases
 fn execute_sync_command(command: Command, json_format: cli::OutputFormat) -> Result<(), CliError> {
+    ensure_command_module_compatibility(&command)?;
+
     match command {
         Command::Version { format: _ } => {
             let version_info = commands::version::get_version_info();
@@ -922,6 +982,8 @@ async fn execute_command_safe(
     json_format: cli::OutputFormat,
     executor: &CommandExecutor,
 ) -> Result<(), CliError> {
+    ensure_command_module_compatibility(&command)?;
+
     // Special commands that bypass the executor (they don't fit the event pattern)
     match &command {
         Command::Tui => {

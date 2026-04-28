@@ -5,6 +5,16 @@ description: Command-line interface for cuenv
 
 The `cuenv` CLI provides tools for managing environments, executing tasks, and integrating with your shell.
 
+## CUE Module Compatibility
+
+Commands that operate on a CUE module check `cue.mod/module.cue` for cuenv's compatibility marker:
+
+```cue
+custom: "github.com/cuenv/cuenv": version: "0.41.1"
+```
+
+If the marker is newer than the running CLI, the command exits and asks you to upgrade cuenv. Missing markers are accepted for existing projects; `cuenv sync` adds the current CLI version.
+
 ## Global Options
 
 | Option              | Description                                         | Default |
@@ -117,6 +127,21 @@ Labels are defined in your CUE task configuration and allow grouping related tas
 :::tip
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production task build`
 :::
+
+### `cuenv sync`
+
+Synchronize generated files and the module's cuenv version marker.
+
+```bash
+cuenv sync [PROVIDER] [OPTIONS]
+```
+
+`cuenv sync` always checks `cue.mod/module.cue` before provider work:
+
+- default write mode adds or updates `custom."github.com/cuenv/cuenv".version`
+- `--check` fails if the marker is missing or stale
+- `--dry-run` reports the marker change without writing
+- a marker newer than the running CLI fails and requires a cuenv upgrade
 
 ### `cuenv build`
 
