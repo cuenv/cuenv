@@ -27,6 +27,8 @@ pub mod info;
 /// View service logs.
 pub mod logs;
 mod module_utils;
+/// CUE module cuenv version compatibility checks.
+pub mod module_version;
 /// List running services and their status.
 pub mod ps;
 /// Release management commands (prepare, version, publish, binaries).
@@ -524,6 +526,7 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
+        module_version::ensure_compatible_module(&module_root)?;
 
         let mut guard = self.workspace_modules.lock().map_err(|_| {
             cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
@@ -547,6 +550,7 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
+        module_version::ensure_compatible_module(&module_root)?;
 
         let target_rel_path = compute_relative_path(target_path, &module_root);
         let options = ModuleEvalOptions {

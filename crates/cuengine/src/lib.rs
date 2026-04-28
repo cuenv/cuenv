@@ -21,6 +21,7 @@ pub use validation::Limits;
 // Local type alias for internal use
 use error::CueEngineError as Error;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
@@ -165,6 +166,15 @@ unsafe extern "C" {
         package_name: *const c_char,
         options_json: *const c_char,
     ) -> *mut c_char;
+    fn cue_module_custom_version(
+        module_root: *const c_char,
+        namespace: *const c_char,
+    ) -> *mut c_char;
+    fn cue_format_module_with_custom_version(
+        module_root: *const c_char,
+        namespace: *const c_char,
+        version: *const c_char,
+    ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
 }
@@ -172,6 +182,20 @@ unsafe extern "C" {
 // Stub FFI for documentation builds - these satisfy the compiler but panic if called
 #[cfg(docsrs)]
 unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_module_custom_version(_: *const c_char, _: *const c_char) -> *mut c_char {
+    panic!("FFI not available in documentation builds")
+}
+
+#[cfg(docsrs)]
+unsafe fn cue_format_module_with_custom_version(
+    _: *const c_char,
+    _: *const c_char,
+    _: *const c_char,
+) -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }
 
@@ -229,6 +253,18 @@ pub struct ModuleResult {
     /// Map of "path/field" to source location (only populated when `with_meta`: true)
     #[serde(default)]
     pub meta: std::collections::HashMap<String, FieldMeta>,
+}
+
+/// Cuenv custom metadata extracted from `cue.mod/module.cue`.
+#[derive(Debug, Deserialize)]
+pub struct ModuleCustomVersion {
+    /// The custom cuenv version marker, if present.
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct FormattedModuleFile {
+    content: String,
 }
 
 /// Evaluates CUE instances in a module and returns results with optional source metadata
@@ -525,6 +561,93 @@ pub fn get_bridge_version() -> Result<String> {
 
     tracing::info!(bridge_version = bridge_version, "Retrieved bridge version");
     Ok(bridge_version)
+}
+
+fn process_bridge_json<T: DeserializeOwned>(
+    json_str: &str,
+    module_root: &Path,
+    function_name: &'static str,
+) -> Result<T> {
+    let envelope = parse_bridge_envelope(json_str).map_err(|err| match err {
+        Error::Ffi { message, .. } => Error::ffi(function_name, message),
+        err => err,
+    })?;
+    if let Some(bridge_error) = envelope.error {
+        return match handle_bridge_error(bridge_error, module_root) {
+            Error::Ffi { message, .. } => Err(Error::ffi(function_name, message)),
+            err => Err(err),
+        };
+    }
+
+    let json_data = envelope
+        .ok
+        .map(|raw| raw.get().to_string())
+        .ok_or_else(|| {
+            Error::ffi(
+                function_name,
+                "Invalid bridge response: missing both 'ok' and 'error' fields".to_string(),
+            )
+        })?;
+
+    serde_json::from_str(&json_data).map_err(|e| {
+        Error::ffi(
+            function_name,
+            format!("Failed to parse bridge response payload: {e}"),
+        )
+    })
+}
+
+/// Read cuenv custom version metadata from `cue.mod/module.cue`.
+///
+/// # Errors
+///
+/// Returns an error if the module file cannot be read or parsed.
+pub fn module_custom_version(module_root: &Path, namespace: &str) -> Result<ModuleCustomVersion> {
+    const FUNCTION_NAME: &str = "cue_module_custom_version";
+    let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
+    let c_namespace = str_to_cstring(namespace, FUNCTION_NAME, "namespace")?;
+
+    // Safety: cue_module_custom_version takes valid C strings and returns a
+    // heap-allocated C string owned by the caller.
+    let result_ptr =
+        unsafe { cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr()) };
+    let result = unsafe { CStringPtr::new(result_ptr) };
+    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    process_bridge_json(&json_str, module_root, FUNCTION_NAME)
+}
+
+/// Return a formatted `cue.mod/module.cue` with cuenv custom version metadata set.
+///
+/// This function does not write to disk; callers decide how to handle dry-run
+/// and check modes.
+///
+/// # Errors
+///
+/// Returns an error if the module file cannot be read, parsed, or formatted.
+pub fn format_module_with_custom_version(
+    module_root: &Path,
+    namespace: &str,
+    version: &str,
+) -> Result<String> {
+    const FUNCTION_NAME: &str = "cue_format_module_with_custom_version";
+    let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
+    let c_namespace = str_to_cstring(namespace, FUNCTION_NAME, "namespace")?;
+    let c_version = str_to_cstring(version, FUNCTION_NAME, "version")?;
+
+    // Safety: cue_format_module_with_custom_version takes valid C strings and
+    // returns a heap-allocated C string owned by the caller.
+    let result_ptr = unsafe {
+        cue_format_module_with_custom_version(
+            c_module_root.as_ptr(),
+            c_namespace.as_ptr(),
+            c_version.as_ptr(),
+        )
+    };
+    let result = unsafe { CStringPtr::new(result_ptr) };
+    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    let formatted: FormattedModuleFile =
+        process_bridge_json(&json_str, module_root, FUNCTION_NAME)?;
+    Ok(formatted.content)
 }
 
 /// Convenience wrapper around `evaluate_module` for single-directory evaluation.
