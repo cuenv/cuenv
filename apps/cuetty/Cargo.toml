@@ -19,10 +19,16 @@ print_stderr = "warn"
 
 [dependencies]
 anyhow = "1.0"
+# pinned: Zed does not publish gpui to crates.io; tracking main is intentional.
+# Bump cadence: roughly monthly, paired with the gpui_ghostty_terminal rev below.
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", features = [
   "runtime_shaders",
 ] }
+# pinned: gpui_ghostty_terminal is pre-1.0 and pulls a vendored Ghostty VT tree
+# whose Zig dependency hashes must match the lockfile in flake.nix. Always bump
+# the rev here and the `gpui-ghostty-src` input in flake.nix together.
 gpui_ghostty_terminal = { git = "https://github.com/Xuanwo/gpui-ghostty", rev = "e3025981c6211dd7db2a825dc364ffb5d342f45e", package = "gpui_ghostty_terminal" }
 portable-pty = "0.9"
+flume = "0.11"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

@@ -2,10 +2,10 @@ use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
 use anyhow::{Context as _, Result};
+use flume::{Receiver, Sender};
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 const DEFAULT_SHELL: &str = "/bin/sh";
@@ -131,8 +131,8 @@ impl TerminalProcess {
             .try_clone_reader()
             .context("failed to clone PTY reader")?;
         let mut pty_writer = master.take_writer().context("failed to take PTY writer")?;
-        let (stdin_tx, stdin_rx) = mpsc::channel::<Vec<u8>>();
-        let (stdout_tx, stdout_rx) = mpsc::channel::<Vec<u8>>();
+        let (stdin_tx, stdin_rx) = flume::unbounded::<Vec<u8>>();
+        let (stdout_tx, stdout_rx) = flume::unbounded::<Vec<u8>>();
 
         spawn_named_thread("cuetty-pty-writer", move || {
             while let Ok(bytes) = stdin_rx.recv() {

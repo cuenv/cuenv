@@ -22,6 +22,17 @@ The first milestone is deliberately small:
 
 The ignored `apps/cuetty/termy` checkout is a reference only. Cuetty should keep its own module boundaries and use Termy as a guide, not as a long-term dependency.
 
+## Integration notes
+
+Cuetty leans on three pre-1.0 building blocks: GPUI from Zed (git pin), `gpui_ghostty_terminal` from `Xuanwo/gpui-ghostty` (git pin, vendors Ghostty's VT core via Zig), and `portable-pty` for shell I/O. This shape is currently the shortest path to a Ghostty-backed terminal on GPUI; `libghostty` itself is still working toward a stable embedding surface, and rolling our own bindings would duplicate the glue Xuanwo's crate already provides.
+
+Two consequences worth knowing:
+
+- **Lockstep pinning.** The `gpui_ghostty_terminal` rev in `Cargo.toml` and the `gpui-ghostty-src` flake input must always point at the same commit. The Nix build symlinks the vendored Ghostty source from that flake input into the Cargo build tree, so a mismatch yields a build that links the wrong Zig artefacts. Bump both together.
+- **`terminal_responses.rs` is a temporary patch.** Upstream answers DSR and OSC color queries but not Primary or Secondary Device Attributes. Cuetty scans the PTY output stream itself to reply, so shells like fish do not stall on `CSI c` at startup. Delete the module once upstream gains DA support.
+
+Output is event-driven: the PTY reader thread pushes byte chunks through a `flume` channel that the GPUI task awaits asynchronously, then batches anything else already buffered before handing the batch to the terminal view. There is no fixed-interval polling loop.
+
 ## Development
 
 Use the app-local flake from `apps/cuetty`:

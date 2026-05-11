@@ -1264,6 +1264,7 @@ name = "cuetty"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flume",
  "gpui",
  "gpui_ghostty_terminal",
  "portable-pty",
