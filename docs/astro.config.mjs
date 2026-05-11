@@ -65,6 +65,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Explanation', slug: 'explanation' },
 						{ label: 'Architecture', slug: 'explanation/architecture' },
+						{ label: 'Cuetty', slug: 'explanation/cuetty' },
 						{ label: 'cuengine', slug: 'explanation/cuengine' },
 						{ label: 'cuenv-codeowners', slug: 'explanation/cuenv-codeowners' },
 						{ label: 'cuenv-events', slug: 'explanation/cuenv-events' },

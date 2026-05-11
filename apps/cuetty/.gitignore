@@ -1,0 +1,7 @@
+/termy/
+/target/
+/result
+/.direnv/
+/.zig-cache/
+/zig-cache/
+
