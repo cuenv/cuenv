@@ -16,7 +16,10 @@ use crate::ui::RootView;
 const APP_NAME: &str = "Cuetty";
 const APP_ID: &str = "com.cuenv.cuetty";
 
-actions!(cuetty, [Quit]);
+actions!(
+    cuetty,
+    [CloseTab, FocusNextPane, NewTab, Quit, SplitDown, SplitRight]
+);
 
 #[derive(Clone, Debug, Default)]
 pub struct CuettyOptions {
@@ -44,16 +47,33 @@ fn install_app_chrome(cx: &mut App) {
     cx.on_action(quit);
     cx.set_menus(vec![Menu {
         name: APP_NAME.into(),
-        items: vec![MenuItem::action(format!("Quit {APP_NAME}"), Quit)],
+        items: vec![
+            MenuItem::action("New Tab", NewTab),
+            MenuItem::action("Close Tab", CloseTab),
+            MenuItem::action("Split Right", SplitRight),
+            MenuItem::action("Split Down", SplitDown),
+            MenuItem::action("Focus Next Pane", FocusNextPane),
+            MenuItem::action(format!("Quit {APP_NAME}"), Quit),
+        ],
     }]);
 }
 
 fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
+        KeyBinding::new("cmd-t", NewTab, None),
+        KeyBinding::new("cmd-w", CloseTab, None),
+        KeyBinding::new("cmd-d", SplitRight, None),
+        KeyBinding::new("cmd-shift-d", SplitDown, None),
+        KeyBinding::new("cmd-]", FocusNextPane, None),
         KeyBinding::new("cmd-a", SelectAll, None),
         KeyBinding::new("cmd-c", Copy, None),
         KeyBinding::new("cmd-v", Paste, None),
+        KeyBinding::new("ctrl-shift-t", NewTab, None),
+        KeyBinding::new("ctrl-shift-w", CloseTab, None),
+        KeyBinding::new("ctrl-shift-d", SplitRight, None),
+        KeyBinding::new("ctrl-shift-e", SplitDown, None),
+        KeyBinding::new("ctrl-shift-]", FocusNextPane, None),
         KeyBinding::new("ctrl-shift-c", Copy, None),
         KeyBinding::new("ctrl-shift-v", Paste, None),
     ]);
