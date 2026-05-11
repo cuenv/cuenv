@@ -9,7 +9,7 @@ Cuetty is the experimental cuenv terminal app in `apps/cuetty`. It is scaffolded
 
 Cuetty uses GPUI for the desktop shell and the Ghostty VT stack for terminal parsing and rendering. Unlike Termy, it does not depend on `alacritty_terminal`.
 
-The first milestone is deliberately small:
+The first milestone was deliberately small:
 
 - Open one GPUI window.
 - Spawn the user's login shell through a PTY.
@@ -19,6 +19,16 @@ The first milestone is deliberately small:
 - Reply to terminal capability queries, including Device Attributes, without waiting for a render pass.
 - Install a Cuetty app menu and `cmd-q` quit action instead of inheriting dependency metadata.
 - Resize the terminal state and PTY from GPUI window bounds.
+
+The current shell milestone adds the first product boundary:
+
+- A tab model with independent terminal sessions per tab.
+- A split tree per tab for right and down splits.
+- One PTY, Ghostty terminal session, input bridge, and output pump per pane.
+- Active-pane tracking and focus cycling.
+- Per-pane grid resizing based on the active tab's split geometry.
+- App actions and keybindings for new tab, close tab, split right, split down,
+  and focus next pane.
 
 The ignored `apps/cuetty/termy` checkout is a reference only. Cuetty should keep its own module boundaries and use Termy as a guide, not as a long-term dependency.
 
@@ -31,7 +41,16 @@ Two consequences worth knowing:
 - **Lockstep pinning.** The `gpui_ghostty_terminal` rev in `Cargo.toml` and the `gpui-ghostty-src` flake input must always point at the same commit. The Nix build symlinks the vendored Ghostty source from that flake input into the Cargo build tree, so a mismatch yields a build that links the wrong Zig artefacts. Bump both together.
 - **`terminal_responses.rs` is a temporary patch.** Upstream answers DSR and OSC color queries but not Primary or Secondary Device Attributes. Cuetty scans the PTY output stream itself to reply, so shells like fish do not stall on `CSI c` at startup. Delete the module once upstream gains DA support.
 
-Output is event-driven: the PTY reader thread pushes byte chunks through a `flume` channel that the GPUI task awaits asynchronously, then batches anything else already buffered before handing the batch to the terminal view. There is no fixed-interval polling loop.
+Output is event-driven: each PTY reader thread pushes byte chunks through a
+`flume` channel that its GPUI task awaits asynchronously, then batches anything
+else already buffered before handing the batch to that pane's terminal view.
+There is no fixed-interval polling loop.
+
+Tabs and splits are intentionally app-owned. Each leaf in the split tree points
+at a terminal pane, and each pane owns its own PTY plus Ghostty-backed terminal
+view. Cuetty still uses `gpui_ghostty_terminal` for the terminal substrate; the
+tab and split model is the boundary that lets Cuetty later prototype a native
+embedded-Ghostty adapter without rewriting the product shell.
 
 ## Development
 

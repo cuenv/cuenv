@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use anyhow::{Context as _, Result};
 use gpui::{
-    AnyElement, AppContext, Context as GpuiContext, Entity, FocusHandle, InteractiveElement,
-    IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px, rgb,
+    AnyElement, AppContext, Context as GpuiContext, Entity, FocusHandle, FontWeight,
+    InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
+    SharedString, Styled, Window, div, px, rgb,
 };
 use gpui_ghostty_terminal::view::{TerminalInput, TerminalView};
 use gpui_ghostty_terminal::{
@@ -10,9 +13,18 @@ use gpui_ghostty_terminal::{
 
 use crate::pty::{GridMetrics, PtyGridSize, TerminalProcess, TerminalProcessOptions};
 use crate::terminal_responses::TerminalResponseScanner;
+use crate::{CloseTab, FocusNextPane, NewTab, SplitDown, SplitRight};
+
+const TAB_BAR_HEIGHT: f32 = 38.0;
+const STATUS_BAR_HEIGHT: f32 = 24.0;
+const DIVIDER_THICKNESS: f32 = 1.0;
 
 pub struct RootView {
-    terminal: Option<Entity<TerminalView>>,
+    tabs: Vec<TerminalTab>,
+    panes: Vec<TerminalPane>,
+    active_tab: usize,
+    next_terminal_id: u64,
+    process_options: TerminalProcessOptions,
     error: Option<String>,
     focus_handle: FocusHandle,
 }
@@ -26,53 +38,482 @@ impl RootView {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let launch_options = TerminalLaunchOptions {
+        let mut root = Self {
+            tabs: Vec::new(),
+            panes: Vec::new(),
+            active_tab: 0,
+            next_terminal_id: 1,
             process_options,
-            focus_handle: focus_handle.clone(),
+            error: None,
+            focus_handle,
         };
 
-        match launch_terminal(window, launch_options, cx) {
-            Ok(terminal) => Self {
-                terminal: Some(terminal),
-                error: None,
-                focus_handle,
-            },
-            Err(error) => {
-                tracing::error!(%error, "failed to launch terminal");
-                Self {
-                    terminal: None,
-                    error: Some(error.to_string()),
-                    focus_handle,
-                }
-            }
+        root.open_tab(window, cx);
+        install_resize_observer(window, cx);
+        root.resize_active_layout(window, cx);
+        root
+    }
+
+    fn focus_active_pane(&self, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        if let Some(handle) = self.active_pane_focus_handle() {
+            handle.focus(window, cx);
+        } else {
+            self.focus_handle.focus(window, cx);
         }
+    }
+
+    fn active_pane_focus_handle(&self) -> Option<FocusHandle> {
+        let tab = self.tabs.get(self.active_tab)?;
+        self.panes
+            .iter()
+            .find(|pane| pane.id == tab.active_pane)
+            .map(|pane| pane.focus_handle.clone())
     }
 }
 
 impl Render for RootView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut GpuiContext<Self>) -> impl IntoElement {
-        let content = match &self.terminal {
-            Some(terminal) => div().size_full().child(terminal.clone()).into_any_element(),
-            None => self.render_error().into_any_element(),
-        };
-
+    fn render(&mut self, _window: &mut Window, cx: &mut GpuiContext<Self>) -> impl IntoElement {
         div()
             .id("cuetty-root")
             .track_focus(&self.focus_handle)
             .size_full()
+            .flex()
+            .flex_col()
             .bg(rgb(0x090d12))
             .text_color(rgb(0xe6edf3))
-            .child(content)
+            .on_action(cx.listener(Self::handle_new_tab))
+            .on_action(cx.listener(Self::handle_close_tab))
+            .on_action(cx.listener(Self::handle_split_right))
+            .on_action(cx.listener(Self::handle_split_down))
+            .on_action(cx.listener(Self::handle_focus_next_pane))
+            .child(self.render_tab_bar(cx))
+            .child(self.render_workspace(cx))
+            .child(self.render_status_bar())
     }
 }
 
 impl RootView {
-    fn render_error(&self) -> AnyElement {
-        let message = self
-            .error
-            .as_deref()
-            .unwrap_or("Cuetty could not launch the terminal process.");
+    fn handle_new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        self.open_tab(window, cx);
+    }
 
+    fn handle_close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        self.close_active_tab(window, cx);
+    }
+
+    fn handle_split_right(
+        &mut self,
+        _: &SplitRight,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        self.split_active_pane(SplitAxis::Row, window, cx);
+    }
+
+    fn handle_split_down(
+        &mut self,
+        _: &SplitDown,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        self.split_active_pane(SplitAxis::Column, window, cx);
+    }
+
+    fn handle_focus_next_pane(
+        &mut self,
+        _: &FocusNextPane,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        self.focus_next_pane(window, cx);
+    }
+
+    fn open_tab(&mut self, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        let terminal_id = self.allocate_terminal_id();
+        match self.spawn_terminal(terminal_id, window, cx) {
+            Ok(pane) => {
+                self.panes.push(pane);
+                self.tabs.push(TerminalTab {
+                    title: format!("Tab {}", self.tabs.len() + 1),
+                    layout: PaneNode::Leaf(terminal_id),
+                    active_pane: terminal_id,
+                });
+                self.active_tab = self.tabs.len().saturating_sub(1);
+                self.error = None;
+                self.focus_active_pane(window, cx);
+                self.resize_active_layout(window, cx);
+                cx.notify();
+            }
+            Err(error) => self.record_error(error, cx),
+        }
+    }
+
+    fn close_active_tab(&mut self, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        if self.tabs.len() <= 1 {
+            return;
+        }
+
+        let removed = self.tabs.remove(self.active_tab);
+        self.remove_panes_for_layout(&removed.layout);
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        self.focus_active_pane(window, cx);
+        self.resize_active_layout(window, cx);
+        cx.notify();
+    }
+
+    fn split_active_pane(
+        &mut self,
+        axis: SplitAxis,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        let Some(active_index) = self.active_tab() else {
+            return;
+        };
+        let active_pane = self.tabs[active_index]
+            .layout
+            .active_or_first_leaf(self.tabs[active_index].active_pane);
+        let Some(active_pane) = active_pane else {
+            return;
+        };
+
+        let terminal_id = self.allocate_terminal_id();
+        match self.spawn_terminal(terminal_id, window, cx) {
+            Ok(pane) => {
+                self.panes.push(pane);
+                if self.tabs[active_index]
+                    .layout
+                    .split_leaf(active_pane, axis, terminal_id)
+                {
+                    self.tabs[active_index].active_pane = terminal_id;
+                    self.error = None;
+                    self.focus_active_pane(window, cx);
+                    self.resize_active_layout(window, cx);
+                    cx.notify();
+                } else {
+                    self.panes.retain(|pane| pane.id != terminal_id);
+                }
+            }
+            Err(error) => self.record_error(error, cx),
+        }
+    }
+
+    fn focus_next_pane(&mut self, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        let Some(active_index) = self.active_tab() else {
+            return;
+        };
+
+        let mut panes = Vec::new();
+        self.tabs[active_index].layout.leaf_ids(&mut panes);
+        if panes.is_empty() {
+            return;
+        }
+
+        let current = self.tabs[active_index].active_pane;
+        let next_index = panes
+            .iter()
+            .position(|id| *id == current)
+            .map(|index| (index + 1) % panes.len())
+            .unwrap_or(0);
+        self.tabs[active_index].active_pane = panes[next_index];
+        self.focus_active_pane(window, cx);
+        cx.notify();
+    }
+
+    fn activate_tab(&mut self, tab_index: usize, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        if tab_index >= self.tabs.len() {
+            return;
+        }
+
+        self.active_tab = tab_index;
+        self.focus_active_pane(window, cx);
+        self.resize_active_layout(window, cx);
+        cx.notify();
+    }
+
+    fn close_tab(&mut self, tab_index: usize, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        if self.tabs.len() <= 1 || tab_index >= self.tabs.len() {
+            return;
+        }
+
+        let removed = self.tabs.remove(tab_index);
+        self.remove_panes_for_layout(&removed.layout);
+        if self.active_tab >= tab_index {
+            self.active_tab = self.active_tab.saturating_sub(1);
+        }
+        self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        self.focus_active_pane(window, cx);
+        self.resize_active_layout(window, cx);
+        cx.notify();
+    }
+
+    fn render_tab_bar(&self, cx: &mut GpuiContext<Self>) -> AnyElement {
+        let mut tabs = Vec::with_capacity(self.tabs.len() + 4);
+        for (index, tab) in self.tabs.iter().enumerate() {
+            tabs.push(self.render_tab_button(TabButtonInput { index, tab }, cx));
+        }
+
+        tabs.push(self.render_toolbar_button(
+            ToolbarButtonInput {
+                id: "cuetty-new-tab",
+                label: "+",
+                action: ToolbarAction::NewTab,
+            },
+            cx,
+        ));
+        tabs.push(self.render_toolbar_button(
+            ToolbarButtonInput {
+                id: "cuetty-split-right",
+                label: "|",
+                action: ToolbarAction::SplitRight,
+            },
+            cx,
+        ));
+        tabs.push(self.render_toolbar_button(
+            ToolbarButtonInput {
+                id: "cuetty-split-down",
+                label: "-",
+                action: ToolbarAction::SplitDown,
+            },
+            cx,
+        ));
+        tabs.push(self.render_toolbar_button(
+            ToolbarButtonInput {
+                id: "cuetty-focus-next",
+                label: ">",
+                action: ToolbarAction::FocusNextPane,
+            },
+            cx,
+        ));
+
+        div()
+            .id("cuetty-tab-bar")
+            .h(px(TAB_BAR_HEIGHT))
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .border_b_1()
+            .border_color(rgb(0x1b2733))
+            .bg(rgb(0x0d141c))
+            .children(tabs)
+            .into_any_element()
+    }
+
+    fn render_tab_button(
+        &self,
+        input: TabButtonInput<'_>,
+        cx: &mut GpuiContext<Self>,
+    ) -> AnyElement {
+        let active = input.index == self.active_tab;
+        let pane_count = input.tab.layout.leaf_count();
+        let bg = if active { rgb(0x1f2a36) } else { rgb(0x111a24) };
+        let border = if active { rgb(0x4e8cff) } else { rgb(0x223040) };
+        let text = if active { rgb(0xf3f7fb) } else { rgb(0xaebccb) };
+        let label = format!("{} ({pane_count})", input.tab.title);
+
+        div()
+            .id(SharedString::from(format!("cuetty-tab-{}", input.index)))
+            .h(px(28.0))
+            .min_w(px(112.0))
+            .max_w(px(220.0))
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(border)
+            .bg(bg)
+            .text_color(text)
+            .text_sm()
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(0x263545)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    this.activate_tab(input.index, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(div().flex_1().truncate().child(label))
+            .child(self.render_tab_close_button(input.index, cx))
+            .into_any_element()
+    }
+
+    fn render_tab_close_button(&self, tab_index: usize, cx: &mut GpuiContext<Self>) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("cuetty-tab-close-{tab_index}")))
+            .w(px(16.0))
+            .h(px(16.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .text_xs()
+            .text_color(rgb(0xb7c4d1))
+            .hover(|style| style.bg(rgb(0x3b2630)).text_color(rgb(0xffb5c2)))
+            .child("x")
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    this.close_tab(tab_index, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .into_any_element()
+    }
+
+    fn render_toolbar_button(
+        &self,
+        input: ToolbarButtonInput,
+        cx: &mut GpuiContext<Self>,
+    ) -> AnyElement {
+        div()
+            .id(SharedString::from(input.id))
+            .w(px(28.0))
+            .h(px(28.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(0x243244))
+            .bg(rgb(0x101923))
+            .text_color(rgb(0xc7d3df))
+            .text_sm()
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .hover(|style| style.bg(rgb(0x1d2a38)).text_color(rgb(0xffffff)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    match input.action {
+                        ToolbarAction::NewTab => this.open_tab(window, cx),
+                        ToolbarAction::SplitRight => {
+                            this.split_active_pane(SplitAxis::Row, window, cx)
+                        }
+                        ToolbarAction::SplitDown => {
+                            this.split_active_pane(SplitAxis::Column, window, cx)
+                        }
+                        ToolbarAction::FocusNextPane => this.focus_next_pane(window, cx),
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(input.label)
+            .into_any_element()
+    }
+
+    fn render_workspace(&self, cx: &mut GpuiContext<Self>) -> AnyElement {
+        if let Some(message) = self.error.as_ref() {
+            return self.render_error(message).into_any_element();
+        }
+
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return self
+                .render_error("Cuetty has no terminal tabs.")
+                .into_any_element();
+        };
+
+        div()
+            .id("cuetty-workspace")
+            .flex_1()
+            .size_full()
+            .overflow_hidden()
+            .child(self.render_layout(&tab.layout, tab.active_pane, cx))
+            .into_any_element()
+    }
+
+    fn render_layout(
+        &self,
+        node: &PaneNode,
+        active_pane: TerminalId,
+        cx: &mut GpuiContext<Self>,
+    ) -> AnyElement {
+        match node {
+            PaneNode::Leaf(id) => self.render_pane(*id, active_pane, cx),
+            PaneNode::Split {
+                axis,
+                first,
+                second,
+            } => {
+                let mut container = div().flex_1().size_full().flex().overflow_hidden();
+                container = match axis {
+                    SplitAxis::Row => container.flex_row(),
+                    SplitAxis::Column => container.flex_col(),
+                };
+
+                container
+                    .child(self.render_layout(first, active_pane, cx))
+                    .child(split_divider(*axis))
+                    .child(self.render_layout(second, active_pane, cx))
+                    .into_any_element()
+            }
+        }
+    }
+
+    fn render_pane(
+        &self,
+        terminal_id: TerminalId,
+        active_pane: TerminalId,
+        cx: &mut GpuiContext<Self>,
+    ) -> AnyElement {
+        let Some(pane) = self.pane(terminal_id) else {
+            return self
+                .render_error("Cuetty lost a terminal pane.")
+                .into_any_element();
+        };
+
+        let active = terminal_id == active_pane;
+        let border = if active { rgb(0x4e8cff) } else { rgb(0x111820) };
+
+        div()
+            .id(SharedString::from(format!("cuetty-pane-{}", terminal_id.0)))
+            .flex_1()
+            .size_full()
+            .overflow_hidden()
+            .border_1()
+            .border_color(border)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    this.activate_pane(terminal_id, window, cx);
+                    cx.stop_propagation();
+                }),
+            )
+            .child(pane.view.clone())
+            .into_any_element()
+    }
+
+    fn render_status_bar(&self) -> AnyElement {
+        let tab_count = self.tabs.len();
+        let pane_count = self
+            .tabs
+            .get(self.active_tab)
+            .map(|tab| tab.layout.leaf_count())
+            .unwrap_or_default();
+        let status = format!("{tab_count} tabs / {pane_count} panes");
+
+        div()
+            .id("cuetty-status-bar")
+            .h(px(STATUS_BAR_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_3()
+            .border_t_1()
+            .border_color(rgb(0x1b2733))
+            .bg(rgb(0x0b1118))
+            .text_xs()
+            .text_color(rgb(0x7f90a2))
+            .child("cuetty")
+            .child(status)
+            .into_any_element()
+    }
+
+    fn render_error(&self, message: &str) -> AnyElement {
         div()
             .size_full()
             .flex()
@@ -84,7 +525,7 @@ impl RootView {
             .child(
                 div()
                     .text_xl()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child("Cuetty could not start"),
             )
             .child(
@@ -96,18 +537,207 @@ impl RootView {
             )
             .into_any_element()
     }
+
+    fn activate_pane(
+        &mut self,
+        terminal_id: TerminalId,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        if tab.layout.contains(terminal_id) {
+            tab.active_pane = terminal_id;
+            self.focus_active_pane(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn resize_active_layout(&mut self, window: &mut Window, cx: &mut GpuiContext<Self>) {
+        let Some(tab) = self.tabs.get(self.active_tab) else {
+            return;
+        };
+        let Some((cell_width, cell_height)) = cell_metrics(window) else {
+            return;
+        };
+
+        let region = terminal_region(window);
+        let mut input = ResizeLayoutInput {
+            panes: &mut self.panes,
+            cell_width,
+            cell_height,
+            cx,
+        };
+        resize_layout_node(&tab.layout, region, &mut input);
+    }
+
+    fn spawn_terminal(
+        &mut self,
+        terminal_id: TerminalId,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) -> Result<TerminalPane> {
+        launch_terminal(
+            window,
+            TerminalLaunchOptions {
+                terminal_id,
+                process_options: self.process_options.clone(),
+            },
+            cx,
+        )
+    }
+
+    fn remove_panes_for_layout(&mut self, layout: &PaneNode) {
+        let mut removed = Vec::new();
+        layout.leaf_ids(&mut removed);
+        self.panes.retain(|pane| !removed.contains(&pane.id));
+    }
+
+    fn record_error(&mut self, error: anyhow::Error, cx: &mut GpuiContext<Self>) {
+        tracing::error!(%error, "failed to launch terminal");
+        self.error = Some(error.to_string());
+        cx.notify();
+    }
+
+    fn active_tab(&self) -> Option<usize> {
+        (self.active_tab < self.tabs.len()).then_some(self.active_tab)
+    }
+
+    fn allocate_terminal_id(&mut self) -> TerminalId {
+        let id = TerminalId(self.next_terminal_id);
+        self.next_terminal_id += 1;
+        id
+    }
+
+    fn pane(&self, terminal_id: TerminalId) -> Option<&TerminalPane> {
+        self.panes.iter().find(|pane| pane.id == terminal_id)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TerminalId(u64);
+
+struct TerminalTab {
+    title: String,
+    layout: PaneNode,
+    active_pane: TerminalId,
+}
+
+struct TerminalPane {
+    id: TerminalId,
+    view: Entity<TerminalView>,
+    master: Arc<dyn portable_pty::MasterPty + Send>,
+    focus_handle: FocusHandle,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PaneNode {
+    Leaf(TerminalId),
+    Split {
+        axis: SplitAxis,
+        first: Box<PaneNode>,
+        second: Box<PaneNode>,
+    },
+}
+
+impl PaneNode {
+    fn split_leaf(&mut self, target: TerminalId, axis: SplitAxis, new_leaf: TerminalId) -> bool {
+        match self {
+            PaneNode::Leaf(id) if *id == target => {
+                *self = PaneNode::Split {
+                    axis,
+                    first: Box::new(PaneNode::Leaf(target)),
+                    second: Box::new(PaneNode::Leaf(new_leaf)),
+                };
+                true
+            }
+            PaneNode::Leaf(_) => false,
+            PaneNode::Split { first, second, .. } => {
+                first.split_leaf(target, axis, new_leaf)
+                    || second.split_leaf(target, axis, new_leaf)
+            }
+        }
+    }
+
+    fn contains(&self, terminal_id: TerminalId) -> bool {
+        match self {
+            PaneNode::Leaf(id) => *id == terminal_id,
+            PaneNode::Split { first, second, .. } => {
+                first.contains(terminal_id) || second.contains(terminal_id)
+            }
+        }
+    }
+
+    fn active_or_first_leaf(&self, active: TerminalId) -> Option<TerminalId> {
+        if self.contains(active) {
+            Some(active)
+        } else {
+            self.first_leaf()
+        }
+    }
+
+    fn first_leaf(&self) -> Option<TerminalId> {
+        match self {
+            PaneNode::Leaf(id) => Some(*id),
+            PaneNode::Split { first, .. } => first.first_leaf(),
+        }
+    }
+
+    fn leaf_ids(&self, ids: &mut Vec<TerminalId>) {
+        match self {
+            PaneNode::Leaf(id) => ids.push(*id),
+            PaneNode::Split { first, second, .. } => {
+                first.leaf_ids(ids);
+                second.leaf_ids(ids);
+            }
+        }
+    }
+
+    fn leaf_count(&self) -> usize {
+        match self {
+            PaneNode::Leaf(_) => 1,
+            PaneNode::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SplitAxis {
+    Row,
+    Column,
+}
+
+#[derive(Clone, Copy)]
+enum ToolbarAction {
+    NewTab,
+    SplitRight,
+    SplitDown,
+    FocusNextPane,
+}
+
+struct TabButtonInput<'a> {
+    index: usize,
+    tab: &'a TerminalTab,
+}
+
+#[derive(Clone, Copy)]
+struct ToolbarButtonInput {
+    id: &'static str,
+    label: &'static str,
+    action: ToolbarAction,
 }
 
 struct TerminalLaunchOptions {
+    terminal_id: TerminalId,
     process_options: TerminalProcessOptions,
-    focus_handle: FocusHandle,
 }
 
 fn launch_terminal(
     window: &mut Window,
     options: TerminalLaunchOptions,
     cx: &mut GpuiContext<RootView>,
-) -> Result<Entity<TerminalView>> {
+) -> Result<TerminalPane> {
     let config = TerminalConfig::default();
     let process = TerminalProcess::spawn(TerminalProcessOptions {
         grid_size: PtyGridSize::new(config.cols, config.rows),
@@ -121,16 +751,11 @@ fn launch_terminal(
             tracing::debug!("terminal input channel is closed");
         }
     });
-    let view = cx.new(|_| TerminalView::new_with_input(session, options.focus_handle, input));
+    let focus_handle = cx.focus_handle();
+    let view_focus = focus_handle.clone();
+    let view = cx.new(|_| TerminalView::new_with_input(session, view_focus, input));
+    let master = process.master.clone();
 
-    install_resize_observer(
-        window,
-        ResizeObserverInput {
-            view: view.clone(),
-            master: process.master.clone(),
-        },
-        cx,
-    );
     start_output_pump(
         window,
         OutputPumpInput {
@@ -140,31 +765,17 @@ fn launch_terminal(
         cx,
     );
 
-    Ok(view)
+    Ok(TerminalPane {
+        id: options.terminal_id,
+        view,
+        master,
+        focus_handle,
+    })
 }
 
-struct ResizeObserverInput {
-    view: Entity<TerminalView>,
-    master: std::sync::Arc<dyn portable_pty::MasterPty + Send>,
-}
-
-fn install_resize_observer(
-    window: &mut Window,
-    input: ResizeObserverInput,
-    cx: &mut GpuiContext<RootView>,
-) {
-    let subscription = input.view.update(cx, |_, cx| {
-        let master = input.master.clone();
-        cx.observe_window_bounds(window, move |terminal, window, cx| {
-            let Some(grid_size) = grid_size_for_window(window) else {
-                return;
-            };
-
-            if let Err(error) = master.resize(grid_size.to_pty_size()) {
-                tracing::debug!(%error, "failed to resize PTY");
-            }
-            terminal.resize_terminal(grid_size.cols, grid_size.rows, cx);
-        })
+fn install_resize_observer(window: &mut Window, cx: &mut GpuiContext<RootView>) {
+    let subscription = cx.observe_window_bounds(window, move |root, window, cx| {
+        root.resize_active_layout(window, cx);
     });
     subscription.detach();
 }
@@ -206,11 +817,98 @@ fn start_output_pump(window: &mut Window, input: OutputPumpInput, cx: &mut GpuiC
         .detach();
 }
 
-fn grid_size_for_window(window: &mut Window) -> Option<PtyGridSize> {
-    let size = window.viewport_size();
-    let width = f32::from(size.width);
-    let height = f32::from(size.height);
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PixelRegion {
+    width: f32,
+    height: f32,
+}
 
+struct ResizeLayoutInput<'a, 'b> {
+    panes: &'a mut [TerminalPane],
+    cell_width: f32,
+    cell_height: f32,
+    cx: &'a mut GpuiContext<'b, RootView>,
+}
+
+fn resize_layout_node(node: &PaneNode, region: PixelRegion, input: &mut ResizeLayoutInput<'_, '_>) {
+    match node {
+        PaneNode::Leaf(id) => resize_pane(*id, region, input),
+        PaneNode::Split {
+            axis,
+            first,
+            second,
+        } => {
+            let (first_region, second_region) = split_region(region, *axis);
+            resize_layout_node(first, first_region, input);
+            resize_layout_node(second, second_region, input);
+        }
+    }
+}
+
+fn resize_pane(
+    terminal_id: TerminalId,
+    region: PixelRegion,
+    input: &mut ResizeLayoutInput<'_, '_>,
+) {
+    let Some(pane) = input.panes.iter_mut().find(|pane| pane.id == terminal_id) else {
+        return;
+    };
+
+    let grid_size = PtyGridSize::from_metrics(GridMetrics {
+        pixel_width: region.width,
+        pixel_height: region.height,
+        cell_width: input.cell_width,
+        cell_height: input.cell_height,
+    });
+
+    if let Err(error) = pane.master.resize(grid_size.to_pty_size()) {
+        tracing::debug!(%error, "failed to resize PTY");
+    }
+    pane.view.update(input.cx, |terminal, cx| {
+        terminal.resize_terminal(grid_size.cols, grid_size.rows, cx);
+    });
+}
+
+fn split_region(region: PixelRegion, axis: SplitAxis) -> (PixelRegion, PixelRegion) {
+    match axis {
+        SplitAxis::Row => {
+            let width = ((region.width - DIVIDER_THICKNESS) / 2.0).max(1.0);
+            (
+                PixelRegion {
+                    width,
+                    height: region.height,
+                },
+                PixelRegion {
+                    width,
+                    height: region.height,
+                },
+            )
+        }
+        SplitAxis::Column => {
+            let height = ((region.height - DIVIDER_THICKNESS) / 2.0).max(1.0);
+            (
+                PixelRegion {
+                    width: region.width,
+                    height,
+                },
+                PixelRegion {
+                    width: region.width,
+                    height,
+                },
+            )
+        }
+    }
+}
+
+fn terminal_region(window: &mut Window) -> PixelRegion {
+    let size = window.viewport_size();
+    PixelRegion {
+        width: f32::from(size.width).max(1.0),
+        height: (f32::from(size.height) - TAB_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(1.0),
+    }
+}
+
+fn cell_metrics(window: &mut Window) -> Option<(f32, f32)> {
     let mut style = window.text_style();
     let font = default_terminal_font();
     style.font_family = font.family.clone();
@@ -230,10 +928,86 @@ fn grid_size_for_window(window: &mut Window) -> Option<PtyGridSize> {
     let cell_width = f32::from(line.width()).max(1.0);
     let cell_height = f32::from(line_height).max(1.0);
 
-    Some(PtyGridSize::from_metrics(GridMetrics {
-        pixel_width: width,
-        pixel_height: height,
-        cell_width,
-        cell_height,
-    }))
+    Some((cell_width, cell_height))
+}
+
+fn split_divider(axis: SplitAxis) -> AnyElement {
+    match axis {
+        SplitAxis::Row => div()
+            .w(px(DIVIDER_THICKNESS))
+            .h_full()
+            .bg(rgb(0x17212c))
+            .into_any_element(),
+        SplitAxis::Column => div()
+            .h(px(DIVIDER_THICKNESS))
+            .w_full()
+            .bg(rgb(0x17212c))
+            .into_any_element(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_leaf_replaces_target_with_ordered_split() {
+        let first = TerminalId(1);
+        let second = TerminalId(2);
+        let mut layout = PaneNode::Leaf(first);
+
+        assert!(layout.split_leaf(first, SplitAxis::Row, second));
+
+        assert_eq!(
+            layout,
+            PaneNode::Split {
+                axis: SplitAxis::Row,
+                first: Box::new(PaneNode::Leaf(first)),
+                second: Box::new(PaneNode::Leaf(second)),
+            }
+        );
+    }
+
+    #[test]
+    fn leaf_ids_preserve_focus_order() {
+        let layout = PaneNode::Split {
+            axis: SplitAxis::Row,
+            first: Box::new(PaneNode::Leaf(TerminalId(1))),
+            second: Box::new(PaneNode::Split {
+                axis: SplitAxis::Column,
+                first: Box::new(PaneNode::Leaf(TerminalId(2))),
+                second: Box::new(PaneNode::Leaf(TerminalId(3))),
+            }),
+        };
+        let mut ids = Vec::new();
+
+        layout.leaf_ids(&mut ids);
+
+        assert_eq!(ids, vec![TerminalId(1), TerminalId(2), TerminalId(3)]);
+    }
+
+    #[test]
+    fn split_region_accounts_for_divider() {
+        let (left, right) = split_region(
+            PixelRegion {
+                width: 101.0,
+                height: 80.0,
+            },
+            SplitAxis::Row,
+        );
+
+        assert_eq!(
+            (left, right),
+            (
+                PixelRegion {
+                    width: 50.0,
+                    height: 80.0,
+                },
+                PixelRegion {
+                    width: 50.0,
+                    height: 80.0,
+                },
+            )
+        );
+    }
 }
