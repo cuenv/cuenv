@@ -8,6 +8,11 @@
       url = "github:oxalica/rust-overlay";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Keep this rev in lockstep with the `gpui_ghostty_terminal` git dep in Cargo.toml.
+    # Both the Rust dep and this input must point at the same commit so the vendored
+    # Ghostty VT source tree (consumed via the postPatch symlink below) matches the
+    # generated bindings. Bumping either alone will yield a build that links the wrong
+    # Zig artefacts.
     gpui-ghostty-src = {
       url = "git+https://github.com/Xuanwo/gpui-ghostty?rev=e3025981c6211dd7db2a825dc364ffb5d342f45e&submodules=1";
       flake = false;

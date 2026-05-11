@@ -1,3 +1,12 @@
+//! Inline responder for VT queries that `gpui_ghostty_terminal` does not yet handle.
+//!
+//! Upstream `TerminalSession::feed_with_pty_responses` (at the pinned rev) answers
+//! DSR (`CSI 5/6 n`) and OSC color (`OSC 10/11`) queries but not Primary or Secondary
+//! Device Attributes (`CSI c`, `CSI 0 c`, `CSI > c`, `CSI > 0 c`). Shells like fish
+//! block their prompt on a DA1 reply at startup, so we scan the PTY output stream
+//! ourselves and inject the answer. Delete this module once upstream lands DA
+//! support in `feed_with_pty_responses`.
+
 const ESC: u8 = 0x1b;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE: &[u8] = b"\x1b[?62;22c";
 const SECONDARY_DEVICE_ATTRIBUTES_RESPONSE: &[u8] = b"\x1b[>1;10;0c";

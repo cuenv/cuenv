@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use anyhow::{Context as _, Result};
 use gpui::{
     AnyElement, AppContext, Context as GpuiContext, Entity, FocusHandle, InteractiveElement,
@@ -183,22 +181,19 @@ fn start_output_pump(window: &mut Window, input: OutputPumpInput, cx: &mut GpuiC
     window
         .spawn(cx, async move |cx| {
             let mut response_scanner = TerminalResponseScanner::default();
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-
-                let mut batch = Vec::new();
-                while let Ok(chunk) = stdout_rx.try_recv() {
-                    response_scanner.scan(&chunk, |response| {
-                        if stdin_tx.send(response.to_vec()).is_err() {
-                            tracing::debug!("terminal response channel is closed");
-                        }
-                    });
-                    batch.extend_from_slice(&chunk);
+            let mut respond = |response: &[u8]| {
+                if stdin_tx.send(response.to_vec()).is_err() {
+                    tracing::debug!("terminal response channel is closed");
                 }
-                if batch.is_empty() {
-                    continue;
+            };
+
+            while let Ok(first) = stdout_rx.recv_async().await {
+                let mut batch = first;
+                response_scanner.scan(&batch, &mut respond);
+
+                while let Ok(chunk) = stdout_rx.try_recv() {
+                    response_scanner.scan(&chunk, &mut respond);
+                    batch.extend_from_slice(&chunk);
                 }
 
                 let _ = cx.update(|_, cx| {
