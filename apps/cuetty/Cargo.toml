@@ -6,6 +6,9 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [workspace]
+members = [".", "crates/gpui_ghostty_terminal"]
+default-members = [".", "crates/gpui_ghostty_terminal"]
+resolver = "2"
 
 [lints.rust]
 unsafe_code = "warn"
@@ -25,10 +28,11 @@ libc = "0.2"
 gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", features = [
   "runtime_shaders",
 ] }
-# pinned: gpui_ghostty_terminal is pre-1.0 and pulls a vendored Ghostty VT tree
-# whose Zig dependency hashes must match the lockfile in flake.nix. Always bump
-# the rev here and the `gpui-ghostty-src` input in flake.nix together.
-gpui_ghostty_terminal = { git = "https://github.com/Xuanwo/gpui-ghostty", rev = "e3025981c6211dd7db2a825dc364ffb5d342f45e", package = "gpui_ghostty_terminal" }
+# patched: gpui_ghostty_terminal is pre-1.0 and currently needs a local
+# coordinate-space fix for text selection inside Cuetty's app chrome. Keep the
+# Ghostty VT rev in the patched crate and the `gpui-ghostty-src` flake input in
+# lockstep.
+gpui_ghostty_terminal = { path = "crates/gpui_ghostty_terminal" }
 portable-pty = "0.9"
 flume = "0.11"
 tracing = "0.1"

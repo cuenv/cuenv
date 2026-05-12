@@ -548,13 +548,6 @@ impl RootView {
             rgb(Theme::RULE)
         };
 
-        // TODO: text selection inside the pane lands one row below and ~100px
-        // to the right of the actual mouse position. Investigation isolated
-        // it to a coordinate-space mismatch between mouse events and element
-        // bounds in this layout shape — not in the pane wrapper itself
-        // (stripping the wrapper down to upstream's minimal pattern did not
-        // help). Likely needs either a patched gpui_ghostty_terminal or
-        // deeper GPUI investigation.
         div()
             .id(SharedString::from(format!("cuetty-pane-{}", terminal_id.0)))
             .flex_1()
