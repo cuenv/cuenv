@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{CStr, OsString};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -95,7 +95,7 @@ pub struct TerminalProcessOptions {
 impl Default for TerminalProcessOptions {
     fn default() -> Self {
         Self {
-            shell: shell_path_from_env(std::env::var_os("SHELL")),
+            shell: resolve_shell(),
             grid_size: PtyGridSize::default(),
             environment: TerminalEnvironment::default(),
         }
@@ -177,16 +177,50 @@ impl TerminalProcess {
     }
 }
 
-pub fn shell_path_from_env(shell: Option<OsString>) -> PathBuf {
-    shell
-        .and_then(|value| {
-            if value.is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(value))
-            }
-        })
+/// Resolves which shell binary to spawn, in priority order:
+///
+/// 1. The user's login shell from the passwd database (the value `chsh`
+///    would update), which matches what most terminals do and survives
+///    GUI launches that don't inherit a meaningful `$SHELL`.
+/// 2. The `$SHELL` environment variable, if set.
+/// 3. `/bin/sh`.
+pub fn resolve_shell() -> PathBuf {
+    user_login_shell()
+        .or_else(|| shell_path_from_env(std::env::var_os("SHELL")))
         .unwrap_or_else(|| PathBuf::from(DEFAULT_SHELL))
+}
+
+pub fn shell_path_from_env(shell: Option<OsString>) -> Option<PathBuf> {
+    shell.and_then(|value| {
+        if value.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(value))
+        }
+    })
+}
+
+#[allow(unsafe_code)]
+fn user_login_shell() -> Option<PathBuf> {
+    // SAFETY: getpwuid returns a pointer into a libc-owned passwd struct that
+    // remains valid until the next getpw* call on this thread; we read pw_shell
+    // before doing anything else with libc. pw_shell is a NUL-terminated C
+    // string for which we check non-null before dereferencing.
+    unsafe {
+        let passwd = libc::getpwuid(libc::geteuid());
+        if passwd.is_null() {
+            return None;
+        }
+        let shell_ptr = (*passwd).pw_shell;
+        if shell_ptr.is_null() {
+            return None;
+        }
+        CStr::from_ptr(shell_ptr)
+            .to_str()
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
 }
 
 fn build_command(options: &TerminalProcessOptions) -> CommandBuilder {
@@ -211,15 +245,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn shell_path_from_env_falls_back_when_missing() {
-        assert_eq!(shell_path_from_env(None), PathBuf::from(DEFAULT_SHELL));
+    fn shell_path_from_env_returns_none_when_missing() {
+        assert_eq!(shell_path_from_env(None), None);
     }
 
     #[test]
-    fn shell_path_from_env_falls_back_when_empty() {
+    fn shell_path_from_env_returns_none_when_empty() {
+        assert_eq!(shell_path_from_env(Some(OsString::from(""))), None);
+    }
+
+    #[test]
+    fn shell_path_from_env_returns_value_when_set() {
         assert_eq!(
-            shell_path_from_env(Some(OsString::from(""))),
-            PathBuf::from(DEFAULT_SHELL)
+            shell_path_from_env(Some(OsString::from("/bin/fish"))),
+            Some(PathBuf::from("/bin/fish"))
+        );
+    }
+
+    #[test]
+    fn resolve_shell_returns_executable_path() {
+        let resolved = resolve_shell();
+        assert!(
+            resolved.is_absolute(),
+            "expected absolute path, got {resolved:?}"
         );
     }
 

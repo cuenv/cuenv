@@ -1267,6 +1267,7 @@ dependencies = [
  "flume",
  "gpui",
  "gpui_ghostty_terminal",
+ "libc",
  "portable-pty",
  "tracing",
  "tracing-subscriber",
