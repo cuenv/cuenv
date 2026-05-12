@@ -129,6 +129,45 @@ schema.#Project & {{
     )
 }
 
+fn project_env_cue_with_trigger_inputs(name: &str, pipeline: &str, task: &str) -> String {
+    format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  let _t = tasks
+
+  name: "{name}"
+
+  ci: {{
+    providers: ["github"]
+    pipelines: {{
+      "{pipeline}": {{
+        when: {{
+          branch: "main"
+          pullRequest: true
+        }}
+        tasks: [_t.{task}]
+      }}
+    }}
+  }}
+
+  tasks: {{
+    {task}: schema.#Task & {{
+      command: "echo"
+      args: ["{task}"]
+      inputs: [
+        "../flake.nix",
+        "../infrastructure/waddle.cloud/gitops/waddle-server/**",
+      ]
+    }}
+  }}
+}}
+"#
+    )
+}
+
 fn base_env_cue(_owner: &str, _include_ignore: bool) -> String {
     r#"package cuenv
 
@@ -280,6 +319,40 @@ fn sync_nested_project_only_generates_nested_ci_in_repo_root() {
     assert!(workflows_dir.join("service-test.yml").exists());
     assert!(!workflows_dir.join("root-build.yml").exists());
     assert!(!nested.join(".github").exists());
+}
+
+#[test]
+fn sync_nested_project_normalizes_parent_trigger_paths() {
+    let tmp = create_repo();
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+    fs::write(root.join("flake.nix"), "{}").unwrap();
+    fs::create_dir_all(root.join("infrastructure/waddle.cloud/gitops/waddle-server")).unwrap();
+
+    let nested = root.join("server");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(
+        nested.join("env.cue"),
+        project_env_cue_with_trigger_inputs("server", "deploy", "deploy"),
+    )
+    .unwrap();
+
+    let (_stdout, stderr, success) = run_cuenv(&nested, &["sync"]);
+    assert!(success, "sync failed: {stderr}");
+
+    let workflow_path = root.join(".github/workflows/server-deploy.yml");
+    let workflow = fs::read_to_string(&workflow_path)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", workflow_path.display()));
+
+    assert!(workflow.contains("flake.nix"), "{workflow}");
+    assert!(
+        workflow.contains("infrastructure/waddle.cloud/gitops/waddle-server/**"),
+        "{workflow}"
+    );
+    assert!(workflow.contains("server/env.cue"), "{workflow}");
+    assert!(!workflow.contains("server/../"), "{workflow}");
+    assert!(!workflow.contains("../"), "{workflow}");
 }
 
 #[test]
