@@ -17,10 +17,12 @@ Status guardrails:
 - OCI is schema-visible in `#Source`, but the tool registry does not register an OCI provider.
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
+- `#VcsDependency.subdir` performs sparse-checkout of a single subtree (vendor-only). The lockfile records the subtree hash and re-syncs are deterministic.
 
 Adversarial prompts:
 
 - "Install a tool from an OCI image." State schema exists but provider support is missing.
 - "Add platform-specific GitHub release assets." Use `#Override` and `#GitHubExtract`.
 - "Sync VCS dependencies." Use `schema.#VcsDependency` and `cuenv sync vcs`.
+- "Vendor only one directory of a remote repo (e.g. agent skills)." Use `subdir` with `vendor: true`; cuenv runs a sparse-checkout and lands only that subtree at `path`.
 
