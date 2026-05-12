@@ -1285,6 +1285,8 @@ pipelines: {
 
 When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from each pipeline task's path inputs. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths, so an input such as `../flake.nix` in `server/env.cue` becomes `flake.nix` in the generated workflow instead of `server/../flake.nix`.
 
+Task inputs without glob metacharacters (no `*`, `?`, or `[`) are also expanded into a `path/**` companion entry, since GitHub Actions path filters are glob-only and would otherwise only match the literal path. This keeps derived CI triggers consistent with cuenv's own affected-task detection, which treats non-glob inputs as prefixes. Inputs that resolve outside the repository root are skipped and logged at `warn` level.
+
 ### #PipelineCondition
 
 Trigger conditions for pipeline execution.

@@ -473,12 +473,31 @@ impl Compiler {
 
         let mut paths = HashSet::new();
 
-        // Add task inputs with appropriate prefix
+        // Add task inputs, canonicalized into repo-relative trigger filters.
+        //
+        // GitHub Actions path filters are glob-only — a bare `server/src`
+        // matches only the literal path, not its descendants. cuenv's own
+        // affected matching (`cuenv_core::matches_pattern`) treats non-glob
+        // patterns as prefixes, so to keep the two in agreement we also emit
+        // `<path>/**` for any user input that does not already contain glob
+        // metacharacters. This costs one extra entry per simple-path input
+        // and covers both "input is a file" and "input is a directory".
         for input in &task_inputs {
-            if let Some(path) =
-                repo_relative_trigger_path(self.options.project_path.as_deref(), input)
-            {
-                paths.insert(path);
+            match repo_relative_trigger_path(self.options.project_path.as_deref(), input) {
+                Some(path) => {
+                    if is_simple_path_pattern(input) {
+                        paths.insert(format!("{path}/**"));
+                    }
+                    paths.insert(path);
+                }
+                None => {
+                    tracing::warn!(
+                        project_path = self.options.project_path.as_deref().unwrap_or("."),
+                        input = input.as_str(),
+                        "Skipping task input that escapes the repository root or is absolute; \
+                         it will not contribute to derived GitHub path filters",
+                    );
+                }
             }
         }
 
@@ -1623,6 +1642,14 @@ fn repo_relative_trigger_path(project_path: Option<&str>, input: &str) -> Option
     } else {
         Some(rendered)
     }
+}
+
+/// True when `input` contains none of the glob metacharacters that
+/// `cuenv_core::affected::matches_pattern` uses to switch between glob
+/// matching and prefix matching. Kept in sync with that function so derived
+/// GitHub trigger paths stay aligned with local affected detection.
+fn is_simple_path_pattern(input: &str) -> bool {
+    !input.contains('*') && !input.contains('?') && !input.contains('[')
 }
 
 fn push_relative_components(path: &mut PathBuf, input: &Path) -> bool {
@@ -3117,6 +3144,59 @@ mod tests {
         assert!(
             !paths.contains(&"server/**".to_string()),
             "Escaping task input should not trigger project fallback: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_emits_recursive_glob_for_simple_directory_inputs() {
+        // Inputs without glob metacharacters can refer to files or directories.
+        // GitHub Actions path filters do not treat a bare `server/src` as
+        // matching files beneath it, so we emit `<path>/**` alongside the
+        // literal path. This keeps derived filters aligned with
+        // `cuenv_core::affected::matches_pattern`, which treats non-glob
+        // patterns as prefixes.
+        let paths = trigger_paths_for_project("server", &["src", "../flake.nix"]);
+
+        assert!(
+            paths.contains(&"server/src".to_string()),
+            "literal path should still be emitted: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"server/src/**".to_string()),
+            "directory input should also emit recursive glob: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"flake.nix".to_string()),
+            "literal file from parent should be emitted: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"flake.nix/**".to_string()),
+            "simple parent path should also emit recursive glob (covers \
+             the case where it turns out to be a directory): {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_does_not_expand_existing_globs() {
+        // Inputs that already contain glob metacharacters must not get a
+        // duplicate `/**` appended; their meaning is left to GitHub Actions.
+        let paths = trigger_paths_for_project("server", &["src/**/*.rs", "data/?.json"]);
+
+        assert!(
+            paths.contains(&"server/src/**/*.rs".to_string()),
+            "glob input should be emitted as-is: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p == "server/src/**/*.rs/**"),
+            "glob input should not have /** appended: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"server/data/?.json".to_string()),
+            "wildcard input should be emitted as-is: {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p == "server/data/?.json/**"),
+            "wildcard input should not have /** appended: {paths:?}"
         );
     }
 
