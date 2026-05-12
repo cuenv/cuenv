@@ -73,6 +73,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -95,6 +99,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.audit
       run: nix build .#checks.x86_64-linux.cuenv-audit -L --accept-flake-config
       working-directory: .
@@ -117,6 +125,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.bdd
       run: nix build .#checks.x86_64-linux.cuenv-bdd -L --accept-flake-config
       working-directory: .
@@ -139,6 +151,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.clippy
       run: nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
       working-directory: .
@@ -161,6 +177,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.cuenv
       run: nix build .#checks.x86_64-linux.cuenv -L --accept-flake-config
       working-directory: .
@@ -183,6 +203,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.deny
       run: nix build .#checks.x86_64-linux.cuenv-deny -L --accept-flake-config
       working-directory: .
@@ -205,6 +229,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.doctest
       run: nix build .#checks.x86_64-linux.cuenv-doctest -L --accept-flake-config
       working-directory: .
@@ -227,6 +255,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: checks.nextest
       run: nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
       working-directory: .
