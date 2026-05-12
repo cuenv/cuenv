@@ -1250,6 +1250,8 @@ mod tests {
                 tree: "89abcdef012345670123456789abcdef01234567".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
+                subtree: None,
             },
         );
 

@@ -557,12 +557,19 @@ pub struct LockedVcsDependency {
     pub reference: String,
     /// Resolved commit SHA.
     pub commit: String,
-    /// Tree object SHA for the resolved commit.
+    /// Tree object SHA for the resolved commit (repository root).
     pub tree: String,
     /// Whether the materialized dependency is a tracked source snapshot.
     pub vendor: bool,
     /// Repository-relative materialization path.
     pub path: String,
+    /// Subdirectory of the repo that was vendored (sparse checkout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+    /// Tree object SHA for the vendored subdirectory at `commit:subdir`.
+    /// Only populated when `subdir` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtree: Option<String>,
 }
 
 impl LockedVcsDependency {
@@ -583,6 +590,22 @@ impl LockedVcsDependency {
             return Err("path must not be empty".to_string());
         }
         validate_locked_vcs_path(&self.path)?;
+        match (self.subdir.as_deref(), self.subtree.as_deref()) {
+            (None, None) => {}
+            (Some(subdir), Some(subtree)) => {
+                if subdir.trim().is_empty() {
+                    return Err("subdir must not be empty".to_string());
+                }
+                validate_locked_vcs_subdir(subdir)?;
+                if !is_git_object_id(subtree) {
+                    return Err("subtree must be a hexadecimal Git object ID".to_string());
+                }
+                if !self.vendor {
+                    return Err("subdir requires vendor = true".to_string());
+                }
+            }
+            _ => return Err("subdir and subtree must be set together".to_string()),
+        }
         Ok(())
     }
 }
@@ -592,6 +615,32 @@ fn is_git_object_id(value: &str) -> bool {
 }
 
 fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
+    let components = parse_locked_relative_components(path)?;
+    if components.iter().any(|component| component == ".git")
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "cache".to_string()])
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "tmp".to_string()])
+    {
+        return Err("path targets cuenv or git internals".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a sparse-checkout subdir as recorded in the lockfile.
+///
+/// Like [`validate_locked_vcs_path`] but without the local-disk reserved-path
+/// checks: `subdir` is a path *inside the remote repository*, so a remote repo
+/// that happens to contain `.cuenv/...` is a legitimate target. We still
+/// reject `.git` components, since git itself does not allow them as tracked
+/// directories.
+fn validate_locked_vcs_subdir(subdir: &str) -> Result<(), String> {
+    let components = parse_locked_relative_components(subdir)?;
+    if components.iter().any(|component| component == ".git") {
+        return Err("subdir must not contain a '.git' component".to_string());
+    }
+    Ok(())
+}
+
+fn parse_locked_relative_components(path: &str) -> Result<Vec<String>, String> {
     let rel = Path::new(path);
     if rel.is_absolute() || path.trim().is_empty() {
         return Err("path must be relative".to_string());
@@ -605,6 +654,7 @@ fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
         if value.is_empty()
             || value == "."
             || value == ".."
+            || value.starts_with('-')
             || value.contains('\\')
             || value.chars().any(|c| {
                 c.is_control()
@@ -621,13 +671,7 @@ fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
     if components.is_empty() {
         return Err("path must not target the repository root".to_string());
     }
-    if components.iter().any(|component| component == ".git")
-        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "cache".to_string()])
-        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "tmp".to_string()])
-    {
-        return Err("path targets cuenv or git internals".to_string());
-    }
-    Ok(())
+    Ok(components)
 }
 
 fn lockfile_parent_for_sync(path: &Path) -> &Path {
@@ -972,6 +1016,8 @@ mod tests {
                     tree: "89abcdef012345670123456789abcdef01234567".to_string(),
                     vendor: true,
                     path: "vendor/mylib".to_string(),
+                    subdir: None,
+                    subtree: None,
                 },
             )
             .unwrap();
@@ -983,6 +1029,87 @@ mod tests {
 
         let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.find_vcs("mylib").unwrap().path, "vendor/mylib");
+    }
+
+    #[test]
+    fn test_vcs_subdir_serialization_roundtrip() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "skills".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/cuenv/cuenv.git".to_string(),
+                    reference: "0.27.1".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: true,
+                    path: ".agents/skills".to_string(),
+                    subdir: Some(".agents/skills".to_string()),
+                    subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("subdir = \".agents/skills\""));
+        assert!(toml_str.contains("subtree = \"ffffffffffffffffffffffffffffffffffffffff\""));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        let dep = parsed.find_vcs("skills").unwrap();
+        assert_eq!(dep.subdir.as_deref(), Some(".agents/skills"));
+        assert_eq!(
+            dep.subtree.as_deref(),
+            Some("ffffffffffffffffffffffffffffffffffffffff")
+        );
+    }
+
+    #[test]
+    fn test_vcs_without_subdir_omits_fields() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "plain".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/example/plain.git".to_string(),
+                    reference: "main".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: true,
+                    path: "vendor/plain".to_string(),
+                    subdir: None,
+                    subtree: None,
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(!toml_str.contains("subdir"));
+        assert!(!toml_str.contains("subtree"));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        let dep = parsed.find_vcs("plain").unwrap();
+        assert_eq!(dep.subdir, None);
+        assert_eq!(dep.subtree, None);
+    }
+
+    #[test]
+    fn test_legacy_vcs_entry_without_subdir_loads() {
+        // A lockfile written before subdir/subtree existed should still load.
+        let legacy = r#"
+version = 4
+
+[vcs.legacy]
+url = "https://github.com/example/legacy.git"
+reference = "main"
+commit = "0123456789abcdef0123456789abcdef01234567"
+tree = "89abcdef012345670123456789abcdef01234567"
+vendor = true
+path = "vendor/legacy"
+"#;
+        let parsed: Lockfile = toml::from_str(legacy).expect("legacy lockfile parses");
+        let dep = parsed.find_vcs("legacy").expect("entry present");
+        assert_eq!(dep.subdir, None);
+        assert_eq!(dep.subtree, None);
     }
 
     #[test]
@@ -1004,6 +1131,26 @@ mod tests {
         assert!(validate_locked_vcs_path(".cuenv/vcs/cache/lib").is_err());
         assert!(validate_locked_vcs_path(".cuenv/vcs/tmp/lib").is_err());
         assert!(validate_locked_vcs_path("vendor/lib").is_ok());
+    }
+
+    #[test]
+    fn test_vcs_subdir_allows_dotcuenv_paths_but_rejects_dotgit() {
+        // subdir is a path *inside the remote repo*, so .cuenv/... is allowed —
+        // only local-disk materialization paths reserve those prefixes.
+        assert!(validate_locked_vcs_subdir(".cuenv/vcs/cache").is_ok());
+        assert!(validate_locked_vcs_subdir(".cuenv/some/skill").is_ok());
+        assert!(validate_locked_vcs_subdir(".agents/skills").is_ok());
+
+        // .git inside a tree is still impossible under git's own rules.
+        assert!(validate_locked_vcs_subdir(".git").is_err());
+        assert!(validate_locked_vcs_subdir("nested/.git").is_err());
+
+        // Component-safety rules still apply.
+        assert!(validate_locked_vcs_subdir("--stdin").is_err());
+        assert!(validate_locked_vcs_subdir("nested/-evil").is_err());
+        assert!(validate_locked_vcs_subdir("a\\b").is_err());
+        assert!(validate_locked_vcs_subdir("..").is_err());
+        assert!(validate_locked_vcs_subdir("").is_err());
     }
 
     #[test]
