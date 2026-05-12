@@ -558,8 +558,9 @@ impl RootView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    // Intentionally not stopping propagation: the underlying
+                    // TerminalView needs the mouse-down to start text selection.
                     this.activate_pane(terminal_id, window, cx);
-                    cx.stop_propagation();
                 }),
             )
             .child(pane.view.clone())
