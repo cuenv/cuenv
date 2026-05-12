@@ -557,12 +557,19 @@ pub struct LockedVcsDependency {
     pub reference: String,
     /// Resolved commit SHA.
     pub commit: String,
-    /// Tree object SHA for the resolved commit.
+    /// Tree object SHA for the resolved commit (repository root).
     pub tree: String,
     /// Whether the materialized dependency is a tracked source snapshot.
     pub vendor: bool,
     /// Repository-relative materialization path.
     pub path: String,
+    /// Subdirectory of the repo that was vendored (sparse checkout).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+    /// Tree object SHA for the vendored subdirectory at `commit:subdir`.
+    /// Only populated when `subdir` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtree: Option<String>,
 }
 
 impl LockedVcsDependency {
@@ -583,6 +590,22 @@ impl LockedVcsDependency {
             return Err("path must not be empty".to_string());
         }
         validate_locked_vcs_path(&self.path)?;
+        match (self.subdir.as_deref(), self.subtree.as_deref()) {
+            (None, None) => {}
+            (Some(subdir), Some(subtree)) => {
+                if subdir.trim().is_empty() {
+                    return Err("subdir must not be empty".to_string());
+                }
+                validate_locked_vcs_path(subdir)?;
+                if !is_git_object_id(subtree) {
+                    return Err("subtree must be a hexadecimal Git object ID".to_string());
+                }
+                if !self.vendor {
+                    return Err("subdir requires vendor = true".to_string());
+                }
+            }
+            _ => return Err("subdir and subtree must be set together".to_string()),
+        }
         Ok(())
     }
 }
@@ -972,6 +995,8 @@ mod tests {
                     tree: "89abcdef012345670123456789abcdef01234567".to_string(),
                     vendor: true,
                     path: "vendor/mylib".to_string(),
+                    subdir: None,
+                    subtree: None,
                 },
             )
             .unwrap();
@@ -983,6 +1008,87 @@ mod tests {
 
         let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
         assert_eq!(parsed.find_vcs("mylib").unwrap().path, "vendor/mylib");
+    }
+
+    #[test]
+    fn test_vcs_subdir_serialization_roundtrip() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "skills".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/cuenv/cuenv.git".to_string(),
+                    reference: "0.27.1".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: true,
+                    path: ".agents/skills".to_string(),
+                    subdir: Some(".agents/skills".to_string()),
+                    subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("subdir = \".agents/skills\""));
+        assert!(toml_str.contains("subtree = \"ffffffffffffffffffffffffffffffffffffffff\""));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        let dep = parsed.find_vcs("skills").unwrap();
+        assert_eq!(dep.subdir.as_deref(), Some(".agents/skills"));
+        assert_eq!(
+            dep.subtree.as_deref(),
+            Some("ffffffffffffffffffffffffffffffffffffffff")
+        );
+    }
+
+    #[test]
+    fn test_vcs_without_subdir_omits_fields() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "plain".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/example/plain.git".to_string(),
+                    reference: "main".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: true,
+                    path: "vendor/plain".to_string(),
+                    subdir: None,
+                    subtree: None,
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(!toml_str.contains("subdir"));
+        assert!(!toml_str.contains("subtree"));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        let dep = parsed.find_vcs("plain").unwrap();
+        assert_eq!(dep.subdir, None);
+        assert_eq!(dep.subtree, None);
+    }
+
+    #[test]
+    fn test_legacy_vcs_entry_without_subdir_loads() {
+        // A lockfile written before subdir/subtree existed should still load.
+        let legacy = r#"
+version = 4
+
+[vcs.legacy]
+url = "https://github.com/example/legacy.git"
+reference = "main"
+commit = "0123456789abcdef0123456789abcdef01234567"
+tree = "89abcdef012345670123456789abcdef01234567"
+vendor = true
+path = "vendor/legacy"
+"#;
+        let parsed: Lockfile = toml::from_str(legacy).expect("legacy lockfile parses");
+        let dep = parsed.find_vcs("legacy").expect("entry present");
+        assert_eq!(dep.subdir, None);
+        assert_eq!(dep.subtree, None);
     }
 
     #[test]

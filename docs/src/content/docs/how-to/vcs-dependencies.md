@@ -57,6 +57,29 @@ vcs: lib: {
 
 Cuenv updates `.gitignore` with a managed block for non-vendored paths.
 
+## Sparse Subdirectory Vendoring
+
+Set `subdir` to vendor a single subdirectory of a remote repo via git's
+sparse-checkout. Only that subtree is fetched and written to `path`. This is
+the recommended way to pull agent skill packs out of a larger repository.
+
+```cue
+vcs: "cuenv-skills": {
+    url:       "https://github.com/cuenv/cuenv.git"
+    reference: "0.27.1"
+    vendor:    true
+    subdir:    ".agents/skills"
+    path:      ".agents/skills"
+}
+```
+
+Requirements and behavior:
+
+- `subdir` requires `vendor: true`. Non-vendored sparse checkouts are not supported.
+- The path must be repo-relative, forward-slash separated, and contain no `.`, `..`, or glob characters.
+- The lockfile records both the resolved commit and the subtree hash, so re-syncs are deterministic and `cuenv sync vcs --check` detects tampering of the vendored content.
+- Requires git ≥ 2.27 (cone-mode sparse-checkout).
+
 ## Updating
 
 By default, cuenv reuses the commit already recorded in `cuenv.lock`.

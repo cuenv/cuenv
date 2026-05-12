@@ -148,6 +148,10 @@ pub struct VcsDependency {
     pub vendor: bool,
     /// Repository-relative materialization path.
     pub path: String,
+    /// Subdirectory of the repo to materialize via sparse checkout.
+    /// Requires `vendor = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
 }
 
 fn default_vcs_reference() -> String {
@@ -1553,6 +1557,31 @@ mod tests {
     use super::*;
     use crate::tasks::{TaskDependency, TaskGroup, TaskNode};
     use crate::test_utils::create_test_hook;
+
+    #[test]
+    fn test_vcs_dependency_deserializes_subdir() {
+        let dep: VcsDependency = serde_json::from_value(serde_json::json!({
+            "url": "https://github.com/cuenv/cuenv.git",
+            "reference": "0.27.1",
+            "vendor": true,
+            "path": ".agents/skills",
+            "subdir": ".agents/skills"
+        }))
+        .expect("subdir field should deserialize");
+        assert_eq!(dep.subdir.as_deref(), Some(".agents/skills"));
+    }
+
+    #[test]
+    fn test_vcs_dependency_subdir_defaults_to_none() {
+        let dep: VcsDependency = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com/lib.git",
+            "reference": "main",
+            "vendor": true,
+            "path": "vendor/lib"
+        }))
+        .expect("legacy spec without subdir should deserialize");
+        assert_eq!(dep.subdir, None);
+    }
 
     #[test]
     fn test_service_type_defaults_to_service_when_omitted() {

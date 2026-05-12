@@ -595,6 +595,43 @@ fn validate_path_component(component: &str, original_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a sparse-checkout `subdir`. Returns the slash-joined relative path
+/// to use with `git sparse-checkout set` and `git cat-file/rev-parse`.
+fn validate_subdir(subdir: &str) -> Result<String> {
+    let trimmed = subdir.trim();
+    if trimmed.is_empty() {
+        return Err(Error::configuration(
+            "Invalid VCS dependency subdir: must not be empty",
+        ));
+    }
+    let rel = Path::new(trimmed);
+    if rel.is_absolute() {
+        return Err(Error::configuration(format!(
+            "Invalid VCS dependency subdir '{}': must be a relative path",
+            subdir
+        )));
+    }
+    let mut components = Vec::new();
+    for component in rel.components() {
+        let Component::Normal(value) = component else {
+            return Err(Error::configuration(format!(
+                "Invalid VCS dependency subdir '{}': must not contain '.', '..', or prefixes",
+                subdir
+            )));
+        };
+        let value = value.to_string_lossy();
+        validate_path_component(&value, subdir)?;
+        components.push(value.into_owned());
+    }
+    if components.is_empty() {
+        return Err(Error::configuration(format!(
+            "Invalid VCS dependency subdir '{}': must not target the repository root",
+            subdir
+        )));
+    }
+    Ok(components.join("/"))
+}
+
 fn ensure_parent_stays_in_repo(git_root: &Path, target: &Path) -> Result<()> {
     let canonical_root = git_root
         .canonicalize()
@@ -686,6 +723,7 @@ fn locked_matches(locked: Option<&LockedVcsDependency>, spec: &VcsDependency) ->
             && locked.reference == spec.reference
             && locked.vendor == spec.vendor
             && locked.path == spec.path
+            && locked.subdir == spec.subdir
     })
 }
 
@@ -696,6 +734,18 @@ fn resolve_dependency(
 ) -> Result<LockedVcsDependency> {
     validate_git_input("url", &spec.url)?;
     validate_git_input("reference", &spec.reference)?;
+    let normalized_subdir = match spec.subdir.as_deref() {
+        Some(value) => {
+            if !spec.vendor {
+                return Err(Error::configuration(format!(
+                    "VCS dependency '{}': subdir requires vendor = true",
+                    name
+                )));
+            }
+            Some(validate_subdir(value)?)
+        }
+        None => None,
+    };
     let cache_path = cache_root.join(name);
     fs::create_dir_all(cache_root).map_err(|e| Error::configuration(e.to_string()))?;
     ensure_managed_internal_path(cache_root, &cache_path)?;
@@ -739,6 +789,36 @@ fn resolve_dependency(
         Some(&cache_path),
     )?;
 
+    let subtree = if let Some(ref subdir) = normalized_subdir {
+        let object_ref = format!("{}:{}", commit, subdir);
+        let object_type = git_output(
+            [
+                OsStr::new("cat-file"),
+                OsStr::new("-t"),
+                OsStr::new(&object_ref),
+            ],
+            Some(&cache_path),
+        )
+        .map_err(|_| {
+            Error::configuration(format!(
+                "VCS dependency '{}': subdir '{}' not found at reference '{}'",
+                name, subdir, spec.reference
+            ))
+        })?;
+        if object_type != "tree" {
+            return Err(Error::configuration(format!(
+                "VCS dependency '{}': subdir '{}' must be a tree (directory), got {} at reference '{}'",
+                name, subdir, object_type, spec.reference
+            )));
+        }
+        Some(git_output(
+            [OsStr::new("rev-parse"), OsStr::new(&object_ref)],
+            Some(&cache_path),
+        )?)
+    } else {
+        None
+    };
+
     Ok(LockedVcsDependency {
         url: spec.url.clone(),
         reference: spec.reference.clone(),
@@ -746,6 +826,8 @@ fn resolve_dependency(
         tree,
         vendor: spec.vendor,
         path: spec.path.clone(),
+        subdir: normalized_subdir,
+        subtree,
     })
 }
 
@@ -760,6 +842,9 @@ fn prepare_dependency(
     validate_git_input("commit", &locked.commit)?;
     ensure_replaceable_target(target, previous)?;
     fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
+    if let Some(ref subdir) = locked.subdir {
+        return prepare_subdir_dependency(temp_root, target, locked, subdir);
+    }
     let temp_target = temporary_target_path(temp_root, target, "tmp")?;
     let temp_guard = TempPath::new(temp_target);
     let temp_target = temp_guard.path();
@@ -798,6 +883,103 @@ fn prepare_dependency(
     }
     write_ownership_marker(temp_target, locked)?;
     Ok(temp_guard)
+}
+
+/// Sparse-checkout vendor path: only the requested `subdir` of the repo lands
+/// at `target`, with no `.git` directory.
+fn prepare_subdir_dependency(
+    temp_root: &Path,
+    target: &Path,
+    locked: &LockedVcsDependency,
+    subdir: &str,
+) -> Result<TempPath> {
+    let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
+        Error::configuration(format!(
+            "VCS dependency '{}': locked entry has subdir but no subtree hash",
+            locked.path
+        ))
+    })?;
+    let clone_target = temporary_target_path(temp_root, target, "clone")?;
+    let clone_guard = TempPath::new(clone_target);
+    let clone_path = clone_guard.path();
+    run_git(
+        [
+            OsStr::new("clone"),
+            OsStr::new("--no-checkout"),
+            OsStr::new("--filter=blob:none"),
+            OsStr::new(&locked.url),
+            clone_path.as_os_str(),
+        ],
+        None,
+    )?;
+    run_git(
+        [
+            OsStr::new("sparse-checkout"),
+            OsStr::new("init"),
+            OsStr::new("--cone"),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("sparse-checkout"),
+            OsStr::new("set"),
+            OsStr::new(subdir),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("fetch"),
+            OsStr::new("origin"),
+            OsStr::new(&locked.commit),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("checkout"),
+            OsStr::new("--detach"),
+            OsStr::new(&locked.commit),
+        ],
+        Some(clone_path),
+    )?;
+    let subtree = git_output(
+        [
+            OsStr::new("rev-parse"),
+            OsStr::new(&format!("HEAD:{}", subdir)),
+        ],
+        Some(clone_path),
+    )
+    .map_err(|_| {
+        Error::configuration(format!(
+            "VCS dependency '{}': subdir '{}' not present at locked commit",
+            locked.path, subdir
+        ))
+    })?;
+    if subtree != expected_subtree {
+        return Err(Error::configuration(format!(
+            "VCS dependency '{}': subdir tree {} does not match locked subtree {}",
+            locked.path, subtree, expected_subtree
+        )));
+    }
+
+    let extracted_source = clone_path.join(subdir);
+    if !extracted_source.is_dir() {
+        return Err(Error::configuration(format!(
+            "VCS dependency '{}': sparse checkout did not materialize subdir '{}'",
+            locked.path, subdir
+        )));
+    }
+    let extracted_target = temporary_target_path(temp_root, target, "tmp")?;
+    let extracted_guard = TempPath::new(extracted_target);
+    fs::rename(&extracted_source, extracted_guard.path())
+        .map_err(|e| Error::configuration(e.to_string()))?;
+    drop(clone_guard);
+
+    ensure_dependency_does_not_reserve_marker(extracted_guard.path(), locked)?;
+    write_ownership_marker(extracted_guard.path(), locked)?;
+    Ok(extracted_guard)
 }
 
 fn install_prepared_dependency(target: &Path, prepared: &Path) -> Result<()> {
@@ -880,13 +1062,14 @@ fn ensure_replaceable_target(target: &Path, previous: Option<&LockedVcsDependenc
     }
     validate_git_input("marker", marker.trim())?;
     if previous.vendor {
+        let expected = expected_vendored_tree(previous);
         let actual = vendored_tree_hash(target)?;
-        if actual != previous.tree {
+        if actual != expected {
             return Err(Error::configuration(format!(
                 "Refusing to overwrite modified vendored VCS target '{}': tree {}, expected {}",
                 target.display(),
                 actual,
-                previous.tree
+                expected
             )));
         }
     }
@@ -1094,6 +1277,12 @@ fn verify_checked_out_tree(path: &Path, locked: &LockedVcsDependency) -> Result<
     Ok(())
 }
 
+/// Tree object the vendored content on disk should hash to. When a `subdir`
+/// is set we expect the subtree, not the full repo root tree.
+fn expected_vendored_tree(locked: &LockedVcsDependency) -> &str {
+    locked.subtree.as_deref().unwrap_or(locked.tree.as_str())
+}
+
 fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> Result<()> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -1126,11 +1315,12 @@ fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> Result<()> {
         )));
     }
     if locked.vendor {
+        let expected = expected_vendored_tree(locked);
         let actual = vendored_tree_hash(path)?;
-        if actual != locked.tree {
+        if actual != expected {
             return Err(Error::configuration(format!(
                 "VCS dependency '{}' has tree {}, expected {}",
-                locked.path, actual, locked.tree
+                locked.path, actual, expected
             )));
         }
         return Ok(());
@@ -1380,6 +1570,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
             },
         };
 
@@ -1411,6 +1602,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1448,6 +1640,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1485,6 +1678,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
             },
         };
 
@@ -1509,6 +1703,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         let options = SyncOptions {
@@ -1540,6 +1735,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: true,
                 path: "vendor/lib".to_string(),
+                subdir: None,
             },
         };
         let mut conflicting_name = dependency.clone();
@@ -1582,6 +1778,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
 
@@ -1637,6 +1834,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
 
@@ -1673,6 +1871,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1710,6 +1909,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1748,6 +1948,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1782,6 +1983,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1816,6 +2018,7 @@ mod tests {
                 reference: "main".to_string(),
                 vendor: false,
                 path: ".cuenv/vcs/lib".to_string(),
+                subdir: None,
             },
         };
         sync_vcs!(
@@ -1901,5 +2104,265 @@ mod tests {
         )
         .expect("git commit");
         dir
+    }
+
+    /// Source repo with multiple top-level directories so subdir tests can
+    /// verify a sparse checkout extracts only the requested subtree.
+    fn create_source_repo_with_subdirs() -> tempfile::TempDir {
+        let dir = create_source_repo();
+        let skills = dir.path().join(".agents/skills/example");
+        fs::create_dir_all(&skills).expect("create skills subdir");
+        fs::write(skills.join("SKILL.md"), "# Example skill\n").expect("write SKILL.md");
+        fs::write(dir.path().join("other.txt"), "sibling content\n").expect("write sibling");
+        run_git(
+            [
+                OsStr::new("add"),
+                OsStr::new(".agents/skills/example/SKILL.md"),
+                OsStr::new("other.txt"),
+            ],
+            Some(dir.path()),
+        )
+        .expect("git add subdirs");
+        run_git(
+            [
+                OsStr::new("commit"),
+                OsStr::new("-m"),
+                OsStr::new("add subdirs"),
+            ],
+            Some(dir.path()),
+        )
+        .expect("git commit subdirs");
+        dir
+    }
+
+    #[test]
+    fn subdir_requires_vendor_true() {
+        let source = create_source_repo_with_subdirs();
+        let workspace = create_workspace();
+        let dependency = CollectedVcsDependency {
+            name: "skills".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: false,
+                path: ".agents/skills".to_string(),
+                subdir: Some(".agents/skills".to_string()),
+            },
+        };
+
+        let err = sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect_err("subdir without vendor=true must be rejected");
+        assert!(
+            err.to_string().contains("subdir requires vendor"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn subdir_invalid_values_rejected() {
+        for bad in ["", "..", "./skills", "/abs", "a/../b", "glob*"] {
+            assert!(
+                validate_subdir(bad).is_err(),
+                "expected '{bad}' to be rejected"
+            );
+        }
+        assert!(validate_subdir(".agents/skills").is_ok());
+    }
+
+    #[test]
+    fn sparse_checkout_extracts_only_subdir() {
+        let source = create_source_repo_with_subdirs();
+        let workspace = create_workspace();
+        let dependency = CollectedVcsDependency {
+            name: "skills".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: true,
+                path: ".agents/skills".to_string(),
+                subdir: Some(".agents/skills".to_string()),
+            },
+        };
+
+        let output = sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect("subdir sync should succeed");
+        assert!(output.contains("skills: Synced"));
+
+        let target = workspace.path().join(".agents/skills");
+        assert!(target.join("example/SKILL.md").exists());
+        assert!(!target.join("lib.txt").exists());
+        assert!(!target.join("other.txt").exists());
+        assert!(!target.join(".git").exists());
+        assert!(target.join(".cuenv-vcs").exists());
+
+        let lockfile = Lockfile::load(&workspace.path().join(LOCKFILE_NAME))
+            .expect("load lockfile")
+            .expect("lockfile present");
+        let entry = lockfile.find_vcs("skills").expect("entry present");
+        assert_eq!(entry.subdir.as_deref(), Some(".agents/skills"));
+        assert!(entry.subtree.is_some());
+    }
+
+    #[test]
+    fn check_rejects_modified_vendored_subdir() {
+        let source = create_source_repo_with_subdirs();
+        let workspace = create_workspace();
+        let dependency = CollectedVcsDependency {
+            name: "skills".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: true,
+                path: ".agents/skills".to_string(),
+                subdir: Some(".agents/skills".to_string()),
+            },
+        };
+        sync_vcs!(
+            workspace.path(),
+            vec![dependency.clone()],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect("initial sync");
+        fs::write(
+            workspace.path().join(".agents/skills/example/SKILL.md"),
+            "tampered\n",
+        )
+        .expect("mutate skill");
+
+        let options = SyncOptions {
+            mode: SyncMode::Check,
+            ..SyncOptions::default()
+        };
+        let err = sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &options,
+            VcsSyncScope::Path,
+        )
+        .expect_err("check should reject modified subdir");
+        assert!(err.to_string().contains("tree"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn changing_subdir_at_same_path_rematerialises() {
+        let source = create_source_repo_with_subdirs();
+        // Add a second skill under a different subdir.
+        let other = source.path().join(".agents/skills/other");
+        fs::create_dir_all(&other).expect("create other skill dir");
+        fs::write(other.join("SKILL.md"), "# Other\n").expect("write other SKILL.md");
+        run_git(
+            [
+                OsStr::new("add"),
+                OsStr::new(".agents/skills/other/SKILL.md"),
+            ],
+            Some(source.path()),
+        )
+        .expect("git add other");
+        run_git(
+            [
+                OsStr::new("commit"),
+                OsStr::new("-m"),
+                OsStr::new("add other"),
+            ],
+            Some(source.path()),
+        )
+        .expect("git commit other");
+
+        let workspace = create_workspace();
+        let mut dependency = CollectedVcsDependency {
+            name: "pack".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: true,
+                path: "vendor/pack".to_string(),
+                subdir: Some(".agents/skills/example".to_string()),
+            },
+        };
+        sync_vcs!(
+            workspace.path(),
+            vec![dependency.clone()],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect("first sync");
+        assert!(workspace.path().join("vendor/pack/SKILL.md").exists());
+
+        dependency.spec.subdir = Some(".agents/skills/other".to_string());
+        sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect("subdir change should re-materialise");
+        let content = fs::read_to_string(workspace.path().join("vendor/pack/SKILL.md"))
+            .expect("read remateralised skill");
+        assert!(content.contains("# Other"));
+    }
+
+    #[test]
+    fn subdir_referencing_blob_rejected() {
+        let source = create_source_repo_with_subdirs();
+        let workspace = create_workspace();
+        let dependency = CollectedVcsDependency {
+            name: "blob".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: true,
+                path: "vendor/blob".to_string(),
+                subdir: Some("other.txt".to_string()),
+            },
+        };
+        let err = sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect_err("subdir pointing at a file must be rejected");
+        assert!(
+            err.to_string().contains("subdir") && err.to_string().contains("tree"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn subdir_missing_at_reference_rejected() {
+        let source = create_source_repo_with_subdirs();
+        let workspace = create_workspace();
+        let dependency = CollectedVcsDependency {
+            name: "missing".to_string(),
+            spec: VcsDependency {
+                url: source.path().display().to_string(),
+                reference: "main".to_string(),
+                vendor: true,
+                path: "vendor/missing".to_string(),
+                subdir: Some("does/not/exist".to_string()),
+            },
+        };
+        let err = sync_vcs!(
+            workspace.path(),
+            vec![dependency],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect_err("missing subdir must be rejected");
+        assert!(
+            err.to_string().contains("subdir"),
+            "unexpected error: {err}"
+        );
     }
 }
