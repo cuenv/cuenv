@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.41.1"
+version = "0.41.3"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
