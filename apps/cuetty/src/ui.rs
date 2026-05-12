@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -13,11 +14,15 @@ use gpui_ghostty_terminal::{
 
 use crate::pty::{GridMetrics, PtyGridSize, TerminalProcess, TerminalProcessOptions};
 use crate::terminal_responses::TerminalResponseScanner;
+use crate::theme::Theme;
 use crate::{CloseTab, FocusNextPane, NewTab, SplitDown, SplitRight};
 
-const TAB_BAR_HEIGHT: f32 = 38.0;
-const STATUS_BAR_HEIGHT: f32 = 24.0;
+const TITLEBAR_HEIGHT: f32 = 40.0;
+const SIDEBAR_WIDTH: f32 = 220.0;
 const DIVIDER_THICKNESS: f32 = 1.0;
+// Reserve space inside the titlebar for the macOS traffic lights overlay.
+const TITLEBAR_LEFT_INSET: f32 = 80.0;
+const CLOSE_HOVER_COLOR: u32 = 0xd35a4e;
 
 pub struct RootView {
     tabs: Vec<TerminalTab>,
@@ -27,6 +32,7 @@ pub struct RootView {
     process_options: TerminalProcessOptions,
     error: Option<String>,
     focus_handle: FocusHandle,
+    startup_cwd: Option<PathBuf>,
 }
 
 impl RootView {
@@ -46,6 +52,7 @@ impl RootView {
             process_options,
             error: None,
             focus_handle,
+            startup_cwd: std::env::current_dir().ok(),
         };
 
         root.open_tab(window, cx);
@@ -79,16 +86,23 @@ impl Render for RootView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x090d12))
-            .text_color(rgb(0xe6edf3))
+            .bg(rgb(Theme::BG))
+            .text_color(rgb(Theme::INK))
             .on_action(cx.listener(Self::handle_new_tab))
             .on_action(cx.listener(Self::handle_close_tab))
             .on_action(cx.listener(Self::handle_split_right))
             .on_action(cx.listener(Self::handle_split_down))
             .on_action(cx.listener(Self::handle_focus_next_pane))
-            .child(self.render_tab_bar(cx))
-            .child(self.render_workspace(cx))
-            .child(self.render_status_bar())
+            .child(self.render_titlebar(cx))
+            .child(
+                div()
+                    .id("cuetty-shell")
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .child(self.render_sidebar(cx))
+                    .child(self.render_workspace(cx)),
+            )
     }
 }
 
@@ -247,114 +261,213 @@ impl RootView {
         cx.notify();
     }
 
-    fn render_tab_bar(&self, cx: &mut GpuiContext<Self>) -> AnyElement {
-        let mut tabs = Vec::with_capacity(self.tabs.len() + 4);
-        for (index, tab) in self.tabs.iter().enumerate() {
-            tabs.push(self.render_tab_button(TabButtonInput { index, tab }, cx));
+    fn render_titlebar(&self, cx: &mut GpuiContext<Self>) -> AnyElement {
+        let tab_label = self.titlebar_tab_label();
+        let path = self.titlebar_path_string();
+
+        let mut location = div().flex().items_center().gap_2().text_xs();
+        location = location.child(
+            div()
+                .text_color(rgb(Theme::INK_2))
+                .child(SharedString::from(tab_label)),
+        );
+        if !path.is_empty() {
+            location = location
+                .child(div().text_color(rgb(Theme::SUB_2)).child("·"))
+                .child(
+                    div()
+                        .text_color(rgb(Theme::SUB))
+                        .child(SharedString::from(path)),
+                );
         }
 
-        tabs.push(self.render_toolbar_button(
-            ToolbarButtonInput {
-                id: "cuetty-new-tab",
-                label: "+",
-                action: ToolbarAction::NewTab,
-            },
-            cx,
-        ));
-        tabs.push(self.render_toolbar_button(
-            ToolbarButtonInput {
-                id: "cuetty-split-right",
-                label: "|",
-                action: ToolbarAction::SplitRight,
-            },
-            cx,
-        ));
-        tabs.push(self.render_toolbar_button(
-            ToolbarButtonInput {
-                id: "cuetty-split-down",
-                label: "-",
-                action: ToolbarAction::SplitDown,
-            },
-            cx,
-        ));
-        tabs.push(self.render_toolbar_button(
-            ToolbarButtonInput {
-                id: "cuetty-focus-next",
-                label: ">",
-                action: ToolbarAction::FocusNextPane,
-            },
-            cx,
-        ));
-
         div()
-            .id("cuetty-tab-bar")
-            .h(px(TAB_BAR_HEIGHT))
+            .id("cuetty-titlebar")
+            .h(px(TITLEBAR_HEIGHT))
             .flex()
             .items_center()
-            .gap_1()
-            .px_2()
+            .gap_4()
+            .pl(px(TITLEBAR_LEFT_INSET))
+            .pr(px(12.0))
+            .bg(rgb(Theme::BG))
             .border_b_1()
-            .border_color(rgb(0x1b2733))
-            .bg(rgb(0x0d141c))
-            .children(tabs)
+            .border_color(rgb(Theme::RULE))
+            .child(
+                div()
+                    .text_color(rgb(Theme::INK))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_sm()
+                    .child("cuetty"),
+            )
+            .child(location)
+            .child(div().flex_1())
+            .child(
+                div()
+                    .flex()
+                    .gap_1()
+                    .child(self.render_titlebar_action(TitleAction::NewTab, "+", cx))
+                    .child(self.render_titlebar_action(TitleAction::SplitRight, "|", cx))
+                    .child(self.render_titlebar_action(TitleAction::SplitDown, "—", cx)),
+            )
             .into_any_element()
     }
 
-    fn render_tab_button(
+    fn render_titlebar_action(
         &self,
-        input: TabButtonInput<'_>,
+        action: TitleAction,
+        label: &'static str,
         cx: &mut GpuiContext<Self>,
     ) -> AnyElement {
-        let active = input.index == self.active_tab;
-        let pane_count = input.tab.layout.leaf_count();
-        let bg = if active { rgb(0x1f2a36) } else { rgb(0x111a24) };
-        let border = if active { rgb(0x4e8cff) } else { rgb(0x223040) };
-        let text = if active { rgb(0xf3f7fb) } else { rgb(0xaebccb) };
-        let label = format!("{} ({pane_count})", input.tab.title);
+        let id: &'static str = match action {
+            TitleAction::NewTab => "cuetty-title-new-tab",
+            TitleAction::SplitRight => "cuetty-title-split-right",
+            TitleAction::SplitDown => "cuetty-title-split-down",
+        };
+        let hover_color = match action {
+            TitleAction::NewTab => Theme::ACCENT,
+            TitleAction::SplitRight | TitleAction::SplitDown => Theme::INK,
+        };
 
         div()
-            .id(SharedString::from(format!("cuetty-tab-{}", input.index)))
+            .id(SharedString::from(id))
+            .w(px(28.0))
             .h(px(28.0))
-            .min_w(px(112.0))
-            .max_w(px(220.0))
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .px_3()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(border)
-            .bg(bg)
-            .text_color(text)
-            .text_sm()
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(0x263545)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                    this.activate_tab(input.index, window, cx);
-                    cx.stop_propagation();
-                }),
-            )
-            .child(div().flex_1().truncate().child(label))
-            .child(self.render_tab_close_button(input.index, cx))
-            .into_any_element()
-    }
-
-    fn render_tab_close_button(&self, tab_index: usize, cx: &mut GpuiContext<Self>) -> AnyElement {
-        div()
-            .id(SharedString::from(format!("cuetty-tab-close-{tab_index}")))
-            .w(px(16.0))
-            .h(px(16.0))
             .flex()
             .items_center()
             .justify_center()
             .rounded(px(4.0))
+            .text_color(rgb(Theme::SUB))
+            .text_sm()
+            .cursor_pointer()
+            .hover(move |style| style.bg(Theme::hover_bg()).text_color(rgb(hover_color)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    match action {
+                        TitleAction::NewTab => this.open_tab(window, cx),
+                        TitleAction::SplitRight => {
+                            this.split_active_pane(SplitAxis::Row, window, cx)
+                        }
+                        TitleAction::SplitDown => {
+                            this.split_active_pane(SplitAxis::Column, window, cx)
+                        }
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(label)
+            .into_any_element()
+    }
+
+    fn render_sidebar(&self, cx: &mut GpuiContext<Self>) -> AnyElement {
+        let mut list = div().flex().flex_col().gap_1();
+        for (index, tab) in self.tabs.iter().enumerate() {
+            list = list.child(self.render_tab_row(TabRowInput { index, tab }, cx));
+        }
+
+        div()
+            .id("cuetty-sidebar")
+            .w(px(SIDEBAR_WIDTH))
+            .h_full()
+            .bg(rgb(Theme::PANEL))
+            .border_r_1()
+            .border_color(rgb(Theme::RULE))
+            .px(px(8.0))
+            .py(px(12.0))
+            .child(list)
+            .into_any_element()
+    }
+
+    fn render_tab_row(&self, input: TabRowInput<'_>, cx: &mut GpuiContext<Self>) -> AnyElement {
+        let index = input.index;
+        let active = index == self.active_tab;
+        let pane_count = input.tab.layout.leaf_count();
+        let title = input.tab.title.clone();
+
+        let num_color = if active { Theme::ACCENT } else { Theme::SUB };
+        let name_color = if active { Theme::INK } else { Theme::INK_2 };
+
+        let sub_text = if pane_count <= 1 {
+            "1 pane".to_string()
+        } else {
+            format!("{pane_count} panes")
+        };
+
+        let mut strip = div().w(px(2.0)).h(px(28.0)).rounded(px(1.0));
+        if active {
+            strip = strip.bg(rgb(Theme::ACCENT));
+        }
+
+        let mut row = div()
+            .id(SharedString::from(format!("cuetty-tab-{index}")))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .px(px(10.0))
+            .py(px(10.0))
+            .rounded(px(4.0))
+            .cursor_pointer()
+            .child(strip)
+            .child(
+                div()
+                    .w(px(20.0))
+                    .text_color(rgb(num_color))
+                    .text_xs()
+                    .child(format!("{:02}", index + 1)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_color(rgb(name_color))
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_color(rgb(Theme::SUB_2))
+                            .text_xs()
+                            .child(SharedString::from(sub_text)),
+                    ),
+            )
+            .child(self.render_tab_close(index, cx))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                    this.activate_tab(index, window, cx);
+                    cx.stop_propagation();
+                }),
+            );
+
+        if active {
+            row = row.bg(Theme::active_bg());
+        } else {
+            row = row.hover(|style| style.bg(Theme::hover_bg()));
+        }
+
+        row.into_any_element()
+    }
+
+    fn render_tab_close(&self, tab_index: usize, cx: &mut GpuiContext<Self>) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("cuetty-tab-close-{tab_index}")))
+            .w(px(18.0))
+            .h(px(18.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(3.0))
             .text_xs()
-            .text_color(rgb(0xb7c4d1))
-            .hover(|style| style.bg(rgb(0x3b2630)).text_color(rgb(0xffb5c2)))
-            .child("x")
+            .text_color(rgb(Theme::SUB_2))
+            .cursor_pointer()
+            .hover(|style| style.text_color(rgb(CLOSE_HOVER_COLOR)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
@@ -362,47 +475,7 @@ impl RootView {
                     cx.stop_propagation();
                 }),
             )
-            .into_any_element()
-    }
-
-    fn render_toolbar_button(
-        &self,
-        input: ToolbarButtonInput,
-        cx: &mut GpuiContext<Self>,
-    ) -> AnyElement {
-        div()
-            .id(SharedString::from(input.id))
-            .w(px(28.0))
-            .h(px(28.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(0x243244))
-            .bg(rgb(0x101923))
-            .text_color(rgb(0xc7d3df))
-            .text_sm()
-            .font_weight(FontWeight::SEMIBOLD)
-            .cursor_pointer()
-            .hover(|style| style.bg(rgb(0x1d2a38)).text_color(rgb(0xffffff)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
-                    match input.action {
-                        ToolbarAction::NewTab => this.open_tab(window, cx),
-                        ToolbarAction::SplitRight => {
-                            this.split_active_pane(SplitAxis::Row, window, cx)
-                        }
-                        ToolbarAction::SplitDown => {
-                            this.split_active_pane(SplitAxis::Column, window, cx)
-                        }
-                        ToolbarAction::FocusNextPane => this.focus_next_pane(window, cx),
-                    }
-                    cx.stop_propagation();
-                }),
-            )
-            .child(input.label)
+            .child("×")
             .into_any_element()
     }
 
@@ -420,8 +493,9 @@ impl RootView {
         div()
             .id("cuetty-workspace")
             .flex_1()
-            .size_full()
+            .h_full()
             .overflow_hidden()
+            .bg(rgb(Theme::BG))
             .child(self.render_layout(&tab.layout, tab.active_pane, cx))
             .into_any_element()
     }
@@ -467,7 +541,11 @@ impl RootView {
         };
 
         let active = terminal_id == active_pane;
-        let border = if active { rgb(0x4e8cff) } else { rgb(0x111820) };
+        let border = if active {
+            rgb(Theme::ACCENT)
+        } else {
+            rgb(Theme::RULE)
+        };
 
         div()
             .id(SharedString::from(format!("cuetty-pane-{}", terminal_id.0)))
@@ -484,32 +562,6 @@ impl RootView {
                 }),
             )
             .child(pane.view.clone())
-            .into_any_element()
-    }
-
-    fn render_status_bar(&self) -> AnyElement {
-        let tab_count = self.tabs.len();
-        let pane_count = self
-            .tabs
-            .get(self.active_tab)
-            .map(|tab| tab.layout.leaf_count())
-            .unwrap_or_default();
-        let status = format!("{tab_count} tabs / {pane_count} panes");
-
-        div()
-            .id("cuetty-status-bar")
-            .h(px(STATUS_BAR_HEIGHT))
-            .flex()
-            .items_center()
-            .justify_between()
-            .px_3()
-            .border_t_1()
-            .border_color(rgb(0x1b2733))
-            .bg(rgb(0x0b1118))
-            .text_xs()
-            .text_color(rgb(0x7f90a2))
-            .child("cuetty")
-            .child(status)
             .into_any_element()
     }
 
@@ -532,7 +584,7 @@ impl RootView {
                 div()
                     .max_w(px(640.0))
                     .text_center()
-                    .text_color(rgb(0x9fb0c0))
+                    .text_color(rgb(Theme::SUB))
                     .child(message.to_string()),
             )
             .into_any_element()
@@ -612,6 +664,20 @@ impl RootView {
 
     fn pane(&self, terminal_id: TerminalId) -> Option<&TerminalPane> {
         self.panes.iter().find(|pane| pane.id == terminal_id)
+    }
+
+    fn titlebar_tab_label(&self) -> String {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| format!("{:02} {}", self.active_tab + 1, tab.title))
+            .unwrap_or_default()
+    }
+
+    fn titlebar_path_string(&self) -> String {
+        self.startup_cwd
+            .as_deref()
+            .map(collapse_home)
+            .unwrap_or_default()
     }
 }
 
@@ -708,24 +774,16 @@ enum SplitAxis {
     Column,
 }
 
-#[derive(Clone, Copy)]
-enum ToolbarAction {
+#[derive(Clone, Copy, Debug)]
+enum TitleAction {
     NewTab,
     SplitRight,
     SplitDown,
-    FocusNextPane,
 }
 
-struct TabButtonInput<'a> {
+struct TabRowInput<'a> {
     index: usize,
     tab: &'a TerminalTab,
-}
-
-#[derive(Clone, Copy)]
-struct ToolbarButtonInput {
-    id: &'static str,
-    label: &'static str,
-    action: ToolbarAction,
 }
 
 struct TerminalLaunchOptions {
@@ -903,8 +961,8 @@ fn split_region(region: PixelRegion, axis: SplitAxis) -> (PixelRegion, PixelRegi
 fn terminal_region(window: &mut Window) -> PixelRegion {
     let size = window.viewport_size();
     PixelRegion {
-        width: f32::from(size.width).max(1.0),
-        height: (f32::from(size.height) - TAB_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(1.0),
+        width: (f32::from(size.width) - SIDEBAR_WIDTH).max(1.0),
+        height: (f32::from(size.height) - TITLEBAR_HEIGHT).max(1.0),
     }
 }
 
@@ -936,14 +994,27 @@ fn split_divider(axis: SplitAxis) -> AnyElement {
         SplitAxis::Row => div()
             .w(px(DIVIDER_THICKNESS))
             .h_full()
-            .bg(rgb(0x17212c))
+            .bg(rgb(Theme::RULE))
             .into_any_element(),
         SplitAxis::Column => div()
             .h(px(DIVIDER_THICKNESS))
             .w_full()
-            .bg(rgb(0x17212c))
+            .bg(rgb(Theme::RULE))
             .into_any_element(),
     }
+}
+
+fn collapse_home(path: &Path) -> String {
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return if rel.as_os_str().is_empty() {
+            "~".to_string()
+        } else {
+            format!("~/{}", rel.display())
+        };
+    }
+    path.display().to_string()
 }
 
 #[cfg(test)]
@@ -1009,5 +1080,15 @@ mod tests {
                 },
             )
         );
+    }
+
+    #[test]
+    fn collapse_home_returns_tilde_for_home() {
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        if let Some(home) = home {
+            assert_eq!(collapse_home(&home), "~");
+            let nested = home.join("project");
+            assert_eq!(collapse_home(&nested), "~/project");
+        }
     }
 }

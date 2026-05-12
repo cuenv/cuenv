@@ -1,5 +1,6 @@
 mod pty;
 mod terminal_responses;
+mod theme;
 mod ui;
 
 pub use pty::{PtyGridSize, TerminalEnvironment, TerminalProcessOptions, shell_path_from_env};
@@ -87,6 +88,7 @@ fn window_options() -> WindowOptions {
     WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some(APP_NAME.into()),
+            appears_transparent: true,
             ..TitlebarOptions::default()
         }),
         app_id: Some(APP_ID.to_string()),
