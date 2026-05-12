@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
+use flume::Receiver;
 use gpui::{
     AnyElement, AppContext, Context as GpuiContext, Entity, FocusHandle, FontWeight,
     InteractiveElement, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
@@ -679,6 +680,52 @@ impl RootView {
             .map(collapse_home)
             .unwrap_or_default()
     }
+
+    fn handle_pane_exit(
+        &mut self,
+        terminal_id: TerminalId,
+        window: &mut Window,
+        cx: &mut GpuiContext<Self>,
+    ) {
+        self.panes.retain(|pane| pane.id != terminal_id);
+
+        let Some(tab_index) = self
+            .tabs
+            .iter()
+            .position(|tab| tab.layout.contains(terminal_id))
+        else {
+            return;
+        };
+
+        let owned_layout = std::mem::take(&mut self.tabs[tab_index].layout);
+        match owned_layout.remove_leaf(terminal_id) {
+            Some(new_layout) => {
+                let tab = &mut self.tabs[tab_index];
+                tab.layout = new_layout;
+                if tab.active_pane == terminal_id
+                    && let Some(first) = tab.layout.first_leaf()
+                {
+                    tab.active_pane = first;
+                }
+            }
+            None => {
+                self.tabs.remove(tab_index);
+                if self.active_tab > tab_index {
+                    self.active_tab -= 1;
+                }
+                self.active_tab = self.active_tab.min(self.tabs.len().saturating_sub(1));
+
+                if self.tabs.is_empty() {
+                    cx.quit();
+                    return;
+                }
+            }
+        }
+
+        self.focus_active_pane(window, cx);
+        self.resize_active_layout(window, cx);
+        cx.notify();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -766,6 +813,34 @@ impl PaneNode {
             PaneNode::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
         }
     }
+
+    fn remove_leaf(self, target: TerminalId) -> Option<PaneNode> {
+        match self {
+            PaneNode::Leaf(id) if id == target => None,
+            PaneNode::Leaf(_) => Some(self),
+            PaneNode::Split {
+                axis,
+                first,
+                second,
+            } => match (first.remove_leaf(target), second.remove_leaf(target)) {
+                (None, None) => None,
+                (Some(node), None) | (None, Some(node)) => Some(node),
+                (Some(f), Some(s)) => Some(PaneNode::Split {
+                    axis,
+                    first: Box::new(f),
+                    second: Box::new(s),
+                }),
+            },
+        }
+    }
+}
+
+impl Default for PaneNode {
+    fn default() -> Self {
+        // TerminalId(0) is never allocated (next_terminal_id starts at 1) so this is a safe
+        // placeholder for std::mem::take during layout surgery.
+        PaneNode::Leaf(TerminalId(0))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -818,10 +893,13 @@ fn launch_terminal(
         window,
         OutputPumpInput {
             view: view.clone(),
-            process,
+            stdin_tx: process.stdin_tx.clone(),
+            stdout_rx: process.stdout_rx.clone(),
         },
         cx,
     );
+
+    spawn_pane_death_observer(window, options.terminal_id, process.exited_rx.clone(), cx);
 
     Ok(TerminalPane {
         id: options.terminal_id,
@@ -829,6 +907,25 @@ fn launch_terminal(
         master,
         focus_handle,
     })
+}
+
+fn spawn_pane_death_observer(
+    window: &mut Window,
+    terminal_id: TerminalId,
+    exited_rx: Receiver<()>,
+    cx: &mut GpuiContext<RootView>,
+) {
+    let root_entity = cx.entity();
+    window
+        .spawn(cx, async move |cx| {
+            let _ = exited_rx.recv_async().await;
+            let _ = cx.update(|window, cx| {
+                root_entity.update(cx, |root, cx| {
+                    root.handle_pane_exit(terminal_id, window, cx);
+                });
+            });
+        })
+        .detach();
 }
 
 fn install_resize_observer(window: &mut Window, cx: &mut GpuiContext<RootView>) {
@@ -840,13 +937,14 @@ fn install_resize_observer(window: &mut Window, cx: &mut GpuiContext<RootView>) 
 
 struct OutputPumpInput {
     view: Entity<TerminalView>,
-    process: TerminalProcess,
+    stdin_tx: flume::Sender<Vec<u8>>,
+    stdout_rx: flume::Receiver<Vec<u8>>,
 }
 
 fn start_output_pump(window: &mut Window, input: OutputPumpInput, cx: &mut GpuiContext<RootView>) {
     let view_for_task = input.view;
-    let stdin_tx = input.process.stdin_tx;
-    let stdout_rx = input.process.stdout_rx;
+    let stdin_tx = input.stdin_tx;
+    let stdout_rx = input.stdout_rx;
     window
         .spawn(cx, async move |cx| {
             let mut response_scanner = TerminalResponseScanner::default();
@@ -1036,6 +1134,48 @@ mod tests {
                 first: Box::new(PaneNode::Leaf(first)),
                 second: Box::new(PaneNode::Leaf(second)),
             }
+        );
+    }
+
+    #[test]
+    fn remove_leaf_collapses_split_to_sibling() {
+        let layout = PaneNode::Split {
+            axis: SplitAxis::Row,
+            first: Box::new(PaneNode::Leaf(TerminalId(1))),
+            second: Box::new(PaneNode::Leaf(TerminalId(2))),
+        };
+
+        assert_eq!(
+            layout.remove_leaf(TerminalId(1)),
+            Some(PaneNode::Leaf(TerminalId(2)))
+        );
+    }
+
+    #[test]
+    fn remove_leaf_returns_none_when_tree_empties() {
+        let layout = PaneNode::Leaf(TerminalId(1));
+        assert_eq!(layout.remove_leaf(TerminalId(1)), None);
+    }
+
+    #[test]
+    fn remove_leaf_collapses_nested_split() {
+        let layout = PaneNode::Split {
+            axis: SplitAxis::Row,
+            first: Box::new(PaneNode::Leaf(TerminalId(1))),
+            second: Box::new(PaneNode::Split {
+                axis: SplitAxis::Column,
+                first: Box::new(PaneNode::Leaf(TerminalId(2))),
+                second: Box::new(PaneNode::Leaf(TerminalId(3))),
+            }),
+        };
+
+        assert_eq!(
+            layout.remove_leaf(TerminalId(2)),
+            Some(PaneNode::Split {
+                axis: SplitAxis::Row,
+                first: Box::new(PaneNode::Leaf(TerminalId(1))),
+                second: Box::new(PaneNode::Leaf(TerminalId(3))),
+            })
         );
     }
 
