@@ -1,18 +1,18 @@
-# VCS Subdir: Sparse Vendoring of a Single Directory
+# VCS Subdir: Sparse Materialization of a Single Directory
 
 Date: 2026-05-12
 Status: Design
 
 ## Goal
 
-Let a `#VcsDependency` materialise a single subdirectory of a remote git repository at a pinned commit, rather than the whole repo. This makes "fetch `.agents/skills/` from `cuenv/cuenv` at a tagged release" a one-entry VCS recipe, and incidentally enables partial vendoring of any monorepo subtree.
+Let a `#VcsDependency` materialise a single subdirectory of a remote git repository at a pinned commit, rather than the whole repo. This makes "fetch `.agents/skills/` from `cuenv/cuenv` at a tagged release" a one-entry VCS recipe, and incidentally enables partial materialization of any monorepo subtree.
 
 ## Non-goals
 
 - No `skills:` schema block. Skill packs are vendored via VCS like any other directory dependency; documentation provides the canonical recipe.
 - No binary-bundled assets. cuenv does not ship skill content inside the cuenv binary.
 - No multi-tool target translation. Skills land at `.agents/skills/<pack>/SKILL.md` and nowhere else.
-- No support for sparse + non-vendored (`vendor: false`) checkouts. Live `.git` directories that present as "only this subdirectory" are confusing for any user who later wants to `git fetch` from inside the checkout. Sparse is vendor-only.
+- No nested sparse checkout left behind at the destination. Subdir materialization always writes the selected subtree without `.git`; `vendor` only decides whether the destination is tracked or ignored by the outer repo.
 
 ## Background
 
@@ -33,7 +33,7 @@ This works fine for "vendor a small library." It is wasteful for "vendor a singl
     // When set, only this subtree of the repo is materialised at `path`.
     // Must be a relative, forward-slash path inside the repo containing only
     // literal safe path components (no ".", "..", glob characters, control
-    // characters, or backslashes). Requires `vendor: true`.
+    // characters, or backslashes).
     subdir?: string
 })
 ```
@@ -50,7 +50,7 @@ A new `validate_subdir(subdir: &str) -> Result<String>` returns the canonical sl
 - Reject leading or trailing `'/'` and empty components (`a//b`).
 - Reject `.` or `..` components, control characters, and glob meta (`*?[]!#` plus whitespace) — the same rules `validate_path_component` applies to `path`.
 - Reject any component starting with `-` (defence in depth against argument-injection into `git sparse-checkout set`; the call also passes `--` to terminate option parsing).
-- Reject when `vendor: false`.
+- Allow either `vendor` value. With `vendor: false`, the selected subtree is generated content and cuenv adds `path` to `.gitignore`.
 
 At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produces a configuration error before any git operations run.
 
@@ -63,7 +63,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
    - `cuenv_core::manifest::VcsDependency` gains `pub subdir: Option<String>`.
    - `cuenv_core::lockfile::LockedVcsDependency` gains:
      - `pub subdir: Option<String>` — copy of the spec value.
-     - `pub subtree: Option<String>` — git tree hash of `<commit>:<subdir>`, populated only when `subdir` is set.
+   - `pub subtree: Option<String>` — git tree hash of `<commit>:<subdir>`, populated only when `subdir` is set.
      - Both use `#[serde(default, skip_serializing_if = "Option::is_none")]` so existing lockfiles continue to deserialise. Lockfile version stays at the current value (additive change).
    - `locked_matches` extends to compare `subdir` alongside the existing fields.
 
@@ -115,13 +115,13 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
 
 - The `.cuenv-vcs` marker stays at the install root and continues to hold the commit SHA. No format change.
 - `ensure_replaceable_target` is unchanged; vendored-tree-hash verification uses `subtree` when present, otherwise `tree`.
-- `sync_gitignore` continues to use the install `path` — no change.
+- `sync_gitignore` continues to use the install `path`; for non-vendored subdir dependencies the whole materialized subtree is ignored.
 - `prune_removed_vcs_dependencies` is unaffected: pruning operates on the install path, not on which subtree was vendored.
 
 ## Documentation updates
 
 - `docs/design/specs/schema-coverage-matrix.md` — update the VCS row to note `subdir` as `implemented` once the change ships.
-- `.agents/skills/cuenv-tools-lock-vcs/SKILL.md` — add `subdir` to the dependency surface, with a one-line note that it requires `vendor: true`.
+- `.agents/skills/cuenv-tools-lock-vcs/SKILL.md` — add `subdir` to the dependency surface, with a one-line note that `vendor: false` materializes ignored generated content.
 - New how-to: `docs/guides/syncing-agent-skills.md` — show two recipes:
   1. Fetch cuenv's own bundled skills at a pinned release tag.
   2. Fetch a third-party skill pack from its repo.
@@ -132,7 +132,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
 Unit tests in `vcs.rs`, using a local source repo with a known multi-directory tree (extend `create_source_repo` to add a few directories with content):
 
 1. `subdir` extracts only the requested subdirectory; sibling content is absent at `path`.
-2. `subdir` with `vendor: false` is rejected with a clear configuration error.
+2. `subdir` with `vendor: false` materializes the subtree, writes no nested `.git`, and ignores the target path.
 3. Invalid `subdir` values rejected: empty, `..`, leading `/`, glob characters, control characters.
 4. `subdir` referencing a non-existent path at the pinned ref produces a clear "subdir not present at reference" error.
 5. `subdir` referencing a blob (file) rather than a tree is rejected at resolve time.
