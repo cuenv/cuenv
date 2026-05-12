@@ -38,8 +38,9 @@ Cuetty leans on three pre-1.0 building blocks: GPUI from Zed (git pin), `gpui_gh
 
 Two consequences worth knowing:
 
-- **Lockstep pinning.** The `gpui_ghostty_terminal` rev in `Cargo.toml` and the `gpui-ghostty-src` flake input must always point at the same commit. The Nix build symlinks the vendored Ghostty source from that flake input into the Cargo build tree, so a mismatch yields a build that links the wrong Zig artefacts. Bump both together.
+- **Lockstep pinning.** The `ghostty_vt` rev in `crates/gpui_ghostty_terminal/Cargo.toml` and the `gpui-ghostty-src` flake input must always point at the same commit. The Nix build symlinks the vendored Ghostty source from that flake input into the Cargo build tree, so a mismatch yields a build that links the wrong Zig artefacts. Bump both together.
 - **`terminal_responses.rs` is a temporary patch.** Upstream answers DSR and OSC color queries but not Primary or Secondary Device Attributes. Cuetty scans the PTY output stream itself to reply, so shells like fish do not stall on `CSI c` at startup. Delete the module once upstream gains DA support.
+- **`crates/gpui_ghostty_terminal` is a local patch.** Cuetty carries a small app-local copy of the upstream terminal view so native text selection converts GPUI window mouse coordinates into terminal-local coordinates before calculating rows and columns. Drop this copy once upstream includes the coordinate fix.
 
 Output is event-driven: each PTY reader thread pushes byte chunks through a
 `flume` channel that its GPUI task awaits asynchronously, then batches anything

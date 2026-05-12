@@ -1,0 +1,13 @@
+[package]
+name = "gpui_ghostty_terminal"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[dependencies]
+base64 = "0.22"
+ghostty_vt = { git = "https://github.com/Xuanwo/gpui-ghostty", rev = "e3025981c6211dd7db2a825dc364ffb5d342f45e", package = "ghostty_vt" }
+gpui = { git = "https://github.com/zed-industries/zed", package = "gpui" }
+smallvec = { version = "1.15", features = ["const_new"] }
+unicode-width = "0.2"
