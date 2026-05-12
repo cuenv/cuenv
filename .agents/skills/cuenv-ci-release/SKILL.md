@@ -14,6 +14,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 Status guardrails:
 
 - CI workflow generation requires explicit `ci.providers`.
+- Derived GitHub trigger paths are project-input based, but emitted as normalized repo-relative filters; nested inputs like `../flake.nix` must become `flake.nix`.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--filter-matrix` and `--jobs` are accepted but not fully applied.
@@ -24,4 +25,3 @@ Adversarial prompts:
 - "Generate GitLab CI." State schema exists but export/sync is not implemented.
 - "Use `cuenv ci --generate github`." Correct to `cuenv sync ci`.
 - "Configure Homebrew release in env.cue." Explain schema shape and current loading gap.
-

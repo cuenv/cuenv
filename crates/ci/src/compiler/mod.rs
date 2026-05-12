@@ -28,7 +28,7 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -473,19 +473,13 @@ impl Compiler {
 
         let mut paths = HashSet::new();
 
-        // Helper to prefix a path with project_path, handling "." (root) specially
-        // GitHub Actions doesn't handle "./" prefix correctly
-        let prefix_path = |path: &str| -> String {
-            match &self.options.project_path {
-                Some(pp) if pp == "." => path.to_string(),
-                Some(pp) => format!("{pp}/{path}"),
-                None => path.to_string(),
-            }
-        };
-
         // Add task inputs with appropriate prefix
         for input in &task_inputs {
-            paths.insert(prefix_path(input));
+            if let Some(path) =
+                repo_relative_trigger_path(self.options.project_path.as_deref(), input)
+            {
+                paths.insert(path);
+            }
         }
 
         // If no task inputs were collected, use the project directory as fallback
@@ -499,8 +493,16 @@ impl Compiler {
         }
 
         // Add implicit CUE inputs (changes here should always trigger)
-        paths.insert(prefix_path("env.cue"));
-        paths.insert(prefix_path("schema/**"));
+        if let Some(path) =
+            repo_relative_trigger_path(self.options.project_path.as_deref(), "env.cue")
+        {
+            paths.insert(path);
+        }
+        if let Some(path) =
+            repo_relative_trigger_path(self.options.project_path.as_deref(), "schema/**")
+        {
+            paths.insert(path);
+        }
         // cue.mod is always at module root, not prefixed with project_path
         paths.insert("cue.mod/**".to_string());
 
@@ -1589,14 +1591,114 @@ impl Compiler {
     }
 }
 
+/// Convert a project-relative input glob into a repo-relative trigger path.
+///
+/// GitHub Actions path filters compare changed file names as repo-relative
+/// strings. They do not normalize `server/../flake.nix`, so derived trigger
+/// paths must be cleaned before emission.
+fn repo_relative_trigger_path(project_path: Option<&str>, input: &str) -> Option<String> {
+    let mut path = PathBuf::new();
+
+    if let Some(project_path) = project_path.filter(|p| !p.is_empty() && *p != ".")
+        && !push_relative_components(&mut path, Path::new(project_path))
+    {
+        return None;
+    }
+
+    if !push_relative_components(&mut path, Path::new(input)) {
+        return None;
+    }
+
+    let rendered = path
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered)
+    }
+}
+
+fn push_relative_components(path: &mut PathBuf, input: &Path) -> bool {
+    for component in input.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => path.push(part),
+            Component::ParentDir => {
+                if !path.pop() {
+                    return false;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return false,
+        }
+    }
+
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::ci::PipelineMode;
-    use cuenv_core::tasks::{Task, TaskDependency, TaskNode};
+    use cuenv_core::ci::{
+        CI, Pipeline, PipelineCondition, PipelineMode, PipelineTask, StringOrVec, TaskRef,
+    };
+    use cuenv_core::tasks::{Input, Task, TaskDependency, TaskNode};
 
     fn test_compiler() -> Compiler {
         Compiler::new(Project::new("test-project"))
+    }
+
+    fn trigger_paths_for_project(project_path: &str, inputs: &[&str]) -> Vec<String> {
+        let mut project = Project::new("test-project");
+        project.tasks.insert(
+            "build".to_string(),
+            TaskNode::Task(Box::new(Task {
+                command: "cargo".to_string(),
+                args: vec!["build".to_string()],
+                inputs: inputs
+                    .iter()
+                    .map(|input| Input::Path((*input).to_string()))
+                    .collect(),
+                ..Default::default()
+            })),
+        );
+
+        let pipeline = Pipeline {
+            tasks: vec![PipelineTask::Simple(TaskRef::from_name("build"))],
+            when: Some(PipelineCondition {
+                branch: Some(StringOrVec::String("main".to_string())),
+                pull_request: None,
+                tag: None,
+                default_branch: None,
+                scheduled: None,
+                manual: None,
+                release: None,
+            }),
+            ..Default::default()
+        };
+
+        project.ci = Some(CI {
+            pipelines: BTreeMap::from([("default".to_string(), pipeline.clone())]),
+            ..Default::default()
+        });
+
+        let options = CompilerOptions {
+            pipeline_name: Some("default".to_string()),
+            pipeline: Some(pipeline),
+            project_path: Some(project_path.to_string()),
+            ..Default::default()
+        };
+
+        let compiler = Compiler::with_options(project, options);
+        let ir = compiler.compile().unwrap();
+
+        ir.pipeline.trigger.expect("should have trigger").paths
     }
 
     #[test]
@@ -2723,9 +2825,6 @@ mod tests {
     // Path Derivation Tests
     // =========================================================================
 
-    use cuenv_core::ci::{PipelineCondition, PipelineTask, StringOrVec, TaskRef};
-    use cuenv_core::tasks::Input;
-
     #[test]
     fn test_derive_paths_from_task_group() {
         // Create a task group (like "check" with nested tasks "lint", "test", etc.)
@@ -2947,6 +3046,77 @@ mod tests {
             trigger.paths.contains(&"projects/api/env.cue".to_string()),
             "Should contain prefixed env.cue. Paths: {:?}",
             trigger.paths
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_nested_project_normalizes_parent_inputs() {
+        let paths = trigger_paths_for_project(
+            "server",
+            &[
+                "../flake.nix",
+                "../infrastructure/waddle.cloud/gitops/waddle-server/**",
+                "src/**",
+            ],
+        );
+
+        assert!(paths.contains(&"flake.nix".to_string()), "Paths: {paths:?}");
+        assert!(
+            paths.contains(&"infrastructure/waddle.cloud/gitops/waddle-server/**".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"server/src/**".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"server/env.cue".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"server/schema/**".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains("../")),
+            "Paths should not contain parent traversal: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_deep_nested_project_normalizes_parent_inputs() {
+        let paths = trigger_paths_for_project("apps/server", &["../../flake.nix", "../shared/**"]);
+
+        assert!(paths.contains(&"flake.nix".to_string()), "Paths: {paths:?}");
+        assert!(
+            paths.contains(&"apps/shared/**".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.contains(&"apps/server/env.cue".to_string()),
+            "Paths: {paths:?}"
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains("../")),
+            "Paths should not contain parent traversal: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn test_derive_paths_skips_inputs_that_escape_repo_root() {
+        let paths = trigger_paths_for_project("server", &["../../outside/**"]);
+
+        assert!(
+            !paths.iter().any(|path| path.contains("outside")),
+            "Escaping paths should be skipped: {paths:?}"
+        );
+        assert!(
+            paths.iter().all(|path| !path.contains("..")),
+            "Paths should not contain parent traversal: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"server/**".to_string()),
+            "Escaping task input should not trigger project fallback: {paths:?}"
         );
     }
 
