@@ -61,16 +61,15 @@ import "github.com/cuenv/cuenv/schema"
 	}]
 }
 
-// #CuenvGit builds cuenv from git checkout using Nix
-// Requires nix.install to have run first.
+// #CuenvGit builds cuenv from git checkout using Nix.
+// Requires Nix to be available from the runner or an earlier contributor.
 #CuenvGit: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["git"]
 	tasks: [{
-		id:        "cuenv.setup"
-		label:     "Build cuenv"
-		priority:  10
-		dependsOn: ["nix.install"]
+		id:       "cuenv.setup"
+		label:    "Build cuenv"
+		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -138,15 +137,14 @@ import "github.com/cuenv/cuenv/schema"
 }
 
 // #CuenvNix builds cuenv from the checked-out repository flake.
-// Requires nix.install to have run first.
+// Requires Nix to be available from the runner or an earlier contributor.
 #CuenvNix: schema.#Contributor & {
 	id: "cuenv"
 	when: cuenvSource: ["nix"]
 	tasks: [{
-		id:        "cuenv.setup"
-		label:     "Build cuenv (nix)"
-		priority:  10
-		dependsOn: ["nix.install"]
+		id:       "cuenv.setup"
+		label:    "Build cuenv (nix)"
+		priority: 10
 		env: GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 		script: """
 			. /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh

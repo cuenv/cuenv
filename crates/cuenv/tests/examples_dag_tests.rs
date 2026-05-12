@@ -173,7 +173,7 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
-            name: "ci-flakehub-cache",
+            name: "ci-namespace-cache",
             min_task_count: 1, // build
             has_hooks: false,
             has_env: false,

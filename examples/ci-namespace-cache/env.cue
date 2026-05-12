@@ -9,7 +9,7 @@ schema.#Project
 
 let _t = tasks
 
-name: "ci-flakehub-cache"
+name: "ci-namespace-cache"
 
 runtime: schema.#NixRuntime & {
 	flake:  "."
@@ -17,11 +17,10 @@ runtime: schema.#NixRuntime & {
 }
 
 ci: {
-	contributors: [c.#FlakeHubCache]
-	provider: github: flakehubCache: {}
+	contributors: [c.#NamespaceCache]
+	provider: github: namespaceCache: {}
 	pipelines: {
 		build: {
-			provider: github: permissions: "id-token": "write"
 			tasks: [_t.build]
 			when: branch: "main"
 		}
@@ -31,7 +30,7 @@ ci: {
 tasks: {
 	build: schema.#Task & {
 		command: "echo"
-		args: ["Building with Nix and FlakeHub Cache"]
+		args: ["Building with Nix and Namespace cache"]
 		inputs: ["env.cue"]
 	}
 }

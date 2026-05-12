@@ -1222,7 +1222,7 @@ ci: {
     // Provider-specific configuration
     provider: github: {
         runner: "ubuntu-latest"
-        flakehubCache: {}
+        namespaceCache: {}
         cachix: name: "my-cache"
     }
 
