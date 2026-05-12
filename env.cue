@@ -93,6 +93,7 @@ schema.#Project & {
 
 		contributors: [
 			xContributors.#NamespaceCache,
+			xContributors.#Nix,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,

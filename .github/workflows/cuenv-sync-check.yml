@@ -76,6 +76,10 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
