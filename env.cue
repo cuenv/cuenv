@@ -92,7 +92,7 @@ schema.#Project & {
 		providers: ["github"]
 
 		contributors: [
-			xContributors.#FlakeHubCache,
+			xContributors.#NamespaceCache,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
@@ -107,7 +107,7 @@ schema.#Project & {
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
-			flakehubCache: {}
+			namespaceCache: {}
 
 			artifacts: {
 				paths: [".cuenv/reports/"]

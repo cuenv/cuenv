@@ -31,15 +31,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -57,15 +52,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -83,15 +73,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -111,15 +96,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -160,15 +140,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -209,15 +184,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -261,15 +231,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -318,15 +283,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -360,15 +320,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -402,15 +357,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -447,15 +397,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh

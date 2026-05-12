@@ -9,17 +9,23 @@ on:
     paths:
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
+    - Cargo.lock/**
     - Cargo.toml
+    - Cargo.toml/**
     - _tests/**
     - contrib/**
     - crates/**
     - cue.mod/**
     - deny.toml
+    - deny.toml/**
     - env.cue
+    - env.cue/**
     - examples/**
     - features/**
     - flake.lock
+    - flake.lock/**
     - flake.nix
+    - flake.nix/**
     - schema/**
   pull_request:
     branches:
@@ -27,17 +33,23 @@ on:
     paths:
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
+    - Cargo.lock/**
     - Cargo.toml
+    - Cargo.toml/**
     - _tests/**
     - contrib/**
     - crates/**
     - cue.mod/**
     - deny.toml
+    - deny.toml/**
     - env.cue
+    - env.cue/**
     - examples/**
     - features/**
     - flake.lock
+    - flake.lock/**
     - flake.nix
+    - flake.nix/**
     - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -57,15 +69,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -84,15 +91,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.audit
       run: nix build .#checks.x86_64-linux.cuenv-audit -L --accept-flake-config
       working-directory: .
@@ -111,15 +113,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.bdd
       run: nix build .#checks.x86_64-linux.cuenv-bdd -L --accept-flake-config
       working-directory: .
@@ -138,15 +135,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.clippy
       run: nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
       working-directory: .
@@ -165,15 +157,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.cuenv
       run: nix build .#checks.x86_64-linux.cuenv -L --accept-flake-config
       working-directory: .
@@ -192,15 +179,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.deny
       run: nix build .#checks.x86_64-linux.cuenv-deny -L --accept-flake-config
       working-directory: .
@@ -219,15 +201,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.doctest
       run: nix build .#checks.x86_64-linux.cuenv-doctest -L --accept-flake-config
       working-directory: .
@@ -246,15 +223,10 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 2
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
+    - name: Setup Namespace Nix Cache
+      uses: namespacelabs/nscloud-cache-action@v1
       with:
-        extra-conf: accept-flake-config = true
-    - name: Setup FlakeHub Cache
-      uses: DeterminateSystems/flakehub-cache-action@v3
-      with:
-        flakehub-flake-name: ''
-        use-gha-cache: disabled
+        cache: nix
     - name: checks.nextest
       run: nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
       working-directory: .

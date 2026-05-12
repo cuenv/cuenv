@@ -34,10 +34,7 @@ package schema
 		authToken?:  string
 		pushFilter?: string
 	})
-	flakehubCache?: close({
-		flakeName?:   string
-		useGhaCache?: "disabled" | "no-preference" | "enabled" | *"disabled"
-	})
+	namespaceCache?: close({})
 	artifacts?: close({
 		paths?:          [...string]
 		ifNoFilesFound?: "warn" | "error" | "ignore"

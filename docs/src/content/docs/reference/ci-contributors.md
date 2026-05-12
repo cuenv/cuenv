@@ -44,7 +44,7 @@ The cuenv CI compiler uses a **contributor system** to inject platform-specific 
 Project + Pipeline -> Compiler -> Fixed-point iteration -> IR
                                         ^
                                         |
-                          Contributors (Nix, Cuenv, 1Password, Cachix/FlakeHub Cache, GH Models)
+                          Contributors (Nix, Cuenv, 1Password, Cachix/Namespace Cache, GH Models)
 ```
 
 The compiler applies contributors in a loop until no contributor reports modifications (stable state).
@@ -213,19 +213,19 @@ ci: pipelines: [
 
 ---
 
-### FlakeHubCacheContributor
+### NamespaceCacheContributor
 
-Configures FlakeHub Cache for Nix binary caching.
+Configures Namespace nscloud-cache for Nix store caching.
 
-**Activation:** `ci.provider.github.flakehubCache` is configured
+**Activation:** `ci.provider.github.namespaceCache` is configured
 
-**Phase:** Bootstrap (priorities 0 and 9)
+**Phase:** Bootstrap (priority 0)
 
-**Task IDs:** `install-nix`, `setup-flakehub-cache`
+**Task IDs:** `namespaceCache.setup`
 
-**Dependencies:** `setup-flakehub-cache` depends on `install-nix`
+**Dependencies:** none
 
-**Permissions:** GitHub workflows need `id-token: write` and `contents: read`.
+**Requirements:** the selected Namespace runner profile must attach a cache volume and provide Nix. This contributor does not install Nix.
 
 **Configuration Example:**
 
@@ -242,25 +242,18 @@ runtime: schema.#NixFlake & {
 }
 
 ci: {
-    contributors: [contributors.#FlakeHubCache]
-    provider: github: flakehubCache: {
-        // Optional; omit to let the action auto-detect the FlakeHub flake
-        // flakeName: "my-org/my-project"
-
-        // Defaults to "disabled" so only FlakeHub Cache is used
-        useGhaCache: "disabled"
-    }
+    contributors: [contributors.#NamespaceCache]
+    provider: github: namespaceCache: {}
     pipelines: [
         {
             name:  "build"
-            provider: github: permissions: "id-token": "write"
             tasks: ["build"]
         },
     ]
 }
 ```
 
-Use this instead of `#Nix` for workflows that should install Determinate Nix and use FlakeHub Cache. Keep using `#Cachix` when a project is backed by Cachix.
+Use this on Namespace runners that already provide Nix and should persist `/nix` through Namespace cache volumes. Keep using `#Cachix` when a project is backed by Cachix.
 
 ---
 
@@ -364,18 +357,18 @@ ci: contributors: [
     contributors.#Nix,
     contributors.#Cuenv,
     contributors.#Cachix,
-    contributors.#FlakeHubCache,
+    contributors.#NamespaceCache,
 ]
 ```
 
-For release pipelines, use the Nix cache contributor your project is configured for. `#FlakeHubCache` is OIDC-based and disables GitHub Actions cache fallback by default; `#Cachix` remains available for projects backed by Cachix.
+For release pipelines, use the Nix cache contributor your project is configured for. `#NamespaceCache` is for Namespace runner profiles with cache volumes; `#Cachix` remains available for projects backed by Cachix.
 
 **Available Contributors:**
 
 | Set                    | Contributors                                                |
 | ---------------------- | ----------------------------------------------------------- |
 | `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`                            |
-| `#GitHubContributors`  | `#Cachix`, `#FlakeHubCache`, `#GhModels`, `#TrustedPublishing` |
+| `#GitHubContributors`  | `#Cachix`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing` |
 | `#DefaultContributors` | All of the above                                            |
 
 ## Activation Conditions
@@ -397,7 +390,7 @@ Contributors use activation conditions to determine when they should inject task
     secretsProvider?: [...("onepassword" | "aws" | "vault")]
 
     // Active if these provider config paths are set
-    providerConfig?: [...string]  // e.g., ["github.flakehubCache", "github.cachix", "github.trustedPublishing.cratesIo"]
+    providerConfig?: [...string]  // e.g., ["github.namespaceCache", "github.cachix", "github.trustedPublishing.cratesIo"]
 
     // Active if any pipeline task uses these commands
     taskCommand?: [...string]  // e.g., ["gh", "models"]

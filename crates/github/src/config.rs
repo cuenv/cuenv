@@ -19,8 +19,8 @@ pub struct GitHubConfig {
     pub runners: Option<RunnerMapping>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
-    /// FlakeHub Cache configuration for Nix caching
-    pub flakehub_cache: Option<FlakeHubCacheConfig>,
+    /// Namespace nscloud-cache configuration for Nix store caching
+    pub namespace_cache: Option<NamespaceCacheConfig>,
     /// Artifact upload configuration
     pub artifacts: Option<ArtifactsConfig>,
     /// Trusted publishing configuration (OIDC-based, no secrets needed)
@@ -55,15 +55,10 @@ pub struct CachixConfig {
     pub push_filter: Option<String>,
 }
 
-/// FlakeHub Cache configuration.
+/// Namespace nscloud-cache configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct FlakeHubCacheConfig {
-    /// Flake name on FlakeHub. Empty or omitted enables action auto-detection.
-    pub flake_name: Option<String>,
-    /// GitHub Actions cache fallback behavior.
-    pub use_gha_cache: Option<String>,
-}
+pub struct NamespaceCacheConfig {}
 
 /// Artifact upload configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -108,7 +103,7 @@ impl GitHubConfigExt for CI {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
-                flakehub_cache: pipeline.flakehub_cache.clone().or(global.flakehub_cache),
+                namespace_cache: pipeline.namespace_cache.clone().or(global.namespace_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
                     .trusted_publishing
@@ -191,7 +186,7 @@ mod tests {
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
         assert!(config.cachix.is_none());
-        assert!(config.flakehub_cache.is_none());
+        assert!(config.namespace_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
         assert!(config.permissions.is_none());
@@ -211,17 +206,13 @@ mod tests {
     }
 
     #[test]
-    fn test_flakehub_cache_config_serde() {
-        let config = FlakeHubCacheConfig {
-            flake_name: Some("cuenv/cuenv".to_string()),
-            use_gha_cache: Some("disabled".to_string()),
-        };
+    fn test_namespace_cache_config_serde() {
+        let config = NamespaceCacheConfig {};
         let json = serde_json::to_string(&config).unwrap();
-        assert!(json.contains("cuenv/cuenv"));
-        assert!(json.contains("disabled"));
+        assert_eq!(json, "{}");
 
-        let parsed: FlakeHubCacheConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.flake_name, Some("cuenv/cuenv".to_string()));
+        let parsed: NamespaceCacheConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, NamespaceCacheConfig {});
     }
 
     #[test]
