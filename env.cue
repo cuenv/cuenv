@@ -25,6 +25,21 @@ let _checkInputs = list.Concat([
 	["_tests/**", "contrib/**", "features/**", "examples/**", "schema/**", "cue.mod/**", "deny.toml", "env.cue"],
 ])
 
+let _schemaDocsInputs = [
+	"AGENTS.md",
+	"CLAUDE.md",
+	"readme.md",
+	"llms.txt",
+	"env.cue",
+	"schema/**",
+	"docs/design/specs/schema-coverage-matrix.md",
+	"docs/src/content/docs/reference/schema/**",
+	"docs/src/content/docs/agents/**",
+	".agents/skills/**",
+	"prompts/**",
+	"scripts/check-schema-docs.sh",
+]
+
 schema.#Project & {
 	name: "cuenv"
 
@@ -107,7 +122,10 @@ schema.#Project & {
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: [_t.ci."sync-check"]
+				tasks: [
+					_t.ci."sync-check",
+					_t.ci."schema-docs-check",
+				]
 			}
 
 			ci: {
@@ -172,6 +190,12 @@ schema.#Project & {
 				command: "cuenv"
 				args: ["sync", "--check"]
 				inputs: ["env.cue", "schema/**", "contrib/**"]
+			}
+
+			"schema-docs-check": schema.#Task & {
+				command: "bash"
+				args: ["scripts/check-schema-docs.sh"]
+				inputs: _schemaDocsInputs
 			}
 		}
 
@@ -509,6 +533,18 @@ schema.#Project & {
 			"task-gen": schema.#Task & {
 				command: "gh"
 				args: ["models", "eval", "prompts/cuenv-task-generation.prompt.yml"]
+				inputs: _inputs
+			}
+
+			"task-script": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-task-script-generation.prompt.yml"]
+				inputs: _inputs
+			}
+
+			"task-script-embed": schema.#Task & {
+				command: "gh"
+				args: ["models", "eval", "prompts/cuenv-task-script-embed.prompt.yml"]
 				inputs: _inputs
 			}
 

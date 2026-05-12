@@ -143,7 +143,7 @@ cuenv task dev
 cuenv task
 
 # Generate CI workflow (optional)
-cuenv ci --generate github
+cuenv sync ci
 ```
 
 ---
@@ -159,14 +159,14 @@ env: {
     // 1Password
     DB_PASSWORD: schema.#OnePasswordRef & { ref: "op://vault/db/password" }
 
-    // AWS Secrets Manager
-    API_KEY: schema.#AWSSecretRef & { region: "us-west-2", name: "api-key" }
+    // AWS Secrets Manager schema. Runtime resolver support is not registered by default.
+    API_KEY: schema.#AwsSecret & { secretId: "api-key" }
 
-    // HashiCorp Vault
-    STRIPE_KEY: schema.#VaultRef & { path: "secret/stripe", field: "key" }
+    // HashiCorp Vault schema. Runtime resolver support is not registered by default.
+    STRIPE_KEY: schema.#VaultSecret & { path: "stripe", key: "key" }
 
     // Or define your own resolver for any CLI
-    CUSTOM_SECRET: schema.#ExecResolver & {
+    CUSTOM_SECRET: schema.#ExecSecret & {
         command: "my-secret-tool"
         args:    ["fetch", "my-secret"]
     }
@@ -288,8 +288,8 @@ cd ~/projects/myapp
 Generate CI workflows from your CUE configuration. cuenv detects affected projects and runs only what's needed:
 
 ```bash
-# Generate GitHub Actions workflow
-cuenv ci --generate github
+# Generate configured GitHub Actions workflows
+cuenv sync ci
 
 # Run CI locally
 cuenv ci
@@ -348,8 +348,8 @@ Define codegen in your CUE configuration to generate TypeScript configs, Dockerf
 cuenv supports GitHub, GitLab, and Bitbucket for CODEOWNERS and CI integration:
 
 ```bash
-# Sync CODEOWNERS for your platform
-cuenv sync codeowners
+# Sync generated rules for your platform
+cuenv sync
 
 # Works with GitHub, GitLab, or Bitbucket
 # Platform is auto-detected from your repository
@@ -378,7 +378,7 @@ cuenv task -l ci                           # Run all tasks with label "ci"
 ```bash
 # View environment (secrets are redacted)
 cuenv env print
-cuenv env print --output-format json
+cuenv env print --output json
 cuenv env list                             # List available environments
 
 # Shell integration
@@ -392,9 +392,9 @@ cuenv env status                           # Check hook execution status
 ```bash
 # Sync generated files from CUE configuration
 cuenv sync                                 # Sync all
-cuenv sync ignore                          # Generate .gitignore/.dockerignore
-cuenv sync codeowners                      # Sync CODEOWNERS file
 cuenv sync codegen                         # Sync code from CUE codegen
+cuenv sync ci                              # Sync CI workflows
+cuenv sync vcs                             # Sync VCS dependencies
 cuenv sync --check                         # Check if files are in sync
 ```
 
@@ -403,7 +403,7 @@ cuenv sync --check                         # Check if files are in sync
 ```bash
 # CI integration
 cuenv ci                                   # Run CI pipeline
-cuenv ci --generate github                 # Generate GitHub Actions workflow
+cuenv sync ci                              # Generate configured CI workflows
 cuenv ci --dry-run                         # Preview what would run
 
 # Release management
@@ -434,7 +434,7 @@ cuenv tui                                  # Interactive TUI dashboard
 | `--env, -e`       | Environment to use (dev, staging, production) |
 | `-p, --path`      | Directory with CUE files (default: ".")       |
 | `--package`       | CUE package name (default: "cuenv")           |
-| `--output-format` | Output format (json, env, simple)             |
+| `--output`        | Command output format where supported         |
 | `-L, --level`     | Log level (trace, debug, info, warn, error)   |
 
 ---

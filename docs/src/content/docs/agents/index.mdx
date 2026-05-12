@@ -1,0 +1,15 @@
+---
+title: Agent guides
+description: Schema-first workflows for agents working with cuenv
+---
+
+import { CardGrid, Card } from '@astrojs/starlight/components';
+
+Cuenv uses CUE schemas that may be newer than an agent's training data. Agents must ground answers in the checked-out schema, implementation, and schema status matrix.
+
+<CardGrid>
+  <Card title="Schema-first workflow" icon="right-arrow" href="/agents/schema-first/">
+    Start every cuenv answer from `schema/**/*.cue`, then verify implementation status before giving examples.
+  </Card>
+</CardGrid>
+

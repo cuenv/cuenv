@@ -1,0 +1,128 @@
+name: CUE Task Script Embed
+description: Test if LLM uses CUE @embed for repo-local script files when repository structure encourages it
+model: openai/gpt-4.1-mini
+messages:
+  - role: system
+    content: |
+      You are a cuenv configuration assistant. Generate valid CUE for cuenv tasks that execute existing repository script files.
+
+      RULES:
+      1. When the repository has `scripts/`, `bin/`, `ci/`, or many existing `.sh`, `.fish`, or `.nu` files, use CUE file embedding instead of `command`/`args`.
+      2. For embedded scripts, place file-level `@extern(embed)` before the `package` clause.
+      3. Use `script: _ @embed(file=path/to/script,type=text)` directly on the schema.#Task.
+      4. Set `scriptShell` from the script extension or requirement: `.sh` -> `bash` unless specified otherwise, `.fish` -> `fish`, `.nu` -> `nu`.
+      5. Include the embedded script file path in `inputs` so caching and hermetic execution see the file.
+      6. Do not inline the script body, do not use `command: "scripts/..."`, and do not use `command: "bash"` with script path args.
+      7. Output a complete `env.cue` file using `package cuenv`, importing `github.com/cuenv/cuenv/schema`, and wrapping tasks in `schema.#Project`.
+      8. Output only CUE code, with no Markdown fences or explanations.
+
+      Example output format:
+      ```cue
+      @extern(embed)
+
+      package cuenv
+
+      import "github.com/cuenv/cuenv/schema"
+
+      schema.#Project & {
+        name: "example"
+        tasks: {
+          release: schema.#Task & {
+            script: _ @embed(file=scripts/release.sh,type=text)
+            scriptShell: "bash"
+            inputs: ["scripts/release.sh"]
+          }
+        }
+      }
+      ```
+
+      Reference documentation:
+      {{llms_context}}
+  - role: user
+    content: |
+      Generate cuenv CUE for this repository: {{repo_context}}
+
+      Output only the CUE code, no explanations.
+testData:
+  - repo_context: "Project name webapp. The repo has scripts/release.sh and scripts/check.sh. Add a release task that runs the existing scripts/release.sh file with bash."
+    expected: |
+      @extern(embed)
+
+      package cuenv
+
+      import "github.com/cuenv/cuenv/schema"
+
+      schema.#Project & {
+        name: "webapp"
+        tasks: {
+          release: schema.#Task & {
+            script: _ @embed(file=scripts/release.sh,type=text)
+            scriptShell: "bash"
+            inputs: ["scripts/release.sh"]
+          }
+        }
+      }
+  - repo_context: "Project name infra. This repo already has many Nu scripts under scripts/, including scripts/cache-refresh.nu. Add a cache-refresh task backed by that file."
+    expected: |
+      @extern(embed)
+
+      package cuenv
+
+      import "github.com/cuenv/cuenv/schema"
+
+      schema.#Project & {
+        name: "infra"
+        tasks: {
+          "cache-refresh": schema.#Task & {
+            script: _ @embed(file=scripts/cache-refresh.nu,type=text)
+            scriptShell: "nu"
+            inputs: ["scripts/cache-refresh.nu"]
+          }
+        }
+      }
+  - repo_context: "Project name shell-tools. The repo has scripts/deploy.fish and scripts/clean.fish. Add a deploy task that uses the existing fish script."
+    expected: |
+      @extern(embed)
+
+      package cuenv
+
+      import "github.com/cuenv/cuenv/schema"
+
+      schema.#Project & {
+        name: "shell-tools"
+        tasks: {
+          deploy: schema.#Task & {
+            script: _ @embed(file=scripts/deploy.fish,type=text)
+            scriptShell: "fish"
+            inputs: ["scripts/deploy.fish"]
+          }
+        }
+      }
+evaluators:
+  - name: Enables CUE embed
+    string:
+      contains: "@extern(embed)"
+  - name: Emits cuenv package
+    string:
+      contains: "package cuenv"
+  - name: Wraps project schema
+    string:
+      contains: "schema.#Project"
+  - name: Uses embedded script file
+    string:
+      contains: "@embed"
+  - name: Embeds repository script path
+    string:
+      contains: "scripts/"
+  - name: Embeds scripts as text
+    string:
+      contains: "text"
+  - name: Uses script field
+    string:
+      contains: "script:"
+  - name: Uses script shell
+    string:
+      contains: "scriptShell"
+  - name: Tracks script input
+    string:
+      contains: "inputs"

@@ -16,7 +16,7 @@ cuenv exec -e production -- ./deploy.sh
 ```
 
 - Environment variables are validated against CUE constraints
-- Secrets are resolved at runtime from providers (1Password, AWS, GCP, Vault)
+- Secrets are resolved at runtime. Exec and 1Password are implemented; AWS, GCP, and Vault have schema definitions but are not registered by default.
 - Secrets are never written to disk or exported to shell history
 
 ### `cuenv task <name>`
@@ -48,19 +48,55 @@ schema.#Project & {
 
 env: {
     NODE_ENV: "development" | "staging" | "production"
-    API_KEY:  schema.#Secret & { command: "op", args: ["read", "op://vault/api/key"] }
+    API_KEY:  schema.#OnePasswordRef & { ref: "op://vault/api/key" }
 }
 
 tasks: {
-    build: {
+    build: schema.#Task & {
         command: "npm"
         args:    ["run", "build"]
         inputs:  ["src/**/*", "package.json"]
         outputs: ["dist/**/*"]
     }
-    test: {
-        unit:        { command: "npm", args: ["test"] }
-        integration: { command: "npm", args: ["test:e2e"] }
+    test: schema.#TaskGroup & {
+        type: "group"
+        unit:        schema.#Task & { command: "npm", args: ["test"] }
+        integration: schema.#Task & { command: "npm", args: ["test:e2e"] }
+    }
+}
+```
+
+Script tasks use `script` instead of `command`/`args`. Use an inline multiline string for short task-local logic:
+
+```cue
+tasks: {
+    bootstrap: schema.#Task & {
+        script: """
+            npm ci
+            npm run build
+            """
+        scriptShell: "bash"
+    }
+}
+```
+
+If the repository already has `scripts/`, `bin/`, `ci/`, or many `.sh`, `.fish`, or `.nu` files, prefer CUE file embedding instead of calling the script path through `command`/`args`. The file-level `@extern(embed)` attribute must appear before `package`, and the script path should be listed in `inputs`.
+
+```cue
+@extern(embed)
+
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+    tasks: {
+        release: schema.#Task & {
+            script:      _ @embed(file=scripts/release.sh,type=text)
+            scriptShell: "bash"
+            inputs:      ["scripts/release.sh"]
+        }
     }
 }
 ```
@@ -76,26 +112,23 @@ env: {
 }
 ```
 
-### Secrets (always use schema.#Secret)
+### Secrets
 ```cue
 env: {
-    DATABASE_URL: schema.#Secret & {
+    DATABASE_URL: schema.#ExecSecret & {
         command: "op"
         args: ["read", "op://vault/db/url"]
     }
-    API_KEY: schema.#Secret & {
-        command: "aws"
-        args: ["secretsmanager", "get-secret-value", "--secret-id", "api-key"]
-    }
+    API_KEY: schema.#OnePasswordRef & { ref: "op://vault/api/key" }
 }
 ```
 
-Secrets are resolved at runtime by executing the specified command. The `schema.#Secret` type ensures proper handling: never written to disk, redacted from logs, and not exported to shell history.
+Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands and `schema.#OnePasswordRef` for 1Password references. `schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
 
 ## Key Concepts
 
 - **Type Safety**: CUE constraints validate environment variables before execution
-- **Secret Management**: Use `schema.#Secret & { command: "...", args: [...] }` for all secrets
+- **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets and `schema.#OnePasswordRef` for 1Password.
 - **Parallel Execution**: Object keys in task groups run concurrently
 - **Sequential Execution**: Array elements in task groups run in order
 - **Caching**: Tasks with declared inputs/outputs are cached by content hash
@@ -108,6 +141,8 @@ cuenv exec -- <command>     Execute command with validated environment
 cuenv task <name>           Run a named task
 cuenv env print             Show environment variables (secrets redacted)
 cuenv env list              List available environments
+cuenv sync ci               Generate configured CI workflows
+cuenv sync codegen          Sync CUE-defined generated files
 cuenv allow                 Approve configuration for hook execution
 cuenv shell init <shell>    Generate shell integration script
 ```
@@ -116,4 +151,3 @@ cuenv shell init <shell>    Generate shell integration script
 
 - Repository: https://github.com/cuenv/cuenv
 - CUE Language: https://cuelang.org
-

@@ -21,7 +21,7 @@ If the marker is newer than the running CLI, the command exits and asks you to u
 | ------------------- | --------------------------------------------------- | ------- |
 | `--level, -L`       | Set logging level (trace, debug, info, warn, error) | warn    |
 | `--json`            | Emit JSON envelope regardless of format             | false   |
-| `--environment, -e` | Apply environment-specific overrides                | none    |
+| `--env, -e`         | Apply environment-specific overrides                | none    |
 
 :::caution[Breaking Change in 0.16.0]
 The short flag for `--level` changed from `-l` to `-L`. The `-l` short flag is now used for `--label` in task execution. Update any scripts using `cuenv -l debug` to `cuenv -L debug`.
@@ -39,7 +39,7 @@ cuenv version [OPTIONS]
 
 **Options:**
 
-- `--output-format <FORMAT>`: Output format (simple, json, env). Default: simple.
+- `--output <FORMAT>`: Output format (text, json, env). Default: text.
 
 ### `cuenv env`
 
@@ -57,7 +57,7 @@ cuenv env print [OPTIONS]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `--output-format <FORMAT>`: Output format (env, json, simple). Default: `env`
+- `--output <FORMAT>`: Output format (env, json, text). Default: `env`
 
 #### `cuenv env load`
 
@@ -104,7 +104,7 @@ cuenv task [NAME] [OPTIONS] [-- TASK_ARGS...]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-l, --label <LABEL>`: Execute all tasks matching given labels (repeatable, AND semantics).
-- `--output-format <FORMAT>`: Output format when listing tasks (simple, json). Default: `simple`
+- `--output <FORMAT>`: Output format when listing tasks. Defaults to config or TTY auto-detection.
 - `--materialize-outputs <DIR>`: Materialize cached outputs to this directory on cache hit.
 - `--show-cache-path`: Print the cache path for this task key.
 - `--backend <BACKEND>`: Force specific execution backend (`host` or `dagger`).
@@ -372,7 +372,7 @@ cuenv env status [OPTIONS]
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--wait`: Wait for hooks to complete before returning.
 - `--timeout <SECONDS>`: Timeout in seconds for waiting. Default: `300`
-- `--output-format <FORMAT>`: Output format (text, short, starship). Default: `text`
+- `--output <FORMAT>`: Output format (text, short, starship). Default: `text`
 
 #### `cuenv env inspect`
 
@@ -399,7 +399,7 @@ cuenv env list [OPTIONS]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `--output-format <FORMAT>`: Output format (simple, json). Default: `simple`
+- `--output <FORMAT>`: Output format (text, json, env). Default: `text`
 
 ### `cuenv ci`
 
@@ -413,11 +413,12 @@ cuenv ci [OPTIONS]
 
 - `--dry-run`: Show what would be executed without running it.
 - `--pipeline <NAME>`: Force a specific pipeline to run.
-- `--generate <PROVIDER>`: Generate static CI workflow files (e.g., `github`, `buildkite`).
-- `--format <FORMAT>`: Output dynamic pipeline in specified format (`buildkite`, `github`).
+- `--export <FORMAT>`: Export pipeline YAML instead of running (`buildkite`, `gitlab`, `github-actions`, `circleci`).
+- `--output <PATH>`: Write exported YAML to a file instead of stdout.
+- `--filter-matrix <KEY=VALUE>`: Filter matrix dimensions. Accepted by the CLI; execution support is partial.
+- `--jobs <N>`: Maximum parallel tasks. Accepted by the CLI; execution support is partial.
 - `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
-- `--force`: Overwrite existing workflow files when generating.
-- `--check`: Check if CI workflows are in sync without writing files.
+- `--environment, -e <NAME>`: Environment for secrets resolution.
 
 **Example:**
 
@@ -428,17 +429,14 @@ cuenv ci
 # See what would run without executing
 cuenv ci --dry-run
 
-# Generate GitHub Actions workflow files
-cuenv ci --format github
+# Generate configured workflow files
+cuenv sync ci
 
 # Check if workflows are in sync (useful for CI validation)
-cuenv ci --format github --check
-
-# Generate static Buildkite bootstrap pipeline
-cuenv ci --generate buildkite
+cuenv sync ci --check
 
 # Output dynamic Buildkite pipeline (pipe to buildkite-agent)
-cuenv ci --format buildkite | buildkite-agent pipeline upload
+cuenv ci --export buildkite | buildkite-agent pipeline upload
 
 # Compare against a specific base ref
 cuenv ci --from main

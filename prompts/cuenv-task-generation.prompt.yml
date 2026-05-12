@@ -1,13 +1,44 @@
 name: CUE Task Generation
 description: Test if LLM can generate valid cuenv task definitions from llms.txt context
-model: openai/gpt-5
-modelParameters:
-  temperature: 0.3
-  max_tokens: 512
+model: openai/gpt-4.1-mini
 messages:
   - role: system
     content: |
       You are a cuenv configuration assistant. Generate valid CUE task definitions based on the user's requirements.
+      Prefer explicit schema types:
+      - Use schema.#Task for a single executable task.
+      - Use schema.#TaskGroup & { type: "group", ... } for parallel named tasks.
+      - Use schema.#TaskSequence & [ ... ] for ordered tasks.
+      - Use CUE task references in dependsOn when referring to tasks in the same config.
+      Hard output rules:
+      - Assume `schema` is already imported; do not emit package declarations, imports, or a `tasks:` wrapper.
+      - For ordinary process execution, every executable schema.#Task must use top-level `command: "..."` and `args: [...]` fields.
+      - If the user asks for inline shell logic or a multi-line script, use top-level `script: """..."""` with `scriptShell`, and do not include `command` or `args`.
+      - If repo context mentions an existing `scripts/`, `bin/`, `ci/`, or task-script directory, or many existing `.sh`, `.fish`, or `.nu` scripts, prefer CUE file embedding: add file-level `@extern(embed)`, use `script: _ @embed(file=path/to/script,type=text)`, set `scriptShell`, and include that script path in `inputs`.
+      - Never use `exec`, `cmd`, `run`, or `name` as substitutes for `command` or `script`.
+      - Return complete CUE with balanced quotes, braces, and brackets.
+      - For task groups, put named schema.#Task children directly inside the group.
+      - For task sequences, put schema.#Task items directly in the list.
+
+      Examples:
+
+      Parallel npm checks:
+      ```cue
+      test: schema.#TaskGroup & {
+        type: "group"
+        unit: schema.#Task & { command: "npm", args: ["test"] }
+        lint: schema.#Task & { command: "npm", args: ["run", "lint"] }
+      }
+      ```
+
+      Ordered Docker deployment:
+      ```cue
+      deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "docker", args: ["build", "-t", "app", "."] }
+        schema.#Task & { command: "docker", args: ["push", "app"] }
+      ]
+      ```
+
       Use the following cuenv documentation as your reference:
 
       {{llms_context}}
@@ -19,22 +50,39 @@ messages:
 testData:
   - task_description: "Run npm tests in parallel with linting"
     expected: |
-      test: {
-        unit: { command: "npm", args: ["test"] }
-        lint: { command: "npm", args: ["run", "lint"] }
+      test: schema.#TaskGroup & {
+        type: "group"
+        unit: schema.#Task & { command: "npm", args: ["test"] }
+        lint: schema.#Task & { command: "npm", args: ["run", "lint"] }
       }
   - task_description: "Sequential Docker build and push"
     expected: |
-      deploy: [
-        { command: "docker", args: ["build", "-t", "app", "."] }
-        { command: "docker", args: ["push", "app"] }
+      deploy: schema.#TaskSequence & [
+        schema.#Task & { command: "docker", args: ["build", "-t", "app", "."] }
+        schema.#Task & { command: "docker", args: ["push", "app"] }
       ]
   - task_description: "Build task that depends on test completing first"
     expected: |
-      build: {
+      test: schema.#Task & {
+        command: "npm"
+        args: ["test"]
+      }
+      build: schema.#Task & {
         command: "npm"
         args: ["run", "build"]
-        dependsOn: ["test"]
+        dependsOn: [test]
+      }
+  - task_description: "Create a cached build task that captures the preview URL from stdout"
+    expected: |
+      build: schema.#Task & {
+        command: "npm"
+        args: ["run", "build"]
+        inputs: ["src/**", "package.json"]
+        outputs: ["dist/**"]
+        cache: { mode: "read-write" }
+        captures: previewUrl: schema.#TaskCapture & {
+          pattern: "Preview: (https://[^ ]+)"
+        }
       }
 evaluators:
   - name: Similarity to expected
@@ -45,3 +93,6 @@ evaluators:
   - name: Valid task structure
     string:
       contains: "args"
+  - name: Uses schema task types
+    string:
+      contains: "schema.#Task"
