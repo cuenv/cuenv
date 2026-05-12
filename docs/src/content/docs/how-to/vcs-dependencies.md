@@ -76,7 +76,7 @@ vcs: "cuenv-skills": {
 Requirements and behavior:
 
 - `subdir` requires `vendor: true`. Non-vendored sparse checkouts are not supported.
-- The path must be repo-relative, forward-slash separated, and contain no `.`, `..`, or glob characters.
+- The path must be repo-relative, forward-slash separated, in canonical form (no leading/trailing whitespace, no leading/trailing slashes, no `a//b`), and contain no `.`, `..`, glob characters, or path components beginning with `-`.
 - The lockfile records both the resolved commit and the subtree hash, so re-syncs are deterministic and `cuenv sync vcs --check` detects tampering of the vendored content.
 - Requires git ≥ 2.27 (cone-mode sparse-checkout).
 

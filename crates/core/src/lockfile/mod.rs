@@ -596,7 +596,7 @@ impl LockedVcsDependency {
                 if subdir.trim().is_empty() {
                     return Err("subdir must not be empty".to_string());
                 }
-                validate_locked_vcs_path(subdir)?;
+                validate_locked_vcs_subdir(subdir)?;
                 if !is_git_object_id(subtree) {
                     return Err("subtree must be a hexadecimal Git object ID".to_string());
                 }
@@ -615,6 +615,32 @@ fn is_git_object_id(value: &str) -> bool {
 }
 
 fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
+    let components = parse_locked_relative_components(path)?;
+    if components.iter().any(|component| component == ".git")
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "cache".to_string()])
+        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "tmp".to_string()])
+    {
+        return Err("path targets cuenv or git internals".to_string());
+    }
+    Ok(())
+}
+
+/// Validate a sparse-checkout subdir as recorded in the lockfile.
+///
+/// Like [`validate_locked_vcs_path`] but without the local-disk reserved-path
+/// checks: `subdir` is a path *inside the remote repository*, so a remote repo
+/// that happens to contain `.cuenv/...` is a legitimate target. We still
+/// reject `.git` components, since git itself does not allow them as tracked
+/// directories.
+fn validate_locked_vcs_subdir(subdir: &str) -> Result<(), String> {
+    let components = parse_locked_relative_components(subdir)?;
+    if components.iter().any(|component| component == ".git") {
+        return Err("subdir must not contain a '.git' component".to_string());
+    }
+    Ok(())
+}
+
+fn parse_locked_relative_components(path: &str) -> Result<Vec<String>, String> {
     let rel = Path::new(path);
     if rel.is_absolute() || path.trim().is_empty() {
         return Err("path must be relative".to_string());
@@ -628,6 +654,7 @@ fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
         if value.is_empty()
             || value == "."
             || value == ".."
+            || value.starts_with('-')
             || value.contains('\\')
             || value.chars().any(|c| {
                 c.is_control()
@@ -644,13 +671,7 @@ fn validate_locked_vcs_path(path: &str) -> Result<(), String> {
     if components.is_empty() {
         return Err("path must not target the repository root".to_string());
     }
-    if components.iter().any(|component| component == ".git")
-        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "cache".to_string()])
-        || components.starts_with(&[".cuenv".to_string(), "vcs".to_string(), "tmp".to_string()])
-    {
-        return Err("path targets cuenv or git internals".to_string());
-    }
-    Ok(())
+    Ok(components)
 }
 
 fn lockfile_parent_for_sync(path: &Path) -> &Path {
@@ -1110,6 +1131,26 @@ path = "vendor/legacy"
         assert!(validate_locked_vcs_path(".cuenv/vcs/cache/lib").is_err());
         assert!(validate_locked_vcs_path(".cuenv/vcs/tmp/lib").is_err());
         assert!(validate_locked_vcs_path("vendor/lib").is_ok());
+    }
+
+    #[test]
+    fn test_vcs_subdir_allows_dotcuenv_paths_but_rejects_dotgit() {
+        // subdir is a path *inside the remote repo*, so .cuenv/... is allowed —
+        // only local-disk materialization paths reserve those prefixes.
+        assert!(validate_locked_vcs_subdir(".cuenv/vcs/cache").is_ok());
+        assert!(validate_locked_vcs_subdir(".cuenv/some/skill").is_ok());
+        assert!(validate_locked_vcs_subdir(".agents/skills").is_ok());
+
+        // .git inside a tree is still impossible under git's own rules.
+        assert!(validate_locked_vcs_subdir(".git").is_err());
+        assert!(validate_locked_vcs_subdir("nested/.git").is_err());
+
+        // Component-safety rules still apply.
+        assert!(validate_locked_vcs_subdir("--stdin").is_err());
+        assert!(validate_locked_vcs_subdir("nested/-evil").is_err());
+        assert!(validate_locked_vcs_subdir("a\\b").is_err());
+        assert!(validate_locked_vcs_subdir("..").is_err());
+        assert!(validate_locked_vcs_subdir("").is_err());
     }
 
     #[test]

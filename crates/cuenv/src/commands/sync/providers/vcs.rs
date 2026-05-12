@@ -578,6 +578,7 @@ fn validate_path_component(component: &str, original_path: &str) -> Result<()> {
     if component.is_empty()
         || component == "."
         || component == ".."
+        || component.starts_with('-')
         || component.contains('\\')
         || component.chars().any(|c| {
             c.is_control()
@@ -595,39 +596,52 @@ fn validate_path_component(component: &str, original_path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate a sparse-checkout `subdir`. Returns the slash-joined relative path
-/// to use with `git sparse-checkout set` and `git cat-file/rev-parse`.
+/// Validate a sparse-checkout `subdir`. Returns the canonical slash-joined
+/// relative path to use with `git sparse-checkout set` and `git cat-file/rev-parse`.
+///
+/// The input is required to be in canonical form: forward-slash separated, no
+/// leading/trailing whitespace, no leading/trailing slashes, no empty
+/// components. Non-canonical inputs are rejected so the value can be compared
+/// to the lockfile entry by string equality without re-canonicalizing.
 fn validate_subdir(subdir: &str) -> Result<String> {
-    let trimmed = subdir.trim();
-    if trimmed.is_empty() {
+    if subdir.is_empty() {
         return Err(Error::configuration(
             "Invalid VCS dependency subdir: must not be empty",
         ));
     }
-    let rel = Path::new(trimmed);
-    if rel.is_absolute() {
+    if subdir.trim() != subdir {
         return Err(Error::configuration(format!(
-            "Invalid VCS dependency subdir '{}': must be a relative path",
+            "Invalid VCS dependency subdir '{}': must not have leading or trailing whitespace",
             subdir
         )));
     }
-    let mut components = Vec::new();
-    for component in rel.components() {
-        let Component::Normal(value) = component else {
+    if subdir.contains('\\') {
+        return Err(Error::configuration(format!(
+            "Invalid VCS dependency subdir '{}': must use forward-slash separators",
+            subdir
+        )));
+    }
+    if subdir.starts_with('/') || subdir.ends_with('/') {
+        return Err(Error::configuration(format!(
+            "Invalid VCS dependency subdir '{}': must not start or end with '/'",
+            subdir
+        )));
+    }
+    let components: Vec<&str> = subdir.split('/').collect();
+    for component in &components {
+        if component.is_empty() {
             return Err(Error::configuration(format!(
-                "Invalid VCS dependency subdir '{}': must not contain '.', '..', or prefixes",
+                "Invalid VCS dependency subdir '{}': must not contain empty components",
                 subdir
             )));
-        };
-        let value = value.to_string_lossy();
-        validate_path_component(&value, subdir)?;
-        components.push(value.into_owned());
-    }
-    if components.is_empty() {
-        return Err(Error::configuration(format!(
-            "Invalid VCS dependency subdir '{}': must not target the repository root",
-            subdir
-        )));
+        }
+        if *component == "." || *component == ".." {
+            return Err(Error::configuration(format!(
+                "Invalid VCS dependency subdir '{}': must not contain '.' or '..'",
+                subdir
+            )));
+        }
+        validate_path_component(component, subdir)?;
     }
     Ok(components.join("/"))
 }
@@ -924,6 +938,7 @@ fn prepare_subdir_dependency(
         [
             OsStr::new("sparse-checkout"),
             OsStr::new("set"),
+            OsStr::new("--"),
             OsStr::new(subdir),
         ],
         Some(clone_path),
@@ -2165,13 +2180,30 @@ mod tests {
 
     #[test]
     fn subdir_invalid_values_rejected() {
-        for bad in ["", "..", "./skills", "/abs", "a/../b", "glob*"] {
+        for bad in [
+            "",
+            "..",
+            "./skills",
+            "/abs",
+            "a/../b",
+            "glob*",
+            " .agents/skills",
+            ".agents/skills ",
+            ".agents//skills",
+            ".agents/skills/",
+            "/.agents/skills",
+            "a\\b",
+            "--stdin",
+            "-rf",
+            ".agents/-evil",
+        ] {
             assert!(
                 validate_subdir(bad).is_err(),
                 "expected '{bad}' to be rejected"
             );
         }
         assert!(validate_subdir(".agents/skills").is_ok());
+        assert_eq!(validate_subdir(".agents/skills").unwrap(), ".agents/skills");
     }
 
     #[test]

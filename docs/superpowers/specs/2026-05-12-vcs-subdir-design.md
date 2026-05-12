@@ -42,11 +42,14 @@ The CUE-side validation is intentionally lax (just a regex would be the right ti
 
 ## Validation rules (Rust)
 
-A new `validate_subdir(subdir: &str) -> Result<Vec<String>>` mirrors `validate_materialization_path`:
+A new `validate_subdir(subdir: &str) -> Result<String>` returns the canonical slash-joined form (which must equal the input):
 
 - Reject empty (use omission instead).
-- Reject absolute paths.
-- Reject `.` or `..` components, `\\`, control characters, and glob meta (`*?[]!#` plus whitespace) — the same rules `validate_path_component` already applies to `path`.
+- Reject any leading or trailing whitespace — the input must be exactly canonical, not "canonicalizable", so `locked.subdir == spec.subdir` is a sound string comparison without re-running the validator.
+- Reject backslashes in the raw input (do not rely on `Path::components()`, which treats `\` as a separator on Windows). Splitting is done on `'/'` explicitly.
+- Reject leading or trailing `'/'` and empty components (`a//b`).
+- Reject `.` or `..` components, control characters, and glob meta (`*?[]!#` plus whitespace) — the same rules `validate_path_component` applies to `path`.
+- Reject any component starting with `-` (defence in depth against argument-injection into `git sparse-checkout set`; the call also passes `--` to terminate option parsing).
 - Reject when `vendor: false`.
 
 At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produces a configuration error before any git operations run.
@@ -82,7 +85,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
      ```
      git clone --filter=blob:none --no-checkout <url> <tmp>
      git -C <tmp> sparse-checkout init --cone
-     git -C <tmp> sparse-checkout set <subdir>
+     git -C <tmp> sparse-checkout set -- <subdir>
      git -C <tmp> fetch origin <commit>
      git -C <tmp> checkout --detach <commit>
      ```
