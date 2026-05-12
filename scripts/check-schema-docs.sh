@@ -43,7 +43,7 @@ if [[ -f "$matrix" ]]; then
 		' "$matrix"; then
 			record_failure "missing schema coverage row for $file $def"
 		fi
-	done < <(rg -n '^#[A-Za-z0-9_]+' schema)
+	done < <(grep -rEn '^#[A-Za-z0-9_]+' schema)
 
 	awk -F'|' '
 		function clean(value) {
@@ -95,21 +95,21 @@ for skill in "${required_skills[@]}"; do
 		record_failure "missing $skill_file"
 		continue
 	fi
-	if ! rg -q "^name: $skill$" "$skill_file"; then
+	if ! grep -q "^name: $skill\$" "$skill_file"; then
 		record_failure "$skill_file has missing or wrong name frontmatter"
 	fi
-	if ! rg -q '^description: .+' "$skill_file"; then
+	if ! grep -qE '^description: .+' "$skill_file"; then
 		record_failure "$skill_file is missing description frontmatter"
 	fi
-	if ! rg -q 'schema-coverage-matrix' "$skill_file"; then
+	if ! grep -q 'schema-coverage-matrix' "$skill_file"; then
 		record_failure "$skill_file does not point agents at the schema coverage matrix"
 	fi
-	if ! rg -q 'schema/' "$skill_file"; then
+	if ! grep -q 'schema/' "$skill_file"; then
 		record_failure "$skill_file does not name its schema ownership"
 	fi
 done
 
-if ! rg -q 'cuenv task ci\.schema-docs-check' AGENTS.md CLAUDE.md; then
+if ! grep -q 'cuenv task ci\.schema-docs-check' AGENTS.md CLAUDE.md; then
 	record_failure "AGENTS.md or CLAUDE.md must require cuenv task ci.schema-docs-check"
 fi
 
@@ -133,7 +133,7 @@ stale_patterns=(
 )
 
 for pattern in "${stale_patterns[@]}"; do
-	if rg -n -- "$pattern" "${stale_scope[@]}" >/tmp/cuenv-schema-docs-rg.out 2>/dev/null; then
+	if grep -rn -- "$pattern" "${stale_scope[@]}" >/tmp/cuenv-schema-docs-rg.out 2>/dev/null; then
 		cat /tmp/cuenv-schema-docs-rg.out >&2
 		record_failure "stale schema or command pattern matched: $pattern"
 	fi
