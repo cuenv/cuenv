@@ -106,6 +106,7 @@ pub struct TerminalProcess {
     pub stdin_tx: Sender<Vec<u8>>,
     pub stdout_rx: Receiver<Vec<u8>>,
     pub master: Arc<dyn MasterPty + Send>,
+    pub exited_rx: Receiver<()>,
 }
 
 impl TerminalProcess {
@@ -116,15 +117,19 @@ impl TerminalProcess {
             .context("failed to open PTY")?;
         let master: Arc<dyn MasterPty + Send> = Arc::from(pty_pair.master);
 
+        tracing::info!(shell = %options.shell.display(), "spawning shell");
+
         let mut child = pty_pair
             .slave
             .spawn_command(build_command(&options))
-            .with_context(|| format!("failed to spawn login shell {}", options.shell.display()))?;
+            .with_context(|| format!("failed to spawn shell {}", options.shell.display()))?;
 
+        let (exited_tx, exited_rx) = flume::bounded::<()>(1);
         spawn_named_thread("cuetty-child-wait", move || {
             if let Err(error) = child.wait() {
                 tracing::debug!(%error, "terminal child wait failed");
             }
+            let _ = exited_tx.send(());
         })?;
 
         let mut pty_reader = master
@@ -167,6 +172,7 @@ impl TerminalProcess {
             stdin_tx,
             stdout_rx,
             master,
+            exited_rx,
         })
     }
 }
@@ -185,7 +191,6 @@ pub fn shell_path_from_env(shell: Option<OsString>) -> PathBuf {
 
 fn build_command(options: &TerminalProcessOptions) -> CommandBuilder {
     let mut command = CommandBuilder::new(options.shell.clone());
-    command.arg("-l");
     for (key, value) in options.environment.as_pairs() {
         command.env(key, value);
     }
