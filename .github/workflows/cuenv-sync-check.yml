@@ -7,20 +7,40 @@ on:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-sync-check.yml
+    - AGENTS.md
+    - CLAUDE.md
     - contrib/**
     - cue.mod/**
+    - docs/design/specs/schema-coverage-matrix.md
+    - docs/src/content/docs/agents/**
+    - docs/src/content/docs/reference/schema/**
     - env.cue
+    - llms.txt
+    - prompts/**
+    - readme.md
     - schema/**
+    - scripts/check-schema-docs.sh
   pull_request:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-sync-check.yml
+    - AGENTS.md
+    - CLAUDE.md
     - contrib/**
     - cue.mod/**
+    - docs/design/specs/schema-coverage-matrix.md
+    - docs/src/content/docs/agents/**
+    - docs/src/content/docs/reference/schema/**
     - env.cue
+    - llms.txt
+    - prompts/**
+    - readme.md
     - schema/**
+    - scripts/check-schema-docs.sh
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true

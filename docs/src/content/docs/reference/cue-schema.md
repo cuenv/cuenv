@@ -277,6 +277,29 @@ tasks: {
 }
 ```
 
+Use inline `script` for short task-local logic. When a repository already keeps task logic in files such as `scripts/release.sh`, `scripts/deploy.fish`, or `scripts/cache-refresh.nu`, prefer CUE file embedding so cuenv receives the script body through the `script` field while caching and hermetic execution still track the script file as an input.
+
+```cue
+@extern(embed)
+
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+    tasks: {
+        release: schema.#Task & {
+            script:      _ @embed(file=scripts/release.sh,type=text)
+            scriptShell: "bash"
+            inputs:      ["scripts/release.sh"]
+        }
+    }
+}
+```
+
+`@extern(embed)` is a file-level CUE attribute and must appear before the `package` clause. Use `type=text` for shell and scripting language files whose extension is not decoded as structured data.
+
 **Fields:**
 
 | Field            | Type                                              | Required | Description                              |

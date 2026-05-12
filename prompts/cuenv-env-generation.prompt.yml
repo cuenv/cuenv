@@ -1,20 +1,26 @@
 name: Environment Configuration
 description: Test if LLM can generate valid cuenv env definitions with secrets
-model: openai/gpt-5
+model: openai/gpt-4.1-mini
 messages:
   - role: system
     content: |
       You are a cuenv configuration assistant. Generate valid CUE environment definitions.
 
       RULES:
-      1. Always wrap environment variables in an `env:` block
-      2. For secrets, use: schema.#Secret & { command: "op", args: ["read", "op://vault/path"] }
+      1. Always wrap environment variables in an `env: schema.#Env & { ... }` block
+      2. For command-backed secrets, use: schema.#ExecSecret & { command: "op", args: ["read", "op://vault/path"] }
+      3. For 1Password references, use: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
+      4. For host environment passthrough, use: schema.#EnvPassthrough & { name: "HOST_VAR" }
+      5. Do not invent legacy provider type names. The current cloud secret schema names are schema.#AwsSecret, schema.#GcpSecret, and schema.#VaultSecret, and their runtime resolvers are not registered by default.
+      6. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
+      7. Output only CUE code, with no Markdown fences or explanations.
 
       Example output format:
       ```cue
-      env: {
+      env: schema.#Env & {
           VAR_NAME: "value" | "other"
-          SECRET_VAR: schema.#Secret & { command: "op", args: ["read", "op://vault/secret"] }
+          SECRET_VAR: schema.#ExecSecret & { command: "op", args: ["read", "op://vault/secret"] }
+          OP_SECRET: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
       }
       ```
 
@@ -26,27 +32,31 @@ messages:
 
       Output only the CUE code, no explanations.
 testData:
-  - requirements: "Node.js app with DATABASE_URL secret resolved via command"
+  - requirements: "Node.js app with NODE_ENV constrained to development or production, and DATABASE_URL secret resolved with `op read op://vault/db/url`"
     expected: |
-      env: {
+      env: schema.#Env & {
         NODE_ENV: "development" | "production"
-        DATABASE_URL: schema.#Secret & {
+        DATABASE_URL: schema.#ExecSecret & {
           command: "op"
           args: ["read", "op://vault/db/url"]
         }
       }
   - requirements: "API service with PORT constraint between 1024-65535 and required API_KEY secret"
     expected: |
-      env: {
+      env: schema.#Env & {
         PORT: >1024 & <65536
-        API_KEY: schema.#Secret & {
-          command: "op"
-          args: ["read", "op://vault/api/key"]
+        API_KEY: schema.#OnePasswordRef & { ref: "op://vault/api/key" }
+      }
+  - requirements: "App that passes through host variable GITHUB_REF_NAME as RELEASE_TAG"
+    expected: |
+      env: schema.#Env & {
+        RELEASE_TAG: schema.#EnvPassthrough & {
+          name: "GITHUB_REF_NAME"
         }
       }
   - requirements: "Simple app with LOG_LEVEL that must be debug, info, warn, or error"
     expected: |
-      env: {
+      env: schema.#Env & {
         LOG_LEVEL: "debug" | "info" | "warn" | "error"
       }
 evaluators:

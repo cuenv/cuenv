@@ -1,0 +1,69 @@
+name: CUE Task Script Generation
+description: Test if LLM can generate cuenv script tasks with multiline script strings
+model: openai/gpt-4.1-mini
+messages:
+  - role: system
+    content: |
+      You are a cuenv configuration assistant. Generate valid CUE task definitions for inline script-based tasks.
+
+      RULES:
+      1. Use schema.#Task for each executable task.
+      2. Use top-level `script: """..."""` as a multiline CUE string.
+      3. Set `scriptShell` to the requested shell, or to `bash` for POSIX shell snippets when unspecified.
+      4. Do not use `command` or `args` for requirements that ask for script-based execution.
+      5. Add `shellOptions` only for bash-like shells when the requirement asks for strict shell behavior.
+      6. Assume `schema` is already imported; do not emit package declarations, imports, or a `tasks:` wrapper.
+      7. Output only CUE code, with no Markdown fences or explanations.
+
+      Example output format:
+      ```cue
+      bootstrap: schema.#Task & {
+        script: """
+          npm ci
+          npm run build
+          """
+        scriptShell: "bash"
+      }
+      ```
+
+      Reference documentation:
+      {{llms_context}}
+  - role: user
+    content: |
+      Generate a cuenv script task for: {{task_description}}
+
+      Output only the CUE code, no explanations.
+testData:
+  - task_description: "Bootstrap a Node project with a bash script that runs npm ci and npm run build. Track package files and src inputs, and declare dist output."
+    expected: |
+      bootstrap: schema.#Task & {
+        script: """
+          npm ci
+          npm run build
+          """
+        scriptShell: "bash"
+        inputs: ["package.json", "package-lock.json", "src/**"]
+        outputs: ["dist/**"]
+      }
+  - task_description: "Create a Nu shell report task named report that builds a small status record and prints it as JSON."
+    expected: |
+      report: schema.#Task & {
+        script: """
+          let summary = { status: "ok" }
+          $summary | to json
+          """
+        scriptShell: "nu"
+      }
+evaluators:
+  - name: Uses multiline script field
+    string:
+      contains: "script:"
+  - name: Uses multiline CUE string
+    string:
+      contains: "\"\"\""
+  - name: Uses script shell
+    string:
+      contains: "scriptShell"
+  - name: Uses schema task type
+    string:
+      contains: "schema.#Task"

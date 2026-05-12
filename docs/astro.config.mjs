@@ -56,8 +56,16 @@ export default defineConfig({
 						{ label: 'Reference', slug: 'reference' },
 						{ label: 'CLI', slug: 'reference/cli' },
 						{ label: 'CUE schema', slug: 'reference/cue-schema' },
+						{ label: 'Schema status', slug: 'reference/schema/status' },
 						{ label: 'Rust API', slug: 'reference/rust-api' },
 						{ label: 'Examples', slug: 'reference/examples' },
+					],
+				},
+				{
+					label: 'Agents',
+					items: [
+						{ label: 'Agent guides', slug: 'agents' },
+						{ label: 'Schema-first workflow', slug: 'agents/schema-first' },
 					],
 				},
 				{
