@@ -86,6 +86,7 @@ impl CliRenderer {
                 name,
                 command,
                 hermetic,
+                ..
             } => {
                 let hermetic_indicator = if *hermetic { " (hermetic)" } else { "" };
                 eprintln!("> [{name}] {command}{hermetic_indicator}");
@@ -93,10 +94,35 @@ impl CliRenderer {
             TaskEvent::CacheHit { name, .. } => {
                 eprintln!("> [{name}] (cached)");
             }
-            TaskEvent::CacheMiss { name } => {
+            TaskEvent::CacheMiss { name, .. } => {
                 if self.config.verbose {
                     eprintln!("> [{name}] cache miss, executing...");
                 }
+            }
+            TaskEvent::CacheSkipped { name, reason, .. } => {
+                if self.config.verbose {
+                    eprintln!("> [{name}] cache skipped: {reason}");
+                }
+            }
+            TaskEvent::Queued {
+                name,
+                queue_position,
+                ..
+            } => {
+                if self.config.verbose {
+                    eprintln!("> [{name}] queued (position {queue_position})");
+                }
+            }
+            TaskEvent::Skipped { name, reason, .. } => {
+                eprintln!("> [{name}] skipped ({reason})");
+            }
+            TaskEvent::Retrying {
+                name,
+                attempt,
+                max_attempts,
+                ..
+            } => {
+                eprintln!("> [{name}] retrying (attempt {attempt}/{max_attempts})");
             }
             TaskEvent::Output {
                 stream, content, ..
@@ -123,6 +149,7 @@ impl CliRenderer {
                 name,
                 sequential,
                 task_count,
+                ..
             } => {
                 let mode = if *sequential {
                     "sequential"
@@ -135,10 +162,16 @@ impl CliRenderer {
                 name,
                 success,
                 duration_ms,
+                succeeded,
+                failed,
+                skipped,
+                ..
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    eprintln!("> Group {name} {status} in {duration_ms}ms");
+                    eprintln!(
+                        "> Group {name} {status} in {duration_ms}ms ({succeeded} ok, {failed} failed, {skipped} skipped)"
+                    );
                 }
             }
         }
@@ -398,6 +431,8 @@ mod tests {
             name: "test-task".to_string(),
             command: "echo hello".to_string(),
             hermetic: false,
+            parent_group: None,
+            task_kind: crate::event::TaskKind::Task,
         }));
         renderer.render(&event);
     }
@@ -409,6 +444,8 @@ mod tests {
             name: "test-task".to_string(),
             command: "echo hello".to_string(),
             hermetic: true,
+            parent_group: None,
+            task_kind: crate::event::TaskKind::Task,
         }));
         renderer.render(&event);
     }
@@ -419,6 +456,7 @@ mod tests {
         let event = make_event(EventCategory::Task(TaskEvent::CacheHit {
             name: "cached-task".to_string(),
             cache_key: "abc123".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -432,6 +470,62 @@ mod tests {
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheMiss {
             name: "uncached-task".to_string(),
+            parent_group: None,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_cache_skipped_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = make_event(EventCategory::Task(TaskEvent::CacheSkipped {
+            name: "fmt".to_string(),
+            parent_group: None,
+            reason: crate::event::CacheSkipReason::EmptyInputs,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_skipped() {
+        let renderer = CliRenderer::new();
+        let event = make_event(EventCategory::Task(TaskEvent::Skipped {
+            name: "deploy".to_string(),
+            parent_group: None,
+            reason: crate::event::SkipReason::DependencyFailed {
+                dep: "build".to_string(),
+            },
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_queued_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = make_event(EventCategory::Task(TaskEvent::Queued {
+            name: "build".to_string(),
+            parent_group: None,
+            queue_position: 1,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_retrying() {
+        let renderer = CliRenderer::new();
+        let event = make_event(EventCategory::Task(TaskEvent::Retrying {
+            name: "flaky".to_string(),
+            parent_group: None,
+            attempt: 2,
+            max_attempts: 3,
         }));
         renderer.render(&event);
     }
@@ -443,6 +537,7 @@ mod tests {
             name: "task".to_string(),
             stream: Stream::Stdout,
             content: "stdout content".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -454,6 +549,7 @@ mod tests {
             name: "task".to_string(),
             stream: Stream::Stderr,
             content: "stderr content".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -470,6 +566,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             duration_ms: 1000,
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -486,6 +583,7 @@ mod tests {
             success: false,
             exit_code: Some(1),
             duration_ms: 500,
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -497,6 +595,8 @@ mod tests {
             name: "group".to_string(),
             sequential: true,
             task_count: 5,
+            parent_group: None,
+            max_concurrency: None,
         }));
         renderer.render(&event);
     }
@@ -508,6 +608,8 @@ mod tests {
             name: "group".to_string(),
             sequential: false,
             task_count: 3,
+            parent_group: None,
+            max_concurrency: Some(4),
         }));
         renderer.render(&event);
     }
@@ -523,6 +625,10 @@ mod tests {
             name: "group".to_string(),
             success: true,
             duration_ms: 2000,
+            parent_group: None,
+            succeeded: 3,
+            failed: 0,
+            skipped: 0,
         }));
         renderer.render(&event);
     }

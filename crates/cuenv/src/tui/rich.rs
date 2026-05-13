@@ -279,6 +279,7 @@ impl RichTui {
                 name,
                 stream,
                 content,
+                ..
             } => {
                 let stream_str = match stream {
                     cuenv_events::Stream::Stdout => "stdout",
@@ -304,8 +305,13 @@ impl RichTui {
                     task.exit_code = exit_code;
                 }
             }
-            // These events don't require status updates in the TUI
+            // These events don't require status updates in the TUI yet.
+            // Group/queue/skip/retry visualisation lands in Phase 2/3.
             TaskEvent::CacheMiss { .. }
+            | TaskEvent::CacheSkipped { .. }
+            | TaskEvent::Queued { .. }
+            | TaskEvent::Skipped { .. }
+            | TaskEvent::Retrying { .. }
             | TaskEvent::GroupStarted { .. }
             | TaskEvent::GroupCompleted { .. } => {}
         }
