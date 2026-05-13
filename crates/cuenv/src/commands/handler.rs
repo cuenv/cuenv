@@ -415,6 +415,8 @@ pub struct TaskHandler {
     pub dry_run: cuenv_core::DryRun,
     /// Additional arguments to pass to the task.
     pub task_args: Vec<String>,
+    /// Optional path to record every emitted event as JSONL.
+    pub record_events: Option<String>,
 }
 
 #[async_trait]
@@ -435,6 +437,14 @@ impl CommandHandler for TaskHandler {
                 "Task arguments are not supported when selecting tasks by label",
             ));
         }
+
+        // Spawn event recorder if --record-events was passed. The recorder
+        // subscribes to the global event bus and writes every event as JSONL
+        // alongside whatever renderer the user picked.
+        let recorder_handle = self
+            .record_events
+            .as_deref()
+            .and_then(spawn_record_events_handle);
 
         // Build request using the builder pattern
         let mut request = match (&self.name, &self.labels, self.interactive) {
@@ -481,8 +491,34 @@ impl CommandHandler for TaskHandler {
             request = request.with_dry_run();
         }
 
-        task::execute(request).await
+        let outcome = task::execute(request).await;
+
+        if let Some(handle) = recorder_handle {
+            handle.abort();
+            let _ = handle.await;
+        }
+
+        outcome
     }
+}
+
+/// Spawn an [`cuenv_events::EventRecorder`] writing to `path`, subscribed to
+/// the global event bus. Returns the join handle so callers can stop the
+/// recorder when the host command finishes.
+fn spawn_record_events_handle(path: &str) -> Option<tokio::task::JoinHandle<()>> {
+    let recorder = match cuenv_events::EventRecorder::create(path) {
+        Ok(r) => r,
+        Err(err) => {
+            tracing::warn!(
+                path = %path,
+                error = %err,
+                "failed to start event recorder; --record-events ignored"
+            );
+            return None;
+        }
+    };
+    let receiver = crate::tracing::subscribe_global_events()?;
+    Some(tokio::spawn(recorder.run(receiver)))
 }
 
 /// Handler for `ci` command.
