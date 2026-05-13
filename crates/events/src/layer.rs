@@ -11,8 +11,9 @@
 )]
 
 use crate::event::{
-    CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent,
-    RestartReason, ServiceEvent, Stream, SystemEvent, TaskEvent,
+    CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
+    InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
+    TaskEvent, TaskKind,
 };
 use crate::metadata::correlation_id;
 use crate::redaction::redact;
@@ -80,6 +81,16 @@ struct CuenvEventVisitor {
     duration_ms: Option<u64>,
     sequential: Option<bool>,
     task_count: Option<usize>,
+    parent_group: Option<String>,
+    task_kind: Option<TaskKind>,
+    cache_skip_reason: Option<CacheSkipReason>,
+    skip_reason: Option<SkipReason>,
+    queue_position: Option<usize>,
+    max_attempts: Option<u32>,
+    max_concurrency: Option<u32>,
+    succeeded_count: Option<usize>,
+    failed_count: Option<usize>,
+    skipped_count: Option<usize>,
 
     // Service event fields
     service_name: Option<String>,
@@ -129,6 +140,16 @@ impl CuenvEventVisitor {
             duration_ms: None,
             sequential: None,
             task_count: None,
+            parent_group: None,
+            task_kind: None,
+            cache_skip_reason: None,
+            skip_reason: None,
+            queue_position: None,
+            max_attempts: None,
+            max_concurrency: None,
+            succeeded_count: None,
+            failed_count: None,
+            skipped_count: None,
             service_name: None,
             after_ms: None,
             attempt: None,
@@ -170,34 +191,67 @@ impl CuenvEventVisitor {
                 name: self.task_name?,
                 command: self.command?,
                 hermetic: self.hermetic.unwrap_or(false),
+                parent_group: self.parent_group,
+                task_kind: self.task_kind.unwrap_or_default(),
             }),
             "task.cache_hit" => EventCategory::Task(TaskEvent::CacheHit {
                 name: self.task_name?,
                 cache_key: self.cache_key?,
+                parent_group: self.parent_group,
             }),
             "task.cache_miss" => EventCategory::Task(TaskEvent::CacheMiss {
                 name: self.task_name?,
+                parent_group: self.parent_group,
+            }),
+            "task.cache_skipped" => EventCategory::Task(TaskEvent::CacheSkipped {
+                name: self.task_name?,
+                parent_group: self.parent_group,
+                reason: self.cache_skip_reason?,
+            }),
+            "task.queued" => EventCategory::Task(TaskEvent::Queued {
+                name: self.task_name?,
+                parent_group: self.parent_group,
+                queue_position: self.queue_position.unwrap_or(0),
+            }),
+            "task.skipped" => EventCategory::Task(TaskEvent::Skipped {
+                name: self.task_name?,
+                parent_group: self.parent_group,
+                reason: self.skip_reason?,
+            }),
+            "task.retrying" => EventCategory::Task(TaskEvent::Retrying {
+                name: self.task_name?,
+                parent_group: self.parent_group,
+                attempt: self.attempt.unwrap_or(1),
+                max_attempts: self.max_attempts.unwrap_or(1),
             }),
             "task.output" => EventCategory::Task(TaskEvent::Output {
                 name: self.task_name?,
                 stream: self.stream.unwrap_or(Stream::Stdout),
                 content: content?,
+                parent_group: self.parent_group,
             }),
             "task.completed" => EventCategory::Task(TaskEvent::Completed {
                 name: self.task_name?,
                 success: self.success?,
                 exit_code: self.exit_code,
                 duration_ms: self.duration_ms.unwrap_or(0),
+                parent_group: self.parent_group,
             }),
             "task.group_started" => EventCategory::Task(TaskEvent::GroupStarted {
                 name: self.task_name?,
                 sequential: self.sequential.unwrap_or(false),
                 task_count: self.task_count.unwrap_or(0),
+                parent_group: self.parent_group,
+                max_concurrency: self.max_concurrency,
             }),
             "task.group_completed" => EventCategory::Task(TaskEvent::GroupCompleted {
                 name: self.task_name?,
                 success: self.success?,
                 duration_ms: self.duration_ms.unwrap_or(0),
+                parent_group: self.parent_group,
+                succeeded: self.succeeded_count.unwrap_or(0),
+                failed: self.failed_count.unwrap_or(0),
+                skipped: self.skipped_count.unwrap_or(0),
             }),
 
             // Service events
@@ -359,6 +413,20 @@ impl Visit for CuenvEventVisitor {
                     _ => None,
                 };
             }
+            "task_kind" => {
+                self.task_kind = match value {
+                    "task" => Some(TaskKind::Task),
+                    "group" => Some(TaskKind::Group),
+                    "sequence" => Some(TaskKind::Sequence),
+                    _ => None,
+                };
+            }
+            "cache_skip_reason" => {
+                self.cache_skip_reason = serde_json::from_str(value).ok();
+            }
+            "skip_reason" => {
+                self.skip_reason = serde_json::from_str(value).ok();
+            }
             _ => {}
         }
     }
@@ -369,8 +437,14 @@ impl Visit for CuenvEventVisitor {
             "duration_ms" => self.duration_ms = Some(value as u64),
             "after_ms" => self.after_ms = Some(value as u64),
             "attempt" => self.attempt = Some(value as u32),
+            "max_attempts" => self.max_attempts = Some(value as u32),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
+            "queue_position" => self.queue_position = Some(value as usize),
+            "max_concurrency" => self.max_concurrency = Some(value as u32),
+            "succeeded" => self.succeeded_count = Some(value as usize),
+            "failed_count" => self.failed_count = Some(value as usize),
+            "skipped_count" => self.skipped_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value as u64),
             _ => {}
         }
@@ -381,8 +455,14 @@ impl Visit for CuenvEventVisitor {
             "duration_ms" => self.duration_ms = Some(value),
             "after_ms" => self.after_ms = Some(value),
             "attempt" => self.attempt = Some(value as u32),
+            "max_attempts" => self.max_attempts = Some(value as u32),
             "count" => self.count = Some(value as usize),
             "task_count" => self.task_count = Some(value as usize),
+            "queue_position" => self.queue_position = Some(value as usize),
+            "max_concurrency" => self.max_concurrency = Some(value as u32),
+            "succeeded" => self.succeeded_count = Some(value as usize),
+            "failed_count" => self.failed_count = Some(value as usize),
+            "skipped_count" => self.skipped_count = Some(value as usize),
             "elapsed_secs" => self.elapsed_secs = Some(value),
             _ => {}
         }
@@ -427,7 +507,7 @@ impl Visit for CuenvEventVisitor {
             // When tracing uses Display formatting (%), it wraps values in a DisplayValue
             // which then gets passed to record_debug instead of record_str
             "event_type" | "task_name" | "service_name" | "name" | "command" | "cmd"
-            | "content" | "cache_key" | "stream" | "error" | "reason" => {
+            | "content" | "cache_key" | "stream" | "error" | "reason" | "task_kind" => {
                 // Remove surrounding quotes if present (debug format adds them for strings)
                 let cleaned = value_str.trim_matches('"');
                 match field.name() {
@@ -446,8 +526,32 @@ impl Visit for CuenvEventVisitor {
                             _ => None,
                         };
                     }
+                    "task_kind" => {
+                        self.task_kind = match cleaned {
+                            "task" => Some(TaskKind::Task),
+                            "group" => Some(TaskKind::Group),
+                            "sequence" => Some(TaskKind::Sequence),
+                            _ => None,
+                        };
+                    }
                     _ => {}
                 }
+            }
+            // The cache_skip_reason and skip_reason fields carry JSON-encoded
+            // enum values via Display formatting (%). When the JSON itself is
+            // already-quoted (e.g. unit variant `"empty_inputs"`) we must not
+            // strip the quotes — serde_json needs them to deserialize.
+            "cache_skip_reason" => {
+                let cleaned = value_str.trim_matches('"');
+                self.cache_skip_reason = serde_json::from_str(cleaned)
+                    .ok()
+                    .or_else(|| serde_json::from_str(&value_str).ok());
+            }
+            "skip_reason" => {
+                let cleaned = value_str.trim_matches('"');
+                self.skip_reason = serde_json::from_str(cleaned)
+                    .ok()
+                    .or_else(|| serde_json::from_str(&value_str).ok());
             }
             // Handle exit_code which uses Debug formatting (?exit_code)
             // Can be "Some(0)", "None", or just "0" depending on context
@@ -466,9 +570,37 @@ impl Visit for CuenvEventVisitor {
                     }
                 }
             }
+            // parent_group uses Debug (?parent_group) since the macro accepts
+            // Option<impl Display> and that doesn't itself impl Display.
+            // Format is `Some("ci")`, `None`, or `Some(ci)` depending on
+            // whether the inner value impls Debug as a quoted string.
+            "parent_group" => {
+                self.parent_group = parse_optional_debug_str(&value_str);
+            }
+            // max_concurrency uses ?max_concurrency (Option<u32>).
+            "max_concurrency" => {
+                if let Some(inner) = value_str
+                    .strip_prefix("Some(")
+                    .and_then(|s| s.strip_suffix(')'))
+                    && let Ok(n) = inner.parse::<u32>()
+                {
+                    self.max_concurrency = Some(n);
+                }
+            }
             _ => {}
         }
     }
+}
+
+/// Parse a Rust-`Debug`-formatted `Option<impl Debug>` containing a string.
+///
+/// Handles `Some("foo")`, `Some(foo)`, and `None`.
+fn parse_optional_debug_str(value: &str) -> Option<String> {
+    if value == "None" {
+        return None;
+    }
+    let inner = value.strip_prefix("Some(")?.strip_suffix(')')?;
+    Some(inner.trim_matches('"').to_string())
 }
 
 #[cfg(test)]
@@ -547,12 +679,77 @@ mod tests {
                 name,
                 command,
                 hermetic,
+                ..
             }) => {
                 assert_eq!(name, "build");
                 assert_eq!(command, "cargo build");
                 assert!(hermetic);
             }
             _ => panic!("Expected task started event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_extracts_parent_group_and_task_kind() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let parent: Option<&str> = Some("ci");
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.started",
+                task_name = "ci.build",
+                command = "cargo build",
+                hermetic = true,
+                parent_group = ?parent,
+                task_kind = "task",
+                "Task started in group"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::Started {
+                name,
+                parent_group,
+                task_kind,
+                ..
+            }) => {
+                assert_eq!(name, "ci.build");
+                assert_eq!(parent_group.as_deref(), Some("ci"));
+                assert_eq!(task_kind, TaskKind::Task);
+            }
+            other => panic!("Expected task started event, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_extracts_cache_skipped() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let layer = CuenvEventLayer::new(tx);
+        let subscriber = tracing_subscriber::registry().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let reason = CacheSkipReason::EmptyInputs;
+            let encoded = serde_json::to_string(&reason).unwrap();
+            tracing::info!(
+                target: "cuenv::task",
+                event_type = "task.cache_skipped",
+                task_name = "fmt",
+                cache_skip_reason = %encoded,
+                "skipped"
+            );
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event.category {
+            EventCategory::Task(TaskEvent::CacheSkipped { name, reason, .. }) => {
+                assert_eq!(name, "fmt");
+                assert_eq!(reason, CacheSkipReason::EmptyInputs);
+            }
+            other => panic!("Expected cache skipped event, got {other:?}"),
         }
     }
 }

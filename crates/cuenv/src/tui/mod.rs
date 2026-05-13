@@ -162,18 +162,22 @@ fn format_cuenv_event(event: &CuenvEvent) -> String {
                     name,
                     command,
                     hermetic,
+                    ..
                 } => {
                     format!(
                         "[{timestamp}] {source} TASK {name} started: {command} (hermetic={hermetic})"
                     )
                 }
-                TaskEvent::CacheHit { name, cache_key } => {
+                TaskEvent::CacheHit {
+                    name, cache_key, ..
+                } => {
                     format!("[{timestamp}] {source} CACHE HIT {name} key={cache_key}")
                 }
                 TaskEvent::Output {
                     name,
                     stream,
                     content,
+                    ..
                 } => {
                     format!("[{timestamp}] {source} OUTPUT {name}:{stream:?} {content}")
                 }

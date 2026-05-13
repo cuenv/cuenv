@@ -58,6 +58,37 @@ pub struct TaskResult {
 /// Number of lines from stdout/stderr to include when summarizing failures
 pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 
+/// Emit a `task.group_completed` event with succeeded/failed/skipped counts
+/// derived from the inner result.
+///
+/// On `Err` the group is reported as failed with all children counted as
+/// failed (we lack per-child results once a sequence/parallel aborts).
+fn emit_group_completion(
+    prefix: &str,
+    started: std::time::Instant,
+    outcome: &Result<Vec<TaskResult>>,
+    total_children: usize,
+) {
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let (success, succeeded, failed, skipped) = match outcome {
+        Ok(results) => {
+            let succeeded = results.iter().filter(|r| r.success).count();
+            let failed = results.iter().filter(|r| !r.success).count();
+            let skipped = total_children.saturating_sub(succeeded + failed);
+            (failed == 0, succeeded, failed, skipped)
+        }
+        Err(_) => (false, 0_usize, total_children, 0_usize),
+    };
+    cuenv_events::emit_task_group_completed!(
+        prefix,
+        success,
+        duration_ms,
+        succeeded,
+        failed,
+        skipped
+    );
+}
+
 /// Task executor configuration
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
@@ -158,7 +189,7 @@ impl TaskExecutor {
         let cache_handle: Option<(TaskCacheConfig, cuenv_cas::Digest, PathBuf)> =
             if let Some(cache) = self.config.cache.clone() {
                 let workdir = self.workdir_for_task(task);
-                match super::cache::build_action(BuildActionInput {
+                let outcome = super::cache::build_action(BuildActionInput {
                     task,
                     task_name: name,
                     environment: &self.config.environment,
@@ -171,12 +202,13 @@ impl TaskExecutor {
                         .as_deref()
                         .unwrap_or(&self.config.project_root),
                 })
-                .await?
-                {
-                    Some((_, action_digest)) => {
+                .await?;
+                match outcome {
+                    super::cache::CacheOutcome::Eligible(_, action_digest) => {
                         // Cache lookup. On a hit, short-circuit execution.
                         if let Some(cached) = super::cache::lookup(&cache, &action_digest, task)? {
                             tracing::debug!(task = %name, "action cache hit");
+                            cuenv_events::emit_task_cache_hit!(name, action_digest.to_string());
                             return self.return_cache_hit(CacheHitInput {
                                 name,
                                 task,
@@ -186,9 +218,13 @@ impl TaskExecutor {
                             });
                         }
                         tracing::debug!(task = %name, "action cache miss");
+                        cuenv_events::emit_task_cache_miss!(name);
                         Some((cache, action_digest, workdir))
                     }
-                    None => None,
+                    super::cache::CacheOutcome::Skipped(reason) => {
+                        cuenv_events::emit_task_cache_skipped!(name, reason);
+                        None
+                    }
                 }
             } else {
                 None
@@ -587,9 +623,26 @@ impl TaskExecutor {
         sequence: &[TaskNode],
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
-        if !self.config.capture_output.should_capture() {
+        let emit_lifecycle = !self.config.capture_output.should_capture();
+        if emit_lifecycle {
             cuenv_events::emit_task_group_started!(prefix, true, sequence.len());
         }
+        let started = std::time::Instant::now();
+        let outcome = self
+            .execute_sequential_inner(prefix, sequence, all_tasks)
+            .await;
+        if emit_lifecycle {
+            emit_group_completion(prefix, started, &outcome, sequence.len());
+        }
+        outcome
+    }
+
+    async fn execute_sequential_inner(
+        &self,
+        prefix: &str,
+        sequence: &[TaskNode],
+        all_tasks: &Tasks,
+    ) -> Result<Vec<TaskResult>> {
         let mut results = Vec::new();
         // Track completed step results for output ref resolution within sequences.
         let mut seq_results: std::collections::HashMap<String, TaskResult> =
@@ -639,20 +692,41 @@ impl TaskExecutor {
         group: &TaskGroup,
         all_tasks: &Tasks,
     ) -> Result<Vec<TaskResult>> {
+        let emit_lifecycle = !self.config.capture_output.should_capture();
         // Check for "default" task to override parallel execution
         if let Some(default_task) = group.children.get("default") {
-            if !self.config.capture_output.should_capture() {
+            if emit_lifecycle {
                 cuenv_events::emit_task_group_started!(prefix, true, 1_usize);
             }
+            let started = std::time::Instant::now();
             // Execute only the default task, using the group prefix directly
             // since "default" is implicit when invoking the group name
             let task_name = format!("{}.default", prefix);
-            return self.execute_node(&task_name, default_task, all_tasks).await;
+            let outcome = self.execute_node(&task_name, default_task, all_tasks).await;
+            if emit_lifecycle {
+                emit_group_completion(prefix, started, &outcome, 1);
+            }
+            return outcome;
         }
 
-        if !self.config.capture_output.should_capture() {
+        if emit_lifecycle {
             cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
         }
+        let started = std::time::Instant::now();
+        let total_children = group.children.len();
+        let outcome = self.execute_parallel_inner(prefix, group, all_tasks).await;
+        if emit_lifecycle {
+            emit_group_completion(prefix, started, &outcome, total_children);
+        }
+        outcome
+    }
+
+    async fn execute_parallel_inner(
+        &self,
+        prefix: &str,
+        group: &TaskGroup,
+        all_tasks: &Tasks,
+    ) -> Result<Vec<TaskResult>> {
         let mut join_set = JoinSet::new();
         let all_tasks = Arc::new(all_tasks.clone());
         let mut all_results = Vec::new();
