@@ -538,6 +538,13 @@ pub enum Commands {
         /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
+        /// Record every emitted event as JSONL to the given path for later replay.
+        #[arg(
+            long = "record-events",
+            help = "Record every emitted event as JSONL to the given path for later replay with `cuenv tui-replay`",
+            value_name = "PATH"
+        )]
+        record_events: Option<String>,
     },
     /// Execute a command with CUE environment variables.
     #[command(
@@ -676,7 +683,36 @@ pub enum Commands {
     Ci(crate::commands::ci::CiArgs),
     /// Start interactive TUI dashboard for monitoring cuenv events.
     #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
-    Tui,
+    Tui {
+        /// Record every emitted event as JSONL to the given path for later replay.
+        #[arg(
+            long = "record-events",
+            help = "Record every emitted event as JSONL to the given path for later replay with `cuenv tui-replay`",
+            value_name = "PATH"
+        )]
+        record_events: Option<String>,
+    },
+    /// Replay a recorded event trace through the TUI.
+    #[command(about = "Replay a recorded event trace through the TUI")]
+    TuiReplay {
+        /// Path to the JSONL recording produced by `--record-events`.
+        #[arg(help = "Path to the JSONL recording", value_name = "PATH")]
+        path: String,
+        /// Play events as fast as possible (default: honor original timestamps).
+        #[arg(
+            long = "fast",
+            help = "Play events as fast as possible instead of honoring recorded timestamps",
+            default_value_t = false
+        )]
+        fast: bool,
+        /// Render snapshot frames to the given directory and exit (no interactive TUI).
+        #[arg(
+            long = "snapshot-frames-to",
+            help = "Render snapshot frames to the given directory and exit (no interactive TUI)",
+            value_name = "DIR"
+        )]
+        snapshot_frames_to: Option<String>,
+    },
     /// Start web server for streaming cuenv events.
     #[command(about = "Start web server for streaming cuenv events")]
     Web {
@@ -1544,7 +1580,8 @@ impl Commands {
             | Self::Completions { .. }
             | Self::Shell { .. }
             | Self::Ci { .. }
-            | Self::Tui
+            | Self::Tui { .. }
+            | Self::TuiReplay { .. }
             | Self::Web { .. }
             | Self::Changeset { .. }
             | Self::Release { .. }
@@ -1632,6 +1669,7 @@ impl Commands {
                 skip_dependencies,
                 dry_run,
                 task_args,
+                record_events,
             } => Command::Task {
                 path,
                 package,
@@ -1649,6 +1687,7 @@ impl Commands {
                 skip_dependencies,
                 dry_run: dry_run.into(),
                 task_args,
+                record_events,
             },
             Self::Exec {
                 command,
@@ -1698,7 +1737,16 @@ impl Commands {
                 package,
             },
             Self::Ci(args) => Command::Ci { args },
-            Self::Tui => Command::Tui,
+            Self::Tui { record_events } => Command::Tui { record_events },
+            Self::TuiReplay {
+                path,
+                fast,
+                snapshot_frames_to,
+            } => Command::TuiReplay {
+                path,
+                fast,
+                snapshot_frames_to,
+            },
             Self::Web { port, host } => Command::Web { port, host },
             Self::Changeset { subcommand } => match subcommand {
                 ChangesetCommands::Add {
@@ -2669,6 +2717,7 @@ mod tests {
             skip_dependencies: false,
             dry_run: false,
             task_args: vec![],
+            record_events: None,
         };
         assert_eq!(task_cmd.package(), "mypackage");
 
