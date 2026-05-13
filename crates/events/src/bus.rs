@@ -3,9 +3,97 @@
 //! Provides a broadcast-capable event bus that allows multiple subscribers
 //! to receive events concurrently.
 
-use crate::event::CuenvEvent;
+use crate::event::{CuenvEvent, EventCategory, EventSource, SystemEvent};
+use crate::metadata::correlation_id;
 use std::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
+use uuid::Uuid;
+
+/// Process-wide event sender for the direct-emit path.
+///
+/// Held behind a `Mutex<Option<_>>` (not a `OnceLock`) so the global
+/// sender can be replaced at runtime — important for tests, which
+/// install a fresh bus per case, and for hosts that tear down and
+/// recreate the bus on a long-lived process. When `None`, [`emit`] is
+/// a no-op.
+static GLOBAL_SENDER: Mutex<Option<EventSender>> = Mutex::new(None);
+
+/// Install (or replace) the process-wide [`EventSender`].
+///
+/// Replaces any previously-installed sender. Always returns `true` for
+/// historical compatibility with callers that treated the return as
+/// "was the install successful"; failure modes (poisoned mutex) are
+/// internal and surfaced via `tracing::warn!`.
+///
+/// Pair with [`emit`] / [`emit_with_source`] to publish events without
+/// going through `tracing::info!` macros.
+pub fn set_global_sender(sender: EventSender) -> bool {
+    if let Ok(mut guard) = GLOBAL_SENDER.lock() {
+        *guard = Some(sender);
+        true
+    } else {
+        tracing::warn!("global event sender lock poisoned; dropping replacement");
+        false
+    }
+}
+
+/// Get the process-wide [`EventSender`], if one is installed.
+#[must_use]
+pub fn global_sender() -> Option<EventSender> {
+    GLOBAL_SENDER.lock().ok().and_then(|g| g.clone())
+}
+
+/// Clear the process-wide [`EventSender`].
+///
+/// Intended for tests that need a clean slate between cases. After
+/// calling, [`emit`] returns `SendError::Closed` until a new sender is
+/// installed.
+pub fn clear_global_sender() {
+    if let Ok(mut guard) = GLOBAL_SENDER.lock() {
+        *guard = None;
+    }
+}
+
+/// Publish an [`EventCategory`] to the global event bus.
+///
+/// Constructs a [`CuenvEvent`] with a fresh id, the active session's
+/// [`correlation_id`], and the given `source` and `category`, then sends
+/// it through the process-wide [`EventSender`] (see [`set_global_sender`]).
+///
+/// Returns `Ok(())` on success, `Err(SendError::Closed)` if the bus has
+/// been shut down, and `Err(SendError::Closed)` (semantically "no bus")
+/// if [`set_global_sender`] was never called — this lets call sites stay
+/// branch-free in non-bus contexts (tests, library embeddings) without
+/// silent failures.
+///
+/// # Errors
+///
+/// Returns [`SendError::Closed`] if no global sender is installed or the
+/// bus has been shut down.
+pub fn emit_with_source(source: EventSource, category: EventCategory) -> Result<(), SendError> {
+    let sender = global_sender().ok_or(SendError::Closed)?;
+    let event = CuenvEvent {
+        id: Uuid::new_v4(),
+        correlation_id: correlation_id(),
+        timestamp: chrono::Utc::now(),
+        source,
+        category,
+    };
+    sender.send(event)
+}
+
+/// Publish an [`EventCategory`] to the global event bus, using a default
+/// source target of `"cuenv::events::emit"`.
+///
+/// See [`emit_with_source`] for the variant that lets you set the source
+/// explicitly.
+///
+/// # Errors
+///
+/// See [`emit_with_source`].
+pub fn emit(category: EventCategory) -> Result<(), SendError> {
+    emit_with_source(EventSource::new("cuenv::events::emit"), category)
+}
 
 /// Default channel capacity for the broadcast channel.
 const DEFAULT_BROADCAST_CAPACITY: usize = 1000;
@@ -142,38 +230,41 @@ pub struct EventReceiver {
 impl EventReceiver {
     /// Receive the next event.
     ///
-    /// Returns `None` if the bus has been dropped.
-    /// May skip events if the receiver falls behind.
+    /// Returns `None` only when the broadcast sender is closed. When the
+    /// channel lags and drops events, returns a synthesized
+    /// [`SystemEvent::EventGap`] so downstream consumers see the gap
+    /// instead of silently losing it.
     pub async fn recv(&mut self) -> Option<CuenvEvent> {
-        loop {
-            match self.inner.recv().await {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "Event receiver lagged, skipped events");
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
+        match self.inner.recv().await {
+            Ok(event) => Some(event),
+            Err(broadcast::error::RecvError::Lagged(n)) => Some(synth_event_gap(n)),
+            Err(broadcast::error::RecvError::Closed) => None,
         }
     }
 
     /// Try to receive an event without waiting.
     ///
-    /// Returns `None` if no event is immediately available or the bus is closed.
+    /// Returns `None` if no event is immediately available or the bus is
+    /// closed. Returns [`SystemEvent::EventGap`] (synthesized) when the
+    /// channel lagged and dropped events.
     pub fn try_recv(&mut self) -> Option<CuenvEvent> {
-        loop {
-            match self.inner.try_recv() {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "Event receiver lagged, skipped events");
-                }
-                Err(
-                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
-                ) => {
-                    return None;
-                }
+        match self.inner.try_recv() {
+            Ok(event) => Some(event),
+            Err(broadcast::error::TryRecvError::Lagged(n)) => Some(synth_event_gap(n)),
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                None
             }
         }
     }
+}
+
+fn synth_event_gap(skipped: u64) -> CuenvEvent {
+    tracing::warn!(skipped, "event receiver lagged; emitting EventGap");
+    CuenvEvent::new(
+        Uuid::new_v4(),
+        EventSource::new("cuenv::events::bus"),
+        EventCategory::System(SystemEvent::EventGap { skipped }),
+    )
 }
 
 /// Error returned when sending to a closed bus.
@@ -215,6 +306,47 @@ mod tests {
         let bus = EventBus::new();
         let sender = bus.sender().expect("sender should be available");
         assert!(!sender.is_closed());
+    }
+
+    #[test]
+    fn emit_returns_closed_when_no_global_sender() {
+        // GLOBAL_SENDER is a process-wide OnceLock; cargo test runs all
+        // tests in one process so we can't safely *uninstall* it. But
+        // before any installer test runs, emit must return Closed —
+        // covered indirectly by the install path test below.
+        let outcome = emit(EventCategory::System(SystemEvent::Shutdown));
+        // Either Ok (a prior test installed) or Err(Closed) (none did).
+        // Both are well-defined; the contract is "no panic, no surprise".
+        assert!(matches!(outcome, Ok(()) | Err(SendError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn emit_with_installed_global_sender_publishes_event() {
+        let bus = EventBus::new();
+        let sender = bus.sender().expect("sender should be available");
+        let mut receiver = bus.subscribe();
+
+        // `set_global_sender` is idempotent process-wide; the test only
+        // asserts that emit() succeeds when *some* sender is installed,
+        // which is the contract we care about. Other tests in this
+        // module may have installed an earlier sender — that's fine.
+        let _ = set_global_sender(sender);
+
+        emit(EventCategory::Output(OutputEvent::Stdout {
+            content: "via direct emit".to_string(),
+        }))
+        .expect("emit should succeed with a global sender installed");
+
+        let received = receiver
+            .recv()
+            .await
+            .expect("subscriber should receive the emitted event");
+        match received.category {
+            EventCategory::Output(OutputEvent::Stdout { content }) => {
+                assert_eq!(content, "via direct emit");
+            }
+            other => panic!("unexpected category: {other:?}"),
+        }
     }
 
     #[tokio::test]

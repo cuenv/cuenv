@@ -194,6 +194,14 @@ impl TaskGraph {
         }
     }
 
+    /// Borrow the underlying generic graph. Use this to hand the graph
+    /// to walkers / algorithms that operate on
+    /// `cuenv_task_graph::TaskGraph<T>` directly.
+    #[must_use]
+    pub const fn inner(&self) -> &cuenv_task_graph::TaskGraph<Task> {
+        &self.inner
+    }
+
     /// Build a graph from a task node.
     pub fn build_from_node(
         &mut self,

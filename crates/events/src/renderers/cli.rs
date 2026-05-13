@@ -10,45 +10,86 @@ use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, ServiceEvent,
     Stream, SystemEvent, TaskEvent,
 };
+#[cfg(feature = "spinner")]
+use crate::renderers::SpinnerRenderer;
 use std::io::{self, IsTerminal, Write};
+#[cfg(feature = "spinner")]
+use std::sync::Mutex;
 
 /// CLI renderer configuration.
+///
+/// `#[allow(clippy::struct_excessive_bools)]` — the fields are toggles
+/// that the CLI surfaces independently (colors, verbose, spinner,
+/// spinner output mirroring); folding them into a state machine would
+/// not improve clarity.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct CliRendererConfig {
     /// Whether to use ANSI colors.
     pub colors: bool,
     /// Whether to show verbose output.
     pub verbose: bool,
+    /// Whether to render an indicatif spinner UI on a TTY. When `false`
+    /// (or when stdout isn't a TTY) the renderer falls back to plain
+    /// eprintln output so CI logs stay grep-able.
+    pub spinner: bool,
+    /// Mirror the latest output line under each task spinner. Off by
+    /// default to keep terminals quiet.
+    pub spinner_output_tail: bool,
 }
 
 impl Default for CliRendererConfig {
     fn default() -> Self {
+        let tty = io::stdout().is_terminal();
         Self {
-            colors: io::stdout().is_terminal(),
+            colors: tty,
             verbose: false,
+            spinner: tty,
+            spinner_output_tail: false,
         }
     }
 }
 
 /// CLI renderer that outputs events to stdout/stderr.
-#[derive(Debug)]
 pub struct CliRenderer {
     config: CliRendererConfig,
+    #[cfg(feature = "spinner")]
+    spinner: Option<Mutex<SpinnerRenderer>>,
+}
+
+impl std::fmt::Debug for CliRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("CliRenderer");
+        s.field("config", &self.config);
+        #[cfg(feature = "spinner")]
+        s.field("spinner", &self.spinner.is_some());
+        s.finish()
+    }
 }
 
 impl CliRenderer {
     /// Create a new CLI renderer with default configuration.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            config: CliRendererConfig::default(),
-        }
+        Self::with_config(CliRendererConfig::default())
     }
 
     /// Create a new CLI renderer with the given configuration.
     #[must_use]
-    pub const fn with_config(config: CliRendererConfig) -> Self {
-        Self { config }
+    pub fn with_config(config: CliRendererConfig) -> Self {
+        #[cfg(feature = "spinner")]
+        let spinner = if config.spinner {
+            Some(Mutex::new(
+                SpinnerRenderer::new().with_output_tail(config.spinner_output_tail),
+            ))
+        } else {
+            None
+        };
+        Self {
+            config,
+            #[cfg(feature = "spinner")]
+            spinner,
+        }
     }
 
     /// Run the renderer, consuming events from the receiver.
@@ -81,11 +122,39 @@ impl CliRenderer {
     }
 
     fn render_task(&self, event: &TaskEvent) {
+        #[cfg(feature = "spinner")]
+        if let Some(spinner) = self.spinner.as_ref() {
+            // Best-effort lock — if a renderer panicked while holding it we
+            // still surface the event via the fallback path below rather
+            // than poisoning all future output.
+            if let Ok(mut guard) = spinner.lock() {
+                guard.apply(event);
+                // Route output through MultiProgress::println so it appears
+                // above the active spinners without corrupting their frames.
+                // Bare println! / eprintln! here would race indicatif's
+                // cursor moves on stderr.
+                if let TaskEvent::Output {
+                    name,
+                    stream,
+                    content,
+                    ..
+                } = event
+                {
+                    let prefix = match stream {
+                        Stream::Stdout => "  ",
+                        Stream::Stderr => "! ",
+                    };
+                    guard.print_above(&format!("{prefix}[{name}] {content}"));
+                }
+                return;
+            }
+        }
         match event {
             TaskEvent::Started {
                 name,
                 command,
                 hermetic,
+                ..
             } => {
                 let hermetic_indicator = if *hermetic { " (hermetic)" } else { "" };
                 eprintln!("> [{name}] {command}{hermetic_indicator}");
@@ -93,10 +162,35 @@ impl CliRenderer {
             TaskEvent::CacheHit { name, .. } => {
                 eprintln!("> [{name}] (cached)");
             }
-            TaskEvent::CacheMiss { name } => {
+            TaskEvent::CacheMiss { name, .. } => {
                 if self.config.verbose {
                     eprintln!("> [{name}] cache miss, executing...");
                 }
+            }
+            TaskEvent::CacheSkipped { name, reason, .. } => {
+                if self.config.verbose {
+                    eprintln!("> [{name}] cache skipped: {reason}");
+                }
+            }
+            TaskEvent::Queued {
+                name,
+                queue_position,
+                ..
+            } => {
+                if self.config.verbose {
+                    eprintln!("> [{name}] queued (position {queue_position})");
+                }
+            }
+            TaskEvent::Skipped { name, reason, .. } => {
+                eprintln!("> [{name}] skipped ({reason})");
+            }
+            TaskEvent::Retrying {
+                name,
+                attempt,
+                max_attempts,
+                ..
+            } => {
+                eprintln!("> [{name}] retrying (attempt {attempt}/{max_attempts})");
             }
             TaskEvent::Output {
                 stream, content, ..
@@ -123,6 +217,7 @@ impl CliRenderer {
                 name,
                 sequential,
                 task_count,
+                ..
             } => {
                 let mode = if *sequential {
                     "sequential"
@@ -135,10 +230,16 @@ impl CliRenderer {
                 name,
                 success,
                 duration_ms,
+                succeeded,
+                failed,
+                skipped,
+                ..
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    eprintln!("> Group {name} {status} in {duration_ms}ms");
+                    eprintln!(
+                        "> Group {name} {status} in {duration_ms}ms ({succeeded} ok, {failed} failed, {skipped} skipped)"
+                    );
                 }
             }
         }
@@ -178,9 +279,7 @@ impl CliRenderer {
                 eprintln!("> [{name}] stopping");
             }
             ServiceEvent::Stopped { name, exit_code } => {
-                let code = exit_code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string());
+                let code = exit_code.map_or_else(|| "signal".to_string(), |c| c.to_string());
                 eprintln!("> [{name}] stopped (exit: {code})");
             }
             ServiceEvent::Failed { name, error } => {
@@ -298,6 +397,9 @@ impl CliRenderer {
                     eprintln!("System shutdown");
                 }
             }
+            SystemEvent::EventGap { skipped } => {
+                eprintln!("⚠  event bus lagged: {skipped} events dropped");
+            }
         }
     }
 
@@ -344,6 +446,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let debug = format!("{config:?}");
         assert!(debug.contains("CliRendererConfig"));
@@ -355,6 +459,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let cloned = config.clone();
         assert_eq!(config.colors, cloned.colors);
@@ -378,6 +484,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         assert!(renderer.config.verbose);
@@ -398,6 +506,8 @@ mod tests {
             name: "test-task".to_string(),
             command: "echo hello".to_string(),
             hermetic: false,
+            parent_group: None,
+            task_kind: crate::event::TaskKind::Task,
         }));
         renderer.render(&event);
     }
@@ -409,6 +519,8 @@ mod tests {
             name: "test-task".to_string(),
             command: "echo hello".to_string(),
             hermetic: true,
+            parent_group: None,
+            task_kind: crate::event::TaskKind::Task,
         }));
         renderer.render(&event);
     }
@@ -419,6 +531,7 @@ mod tests {
         let event = make_event(EventCategory::Task(TaskEvent::CacheHit {
             name: "cached-task".to_string(),
             cache_key: "abc123".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -428,10 +541,72 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheMiss {
             name: "uncached-task".to_string(),
+            parent_group: None,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_cache_skipped_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = make_event(EventCategory::Task(TaskEvent::CacheSkipped {
+            name: "fmt".to_string(),
+            parent_group: None,
+            reason: crate::event::CacheSkipReason::EmptyInputs,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_skipped() {
+        let renderer = CliRenderer::new();
+        let event = make_event(EventCategory::Task(TaskEvent::Skipped {
+            name: "deploy".to_string(),
+            parent_group: None,
+            reason: crate::event::SkipReason::DependencyFailed {
+                dep: "build".to_string(),
+            },
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_queued_verbose() {
+        let config = CliRendererConfig {
+            colors: false,
+            verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
+        };
+        let renderer = CliRenderer::with_config(config);
+        let event = make_event(EventCategory::Task(TaskEvent::Queued {
+            name: "build".to_string(),
+            parent_group: None,
+            queue_position: 1,
+        }));
+        renderer.render(&event);
+    }
+
+    #[test]
+    fn test_render_task_retrying() {
+        let renderer = CliRenderer::new();
+        let event = make_event(EventCategory::Task(TaskEvent::Retrying {
+            name: "flaky".to_string(),
+            parent_group: None,
+            attempt: 2,
+            max_attempts: 3,
         }));
         renderer.render(&event);
     }
@@ -443,6 +618,7 @@ mod tests {
             name: "task".to_string(),
             stream: Stream::Stdout,
             content: "stdout content".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -454,6 +630,7 @@ mod tests {
             name: "task".to_string(),
             stream: Stream::Stderr,
             content: "stderr content".to_string(),
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -463,6 +640,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -470,6 +649,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             duration_ms: 1000,
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -479,6 +659,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -486,6 +668,7 @@ mod tests {
             success: false,
             exit_code: Some(1),
             duration_ms: 500,
+            parent_group: None,
         }));
         renderer.render(&event);
     }
@@ -497,6 +680,8 @@ mod tests {
             name: "group".to_string(),
             sequential: true,
             task_count: 5,
+            parent_group: None,
+            max_concurrency: None,
         }));
         renderer.render(&event);
     }
@@ -508,6 +693,8 @@ mod tests {
             name: "group".to_string(),
             sequential: false,
             task_count: 3,
+            parent_group: None,
+            max_concurrency: Some(4),
         }));
         renderer.render(&event);
     }
@@ -517,12 +704,18 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::GroupCompleted {
             name: "group".to_string(),
             success: true,
             duration_ms: 2000,
+            parent_group: None,
+            succeeded: 3,
+            failed: 0,
+            skipped: 0,
         }));
         renderer.render(&event);
     }
@@ -622,6 +815,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Started {
@@ -636,6 +831,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Progress {
@@ -651,6 +848,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Completed {
@@ -711,6 +910,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::System(SystemEvent::Shutdown));

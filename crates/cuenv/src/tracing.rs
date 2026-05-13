@@ -238,6 +238,12 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
     let sender = event_bus
         .sender()
         .ok_or_else(|| miette::miette!("EventBus sender unavailable"))?;
+    // Install the process-wide sender for direct-emit callers (the new
+    // `emit!` macros + `cuenv_events::emit`). The CuenvEventLayer
+    // installed below remains as a transitional bridge for any code path
+    // that still uses `tracing::info!(target: "cuenv::...", ...)`
+    // directly without going through the macros.
+    let _ = cuenv_events::set_global_sender(sender.clone());
     let event_layer = CuenvEventLayer::new(sender.into_inner());
 
     // Get a receiver for the main renderer before storing the bus globally

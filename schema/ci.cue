@@ -246,6 +246,13 @@ package schema
 	// Values can be literal strings or #TaskCaptureRef (resolved after execution).
 	annotations?: [string]: string | #TaskCaptureRef
 
+	// When true, a failing task does not abort the rest of the pipeline.
+	// Subsequent tasks whose dependencies failed are reported as Skipped
+	// (with the failing dependency named) instead of being silently
+	// dropped. The pipeline still exits non-zero overall if any task
+	// failed. Default: false (current behaviour — first failure aborts).
+	continueOnError?: bool | *false
+
 	derivePaths?: bool // whether to derive trigger paths from task inputs
 	provider?:    #ProviderConfig
 })

@@ -411,6 +411,8 @@ pub struct TaskHandler {
     pub help: bool,
     /// Whether to skip task dependencies.
     pub skip_dependencies: bool,
+    /// Whether to keep running siblings after a task fails.
+    pub continue_on_error: bool,
     /// Dry run mode: export DAG without executing.
     pub dry_run: cuenv_core::DryRun,
     /// Additional arguments to pass to the task.
@@ -476,6 +478,9 @@ impl CommandHandler for TaskHandler {
         }
         if self.skip_dependencies {
             request = request.with_skip_dependencies();
+        }
+        if self.continue_on_error {
+            request = request.with_continue_on_error();
         }
         if self.dry_run.is_dry_run() {
             request = request.with_dry_run();

@@ -40,6 +40,12 @@ pub struct TaskExecutionRequest<'a> {
     /// Skip executing task dependencies (for CI orchestrators that handle deps externally)
     pub skip_dependencies: bool,
 
+    /// When `true`, a failing task does not abort the run. Its dependents
+    /// in later parallel groups are emitted as `task.skipped` (with a
+    /// `DependencyFailed` reason) and independent sibling chains keep
+    /// running. Matches the `ci.pipelines[*].continueOnError` semantic.
+    pub continue_on_error: bool,
+
     /// Dry run mode: export DAG as JSON without executing
     pub dry_run: DryRun,
 
@@ -58,6 +64,7 @@ impl fmt::Debug for TaskExecutionRequest<'_> {
             .field("execution_mode", &self.execution_mode)
             .field("backend", &self.backend)
             .field("skip_dependencies", &self.skip_dependencies)
+            .field("continue_on_error", &self.continue_on_error)
             .field("dry_run", &self.dry_run)
             .field("executor", &"<CommandExecutor>")
             .finish()
@@ -148,6 +155,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: DryRun::No,
             executor,
         }
@@ -173,6 +181,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: DryRun::No,
             executor,
         }
@@ -195,6 +204,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: DryRun::No,
             executor,
         }
@@ -216,6 +226,7 @@ impl<'a> TaskExecutionRequest<'a> {
             execution_mode: ExecutionMode::default(),
             backend: None,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: DryRun::No,
             executor,
         }
@@ -290,6 +301,14 @@ impl<'a> TaskExecutionRequest<'a> {
     #[must_use]
     pub const fn with_skip_dependencies(mut self) -> Self {
         self.skip_dependencies = true;
+        self
+    }
+
+    /// Don't abort on the first failure; mark dependents as Skipped and
+    /// keep independent siblings running. Mirrors CI's `continueOnError`.
+    #[must_use]
+    pub const fn with_continue_on_error(mut self) -> Self {
+        self.continue_on_error = true;
         self
     }
 

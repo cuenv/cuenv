@@ -175,6 +175,8 @@ pub enum Command {
         help: bool,
         /// Whether to skip running task dependencies.
         skip_dependencies: bool,
+        /// Continue running independent siblings after a task fails.
+        continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
         /// Additional arguments to pass to the task.
@@ -241,8 +243,6 @@ pub enum Command {
         /// CI command arguments.
         args: ci::CiArgs,
     },
-    /// Launch the terminal user interface.
-    Tui,
     /// Launch the web-based user interface.
     Web {
         /// Port number for the web server.
@@ -927,6 +927,7 @@ impl CommandExecutor {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run,
                 task_args,
             } => {
@@ -944,6 +945,7 @@ impl CommandExecutor {
                     interactive,
                     help,
                     skip_dependencies,
+                    continue_on_error,
                     dry_run,
                     task_args,
                 })
@@ -978,8 +980,7 @@ impl CommandExecutor {
             }
 
             // Commands handled directly in main.rs
-            Command::Tui
-            | Command::Web { .. }
+            Command::Web { .. }
             | Command::Completions { .. }
             | Command::Info { .. }
             | Command::Fmt { .. }

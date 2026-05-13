@@ -29,8 +29,8 @@ use cuenv::cli::{
     self, CliError, EXIT_OK, OkEnvelope, OutputFormat, exit_code_for, parse, render_error,
 };
 use cuenv::commands::{self, Command, CommandExecutor};
+use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
-use cuenv::{coordinator, tui};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use cuenv_hooks::{ExecutionStatus, Hook, HookExecutionConfig, StateManager, execute_hooks};
 use std::path::PathBuf;
@@ -54,8 +54,11 @@ fn main() {
     // Set up error handling first
     // NOTE: Using eprintln! in panic hook is intentional - tracing infrastructure
     // may be corrupted during a panic, so we use the most reliable output method.
+    // Restore terminal state before printing so the panic output isn't garbled
+    // by leftover raw-mode / alt-screen state from a TUI that didn't drop cleanly.
     #[allow(clippy::print_stderr)]
     std::panic::set_hook(Box::new(|panic_info| {
+        cleanup_terminal();
         eprintln!("Application panicked: {panic_info}");
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
     }));
@@ -185,7 +188,6 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             cli::Commands::Task { .. }
             | cli::Commands::Exec { .. }
             | cli::Commands::Ci { .. }
-            | cli::Commands::Tui
             | cli::Commands::Web { .. }
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
@@ -330,7 +332,6 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::Restart { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
-        | Command::Tui
         | Command::Web { .. }
         | Command::Completions { .. }
         | Command::ChangesetAdd { .. }
@@ -986,11 +987,6 @@ async fn execute_command_safe(
 
     // Special commands that bypass the executor (they don't fit the event pattern)
     match &command {
-        Command::Tui => {
-            return execute_tui_command()
-                .await
-                .map_err(|e| CliError::other(e.to_string()));
-        }
         Command::Web { port, host } => {
             return execute_web_command(*port, host.clone())
                 .await
@@ -1220,40 +1216,6 @@ async fn execute_command_safe(
         let cli_err: CliError = e.into();
         cli_err.with_help("Run with --help for usage information")
     })
-}
-
-/// Execute TUI command - starts interactive event dashboard
-#[instrument(name = "cuenv_execute_tui")]
-async fn execute_tui_command() -> Result<(), CliError> {
-    use coordinator::client::CoordinatorClient;
-    use coordinator::protocol::UiType;
-
-    // Connect to coordinator as a TUI consumer
-    let Ok(mut client) = CoordinatorClient::connect_as_consumer(UiType::Tui).await else {
-        return Err(CliError::other(
-            "No cuenv coordinator is running.\n\n\
-             The TUI connects to an event coordinator to display events from other cuenv commands.\n\
-             To use the TUI:\n\
-             1. Run a cuenv command (e.g., 'cuenv t') in another terminal\n\
-             2. Then run 'cuenv tui' to watch the events\n\n\
-             Note: The coordinator is started automatically when running task commands."
-                .to_string(),
-        ));
-    };
-
-    cuenv_events::emit_command_started!("tui");
-
-    // Run the TUI event viewer
-    match tui::run_event_viewer(&mut client).await {
-        Ok(()) => {
-            cuenv_events::emit_command_completed!("tui", true, 0_u64);
-            Ok(())
-        }
-        Err(e) => {
-            cuenv_events::emit_command_completed!("tui", false, 0_u64);
-            Err(CliError::other(format!("TUI error: {e}")))
-        }
-    }
 }
 
 /// Execute Web command - starts web server for event streaming

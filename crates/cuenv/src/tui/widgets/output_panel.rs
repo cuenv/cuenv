@@ -74,28 +74,22 @@ impl<'a> OutputPanelWidget<'a> {
 
     /// Get tasks to display based on current selection
     fn get_visible_tasks(&self) -> Vec<&str> {
-        match &self.state.selected_task {
-            None => {
-                // All mode - show all tasks
-                self.state.tasks.keys().map(String::as_str).collect()
-            }
-            Some(filter) => {
-                // Filter tasks
-                self.state
-                    .tasks
-                    .keys()
-                    .filter(|name| Self::task_matches_filter(name, filter))
-                    .map(String::as_str)
-                    .collect()
-            }
+        match self.state.selected_task() {
+            None => self.state.tasks().keys().map(String::as_str).collect(),
+            Some(filter) => self
+                .state
+                .tasks()
+                .keys()
+                .filter(|name| Self::task_matches_filter(name, filter))
+                .map(String::as_str)
+                .collect(),
         }
     }
 }
 
 impl Widget for OutputPanelWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Generate title based on selection
-        let title = match &self.state.selected_task {
+        let title = match self.state.selected_task() {
             None => " Output: All Tasks ".to_string(),
             Some(filter) if filter.starts_with("::group::") => {
                 let group = filter.strip_prefix("::group::").unwrap_or("?");
@@ -125,12 +119,12 @@ impl Widget for OutputPanelWidget<'_> {
         sorted_tasks.sort_unstable();
 
         for task_name in sorted_tasks {
-            if let Some(output) = self.state.outputs.get(task_name) {
+            if let Some(output) = self.state.outputs().get(task_name) {
                 if output.combined.is_empty() {
                     continue;
                 }
 
-                let task_info = self.state.tasks.get(task_name);
+                let task_info = self.state.tasks().get(task_name);
                 let (symbol, color) = task_info.map_or(("?", Color::DarkGray), |t| {
                     (t.status.symbol(), t.status.color())
                 });
@@ -167,11 +161,11 @@ impl Widget for OutputPanelWidget<'_> {
         let total_lines = lines.len();
 
         // Auto-scroll to bottom for "All" mode, use manual scroll for "Selected" mode
-        let effective_scroll = match self.state.output_mode {
+        let effective_scroll = match self.state.output_mode() {
             OutputMode::All => total_lines.saturating_sub(visible_height),
             OutputMode::Selected => self
                 .state
-                .output_scroll
+                .output_scroll()
                 .min(total_lines.saturating_sub(visible_height)),
         };
 
