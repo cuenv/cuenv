@@ -7,6 +7,7 @@ on:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
@@ -31,6 +32,7 @@ on:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
@@ -73,10 +75,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Build cuenv (nix)
       run: |-
         . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
@@ -99,10 +105,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.audit
       run: nix build .#checks.x86_64-linux.cuenv-audit -L --accept-flake-config
       working-directory: .
@@ -125,10 +135,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.bdd
       run: nix build .#checks.x86_64-linux.cuenv-bdd -L --accept-flake-config
       working-directory: .
@@ -151,10 +165,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.clippy
       run: nix build .#checks.x86_64-linux.cuenv-clippy -L --accept-flake-config
       working-directory: .
@@ -177,10 +195,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.cuenv
       run: nix build .#checks.x86_64-linux.cuenv -L --accept-flake-config
       working-directory: .
@@ -203,10 +225,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.deny
       run: nix build .#checks.x86_64-linux.cuenv-deny -L --accept-flake-config
       working-directory: .
@@ -229,10 +255,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.doctest
       run: nix build .#checks.x86_64-linux.cuenv-doctest -L --accept-flake-config
       working-directory: .
@@ -255,10 +285,14 @@ jobs:
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix
+    - name: Prepare Namespace Nix Cache
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: Install Determinate Nix
       uses: DeterminateSystems/determinate-nix-action@v3
       with:
         extra-conf: accept-flake-config = true
+    - name: Prune Determinate Nix receipt
+      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
     - name: checks.nextest
       run: nix build .#checks.x86_64-linux.cuenv-nextest -L --accept-flake-config
       working-directory: .

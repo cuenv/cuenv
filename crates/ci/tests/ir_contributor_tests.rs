@@ -110,6 +110,11 @@ fn test_nix_contributor_active_with_nix_runtime() {
         .find(|t| t.id == "install-nix")
         .unwrap();
     assert_eq!(install_nix.contributor.as_deref(), Some("nix"));
+    assert_eq!(
+        install_nix.priority,
+        Some(2),
+        "Nix install should leave room for Namespace cache preflight cleanup"
+    );
 }
 
 #[test]
@@ -327,6 +332,52 @@ fn test_namespace_cache_contributor_active_with_config() {
     assert!(
         inputs.get("cache").and_then(|value| value.as_str()) == Some("nix"),
         "Namespace cache should enable Nix cache mode"
+    );
+
+    let prepare_receipt = bootstrap_tasks
+        .iter()
+        .find(|task| task.id == "namespaceCache.prepareDeterminateReceipt")
+        .expect(
+            "NamespaceCache contributor should inject namespaceCache.prepareDeterminateReceipt",
+        );
+    assert_eq!(
+        prepare_receipt.priority,
+        Some(1),
+        "Namespace cache prepare step must run before Determinate Nix install"
+    );
+    assert!(
+        prepare_receipt
+            .command
+            .iter()
+            .any(|command| command.contains("/nix/receipt.json")),
+        "Namespace cache prepare should remove stale Determinate Nix receipt metadata"
+    );
+    assert!(
+        prepare_receipt.provider_hints.is_none(),
+        "Namespace cache prepare should render as a shell step"
+    );
+
+    let cleanup_receipt = bootstrap_tasks
+        .iter()
+        .find(|task| task.id == "namespaceCache.cleanupDeterminateReceipt")
+        .expect(
+            "NamespaceCache contributor should inject namespaceCache.cleanupDeterminateReceipt",
+        );
+    assert_eq!(
+        cleanup_receipt.priority,
+        Some(3),
+        "Namespace cache cleanup step must run after Determinate Nix install"
+    );
+    assert!(
+        cleanup_receipt
+            .command
+            .iter()
+            .any(|command| command.contains("/nix/receipt.json")),
+        "Namespace cache cleanup should remove Determinate Nix receipt metadata"
+    );
+    assert!(
+        cleanup_receipt.provider_hints.is_none(),
+        "Namespace cache cleanup should render as a shell step"
     );
 }
 

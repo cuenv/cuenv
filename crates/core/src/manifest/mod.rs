@@ -149,7 +149,6 @@ pub struct VcsDependency {
     /// Repository-relative materialization path.
     pub path: String,
     /// Subdirectory of the repo to materialize via sparse checkout.
-    /// Requires `vendor = true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdir: Option<String>,
 }

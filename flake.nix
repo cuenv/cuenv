@@ -181,6 +181,9 @@
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
               isInTestsDir = builtins.match ".*/_tests/.*" path != null || baseName == "_tests";
               isInFeaturesDir = builtins.match ".*/features/.*" path != null || baseName == "features";
+              isAgentsRootDir = baseName == ".agents";
+              isAgentsSkillsRoot = builtins.match ".*/\\.agents/skills" path != null;
+              isInAgentsSkillsDir = builtins.match ".*/\\.agents/skills/.*" path != null;
               isLlmsTxt = baseName == "llms.txt";
               isEnvCue = baseName == "env.cue";
               isDenyToml = baseName == "deny.toml";
@@ -188,12 +191,23 @@
               # We must include the directories themselves so the filter recurses into them
               isDir = type == "directory";
               isAllowedDir =
-                (isInSchemaDir || isInExamplesDir || isInCueModDir || isInTestsDir || isInFeaturesDir || isInContribDir)
+                (
+                  isInSchemaDir
+                  || isInExamplesDir
+                  || isInCueModDir
+                  || isInTestsDir
+                  || isInFeaturesDir
+                  || isInContribDir
+                  || isAgentsRootDir
+                  || isAgentsSkillsRoot
+                  || isInAgentsSkillsDir
+                )
                 && isDir;
             in
             isCargoSource ||
             isInCratesDir ||
             isInContribDir ||
+            isInAgentsSkillsDir ||
             isLlmsTxt ||
             isEnvCue ||
             isDenyToml ||

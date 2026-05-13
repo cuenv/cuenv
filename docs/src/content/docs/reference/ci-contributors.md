@@ -83,7 +83,7 @@ Installs Determinate Nix.
 
 **Activation:** Project has a Nix-based runtime (`runtime.nix` or `runtime.devenv`)
 
-**Phase:** Bootstrap (priority 0)
+**Phase:** Bootstrap (priority 2)
 
 **Task ID:** `install-nix`
 
@@ -215,17 +215,17 @@ ci: pipelines: [
 
 ### NamespaceCacheContributor
 
-Configures Namespace nscloud-cache for Nix store caching.
+Configures Namespace nscloud-cache for Nix store caching and removes Determinate Nix installer receipt metadata around the install step.
 
 **Activation:** `ci.provider.github.namespaceCache` is configured
 
 **Phase:** Bootstrap (priority 0)
 
-**Task IDs:** `namespaceCache.setup`
+**Task IDs:** `namespaceCache.setup`, `namespaceCache.prepareDeterminateReceipt`, `namespaceCache.cleanupDeterminateReceipt`
 
 **Dependencies:** none
 
-**Requirements:** the selected Namespace runner profile must attach a cache volume and provide Nix. This contributor does not install Nix.
+**Requirements:** the selected Namespace runner profile must attach a cache volume. This contributor does not install Nix. When used with Determinate Nix, it removes any restored `/nix/receipt.json` before installation, then prunes the new receipt before the Namespace cache saves state.
 
 **Configuration Example:**
 
