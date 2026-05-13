@@ -28,8 +28,12 @@ tokio = { workspace = true, features = ["sync", "rt"] }
 uuid = { workspace = true }
 chrono = { workspace = true }
 
+# Errors
+thiserror = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
