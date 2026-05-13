@@ -214,8 +214,10 @@ impl RichTui {
                 self.can_quit = self.state.is_complete;
             }
             KeyCode::Esc => {
-                // If in selected mode, return to all mode first
-                if self.state.output_mode == OutputMode::Selected {
+                // Exit focus mode first, then selected mode, before quitting.
+                if self.state.focused_task.is_some() {
+                    self.state.clear_focus();
+                } else if self.state.output_mode == OutputMode::Selected {
                     self.state.show_all_output();
                 } else if self.state.is_complete {
                     return false;
@@ -223,6 +225,9 @@ impl RichTui {
                     self.quit_requested = true;
                     self.can_quit = self.state.is_complete;
                 }
+            }
+            KeyCode::Char('f') => {
+                self.state.toggle_focus();
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Force quit on Ctrl+C
@@ -388,22 +393,27 @@ impl RichTui {
             // Render header
             Self::render_header_static(state, f, main_chunks[0]);
 
-            // Create 2-panel horizontal split for main content
-            let content_chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Percentage(30), // Task tree (left)
-                    Constraint::Percentage(70), // Output panel (right)
-                ])
-                .split(main_chunks[1]);
+            // When a task is focused, the tree is hidden so the output
+            // panel gets every available column. Otherwise we keep the
+            // usual 30/70 tree-output split.
+            if state.focused_task.is_some() {
+                let output_widget = OutputPanelWidget::new(state);
+                f.render_widget(output_widget, main_chunks[1]);
+            } else {
+                let content_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Percentage(30), // Task tree (left)
+                        Constraint::Percentage(70), // Output panel (right)
+                    ])
+                    .split(main_chunks[1]);
 
-            // Render task tree widget (left panel)
-            let tree_widget = TaskTreeWidget::new(state);
-            f.render_widget(tree_widget, content_chunks[0]);
+                let tree_widget = TaskTreeWidget::new(state);
+                f.render_widget(tree_widget, content_chunks[0]);
 
-            // Render output panel widget (right panel)
-            let output_widget = OutputPanelWidget::new(state);
-            f.render_widget(output_widget, content_chunks[1]);
+                let output_widget = OutputPanelWidget::new(state);
+                f.render_widget(output_widget, content_chunks[1]);
+            }
 
             // Render status bar
             Self::render_status_bar_static(state, quit_requested, f, main_chunks[2]);
@@ -468,10 +478,12 @@ impl RichTui {
             "Press 'q' to quit"
         } else if quit_requested {
             "Waiting for tasks... (Ctrl+C to force)"
+        } else if state.focused_task.is_some() {
+            "f/Esc: Exit focus | PgUp/PgDn: Scroll | q: Quit"
         } else if state.output_mode == OutputMode::Selected {
-            "Esc/a: All | ↑↓/jk: Navigate | PgUp/PgDn: Scroll | q: Quit"
+            "Esc/a: All | f: Focus task | ↑↓/jk: Navigate | PgUp/PgDn: Scroll | q: Quit"
         } else {
-            "↑↓/jk: Navigate | ←→/hl: Collapse/Expand | Enter: Select | a: All | q: Quit"
+            "↑↓/jk: Navigate | ←→/hl: Collapse/Expand | Enter: Select | f: Focus | a: All | q: Quit"
         };
 
         let block = Block::default()
