@@ -545,13 +545,6 @@ pub enum Commands {
         /// Arguments to pass to the task (positional and --named values).
         #[arg(help = "Arguments to pass to the task (positional and --named values)")]
         task_args: Vec<String>,
-        /// Record every emitted event as JSONL to the given path for later replay.
-        #[arg(
-            long = "record-events",
-            help = "Record every emitted event as JSONL to the given path for later replay with `cuenv tui-replay`",
-            value_name = "PATH"
-        )]
-        record_events: Option<String>,
     },
     /// Execute a command with CUE environment variables.
     #[command(
@@ -688,31 +681,6 @@ pub enum Commands {
     /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
     Ci(crate::commands::ci::CiArgs),
-    /// Start interactive TUI dashboard for monitoring cuenv events.
-    #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
-    Tui {
-        /// Record every emitted event as JSONL to the given path for later replay.
-        #[arg(
-            long = "record-events",
-            help = "Record every emitted event as JSONL to the given path for later replay with `cuenv tui-replay`",
-            value_name = "PATH"
-        )]
-        record_events: Option<String>,
-    },
-    /// Replay a recorded event trace through the TUI.
-    #[command(about = "Replay a recorded event trace through the TUI")]
-    TuiReplay {
-        /// Path to the JSONL recording produced by `--record-events`.
-        #[arg(help = "Path to the JSONL recording", value_name = "PATH")]
-        path: String,
-        /// Play events as fast as possible (default: honor original timestamps).
-        #[arg(
-            long = "fast",
-            help = "Play events as fast as possible instead of honoring recorded timestamps",
-            default_value_t = false
-        )]
-        fast: bool,
-    },
     /// Start web server for streaming cuenv events.
     #[command(about = "Start web server for streaming cuenv events")]
     Web {
@@ -1580,8 +1548,6 @@ impl Commands {
             | Self::Completions { .. }
             | Self::Shell { .. }
             | Self::Ci { .. }
-            | Self::Tui { .. }
-            | Self::TuiReplay { .. }
             | Self::Web { .. }
             | Self::Changeset { .. }
             | Self::Release { .. }
@@ -1670,7 +1636,6 @@ impl Commands {
                 continue_on_error,
                 dry_run,
                 task_args,
-                record_events,
             } => Command::Task {
                 path,
                 package,
@@ -1689,7 +1654,6 @@ impl Commands {
                 continue_on_error,
                 dry_run: dry_run.into(),
                 task_args,
-                record_events,
             },
             Self::Exec {
                 command,
@@ -1739,8 +1703,6 @@ impl Commands {
                 package,
             },
             Self::Ci(args) => Command::Ci { args },
-            Self::Tui { record_events } => Command::Tui { record_events },
-            Self::TuiReplay { path, fast } => Command::TuiReplay { path, fast },
             Self::Web { port, host } => Command::Web { port, host },
             Self::Changeset { subcommand } => match subcommand {
                 ChangesetCommands::Add {
@@ -2712,7 +2674,6 @@ mod tests {
             continue_on_error: false,
             dry_run: false,
             task_args: vec![],
-            record_events: None,
         };
         assert_eq!(task_cmd.package(), "mypackage");
 

@@ -904,8 +904,8 @@ impl TuiState {
     /// Apply a [`CuenvEvent`] to the activity model half of this state.
     ///
     /// This is the single canonical entry point for event-driven mutations.
-    /// Replay tooling (`cuenv tui-replay`), snapshot tests, and the live
-    /// TUI all funnel events through here so behaviour stays consistent.
+    /// The TUI funnels every task event through here so the model stays
+    /// consistent regardless of how the event arrived.
     ///
     /// The method touches only activity-model fields — `selected_task`,
     /// `cursor_position`, `focused_task`, etc. are left alone so the user's
@@ -913,7 +913,7 @@ impl TuiState {
     ///
     /// Late or duplicate events targeting a task that has already reached
     /// a terminal status are dropped by [`Self::update_task_status`] so
-    /// replay determinism survives clock skew and broadcast lag.
+    /// determinism survives clock skew and broadcast lag.
     pub fn apply_event(&mut self, event: &CuenvEvent) {
         match &event.category {
             EventCategory::Task(task_event) => self.apply_task_event(task_event),

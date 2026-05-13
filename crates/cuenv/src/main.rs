@@ -29,8 +29,8 @@ use cuenv::cli::{
     self, CliError, EXIT_OK, OkEnvelope, OutputFormat, exit_code_for, parse, render_error,
 };
 use cuenv::commands::{self, Command, CommandExecutor};
+use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
-use cuenv::{coordinator, tui};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
 use cuenv_hooks::{ExecutionStatus, Hook, HookExecutionConfig, StateManager, execute_hooks};
 use std::path::PathBuf;
@@ -188,8 +188,6 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             cli::Commands::Task { .. }
             | cli::Commands::Exec { .. }
             | cli::Commands::Ci { .. }
-            | cli::Commands::Tui { .. }
-            | cli::Commands::TuiReplay { .. }
             | cli::Commands::Web { .. }
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
@@ -334,8 +332,6 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::Restart { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
-        | Command::Tui { .. }
-        | Command::TuiReplay { .. }
         | Command::Web { .. }
         | Command::Completions { .. }
         | Command::ChangesetAdd { .. }
@@ -991,16 +987,6 @@ async fn execute_command_safe(
 
     // Special commands that bypass the executor (they don't fit the event pattern)
     match &command {
-        Command::Tui { record_events } => {
-            return execute_tui_command(record_events.clone())
-                .await
-                .map_err(|e| CliError::other(e.to_string()));
-        }
-        Command::TuiReplay { path, fast } => {
-            return execute_tui_replay_command(path.clone(), *fast)
-                .await
-                .map_err(|e| CliError::other(e.to_string()));
-        }
         Command::Web { port, host } => {
             return execute_web_command(*port, host.clone())
                 .await
@@ -1230,174 +1216,6 @@ async fn execute_command_safe(
         let cli_err: CliError = e.into();
         cli_err.with_help("Run with --help for usage information")
     })
-}
-
-/// Execute TUI command - starts interactive event dashboard
-#[instrument(name = "cuenv_execute_tui")]
-async fn execute_tui_command(record_events: Option<String>) -> Result<(), CliError> {
-    use coordinator::client::CoordinatorClient;
-    use coordinator::protocol::UiType;
-
-    let recorder = spawn_event_recorder(record_events.as_deref());
-
-    // Connect to coordinator as a TUI consumer
-    let Ok(mut client) = CoordinatorClient::connect_as_consumer(UiType::Tui).await else {
-        return Err(CliError::other(
-            "No cuenv coordinator is running.\n\n\
-             The TUI connects to an event coordinator to display events from other cuenv commands.\n\
-             To use the TUI:\n\
-             1. Run a cuenv command (e.g., 'cuenv t') in another terminal\n\
-             2. Then run 'cuenv tui' to watch the events\n\n\
-             Note: The coordinator is started automatically when running task commands."
-                .to_string(),
-        ));
-    };
-
-    cuenv_events::emit_command_started!("tui");
-
-    let result = tui::run_event_viewer(&mut client).await;
-
-    if let Some((handle, stop)) = recorder {
-        let _ = stop.send(());
-        let _ = handle.await;
-    }
-
-    match result {
-        Ok(()) => {
-            cuenv_events::emit_command_completed!("tui", true, 0_u64);
-            Ok(())
-        }
-        Err(e) => {
-            cuenv_events::emit_command_completed!("tui", false, 0_u64);
-            Err(CliError::other(format!("TUI error: {e}")))
-        }
-    }
-}
-
-/// Execute the TUI replay command — drive the rich TUI from a recorded
-/// JSONL trace instead of live coordinator events.
-///
-/// Reads `path` as JSONL via [`cuenv_events::EventReplayReader`], pushes
-/// every event into a fresh [`cuenv_events::EventBus`], and drives the
-/// existing [`tui::rich::RichTui`] event loop against the bus. When
-/// `--fast` is set events are emitted as fast as possible; otherwise the
-/// recorded inter-arrival gaps (derived from `CuenvEvent::timestamp`) are
-/// honoured.
-#[instrument(name = "cuenv_execute_tui_replay")]
-async fn execute_tui_replay_command(path: String, fast: bool) -> Result<(), CliError> {
-    use cuenv_events::{EventBus, EventReplayReader};
-
-    let reader = EventReplayReader::open(&path)
-        .map_err(|err| CliError::other(format!("failed to open event recording {path}: {err}")))?;
-
-    let mut events: Vec<cuenv_events::CuenvEvent> = Vec::new();
-    for (line_no, result) in reader.enumerate() {
-        match result {
-            Ok(event) => events.push(event),
-            Err(err) => ::tracing::warn!(
-                path = %path,
-                line = line_no + 1,
-                error = %err,
-                "skipping malformed event in recording"
-            ),
-        }
-    }
-    if events.is_empty() {
-        return Err(CliError::other(format!("event recording {path} is empty")));
-    }
-
-    cuenv_events::emit_command_started!("tui-replay");
-
-    let bus = EventBus::new();
-    let sender = bus
-        .sender()
-        .ok_or_else(|| CliError::other("event bus sender unavailable".to_string()))?;
-    let receiver = bus.subscribe();
-
-    // Spawn the playback task before constructing the TUI so subscribers
-    // are guaranteed to be active by the time events flow.
-    let playback = tokio::spawn(playback_events(events, sender, fast));
-
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    let mut tui = tui::rich::RichTui::new(receiver, ready_tx)
-        .map_err(|err| CliError::other(format!("failed to initialise replay TUI: {err}")))?;
-    drop(ready_rx);
-
-    let outcome = tokio::task::spawn_blocking(move || tui.run())
-        .await
-        .map_err(|err| CliError::other(format!("replay TUI join error: {err}")))
-        .and_then(|r| r.map_err(|err| CliError::other(format!("replay TUI error: {err}"))));
-
-    let _ = playback.await;
-
-    match outcome {
-        Ok(()) => {
-            cuenv_events::emit_command_completed!("tui-replay", true, 0_u64);
-            Ok(())
-        }
-        Err(e) => {
-            cuenv_events::emit_command_completed!("tui-replay", false, 0_u64);
-            Err(e)
-        }
-    }
-}
-
-/// Push every recorded event onto `sender`, honouring inter-arrival gaps
-/// unless `fast` is set. Final event is a synthesised `SystemEvent::Shutdown`
-/// so the TUI exits when playback finishes.
-async fn playback_events(
-    events: Vec<cuenv_events::CuenvEvent>,
-    sender: cuenv_events::EventSender,
-    fast: bool,
-) {
-    use cuenv_events::{EventCategory, EventSource, SystemEvent};
-    let mut prev_ts: Option<chrono::DateTime<chrono::Utc>> = None;
-    for event in events {
-        if !fast {
-            if let Some(prev) = prev_ts {
-                let delta = (event.timestamp - prev)
-                    .to_std()
-                    .unwrap_or(std::time::Duration::ZERO);
-                tokio::time::sleep(delta).await;
-            }
-            prev_ts = Some(event.timestamp);
-        }
-        if sender.send(event).is_err() {
-            break;
-        }
-    }
-    let _ = sender.send(cuenv_events::CuenvEvent::new(
-        uuid::Uuid::new_v4(),
-        EventSource::new("cuenv::replay"),
-        EventCategory::System(SystemEvent::Shutdown),
-    ));
-}
-
-/// Spawn an event recorder if the user passed `--record-events`.
-///
-/// Returns a join handle paired with a oneshot sender — callers signal the
-/// recorder to stop and then await the handle so buffered events flush.
-fn spawn_event_recorder(
-    path: Option<&str>,
-) -> Option<(
-    tokio::task::JoinHandle<()>,
-    tokio::sync::oneshot::Sender<()>,
-)> {
-    let path = path?;
-    let recorder = match cuenv_events::EventRecorder::create(path) {
-        Ok(r) => r,
-        Err(err) => {
-            ::tracing::warn!(
-                path = %path,
-                error = %err,
-                "failed to start event recorder; --record-events ignored"
-            );
-            return None;
-        }
-    };
-    let receiver = crate::tracing::subscribe_global_events()?;
-    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-    Some((tokio::spawn(recorder.run(receiver, stop_rx)), stop_tx))
 }
 
 /// Execute Web command - starts web server for event streaming

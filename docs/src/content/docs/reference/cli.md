@@ -616,59 +616,6 @@ yq (4.44.6):
   ...
 ```
 
-### `cuenv tui`
-
-Start an interactive TUI dashboard for monitoring cuenv events.
-
-```bash
-cuenv tui [--record-events <PATH>]
-```
-
-**Options:**
-
-- `--record-events <PATH>`: Record every emitted event as JSON Lines to `PATH` while the TUI runs. Pairs with `cuenv tui-replay` for deterministic playback. Registered secrets are redacted before each line is written.
-
-The TUI connects to a running cuenv coordinator to display real-time events from other cuenv commands. To use:
-
-1. Run a cuenv command (e.g., `cuenv task build`) in another terminal
-2. Run `cuenv tui` to watch the events
-
-`--record-events` is also accepted by `cuenv task`/`cuenv t` so recordings can be produced without the TUI attached.
-
-### `cuenv tui-replay`
-
-Replay a recorded JSONL event trace through the rich TUI. Useful for post-mortem analysis or for sharing a reproduction of a run.
-
-```bash
-cuenv tui-replay <PATH> [--fast]
-```
-
-**Arguments:**
-
-- `<PATH>`: Path to a JSONL recording produced by `--record-events`.
-
-**Options:**
-
-- `--fast`: Replay events as fast as possible. By default the original inter-arrival timing is honoured so the replay paces like the live run.
-
-Malformed lines are logged at `warn` level and skipped — a single corrupt line does not abort the replay.
-
-#### JSONL recording format
-
-Each line is a JSON-serialized `CuenvEvent` with a stable shape:
-
-```json
-{
-  "id": "<uuid>",
-  "correlation_id": "<uuid>",
-  "timestamp": "<RFC3339>",
-  "source": { "target": "cuenv::task" },
-  "category": { "type": "Task", "data": { "event": "Started", "data": {"name": "...", "command": "...", "hermetic": true } } }
-}
-```
-
-When the broadcast bus lags, the receiver injects a synthetic `SystemEvent::EventGap { skipped }` event so the recording preserves the gap rather than silently dropping events.
-
 ### `cuenv web`
 
 Start a web server for streaming cuenv events.
