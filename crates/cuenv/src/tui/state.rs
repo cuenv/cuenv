@@ -1,7 +1,42 @@
-//! Centralized state management for the rich TUI
+//! Centralized state management for the rich TUI.
+//!
+//! State is logically split into two concerns:
+//!
+//! - **[`ActivityModel`]** — the event-driven data model: tasks, outputs,
+//!   running set, completion status. Mutated **only** by
+//!   [`TuiState::apply_event`] (and helpers it calls). Two replays of the
+//!   same event trace produce identical `ActivityModel`s; that property
+//!   is asserted by the integration tests in `tests/tui_replay.rs`.
+//! - **[`UiState`]** — the input-driven view state: cursor position,
+//!   expansion, focus, selected task, scroll offset. Mutated only by
+//!   keyboard handlers.
+//!
+//! Both concerns currently live inside [`TuiState`] for backward
+//! compatibility with the widget renderers and rich TUI consumers, which
+//! still read individual fields directly. The two marker structs below
+//! exist to document the boundary and to let downstream code spell out
+//! which subset of state it expects; full field migration into the
+//! sub-structs is a follow-up.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
+
+use cuenv_events::{CuenvEvent, EventCategory, Stream, TaskEvent};
+
+/// Marker for the event-driven half of [`TuiState`].
+///
+/// The boundary exists so renderers and snapshot tests can reason about
+/// "what would a fresh replay of this trace produce" independently of the
+/// user's current focus / scroll position. Concrete fields still live on
+/// [`TuiState`]; this struct documents the invariant.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ActivityModel;
+
+/// Marker for the input-driven half of [`TuiState`].
+///
+/// See [`ActivityModel`] for the rationale.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UiState;
 
 /// Status of a task in the execution graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,9 +264,16 @@ impl TaskOutput {
     }
 }
 
-/// Global TUI state for task execution
+/// Global TUI state for task execution.
+///
+/// Fields are grouped by concern: the upper block belongs to the
+/// [`ActivityModel`] (event-driven, deterministic when replayed) and the
+/// lower block belongs to the [`UiState`] (input-driven). Mutations that
+/// cross the boundary go through [`TuiState::apply_event`] or explicit
+/// input-handler methods, never through ad-hoc field writes.
 #[derive(Debug)]
 pub struct TuiState {
+    // -- ActivityModel: mutated by apply_event -------------------------------
     /// Start time of the overall execution
     pub start_time: Instant,
     /// Map of task name to task info
@@ -246,6 +288,8 @@ pub struct TuiState {
     pub success: bool,
     /// Error message (if failed)
     pub error_message: Option<String>,
+
+    // -- UiState: mutated by input handlers ----------------------------------
     /// Currently selected task for output filtering (None = show all)
     pub selected_task: Option<String>,
     /// Set of expanded tree nodes (task names that are expanded)
@@ -648,6 +692,80 @@ impl TuiState {
         // Expand "All" node by default for visibility
         self.expanded_nodes.insert("::all::".to_string());
         self.rebuild_flattened_tree();
+    }
+
+    /// Apply a [`CuenvEvent`] to the [`ActivityModel`] half of this state.
+    ///
+    /// This is the single canonical entry point for event-driven mutations.
+    /// Replay tooling (`cuenv tui-replay`), snapshot tests, and the live
+    /// TUI all funnel events through here so behaviour stays consistent.
+    ///
+    /// The method touches only model fields — `selected_task`,
+    /// `cursor_position`, `focused_task`, etc. are left alone so the user's
+    /// in-flight UI interaction survives a flurry of events.
+    pub fn apply_event(&mut self, event: &CuenvEvent) {
+        match &event.category {
+            EventCategory::Task(task_event) => self.apply_task_event(task_event),
+            EventCategory::Service(_)
+            | EventCategory::Ci(_)
+            | EventCategory::Command(_)
+            | EventCategory::Interactive(_)
+            | EventCategory::System(_)
+            | EventCategory::Output(_) => {}
+        }
+    }
+
+    /// Apply a [`TaskEvent`] (the bulk of the lifecycle) to the model.
+    fn apply_task_event(&mut self, event: &TaskEvent) {
+        match event {
+            TaskEvent::Started { name, .. } => {
+                self.update_task_status(name, TaskStatus::Running);
+            }
+            TaskEvent::CacheHit { name, .. } => {
+                self.update_task_status(name, TaskStatus::Cached);
+            }
+            TaskEvent::Output {
+                name,
+                stream,
+                content,
+                ..
+            } => {
+                let stream_str = match stream {
+                    Stream::Stdout => "stdout",
+                    Stream::Stderr => "stderr",
+                };
+                self.add_task_output(name, stream_str, content.clone());
+            }
+            TaskEvent::Completed {
+                name,
+                success,
+                exit_code,
+                ..
+            } => {
+                let status = if *success {
+                    TaskStatus::Completed
+                } else {
+                    TaskStatus::Failed
+                };
+                self.update_task_status(name, status);
+                if let Some(task) = self.tasks.get_mut(name) {
+                    task.exit_code = *exit_code;
+                }
+            }
+            TaskEvent::Skipped { name, .. } => {
+                self.update_task_status(name, TaskStatus::Skipped);
+            }
+            // Group / queue / cache-skip / retry events don't currently move
+            // the model — renderers consume them directly off the bus.
+            // Reserved for Phase 4 (group-aware spinner) where they shape
+            // the CLI renderer's progress aggregates.
+            TaskEvent::CacheMiss { .. }
+            | TaskEvent::CacheSkipped { .. }
+            | TaskEvent::Queued { .. }
+            | TaskEvent::Retrying { .. }
+            | TaskEvent::GroupStarted { .. }
+            | TaskEvent::GroupCompleted { .. } => {}
+        }
     }
 }
 

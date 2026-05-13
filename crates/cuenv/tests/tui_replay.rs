@@ -160,6 +160,62 @@ fn cli_tui_replay_rejects_missing_file() {
 }
 
 #[test]
+fn apply_event_is_deterministic_across_replays() {
+    use cuenv::tui::state::{TaskInfo, TaskStatus, TuiState};
+
+    let trace = sample_trace();
+    // The trace exercises both Started/Output/Completed and group lifecycle
+    // events. The model fields touched by `apply_event` should be bit-
+    // identical after two independent replays of the same event stream.
+    #[derive(Debug, PartialEq, Eq)]
+    struct TaskSnapshot {
+        name: String,
+        status: TaskStatus,
+        exit_code: Option<i32>,
+        stdout_lines: usize,
+        stderr_lines: usize,
+    }
+
+    let snapshot = |events: &[CuenvEvent]| -> Vec<TaskSnapshot> {
+        let mut state = TuiState::new();
+        // Register the task so apply_event has somewhere to record output.
+        state.add_task(TaskInfo::new("ci.fmt".to_string(), Vec::new(), 0));
+        for event in events {
+            state.apply_event(event);
+        }
+        let mut snaps: Vec<TaskSnapshot> = state
+            .tasks
+            .iter()
+            .map(|(name, task)| {
+                let output = state.outputs.get(name);
+                TaskSnapshot {
+                    name: name.clone(),
+                    status: task.status,
+                    exit_code: task.exit_code,
+                    stdout_lines: output.map_or(0, |o| o.stdout.len()),
+                    stderr_lines: output.map_or(0, |o| o.stderr.len()),
+                }
+            })
+            .collect();
+        snaps.sort_by(|a, b| a.name.cmp(&b.name));
+        snaps
+    };
+
+    let a = snapshot(&trace);
+    let b = snapshot(&trace);
+    assert_eq!(
+        a, b,
+        "two replays of the same trace must produce identical model state"
+    );
+    assert!(
+        a.iter().any(|s| s.name == "ci.fmt"
+            && s.status == TaskStatus::Completed
+            && s.stdout_lines == 1),
+        "expected ci.fmt to end Completed with one stdout line, got {a:?}"
+    );
+}
+
+#[test]
 fn cli_tui_replay_rejects_empty_recording() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("empty.jsonl");
