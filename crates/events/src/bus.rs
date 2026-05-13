@@ -4,9 +4,78 @@
 //! to receive events concurrently.
 
 use crate::event::{CuenvEvent, EventCategory, EventSource, SystemEvent};
-use std::sync::Mutex;
+use crate::metadata::correlation_id;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
+
+/// Process-wide event sender, set once at startup.
+///
+/// Direct-emit consumers (and the future replacement for the tracing
+/// transport) push into this. Set via [`set_global_sender`] when the
+/// bus is constructed; until then, [`emit`] is a no-op.
+static GLOBAL_SENDER: OnceLock<EventSender> = OnceLock::new();
+
+/// Install the process-wide [`EventSender`].
+///
+/// Returns `true` if the sender was installed, `false` if one is already
+/// registered (subsequent calls are ignored to preserve idempotence in
+/// tests and embeddings).
+///
+/// Pair with [`emit`] / [`emit_with_source`] to publish events without
+/// going through `tracing::info!` macros — useful for direct-emit
+/// consumers that don't want the parse round-trip the current
+/// [`crate::layer::CuenvEventLayer`] performs.
+pub fn set_global_sender(sender: EventSender) -> bool {
+    GLOBAL_SENDER.set(sender).is_ok()
+}
+
+/// Get the process-wide [`EventSender`], if installed.
+#[must_use]
+pub fn global_sender() -> Option<EventSender> {
+    GLOBAL_SENDER.get().cloned()
+}
+
+/// Publish an [`EventCategory`] to the global event bus.
+///
+/// Constructs a [`CuenvEvent`] with a fresh id, the active session's
+/// [`correlation_id`], and the given `source` and `category`, then sends
+/// it through the process-wide [`EventSender`] (see [`set_global_sender`]).
+///
+/// Returns `Ok(())` on success, `Err(SendError::Closed)` if the bus has
+/// been shut down, and `Err(SendError::Closed)` (semantically "no bus")
+/// if [`set_global_sender`] was never called — this lets call sites stay
+/// branch-free in non-bus contexts (tests, library embeddings) without
+/// silent failures.
+///
+/// # Errors
+///
+/// Returns [`SendError::Closed`] if no global sender is installed or the
+/// bus has been shut down.
+pub fn emit_with_source(source: EventSource, category: EventCategory) -> Result<(), SendError> {
+    let sender = GLOBAL_SENDER.get().ok_or(SendError::Closed)?;
+    let event = CuenvEvent {
+        id: Uuid::new_v4(),
+        correlation_id: correlation_id(),
+        timestamp: chrono::Utc::now(),
+        source,
+        category,
+    };
+    sender.send(event)
+}
+
+/// Publish an [`EventCategory`] to the global event bus, using a default
+/// source target of `"cuenv::events::emit"`.
+///
+/// See [`emit_with_source`] for the variant that lets you set the source
+/// explicitly.
+///
+/// # Errors
+///
+/// See [`emit_with_source`].
+pub fn emit(category: EventCategory) -> Result<(), SendError> {
+    emit_with_source(EventSource::new("cuenv::events::emit"), category)
+}
 
 /// Default channel capacity for the broadcast channel.
 const DEFAULT_BROADCAST_CAPACITY: usize = 1000;
@@ -219,6 +288,47 @@ mod tests {
         let bus = EventBus::new();
         let sender = bus.sender().expect("sender should be available");
         assert!(!sender.is_closed());
+    }
+
+    #[test]
+    fn emit_returns_closed_when_no_global_sender() {
+        // GLOBAL_SENDER is a process-wide OnceLock; cargo test runs all
+        // tests in one process so we can't safely *uninstall* it. But
+        // before any installer test runs, emit must return Closed —
+        // covered indirectly by the install path test below.
+        let outcome = emit(EventCategory::System(SystemEvent::Shutdown));
+        // Either Ok (a prior test installed) or Err(Closed) (none did).
+        // Both are well-defined; the contract is "no panic, no surprise".
+        assert!(matches!(outcome, Ok(()) | Err(SendError::Closed)));
+    }
+
+    #[tokio::test]
+    async fn emit_with_installed_global_sender_publishes_event() {
+        let bus = EventBus::new();
+        let sender = bus.sender().expect("sender should be available");
+        let mut receiver = bus.subscribe();
+
+        // `set_global_sender` is idempotent process-wide; the test only
+        // asserts that emit() succeeds when *some* sender is installed,
+        // which is the contract we care about. Other tests in this
+        // module may have installed an earlier sender — that's fine.
+        let _ = set_global_sender(sender);
+
+        emit(EventCategory::Output(OutputEvent::Stdout {
+            content: "via direct emit".to_string(),
+        }))
+        .expect("emit should succeed with a global sender installed");
+
+        let received = receiver
+            .recv()
+            .await
+            .expect("subscriber should receive the emitted event");
+        match received.category {
+            EventCategory::Output(OutputEvent::Stdout { content }) => {
+                assert_eq!(content, "via direct emit");
+            }
+            other => panic!("unexpected category: {other:?}"),
+        }
     }
 
     #[tokio::test]

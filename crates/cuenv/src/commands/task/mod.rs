@@ -793,6 +793,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
+        continue_on_error: false,
         environment: runtime_env.clone(),
         working_dir: None,
         cue_module_root: cue_module_root.clone(),
@@ -814,6 +815,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         let tui_config = ExecutorConfig {
             capture_output: cuenv_core::OutputCapture::Capture, // Force capture for TUI mode
             max_parallel: 0,
+            continue_on_error: false,
             environment: runtime_env.clone(),
             working_dir: None,
             cue_module_root: cue_module_root.clone(),

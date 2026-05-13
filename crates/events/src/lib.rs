@@ -45,7 +45,10 @@ pub mod renderers;
 pub mod subscribers;
 
 // Re-exports for convenience
-pub use bus::{EventBus, EventReceiver, EventSender, SendError};
+pub use bus::{
+    EventBus, EventReceiver, EventSender, SendError, emit, emit_with_source, global_sender,
+    set_global_sender,
+};
 pub use event::{
     CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
     InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,

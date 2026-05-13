@@ -25,6 +25,8 @@ Event surface (`cuenv-events`):
 - `Started` carries `task_kind: TaskKind` (`Task` / `Group` / `Sequence`) and `parent_group: Option<String>` for group correlation.
 - `SystemEvent::EventGap { skipped }` is synthesised by `EventReceiver` when the broadcast bus lags so consumers (recorder, TUI, JSON renderer) can surface a gap indicator instead of silently dropping events. Public enums are `#[non_exhaustive]`.
 - `cuenv-events::register_secret(...)` / `register_secrets(...)` enroll values; `redact(str)` rewrites them to `*_*` and is applied automatically by `EventRecorder::write_event` so JSONL recordings never contain plaintext secrets.
+- `ExecutorConfig::continue_on_error` makes `cuenv task` and library callers honour the same DAG semantics as `ci.pipelines[*].continueOnError` — dependents of a failing task get `task.skipped { DependencyFailed }` and independent siblings keep running. Panics / `JoinError` are still fatal.
+- `cuenv-events` exposes a direct-emit API: `set_global_sender(EventSender)` installs the process-wide bus, then `cuenv_events::emit(category)` / `emit_with_source(source, category)` publish a `CuenvEvent` without going through the `tracing::info!` macros. The existing `emit_*!` macros still route through `CuenvEventLayer` for now; the direct API is the seam for the planned migration away from tracing-as-transport.
 
 Adversarial prompts:
 
