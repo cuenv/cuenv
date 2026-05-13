@@ -316,7 +316,14 @@ async fn execute_project_pipeline(
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
-        // Execute the task with all dependencies (uses TaskGraph for proper ordering)
+        // Execute the task with all dependencies (uses TaskGraph for proper ordering).
+        // `continueOnError` is read off the pipeline config — when true, a
+        // failing task does not abort the rest of the dependency chain.
+        let pipeline_continue_on_error = config
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.pipelines.get(pipeline_name))
+            .is_some_and(|p| p.continue_on_error);
         let result = execute_task_with_deps(
             config,
             task_name,
@@ -324,6 +331,7 @@ async fn execute_project_pipeline(
             cache_policy_override,
             environment,
             &hook_env,
+            pipeline_continue_on_error,
         )
         .await;
 
@@ -753,11 +761,17 @@ const CI_MAX_PARALLEL: usize = 4;
 /// then walks the graph by topological "parallel groups" so independent tasks
 /// at the same dependency depth run concurrently (bounded by [`CI_MAX_PARALLEL`]).
 ///
-/// Behaviour preserved from the prior serial implementation:
-/// - First failure aborts the rest of the run and returns the failing task's
-///   `TaskOutput` (continue-on-error lands in Phase 6).
-/// - The returned `TaskOutput` is the originally-requested task's output —
-///   resolved by matching the canonical name once execution finishes.
+/// Behaviour:
+/// - When `continue_on_error` is `false` (default), the first failure aborts
+///   the rest of the run and returns the failing task's `TaskOutput`.
+/// - When `continue_on_error` is `true`, dependents of a failing task are
+///   marked as `Skipped { DependencyFailed }` (and `TaskEvent::Skipped` is
+///   emitted), but unrelated sibling chains continue executing. The
+///   originally-requested task's output is returned at the end, with the
+///   failing-dep output if it never got to run.
+///
+/// The returned `TaskOutput` is the originally-requested task's output —
+/// resolved by matching the canonical name once execution finishes.
 async fn execute_task_with_deps(
     config: &Project,
     task_name: &str,
@@ -765,6 +779,7 @@ async fn execute_task_with_deps(
     cache_policy_override: Option<CachePolicy>,
     environment: Option<&str>,
     hook_env: &BTreeMap<String, String>,
+    continue_on_error: bool,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     use tokio::task::JoinSet;
 
@@ -795,6 +810,7 @@ async fn execute_task_with_deps(
     tracing::info!(
         task = task_name,
         canonical = %canonical_name,
+        continue_on_error,
         execution_order = ?parallel_groups
             .iter()
             .map(|g| g.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
@@ -812,11 +828,29 @@ async fn execute_task_with_deps(
     // up to CI_MAX_PARALLEL workers and join on the slowest task before
     // advancing to the next level.
     let mut outputs: HashMap<String, TaskOutput> = HashMap::new();
+    let mut tainted: HashSet<String> = HashSet::new();
     let mut first_failure: Option<TaskOutput> = None;
     'outer: for group in parallel_groups {
         let mut join_set: JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)> =
             JoinSet::new();
-        let mut queue: std::collections::VecDeque<_> = group.into_iter().collect();
+        let mut queue: std::collections::VecDeque<_> = group
+            .into_iter()
+            .filter_map(|node| {
+                let failing_dep = node
+                    .task
+                    .dependency_names()
+                    .find(|dep| tainted.contains(*dep))
+                    .map(str::to_string);
+                if let Some(dep) = failing_dep {
+                    let reason = cuenv_events::SkipReason::DependencyFailed { dep };
+                    // Don't even spawn — emit Skipped and propagate taint.
+                    cuenv_events::emit_task_skipped!(&node.name, reason);
+                    tainted.insert(node.name.clone());
+                    return None;
+                }
+                Some(node)
+            })
+            .collect();
         let mut next_queue_position: usize = 0;
 
         // Prime the join set up to the parallelism cap, emitting queued
@@ -827,10 +861,12 @@ async fn execute_task_with_deps(
                 next_queue_position += 1;
                 queue.push_front(node);
                 if let Some(joined) = join_set.join_next().await
-                    && let Some(failed) = handle_joined_result(joined, &mut outputs)?
+                    && let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)?
                 {
-                    first_failure = Some(failed);
-                    break 'outer;
+                    first_failure.get_or_insert(failed);
+                    if !continue_on_error {
+                        break 'outer;
+                    }
                 }
                 continue;
             }
@@ -846,9 +882,11 @@ async fn execute_task_with_deps(
         }
 
         while let Some(joined) = join_set.join_next().await {
-            if let Some(failed) = handle_joined_result(joined, &mut outputs)? {
-                first_failure = Some(failed);
-                break 'outer;
+            if let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)? {
+                first_failure.get_or_insert(failed);
+                if !continue_on_error {
+                    break 'outer;
+                }
             }
         }
     }
@@ -899,11 +937,13 @@ fn handle_joined_result(
         tokio::task::JoinError,
     >,
     outputs: &mut HashMap<String, TaskOutput>,
+    tainted: &mut HashSet<String>,
 ) -> std::result::Result<Option<TaskOutput>, ExecutorError> {
     let (name, result) = joined
         .map_err(|err| ExecutorError::Compilation(format!("CI orchestrator panic: {err}")))?;
     let output = result?;
     if !output.success {
+        tainted.insert(name.clone());
         outputs.insert(name, output.clone());
         return Ok(Some(output));
     }

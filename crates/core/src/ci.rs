@@ -383,6 +383,13 @@ pub struct Pipeline {
     /// Values can be literal strings or capture references resolved after execution.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub annotations: HashMap<String, AnnotationValue>,
+    /// When true, a failing task does not abort the rest of the pipeline:
+    /// subsequent tasks whose dependencies failed are reported as `Skipped`
+    /// (with the failing dependency named) instead of being silently dropped.
+    /// The pipeline still exits non-zero overall if any task failed.
+    /// Defaults to `false` (current behaviour — first failure aborts).
+    #[serde(default)]
+    pub continue_on_error: bool,
     /// Whether to derive trigger paths from task inputs.
     /// Defaults to true for branch/PR triggers, false for scheduled-only.
     pub derive_paths: Option<bool>,
@@ -937,6 +944,7 @@ mod tests {
                     when: None,
                     tasks: vec![],
                     annotations: HashMap::new(),
+                    continue_on_error: false,
                     derive_paths: None,
                     provider: None,
                 },
@@ -959,6 +967,7 @@ mod tests {
                     when: None,
                     tasks: vec![],
                     annotations: HashMap::new(),
+                    continue_on_error: false,
                     derive_paths: None,
                     provider: None,
                 },
