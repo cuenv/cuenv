@@ -748,18 +748,7 @@ fn resolve_dependency(
 ) -> Result<LockedVcsDependency> {
     validate_git_input("url", &spec.url)?;
     validate_git_input("reference", &spec.reference)?;
-    let normalized_subdir = match spec.subdir.as_deref() {
-        Some(value) => {
-            if !spec.vendor {
-                return Err(Error::configuration(format!(
-                    "VCS dependency '{}': subdir requires vendor = true",
-                    name
-                )));
-            }
-            Some(validate_subdir(value)?)
-        }
-        None => None,
-    };
+    let normalized_subdir = spec.subdir.as_deref().map(validate_subdir).transpose()?;
     let cache_path = cache_root.join(name);
     fs::create_dir_all(cache_root).map_err(|e| Error::configuration(e.to_string()))?;
     ensure_managed_internal_path(cache_root, &cache_path)?;
@@ -899,7 +888,7 @@ fn prepare_dependency(
     Ok(temp_guard)
 }
 
-/// Sparse-checkout vendor path: only the requested `subdir` of the repo lands
+/// Sparse-checkout subdir path: only the requested `subdir` of the repo lands
 /// at `target`, with no `.git` directory.
 fn prepare_subdir_dependency(
     temp_root: &Path,
@@ -1076,19 +1065,18 @@ fn ensure_replaceable_target(target: &Path, previous: Option<&LockedVcsDependenc
         )));
     }
     validate_git_input("marker", marker.trim())?;
-    if previous.vendor {
-        let expected = expected_vendored_tree(previous);
+    if is_snapshot_materialization(previous) {
+        let expected = expected_snapshot_tree(previous);
         let actual = vendored_tree_hash(target)?;
         if actual != expected {
             return Err(Error::configuration(format!(
-                "Refusing to overwrite modified vendored VCS target '{}': tree {}, expected {}",
+                "Refusing to overwrite modified VCS target '{}': tree {}, expected {}",
                 target.display(),
                 actual,
                 expected
             )));
         }
-    }
-    if !previous.vendor {
+    } else {
         ensure_git_dir(target)?;
         ensure_marker_is_excluded(target)?;
         let status = git_output(
@@ -1131,7 +1119,7 @@ fn write_ownership_marker(path: &Path, locked: &LockedVcsDependency) -> Result<(
     marker
         .write_all(locked.commit.as_bytes())
         .map_err(|e| Error::configuration(e.to_string()))?;
-    if !locked.vendor {
+    if is_git_checkout_materialization(locked) {
         ensure_marker_is_excluded(path)?;
     }
     Ok(())
@@ -1292,9 +1280,17 @@ fn verify_checked_out_tree(path: &Path, locked: &LockedVcsDependency) -> Result<
     Ok(())
 }
 
-/// Tree object the vendored content on disk should hash to. When a `subdir`
+fn is_snapshot_materialization(locked: &LockedVcsDependency) -> bool {
+    locked.vendor || locked.subdir.is_some()
+}
+
+fn is_git_checkout_materialization(locked: &LockedVcsDependency) -> bool {
+    !locked.vendor && locked.subdir.is_none()
+}
+
+/// Tree object the snapshot content on disk should hash to. When a `subdir`
 /// is set we expect the subtree, not the full repo root tree.
-fn expected_vendored_tree(locked: &LockedVcsDependency) -> &str {
+fn expected_snapshot_tree(locked: &LockedVcsDependency) -> &str {
     locked.subtree.as_deref().unwrap_or(locked.tree.as_str())
 }
 
@@ -1329,8 +1325,8 @@ fn check_materialized(path: &Path, locked: &LockedVcsDependency) -> Result<()> {
             locked.commit
         )));
     }
-    if locked.vendor {
-        let expected = expected_vendored_tree(locked);
+    if is_snapshot_materialization(locked) {
+        let expected = expected_snapshot_tree(locked);
         let actual = vendored_tree_hash(path)?;
         if actual != expected {
             return Err(Error::configuration(format!(
@@ -2151,7 +2147,7 @@ mod tests {
     }
 
     #[test]
-    fn subdir_requires_vendor_true() {
+    fn non_vendored_subdir_extracts_subdir_and_is_ignored() {
         let source = create_source_repo_with_subdirs();
         let workspace = create_workspace();
         let dependency = CollectedVcsDependency {
@@ -2160,22 +2156,36 @@ mod tests {
                 url: source.path().display().to_string(),
                 reference: "main".to_string(),
                 vendor: false,
-                path: ".agents/skills".to_string(),
+                path: ".cuenv/vcs/skills".to_string(),
                 subdir: Some(".agents/skills".to_string()),
             },
         };
 
-        let err = sync_vcs!(
+        let output = sync_vcs!(
             workspace.path(),
             vec![dependency],
             &SyncOptions::default(),
             VcsSyncScope::Path,
         )
-        .expect_err("subdir without vendor=true must be rejected");
-        assert!(
-            err.to_string().contains("subdir requires vendor"),
-            "unexpected error: {err}"
-        );
+        .expect("non-vendored subdir sync should succeed");
+        assert!(output.contains("skills: Synced"));
+
+        let target = workspace.path().join(".cuenv/vcs/skills");
+        assert!(target.join("example/SKILL.md").exists());
+        assert!(!target.join("other.txt").exists());
+        assert!(!target.join(".git").exists());
+        assert!(target.join(".cuenv-vcs").exists());
+
+        let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
+        assert!(gitignore.contains(".cuenv/vcs/skills/"));
+
+        let lockfile = Lockfile::load(&workspace.path().join(LOCKFILE_NAME))
+            .expect("load lockfile")
+            .expect("lockfile present");
+        let entry = lockfile.find_vcs("skills").expect("entry present");
+        assert!(!entry.vendor);
+        assert_eq!(entry.subdir.as_deref(), Some(".agents/skills"));
+        assert!(entry.subtree.is_some());
     }
 
     #[test]

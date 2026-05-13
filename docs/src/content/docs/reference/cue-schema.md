@@ -959,8 +959,9 @@ VCS dependency names must match `#VcsDependencyName`: ASCII letters, digits, `_`
 | ----------- | -------- | -------- | ------------------------------------------------ |
 | `url`       | `string` | Yes      | Git repository URL                               |
 | `reference` | `string` | No       | Branch, tag, or commit-ish. Default: `HEAD`      |
-| `vendor`    | `bool`   | Yes      | Track a snapshot (`true`) or local checkout      |
+| `vendor`    | `bool`   | Yes      | Track the materialized content (`true`) or ignore generated content (`false`) |
 | `path`      | `string` | Yes      | Repository-relative materialization path         |
+| `subdir`    | `string` | No       | Repo-relative subtree to materialize via sparse checkout |
 
 ## Runtimes
 

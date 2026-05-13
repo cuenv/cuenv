@@ -14,7 +14,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 Status guardrails:
 
 - CI workflow generation requires explicit `ci.providers`.
-- Namespace cache support is `ci.provider.github.namespaceCache` plus `contributors.#NamespaceCache`; it emits `namespacelabs/nscloud-cache-action@v1` with `cache: nix` and intentionally does not install Nix.
+- Namespace cache support is `ci.provider.github.namespaceCache` plus `contributors.#NamespaceCache`; it emits `namespacelabs/nscloud-cache-action@v1` with `cache: nix`, intentionally does not install Nix, removes any restored `/nix/receipt.json` before Determinate Nix installs, and prunes the new receipt before the cache action saves state.
 - Derived GitHub trigger paths are project-input based, but emitted as normalized repo-relative filters; nested inputs like `../flake.nix` must become `flake.nix`. Task inputs without glob metacharacters also emit a `path/**` companion entry so directory inputs trigger on descendants (mirroring `cuenv_core::affected::matches_pattern`). Inputs that escape the repository root are dropped and logged at `warn` level.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.

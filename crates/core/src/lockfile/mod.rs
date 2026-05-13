@@ -563,10 +563,10 @@ pub struct LockedVcsDependency {
     pub vendor: bool,
     /// Repository-relative materialization path.
     pub path: String,
-    /// Subdirectory of the repo that was vendored (sparse checkout).
+    /// Subdirectory of the repo that was materialized via sparse checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdir: Option<String>,
-    /// Tree object SHA for the vendored subdirectory at `commit:subdir`.
+    /// Tree object SHA for the materialized subdirectory at `commit:subdir`.
     /// Only populated when `subdir` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtree: Option<String>,
@@ -599,9 +599,6 @@ impl LockedVcsDependency {
                 validate_locked_vcs_subdir(subdir)?;
                 if !is_git_object_id(subtree) {
                     return Err("subtree must be a hexadecimal Git object ID".to_string());
-                }
-                if !self.vendor {
-                    return Err("subdir requires vendor = true".to_string());
                 }
             }
             _ => return Err("subdir and subtree must be set together".to_string()),
@@ -1056,6 +1053,39 @@ mod tests {
 
         let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
         let dep = parsed.find_vcs("skills").unwrap();
+        assert_eq!(dep.subdir.as_deref(), Some(".agents/skills"));
+        assert_eq!(
+            dep.subtree.as_deref(),
+            Some("ffffffffffffffffffffffffffffffffffffffff")
+        );
+    }
+
+    #[test]
+    fn test_non_vendored_vcs_subdir_serialization_roundtrip() {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .upsert_vcs(
+                "generated-skills".to_string(),
+                LockedVcsDependency {
+                    url: "https://github.com/cuenv/cuenv.git".to_string(),
+                    reference: "0.27.1".to_string(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+                    tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+                    vendor: false,
+                    path: ".cuenv/vcs/generated-skills".to_string(),
+                    subdir: Some(".agents/skills".to_string()),
+                    subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+                },
+            )
+            .unwrap();
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("vendor = false"));
+        assert!(toml_str.contains("subdir = \".agents/skills\""));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        let dep = parsed.find_vcs("generated-skills").unwrap();
+        assert!(!dep.vendor);
         assert_eq!(dep.subdir.as_deref(), Some(".agents/skills"));
         assert_eq!(
             dep.subtree.as_deref(),
