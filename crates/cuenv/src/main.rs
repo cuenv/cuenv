@@ -185,7 +185,8 @@ const fn requires_async_runtime(cli: &cli::Cli) -> bool {
             cli::Commands::Task { .. }
             | cli::Commands::Exec { .. }
             | cli::Commands::Ci { .. }
-            | cli::Commands::Tui
+            | cli::Commands::Tui { .. }
+            | cli::Commands::TuiReplay { .. }
             | cli::Commands::Web { .. }
             | cli::Commands::Allow { .. }
             | cli::Commands::Deny { .. }
@@ -330,7 +331,8 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
         | Command::Restart { .. }
         | Command::Ci { .. }
         | Command::ShellInit { .. }
-        | Command::Tui
+        | Command::Tui { .. }
+        | Command::TuiReplay { .. }
         | Command::Web { .. }
         | Command::Completions { .. }
         | Command::ChangesetAdd { .. }
@@ -986,8 +988,17 @@ async fn execute_command_safe(
 
     // Special commands that bypass the executor (they don't fit the event pattern)
     match &command {
-        Command::Tui => {
-            return execute_tui_command()
+        Command::Tui { record_events } => {
+            return execute_tui_command(record_events.clone())
+                .await
+                .map_err(|e| CliError::other(e.to_string()));
+        }
+        Command::TuiReplay {
+            path,
+            fast,
+            snapshot_frames_to,
+        } => {
+            return execute_tui_replay_command(path.clone(), *fast, snapshot_frames_to.clone())
                 .await
                 .map_err(|e| CliError::other(e.to_string()));
         }
@@ -1224,9 +1235,13 @@ async fn execute_command_safe(
 
 /// Execute TUI command - starts interactive event dashboard
 #[instrument(name = "cuenv_execute_tui")]
-async fn execute_tui_command() -> Result<(), CliError> {
+async fn execute_tui_command(record_events: Option<String>) -> Result<(), CliError> {
     use coordinator::client::CoordinatorClient;
     use coordinator::protocol::UiType;
+
+    // Attach event recorder if requested. The recorder subscribes to the
+    // global event bus and writes every event as JSONL alongside the TUI.
+    let recorder_handle = spawn_event_recorder(record_events.as_deref());
 
     // Connect to coordinator as a TUI consumer
     let Ok(mut client) = CoordinatorClient::connect_as_consumer(UiType::Tui).await else {
@@ -1244,7 +1259,15 @@ async fn execute_tui_command() -> Result<(), CliError> {
     cuenv_events::emit_command_started!("tui");
 
     // Run the TUI event viewer
-    match tui::run_event_viewer(&mut client).await {
+    let result = tui::run_event_viewer(&mut client).await;
+
+    // Stop the recorder cleanly before returning.
+    if let Some(handle) = recorder_handle {
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    match result {
         Ok(()) => {
             cuenv_events::emit_command_completed!("tui", true, 0_u64);
             Ok(())
@@ -1254,6 +1277,45 @@ async fn execute_tui_command() -> Result<(), CliError> {
             Err(CliError::other(format!("TUI error: {e}")))
         }
     }
+}
+
+/// Execute the TUI replay command — drive the rich TUI from a recorded
+/// JSONL trace instead of live coordinator events.
+#[instrument(name = "cuenv_execute_tui_replay", skip(snapshot_frames_to))]
+async fn execute_tui_replay_command(
+    path: String,
+    fast: bool,
+    snapshot_frames_to: Option<String>,
+) -> Result<(), CliError> {
+    // Replay implementation lands in a follow-up step of Phase 1 — for now
+    // we surface a clear error so the subcommand is wired end-to-end and
+    // can be polished without churn elsewhere.
+    let _ = (fast, snapshot_frames_to);
+    Err(CliError::other(format!(
+        "tui-replay is not yet implemented. Recorded trace: {path}"
+    )))
+}
+
+/// Spawn an event recorder if the user passed `--record-events`.
+///
+/// Returns a join handle so callers can stop the recorder when the host
+/// command finishes. Subscribes to the global event bus (initialized by
+/// `init_tracing_with_events`) so it sees the same events the renderers do.
+fn spawn_event_recorder(path: Option<&str>) -> Option<tokio::task::JoinHandle<()>> {
+    let path = path?;
+    let recorder = match cuenv_events::EventRecorder::create(path) {
+        Ok(r) => r,
+        Err(err) => {
+            ::tracing::warn!(
+                path = %path,
+                error = %err,
+                "failed to start event recorder; --record-events ignored"
+            );
+            return None;
+        }
+    };
+    let receiver = crate::tracing::subscribe_global_events()?;
+    Some(tokio::spawn(recorder.run(receiver)))
 }
 
 /// Execute Web command - starts web server for event streaming
