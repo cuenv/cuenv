@@ -7,7 +7,7 @@ use crossterm::{
     execute,
     terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use cuenv_events::{CuenvEvent, EventCategory, EventReceiver, TaskEvent};
+use cuenv_events::{CuenvEvent, EventCategory, EventReceiver};
 use ratatui::{
     Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
@@ -181,7 +181,7 @@ impl RichTui {
             // Drain every pending cuenv event before consulting key events,
             // so a flood of cuenv events can't starve user input.
             while let Some(event) = self.event_rx.try_recv() {
-                self.handle_cuenv_event(event);
+                self.handle_cuenv_event(&event);
             }
 
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -284,10 +284,18 @@ impl RichTui {
         true
     }
 
-    /// Handle a cuenv event
-    fn handle_cuenv_event(&mut self, event: CuenvEvent) {
-        match event.category {
-            EventCategory::Task(task_event) => self.handle_task_event(task_event),
+    /// Handle a cuenv event.
+    ///
+    /// Task events are funnelled through [`TuiState::apply_event`] — the
+    /// canonical deterministic apply path — so live runs and replays
+    /// arrive at identical activity state from the same event stream.
+    /// Command/completion handling stays local because it owns RichTui's
+    /// `received_completion_event` / `can_quit` flags.
+    fn handle_cuenv_event(&mut self, event: &CuenvEvent) {
+        match &event.category {
+            EventCategory::Task(_) => {
+                self.state.apply_event(event);
+            }
             EventCategory::Command(cmd_event) => {
                 use cuenv_events::CommandEvent;
                 match cmd_event {
@@ -295,79 +303,24 @@ impl RichTui {
                         success, command, ..
                     } => {
                         self.received_completion_event = true;
-                        let error_msg = if success {
+                        let error_msg = if *success {
                             None
                         } else {
-                            // Provide context that task execution failed
-                            // Detailed error info is shown in task output panes
                             Some(format!(
                                 "Command '{command}' failed - see task output for details"
                             ))
                         };
-                        self.state.complete(success, error_msg);
+                        self.state.complete(*success, error_msg);
                         self.can_quit = true;
                     }
-                    // Other command events are not displayed in TUI
                     CommandEvent::Started { .. } | CommandEvent::Progress { .. } => {}
                 }
             }
-            // These event categories are not relevant for the TUI display
             EventCategory::Service(_)
             | EventCategory::Ci(_)
             | EventCategory::Interactive(_)
             | EventCategory::System(_)
             | EventCategory::Output(_) => {}
-        }
-    }
-
-    /// Handle a task event
-    fn handle_task_event(&mut self, event: TaskEvent) {
-        match event {
-            TaskEvent::Started { name, .. } => {
-                self.state.update_task_status(&name, TaskStatus::Running);
-            }
-            TaskEvent::CacheHit { name, .. } => {
-                self.state.update_task_status(&name, TaskStatus::Cached);
-            }
-            TaskEvent::Output {
-                name,
-                stream,
-                content,
-                ..
-            } => {
-                let stream_str = match stream {
-                    cuenv_events::Stream::Stdout => "stdout",
-                    cuenv_events::Stream::Stderr => "stderr",
-                };
-                self.state.add_task_output(&name, stream_str, content);
-            }
-            TaskEvent::Completed {
-                name,
-                success,
-                exit_code,
-                ..
-            } => {
-                let status = if success {
-                    TaskStatus::Completed
-                } else {
-                    TaskStatus::Failed
-                };
-                self.state.update_task_status(&name, status);
-
-                // Update exit code
-                if let Some(task) = self.state.tasks.get_mut(&name) {
-                    task.exit_code = exit_code;
-                }
-            }
-            // These events don't require status updates in the TUI yet.
-            // Group/queue/skip/retry visualisation lands in Phase 2/3.
-            TaskEvent::CacheMiss { .. }
-            | TaskEvent::CacheSkipped { .. }
-            | TaskEvent::Queued { .. }
-            | TaskEvent::Skipped { .. }
-            | TaskEvent::Retrying { .. }
-            | TaskEvent::GroupStarted { .. }
-            | TaskEvent::GroupCompleted { .. } => {}
         }
     }
 
