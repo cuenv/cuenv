@@ -5,11 +5,11 @@ use super::widgets::{OutputPanelWidget, TaskTreeWidget};
 use crossterm::{
     event::{self, Event as CrosstermEvent, KeyCode, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use cuenv_events::{CuenvEvent, EventCategory, EventReceiver, TaskEvent};
 use ratatui::{
-    Terminal,
+    Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -29,16 +29,23 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// This guard ensures the terminal is properly restored even if the TUI
 /// exits unexpectedly (e.g., due to a panic). Errors during cleanup are
 /// logged but cannot be propagated since Drop cannot return errors.
-struct TerminalGuard;
+///
+/// `in_alt_screen` tracks whether the TUI is currently using the alternate
+/// screen (expanded mode) so the guard knows whether to issue
+/// `LeaveAlternateScreen` on drop. Inline mode (the default) keeps the
+/// run's output in the terminal's scrollback after exit.
+struct TerminalGuard {
+    in_alt_screen: bool,
+}
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        // Attempt to restore terminal state. Log errors since Drop can't propagate them.
-        // Users may need to run `reset` if these fail.
         if let Err(e) = disable_raw_mode() {
             tracing::warn!(error = %e, "Failed to disable raw mode");
         }
-        if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen) {
+        if self.in_alt_screen
+            && let Err(e) = execute!(io::stdout(), LeaveAlternateScreen)
+        {
             tracing::warn!(error = %e, "Failed to leave alternate screen");
         }
     }
@@ -60,7 +67,20 @@ pub struct RichTui {
 }
 
 impl RichTui {
+    /// Number of rows the inline viewport reserves at the bottom of the
+    /// terminal. Sized so the user keeps a few rows of scrollback visible
+    /// during execution, then the TUI buffer scrolls into permanent
+    /// scrollback when the run finishes.
+    const INLINE_RESERVED_ROWS: u16 = 4;
+    /// Minimum inline viewport height — guards against tiny terminals.
+    const INLINE_MIN_ROWS: u16 = 18;
+
     /// Create a new rich TUI.
+    ///
+    /// Uses ratatui's inline viewport by default so the run's output stays
+    /// in the terminal's scrollback when the TUI exits — pressing `f`
+    /// inside the TUI switches into the alternate screen for a fullscreen
+    /// single-task focus view.
     ///
     /// # Arguments
     /// * `event_rx` - Receiver for cuenv events
@@ -72,16 +92,26 @@ impl RichTui {
     /// Returns an error if terminal initialization fails.
     pub fn new(event_rx: EventReceiver, ready_tx: oneshot::Sender<()>) -> io::Result<Self> {
         enable_raw_mode()?;
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
-
+        let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
-        let terminal = Terminal::new(backend)?;
+
+        let (_, term_rows) = crossterm::terminal::size().unwrap_or((80, 30));
+        let inline_height = term_rows
+            .saturating_sub(Self::INLINE_RESERVED_ROWS)
+            .max(Self::INLINE_MIN_ROWS);
+        let terminal = Terminal::with_options(
+            backend,
+            TerminalOptions {
+                viewport: Viewport::Inline(inline_height),
+            },
+        )?;
 
         Ok(Self {
             terminal,
             state: TuiState::new(),
-            _guard: TerminalGuard,
+            _guard: TerminalGuard {
+                in_alt_screen: false,
+            },
             event_rx,
             quit_requested: false,
             can_quit: false,
@@ -467,7 +497,10 @@ mod tests {
 
     #[test]
     fn test_terminal_guard_drop() {
-        // Just verify TerminalGuard can be created and dropped
-        let _guard = TerminalGuard;
+        // Just verify TerminalGuard can be created and dropped without
+        // leaving the terminal in a stuck state.
+        let _guard = TerminalGuard {
+            in_alt_screen: false,
+        };
     }
 }
