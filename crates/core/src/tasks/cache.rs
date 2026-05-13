@@ -16,6 +16,7 @@ use cuenv_cas::{
     Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
     ExecutionMetadata, FileNode, OutputFile, Platform, digest_of,
 };
+use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
 use std::collections::BTreeMap;
@@ -23,6 +24,16 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use walkdir::WalkDir;
+
+/// Outcome of evaluating a task's cache eligibility.
+#[derive(Debug)]
+pub enum CacheOutcome {
+    /// Task is eligible for caching with the computed action and digest.
+    Eligible(Box<Action>, Digest),
+    /// Task is not eligible; the [`CacheSkipReason`] explains why so renderers
+    /// can surface the reason to the user.
+    Skipped(CacheSkipReason),
+}
 
 /// Bundle of caching infrastructure used by the task executor.
 ///
@@ -89,15 +100,17 @@ pub struct BuildActionInput<'a> {
 
 /// Build the [`Action`] envelope for a task and compute its digest.
 ///
-/// Returns `Ok(None)` when the task is not eligible for caching.
+/// Returns a [`CacheOutcome`] explaining either the resulting action +
+/// digest (eligible) or the structured reason caching was skipped. The
+/// caller is expected to surface the skip reason as a `CacheSkipped` event.
 ///
 /// # Errors
 ///
 /// Propagates failures from task command resolution and canonical encoding.
 ///
-/// Input hashing failures degrade to `Ok(None)` so cache eligibility never
-/// changes whether the task itself is runnable.
-pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action, Digest)>> {
+/// Input hashing failures degrade to a [`CacheOutcome::Skipped`] so cache
+/// eligibility never changes whether the task itself is runnable.
+pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     let BuildActionInput {
         task,
         task_name,
@@ -110,17 +123,19 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
 
     if let Some(reason) = &cache.cache_disabled_reason {
         tracing::debug!(task = %task_name, reason, "skipping cache");
-        return Ok(None);
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::Disabled {
+            reason: Some(reason.clone()),
+        }));
     }
 
     let policy = effective_policy(task);
     if !policy.mode.allows_read() && !policy.mode.allows_write() {
         tracing::debug!(task = %task_name, "skipping cache: task cache mode is never");
-        return Ok(None);
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::NeverMode));
     }
 
     if task.inputs.is_empty() {
-        return Ok(None);
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::EmptyInputs));
     }
 
     let mut patterns = Vec::with_capacity(task.inputs.len());
@@ -132,20 +147,20 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
                 task = %task_name,
                 "skipping cache: task uses non-path input (project/task reference)"
             );
-            return Ok(None);
+            return Ok(CacheOutcome::Skipped(CacheSkipReason::NonPathRef));
         }
     }
 
-    let Some(hashed) = resolve_hashed_inputs(cache, &patterns, project_root, task_name).await?
-    else {
-        return Ok(None);
+    let hashed = match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
+        ResolveOutcome::Resolved(h) => h,
+        ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
     };
     if hashed.is_empty() {
         tracing::debug!(
             task = %task_name,
             "skipping cache: declared path inputs resolved to no files"
         );
-        return Ok(None);
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::NoResolvedInputs));
     }
     let input_root_digest = build_input_root_digest(&hashed)?;
 
@@ -154,7 +169,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
             task = %task_name,
             "skipping cache: task defines task-level environment entries resolved at execution time"
         );
-        return Ok(None);
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv));
     }
 
     let mut environment_variables = BTreeMap::new();
@@ -196,7 +211,13 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<Option<(Action,
     let action_digest = digest_of(&action)
         .map_err(|e| crate::Error::configuration(format!("action digest: {e}")))?;
 
-    Ok(Some((action, action_digest)))
+    Ok(CacheOutcome::Eligible(Box::new(action), action_digest))
+}
+
+/// Internal outcome from input resolution, distinguishing skip reasons.
+enum ResolveOutcome {
+    Resolved(Vec<HashedInput>),
+    Skipped(CacheSkipReason),
 }
 
 async fn resolve_hashed_inputs(
@@ -204,7 +225,7 @@ async fn resolve_hashed_inputs(
     patterns: &[String],
     project_root: &Path,
     task_name: &str,
-) -> Result<Option<Vec<HashedInput>>> {
+) -> Result<ResolveOutcome> {
     let prefixed_patterns =
         match prefix_patterns_for_hasher_root(patterns, project_root, &cache.vcs_hasher_root) {
             Ok(prefixed_patterns) => prefixed_patterns,
@@ -216,7 +237,7 @@ async fn resolve_hashed_inputs(
                     error = %error,
                     "skipping cache: cannot map task inputs to cache hasher root"
                 );
-                return Ok(None);
+                return Ok(ResolveOutcome::Skipped(CacheSkipReason::HasherRootMismatch));
             }
         };
 
@@ -228,7 +249,7 @@ async fn resolve_hashed_inputs(
                 error = %error,
                 "skipping cache: input hashing failed"
             );
-            return Ok(None);
+            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed));
         }
     };
 
@@ -243,11 +264,11 @@ async fn resolve_hashed_inputs(
                     error = %error,
                     "skipping cache: hashed inputs escaped task project root"
                 );
-                return Ok(None);
+                return Ok(ResolveOutcome::Skipped(CacheSkipReason::HasherRootMismatch));
             }
         };
 
-    Ok(Some(rebased))
+    Ok(ResolveOutcome::Resolved(rebased))
 }
 
 /// Query the action cache for a previous result.
@@ -801,7 +822,10 @@ mod tests {
     }
 
     async fn build_action_for_test(input: BuildActionInput<'_>) -> Option<(Action, Digest)> {
-        build_action(input).await.unwrap()
+        match build_action(input).await.unwrap() {
+            CacheOutcome::Eligible(action, digest) => Some((*action, digest)),
+            CacheOutcome::Skipped(_) => None,
+        }
     }
 
     #[tokio::test]

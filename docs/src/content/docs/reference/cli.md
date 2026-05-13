@@ -616,19 +616,6 @@ yq (4.44.6):
   ...
 ```
 
-### `cuenv tui`
-
-Start an interactive TUI dashboard for monitoring cuenv events.
-
-```bash
-cuenv tui
-```
-
-The TUI connects to a running cuenv coordinator to display real-time events from other cuenv commands. To use:
-
-1. Run a cuenv command (e.g., `cuenv task build`) in another terminal
-2. Run `cuenv tui` to watch the events
-
 ### `cuenv web`
 
 Start a web server for streaming cuenv events.

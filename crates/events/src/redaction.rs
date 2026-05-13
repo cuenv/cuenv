@@ -101,16 +101,13 @@ pub fn redact(input: &str) -> String {
 /// Check if any secrets are registered.
 #[must_use]
 pub fn has_secrets() -> bool {
-    SECRET_REGISTRY
-        .read()
-        .map(|r| !r.is_empty())
-        .unwrap_or(false)
+    SECRET_REGISTRY.read().is_ok_and(|r| !r.is_empty())
 }
 
 /// Get the number of registered secrets.
 #[must_use]
 pub fn secret_count() -> usize {
-    SECRET_REGISTRY.read().map(|r| r.len()).unwrap_or(0)
+    SECRET_REGISTRY.read().map_or(0, |r| r.len())
 }
 
 /// Clear all registered secrets.

@@ -59,6 +59,12 @@ pub struct TaskOutput {
     pub captures: HashMap<String, String>,
 }
 
+impl cuenv_core::tasks::graph_walk::WalkOutcome for TaskOutput {
+    fn is_success(&self) -> bool {
+        self.success
+    }
+}
+
 impl TaskOutput {
     /// Create a cached result (no actual execution)
     #[must_use]

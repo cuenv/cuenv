@@ -1272,17 +1272,20 @@ pipelines: {
 
 **Fields:**
 
-| Field         | Type                 | Required | Description                                       |
-| ------------- | -------------------- | -------- | ------------------------------------------------- |
-| `providers`   | `[...#CIProvider]`   | No       | Override global providers (completely replaces)   |
-| `mode`        | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"   |
-| `environment` | `string`             | No       | Environment for secret resolution                 |
-| `when`        | `#PipelineCondition` | No       | Trigger conditions                                |
-| `tasks`       | `[...#PipelineTask]` | No       | Tasks to run                                      |
-| `derivePaths` | `bool`               | No       | Derive provider path filters from task inputs     |
-| `provider`    | `#ProviderConfig`    | No       | Provider-specific overrides                       |
+| Field             | Type                 | Required | Description                                                              |
+| ----------------- | -------------------- | -------- | ------------------------------------------------------------------------ |
+| `providers`       | `[...#CIProvider]`   | No       | Override global providers (completely replaces)                          |
+| `mode`            | `#PipelineMode`      | No       | Generation mode: "thin" (default) or "expanded"                          |
+| `environment`     | `string`             | No       | Environment for secret resolution                                        |
+| `when`            | `#PipelineCondition` | No       | Trigger conditions                                                       |
+| `tasks`           | `[...#PipelineTask]` | No       | Tasks to run                                                             |
+| `continueOnError` | `bool`               | No       | Keep running siblings after a task fails (default `false`; see below)    |
+| `derivePaths`     | `bool`               | No       | Derive provider path filters from task inputs                            |
+| `provider`        | `#ProviderConfig`    | No       | Provider-specific overrides                                              |
 
 **Provider Override Behavior:** Per-pipeline `providers` **completely replaces** the global `ci.providers` - there is no merging.
+
+**`continueOnError`:** When `false` (default), the first failing task in a pipeline's dependency graph aborts the rest of the run. When `true`, the orchestrator finishes every independent chain it can; tasks whose dependencies failed are reported as `Skipped` with a `DependencyFailed { dep }` reason rather than silently dropped. The pipeline still exits non-zero overall if any task failed — `continueOnError` controls scheduling, not success. Surfaces as `task.skipped` events for renderers (CLI spinner, TUI, JSON).
 
 When `derivePaths` is enabled, or left at its default for branch and pull request triggers, cuenv derives provider path filters from each pipeline task's path inputs. For GitHub Actions, nested project inputs are emitted as normalized repo-relative paths, so an input such as `../flake.nix` in `server/env.cue` becomes `flake.nix` in the generated workflow instead of `server/../flake.nix`.
 

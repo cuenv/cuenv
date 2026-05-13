@@ -316,15 +316,23 @@ async fn execute_project_pipeline(
         cuenv_events::emit_ci_task_executing!(&project_display, task_name);
         let task_start = std::time::Instant::now();
 
-        // Execute the task with all dependencies (uses TaskGraph for proper ordering)
-        let result = execute_task_with_deps(
+        // Execute the task with all dependencies (uses TaskGraph for proper ordering).
+        // `continueOnError` is read off the pipeline config — when true, a
+        // failing task does not abort the rest of the dependency chain.
+        let pipeline_continue_on_error = config
+            .ci
+            .as_ref()
+            .and_then(|ci| ci.pipelines.get(pipeline_name))
+            .is_some_and(|p| p.continue_on_error);
+        let result = execute_task_with_deps(TaskDagOptions {
             config,
             task_name,
-            project_path,
+            project_root: project_path,
             cache_policy_override,
             environment,
-            &hook_env,
-        )
+            hook_env: &hook_env,
+            continue_on_error: pipeline_continue_on_error,
+        })
         .await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
@@ -740,69 +748,144 @@ fn collect_all_env_vars(
     merged
 }
 
+/// Default in-project parallelism cap for the CI orchestrator.
+///
+/// Each project's task DAG is executed level-by-level (dependency-respecting);
+/// within a level we run up to this many tasks concurrently. Matches the
+/// `max_parallel` default used by the core executor.
+const CI_MAX_PARALLEL: usize = 4;
+
 /// Execute a task with all its dependencies in correct order.
 ///
-/// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
-/// ensuring tasks run in proper topological order (same as CLI).
-async fn execute_task_with_deps(
-    config: &Project,
-    task_name: &str,
-    project_root: &Path,
+/// Per-call options for [`execute_task_with_deps`].
+struct TaskDagOptions<'a> {
+    config: &'a Project,
+    task_name: &'a str,
+    project_root: &'a Path,
     cache_policy_override: Option<CachePolicy>,
-    environment: Option<&str>,
-    hook_env: &BTreeMap<String, String>,
+    environment: Option<&'a str>,
+    hook_env: &'a BTreeMap<String, String>,
+    continue_on_error: bool,
+}
+
+/// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
+/// then walks the graph by topological "parallel groups" so independent tasks
+/// at the same dependency depth run concurrently (bounded by [`CI_MAX_PARALLEL`]).
+///
+/// Behaviour:
+/// - When `continue_on_error` is `false` (default), the first failure aborts
+///   the rest of the run and returns the failing task's `TaskOutput`.
+/// - When `continue_on_error` is `true`, dependents of a failing task are
+///   marked as `Skipped { DependencyFailed }` (and `TaskEvent::Skipped` is
+///   emitted), but unrelated sibling chains continue executing. A `JoinError`
+///   (task panic / spawn failure) is always fatal regardless of the flag —
+///   we can't reason about state after a panic.
+///
+/// The returned `TaskOutput` is the originally-requested task's output —
+/// resolved by matching the canonical name once execution finishes.
+async fn execute_task_with_deps(
+    opts: TaskDagOptions<'_>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
-    // 1. Build TaskIndex (same flattening as CLI)
+    use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
+
+    let TaskDagOptions {
+        config,
+        task_name,
+        project_root,
+        cache_policy_override,
+        environment,
+        hook_env,
+        continue_on_error,
+    } = opts;
+
     let index =
         TaskIndex::build(&config.tasks).map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    // 2. Resolve to canonical name
     let entry = index
         .resolve(task_name)
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     let canonical_name = entry.name.clone();
-
-    // 3. Get flattened tasks where all names are top-level
     let flattened_tasks = index.to_tasks();
 
-    // 4. Build TaskGraph (respects dependsOn!)
     let mut graph = TaskGraph::new();
     graph
         .build_for_task(&canonical_name, &flattened_tasks)
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
-    // 5. Get topological execution order
-    let execution_order = graph
-        .topological_sort()
+    let parallel_groups = graph
+        .get_parallel_groups()
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
     tracing::info!(
         task = task_name,
         canonical = %canonical_name,
-        execution_order = ?execution_order.iter().map(|n| &n.name).collect::<Vec<_>>(),
+        continue_on_error,
+        execution_order = ?parallel_groups
+            .iter()
+            .map(|g| g.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
         "Resolved task dependencies"
     );
+    drop(parallel_groups);
 
-    // 6. Execute each task in dependency order
-    let mut final_output = None;
-    for node in execution_order {
-        let output = compile_and_execute_ir(
-            config,
-            &node.name,
-            project_root,
-            cache_policy_override,
-            environment,
-            hook_env,
-        )
-        .await?;
+    let config = Arc::new(config.clone());
+    let project_root = Arc::new(project_root.to_path_buf());
+    let environment = environment.map(str::to_string);
+    let hook_env = Arc::new(hook_env.clone());
 
-        if !output.success {
-            return Ok(output); // Stop on first failure
-        }
-        final_output = Some(output);
+    let policy = WalkPolicy {
+        max_parallel: CI_MAX_PARALLEL,
+        continue_on_error,
+    };
+    let summary = walk_parallel_graph(
+        graph.inner(),
+        policy,
+        // CI doesn't have cross-task output refs that need resolving
+        // before spawn — the IR compiler handles its own substitutions
+        // inside the per-task path. Pass through unchanged.
+        cuenv_core::tasks::graph_walk::passthrough_prepare::<_, _, ExecutorError>,
+        {
+            let config = Arc::clone(&config);
+            let project_root = Arc::clone(&project_root);
+            let hook_env = Arc::clone(&hook_env);
+            move |node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>| {
+                let config = Arc::clone(&config);
+                let project_root = Arc::clone(&project_root);
+                let environment = environment.clone();
+                let hook_env = Arc::clone(&hook_env);
+                async move {
+                    compile_and_execute_ir(
+                        config.as_ref(),
+                        &node.name,
+                        project_root.as_ref(),
+                        cache_policy_override,
+                        environment.as_deref(),
+                        hook_env.as_ref(),
+                    )
+                    .await
+                }
+            }
+        },
+        |err: tokio::task::JoinError| {
+            ExecutorError::Compilation(format!("CI orchestrator panic: {err}"))
+        },
+    )
+    .await?;
+
+    let mut outputs: HashMap<String, TaskOutput> = summary.outcomes.into_iter().collect();
+
+    // If any task failed, surface its TaskOutput so the caller can record
+    // a non-success status for the originally-requested task. Under
+    // continue_on_error we still want to return non-Ok behaviour up
+    // through the pipeline-level success bookkeeping.
+    if summary.failed > 0
+        && let Some(failed) = outputs.values().find(|o| !o.success).cloned()
+    {
+        return Ok(failed);
     }
 
-    final_output.ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
+    outputs
+        .remove(&canonical_name)
+        .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
 }
 
 /// Compile a single task to IR and execute it.
@@ -863,7 +946,7 @@ async fn compile_and_execute_ir(
         .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
 
     // Register resolved secrets for redaction
-    cuenv_events::register_secrets(secrets.into_iter());
+    cuenv_events::register_secrets(secrets);
 
     // Execute all compiled IR tasks sequentially
     let runner = IRTaskRunner::new(

@@ -424,7 +424,6 @@ cuenv deny                                 # Revoke approval
 # Utilities
 cuenv version                              # Show version info
 cuenv completions zsh                      # Generate shell completions
-cuenv tui                                  # Interactive TUI dashboard
 ```
 
 ### Global Options

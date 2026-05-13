@@ -15,6 +15,7 @@ pub mod captures;
 pub(crate) mod env;
 pub mod executor;
 pub mod graph;
+pub mod graph_walk;
 pub mod index;
 pub mod output_refs;
 pub mod process_registry;

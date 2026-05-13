@@ -39,7 +39,7 @@ impl<'a> TaskTreeWidget<'a> {
         let mut failed = 0;
         let mut total = 0;
 
-        for (name, info) in &self.state.tasks {
+        for (name, info) in self.state.tasks() {
             let task_path = Self::parse_task_path(name).join(".");
             if task_path.starts_with(group_path) || group_path.is_empty() {
                 total += 1;
@@ -98,7 +98,7 @@ impl<'a> TaskTreeWidget<'a> {
                 (status.symbol(), status.color(), suffix)
             }
             TreeNodeType::Task(name) => {
-                let task_info = self.state.tasks.get(name);
+                let task_info = self.state.tasks().get(name);
                 let (symbol, color) = task_info.map_or(("?", Color::DarkGray), |t| {
                     (t.status.symbol(), t.status.color())
                 });
@@ -123,7 +123,7 @@ impl<'a> TaskTreeWidget<'a> {
         let mut name_style = Style::default().fg(status_color);
 
         // Bold for running items
-        if matches!(&item.node_type, TreeNodeType::Task(name) if self.state.tasks.get(name).map(|t| t.status) == Some(TaskStatus::Running))
+        if matches!(&item.node_type, TreeNodeType::Task(name) if self.state.tasks().get(name).map(|t| t.status) == Some(TaskStatus::Running))
         {
             name_style = name_style.add_modifier(Modifier::BOLD);
         }
@@ -160,11 +160,9 @@ impl Widget for TaskTreeWidget<'_> {
         let inner = block.inner(area);
         block.render(area, buf);
 
-        // Calculate visible range for scrolling
         let visible_height = inner.height as usize;
-        let cursor = self.state.cursor_position;
+        let cursor = self.state.cursor_position();
 
-        // Calculate scroll offset to keep cursor visible
         let scroll_offset = if cursor >= visible_height {
             cursor - visible_height + 1
         } else {
@@ -172,7 +170,7 @@ impl Widget for TaskTreeWidget<'_> {
         };
 
         let mut lines = Vec::new();
-        for (idx, item) in self.state.flattened_tree.iter().enumerate() {
+        for (idx, item) in self.state.flattened_tree().iter().enumerate() {
             if idx < scroll_offset {
                 continue;
             }
@@ -181,16 +179,14 @@ impl Widget for TaskTreeWidget<'_> {
             }
 
             let is_cursor = idx == cursor;
-            // Check if this node is selected based on node type
+            let selected = self.state.selected_task();
             let is_selected = match &item.node_type {
                 TreeNodeType::All => {
-                    self.state.selected_task.is_none()
-                        && self.state.output_mode == crate::tui::state::OutputMode::All
+                    selected.is_none()
+                        && self.state.output_mode() == crate::tui::state::OutputMode::All
                 }
-                TreeNodeType::Task(name) => self.state.selected_task.as_deref() == Some(name),
-                TreeNodeType::Group(path) => {
-                    self.state.selected_task.as_deref() == Some(&format!("::group::{path}"))
-                }
+                TreeNodeType::Task(name) => selected == Some(name.as_str()),
+                TreeNodeType::Group(path) => selected == Some(format!("::group::{path}").as_str()),
             };
             lines.push(self.render_tree_item(item, is_cursor, is_selected));
         }

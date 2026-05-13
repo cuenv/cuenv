@@ -95,12 +95,18 @@ pub enum EventCategory {
 pub enum TaskEvent {
     /// Task execution started.
     Started {
-        /// Task name.
+        /// Task name (fully qualified, e.g. `group.child`).
         name: String,
         /// Command being executed.
         command: String,
         /// Whether this is a hermetic execution.
         hermetic: bool,
+        /// Parent group prefix, if this task runs inside a group.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Kind of node — distinguishes leaf tasks from groups/sequences.
+        #[serde(default)]
+        task_kind: TaskKind,
     },
     /// Task cache hit - using cached result.
     CacheHit {
@@ -108,11 +114,59 @@ pub enum TaskEvent {
         name: String,
         /// Cache key that matched.
         cache_key: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
     },
     /// Task cache miss - will execute.
     CacheMiss {
         /// Task name.
         name: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+    },
+    /// Task was not eligible for caching.
+    CacheSkipped {
+        /// Task name.
+        name: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Why caching was skipped for this task.
+        reason: CacheSkipReason,
+    },
+    /// Task is queued — graph picked it but parallelism cap blocks immediate start.
+    Queued {
+        /// Task name.
+        name: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Position in the ready queue (zero-based).
+        queue_position: usize,
+    },
+    /// Task is being skipped (e.g. dependency failed under continue-on-error).
+    Skipped {
+        /// Task name.
+        name: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Why the task is skipped.
+        reason: SkipReason,
+    },
+    /// Task is being retried.
+    Retrying {
+        /// Task name.
+        name: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Attempt number (1-based).
+        attempt: u32,
+        /// Maximum attempts allowed.
+        max_attempts: u32,
     },
     /// Task produced output.
     Output {
@@ -122,6 +176,9 @@ pub enum TaskEvent {
         stream: Stream,
         /// Output content.
         content: String,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
     },
     /// Task execution completed.
     Completed {
@@ -133,6 +190,9 @@ pub enum TaskEvent {
         exit_code: Option<i32>,
         /// Duration in milliseconds.
         duration_ms: u64,
+        /// Parent group prefix, if applicable.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
     },
     /// Task group execution started.
     GroupStarted {
@@ -142,6 +202,12 @@ pub enum TaskEvent {
         sequential: bool,
         /// Number of tasks in the group.
         task_count: usize,
+        /// Parent group prefix when groups nest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Concurrency cap for the group, if set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_concurrency: Option<u32>,
     },
     /// Task group execution completed.
     GroupCompleted {
@@ -151,7 +217,105 @@ pub enum TaskEvent {
         success: bool,
         /// Duration in milliseconds.
         duration_ms: u64,
+        /// Parent group prefix when groups nest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_group: Option<String>,
+        /// Number of children that succeeded.
+        #[serde(default)]
+        succeeded: usize,
+        /// Number of children that failed.
+        #[serde(default)]
+        failed: usize,
+        /// Number of children that were skipped.
+        #[serde(default)]
+        skipped: usize,
     },
+}
+
+/// Discriminator for the kind of node a task event refers to.
+///
+/// Leaf tasks default to [`TaskKind::Task`]. Group / sequence containers carry
+/// their own group-level events but child task events keep `TaskKind::Task`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TaskKind {
+    /// A leaf task (default).
+    #[default]
+    Task,
+    /// A parallel group of children.
+    Group,
+    /// A sequential list of children.
+    Sequence,
+}
+
+/// Why a task was not eligible for the action cache.
+///
+/// Renderers surface this so users understand why a task ran instead of
+/// being served from cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CacheSkipReason {
+    /// Task declared no `inputs` to hash.
+    EmptyInputs,
+    /// Inputs included a non-path reference (project/task ref).
+    NonPathRef,
+    /// Inputs hashed to zero files after resolution.
+    NoResolvedInputs,
+    /// Task carries task-level env vars resolved at execution time.
+    RuntimeEnv,
+    /// Cache was explicitly disabled for this task.
+    Disabled {
+        /// Optional human-readable reason from the cache config.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Task cache mode is `never`.
+    NeverMode,
+    /// Inputs could not be mapped onto the cache hasher root.
+    HasherRootMismatch,
+    /// Input hashing itself failed.
+    HashFailed,
+}
+
+impl std::fmt::Display for CacheSkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyInputs => write!(f, "empty inputs"),
+            Self::NonPathRef => write!(f, "non-path input"),
+            Self::NoResolvedInputs => write!(f, "no resolved inputs"),
+            Self::RuntimeEnv => write!(f, "runtime env"),
+            Self::Disabled { reason: Some(r) } => write!(f, "disabled: {r}"),
+            Self::Disabled { reason: None } => write!(f, "disabled"),
+            Self::NeverMode => write!(f, "cache mode never"),
+            Self::HasherRootMismatch => write!(f, "hasher root mismatch"),
+            Self::HashFailed => write!(f, "hashing failed"),
+        }
+    }
+}
+
+/// Why a task was skipped at execution time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum SkipReason {
+    /// A required dependency failed (under continue-on-error mode).
+    DependencyFailed {
+        /// Name of the failing dependency.
+        dep: String,
+    },
+    /// Task was explicitly disabled.
+    ManuallyDisabled,
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DependencyFailed { dep } => write!(f, "dependency failed: {dep}"),
+            Self::ManuallyDisabled => write!(f, "manually disabled"),
+        }
+    }
 }
 
 /// Service lifecycle events.
@@ -232,6 +396,7 @@ pub enum ServiceEvent {
 
 /// Reason a service is being restarted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RestartReason {
     /// Service process crashed (non-zero exit).
     Crashed,
@@ -359,6 +524,7 @@ pub enum InteractiveEvent {
 /// System/supervisor events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data")]
+#[non_exhaustive]
 pub enum SystemEvent {
     /// Supervisor log message.
     SupervisorLog {
@@ -369,6 +535,15 @@ pub enum SystemEvent {
     },
     /// System shutdown.
     Shutdown,
+    /// Broadcast bus lagged — `skipped` events were dropped between
+    /// this consumer's last successful `recv` and now. Emitted by
+    /// [`crate::bus::EventReceiver`] so downstream consumers
+    /// (recorders, renderers) can surface a gap indicator instead of
+    /// silently dropping the events.
+    EventGap {
+        /// Number of events skipped by the broadcast channel.
+        skipped: u64,
+    },
 }
 
 /// Generic output events for migration and compatibility.
@@ -423,6 +598,8 @@ mod tests {
                 name: "build".to_string(),
                 command: "cargo build".to_string(),
                 hermetic: true,
+                parent_group: None,
+                task_kind: TaskKind::Task,
             }),
         );
 
@@ -432,6 +609,23 @@ mod tests {
 
         let parsed: CuenvEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.id, event.id);
+    }
+
+    #[test]
+    fn test_started_backcompat_serde_no_parent_group() {
+        let json = r#"{"event":"Started","data":{"name":"build","command":"cargo build","hermetic":true}}"#;
+        let parsed: TaskEvent = serde_json::from_str(json).unwrap();
+        match parsed {
+            TaskEvent::Started {
+                parent_group,
+                task_kind,
+                ..
+            } => {
+                assert_eq!(parent_group, None);
+                assert_eq!(task_kind, TaskKind::Task);
+            }
+            _ => panic!("expected Started"),
+        }
     }
 
     #[test]
@@ -455,19 +649,95 @@ mod tests {
         let event = TaskEvent::CacheHit {
             name: "test".to_string(),
             cache_key: "abc123".to_string(),
+            parent_group: Some("ci".to_string()),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("CacheHit"));
         assert!(json.contains("abc123"));
+        assert!(json.contains("\"parent_group\":\"ci\""));
     }
 
     #[test]
     fn test_task_event_cache_miss() {
         let event = TaskEvent::CacheMiss {
             name: "test".to_string(),
+            parent_group: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("CacheMiss"));
+        // parent_group: None should not be serialized
+        assert!(!json.contains("parent_group"));
+    }
+
+    #[test]
+    fn test_task_event_cache_skipped() {
+        let event = TaskEvent::CacheSkipped {
+            name: "fmt".to_string(),
+            parent_group: None,
+            reason: CacheSkipReason::EmptyInputs,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("CacheSkipped"));
+        assert!(json.contains("empty_inputs"));
+
+        let parsed: TaskEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            TaskEvent::CacheSkipped { reason, .. } => {
+                assert_eq!(reason, CacheSkipReason::EmptyInputs);
+            }
+            _ => panic!("expected CacheSkipped"),
+        }
+    }
+
+    #[test]
+    fn test_task_event_queued() {
+        let event = TaskEvent::Queued {
+            name: "build".to_string(),
+            parent_group: Some("ci".to_string()),
+            queue_position: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Queued"));
+        assert!(json.contains("\"queue_position\":3"));
+    }
+
+    #[test]
+    fn test_task_event_skipped_dependency_failed() {
+        let event = TaskEvent::Skipped {
+            name: "deploy".to_string(),
+            parent_group: None,
+            reason: SkipReason::DependencyFailed {
+                dep: "build".to_string(),
+            },
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Skipped"));
+        let parsed: TaskEvent = serde_json::from_str(&json).unwrap();
+        match parsed {
+            TaskEvent::Skipped { reason, .. } => {
+                assert_eq!(
+                    reason,
+                    SkipReason::DependencyFailed {
+                        dep: "build".to_string()
+                    }
+                );
+            }
+            _ => panic!("expected Skipped"),
+        }
+    }
+
+    #[test]
+    fn test_task_event_retrying() {
+        let event = TaskEvent::Retrying {
+            name: "flaky".to_string(),
+            parent_group: None,
+            attempt: 2,
+            max_attempts: 3,
+        };
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("Retrying"));
+        assert!(json.contains("\"attempt\":2"));
+        assert!(json.contains("\"max_attempts\":3"));
     }
 
     #[test]
@@ -476,6 +746,7 @@ mod tests {
             name: "build".to_string(),
             stream: Stream::Stdout,
             content: "compiling...".to_string(),
+            parent_group: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("Output"));
@@ -489,6 +760,7 @@ mod tests {
             success: true,
             exit_code: Some(0),
             duration_ms: 1500,
+            parent_group: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("Completed"));
@@ -501,10 +773,13 @@ mod tests {
             name: "tests".to_string(),
             sequential: false,
             task_count: 5,
+            parent_group: None,
+            max_concurrency: Some(4),
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("GroupStarted"));
         assert!(json.contains('5'));
+        assert!(json.contains("\"max_concurrency\":4"));
     }
 
     #[test]
@@ -513,9 +788,34 @@ mod tests {
             name: "tests".to_string(),
             success: true,
             duration_ms: 3000,
+            parent_group: None,
+            succeeded: 4,
+            failed: 1,
+            skipped: 0,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("GroupCompleted"));
+        assert!(json.contains("\"succeeded\":4"));
+        assert!(json.contains("\"failed\":1"));
+    }
+
+    #[test]
+    fn test_cache_skip_reason_display() {
+        assert_eq!(format!("{}", CacheSkipReason::EmptyInputs), "empty inputs");
+        assert_eq!(
+            format!(
+                "{}",
+                CacheSkipReason::Disabled {
+                    reason: Some("hermetic".to_string())
+                }
+            ),
+            "disabled: hermetic"
+        );
+    }
+
+    #[test]
+    fn test_task_kind_default() {
+        assert_eq!(TaskKind::default(), TaskKind::Task);
     }
 
     #[test]
@@ -708,6 +1008,7 @@ mod tests {
         let categories = vec![
             EventCategory::Task(TaskEvent::CacheMiss {
                 name: "test".to_string(),
+                parent_group: None,
             }),
             EventCategory::Service(ServiceEvent::Pending {
                 name: "db".to_string(),

@@ -527,6 +527,13 @@ pub enum Commands {
             default_value_t = false
         )]
         skip_dependencies: bool,
+        /// Continue running independent siblings after a task fails; dependents become Skipped.
+        #[arg(
+            long = "continue-on-error",
+            help = "Don't abort on first failure; dependents of the failing task are emitted as task.skipped and unrelated siblings keep running",
+            default_value_t = false
+        )]
+        continue_on_error: bool,
         /// Dry run mode: export task DAG as JSON without executing.
         #[arg(
             long = "dry-run",
@@ -674,9 +681,6 @@ pub enum Commands {
     /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
     Ci(crate::commands::ci::CiArgs),
-    /// Start interactive TUI dashboard for monitoring cuenv events.
-    #[command(about = "Start interactive TUI dashboard for monitoring cuenv events")]
-    Tui,
     /// Start web server for streaming cuenv events.
     #[command(about = "Start web server for streaming cuenv events")]
     Web {
@@ -1544,7 +1548,6 @@ impl Commands {
             | Self::Completions { .. }
             | Self::Shell { .. }
             | Self::Ci { .. }
-            | Self::Tui
             | Self::Web { .. }
             | Self::Changeset { .. }
             | Self::Release { .. }
@@ -1630,6 +1633,7 @@ impl Commands {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run,
                 task_args,
             } => Command::Task {
@@ -1647,6 +1651,7 @@ impl Commands {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run: dry_run.into(),
                 task_args,
             },
@@ -1698,7 +1703,6 @@ impl Commands {
                 package,
             },
             Self::Ci(args) => Command::Ci { args },
-            Self::Tui => Command::Tui,
             Self::Web { port, host } => Command::Web { port, host },
             Self::Changeset { subcommand } => match subcommand {
                 ChangesetCommands::Add {
@@ -2667,6 +2671,7 @@ mod tests {
             interactive: false,
             help: false,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: false,
             task_args: vec![],
         };
