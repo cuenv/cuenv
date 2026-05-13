@@ -740,10 +740,24 @@ fn collect_all_env_vars(
     merged
 }
 
+/// Default in-project parallelism cap for the CI orchestrator.
+///
+/// Each project's task DAG is executed level-by-level (dependency-respecting);
+/// within a level we run up to this many tasks concurrently. Matches the
+/// `max_parallel` default used by the core executor.
+const CI_MAX_PARALLEL: usize = 4;
+
 /// Execute a task with all its dependencies in correct order.
 ///
 /// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
-/// ensuring tasks run in proper topological order (same as CLI).
+/// then walks the graph by topological "parallel groups" so independent tasks
+/// at the same dependency depth run concurrently (bounded by [`CI_MAX_PARALLEL`]).
+///
+/// Behaviour preserved from the prior serial implementation:
+/// - First failure aborts the rest of the run and returns the failing task's
+///   `TaskOutput` (continue-on-error lands in Phase 6).
+/// - The returned `TaskOutput` is the originally-requested task's output —
+///   resolved by matching the canonical name once execution finishes.
 async fn execute_task_with_deps(
     config: &Project,
     task_name: &str,
@@ -752,6 +766,8 @@ async fn execute_task_with_deps(
     environment: Option<&str>,
     hook_env: &BTreeMap<String, String>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
+    use tokio::task::JoinSet;
+
     // 1. Build TaskIndex (same flattening as CLI)
     let index =
         TaskIndex::build(&config.tasks).map_err(|e| ExecutorError::Compilation(e.to_string()))?;
@@ -771,38 +787,128 @@ async fn execute_task_with_deps(
         .build_for_task(&canonical_name, &flattened_tasks)
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
-    // 5. Get topological execution order
-    let execution_order = graph
-        .topological_sort()
+    // 5. Get topological execution groups (each group runs in parallel).
+    let parallel_groups = graph
+        .get_parallel_groups()
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
     tracing::info!(
         task = task_name,
         canonical = %canonical_name,
-        execution_order = ?execution_order.iter().map(|n| &n.name).collect::<Vec<_>>(),
+        execution_order = ?parallel_groups
+            .iter()
+            .map(|g| g.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
+            .collect::<Vec<_>>(),
         "Resolved task dependencies"
     );
 
-    // 6. Execute each task in dependency order
-    let mut final_output = None;
-    for node in execution_order {
-        let output = compile_and_execute_ir(
-            config,
-            &node.name,
-            project_root,
-            cache_policy_override,
-            environment,
-            hook_env,
-        )
-        .await?;
+    // Shared inputs cloned once into Arc for cheap spawn-time cloning.
+    let config = Arc::new(config.clone());
+    let project_root = Arc::new(project_root.to_path_buf());
+    let environment = environment.map(|s| s.to_string());
+    let hook_env = Arc::new(hook_env.clone());
 
-        if !output.success {
-            return Ok(output); // Stop on first failure
+    // 6. Execute each parallel group in turn; within a group, fan out to
+    // up to CI_MAX_PARALLEL workers and join on the slowest task before
+    // advancing to the next level.
+    let mut outputs: HashMap<String, TaskOutput> = HashMap::new();
+    let mut first_failure: Option<TaskOutput> = None;
+    'outer: for group in parallel_groups {
+        let mut join_set: JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)> =
+            JoinSet::new();
+        let mut queue: std::collections::VecDeque<_> = group.into_iter().collect();
+        let mut next_queue_position: usize = 0;
+
+        // Prime the join set up to the parallelism cap, emitting queued
+        // events for anything that's ready but capped.
+        while let Some(node) = queue.pop_front() {
+            if join_set.len() >= CI_MAX_PARALLEL {
+                cuenv_events::emit_task_queued!(&node.name, next_queue_position);
+                next_queue_position += 1;
+                queue.push_front(node);
+                if let Some(joined) = join_set.join_next().await
+                    && let Some(failed) = handle_joined_result(joined, &mut outputs)?
+                {
+                    first_failure = Some(failed);
+                    break 'outer;
+                }
+                continue;
+            }
+            spawn_node_task(
+                &mut join_set,
+                node,
+                Arc::clone(&config),
+                Arc::clone(&project_root),
+                cache_policy_override,
+                environment.clone(),
+                Arc::clone(&hook_env),
+            );
         }
-        final_output = Some(output);
+
+        while let Some(joined) = join_set.join_next().await {
+            if let Some(failed) = handle_joined_result(joined, &mut outputs)? {
+                first_failure = Some(failed);
+                break 'outer;
+            }
+        }
     }
 
-    final_output.ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
+    if let Some(failed) = first_failure {
+        return Ok(failed);
+    }
+
+    outputs
+        .remove(&canonical_name)
+        .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
+}
+
+/// Spawn a single graph node onto the JoinSet, cloning the shared inputs.
+#[allow(clippy::needless_pass_by_value)]
+fn spawn_node_task(
+    join_set: &mut tokio::task::JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)>,
+    node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>,
+    config: Arc<Project>,
+    project_root: Arc<std::path::PathBuf>,
+    cache_policy_override: Option<CachePolicy>,
+    environment: Option<String>,
+    hook_env: Arc<BTreeMap<String, String>>,
+) {
+    let name = node.name.clone();
+    join_set.spawn(async move {
+        let result = compile_and_execute_ir(
+            config.as_ref(),
+            &name,
+            project_root.as_ref(),
+            cache_policy_override,
+            environment.as_deref(),
+            hook_env.as_ref(),
+        )
+        .await;
+        (name, result)
+    });
+}
+
+/// Reduce one `JoinSet::join_next` outcome into the running outputs map.
+///
+/// Returns `Ok(Some(failed_output))` when the joined task reported a
+/// non-success exit code, signalling the caller to abort the run.
+/// Propagates compilation / panic errors via `Err`.
+fn handle_joined_result(
+    joined: std::result::Result<
+        (String, std::result::Result<TaskOutput, ExecutorError>),
+        tokio::task::JoinError,
+    >,
+    outputs: &mut HashMap<String, TaskOutput>,
+) -> std::result::Result<Option<TaskOutput>, ExecutorError> {
+    let (name, result) = joined
+        .map_err(|err| ExecutorError::Compilation(format!("CI orchestrator panic: {err}")))?;
+    let output = result?;
+    if !output.success {
+        outputs.insert(name, output.clone());
+        return Ok(Some(output));
+    }
+    outputs.insert(name, output);
+    Ok(None)
 }
 
 /// Compile a single task to IR and execute it.
