@@ -31,6 +31,9 @@ chrono = { workspace = true }
 # Errors
 thiserror = { workspace = true }
 
+# Progress / spinners
+indicatif = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
