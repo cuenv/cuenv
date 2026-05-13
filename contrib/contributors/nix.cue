@@ -20,7 +20,7 @@ import "github.com/cuenv/cuenv/schema"
 	tasks: [{
 		id:       "nix.install"
 		label:    "Install Determinate Nix"
-		priority: 0
+		priority: 2
 		script:   "curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm --init none"
 		provider: github: {
 			uses: "DeterminateSystems/determinate-nix-action@v3"
