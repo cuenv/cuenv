@@ -297,6 +297,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     let tui = request.execution_mode == ExecutionMode::Tui;
     let help = request.output.help;
     let skip_dependencies = request.skip_dependencies;
+    let continue_on_error = request.continue_on_error;
     let dry_run = request.dry_run;
     let executor = request.executor;
     // Handle CLI help immediately if no task specified
@@ -793,7 +794,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     let config = ExecutorConfig {
         capture_output,
         max_parallel: 0,
-        continue_on_error: false,
+        continue_on_error,
         environment: runtime_env.clone(),
         working_dir: None,
         cue_module_root: cue_module_root.clone(),
@@ -815,7 +816,7 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         let tui_config = ExecutorConfig {
             capture_output: cuenv_core::OutputCapture::Capture, // Force capture for TUI mode
             max_parallel: 0,
-            continue_on_error: false,
+            continue_on_error,
             environment: runtime_env.clone(),
             working_dir: None,
             cue_module_root: cue_module_root.clone(),

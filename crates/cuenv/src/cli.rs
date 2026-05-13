@@ -527,6 +527,13 @@ pub enum Commands {
             default_value_t = false
         )]
         skip_dependencies: bool,
+        /// Continue running independent siblings after a task fails; dependents become Skipped.
+        #[arg(
+            long = "continue-on-error",
+            help = "Don't abort on first failure; dependents of the failing task are emitted as task.skipped and unrelated siblings keep running",
+            default_value_t = false
+        )]
+        continue_on_error: bool,
         /// Dry run mode: export task DAG as JSON without executing.
         #[arg(
             long = "dry-run",
@@ -1660,6 +1667,7 @@ impl Commands {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run,
                 task_args,
                 record_events,
@@ -1678,6 +1686,7 @@ impl Commands {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run: dry_run.into(),
                 task_args,
                 record_events,
@@ -2700,6 +2709,7 @@ mod tests {
             interactive: false,
             help: false,
             skip_dependencies: false,
+            continue_on_error: false,
             dry_run: false,
             task_args: vec![],
             record_events: None,

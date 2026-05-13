@@ -5,35 +5,53 @@
 
 use crate::event::{CuenvEvent, EventCategory, EventSource, SystemEvent};
 use crate::metadata::correlation_id;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-/// Process-wide event sender, set once at startup.
+/// Process-wide event sender for the direct-emit path.
 ///
-/// Direct-emit consumers (and the future replacement for the tracing
-/// transport) push into this. Set via [`set_global_sender`] when the
-/// bus is constructed; until then, [`emit`] is a no-op.
-static GLOBAL_SENDER: OnceLock<EventSender> = OnceLock::new();
+/// Held behind a `Mutex<Option<_>>` (not a `OnceLock`) so the global
+/// sender can be replaced at runtime — important for tests, which
+/// install a fresh bus per case, and for hosts that tear down and
+/// recreate the bus on a long-lived process. When `None`, [`emit`] is
+/// a no-op.
+static GLOBAL_SENDER: Mutex<Option<EventSender>> = Mutex::new(None);
 
-/// Install the process-wide [`EventSender`].
+/// Install (or replace) the process-wide [`EventSender`].
 ///
-/// Returns `true` if the sender was installed, `false` if one is already
-/// registered (subsequent calls are ignored to preserve idempotence in
-/// tests and embeddings).
+/// Replaces any previously-installed sender. Always returns `true` for
+/// historical compatibility with callers that treated the return as
+/// "was the install successful"; failure modes (poisoned mutex) are
+/// internal and surfaced via `tracing::warn!`.
 ///
 /// Pair with [`emit`] / [`emit_with_source`] to publish events without
-/// going through `tracing::info!` macros — useful for direct-emit
-/// consumers that don't want the parse round-trip the current
-/// [`crate::layer::CuenvEventLayer`] performs.
+/// going through `tracing::info!` macros.
 pub fn set_global_sender(sender: EventSender) -> bool {
-    GLOBAL_SENDER.set(sender).is_ok()
+    if let Ok(mut guard) = GLOBAL_SENDER.lock() {
+        *guard = Some(sender);
+        true
+    } else {
+        tracing::warn!("global event sender lock poisoned; dropping replacement");
+        false
+    }
 }
 
-/// Get the process-wide [`EventSender`], if installed.
+/// Get the process-wide [`EventSender`], if one is installed.
 #[must_use]
 pub fn global_sender() -> Option<EventSender> {
-    GLOBAL_SENDER.get().cloned()
+    GLOBAL_SENDER.lock().ok().and_then(|g| g.clone())
+}
+
+/// Clear the process-wide [`EventSender`].
+///
+/// Intended for tests that need a clean slate between cases. After
+/// calling, [`emit`] returns `SendError::Closed` until a new sender is
+/// installed.
+pub fn clear_global_sender() {
+    if let Ok(mut guard) = GLOBAL_SENDER.lock() {
+        *guard = None;
+    }
 }
 
 /// Publish an [`EventCategory`] to the global event bus.
@@ -53,7 +71,7 @@ pub fn global_sender() -> Option<EventSender> {
 /// Returns [`SendError::Closed`] if no global sender is installed or the
 /// bus has been shut down.
 pub fn emit_with_source(source: EventSource, category: EventCategory) -> Result<(), SendError> {
-    let sender = GLOBAL_SENDER.get().ok_or(SendError::Closed)?;
+    let sender = global_sender().ok_or(SendError::Closed)?;
     let event = CuenvEvent {
         id: Uuid::new_v4(),
         correlation_id: correlation_id(),

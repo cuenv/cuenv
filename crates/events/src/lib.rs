@@ -46,8 +46,8 @@ pub mod subscribers;
 
 // Re-exports for convenience
 pub use bus::{
-    EventBus, EventReceiver, EventSender, SendError, emit, emit_with_source, global_sender,
-    set_global_sender,
+    EventBus, EventReceiver, EventSender, SendError, clear_global_sender, emit, emit_with_source,
+    global_sender, set_global_sender,
 };
 pub use event::{
     CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
@@ -65,6 +65,15 @@ pub use subscribers::{EventRecorder, EventReplayReader, RecorderError};
 // ============================================================================
 // Emit Macros
 // ============================================================================
+//
+// These macros are the canonical emit path. They construct a typed
+// `CuenvEvent` and publish it via `cuenv_events::emit` against the
+// process-wide `EventSender` installed by `set_global_sender`. If no
+// sender has been installed (tests, library embeddings without a bus)
+// the call is a no-op.
+//
+// The old tracing-based transport (`CuenvEventLayer` + `CuenvEventVisitor`)
+// has been retired — events no longer round-trip through tracing fields.
 
 /// Emit a task started event.
 ///
@@ -72,503 +81,396 @@ pub use subscribers::{EventRecorder, EventReplayReader, RecorderError};
 /// - `emit_task_started!(name, command, hermetic)` — leaf task, no group.
 /// - `emit_task_started!(name, command, hermetic, parent_group, task_kind)`
 ///   — leaf or group task, optionally inside a parent group.
-///   `parent_group` is `Option<&str>` (or anything `Display`); `task_kind`
+///   `parent_group` is `Option<&str>` or `Option<String>`; `task_kind`
 ///   is a `&'static str` matching `TaskKind` (`"task"`, `"group"`, `"sequence"`).
 #[macro_export]
 macro_rules! emit_task_started {
-    ($name:expr, $command:expr, $hermetic:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.started",
-            task_name = %$name,
-            command = %$command,
-            hermetic = $hermetic,
-        )
-    };
-    ($name:expr, $command:expr, $hermetic:expr, $parent_group:expr, $task_kind:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.started",
-            task_name = %$name,
-            command = %$command,
-            hermetic = $hermetic,
-            parent_group = ?$parent_group,
-            task_kind = $task_kind,
-        )
-    };
+    ($name:expr, $command:expr, $hermetic:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Started {
+            name: ::std::string::ToString::to_string(&$name),
+            command: ::std::string::ToString::to_string(&$command),
+            hermetic: $hermetic,
+            parent_group: ::std::option::Option::None,
+            task_kind: <$crate::TaskKind as ::std::default::Default>::default(),
+        }));
+    }};
+    ($name:expr, $command:expr, $hermetic:expr, $parent_group:expr, $task_kind:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Started {
+            name: ::std::string::ToString::to_string(&$name),
+            command: ::std::string::ToString::to_string(&$command),
+            hermetic: $hermetic,
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+            task_kind: $crate::__macro_helpers::parse_task_kind($task_kind),
+        }));
+    }};
 }
 
 /// Emit a task cache hit event.
-///
-/// Forms:
-/// - `emit_task_cache_hit!(name, cache_key)`
-/// - `emit_task_cache_hit!(name, cache_key, parent_group)`
 #[macro_export]
 macro_rules! emit_task_cache_hit {
-    ($name:expr, $cache_key:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_hit",
-            task_name = %$name,
-            cache_key = %$cache_key,
-        )
-    };
-    ($name:expr, $cache_key:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_hit",
-            task_name = %$name,
-            cache_key = %$cache_key,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $cache_key:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::CacheHit {
+            name: ::std::string::ToString::to_string(&$name),
+            cache_key: ::std::string::ToString::to_string(&$cache_key),
+            parent_group: ::std::option::Option::None,
+        }));
+    }};
+    ($name:expr, $cache_key:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::CacheHit {
+            name: ::std::string::ToString::to_string(&$name),
+            cache_key: ::std::string::ToString::to_string(&$cache_key),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+        }));
+    }};
 }
 
 /// Emit a task cache miss event.
-///
-/// Forms:
-/// - `emit_task_cache_miss!(name)`
-/// - `emit_task_cache_miss!(name, parent_group)`
 #[macro_export]
 macro_rules! emit_task_cache_miss {
-    ($name:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_miss",
-            task_name = %$name,
-        )
-    };
-    ($name:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_miss",
-            task_name = %$name,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::CacheMiss {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ::std::option::Option::None,
+        }));
+    }};
+    ($name:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::CacheMiss {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+        }));
+    }};
 }
 
-/// Emit a task cache skipped event with a structured reason.
-///
-/// `reason` should be a [`crate::CacheSkipReason`].
-///
-/// Forms:
-/// - `emit_task_cache_skipped!(name, reason)`
-/// - `emit_task_cache_skipped!(name, reason, parent_group)`
+/// Emit a task cache skipped event. `reason` is a [`CacheSkipReason`].
 #[macro_export]
 macro_rules! emit_task_cache_skipped {
-    ($name:expr, $reason:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_skipped",
-            task_name = %$name,
-            cache_skip_reason = %$crate::__macro_helpers::encode_cache_skip_reason(&$reason),
-        )
-    };
-    ($name:expr, $reason:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.cache_skipped",
-            task_name = %$name,
-            cache_skip_reason = %$crate::__macro_helpers::encode_cache_skip_reason(&$reason),
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $reason:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::CacheSkipped {
+                name: ::std::string::ToString::to_string(&$name),
+                parent_group: ::std::option::Option::None,
+                reason: $reason,
+            },
+        ));
+    }};
+    ($name:expr, $reason:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::CacheSkipped {
+                name: ::std::string::ToString::to_string(&$name),
+                parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+                reason: $reason,
+            },
+        ));
+    }};
 }
 
-/// Emit a task queued event (graph picked task but parallelism cap blocks start).
-///
-/// Forms:
-/// - `emit_task_queued!(name, queue_position)`
-/// - `emit_task_queued!(name, queue_position, parent_group)`
+/// Emit a task queued event.
 #[macro_export]
 macro_rules! emit_task_queued {
-    ($name:expr, $queue_position:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.queued",
-            task_name = %$name,
-            queue_position = $queue_position,
-        )
-    };
-    ($name:expr, $queue_position:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.queued",
-            task_name = %$name,
-            queue_position = $queue_position,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $queue_position:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Queued {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ::std::option::Option::None,
+            queue_position: $queue_position,
+        }));
+    }};
+    ($name:expr, $queue_position:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Queued {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+            queue_position: $queue_position,
+        }));
+    }};
 }
 
-/// Emit a task skipped event with a structured reason.
-///
-/// `reason` should be a [`crate::SkipReason`].
-///
-/// Forms:
-/// - `emit_task_skipped!(name, reason)`
-/// - `emit_task_skipped!(name, reason, parent_group)`
+/// Emit a task skipped event. `reason` is a [`SkipReason`].
 #[macro_export]
 macro_rules! emit_task_skipped {
-    ($name:expr, $reason:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.skipped",
-            task_name = %$name,
-            skip_reason = %$crate::__macro_helpers::encode_skip_reason(&$reason),
-        )
-    };
-    ($name:expr, $reason:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.skipped",
-            task_name = %$name,
-            skip_reason = %$crate::__macro_helpers::encode_skip_reason(&$reason),
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $reason:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Skipped {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ::std::option::Option::None,
+            reason: $reason,
+        }));
+    }};
+    ($name:expr, $reason:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Skipped {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+            reason: $reason,
+        }));
+    }};
 }
 
 /// Emit a task retrying event.
-///
-/// Forms:
-/// - `emit_task_retrying!(name, attempt, max_attempts)`
-/// - `emit_task_retrying!(name, attempt, max_attempts, parent_group)`
 #[macro_export]
 macro_rules! emit_task_retrying {
-    ($name:expr, $attempt:expr, $max_attempts:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.retrying",
-            task_name = %$name,
-            attempt = $attempt,
-            max_attempts = $max_attempts,
-        )
-    };
-    ($name:expr, $attempt:expr, $max_attempts:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.retrying",
-            task_name = %$name,
-            attempt = $attempt,
-            max_attempts = $max_attempts,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $attempt:expr, $max_attempts:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Retrying {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ::std::option::Option::None,
+            attempt: $attempt,
+            max_attempts: $max_attempts,
+        }));
+    }};
+    ($name:expr, $attempt:expr, $max_attempts:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Retrying {
+            name: ::std::string::ToString::to_string(&$name),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+            attempt: $attempt,
+            max_attempts: $max_attempts,
+        }));
+    }};
 }
 
-/// Emit a task output event.
-///
-/// Forms:
-/// - `emit_task_output!(name, stream, content)`
-/// - `emit_task_output!(name, stream, content, parent_group)`
+/// Emit a task output event. `stream` is `"stdout"` or `"stderr"`.
 #[macro_export]
 macro_rules! emit_task_output {
-    ($name:expr, $stream:expr, $content:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.output",
-            task_name = %$name,
-            stream = $stream,
-            content = %$content,
-        )
-    };
-    ($name:expr, $stream:expr, $content:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.output",
-            task_name = %$name,
-            stream = $stream,
-            content = %$content,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $stream:expr, $content:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Output {
+            name: ::std::string::ToString::to_string(&$name),
+            stream: $crate::__macro_helpers::parse_stream($stream),
+            content: ::std::string::ToString::to_string(&$content),
+            parent_group: ::std::option::Option::None,
+        }));
+    }};
+    ($name:expr, $stream:expr, $content:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Output {
+            name: ::std::string::ToString::to_string(&$name),
+            stream: $crate::__macro_helpers::parse_stream($stream),
+            content: ::std::string::ToString::to_string(&$content),
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+        }));
+    }};
 }
 
 /// Emit a task completed event.
-///
-/// Forms:
-/// - `emit_task_completed!(name, success, exit_code, duration_ms)`
-/// - `emit_task_completed!(name, success, exit_code, duration_ms, parent_group)`
 #[macro_export]
 macro_rules! emit_task_completed {
-    ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.completed",
-            task_name = %$name,
-            success = $success,
-            exit_code = ?$exit_code,
-            duration_ms = $duration_ms,
-        )
-    };
-    ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.completed",
-            task_name = %$name,
-            success = $success,
-            exit_code = ?$exit_code,
-            duration_ms = $duration_ms,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Completed {
+            name: ::std::string::ToString::to_string(&$name),
+            success: $success,
+            exit_code: $exit_code,
+            duration_ms: $duration_ms,
+            parent_group: ::std::option::Option::None,
+        }));
+    }};
+    ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task($crate::TaskEvent::Completed {
+            name: ::std::string::ToString::to_string(&$name),
+            success: $success,
+            exit_code: $exit_code,
+            duration_ms: $duration_ms,
+            parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+        }));
+    }};
 }
 
 /// Emit a task group started event.
-///
-/// Forms:
-/// - `emit_task_group_started!(name, sequential, task_count)`
-/// - `emit_task_group_started!(name, sequential, task_count, parent_group, max_concurrency)`
 #[macro_export]
 macro_rules! emit_task_group_started {
-    ($name:expr, $sequential:expr, $task_count:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.group_started",
-            task_name = %$name,
-            sequential = $sequential,
-            task_count = $task_count,
-        )
-    };
-    ($name:expr, $sequential:expr, $task_count:expr, $parent_group:expr, $max_concurrency:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.group_started",
-            task_name = %$name,
-            sequential = $sequential,
-            task_count = $task_count,
-            parent_group = ?$parent_group,
-            max_concurrency = ?$max_concurrency,
-        )
-    };
+    ($name:expr, $sequential:expr, $task_count:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::GroupStarted {
+                name: ::std::string::ToString::to_string(&$name),
+                sequential: $sequential,
+                task_count: $task_count,
+                parent_group: ::std::option::Option::None,
+                max_concurrency: ::std::option::Option::None,
+            },
+        ));
+    }};
+    ($name:expr, $sequential:expr, $task_count:expr, $parent_group:expr, $max_concurrency:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::GroupStarted {
+                name: ::std::string::ToString::to_string(&$name),
+                sequential: $sequential,
+                task_count: $task_count,
+                parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+                max_concurrency: $max_concurrency,
+            },
+        ));
+    }};
 }
 
 /// Emit a task group completed event.
-///
-/// Forms:
-/// - `emit_task_group_completed!(name, success, duration_ms)`
-/// - `emit_task_group_completed!(name, success, duration_ms, succeeded, failed, skipped)`
-/// - `emit_task_group_completed!(name, success, duration_ms, succeeded, failed, skipped, parent_group)`
 #[macro_export]
 macro_rules! emit_task_group_completed {
-    ($name:expr, $success:expr, $duration_ms:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.group_completed",
-            task_name = %$name,
-            success = $success,
-            duration_ms = $duration_ms,
-        )
-    };
-    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.group_completed",
-            task_name = %$name,
-            success = $success,
-            duration_ms = $duration_ms,
-            succeeded = $succeeded,
-            failed_count = $failed,
-            skipped_count = $skipped,
-        )
-    };
-    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr, $parent_group:expr) => {
-        ::tracing::info!(
-            target: "cuenv::task",
-            event_type = "task.group_completed",
-            task_name = %$name,
-            success = $success,
-            duration_ms = $duration_ms,
-            succeeded = $succeeded,
-            failed_count = $failed,
-            skipped_count = $skipped,
-            parent_group = ?$parent_group,
-        )
-    };
+    ($name:expr, $success:expr, $duration_ms:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::GroupCompleted {
+                name: ::std::string::ToString::to_string(&$name),
+                success: $success,
+                duration_ms: $duration_ms,
+                parent_group: ::std::option::Option::None,
+                succeeded: 0,
+                failed: 0,
+                skipped: 0,
+            },
+        ));
+    }};
+    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::GroupCompleted {
+                name: ::std::string::ToString::to_string(&$name),
+                success: $success,
+                duration_ms: $duration_ms,
+                parent_group: ::std::option::Option::None,
+                succeeded: $succeeded,
+                failed: $failed,
+                skipped: $skipped,
+            },
+        ));
+    }};
+    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr, $parent_group:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Task(
+            $crate::TaskEvent::GroupCompleted {
+                name: ::std::string::ToString::to_string(&$name),
+                success: $success,
+                duration_ms: $duration_ms,
+                parent_group: ($parent_group).map(|p| ::std::string::ToString::to_string(&p)),
+                succeeded: $succeeded,
+                failed: $failed,
+                skipped: $skipped,
+            },
+        ));
+    }};
 }
 
 // Service Events
 
 /// Emit a service pending event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_pending!("db");
-/// ```
 #[macro_export]
 macro_rules! emit_service_pending {
-    ($name:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.pending",
-            service_name = %$name,
-        )
-    };
+    ($name:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Pending {
+                name: ::std::string::ToString::to_string(&$name),
+            },
+        ));
+    }};
 }
 
 /// Emit a service starting event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_starting!("db", "postgres -D /data");
-/// ```
 #[macro_export]
 macro_rules! emit_service_starting {
-    ($name:expr, $command:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.starting",
-            service_name = %$name,
-            command = %$command,
-        )
-    };
+    ($name:expr, $command:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Starting {
+                name: ::std::string::ToString::to_string(&$name),
+                command: ::std::string::ToString::to_string(&$command),
+            },
+        ));
+    }};
 }
 
 /// Emit a service output event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_output!("db", "stdout", "ready to accept connections");
-/// ```
 #[macro_export]
 macro_rules! emit_service_output {
-    ($name:expr, $stream:expr, $line:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.output",
-            service_name = %$name,
-            stream = $stream,
-            content = %$line,
-        )
-    };
+    ($name:expr, $stream:expr, $line:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Output {
+                name: ::std::string::ToString::to_string(&$name),
+                stream: $crate::__macro_helpers::parse_stream($stream),
+                line: ::std::string::ToString::to_string(&$line),
+            },
+        ));
+    }};
 }
 
 /// Emit a service ready event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_ready!("db", 1200_u64);
-/// ```
 #[macro_export]
 macro_rules! emit_service_ready {
-    ($name:expr, $after_ms:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.ready",
-            service_name = %$name,
-            after_ms = $after_ms,
-        )
-    };
+    ($name:expr, $after_ms:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Ready {
+                name: ::std::string::ToString::to_string(&$name),
+                after_ms: $after_ms,
+            },
+        ));
+    }};
 }
 
 /// Emit a service stopping event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_stopping!("db");
-/// ```
 #[macro_export]
 macro_rules! emit_service_stopping {
-    ($name:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.stopping",
-            service_name = %$name,
-        )
-    };
+    ($name:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Stopping {
+                name: ::std::string::ToString::to_string(&$name),
+            },
+        ));
+    }};
 }
 
 /// Emit a service stopped event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_stopped!("db", Some(0));
-/// ```
 #[macro_export]
 macro_rules! emit_service_stopped {
-    ($name:expr, $exit_code:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.stopped",
-            service_name = %$name,
-            exit_code = ?$exit_code,
-        )
-    };
+    ($name:expr, $exit_code:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Stopped {
+                name: ::std::string::ToString::to_string(&$name),
+                exit_code: $exit_code,
+            },
+        ));
+    }};
 }
 
 /// Emit a service failed event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_failed!("db", "readiness timeout");
-/// ```
 #[macro_export]
 macro_rules! emit_service_failed {
-    ($name:expr, $error:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.failed",
-            service_name = %$name,
-            error = %$error,
-        )
-    };
+    ($name:expr, $error:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Failed {
+                name: ::std::string::ToString::to_string(&$name),
+                error: ::std::string::ToString::to_string(&$error),
+            },
+        ));
+    }};
 }
 
 /// Emit a service readiness timeout event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_ready_timeout!("db", 60000_u64);
-/// ```
 #[macro_export]
 macro_rules! emit_service_ready_timeout {
-    ($name:expr, $after_ms:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.ready_timeout",
-            service_name = %$name,
-            after_ms = $after_ms,
-        )
-    };
+    ($name:expr, $after_ms:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::ReadyTimeout {
+                name: ::std::string::ToString::to_string(&$name),
+                after_ms: $after_ms,
+            },
+        ));
+    }};
 }
 
-/// Emit a service restarting event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_restarting!("api", "crashed", 2_u32);
-/// ```
+/// Emit a service restarting event. `reason` is a [`RestartReason`].
 #[macro_export]
 macro_rules! emit_service_restarting {
-    ($name:expr, $reason:expr, $attempt:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.restarting",
-            service_name = %$name,
-            reason = %$reason,
-            attempt = $attempt,
-        )
-    };
+    ($name:expr, $reason:expr, $attempt:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Restarting {
+                name: ::std::string::ToString::to_string(&$name),
+                reason: $crate::__macro_helpers::parse_restart_reason(&$reason),
+                attempt: $attempt,
+            },
+        ));
+    }};
 }
 
 /// Emit a service file watch event.
-///
-/// # Example
-/// ```rust,ignore
-/// emit_service_watch!("api", &["src/main.rs".to_string()]);
-/// ```
 #[macro_export]
 macro_rules! emit_service_watch {
-    ($name:expr, $changed:expr) => {
-        ::tracing::info!(
-            target: "cuenv::service",
-            event_type = "service.watch",
-            service_name = %$name,
-            changed = ?$changed,
-        )
-    };
+    ($name:expr, $changed:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Service(
+            $crate::ServiceEvent::Watch {
+                name: ::std::string::ToString::to_string(&$name),
+                changed: ($changed)
+                    .iter()
+                    .map(|p| ::std::string::ToString::to_string(p))
+                    .collect(),
+            },
+        ));
+    }};
 }
 
 // CI Events
@@ -576,101 +478,90 @@ macro_rules! emit_service_watch {
 /// Emit a CI context detected event.
 #[macro_export]
 macro_rules! emit_ci_context {
-    ($provider:expr, $event_type:expr, $ref_name:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.context_detected",
-            provider = %$provider,
-            ci_event_type = %$event_type,
-            ref_name = %$ref_name,
-        )
-    };
+    ($provider:expr, $event_type:expr, $ref_name:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci(
+            $crate::CiEvent::ContextDetected {
+                provider: ::std::string::ToString::to_string(&$provider),
+                event_type: ::std::string::ToString::to_string(&$event_type),
+                ref_name: ::std::string::ToString::to_string(&$ref_name),
+            },
+        ));
+    }};
 }
 
 /// Emit a CI changed files found event.
 #[macro_export]
 macro_rules! emit_ci_changed_files {
-    ($count:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.changed_files",
-            count = $count,
-        )
-    };
+    ($count:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci(
+            $crate::CiEvent::ChangedFilesFound { count: $count },
+        ));
+    }};
 }
 
 /// Emit a CI projects discovered event.
 #[macro_export]
 macro_rules! emit_ci_projects_discovered {
-    ($count:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.projects_discovered",
-            count = $count,
-        )
-    };
+    ($count:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci(
+            $crate::CiEvent::ProjectsDiscovered { count: $count },
+        ));
+    }};
 }
 
 /// Emit a CI project skipped event.
 #[macro_export]
 macro_rules! emit_ci_project_skipped {
-    ($path:expr, $reason:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.project_skipped",
-            path = %$path,
-            reason = %$reason,
-        )
-    };
+    ($path:expr, $reason:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci($crate::CiEvent::ProjectSkipped {
+            path: ::std::string::ToString::to_string(&$path),
+            reason: ::std::string::ToString::to_string(&$reason),
+        }));
+    }};
 }
 
 /// Emit a CI task executing event.
 #[macro_export]
 macro_rules! emit_ci_task_executing {
-    ($project:expr, $task:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.task_executing",
-            project = %$project,
-            task = %$task,
-        )
-    };
+    ($project:expr, $task:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci($crate::CiEvent::TaskExecuting {
+            project: ::std::string::ToString::to_string(&$project),
+            task: ::std::string::ToString::to_string(&$task),
+        }));
+    }};
 }
 
 /// Emit a CI task result event.
 #[macro_export]
 macro_rules! emit_ci_task_result {
-    ($project:expr, $task:expr, $success:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.task_result",
-            project = %$project,
-            task = %$task,
-            success = $success,
-        )
-    };
-    ($project:expr, $task:expr, $success:expr, $error:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.task_result",
-            project = %$project,
-            task = %$task,
-            success = $success,
-            error = %$error,
-        )
-    };
+    ($project:expr, $task:expr, $success:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci($crate::CiEvent::TaskResult {
+            project: ::std::string::ToString::to_string(&$project),
+            task: ::std::string::ToString::to_string(&$task),
+            success: $success,
+            error: ::std::option::Option::None,
+        }));
+    }};
+    ($project:expr, $task:expr, $success:expr, $error:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci($crate::CiEvent::TaskResult {
+            project: ::std::string::ToString::to_string(&$project),
+            task: ::std::string::ToString::to_string(&$task),
+            success: $success,
+            error: ::std::option::Option::Some(::std::string::ToString::to_string(&$error)),
+        }));
+    }};
 }
 
 /// Emit a CI report generated event.
 #[macro_export]
 macro_rules! emit_ci_report {
-    ($path:expr) => {
-        ::tracing::info!(
-            target: "cuenv::ci",
-            event_type = "ci.report_generated",
-            path = %$path,
-        )
-    };
+    ($path:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Ci(
+            $crate::CiEvent::ReportGenerated {
+                path: ::std::string::ToString::to_string(&$path),
+            },
+        ));
+    }};
 }
 
 // Command Events
@@ -678,49 +569,53 @@ macro_rules! emit_ci_report {
 /// Emit a command started event.
 #[macro_export]
 macro_rules! emit_command_started {
-    ($command:expr) => {
-        ::tracing::info!(
-            target: "cuenv::command",
-            event_type = "command.started",
-            command = %$command,
-        )
-    };
-    ($command:expr, $args:expr) => {
-        ::tracing::info!(
-            target: "cuenv::command",
-            event_type = "command.started",
-            command = %$command,
-            args = ?$args,
-        )
-    };
+    ($command:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Command(
+            $crate::CommandEvent::Started {
+                command: ::std::string::ToString::to_string(&$command),
+                args: ::std::vec::Vec::new(),
+            },
+        ));
+    }};
+    ($command:expr, $args:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Command(
+            $crate::CommandEvent::Started {
+                command: ::std::string::ToString::to_string(&$command),
+                args: ($args)
+                    .into_iter()
+                    .map(|a| ::std::string::ToString::to_string(&a))
+                    .collect(),
+            },
+        ));
+    }};
 }
 
 /// Emit a command progress event.
 #[macro_export]
 macro_rules! emit_command_progress {
-    ($command:expr, $progress:expr, $message:expr) => {
-        ::tracing::info!(
-            target: "cuenv::command",
-            event_type = "command.progress",
-            command = %$command,
-            progress = $progress,
-            message = %$message,
-        )
-    };
+    ($command:expr, $progress:expr, $message:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Command(
+            $crate::CommandEvent::Progress {
+                command: ::std::string::ToString::to_string(&$command),
+                progress: $progress,
+                message: ::std::string::ToString::to_string(&$message),
+            },
+        ));
+    }};
 }
 
 /// Emit a command completed event.
 #[macro_export]
 macro_rules! emit_command_completed {
-    ($command:expr, $success:expr, $duration_ms:expr) => {
-        ::tracing::info!(
-            target: "cuenv::command",
-            event_type = "command.completed",
-            command = %$command,
-            success = $success,
-            duration_ms = $duration_ms,
-        )
-    };
+    ($command:expr, $success:expr, $duration_ms:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Command(
+            $crate::CommandEvent::Completed {
+                command: ::std::string::ToString::to_string(&$command),
+                success: $success,
+                duration_ms: $duration_ms,
+            },
+        ));
+    }};
 }
 
 // Interactive Events
@@ -728,41 +623,44 @@ macro_rules! emit_command_completed {
 /// Emit a prompt requested event.
 #[macro_export]
 macro_rules! emit_prompt_requested {
-    ($prompt_id:expr, $message:expr, $options:expr) => {
-        ::tracing::info!(
-            target: "cuenv::interactive",
-            event_type = "interactive.prompt_requested",
-            prompt_id = %$prompt_id,
-            message = %$message,
-            options = ?$options,
-        )
-    };
+    ($prompt_id:expr, $message:expr, $options:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Interactive(
+            $crate::InteractiveEvent::PromptRequested {
+                prompt_id: ::std::string::ToString::to_string(&$prompt_id),
+                message: ::std::string::ToString::to_string(&$message),
+                options: ($options)
+                    .into_iter()
+                    .map(|o| ::std::string::ToString::to_string(&o))
+                    .collect(),
+            },
+        ));
+    }};
 }
 
 /// Emit a prompt resolved event.
 #[macro_export]
 macro_rules! emit_prompt_resolved {
-    ($prompt_id:expr, $response:expr) => {
-        ::tracing::info!(
-            target: "cuenv::interactive",
-            event_type = "interactive.prompt_resolved",
-            prompt_id = %$prompt_id,
-            response = %$response,
-        )
-    };
+    ($prompt_id:expr, $response:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Interactive(
+            $crate::InteractiveEvent::PromptResolved {
+                prompt_id: ::std::string::ToString::to_string(&$prompt_id),
+                response: ::std::string::ToString::to_string(&$response),
+            },
+        ));
+    }};
 }
 
 /// Emit a wait progress event.
 #[macro_export]
 macro_rules! emit_wait_progress {
-    ($target:expr, $elapsed_secs:expr) => {
-        ::tracing::info!(
-            target: "cuenv::interactive",
-            event_type = "interactive.wait_progress",
-            task_name = %$target,
-            elapsed_secs = $elapsed_secs,
-        )
-    };
+    ($target:expr, $elapsed_secs:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Interactive(
+            $crate::InteractiveEvent::WaitProgress {
+                target: ::std::string::ToString::to_string(&$target),
+                elapsed_secs: $elapsed_secs,
+            },
+        ));
+    }};
 }
 
 // System Events
@@ -770,25 +668,22 @@ macro_rules! emit_wait_progress {
 /// Emit a supervisor log event.
 #[macro_export]
 macro_rules! emit_supervisor_log {
-    ($tag:expr, $message:expr) => {
-        ::tracing::info!(
-            target: "cuenv::system",
-            event_type = "system.supervisor_log",
-            tag = %$tag,
-            message = %$message,
-        )
-    };
+    ($tag:expr, $message:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::System(
+            $crate::SystemEvent::SupervisorLog {
+                tag: ::std::string::ToString::to_string(&$tag),
+                message: ::std::string::ToString::to_string(&$message),
+            },
+        ));
+    }};
 }
 
 /// Emit a system shutdown event.
 #[macro_export]
 macro_rules! emit_shutdown {
-    () => {
-        ::tracing::info!(
-            target: "cuenv::system",
-            event_type = "system.shutdown",
-        )
-    };
+    () => {{
+        let _ = $crate::emit($crate::EventCategory::System($crate::SystemEvent::Shutdown));
+    }};
 }
 
 // Output Events
@@ -796,25 +691,21 @@ macro_rules! emit_shutdown {
 /// Emit a stdout output event.
 #[macro_export]
 macro_rules! emit_stdout {
-    ($content:expr) => {
-        ::tracing::info!(
-            target: "cuenv::output",
-            event_type = "output.stdout",
-            content = %$content,
-        )
-    };
+    ($content:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Output($crate::OutputEvent::Stdout {
+            content: ::std::string::ToString::to_string(&$content),
+        }));
+    }};
 }
 
 /// Emit a stderr output event.
 #[macro_export]
 macro_rules! emit_stderr {
-    ($content:expr) => {
-        ::tracing::info!(
-            target: "cuenv::output",
-            event_type = "output.stderr",
-            content = %$content,
-        )
-    };
+    ($content:expr) => {{
+        let _ = $crate::emit($crate::EventCategory::Output($crate::OutputEvent::Stderr {
+            content: ::std::string::ToString::to_string(&$content),
+        }));
+    }};
 }
 
 /// Internal helpers used by the `emit_*!` macros.
@@ -823,18 +714,39 @@ macro_rules! emit_stderr {
 /// must reference it via `$crate`.
 #[doc(hidden)]
 pub mod __macro_helpers {
-    use crate::event::{CacheSkipReason, SkipReason};
+    use crate::event::{RestartReason, Stream, TaskKind};
 
-    /// Serialize a [`CacheSkipReason`] to JSON for tracing field transport.
+    /// Map the string `task_kind` discriminator the old tracing macros
+    /// accepted to the typed [`TaskKind`] used by the direct emit path.
+    /// Unknown values default to [`TaskKind::Task`].
     #[must_use]
-    pub fn encode_cache_skip_reason(reason: &CacheSkipReason) -> String {
-        serde_json::to_string(reason).unwrap_or_default()
+    pub fn parse_task_kind(kind: &str) -> TaskKind {
+        match kind {
+            "group" => TaskKind::Group,
+            "sequence" => TaskKind::Sequence,
+            _ => TaskKind::Task,
+        }
     }
 
-    /// Serialize a [`SkipReason`] to JSON for tracing field transport.
+    /// Map the string `stream` discriminator to the typed [`Stream`] enum.
+    /// Unknown values fall back to [`Stream::Stdout`].
     #[must_use]
-    pub fn encode_skip_reason(reason: &SkipReason) -> String {
-        serde_json::to_string(reason).unwrap_or_default()
+    pub fn parse_stream(stream: &str) -> Stream {
+        match stream {
+            "stderr" => Stream::Stderr,
+            _ => Stream::Stdout,
+        }
+    }
+
+    /// Map a free-form `restart_reason` string to a typed
+    /// [`RestartReason`]. Unknown values default to `Manual`.
+    #[must_use]
+    pub fn parse_restart_reason(reason: &(impl ::std::fmt::Display + ?Sized)) -> RestartReason {
+        match reason.to_string().as_str() {
+            "crashed" | "Crashed" => RestartReason::Crashed,
+            "watch_triggered" | "WatchTriggered" => RestartReason::WatchTriggered,
+            _ => RestartReason::Manual,
+        }
     }
 }
 

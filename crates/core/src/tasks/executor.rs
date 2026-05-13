@@ -304,8 +304,8 @@ impl TaskExecutor {
         cuenv_events::emit_task_completed!(
             name,
             success,
-            exit_code,
-            cached.execution_metadata.duration_ms
+            Some(exit_code),
+            u64::try_from(cached.execution_metadata.duration_ms).unwrap_or(0)
         );
 
         Ok(TaskResult {
@@ -527,7 +527,7 @@ impl TaskExecutor {
             let success = status.success();
 
             // Emit task completion event
-            cuenv_events::emit_task_completed!(name, success, exit_code, duration_ms);
+            cuenv_events::emit_task_completed!(name, success, Some(exit_code), duration_ms);
 
             if !success {
                 tracing::warn!(task = %name, exit = exit_code, "Task failed");
@@ -1183,12 +1183,10 @@ mod tests {
     use crate::tasks::TaskDependency;
     use crate::tasks::cache::TaskCacheConfig;
     use cuenv_cas::{LocalActionCache, LocalCas};
-    use cuenv_events::{CuenvEventLayer, EventCategory, TaskEvent};
+    use cuenv_events::{EventBus, EventCategory, TaskEvent};
     use cuenv_vcs::WalkHasher;
     use std::collections::HashMap;
     use tempfile::TempDir;
-    use tokio::sync::mpsc;
-    use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]
     async fn test_executor_config_default() {
@@ -1700,25 +1698,40 @@ mod tests {
         executor.execute_task("cached", &task).await.unwrap();
         std::fs::remove_file(workspace.path().join("out.txt")).unwrap();
 
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let layer = CuenvEventLayer::new(tx);
-        let subscriber = tracing_subscriber::registry().with(layer);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        // The macros emit via the process-wide EventSender installed
+        // here; subscribe a receiver before triggering the cached run so
+        // we can observe the replayed Output event.
+        let bus = EventBus::new();
+        let sender = bus.sender().expect("sender available");
+        let _ = cuenv_events::set_global_sender(sender);
+        let mut rx = bus.subscribe();
 
         let result = executor.execute_task("cached", &task).await.unwrap();
         assert!(result.success);
 
+        // The mpsc → broadcast forwarder runs on a tokio task; await with a
+        // short deadline rather than try_recv-looping so we don't race the
+        // forwarder.
         let mut saw_output = false;
-        while let Ok(event) = rx.try_recv() {
-            if let EventCategory::Task(TaskEvent::Output { name, content, .. }) = event.category
-                && name == "cached"
-                && content == "hello"
-            {
-                saw_output = true;
-                break;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        while tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+                Ok(Some(event)) => {
+                    if let EventCategory::Task(TaskEvent::Output { name, content, .. }) =
+                        event.category
+                        && name == "cached"
+                        && content == "hello"
+                    {
+                        saw_output = true;
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => continue,
             }
         }
 
+        cuenv_events::clear_global_sender();
         assert!(
             saw_output,
             "expected cached task output event to be replayed"

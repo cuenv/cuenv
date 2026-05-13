@@ -175,6 +175,8 @@ pub enum Command {
         help: bool,
         /// Whether to skip running task dependencies.
         skip_dependencies: bool,
+        /// Continue running independent siblings after a task fails.
+        continue_on_error: bool,
         /// Dry run mode: export DAG without executing.
         dry_run: DryRun,
         /// Additional arguments to pass to the task.
@@ -939,6 +941,7 @@ impl CommandExecutor {
                 interactive,
                 help,
                 skip_dependencies,
+                continue_on_error,
                 dry_run,
                 task_args,
                 record_events,
@@ -957,6 +960,7 @@ impl CommandExecutor {
                     interactive,
                     help,
                     skip_dependencies,
+                    continue_on_error,
                     dry_run,
                     task_args,
                     record_events,
