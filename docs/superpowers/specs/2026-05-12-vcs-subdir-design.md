@@ -143,6 +143,9 @@ Unit tests in `vcs.rs`, using a local source repo with a known multi-directory t
 10. Two dependencies sharing `url`+`reference` but with different `subdir` and different `path` resolve independently.
 
 No BDD tests planned for v1 — the unit coverage already exercises real git via the existing test harness.
+The Nix build source filter must keep `.agents/skills/**` in the test source,
+because the end-to-end sparse-subdir test seeds a local Git repository from
+the checked-out skill files before running `cuenv sync vcs`.
 
 ## Risks & open questions
 

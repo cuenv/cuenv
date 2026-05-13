@@ -7,6 +7,7 @@ on:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
@@ -31,6 +32,7 @@ on:
     branches:
     - main
     paths:
+    - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
