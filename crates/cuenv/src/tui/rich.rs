@@ -17,8 +17,12 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 use std::io::{self, Stdout};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
+
+/// Target render cadence — coalesces bursts of events into a single redraw
+/// so a chatty task can't melt the TUI into a redraw storm. ~30 FPS.
+const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// RAII guard that restores terminal state on drop.
 ///
@@ -110,16 +114,16 @@ impl RichTui {
         }
 
         loop {
-            // Render the UI
+            // Coalesce events from this frame's budget into a single render.
+            let frame_start = Instant::now();
             self.render()?;
 
-            // Check for quit conditions
             if self.quit_requested && self.can_quit {
                 break;
             }
 
-            // Handle events (non-blocking)
-            if !self.handle_events()? {
+            // Drain pending cuenv events and key events up to the frame deadline.
+            if !self.drain_until_deadline(frame_start + FRAME_INTERVAL)? {
                 break;
             }
         }
@@ -136,98 +140,113 @@ impl RichTui {
         Ok(())
     }
 
-    /// Handle events (keyboard and cuenv events)
-    fn handle_events(&mut self) -> io::Result<bool> {
-        // Non-blocking poll for keyboard events
-        if event::poll(Duration::from_millis(50))?
-            && let CrosstermEvent::Key(key) = event::read()?
-        {
-            match key.code {
-                // Quit handling
-                KeyCode::Char('q') => {
-                    if self.state.is_complete {
-                        return Ok(false); // Exit immediately if complete
-                    }
+    /// Drain key + cuenv events until `deadline`, then return.
+    ///
+    /// Coalesces bursts of cuenv events without redrawing in between, giving
+    /// a ~30 FPS render cadence regardless of how chatty tasks are. Returns
+    /// `Ok(false)` when the user requested a force quit and the caller
+    /// should exit the run loop.
+    fn drain_until_deadline(&mut self, deadline: Instant) -> io::Result<bool> {
+        loop {
+            // Drain every pending cuenv event before consulting key events,
+            // so a flood of cuenv events can't starve user input.
+            while let Some(event) = self.event_rx.try_recv() {
+                self.handle_cuenv_event(event);
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(true);
+            }
+
+            // Cap the per-call timeout so we can re-check cuenv events every
+            // ~5ms even when the user isn't pressing keys.
+            let poll_timeout = remaining.min(Duration::from_millis(5));
+            if event::poll(poll_timeout)?
+                && let CrosstermEvent::Key(key) = event::read()?
+                && !self.handle_key(key)
+            {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// Handle a single key event. Returns `false` when the caller should
+    /// exit the run loop (force-quit).
+    fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> bool {
+        match key.code {
+            // Quit handling
+            KeyCode::Char('q') => {
+                if self.state.is_complete {
+                    return false; // Exit immediately if complete
+                }
+                self.quit_requested = true;
+                self.can_quit = self.state.is_complete;
+            }
+            KeyCode::Esc => {
+                // If in selected mode, return to all mode first
+                if self.state.output_mode == OutputMode::Selected {
+                    self.state.show_all_output();
+                } else if self.state.is_complete {
+                    return false;
+                } else {
                     self.quit_requested = true;
                     self.can_quit = self.state.is_complete;
                 }
-                KeyCode::Esc => {
-                    // If in selected mode, return to all mode first
-                    if self.state.output_mode == OutputMode::Selected {
-                        self.state.show_all_output();
-                    } else if self.state.is_complete {
-                        return Ok(false);
-                    } else {
-                        self.quit_requested = true;
-                        self.can_quit = self.state.is_complete;
-                    }
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    // Force quit on Ctrl+C
-                    return Ok(false);
-                }
-
-                // Tree navigation
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.state.cursor_up();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.state.cursor_down();
-                }
-
-                // Expand/collapse tree nodes
-                KeyCode::Left | KeyCode::Char('h') => {
-                    // Collapse current node
-                    if let Some(node) = self.state.highlighted_node() {
-                        let node_key = node.node_key();
-                        if node.has_children && self.state.expanded_nodes.contains(&node_key) {
-                            self.state.toggle_expansion(&node_key);
-                        }
-                    }
-                }
-                KeyCode::Right | KeyCode::Char('l') => {
-                    // Expand current node
-                    if let Some(node) = self.state.highlighted_node() {
-                        let node_key = node.node_key();
-                        if node.has_children && !self.state.expanded_nodes.contains(&node_key) {
-                            self.state.toggle_expansion(&node_key);
-                        }
-                    }
-                }
-
-                // Select node for filtered output
-                KeyCode::Enter => {
-                    self.state.select_current_node();
-                }
-
-                // Return to "All" output mode
-                KeyCode::Char('a') => {
-                    self.state.show_all_output();
-                }
-
-                // Output scrolling (when in selected mode)
-                KeyCode::PageUp if self.state.output_mode == OutputMode::Selected => {
-                    self.state.output_scroll = self.state.output_scroll.saturating_sub(10);
-                }
-                KeyCode::PageDown if self.state.output_mode == OutputMode::Selected => {
-                    self.state.output_scroll += 10;
-                }
-
-                _ => {}
             }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Force quit on Ctrl+C
+                return false;
+            }
+
+            // Tree navigation
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.state.cursor_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.state.cursor_down();
+            }
+
+            // Expand/collapse tree nodes
+            KeyCode::Left | KeyCode::Char('h') => {
+                if let Some(node) = self.state.highlighted_node() {
+                    let node_key = node.node_key();
+                    if node.has_children && self.state.expanded_nodes.contains(&node_key) {
+                        self.state.toggle_expansion(&node_key);
+                    }
+                }
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(node) = self.state.highlighted_node() {
+                    let node_key = node.node_key();
+                    if node.has_children && !self.state.expanded_nodes.contains(&node_key) {
+                        self.state.toggle_expansion(&node_key);
+                    }
+                }
+            }
+
+            // Select node for filtered output
+            KeyCode::Enter => {
+                self.state.select_current_node();
+            }
+
+            // Return to "All" output mode
+            KeyCode::Char('a') => {
+                self.state.show_all_output();
+            }
+
+            // Output scrolling (when in selected mode)
+            KeyCode::PageUp if self.state.output_mode == OutputMode::Selected => {
+                self.state.output_scroll = self.state.output_scroll.saturating_sub(10);
+            }
+            KeyCode::PageDown if self.state.output_mode == OutputMode::Selected => {
+                self.state.output_scroll += 10;
+            }
+
+            _ => {}
         }
 
-        // Non-blocking drain of ALL available cuenv events
-        // Important: Use `while let` to process ALL pending events, not just one.
-        // Events can accumulate between render cycles (50ms), especially when
-        // multiple tasks emit events in quick succession.
-        while let Some(event) = self.event_rx.try_recv() {
-            self.handle_cuenv_event(event);
-        }
-        // Note: We don't need to detect channel closure separately since
-        // we emit a completion event before the channel closes (in task.rs)
-
-        Ok(true)
+        true
     }
 
     /// Handle a cuenv event
