@@ -1281,19 +1281,102 @@ async fn execute_tui_command(record_events: Option<String>) -> Result<(), CliErr
 
 /// Execute the TUI replay command — drive the rich TUI from a recorded
 /// JSONL trace instead of live coordinator events.
+///
+/// Reads `path` as JSONL via [`cuenv_events::EventReplayReader`], pushes
+/// every event into a fresh [`cuenv_events::EventBus`], and drives the
+/// existing [`tui::rich::RichTui`] event loop against the bus. When
+/// `--fast` is set events are emitted as fast as possible; otherwise the
+/// recorded inter-arrival gaps (derived from `CuenvEvent::timestamp`) are
+/// honoured.
 #[instrument(name = "cuenv_execute_tui_replay", skip(snapshot_frames_to))]
 async fn execute_tui_replay_command(
     path: String,
     fast: bool,
     snapshot_frames_to: Option<String>,
 ) -> Result<(), CliError> {
-    // Replay implementation lands in a follow-up step of Phase 1 — for now
-    // we surface a clear error so the subcommand is wired end-to-end and
-    // can be polished without churn elsewhere.
-    let _ = (fast, snapshot_frames_to);
-    Err(CliError::other(format!(
-        "tui-replay is not yet implemented. Recorded trace: {path}"
-    )))
+    use cuenv_events::{EventBus, EventReplayReader};
+
+    if snapshot_frames_to.is_some() {
+        return Err(CliError::other(
+            "--snapshot-frames-to is not yet implemented; will land with the insta snapshot tests"
+                .to_string(),
+        ));
+    }
+
+    let reader = EventReplayReader::open(&path)
+        .map_err(|err| CliError::other(format!("failed to open event recording {path}: {err}")))?;
+    let events: Vec<cuenv_events::CuenvEvent> = reader
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|err| CliError::other(format!("failed to parse event recording {path}: {err}")))?;
+    if events.is_empty() {
+        return Err(CliError::other(format!("event recording {path} is empty")));
+    }
+
+    cuenv_events::emit_command_started!("tui-replay");
+
+    let bus = EventBus::new();
+    let sender = bus
+        .sender()
+        .ok_or_else(|| CliError::other("event bus sender unavailable".to_string()))?;
+    let receiver = bus.subscribe();
+
+    // Spawn the playback task before constructing the TUI so subscribers
+    // are guaranteed to be active by the time events flow.
+    let playback = tokio::spawn(playback_events(events, sender, fast));
+
+    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+    let mut tui = tui::rich::RichTui::new(receiver, ready_tx)
+        .map_err(|err| CliError::other(format!("failed to initialise replay TUI: {err}")))?;
+    drop(ready_rx);
+
+    let outcome = tokio::task::spawn_blocking(move || tui.run())
+        .await
+        .map_err(|err| CliError::other(format!("replay TUI join error: {err}")))
+        .and_then(|r| r.map_err(|err| CliError::other(format!("replay TUI error: {err}"))));
+
+    let _ = playback.await;
+
+    match outcome {
+        Ok(()) => {
+            cuenv_events::emit_command_completed!("tui-replay", true, 0_u64);
+            Ok(())
+        }
+        Err(e) => {
+            cuenv_events::emit_command_completed!("tui-replay", false, 0_u64);
+            Err(e)
+        }
+    }
+}
+
+/// Push every recorded event onto `sender`, honouring inter-arrival gaps
+/// unless `fast` is set. Final event is a synthesised `SystemEvent::Shutdown`
+/// so the TUI exits when playback finishes.
+async fn playback_events(
+    events: Vec<cuenv_events::CuenvEvent>,
+    sender: cuenv_events::EventSender,
+    fast: bool,
+) {
+    use cuenv_events::{EventCategory, EventSource, SystemEvent};
+    let mut prev_ts: Option<chrono::DateTime<chrono::Utc>> = None;
+    for event in events {
+        if !fast {
+            if let Some(prev) = prev_ts {
+                let delta = (event.timestamp - prev)
+                    .to_std()
+                    .unwrap_or(std::time::Duration::ZERO);
+                tokio::time::sleep(delta).await;
+            }
+            prev_ts = Some(event.timestamp);
+        }
+        if sender.send(event).is_err() {
+            break;
+        }
+    }
+    let _ = sender.send(cuenv_events::CuenvEvent::new(
+        uuid::Uuid::new_v4(),
+        EventSource::new("cuenv::replay"),
+        EventCategory::System(SystemEvent::Shutdown),
+    ));
 }
 
 /// Spawn an event recorder if the user passed `--record-events`.
