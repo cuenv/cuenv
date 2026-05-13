@@ -258,6 +258,9 @@ pub struct TuiState {
     pub output_mode: OutputMode,
     /// Scroll offset for output panel
     pub output_scroll: usize,
+    /// When `Some(task)`, the renderer hides the task tree and devotes
+    /// every available row to that task's output panel. Toggled with `f`.
+    pub focused_task: Option<String>,
 }
 
 impl TuiState {
@@ -278,7 +281,33 @@ impl TuiState {
             flattened_tree: Vec::new(),
             output_mode: OutputMode::All,
             output_scroll: 0,
+            focused_task: None,
         }
+    }
+
+    /// Toggle focus on the highlighted task — when focused, the renderer
+    /// hides the task tree and gives the entire viewport to that task's
+    /// output panel. Calling this with the same task again clears focus.
+    pub fn toggle_focus(&mut self) {
+        if self.focused_task.is_some() {
+            self.focused_task = None;
+            return;
+        }
+        let Some(node) = self.highlighted_node() else {
+            return;
+        };
+        if let TreeNodeType::Task(name) = &node.node_type {
+            let name = name.clone();
+            self.focused_task = Some(name.clone());
+            self.selected_task = Some(name);
+            self.output_mode = OutputMode::Selected;
+            self.output_scroll = 0;
+        }
+    }
+
+    /// Exit focused-task mode (no-op when not focused).
+    pub fn clear_focus(&mut self) {
+        self.focused_task = None;
     }
 
     /// Add a task to the state
