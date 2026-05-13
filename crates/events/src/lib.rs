@@ -46,8 +46,9 @@ pub mod renderers;
 // Re-exports for convenience
 pub use bus::{EventBus, EventReceiver, EventSender, SendError};
 pub use event::{
-    CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent,
-    RestartReason, ServiceEvent, Stream, SystemEvent, TaskEvent,
+    CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
+    InteractiveEvent, OutputEvent, RestartReason, ServiceEvent, SkipReason, Stream, SystemEvent,
+    TaskEvent, TaskKind,
 };
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
@@ -60,10 +61,12 @@ pub use renderers::{CliRenderer, JsonRenderer};
 
 /// Emit a task started event.
 ///
-/// # Example
-/// ```rust,ignore
-/// emit_task_started!("build", "cargo build", true);
-/// ```
+/// Two forms are supported:
+/// - `emit_task_started!(name, command, hermetic)` — leaf task, no group.
+/// - `emit_task_started!(name, command, hermetic, parent_group, task_kind)`
+///   — leaf or group task, optionally inside a parent group.
+///   `parent_group` is `Option<&str>` (or anything `Display`); `task_kind`
+///   is a `&'static str` matching `TaskKind` (`"task"`, `"group"`, `"sequence"`).
 #[macro_export]
 macro_rules! emit_task_started {
     ($name:expr, $command:expr, $hermetic:expr) => {
@@ -75,14 +78,24 @@ macro_rules! emit_task_started {
             hermetic = $hermetic,
         )
     };
+    ($name:expr, $command:expr, $hermetic:expr, $parent_group:expr, $task_kind:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.started",
+            task_name = %$name,
+            command = %$command,
+            hermetic = $hermetic,
+            parent_group = ?$parent_group,
+            task_kind = $task_kind,
+        )
+    };
 }
 
 /// Emit a task cache hit event.
 ///
-/// # Example
-/// ```rust,ignore
-/// emit_task_cache_hit!("build", "abc123");
-/// ```
+/// Forms:
+/// - `emit_task_cache_hit!(name, cache_key)`
+/// - `emit_task_cache_hit!(name, cache_key, parent_group)`
 #[macro_export]
 macro_rules! emit_task_cache_hit {
     ($name:expr, $cache_key:expr) => {
@@ -93,9 +106,22 @@ macro_rules! emit_task_cache_hit {
             cache_key = %$cache_key,
         )
     };
+    ($name:expr, $cache_key:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.cache_hit",
+            task_name = %$name,
+            cache_key = %$cache_key,
+            parent_group = ?$parent_group,
+        )
+    };
 }
 
 /// Emit a task cache miss event.
+///
+/// Forms:
+/// - `emit_task_cache_miss!(name)`
+/// - `emit_task_cache_miss!(name, parent_group)`
 #[macro_export]
 macro_rules! emit_task_cache_miss {
     ($name:expr) => {
@@ -105,14 +131,131 @@ macro_rules! emit_task_cache_miss {
             task_name = %$name,
         )
     };
+    ($name:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.cache_miss",
+            task_name = %$name,
+            parent_group = ?$parent_group,
+        )
+    };
+}
+
+/// Emit a task cache skipped event with a structured reason.
+///
+/// `reason` should be a [`crate::CacheSkipReason`].
+///
+/// Forms:
+/// - `emit_task_cache_skipped!(name, reason)`
+/// - `emit_task_cache_skipped!(name, reason, parent_group)`
+#[macro_export]
+macro_rules! emit_task_cache_skipped {
+    ($name:expr, $reason:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.cache_skipped",
+            task_name = %$name,
+            cache_skip_reason = %$crate::__macro_helpers::encode_cache_skip_reason(&$reason),
+        )
+    };
+    ($name:expr, $reason:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.cache_skipped",
+            task_name = %$name,
+            cache_skip_reason = %$crate::__macro_helpers::encode_cache_skip_reason(&$reason),
+            parent_group = ?$parent_group,
+        )
+    };
+}
+
+/// Emit a task queued event (graph picked task but parallelism cap blocks start).
+///
+/// Forms:
+/// - `emit_task_queued!(name, queue_position)`
+/// - `emit_task_queued!(name, queue_position, parent_group)`
+#[macro_export]
+macro_rules! emit_task_queued {
+    ($name:expr, $queue_position:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.queued",
+            task_name = %$name,
+            queue_position = $queue_position,
+        )
+    };
+    ($name:expr, $queue_position:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.queued",
+            task_name = %$name,
+            queue_position = $queue_position,
+            parent_group = ?$parent_group,
+        )
+    };
+}
+
+/// Emit a task skipped event with a structured reason.
+///
+/// `reason` should be a [`crate::SkipReason`].
+///
+/// Forms:
+/// - `emit_task_skipped!(name, reason)`
+/// - `emit_task_skipped!(name, reason, parent_group)`
+#[macro_export]
+macro_rules! emit_task_skipped {
+    ($name:expr, $reason:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.skipped",
+            task_name = %$name,
+            skip_reason = %$crate::__macro_helpers::encode_skip_reason(&$reason),
+        )
+    };
+    ($name:expr, $reason:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.skipped",
+            task_name = %$name,
+            skip_reason = %$crate::__macro_helpers::encode_skip_reason(&$reason),
+            parent_group = ?$parent_group,
+        )
+    };
+}
+
+/// Emit a task retrying event.
+///
+/// Forms:
+/// - `emit_task_retrying!(name, attempt, max_attempts)`
+/// - `emit_task_retrying!(name, attempt, max_attempts, parent_group)`
+#[macro_export]
+macro_rules! emit_task_retrying {
+    ($name:expr, $attempt:expr, $max_attempts:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.retrying",
+            task_name = %$name,
+            attempt = $attempt,
+            max_attempts = $max_attempts,
+        )
+    };
+    ($name:expr, $attempt:expr, $max_attempts:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.retrying",
+            task_name = %$name,
+            attempt = $attempt,
+            max_attempts = $max_attempts,
+            parent_group = ?$parent_group,
+        )
+    };
 }
 
 /// Emit a task output event.
 ///
-/// # Example
-/// ```rust,ignore
-/// emit_task_output!("build", "stdout", "Compiling...");
-/// ```
+/// Forms:
+/// - `emit_task_output!(name, stream, content)`
+/// - `emit_task_output!(name, stream, content, parent_group)`
 #[macro_export]
 macro_rules! emit_task_output {
     ($name:expr, $stream:expr, $content:expr) => {
@@ -124,14 +267,23 @@ macro_rules! emit_task_output {
             content = %$content,
         )
     };
+    ($name:expr, $stream:expr, $content:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.output",
+            task_name = %$name,
+            stream = $stream,
+            content = %$content,
+            parent_group = ?$parent_group,
+        )
+    };
 }
 
 /// Emit a task completed event.
 ///
-/// # Example
-/// ```rust,ignore
-/// emit_task_completed!("build", true, Some(0), 1234);
-/// ```
+/// Forms:
+/// - `emit_task_completed!(name, success, exit_code, duration_ms)`
+/// - `emit_task_completed!(name, success, exit_code, duration_ms, parent_group)`
 #[macro_export]
 macro_rules! emit_task_completed {
     ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr) => {
@@ -144,9 +296,24 @@ macro_rules! emit_task_completed {
             duration_ms = $duration_ms,
         )
     };
+    ($name:expr, $success:expr, $exit_code:expr, $duration_ms:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.completed",
+            task_name = %$name,
+            success = $success,
+            exit_code = ?$exit_code,
+            duration_ms = $duration_ms,
+            parent_group = ?$parent_group,
+        )
+    };
 }
 
 /// Emit a task group started event.
+///
+/// Forms:
+/// - `emit_task_group_started!(name, sequential, task_count)`
+/// - `emit_task_group_started!(name, sequential, task_count, parent_group, max_concurrency)`
 #[macro_export]
 macro_rules! emit_task_group_started {
     ($name:expr, $sequential:expr, $task_count:expr) => {
@@ -158,9 +325,25 @@ macro_rules! emit_task_group_started {
             task_count = $task_count,
         )
     };
+    ($name:expr, $sequential:expr, $task_count:expr, $parent_group:expr, $max_concurrency:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.group_started",
+            task_name = %$name,
+            sequential = $sequential,
+            task_count = $task_count,
+            parent_group = ?$parent_group,
+            max_concurrency = ?$max_concurrency,
+        )
+    };
 }
 
 /// Emit a task group completed event.
+///
+/// Forms:
+/// - `emit_task_group_completed!(name, success, duration_ms)`
+/// - `emit_task_group_completed!(name, success, duration_ms, succeeded, failed, skipped)`
+/// - `emit_task_group_completed!(name, success, duration_ms, succeeded, failed, skipped, parent_group)`
 #[macro_export]
 macro_rules! emit_task_group_completed {
     ($name:expr, $success:expr, $duration_ms:expr) => {
@@ -170,6 +353,31 @@ macro_rules! emit_task_group_completed {
             task_name = %$name,
             success = $success,
             duration_ms = $duration_ms,
+        )
+    };
+    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.group_completed",
+            task_name = %$name,
+            success = $success,
+            duration_ms = $duration_ms,
+            succeeded = $succeeded,
+            failed_count = $failed,
+            skipped_count = $skipped,
+        )
+    };
+    ($name:expr, $success:expr, $duration_ms:expr, $succeeded:expr, $failed:expr, $skipped:expr, $parent_group:expr) => {
+        ::tracing::info!(
+            target: "cuenv::task",
+            event_type = "task.group_completed",
+            task_name = %$name,
+            success = $success,
+            duration_ms = $duration_ms,
+            succeeded = $succeeded,
+            failed_count = $failed,
+            skipped_count = $skipped,
+            parent_group = ?$parent_group,
         )
     };
 }
@@ -602,6 +810,27 @@ macro_rules! emit_stderr {
     };
 }
 
+/// Internal helpers used by the `emit_*!` macros.
+///
+/// Not part of the stable public API — exposed only because exported macros
+/// must reference it via `$crate`.
+#[doc(hidden)]
+pub mod __macro_helpers {
+    use crate::event::{CacheSkipReason, SkipReason};
+
+    /// Serialize a [`CacheSkipReason`] to JSON for tracing field transport.
+    #[must_use]
+    pub fn encode_cache_skip_reason(reason: &CacheSkipReason) -> String {
+        serde_json::to_string(reason).unwrap_or_default()
+    }
+
+    /// Serialize a [`SkipReason`] to JSON for tracing field transport.
+    #[must_use]
+    pub fn encode_skip_reason(reason: &SkipReason) -> String {
+        serde_json::to_string(reason).unwrap_or_default()
+    }
+}
+
 /// Print to stdout with automatic secret redaction (with newline).
 ///
 /// Use this instead of `println!` when output might contain secrets.
@@ -644,6 +873,40 @@ mod tests {
             emit_task_completed!("build", true, Some(0), 1000_u64);
             emit_task_group_started!("all", false, 3_usize);
             emit_task_group_completed!("all", true, 5000_u64);
+        });
+    }
+
+    #[tokio::test]
+    async fn test_task_macros_extended_forms_compile() {
+        use crate::event::{CacheSkipReason, SkipReason, TaskKind};
+        with_test_subscriber(|| {
+            let parent: Option<&str> = Some("ci");
+            emit_task_started!("ci.build", "cargo build", true, parent, "task");
+            let _ = TaskKind::Task;
+            emit_task_cache_hit!("ci.build", "abc123", parent);
+            emit_task_cache_miss!("ci.test", parent);
+            emit_task_cache_skipped!("ci.fmt", CacheSkipReason::EmptyInputs, parent);
+            emit_task_queued!("ci.lint", 2_usize, parent);
+            emit_task_skipped!(
+                "ci.deploy",
+                SkipReason::DependencyFailed {
+                    dep: "ci.build".to_string()
+                },
+                parent
+            );
+            emit_task_retrying!("ci.flaky", 2_u32, 3_u32, parent);
+            emit_task_output!("ci.build", "stdout", "out", parent);
+            emit_task_completed!("ci.build", true, Some(0), 1000_u64, parent);
+            emit_task_group_started!("ci", false, 3_usize, None::<&str>, Some(4_u32));
+            emit_task_group_completed!(
+                "ci",
+                true,
+                5000_u64,
+                3_usize,
+                0_usize,
+                0_usize,
+                None::<&str>
+            );
         });
     }
 
