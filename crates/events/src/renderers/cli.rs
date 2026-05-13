@@ -10,45 +10,77 @@ use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, ServiceEvent,
     Stream, SystemEvent, TaskEvent,
 };
+use crate::renderers::SpinnerRenderer;
 use std::io::{self, IsTerminal, Write};
+use std::sync::Mutex;
 
 /// CLI renderer configuration.
+///
+/// `#[allow(clippy::struct_excessive_bools)]` — the fields are toggles
+/// that the CLI surfaces independently (colors, verbose, spinner,
+/// spinner output mirroring); folding them into a state machine would
+/// not improve clarity.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct CliRendererConfig {
     /// Whether to use ANSI colors.
     pub colors: bool,
     /// Whether to show verbose output.
     pub verbose: bool,
+    /// Whether to render an indicatif spinner UI on a TTY. When `false`
+    /// (or when stdout isn't a TTY) the renderer falls back to plain
+    /// eprintln output so CI logs stay grep-able.
+    pub spinner: bool,
+    /// Mirror the latest output line under each task spinner. Off by
+    /// default to keep terminals quiet.
+    pub spinner_output_tail: bool,
 }
 
 impl Default for CliRendererConfig {
     fn default() -> Self {
+        let tty = io::stdout().is_terminal();
         Self {
-            colors: io::stdout().is_terminal(),
+            colors: tty,
             verbose: false,
+            spinner: tty,
+            spinner_output_tail: false,
         }
     }
 }
 
 /// CLI renderer that outputs events to stdout/stderr.
-#[derive(Debug)]
 pub struct CliRenderer {
     config: CliRendererConfig,
+    spinner: Option<Mutex<SpinnerRenderer>>,
+}
+
+impl std::fmt::Debug for CliRenderer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliRenderer")
+            .field("config", &self.config)
+            .field("spinner", &self.spinner.is_some())
+            .finish()
+    }
 }
 
 impl CliRenderer {
     /// Create a new CLI renderer with default configuration.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            config: CliRendererConfig::default(),
-        }
+        Self::with_config(CliRendererConfig::default())
     }
 
     /// Create a new CLI renderer with the given configuration.
     #[must_use]
-    pub const fn with_config(config: CliRendererConfig) -> Self {
-        Self { config }
+    pub fn with_config(config: CliRendererConfig) -> Self {
+        let spinner = if config.spinner {
+            Some(Mutex::new(
+                SpinnerRenderer::new().with_output_tail(config.spinner_output_tail),
+            ))
+        } else {
+            None
+        };
+        Self { config, spinner }
     }
 
     /// Run the renderer, consuming events from the receiver.
@@ -81,6 +113,19 @@ impl CliRenderer {
     }
 
     fn render_task(&self, event: &TaskEvent) {
+        if let Some(spinner) = self.spinner.as_ref() {
+            // Best-effort lock — if a renderer panicked while holding it we
+            // still surface the event via the fallback path below rather
+            // than poisoning all future output.
+            if let Ok(mut guard) = spinner.lock() {
+                guard.apply(event);
+                // Output events still mirror to stdout/stderr below so users
+                // see real-time content even with the spinner active.
+                if !matches!(event, TaskEvent::Output { .. }) {
+                    return;
+                }
+            }
+        }
         match event {
             TaskEvent::Started {
                 name,
@@ -377,6 +422,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let debug = format!("{config:?}");
         assert!(debug.contains("CliRendererConfig"));
@@ -388,6 +435,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let cloned = config.clone();
         assert_eq!(config.colors, cloned.colors);
@@ -411,6 +460,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         assert!(renderer.config.verbose);
@@ -466,6 +517,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheMiss {
@@ -480,6 +533,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheSkipped {
@@ -508,6 +563,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Queued {
@@ -559,6 +616,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -576,6 +635,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -619,6 +680,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::GroupCompleted {
@@ -728,6 +791,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Started {
@@ -742,6 +807,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Progress {
@@ -757,6 +824,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Completed {
@@ -817,6 +886,8 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
+            spinner: false,
+            spinner_output_tail: false,
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::System(SystemEvent::Shutdown));

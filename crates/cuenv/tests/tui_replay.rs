@@ -159,6 +159,15 @@ fn cli_tui_replay_rejects_missing_file() {
     );
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct TaskSnapshot {
+    name: String,
+    status: cuenv::tui::state::TaskStatus,
+    exit_code: Option<i32>,
+    stdout_lines: usize,
+    stderr_lines: usize,
+}
+
 #[test]
 fn apply_event_is_deterministic_across_replays() {
     use cuenv::tui::state::{TaskInfo, TaskStatus, TuiState};
@@ -167,15 +176,6 @@ fn apply_event_is_deterministic_across_replays() {
     // The trace exercises both Started/Output/Completed and group lifecycle
     // events. The model fields touched by `apply_event` should be bit-
     // identical after two independent replays of the same event stream.
-    #[derive(Debug, PartialEq, Eq)]
-    struct TaskSnapshot {
-        name: String,
-        status: TaskStatus,
-        exit_code: Option<i32>,
-        stdout_lines: usize,
-        stderr_lines: usize,
-    }
-
     let snapshot = |events: &[CuenvEvent]| -> Vec<TaskSnapshot> {
         let mut state = TuiState::new();
         // Register the task so apply_event has somewhere to record output.
