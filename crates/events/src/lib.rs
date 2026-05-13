@@ -53,7 +53,7 @@ pub use event::{
 pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
 pub use redaction::{REDACTED_PLACEHOLDER, redact, register_secret, register_secrets};
-pub use renderers::{CliRenderer, JsonRenderer};
+pub use renderers::{CliRenderer, EventRecorder, EventReplayReader, JsonRenderer, RecorderError};
 
 // ============================================================================
 // Emit Macros
