@@ -180,10 +180,10 @@ fn apply_event_is_deterministic_across_replays() {
             state.apply_event(event);
         }
         let mut snaps: Vec<TaskSnapshot> = state
-            .tasks
+            .tasks()
             .iter()
             .map(|(name, task)| {
-                let output = state.outputs.get(name);
+                let output = state.outputs().get(name);
                 TaskSnapshot {
                     name: name.clone(),
                     status: task.status,

@@ -246,53 +246,28 @@ impl TaskOutput {
     }
 }
 
-/// Global TUI state for task execution.
+/// Event-driven activity state.
 ///
-/// Fields are grouped by concern: the upper block is the event-driven
-/// activity model (deterministic when replayed) and the lower block is
-/// the input-driven UI state. Mutations that cross the boundary go
-/// through [`TuiState::apply_event`] or explicit input-handler methods,
-/// never through ad-hoc field writes.
+/// Mutated only by [`TuiState::apply_event`] and the small set of helpers
+/// it delegates to. Two replays of the same event trace produce
+/// identical `ActivityModel`s — the integration tests in
+/// `tests/tui_replay.rs` exercise that invariant.
+///
+/// Fields are private; readers go through accessors. Writes go through
+/// [`TuiState`]'s event-driven entry points.
 #[derive(Debug)]
-pub struct TuiState {
-    // -- Activity model: mutated by apply_event ------------------------------
-    /// Start time of the overall execution
-    pub start_time: Instant,
-    /// Map of task name to task info
-    pub tasks: HashMap<String, TaskInfo>,
-    /// Map of task name to output buffer
-    pub outputs: HashMap<String, TaskOutput>,
-    /// Currently running tasks (for split-screen display)
-    pub running_tasks: Vec<String>,
-    /// Whether execution is complete
-    pub is_complete: bool,
-    /// Overall success status
-    pub success: bool,
-    /// Error message (if failed)
-    pub error_message: Option<String>,
-
-    // -- UI state: mutated by input handlers ---------------------------------
-    /// Currently selected task for output filtering (None = show all)
-    pub selected_task: Option<String>,
-    /// Set of expanded tree nodes (task names that are expanded)
-    pub expanded_nodes: HashSet<String>,
-    /// Current cursor position in the flattened tree view
-    pub cursor_position: usize,
-    /// Cached flattened tree view for navigation
-    pub flattened_tree: Vec<TreeViewItem>,
-    /// View mode for output panel
-    pub output_mode: OutputMode,
-    /// Scroll offset for output panel
-    pub output_scroll: usize,
-    /// When `Some(task)`, the renderer hides the task tree and devotes
-    /// every available row to that task's output panel. Toggled with `f`.
-    pub focused_task: Option<String>,
+pub struct ActivityModel {
+    start_time: Instant,
+    tasks: HashMap<String, TaskInfo>,
+    outputs: HashMap<String, TaskOutput>,
+    running_tasks: Vec<String>,
+    is_complete: bool,
+    success: bool,
+    error_message: Option<String>,
 }
 
-impl TuiState {
-    /// Create a new TUI state
-    #[must_use]
-    pub fn new() -> Self {
+impl ActivityModel {
+    fn new() -> Self {
         Self {
             start_time: Instant::now(),
             tasks: HashMap::new(),
@@ -301,6 +276,75 @@ impl TuiState {
             is_complete: false,
             success: false,
             error_message: None,
+        }
+    }
+
+    /// Map of task name to task info.
+    #[must_use]
+    pub const fn tasks(&self) -> &HashMap<String, TaskInfo> {
+        &self.tasks
+    }
+
+    /// Map of task name to output buffer.
+    #[must_use]
+    pub const fn outputs(&self) -> &HashMap<String, TaskOutput> {
+        &self.outputs
+    }
+
+    /// Names of tasks currently in `Running` state, in start order.
+    #[must_use]
+    pub fn running_tasks(&self) -> &[String] {
+        &self.running_tasks
+    }
+
+    /// Whether the overall execution has reported completion.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.is_complete
+    }
+
+    /// Whether the completed run was successful.
+    #[must_use]
+    pub const fn success(&self) -> bool {
+        self.success
+    }
+
+    /// Optional human-readable error message attached at completion.
+    #[must_use]
+    pub fn error_message(&self) -> Option<&str> {
+        self.error_message.as_deref()
+    }
+
+    /// Milliseconds elapsed since [`ActivityModel`] construction.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn elapsed_ms(&self) -> u64 {
+        self.start_time.elapsed().as_millis() as u64
+    }
+}
+
+/// Input-driven view state.
+///
+/// Mutated only by [`TuiState`] input-handler methods. Holds the user's
+/// cursor position, expansion, focus, scroll — state that should survive
+/// a flurry of events.
+///
+/// Fields are private; readers use accessors, mutations go through
+/// `TuiState`'s explicit methods.
+#[derive(Debug)]
+pub struct UiState {
+    selected_task: Option<String>,
+    expanded_nodes: HashSet<String>,
+    cursor_position: usize,
+    flattened_tree: Vec<TreeViewItem>,
+    output_mode: OutputMode,
+    output_scroll: usize,
+    focused_task: Option<String>,
+}
+
+impl UiState {
+    fn new() -> Self {
+        Self {
             selected_task: None,
             expanded_nodes: HashSet::new(),
             cursor_position: 0,
@@ -311,12 +355,174 @@ impl TuiState {
         }
     }
 
+    /// Task name currently selected for filtered output, if any.
+    #[must_use]
+    pub fn selected_task(&self) -> Option<&str> {
+        self.selected_task.as_deref()
+    }
+
+    /// Set of expanded tree nodes (keys produced by [`TreeViewItem::node_key`]).
+    #[must_use]
+    pub const fn expanded_nodes(&self) -> &HashSet<String> {
+        &self.expanded_nodes
+    }
+
+    /// Cursor position in the flattened tree.
+    #[must_use]
+    pub const fn cursor_position(&self) -> usize {
+        self.cursor_position
+    }
+
+    /// Cached flattened tree view.
+    #[must_use]
+    pub fn flattened_tree(&self) -> &[TreeViewItem] {
+        &self.flattened_tree
+    }
+
+    /// Output panel display mode.
+    #[must_use]
+    pub const fn output_mode(&self) -> OutputMode {
+        self.output_mode
+    }
+
+    /// Scroll offset for the output panel.
+    #[must_use]
+    pub const fn output_scroll(&self) -> usize {
+        self.output_scroll
+    }
+
+    /// Task name currently in focused-output mode, if any.
+    #[must_use]
+    pub fn focused_task(&self) -> Option<&str> {
+        self.focused_task.as_deref()
+    }
+}
+
+/// Global TUI state for task execution.
+///
+/// Composed of two halves with structurally-enforced boundaries:
+/// - [`ActivityModel`] — event-driven, deterministic when replayed.
+/// - [`UiState`] — input-driven, survives event floods.
+///
+/// Both halves expose read-only accessors; mutations go through methods
+/// on [`TuiState`] (or [`Self::apply_event`] for activity-model writes).
+#[derive(Debug)]
+pub struct TuiState {
+    model: ActivityModel,
+    ui: UiState,
+}
+
+impl TuiState {
+    /// Create a new TUI state
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            model: ActivityModel::new(),
+            ui: UiState::new(),
+        }
+    }
+
+    /// Borrow the activity model (read-only).
+    #[must_use]
+    pub const fn model(&self) -> &ActivityModel {
+        &self.model
+    }
+
+    /// Borrow the UI state (read-only).
+    #[must_use]
+    pub const fn ui(&self) -> &UiState {
+        &self.ui
+    }
+
+    // ---- Forwarding read accessors --------------------------------------
+    // Convenience for the rich TUI / widget callers that historically read
+    // these fields directly. They delegate to the underlying half so the
+    // invariants stay encapsulated.
+
+    /// Tasks indexed by name. See [`ActivityModel::tasks`].
+    #[must_use]
+    pub const fn tasks(&self) -> &HashMap<String, TaskInfo> {
+        self.model.tasks()
+    }
+
+    /// Outputs indexed by task name. See [`ActivityModel::outputs`].
+    #[must_use]
+    pub const fn outputs(&self) -> &HashMap<String, TaskOutput> {
+        self.model.outputs()
+    }
+
+    /// Currently running task names. See [`ActivityModel::running_tasks`].
+    #[must_use]
+    pub fn running_tasks(&self) -> &[String] {
+        self.model.running_tasks()
+    }
+
+    /// See [`ActivityModel::is_complete`].
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.model.is_complete()
+    }
+
+    /// See [`ActivityModel::success`].
+    #[must_use]
+    pub const fn success(&self) -> bool {
+        self.model.success()
+    }
+
+    /// See [`ActivityModel::error_message`].
+    #[must_use]
+    pub fn error_message(&self) -> Option<&str> {
+        self.model.error_message()
+    }
+
+    /// Currently selected task. See [`UiState::selected_task`].
+    #[must_use]
+    pub fn selected_task(&self) -> Option<&str> {
+        self.ui.selected_task()
+    }
+
+    /// Expanded tree nodes. See [`UiState::expanded_nodes`].
+    #[must_use]
+    pub const fn expanded_nodes(&self) -> &HashSet<String> {
+        self.ui.expanded_nodes()
+    }
+
+    /// Cursor position. See [`UiState::cursor_position`].
+    #[must_use]
+    pub const fn cursor_position(&self) -> usize {
+        self.ui.cursor_position()
+    }
+
+    /// Flattened tree view. See [`UiState::flattened_tree`].
+    #[must_use]
+    pub fn flattened_tree(&self) -> &[TreeViewItem] {
+        self.ui.flattened_tree()
+    }
+
+    /// Output panel mode. See [`UiState::output_mode`].
+    #[must_use]
+    pub const fn output_mode(&self) -> OutputMode {
+        self.ui.output_mode()
+    }
+
+    /// Output panel scroll offset. See [`UiState::output_scroll`].
+    #[must_use]
+    pub const fn output_scroll(&self) -> usize {
+        self.ui.output_scroll()
+    }
+
+    /// Focused task in expanded-output mode. See [`UiState::focused_task`].
+    #[must_use]
+    pub fn focused_task(&self) -> Option<&str> {
+        self.ui.focused_task()
+    }
+
     /// Toggle focus on the highlighted task — when focused, the renderer
     /// hides the task tree and gives the entire viewport to that task's
     /// output panel. Calling this with the same task again clears focus.
     pub fn toggle_focus(&mut self) {
-        if self.focused_task.is_some() {
-            self.focused_task = None;
+        if self.ui.focused_task.is_some() {
+            self.ui.focused_task = None;
             return;
         }
         let Some(node) = self.highlighted_node() else {
@@ -324,23 +530,37 @@ impl TuiState {
         };
         if let TreeNodeType::Task(name) = &node.node_type {
             let name = name.clone();
-            self.focused_task = Some(name.clone());
-            self.selected_task = Some(name);
-            self.output_mode = OutputMode::Selected;
-            self.output_scroll = 0;
+            self.ui.focused_task = Some(name.clone());
+            self.ui.selected_task = Some(name);
+            self.ui.output_mode = OutputMode::Selected;
+            self.ui.output_scroll = 0;
         }
     }
 
     /// Exit focused-task mode (no-op when not focused).
     pub fn clear_focus(&mut self) {
-        self.focused_task = None;
+        self.ui.focused_task = None;
+    }
+
+    /// Scroll the output panel by `delta` lines. Negative scrolls up
+    /// (saturating at 0); positive scrolls down. Replaces the previous
+    /// pub-field write pattern so the invariant stays in one place.
+    pub fn scroll_output_by(&mut self, delta: isize) {
+        let magnitude = delta.unsigned_abs();
+        if delta >= 0 {
+            self.ui.output_scroll = self.ui.output_scroll.saturating_add(magnitude);
+        } else {
+            self.ui.output_scroll = self.ui.output_scroll.saturating_sub(magnitude);
+        }
     }
 
     /// Add a task to the state
     pub fn add_task(&mut self, task: TaskInfo) {
         let name = task.name.clone();
-        self.tasks.insert(name.clone(), task);
-        self.outputs.insert(name.clone(), TaskOutput::new(name));
+        self.model.tasks.insert(name.clone(), task);
+        self.model
+            .outputs
+            .insert(name.clone(), TaskOutput::new(name));
     }
 
     /// Update a task's status.
@@ -350,7 +570,7 @@ impl TuiState {
     /// events — common during replay or under broadcast lag — can't regress
     /// a finished task back to `Running` or `Pending`.
     pub fn update_task_status(&mut self, name: &str, status: TaskStatus) {
-        let Some(task) = self.tasks.get_mut(name) else {
+        let Some(task) = self.model.tasks.get_mut(name) else {
             tracing::warn!(
                 "Attempted to update status for unknown task '{}' to {:?}",
                 name,
@@ -367,8 +587,8 @@ impl TuiState {
         match status {
             TaskStatus::Running => {
                 task.start_time = Some(Instant::now());
-                if !self.running_tasks.contains(&name.to_string()) {
-                    self.running_tasks.push(name.to_string());
+                if !self.model.running_tasks.contains(&name.to_string()) {
+                    self.model.running_tasks.push(name.to_string());
                 }
             }
             TaskStatus::Completed
@@ -380,7 +600,7 @@ impl TuiState {
                     let duration = start.elapsed().as_millis() as u64;
                     task.duration_ms = Some(duration);
                 }
-                self.running_tasks.retain(|t| t != name);
+                self.model.running_tasks.retain(|t| t != name);
             }
             TaskStatus::Pending => {}
         }
@@ -395,12 +615,11 @@ impl TuiState {
 
     /// Add output for a task
     pub fn add_task_output(&mut self, name: &str, stream: &str, content: String) {
-        if let Some(output) = self.outputs.get_mut(name) {
+        if let Some(output) = self.model.outputs.get_mut(name) {
             match stream {
                 "stdout" => output.add_stdout(content),
                 "stderr" => output.add_stderr(content),
                 unknown => {
-                    // Unknown stream type - log and treat as stdout
                     tracing::debug!(
                         "Unknown stream type '{}' for task '{}', treating as stdout",
                         unknown,
@@ -410,8 +629,6 @@ impl TuiState {
                 }
             }
         } else {
-            // Output buffer not found - task may not have been registered yet
-            // Use chars().take() for safe UTF-8 truncation (byte slicing can panic on multi-byte chars)
             let preview: String = content.chars().take(50).collect();
             tracing::warn!(
                 "Received output for unknown task '{}': {}...",
@@ -421,18 +638,17 @@ impl TuiState {
         }
     }
 
-    /// Get elapsed time since start
+    /// Get elapsed time since start. See [`ActivityModel::elapsed_ms`].
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn elapsed_ms(&self) -> u64 {
-        self.start_time.elapsed().as_millis() as u64
+        self.model.elapsed_ms()
     }
 
     /// Mark execution as complete
     pub fn complete(&mut self, success: bool, error_message: Option<String>) {
-        self.is_complete = true;
-        self.success = success;
-        self.error_message = error_message;
+        self.model.is_complete = true;
+        self.model.success = success;
+        self.model.error_message = error_message;
     }
 
     /// Extract the task path from a full task name.
@@ -461,7 +677,7 @@ impl TuiState {
         let mut tree: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
         tree.insert(String::new(), (Vec::new(), Vec::new())); // Root
 
-        for task_name in self.tasks.keys() {
+        for task_name in self.model.tasks.keys() {
             let path_parts = Self::parse_task_path(task_name);
 
             // Build intermediate groups (all parts EXCEPT the last one)
@@ -525,8 +741,8 @@ impl TuiState {
 
         // Add "All" node at the top
         let all_key = "::all::".to_string();
-        let all_expanded = self.expanded_nodes.contains(&all_key);
-        let has_tasks = !self.tasks.is_empty();
+        let all_expanded = self.ui.expanded_nodes.contains(&all_key);
+        let has_tasks = !self.model.tasks.is_empty();
 
         flattened.push(TreeViewItem {
             node_type: TreeNodeType::All,
@@ -566,7 +782,7 @@ impl TuiState {
                 while let Some((path, display_name, depth, is_group)) = stack.pop() {
                     if is_group {
                         let group_key = format!("::group::{path}");
-                        let is_expanded = self.expanded_nodes.contains(&group_key);
+                        let is_expanded = self.ui.expanded_nodes.contains(&group_key);
                         let empty_vec: Vec<String> = Vec::new();
                         let (child_groups, child_tasks) = tree
                             .get(&path)
@@ -614,42 +830,41 @@ impl TuiState {
             }
         }
 
-        self.flattened_tree = flattened;
+        self.ui.flattened_tree = flattened;
 
-        // Ensure cursor position is valid
-        if self.cursor_position >= self.flattened_tree.len() {
-            self.cursor_position = self.flattened_tree.len().saturating_sub(1);
+        if self.ui.cursor_position >= self.ui.flattened_tree.len() {
+            self.ui.cursor_position = self.ui.flattened_tree.len().saturating_sub(1);
         }
     }
 
     /// Toggle expansion state of a tree node
     pub fn toggle_expansion(&mut self, node_key: &str) {
-        if self.expanded_nodes.contains(node_key) {
-            self.expanded_nodes.remove(node_key);
+        if self.ui.expanded_nodes.contains(node_key) {
+            self.ui.expanded_nodes.remove(node_key);
         } else {
-            self.expanded_nodes.insert(node_key.to_string());
+            self.ui.expanded_nodes.insert(node_key.to_string());
         }
         self.rebuild_flattened_tree();
     }
 
     /// Move cursor up in tree
     pub const fn cursor_up(&mut self) {
-        if self.cursor_position > 0 {
-            self.cursor_position -= 1;
+        if self.ui.cursor_position > 0 {
+            self.ui.cursor_position -= 1;
         }
     }
 
     /// Move cursor down in tree
     pub const fn cursor_down(&mut self) {
-        if self.cursor_position < self.flattened_tree.len().saturating_sub(1) {
-            self.cursor_position += 1;
+        if self.ui.cursor_position < self.ui.flattened_tree.len().saturating_sub(1) {
+            self.ui.cursor_position += 1;
         }
     }
 
     /// Get currently highlighted node
     #[must_use]
     pub fn highlighted_node(&self) -> Option<&TreeViewItem> {
-        self.flattened_tree.get(self.cursor_position)
+        self.ui.flattened_tree.get(self.ui.cursor_position)
     }
 
     /// Select current node for output filtering
@@ -657,34 +872,32 @@ impl TuiState {
         if let Some(node) = self.highlighted_node() {
             match &node.node_type {
                 TreeNodeType::All => {
-                    self.selected_task = None;
-                    self.output_mode = OutputMode::All;
+                    self.ui.selected_task = None;
+                    self.ui.output_mode = OutputMode::All;
                 }
                 TreeNodeType::Task(name) => {
-                    self.selected_task = Some(name.clone());
-                    self.output_mode = OutputMode::Selected;
+                    self.ui.selected_task = Some(name.clone());
+                    self.ui.output_mode = OutputMode::Selected;
                 }
                 TreeNodeType::Group(path) => {
-                    // For groups, we'll store the group path and filter in output
-                    self.selected_task = Some(format!("::group::{path}"));
-                    self.output_mode = OutputMode::Selected;
+                    self.ui.selected_task = Some(format!("::group::{path}"));
+                    self.ui.output_mode = OutputMode::Selected;
                 }
             }
-            self.output_scroll = 0;
+            self.ui.output_scroll = 0;
         }
     }
 
     /// Return to "All" output mode
     pub fn show_all_output(&mut self) {
-        self.selected_task = None;
-        self.output_mode = OutputMode::All;
-        self.output_scroll = 0;
+        self.ui.selected_task = None;
+        self.ui.output_mode = OutputMode::All;
+        self.ui.output_scroll = 0;
     }
 
     /// Initialize tree with "All" expanded by default
     pub fn init_tree(&mut self) {
-        // Expand "All" node by default for visibility
-        self.expanded_nodes.insert("::all::".to_string());
+        self.ui.expanded_nodes.insert("::all::".to_string());
         self.rebuild_flattened_tree();
     }
 
@@ -746,7 +959,7 @@ impl TuiState {
                     TaskStatus::Failed
                 };
                 self.update_task_status(name, status);
-                if let Some(task) = self.tasks.get_mut(name) {
+                if let Some(task) = self.model.tasks.get_mut(name) {
                     task.exit_code = *exit_code;
                 }
             }
@@ -822,11 +1035,11 @@ mod tests {
     #[test]
     fn test_tui_state_new() {
         let state = TuiState::new();
-        assert!(state.tasks.is_empty());
-        assert!(state.outputs.is_empty());
-        assert!(state.running_tasks.is_empty());
-        assert!(!state.is_complete);
-        assert!(!state.success);
+        assert!(state.tasks().is_empty());
+        assert!(state.outputs().is_empty());
+        assert!(state.running_tasks().is_empty());
+        assert!(!state.is_complete());
+        assert!(!state.success());
     }
 
     #[test]
@@ -835,10 +1048,10 @@ mod tests {
         let task = TaskInfo::new("test".to_string(), vec![], 0);
         state.add_task(task);
 
-        assert_eq!(state.tasks.len(), 1);
-        assert_eq!(state.outputs.len(), 1);
-        assert!(state.tasks.contains_key("test"));
-        assert!(state.outputs.contains_key("test"));
+        assert_eq!(state.tasks().len(), 1);
+        assert_eq!(state.outputs().len(), 1);
+        assert!(state.tasks().contains_key("test"));
+        assert!(state.outputs().contains_key("test"));
     }
 
     #[test]
@@ -848,15 +1061,18 @@ mod tests {
         state.add_task(task);
 
         state.update_task_status("test", TaskStatus::Running);
-        assert_eq!(state.tasks.get("test").unwrap().status, TaskStatus::Running);
-        assert_eq!(state.running_tasks.len(), 1);
+        assert_eq!(
+            state.tasks().get("test").unwrap().status,
+            TaskStatus::Running
+        );
+        assert_eq!(state.running_tasks().len(), 1);
 
         state.update_task_status("test", TaskStatus::Completed);
         assert_eq!(
-            state.tasks.get("test").unwrap().status,
+            state.tasks().get("test").unwrap().status,
             TaskStatus::Completed
         );
-        assert_eq!(state.running_tasks.len(), 0);
+        assert_eq!(state.running_tasks().len(), 0);
     }
 
     #[test]
@@ -866,18 +1082,16 @@ mod tests {
 
         state.update_task_status("t", TaskStatus::Running);
         state.update_task_status("t", TaskStatus::Completed);
-        // Late duplicate Started must not regress the task.
         state.update_task_status("t", TaskStatus::Running);
-        assert_eq!(state.tasks["t"].status, TaskStatus::Completed);
-        assert!(state.running_tasks.is_empty());
+        assert_eq!(state.tasks()["t"].status, TaskStatus::Completed);
+        assert!(state.running_tasks().is_empty());
 
-        // Once Failed, a later Skipped does nothing either.
         let mut state2 = TuiState::new();
         state2.add_task(TaskInfo::new("u".to_string(), vec![], 0));
         state2.update_task_status("u", TaskStatus::Running);
         state2.update_task_status("u", TaskStatus::Failed);
         state2.update_task_status("u", TaskStatus::Skipped);
-        assert_eq!(state2.tasks["u"].status, TaskStatus::Failed);
+        assert_eq!(state2.tasks()["u"].status, TaskStatus::Failed);
     }
 
     #[test]
@@ -921,24 +1135,19 @@ mod tests {
         state.add_task(TaskInfo::new("task:proj:test.unit".to_string(), vec![], 0));
         state.init_tree();
 
-        // Should start at position 0 (the "All" node)
-        assert_eq!(state.cursor_position, 0);
+        assert_eq!(state.cursor_position(), 0);
 
-        // Verify first item is "All"
         let node = state.highlighted_node().unwrap();
         assert!(matches!(node.node_type, TreeNodeType::All));
 
-        // Move down to first child
         state.cursor_down();
-        assert_eq!(state.cursor_position, 1);
+        assert_eq!(state.cursor_position(), 1);
 
-        // Move up
         state.cursor_up();
-        assert_eq!(state.cursor_position, 0);
+        assert_eq!(state.cursor_position(), 0);
 
-        // Should not go below 0
         state.cursor_up();
-        assert_eq!(state.cursor_position, 0);
+        assert_eq!(state.cursor_position(), 0);
     }
 
     #[test]
@@ -947,20 +1156,16 @@ mod tests {
         state.add_task(TaskInfo::new("task:proj:build".to_string(), vec![], 0));
         state.init_tree();
 
-        // Start in All mode
-        assert_eq!(state.output_mode, OutputMode::All);
+        assert_eq!(state.output_mode(), OutputMode::All);
 
-        // Navigate to a task and select it
-        state.cursor_down(); // Move to "build" group/task
+        state.cursor_down();
         state.select_current_node();
 
-        // Should be in selected mode now
-        assert_eq!(state.output_mode, OutputMode::Selected);
+        assert_eq!(state.output_mode(), OutputMode::Selected);
 
-        // Return to All mode
         state.show_all_output();
-        assert_eq!(state.output_mode, OutputMode::All);
-        assert!(state.selected_task.is_none());
+        assert_eq!(state.output_mode(), OutputMode::All);
+        assert!(state.selected_task().is_none());
     }
 
     #[test]
@@ -968,16 +1173,28 @@ mod tests {
         let mut state = TuiState::new();
         state.complete(true, None);
 
-        assert!(state.is_complete);
-        assert!(state.success);
-        assert!(state.error_message.is_none());
+        assert!(state.is_complete());
+        assert!(state.success());
+        assert!(state.error_message().is_none());
 
         let mut state2 = TuiState::new();
         state2.complete(false, Some("error".to_string()));
 
-        assert!(state2.is_complete);
-        assert!(!state2.success);
-        assert_eq!(state2.error_message, Some("error".to_string()));
+        assert!(state2.is_complete());
+        assert!(!state2.success());
+        assert_eq!(state2.error_message(), Some("error"));
+    }
+
+    #[test]
+    fn scroll_output_by_saturates() {
+        let mut state = TuiState::new();
+        assert_eq!(state.output_scroll(), 0);
+        state.scroll_output_by(-10);
+        assert_eq!(state.output_scroll(), 0, "scrolling up at 0 saturates");
+        state.scroll_output_by(5);
+        assert_eq!(state.output_scroll(), 5);
+        state.scroll_output_by(-3);
+        assert_eq!(state.output_scroll(), 2);
     }
 
     #[test]

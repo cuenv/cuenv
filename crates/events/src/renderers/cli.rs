@@ -10,8 +10,10 @@ use crate::event::{
     CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, ServiceEvent,
     Stream, SystemEvent, TaskEvent,
 };
+#[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
 use std::io::{self, IsTerminal, Write};
+#[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
 /// CLI renderer configuration.
@@ -51,15 +53,17 @@ impl Default for CliRendererConfig {
 /// CLI renderer that outputs events to stdout/stderr.
 pub struct CliRenderer {
     config: CliRendererConfig,
+    #[cfg(feature = "spinner")]
     spinner: Option<Mutex<SpinnerRenderer>>,
 }
 
 impl std::fmt::Debug for CliRenderer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CliRenderer")
-            .field("config", &self.config)
-            .field("spinner", &self.spinner.is_some())
-            .finish()
+        let mut s = f.debug_struct("CliRenderer");
+        s.field("config", &self.config);
+        #[cfg(feature = "spinner")]
+        s.field("spinner", &self.spinner.is_some());
+        s.finish()
     }
 }
 
@@ -73,6 +77,7 @@ impl CliRenderer {
     /// Create a new CLI renderer with the given configuration.
     #[must_use]
     pub fn with_config(config: CliRendererConfig) -> Self {
+        #[cfg(feature = "spinner")]
         let spinner = if config.spinner {
             Some(Mutex::new(
                 SpinnerRenderer::new().with_output_tail(config.spinner_output_tail),
@@ -80,7 +85,11 @@ impl CliRenderer {
         } else {
             None
         };
-        Self { config, spinner }
+        Self {
+            config,
+            #[cfg(feature = "spinner")]
+            spinner,
+        }
     }
 
     /// Run the renderer, consuming events from the receiver.
@@ -113,17 +122,31 @@ impl CliRenderer {
     }
 
     fn render_task(&self, event: &TaskEvent) {
+        #[cfg(feature = "spinner")]
         if let Some(spinner) = self.spinner.as_ref() {
             // Best-effort lock — if a renderer panicked while holding it we
             // still surface the event via the fallback path below rather
             // than poisoning all future output.
             if let Ok(mut guard) = spinner.lock() {
                 guard.apply(event);
-                // Output events still mirror to stdout/stderr below so users
-                // see real-time content even with the spinner active.
-                if !matches!(event, TaskEvent::Output { .. }) {
-                    return;
+                // Route output through MultiProgress::println so it appears
+                // above the active spinners without corrupting their frames.
+                // Bare println! / eprintln! here would race indicatif's
+                // cursor moves on stderr.
+                if let TaskEvent::Output {
+                    name,
+                    stream,
+                    content,
+                    ..
+                } = event
+                {
+                    let prefix = match stream {
+                        Stream::Stdout => "  ",
+                        Stream::Stderr => "! ",
+                    };
+                    guard.print_above(&format!("{prefix}[{name}] {content}"));
                 }
+                return;
             }
         }
         match event {

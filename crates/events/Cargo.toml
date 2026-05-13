@@ -12,6 +12,13 @@ keywords = ["events", "tracing", "structured-logging"]
 categories = ["development-tools"]
 description = "Structured event system for cuenv - enables multiple UI frontends via unified event stream"
 
+[features]
+default = ["spinner"]
+# Build the indicatif-backed SpinnerRenderer.
+# Renderers that don't need a terminal (JSON, future web) can opt out
+# with `default-features = false` to drop the indicatif dependency.
+spinner = ["dep:indicatif"]
+
 [dependencies]
 # Serialization
 serde = { workspace = true }
@@ -31,8 +38,8 @@ chrono = { workspace = true }
 # Errors
 thiserror = { workspace = true }
 
-# Progress / spinners
-indicatif = { workspace = true }
+# Progress / spinners (gated)
+indicatif = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }

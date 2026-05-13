@@ -214,23 +214,22 @@ impl RichTui {
         match key.code {
             // Quit handling
             KeyCode::Char('q') => {
-                if self.state.is_complete {
-                    return false; // Exit immediately if complete
+                if self.state.is_complete() {
+                    return false;
                 }
                 self.quit_requested = true;
-                self.can_quit = self.state.is_complete;
+                self.can_quit = self.state.is_complete();
             }
             KeyCode::Esc => {
-                // Exit focus mode first, then selected mode, before quitting.
-                if self.state.focused_task.is_some() {
+                if self.state.focused_task().is_some() {
                     self.state.clear_focus();
-                } else if self.state.output_mode == OutputMode::Selected {
+                } else if self.state.output_mode() == OutputMode::Selected {
                     self.state.show_all_output();
-                } else if self.state.is_complete {
+                } else if self.state.is_complete() {
                     return false;
                 } else {
                     self.quit_requested = true;
-                    self.can_quit = self.state.is_complete;
+                    self.can_quit = self.state.is_complete();
                 }
             }
             KeyCode::Char('f') => {
@@ -253,7 +252,7 @@ impl RichTui {
             KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(node) = self.state.highlighted_node() {
                     let node_key = node.node_key();
-                    if node.has_children && self.state.expanded_nodes.contains(&node_key) {
+                    if node.has_children && self.state.expanded_nodes().contains(&node_key) {
                         self.state.toggle_expansion(&node_key);
                     }
                 }
@@ -261,7 +260,7 @@ impl RichTui {
             KeyCode::Right | KeyCode::Char('l') => {
                 if let Some(node) = self.state.highlighted_node() {
                     let node_key = node.node_key();
-                    if node.has_children && !self.state.expanded_nodes.contains(&node_key) {
+                    if node.has_children && !self.state.expanded_nodes().contains(&node_key) {
                         self.state.toggle_expansion(&node_key);
                     }
                 }
@@ -278,11 +277,11 @@ impl RichTui {
             }
 
             // Output scrolling (when in selected mode)
-            KeyCode::PageUp if self.state.output_mode == OutputMode::Selected => {
-                self.state.output_scroll = self.state.output_scroll.saturating_sub(10);
+            KeyCode::PageUp if self.state.output_mode() == OutputMode::Selected => {
+                self.state.scroll_output_by(-10);
             }
-            KeyCode::PageDown if self.state.output_mode == OutputMode::Selected => {
-                self.state.output_scroll += 10;
+            KeyCode::PageDown if self.state.output_mode() == OutputMode::Selected => {
+                self.state.scroll_output_by(10);
             }
 
             _ => {}
@@ -356,7 +355,7 @@ impl RichTui {
             // When a task is focused, the tree is hidden so the output
             // panel gets every available column. Otherwise we keep the
             // usual 30/70 tree-output split.
-            if state.focused_task.is_some() {
+            if state.focused_task().is_some() {
                 let output_widget = OutputPanelWidget::new(state);
                 f.render_widget(output_widget, main_chunks[1]);
             } else {
@@ -390,7 +389,7 @@ impl RichTui {
         let secs = elapsed_secs % 60;
 
         // Determine title prefix and color based on completion state
-        let (title_prefix, color) = match (state.is_complete, state.success) {
+        let (title_prefix, color) = match (state.is_complete(), state.success()) {
             (true, true) => ("Task Execution Complete", Color::Green),
             (true, false) => ("Task Execution Failed", Color::Red),
             (false, _) => ("Task Execution", Color::Cyan),
@@ -406,18 +405,18 @@ impl RichTui {
         f.render_widget(block, area);
 
         // Show task counts
-        let total = state.tasks.len();
+        let total = state.tasks().len();
         let completed = state
-            .tasks
+            .tasks()
             .values()
             .filter(|t| matches!(t.status, TaskStatus::Completed | TaskStatus::Cached))
             .count();
         let failed = state
-            .tasks
+            .tasks()
             .values()
             .filter(|t| t.status == TaskStatus::Failed)
             .count();
-        let running = state.running_tasks.len();
+        let running = state.running_tasks().len();
 
         let info = format!(
             "Total: {total} | Running: {running} | Completed: {completed} | Failed: {failed}"
@@ -434,13 +433,13 @@ impl RichTui {
         f: &mut ratatui::Frame,
         area: Rect,
     ) {
-        let help_text = if state.is_complete {
+        let help_text = if state.is_complete() {
             "Press 'q' to quit"
         } else if quit_requested {
             "Waiting for tasks... (Ctrl+C to force)"
-        } else if state.focused_task.is_some() {
+        } else if state.focused_task().is_some() {
             "f/Esc: Exit focus | PgUp/PgDn: Scroll | q: Quit"
-        } else if state.output_mode == OutputMode::Selected {
+        } else if state.output_mode() == OutputMode::Selected {
             "Esc/a: All | f: Focus task | ↑↓/jk: Navigate | PgUp/PgDn: Scroll | q: Quit"
         } else {
             "↑↓/jk: Navigate | ←→/hl: Collapse/Expand | Enter: Select | f: Focus | a: All | q: Quit"

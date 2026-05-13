@@ -63,6 +63,24 @@ impl SpinnerRenderer {
         self
     }
 
+    /// Print a line above the active spinners without corrupting their
+    /// frames.
+    ///
+    /// indicatif redraws on stderr by repositioning the cursor; writing
+    /// to stdout/stderr concurrently from another path shreds the frame.
+    /// This method routes the write through [`MultiProgress::println`],
+    /// which suspends the draw, prints the line above the bars, and
+    /// resumes — the indicatif contract for interleaved output.
+    ///
+    /// Errors are swallowed (`tracing::warn!`'d) because the renderer
+    /// cannot surface I/O failures and we'd rather keep the spinner
+    /// running than abort.
+    pub fn print_above(&self, line: &str) {
+        if let Err(err) = self.multi.println(line) {
+            tracing::warn!(error = %err, "multi.println failed; output line dropped");
+        }
+    }
+
     /// Apply a [`TaskEvent`] to the spinner state.
     pub fn apply(&mut self, event: &TaskEvent) {
         match event {
@@ -399,5 +417,21 @@ mod tests {
             parent_group: Some("ci".to_string()),
         });
         assert!(!spinner.tasks.contains_key("ci.lint"));
+    }
+
+    #[test]
+    fn print_above_does_not_panic_with_no_bars() {
+        let spinner = SpinnerRenderer::new();
+        // Just exercise the indicatif println path; in a non-TTY test
+        // environment it may no-op, but it must not panic.
+        spinner.print_above("hello above");
+    }
+
+    #[test]
+    fn print_above_does_not_panic_with_active_bars() {
+        let mut spinner = SpinnerRenderer::new();
+        spinner.apply(&started("ci.fmt", None));
+        spinner.print_above("output line while spinner active");
+        spinner.apply(&completed("ci.fmt", None, true));
     }
 }
