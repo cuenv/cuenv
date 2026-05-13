@@ -54,8 +54,11 @@ fn main() {
     // Set up error handling first
     // NOTE: Using eprintln! in panic hook is intentional - tracing infrastructure
     // may be corrupted during a panic, so we use the most reliable output method.
+    // Restore terminal state before printing so the panic output isn't garbled
+    // by leftover raw-mode / alt-screen state from a TUI that didn't drop cleanly.
     #[allow(clippy::print_stderr)]
     std::panic::set_hook(Box::new(|panic_info| {
+        cleanup_terminal();
         eprintln!("Application panicked: {panic_info}");
         eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
     }));

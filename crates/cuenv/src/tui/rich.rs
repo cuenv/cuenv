@@ -32,11 +32,15 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// Errors during cleanup are logged but cannot be propagated.
 struct TerminalGuard {
     raw_enabled: bool,
+    in_alt_screen: bool,
 }
 
 impl TerminalGuard {
     const fn new() -> Self {
-        Self { raw_enabled: false }
+        Self {
+            raw_enabled: false,
+            in_alt_screen: false,
+        }
     }
 
     fn enable_raw(&mut self) -> io::Result<()> {
@@ -48,13 +52,18 @@ impl TerminalGuard {
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        // Only emit LeaveAlternateScreen if we actually entered one —
+        // sending the escape unconditionally to a terminal that wasn't
+        // in alt screen can leave artefacts in some emulators.
+        if self.in_alt_screen
+            && let Err(e) = execute!(io::stdout(), LeaveAlternateScreen)
+        {
+            tracing::warn!(error = %e, "Failed to leave alternate screen");
+        }
         if self.raw_enabled
             && let Err(e) = disable_raw_mode()
         {
             tracing::warn!(error = %e, "Failed to disable raw mode");
-        }
-        if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen) {
-            tracing::warn!(error = %e, "Failed to leave alternate screen");
         }
     }
 }
@@ -471,5 +480,17 @@ mod tests {
         // Just verify TerminalGuard can be created and dropped without
         // leaving the terminal in a stuck state.
         let _guard = TerminalGuard::new();
+    }
+
+    #[test]
+    fn terminal_guard_no_op_when_not_enabled() {
+        // Guard with no raw_mode/alt_screen entered must drop without
+        // touching the terminal. (Verified by absence of panics; the
+        // observed bug was the guard sending LeaveAlternateScreen
+        // unconditionally.)
+        let guard = TerminalGuard::new();
+        assert!(!guard.raw_enabled);
+        assert!(!guard.in_alt_screen);
+        drop(guard);
     }
 }

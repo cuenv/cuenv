@@ -55,6 +55,12 @@ pub struct TaskResult {
     pub success: bool,
 }
 
+impl super::graph_walk::WalkOutcome for TaskResult {
+    fn is_success(&self) -> bool {
+        self.success
+    }
+}
+
 /// Number of lines from stdout/stderr to include when summarizing failures
 pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 
@@ -786,130 +792,71 @@ impl TaskExecutor {
 
     #[instrument(name = "execute_graph", skip(self, graph), fields(task_count = graph.task_count()))]
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
-        let parallel_groups = graph.get_parallel_groups()?;
-        let mut all_results = Vec::new();
-        // Map of completed task results for resolving output references.
-        // Populated between sequential parallel groups — no concurrent access.
-        let mut results_map: std::collections::HashMap<String, TaskResult> =
-            std::collections::HashMap::new();
+        use super::graph_walk::{WalkPolicy, walk_parallel_graph};
 
-        // Set of failed task names. Under `continue_on_error`, dependents of
-        // tainted tasks are emitted as `task.skipped` events and never
-        // spawned. Under fail-fast (default) we return on the first failure
-        // before this set is consulted again.
-        let mut tainted: std::collections::HashSet<String> = std::collections::HashSet::new();
-        // First failure encountered under continue_on_error; surfaced at the
-        // end so the caller still sees a non-Ok result.
-        let mut first_failure: Option<TaskResult> = None;
+        let policy = WalkPolicy {
+            max_parallel: self.config.max_parallel,
+            continue_on_error: self.config.continue_on_error,
+        };
 
-        // IMPORTANT:
-        // Each parallel group represents a dependency "level". We must not start tasks from the
-        // next group until *all* tasks from the current group have completed successfully.
-        //
-        // The previous implementation pipelined groups (starting the next group as soon as all
-        // tasks from the current group were spawned), which allowed dependent tasks to run before
-        // their dependencies finished (especially visible with long-running tasks like dev servers).
-        for mut group in parallel_groups {
-            // Under continue_on_error, filter out nodes whose deps are
-            // tainted before we spawn them — and emit Skipped events so
-            // renderers reflect the cascade.
-            if self.config.continue_on_error {
-                group.retain(|node| {
-                    let failing_dep = node
-                        .task
-                        .depends_on
-                        .iter()
-                        .find(|dep| tainted.contains(dep.task_name()));
-                    if let Some(dep) = failing_dep {
-                        let reason = cuenv_events::SkipReason::DependencyFailed {
-                            dep: dep.task_name().to_string(),
-                        };
-                        cuenv_events::emit_task_skipped!(&node.name, reason);
-                        tainted.insert(node.name.clone());
-                        return false;
-                    }
-                    true
-                });
-            }
-
-            let mut join_set = JoinSet::new();
-
-            while !group.is_empty() || !join_set.is_empty() {
-                // Fill the concurrency window for this group
-                while let Some(node) = group.pop() {
-                    let mut task = node.task.clone();
-                    let name = node.name.clone();
-
-                    // Resolve any task output reference placeholders in args/env
-                    // before spawning. The results_map contains all completed
-                    // upstream tasks (from prior parallel groups).
-                    let resolver = super::output_refs::OutputRefResolver {
-                        task_name: &name,
-                        results: &results_map,
-                    };
-                    resolver.resolve(&mut task.args, &mut task.env)?;
-
-                    let executor = self.clone_with_config();
-                    join_set.spawn(async move { executor.execute_task(&name, &task).await });
-
-                    if self.config.max_parallel > 0 && join_set.len() >= self.config.max_parallel {
-                        break;
-                    }
+        let summary = walk_parallel_graph(
+            graph.inner(),
+            policy,
+            // Resolve output-ref placeholders in args/env against tasks
+            // completed in prior parallel groups. Intra-group siblings
+            // are independent by definition so they don't appear here.
+            |mut node, outcomes_so_far| -> Result<_> {
+                let resolver = super::output_refs::OutputRefResolver {
+                    task_name: &node.name,
+                    results: outcomes_so_far,
+                };
+                resolver.resolve(&mut node.task.args, &mut node.task.env)?;
+                Ok(node)
+            },
+            {
+                let executor = Arc::new(self.clone_with_config());
+                move |node| {
+                    let executor = Arc::clone(&executor);
+                    async move { executor.execute_task(&node.name, &node.task).await }
                 }
+            },
+            |join_err| Error::execution(format!("Task execution panicked: {join_err}")),
+        )
+        .await?;
 
-                if let Some(result) = join_set.join_next().await {
-                    match result {
-                        Ok(Ok(task_result)) => {
-                            if !task_result.success {
-                                if self.config.continue_on_error {
-                                    tainted.insert(task_result.name.clone());
-                                    if first_failure.is_none() {
-                                        first_failure = Some(task_result.clone());
-                                    }
-                                    results_map
-                                        .insert(task_result.name.clone(), task_result.clone());
-                                    all_results.push(task_result);
-                                } else {
-                                    join_set.abort_all();
-                                    return Err(Error::task_failed(
-                                        &task_result.name,
-                                        task_result.exit_code.unwrap_or(-1),
-                                        &task_result.stdout,
-                                        &task_result.stderr,
-                                    ));
-                                }
-                            } else {
-                                results_map.insert(task_result.name.clone(), task_result.clone());
-                                all_results.push(task_result);
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            // Compilation / setup error: always fatal,
-                            // regardless of continue_on_error.
-                            join_set.abort_all();
-                            return Err(e);
-                        }
-                        Err(e) => {
-                            // Panic / abort: always fatal — we can't reason
-                            // about state after a panic.
-                            join_set.abort_all();
-                            return Err(Error::execution(format!(
-                                "Task execution panicked: {}",
-                                e
-                            )));
-                        }
-                    }
-                }
-            }
-        }
+        let mut all_results: Vec<TaskResult> =
+            summary.outcomes.into_iter().map(|(_name, r)| r).collect();
 
-        if let Some(failed) = first_failure {
+        // Under fail-fast, the walker short-circuits on the first failure
+        // and we surface it via Err so callers see the failing task's
+        // diagnostics. Under continue_on_error, every outcome is returned
+        // and the first failure is surfaced via Err at the end so callers
+        // still observe a non-Ok run.
+        if !self.config.continue_on_error
+            && let Some(failed) = all_results.iter().find(|r| !r.success).cloned()
+        {
             return Err(Error::task_failed(
                 &failed.name,
                 failed.exit_code.unwrap_or(-1),
                 &failed.stdout,
                 &failed.stderr,
             ));
+        }
+        if self.config.continue_on_error
+            && let Some(failed) = all_results.iter().find(|r| !r.success).cloned()
+        {
+            // Preserve historical ordering: when failing, only the
+            // already-collected outcomes come back via Err; reset
+            // all_results to avoid the caller "succeeding" with mixed
+            // results.
+            let err = Error::task_failed(
+                &failed.name,
+                failed.exit_code.unwrap_or(-1),
+                &failed.stdout,
+                &failed.stderr,
+            );
+            all_results.clear();
+            return Err(err);
         }
 
         Ok(all_results)

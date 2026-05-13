@@ -839,6 +839,10 @@ async fn execute_task_with_deps(
     let summary = walk_parallel_graph(
         graph.inner(),
         policy,
+        // CI doesn't have cross-task output refs that need resolving
+        // before spawn — the IR compiler handles its own substitutions
+        // inside the per-task path. Pass through unchanged.
+        cuenv_core::tasks::graph_walk::passthrough_prepare::<_, _, ExecutorError>,
         {
             let config = Arc::clone(&config);
             let project_root = Arc::clone(&project_root);
