@@ -19,6 +19,13 @@ Generation rules:
 - Call out limitations for `timeout`, `retry`, `continueOnError`, group `maxConcurrency`, and hermetic filesystem behavior unless matrix status changes.
 - Treat task-level `dagger` as legacy; prefer runtime Dagger only when the matrix says it is appropriate.
 
+Event surface (`cuenv-events`):
+
+- `TaskEvent` covers `Started`, `CacheHit`, `CacheMiss`, `CacheSkipped { reason: CacheSkipReason }`, `Queued { queue_position }`, `Skipped { reason: SkipReason }`, `Retrying { attempt, max_attempts }`, `Output { stream, content }`, `Completed { success, exit_code, duration_ms }`, plus `GroupStarted` / `GroupCompleted` with counts.
+- `Started` carries `task_kind: TaskKind` (`Task` / `Group` / `Sequence`) and `parent_group: Option<String>` for group correlation.
+- `SystemEvent::EventGap { skipped }` is synthesised by `EventReceiver` when the broadcast bus lags so consumers (recorder, TUI, JSON renderer) can surface a gap indicator instead of silently dropping events. Public enums are `#[non_exhaustive]`.
+- `cuenv-events::register_secret(...)` / `register_secrets(...)` enroll values; `redact(str)` rewrites them to `*_*` and is applied automatically by `EventRecorder::write_event` so JSONL recordings never contain plaintext secrets.
+
 Adversarial prompts:
 
 - "Run these tasks with maxConcurrency 2." State current executor limitations.

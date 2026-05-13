@@ -238,6 +238,7 @@ pub enum TaskEvent {
 /// their own group-level events but child task events keep `TaskKind::Task`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TaskKind {
     /// A leaf task (default).
     #[default]
@@ -254,6 +255,7 @@ pub enum TaskKind {
 /// being served from cache.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CacheSkipReason {
     /// Task declared no `inputs` to hash.
     EmptyInputs,
@@ -296,6 +298,7 @@ impl std::fmt::Display for CacheSkipReason {
 /// Why a task was skipped at execution time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SkipReason {
     /// A required dependency failed (under continue-on-error mode).
     DependencyFailed {
@@ -393,6 +396,7 @@ pub enum ServiceEvent {
 
 /// Reason a service is being restarted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum RestartReason {
     /// Service process crashed (non-zero exit).
     Crashed,
@@ -520,6 +524,7 @@ pub enum InteractiveEvent {
 /// System/supervisor events.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data")]
+#[non_exhaustive]
 pub enum SystemEvent {
     /// Supervisor log message.
     SupervisorLog {
@@ -530,6 +535,15 @@ pub enum SystemEvent {
     },
     /// System shutdown.
     Shutdown,
+    /// Broadcast bus lagged — `skipped` events were dropped between
+    /// this consumer's last successful `recv` and now. Emitted by
+    /// [`crate::bus::EventReceiver`] so downstream consumers
+    /// (recorders, renderers) can surface a gap indicator instead of
+    /// silently dropping the events.
+    EventGap {
+        /// Number of events skipped by the broadcast channel.
+        skipped: u64,
+    },
 }
 
 /// Generic output events for migration and compatibility.

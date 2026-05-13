@@ -3,9 +3,10 @@
 //! Provides a broadcast-capable event bus that allows multiple subscribers
 //! to receive events concurrently.
 
-use crate::event::CuenvEvent;
+use crate::event::{CuenvEvent, EventCategory, EventSource, SystemEvent};
 use std::sync::Mutex;
 use tokio::sync::{broadcast, mpsc};
+use uuid::Uuid;
 
 /// Default channel capacity for the broadcast channel.
 const DEFAULT_BROADCAST_CAPACITY: usize = 1000;
@@ -142,38 +143,41 @@ pub struct EventReceiver {
 impl EventReceiver {
     /// Receive the next event.
     ///
-    /// Returns `None` if the bus has been dropped.
-    /// May skip events if the receiver falls behind.
+    /// Returns `None` only when the broadcast sender is closed. When the
+    /// channel lags and drops events, returns a synthesized
+    /// [`SystemEvent::EventGap`] so downstream consumers see the gap
+    /// instead of silently losing it.
     pub async fn recv(&mut self) -> Option<CuenvEvent> {
-        loop {
-            match self.inner.recv().await {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "Event receiver lagged, skipped events");
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
+        match self.inner.recv().await {
+            Ok(event) => Some(event),
+            Err(broadcast::error::RecvError::Lagged(n)) => Some(synth_event_gap(n)),
+            Err(broadcast::error::RecvError::Closed) => None,
         }
     }
 
     /// Try to receive an event without waiting.
     ///
-    /// Returns `None` if no event is immediately available or the bus is closed.
+    /// Returns `None` if no event is immediately available or the bus is
+    /// closed. Returns [`SystemEvent::EventGap`] (synthesized) when the
+    /// channel lagged and dropped events.
     pub fn try_recv(&mut self) -> Option<CuenvEvent> {
-        loop {
-            match self.inner.try_recv() {
-                Ok(event) => return Some(event),
-                Err(broadcast::error::TryRecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "Event receiver lagged, skipped events");
-                }
-                Err(
-                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
-                ) => {
-                    return None;
-                }
+        match self.inner.try_recv() {
+            Ok(event) => Some(event),
+            Err(broadcast::error::TryRecvError::Lagged(n)) => Some(synth_event_gap(n)),
+            Err(broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed) => {
+                None
             }
         }
     }
+}
+
+fn synth_event_gap(skipped: u64) -> CuenvEvent {
+    tracing::warn!(skipped, "event receiver lagged; emitting EventGap");
+    CuenvEvent::new(
+        Uuid::new_v4(),
+        EventSource::new("cuenv::events::bus"),
+        EventCategory::System(SystemEvent::EventGap { skipped }),
+    )
 }
 
 /// Error returned when sending to a closed bus.

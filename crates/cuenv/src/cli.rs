@@ -705,13 +705,6 @@ pub enum Commands {
             default_value_t = false
         )]
         fast: bool,
-        /// Render snapshot frames to the given directory and exit (no interactive TUI).
-        #[arg(
-            long = "snapshot-frames-to",
-            help = "Render snapshot frames to the given directory and exit (no interactive TUI)",
-            value_name = "DIR"
-        )]
-        snapshot_frames_to: Option<String>,
     },
     /// Start web server for streaming cuenv events.
     #[command(about = "Start web server for streaming cuenv events")]
@@ -1738,15 +1731,7 @@ impl Commands {
             },
             Self::Ci(args) => Command::Ci { args },
             Self::Tui { record_events } => Command::Tui { record_events },
-            Self::TuiReplay {
-                path,
-                fast,
-                snapshot_frames_to,
-            } => Command::TuiReplay {
-                path,
-                fast,
-                snapshot_frames_to,
-            },
+            Self::TuiReplay { path, fast } => Command::TuiReplay { path, fast },
             Self::Web { port, host } => Command::Web { port, host },
             Self::Changeset { subcommand } => match subcommand {
                 ChangesetCommands::Add {

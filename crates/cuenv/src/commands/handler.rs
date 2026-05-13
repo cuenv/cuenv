@@ -438,10 +438,7 @@ impl CommandHandler for TaskHandler {
             ));
         }
 
-        // Spawn event recorder if --record-events was passed. The recorder
-        // subscribes to the global event bus and writes every event as JSONL
-        // alongside whatever renderer the user picked.
-        let recorder_handle = self
+        let recorder = self
             .record_events
             .as_deref()
             .and_then(spawn_record_events_handle);
@@ -493,8 +490,8 @@ impl CommandHandler for TaskHandler {
 
         let outcome = task::execute(request).await;
 
-        if let Some(handle) = recorder_handle {
-            handle.abort();
+        if let Some((handle, stop)) = recorder {
+            let _ = stop.send(());
             let _ = handle.await;
         }
 
@@ -503,9 +500,14 @@ impl CommandHandler for TaskHandler {
 }
 
 /// Spawn an [`cuenv_events::EventRecorder`] writing to `path`, subscribed to
-/// the global event bus. Returns the join handle so callers can stop the
-/// recorder when the host command finishes.
-fn spawn_record_events_handle(path: &str) -> Option<tokio::task::JoinHandle<()>> {
+/// the global event bus. Returns the join handle paired with a oneshot
+/// sender; callers signal stop and await the handle so buffered events flush.
+fn spawn_record_events_handle(
+    path: &str,
+) -> Option<(
+    tokio::task::JoinHandle<()>,
+    tokio::sync::oneshot::Sender<()>,
+)> {
     let recorder = match cuenv_events::EventRecorder::create(path) {
         Ok(r) => r,
         Err(err) => {
@@ -518,7 +520,8 @@ fn spawn_record_events_handle(path: &str) -> Option<tokio::task::JoinHandle<()>>
         }
     };
     let receiver = crate::tracing::subscribe_global_events()?;
-    Some(tokio::spawn(recorder.run(receiver)))
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    Some((tokio::spawn(recorder.run(receiver, stop_rx)), stop_tx))
 }
 
 /// Handler for `ci` command.

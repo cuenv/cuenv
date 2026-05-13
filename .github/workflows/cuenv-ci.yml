@@ -10,23 +10,17 @@ on:
     - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
-    - Cargo.lock/**
     - Cargo.toml
-    - Cargo.toml/**
     - _tests/**
     - contrib/**
     - crates/**
     - cue.mod/**
     - deny.toml
-    - deny.toml/**
     - env.cue
-    - env.cue/**
     - examples/**
     - features/**
     - flake.lock
-    - flake.lock/**
     - flake.nix
-    - flake.nix/**
     - schema/**
   pull_request:
     branches:
@@ -35,23 +29,17 @@ on:
     - .agents/skills/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
-    - Cargo.lock/**
     - Cargo.toml
-    - Cargo.toml/**
     - _tests/**
     - contrib/**
     - crates/**
     - cue.mod/**
     - deny.toml
-    - deny.toml/**
     - env.cue
-    - env.cue/**
     - examples/**
     - features/**
     - flake.lock
-    - flake.lock/**
     - flake.nix
-    - flake.nix/**
     - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

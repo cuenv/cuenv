@@ -2,41 +2,23 @@
 //!
 //! State is logically split into two concerns:
 //!
-//! - **[`ActivityModel`]** — the event-driven data model: tasks, outputs,
-//!   running set, completion status. Mutated **only** by
-//!   [`TuiState::apply_event`] (and helpers it calls). Two replays of the
-//!   same event trace produce identical `ActivityModel`s; that property
-//!   is asserted by the integration tests in `tests/tui_replay.rs`.
-//! - **[`UiState`]** — the input-driven view state: cursor position,
+//! - **Activity model** — the event-driven data: tasks, outputs, running
+//!   set, completion status. Mutated **only** by [`TuiState::apply_event`]
+//!   (and helpers it calls). Two replays of the same event trace produce
+//!   identical activity state; the integration tests in
+//!   `tests/tui_replay.rs` exercise that invariant.
+//! - **UI state** — the input-driven view state: cursor position,
 //!   expansion, focus, selected task, scroll offset. Mutated only by
 //!   keyboard handlers.
 //!
-//! Both concerns currently live inside [`TuiState`] for backward
-//! compatibility with the widget renderers and rich TUI consumers, which
-//! still read individual fields directly. The two marker structs below
-//! exist to document the boundary and to let downstream code spell out
-//! which subset of state it expects; full field migration into the
+//! The two halves currently share [`TuiState`] because widget renderers
+//! still read individual fields directly; promoting them into separate
 //! sub-structs is a follow-up.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
 use cuenv_events::{CuenvEvent, EventCategory, Stream, TaskEvent};
-
-/// Marker for the event-driven half of [`TuiState`].
-///
-/// The boundary exists so renderers and snapshot tests can reason about
-/// "what would a fresh replay of this trace produce" independently of the
-/// user's current focus / scroll position. Concrete fields still live on
-/// [`TuiState`]; this struct documents the invariant.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct ActivityModel;
-
-/// Marker for the input-driven half of [`TuiState`].
-///
-/// See [`ActivityModel`] for the rationale.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UiState;
 
 /// Status of a task in the execution graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,14 +248,14 @@ impl TaskOutput {
 
 /// Global TUI state for task execution.
 ///
-/// Fields are grouped by concern: the upper block belongs to the
-/// [`ActivityModel`] (event-driven, deterministic when replayed) and the
-/// lower block belongs to the [`UiState`] (input-driven). Mutations that
-/// cross the boundary go through [`TuiState::apply_event`] or explicit
-/// input-handler methods, never through ad-hoc field writes.
+/// Fields are grouped by concern: the upper block is the event-driven
+/// activity model (deterministic when replayed) and the lower block is
+/// the input-driven UI state. Mutations that cross the boundary go
+/// through [`TuiState::apply_event`] or explicit input-handler methods,
+/// never through ad-hoc field writes.
 #[derive(Debug)]
 pub struct TuiState {
-    // -- ActivityModel: mutated by apply_event -------------------------------
+    // -- Activity model: mutated by apply_event ------------------------------
     /// Start time of the overall execution
     pub start_time: Instant,
     /// Map of task name to task info
@@ -289,7 +271,7 @@ pub struct TuiState {
     /// Error message (if failed)
     pub error_message: Option<String>,
 
-    // -- UiState: mutated by input handlers ----------------------------------
+    // -- UI state: mutated by input handlers ---------------------------------
     /// Currently selected task for output filtering (None = show all)
     pub selected_task: Option<String>,
     /// Set of expanded tree nodes (task names that are expanded)
@@ -361,42 +343,54 @@ impl TuiState {
         self.outputs.insert(name.clone(), TaskOutput::new(name));
     }
 
-    /// Update task status
+    /// Update a task's status.
+    ///
+    /// Once a task reaches a terminal status (`Completed`, `Failed`, `Cached`,
+    /// `Skipped`), further status writes are ignored so late or duplicate
+    /// events — common during replay or under broadcast lag — can't regress
+    /// a finished task back to `Running` or `Pending`.
     pub fn update_task_status(&mut self, name: &str, status: TaskStatus) {
-        if let Some(task) = self.tasks.get_mut(name) {
-            task.status = status;
-
-            match status {
-                TaskStatus::Running => {
-                    task.start_time = Some(Instant::now());
-                    if !self.running_tasks.contains(&name.to_string()) {
-                        self.running_tasks.push(name.to_string());
-                    }
-                }
-                TaskStatus::Completed
-                | TaskStatus::Failed
-                | TaskStatus::Cached
-                | TaskStatus::Skipped => {
-                    if let Some(start) = task.start_time {
-                        #[allow(clippy::cast_possible_truncation)]
-                        let duration = start.elapsed().as_millis() as u64;
-                        task.duration_ms = Some(duration);
-                    }
-                    self.running_tasks.retain(|t| t != name);
-                }
-                TaskStatus::Pending => {
-                    // Explicitly handle Pending - no action needed
-                }
-            }
-        } else {
-            // Task not found in state - this could indicate a synchronization issue
-            // between the executor and TUI, or events arriving before task registration
+        let Some(task) = self.tasks.get_mut(name) else {
             tracing::warn!(
                 "Attempted to update status for unknown task '{}' to {:?}",
                 name,
                 status
             );
+            return;
+        };
+
+        if Self::is_terminal_status(task.status) {
+            return;
         }
+
+        task.status = status;
+        match status {
+            TaskStatus::Running => {
+                task.start_time = Some(Instant::now());
+                if !self.running_tasks.contains(&name.to_string()) {
+                    self.running_tasks.push(name.to_string());
+                }
+            }
+            TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cached
+            | TaskStatus::Skipped => {
+                if let Some(start) = task.start_time {
+                    #[allow(clippy::cast_possible_truncation)]
+                    let duration = start.elapsed().as_millis() as u64;
+                    task.duration_ms = Some(duration);
+                }
+                self.running_tasks.retain(|t| t != name);
+            }
+            TaskStatus::Pending => {}
+        }
+    }
+
+    const fn is_terminal_status(status: TaskStatus) -> bool {
+        matches!(
+            status,
+            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cached | TaskStatus::Skipped
+        )
     }
 
     /// Add output for a task
@@ -694,15 +688,19 @@ impl TuiState {
         self.rebuild_flattened_tree();
     }
 
-    /// Apply a [`CuenvEvent`] to the [`ActivityModel`] half of this state.
+    /// Apply a [`CuenvEvent`] to the activity model half of this state.
     ///
     /// This is the single canonical entry point for event-driven mutations.
     /// Replay tooling (`cuenv tui-replay`), snapshot tests, and the live
     /// TUI all funnel events through here so behaviour stays consistent.
     ///
-    /// The method touches only model fields — `selected_task`,
+    /// The method touches only activity-model fields — `selected_task`,
     /// `cursor_position`, `focused_task`, etc. are left alone so the user's
     /// in-flight UI interaction survives a flurry of events.
+    ///
+    /// Late or duplicate events targeting a task that has already reached
+    /// a terminal status are dropped by [`Self::update_task_status`] so
+    /// replay determinism survives clock skew and broadcast lag.
     pub fn apply_event(&mut self, event: &CuenvEvent) {
         match &event.category {
             EventCategory::Task(task_event) => self.apply_task_event(task_event),
@@ -755,10 +753,6 @@ impl TuiState {
             TaskEvent::Skipped { name, .. } => {
                 self.update_task_status(name, TaskStatus::Skipped);
             }
-            // Group / queue / cache-skip / retry events don't currently move
-            // the model — renderers consume them directly off the bus.
-            // Reserved for Phase 4 (group-aware spinner) where they shape
-            // the CLI renderer's progress aggregates.
             TaskEvent::CacheMiss { .. }
             | TaskEvent::CacheSkipped { .. }
             | TaskEvent::Queued { .. }
@@ -863,6 +857,27 @@ mod tests {
             TaskStatus::Completed
         );
         assert_eq!(state.running_tasks.len(), 0);
+    }
+
+    #[test]
+    fn terminal_status_is_monotonic() {
+        let mut state = TuiState::new();
+        state.add_task(TaskInfo::new("t".to_string(), vec![], 0));
+
+        state.update_task_status("t", TaskStatus::Running);
+        state.update_task_status("t", TaskStatus::Completed);
+        // Late duplicate Started must not regress the task.
+        state.update_task_status("t", TaskStatus::Running);
+        assert_eq!(state.tasks["t"].status, TaskStatus::Completed);
+        assert!(state.running_tasks.is_empty());
+
+        // Once Failed, a later Skipped does nothing either.
+        let mut state2 = TuiState::new();
+        state2.add_task(TaskInfo::new("u".to_string(), vec![], 0));
+        state2.update_task_status("u", TaskStatus::Running);
+        state2.update_task_status("u", TaskStatus::Failed);
+        state2.update_task_status("u", TaskStatus::Skipped);
+        assert_eq!(state2.tasks["u"].status, TaskStatus::Failed);
     }
 
     #[test]

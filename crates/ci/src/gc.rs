@@ -168,7 +168,7 @@ impl GarbageCollector {
         );
 
         // Sort by last accessed (oldest first)
-        entries.sort_by(|a, b| a.last_accessed.cmp(&b.last_accessed));
+        entries.sort_by_key(|e| e.last_accessed);
 
         let now = SystemTime::now();
         let max_age = Duration::from_secs(u64::from(self.config.max_age_days) * 24 * 60 * 60);

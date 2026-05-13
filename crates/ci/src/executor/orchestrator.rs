@@ -324,15 +324,15 @@ async fn execute_project_pipeline(
             .as_ref()
             .and_then(|ci| ci.pipelines.get(pipeline_name))
             .is_some_and(|p| p.continue_on_error);
-        let result = execute_task_with_deps(
+        let result = execute_task_with_deps(TaskDagOptions {
             config,
             task_name,
-            project_path,
+            project_root: project_path,
             cache_policy_override,
             environment,
-            &hook_env,
-            pipeline_continue_on_error,
-        )
+            hook_env: &hook_env,
+            continue_on_error: pipeline_continue_on_error,
+        })
         .await;
 
         let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
@@ -757,6 +757,30 @@ const CI_MAX_PARALLEL: usize = 4;
 
 /// Execute a task with all its dependencies in correct order.
 ///
+/// Shared inputs needed to execute every task in a CI pipeline DAG.
+///
+/// Built once per `execute_task_with_deps` call so per-task spawn paths
+/// don't re-clone the project or hook environment.
+struct DagExecCtx {
+    config: Arc<Project>,
+    project_root: Arc<PathBuf>,
+    cache_policy_override: Option<CachePolicy>,
+    environment: Option<String>,
+    hook_env: Arc<BTreeMap<String, String>>,
+    continue_on_error: bool,
+}
+
+/// Per-call options for [`execute_task_with_deps`].
+struct TaskDagOptions<'a> {
+    config: &'a Project,
+    task_name: &'a str,
+    project_root: &'a Path,
+    cache_policy_override: Option<CachePolicy>,
+    environment: Option<&'a str>,
+    hook_env: &'a BTreeMap<String, String>,
+    continue_on_error: bool,
+}
+
 /// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
 /// then walks the graph by topological "parallel groups" so independent tasks
 /// at the same dependency depth run concurrently (bounded by [`CI_MAX_PARALLEL`]).
@@ -766,43 +790,40 @@ const CI_MAX_PARALLEL: usize = 4;
 ///   the rest of the run and returns the failing task's `TaskOutput`.
 /// - When `continue_on_error` is `true`, dependents of a failing task are
 ///   marked as `Skipped { DependencyFailed }` (and `TaskEvent::Skipped` is
-///   emitted), but unrelated sibling chains continue executing. The
-///   originally-requested task's output is returned at the end, with the
-///   failing-dep output if it never got to run.
+///   emitted), but unrelated sibling chains continue executing. A `JoinError`
+///   (task panic / spawn failure) is always fatal regardless of the flag —
+///   we can't reason about state after a panic.
 ///
 /// The returned `TaskOutput` is the originally-requested task's output —
 /// resolved by matching the canonical name once execution finishes.
 async fn execute_task_with_deps(
-    config: &Project,
-    task_name: &str,
-    project_root: &Path,
-    cache_policy_override: Option<CachePolicy>,
-    environment: Option<&str>,
-    hook_env: &BTreeMap<String, String>,
-    continue_on_error: bool,
+    opts: TaskDagOptions<'_>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
     use tokio::task::JoinSet;
 
-    // 1. Build TaskIndex (same flattening as CLI)
+    let TaskDagOptions {
+        config,
+        task_name,
+        project_root,
+        cache_policy_override,
+        environment,
+        hook_env,
+        continue_on_error,
+    } = opts;
+
     let index =
         TaskIndex::build(&config.tasks).map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    // 2. Resolve to canonical name
     let entry = index
         .resolve(task_name)
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
     let canonical_name = entry.name.clone();
-
-    // 3. Get flattened tasks where all names are top-level
     let flattened_tasks = index.to_tasks();
 
-    // 4. Build TaskGraph (respects dependsOn!)
     let mut graph = TaskGraph::new();
     graph
         .build_for_task(&canonical_name, &flattened_tasks)
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
 
-    // 5. Get topological execution groups (each group runs in parallel).
     let parallel_groups = graph
         .get_parallel_groups()
         .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
@@ -818,15 +839,15 @@ async fn execute_task_with_deps(
         "Resolved task dependencies"
     );
 
-    // Shared inputs cloned once into Arc for cheap spawn-time cloning.
-    let config = Arc::new(config.clone());
-    let project_root = Arc::new(project_root.to_path_buf());
-    let environment = environment.map(|s| s.to_string());
-    let hook_env = Arc::new(hook_env.clone());
+    let ctx = DagExecCtx {
+        config: Arc::new(config.clone()),
+        project_root: Arc::new(project_root.to_path_buf()),
+        cache_policy_override,
+        environment: environment.map(str::to_string),
+        hook_env: Arc::new(hook_env.clone()),
+        continue_on_error,
+    };
 
-    // 6. Execute each parallel group in turn; within a group, fan out to
-    // up to CI_MAX_PARALLEL workers and join on the slowest task before
-    // advancing to the next level.
     let mut outputs: HashMap<String, TaskOutput> = HashMap::new();
     let mut tainted: HashSet<String> = HashSet::new();
     let mut first_failure: Option<TaskOutput> = None;
@@ -843,7 +864,6 @@ async fn execute_task_with_deps(
                     .map(str::to_string);
                 if let Some(dep) = failing_dep {
                     let reason = cuenv_events::SkipReason::DependencyFailed { dep };
-                    // Don't even spawn — emit Skipped and propagate taint.
                     cuenv_events::emit_task_skipped!(&node.name, reason);
                     tainted.insert(node.name.clone());
                     return None;
@@ -851,40 +871,35 @@ async fn execute_task_with_deps(
                 Some(node)
             })
             .collect();
-        let mut next_queue_position: usize = 0;
 
-        // Prime the join set up to the parallelism cap, emitting queued
-        // events for anything that's ready but capped.
+        // Emit one Queued event per node that has to wait for the cap.
+        // Earlier versions re-emitted on every iteration of the priming
+        // loop, producing thousands of bogus events with runaway positions.
+        for (position, node) in queue.iter().enumerate().skip(CI_MAX_PARALLEL) {
+            cuenv_events::emit_task_queued!(&node.name, position - CI_MAX_PARALLEL);
+        }
+
         while let Some(node) = queue.pop_front() {
             if join_set.len() >= CI_MAX_PARALLEL {
-                cuenv_events::emit_task_queued!(&node.name, next_queue_position);
-                next_queue_position += 1;
                 queue.push_front(node);
-                if let Some(joined) = join_set.join_next().await
-                    && let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)?
-                {
+                let Some(joined) = join_set.join_next().await else {
+                    break;
+                };
+                if let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)? {
                     first_failure.get_or_insert(failed);
-                    if !continue_on_error {
+                    if !ctx.continue_on_error {
                         break 'outer;
                     }
                 }
                 continue;
             }
-            spawn_node_task(
-                &mut join_set,
-                node,
-                Arc::clone(&config),
-                Arc::clone(&project_root),
-                cache_policy_override,
-                environment.clone(),
-                Arc::clone(&hook_env),
-            );
+            spawn_node_task(&mut join_set, node, &ctx);
         }
 
         while let Some(joined) = join_set.join_next().await {
             if let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)? {
                 first_failure.get_or_insert(failed);
-                if !continue_on_error {
+                if !ctx.continue_on_error {
                     break 'outer;
                 }
             }
@@ -900,18 +915,17 @@ async fn execute_task_with_deps(
         .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
 }
 
-/// Spawn a single graph node onto the JoinSet, cloning the shared inputs.
-#[allow(clippy::needless_pass_by_value)]
 fn spawn_node_task(
     join_set: &mut tokio::task::JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)>,
     node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>,
-    config: Arc<Project>,
-    project_root: Arc<std::path::PathBuf>,
-    cache_policy_override: Option<CachePolicy>,
-    environment: Option<String>,
-    hook_env: Arc<BTreeMap<String, String>>,
+    ctx: &DagExecCtx,
 ) {
-    let name = node.name.clone();
+    let name = node.name;
+    let config = Arc::clone(&ctx.config);
+    let project_root = Arc::clone(&ctx.project_root);
+    let cache_policy_override = ctx.cache_policy_override;
+    let environment = ctx.environment.clone();
+    let hook_env = Arc::clone(&ctx.hook_env);
     join_set.spawn(async move {
         let result = compile_and_execute_ir(
             config.as_ref(),
@@ -929,8 +943,11 @@ fn spawn_node_task(
 /// Reduce one `JoinSet::join_next` outcome into the running outputs map.
 ///
 /// Returns `Ok(Some(failed_output))` when the joined task reported a
-/// non-success exit code, signalling the caller to abort the run.
-/// Propagates compilation / panic errors via `Err`.
+/// non-success exit code so the caller can decide whether to keep going.
+/// Panics, spawn failures, and compilation errors are propagated via
+/// `Err` regardless of `continueOnError` — we cannot soundly continue
+/// past a panic, and a compilation error indicates the DAG itself is
+/// broken.
 fn handle_joined_result(
     joined: std::result::Result<
         (String, std::result::Result<TaskOutput, ExecutorError>),
@@ -1009,7 +1026,7 @@ async fn compile_and_execute_ir(
         .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
 
     // Register resolved secrets for redaction
-    cuenv_events::register_secrets(secrets.into_iter());
+    cuenv_events::register_secrets(secrets);
 
     // Execute all compiled IR tasks sequentially
     let runner = IRTaskRunner::new(

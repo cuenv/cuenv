@@ -26,26 +26,34 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// RAII guard that restores terminal state on drop.
 ///
-/// This guard ensures the terminal is properly restored even if the TUI
-/// exits unexpectedly (e.g., due to a panic). Errors during cleanup are
-/// logged but cannot be propagated since Drop cannot return errors.
-///
-/// `in_alt_screen` tracks whether the TUI is currently using the alternate
-/// screen (expanded mode) so the guard knows whether to issue
-/// `LeaveAlternateScreen` on drop. Inline mode (the default) keeps the
-/// run's output in the terminal's scrollback after exit.
+/// Constructed *before* `enable_raw_mode` runs so its `Drop` is on the
+/// stack the moment raw mode is enabled — any panic between enabling raw
+/// mode and finishing `RichTui::new` still restores the terminal cleanly.
+/// Errors during cleanup are logged but cannot be propagated.
 struct TerminalGuard {
-    in_alt_screen: bool,
+    raw_enabled: bool,
+}
+
+impl TerminalGuard {
+    const fn new() -> Self {
+        Self { raw_enabled: false }
+    }
+
+    fn enable_raw(&mut self) -> io::Result<()> {
+        enable_raw_mode()?;
+        self.raw_enabled = true;
+        Ok(())
+    }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        if let Err(e) = disable_raw_mode() {
+        if self.raw_enabled
+            && let Err(e) = disable_raw_mode()
+        {
             tracing::warn!(error = %e, "Failed to disable raw mode");
         }
-        if self.in_alt_screen
-            && let Err(e) = execute!(io::stdout(), LeaveAlternateScreen)
-        {
+        if let Err(e) = execute!(io::stdout(), LeaveAlternateScreen) {
             tracing::warn!(error = %e, "Failed to leave alternate screen");
         }
     }
@@ -77,10 +85,10 @@ impl RichTui {
 
     /// Create a new rich TUI.
     ///
-    /// Uses ratatui's inline viewport by default so the run's output stays
-    /// in the terminal's scrollback when the TUI exits — pressing `f`
-    /// inside the TUI switches into the alternate screen for a fullscreen
-    /// single-task focus view.
+    /// Uses ratatui's inline viewport so the run's output stays in the
+    /// terminal's scrollback when the TUI exits. The `f` keybinding hides
+    /// the task tree and devotes the full viewport to a single task's
+    /// output panel — it does not enter the alternate screen.
     ///
     /// # Arguments
     /// * `event_rx` - Receiver for cuenv events
@@ -91,7 +99,8 @@ impl RichTui {
     ///
     /// Returns an error if terminal initialization fails.
     pub fn new(event_rx: EventReceiver, ready_tx: oneshot::Sender<()>) -> io::Result<Self> {
-        enable_raw_mode()?;
+        let mut guard = TerminalGuard::new();
+        guard.enable_raw()?;
         let stdout = io::stdout();
         let backend = CrosstermBackend::new(stdout);
 
@@ -109,9 +118,7 @@ impl RichTui {
         Ok(Self {
             terminal,
             state: TuiState::new(),
-            _guard: TerminalGuard {
-                in_alt_screen: false,
-            },
+            _guard: guard,
             event_rx,
             quit_requested: false,
             can_quit: false,
@@ -464,8 +471,6 @@ mod tests {
     fn test_terminal_guard_drop() {
         // Just verify TerminalGuard can be created and dropped without
         // leaving the terminal in a stuck state.
-        let _guard = TerminalGuard {
-            in_alt_screen: false,
-        };
+        let _guard = TerminalGuard::new();
     }
 }

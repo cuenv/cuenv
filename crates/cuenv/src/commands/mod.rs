@@ -254,8 +254,6 @@ pub enum Command {
         path: String,
         /// Play events as fast as possible instead of honoring recorded timestamps.
         fast: bool,
-        /// Render snapshot frames to the given directory and exit (no interactive TUI).
-        snapshot_frames_to: Option<String>,
     },
     /// Launch the web-based user interface.
     Web {

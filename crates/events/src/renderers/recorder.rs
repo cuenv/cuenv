@@ -6,9 +6,11 @@
 
 use crate::bus::EventReceiver;
 use crate::event::{CuenvEvent, EventCategory, SystemEvent};
+use crate::redaction::redact;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use tokio::sync::oneshot;
 
 /// Errors that can occur while recording events.
 #[derive(thiserror::Error, Debug)]
@@ -72,6 +74,10 @@ impl EventRecorder {
 
     /// Write a single event as a JSON line.
     ///
+    /// Registered secrets are redacted from the serialized form before the
+    /// line is written, so recordings never contain plaintext credentials
+    /// even when callers route output through the recorder unredacted.
+    ///
     /// # Errors
     ///
     /// Returns an [`io::Error`] if the underlying writer fails. Serialization
@@ -79,28 +85,43 @@ impl EventRecorder {
     pub fn write_event(&mut self, event: &CuenvEvent) -> io::Result<()> {
         let line = serde_json::to_string(event)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        self.writer.write_all(line.as_bytes())?;
+        let redacted = redact(&line);
+        self.writer.write_all(redacted.as_bytes())?;
         self.writer.write_all(b"\n")?;
         self.events_written += 1;
         Ok(())
     }
 
-    /// Consume events from the receiver until [`SystemEvent::Shutdown`].
+    /// Consume events from the receiver until shutdown is signalled.
+    ///
+    /// The loop exits on any of:
+    /// - explicit signal via `shutdown` oneshot,
+    /// - a [`SystemEvent::Shutdown`] event on the bus,
+    /// - the broadcast sender being dropped (`receiver.recv()` returns `None`).
+    ///
+    /// On signalled shutdown, the recorder drains any events already
+    /// queued in the broadcast channel via `try_recv` before flushing —
+    /// callers can stop the recorder without losing the tail of a burst.
     ///
     /// I/O errors are surfaced via `tracing::warn!` so a recorder failure
-    /// never crashes the host process. The receiver still drains to keep
-    /// the broadcast bus from lagging.
-    pub async fn run(mut self, mut receiver: EventReceiver) {
-        while let Some(event) = receiver.recv().await {
-            if let Err(err) = self.write_event(&event) {
-                tracing::warn!(
-                    path = %self.path.display(),
-                    error = %err,
-                    "event recorder write failed; recording will be incomplete"
-                );
-            }
-            if matches!(event.category, EventCategory::System(SystemEvent::Shutdown)) {
-                break;
+    /// never crashes the host process.
+    pub async fn run(mut self, mut receiver: EventReceiver, mut shutdown: oneshot::Receiver<()>) {
+        loop {
+            tokio::select! {
+                biased;
+                event = receiver.recv() => {
+                    let Some(event) = event else { break };
+                    self.record(&event);
+                    if matches!(event.category, EventCategory::System(SystemEvent::Shutdown)) {
+                        break;
+                    }
+                }
+                _ = &mut shutdown => {
+                    while let Some(event) = receiver.try_recv() {
+                        self.record(&event);
+                    }
+                    break;
+                }
             }
         }
         if let Err(err) = self.writer.flush() {
@@ -108,6 +129,28 @@ impl EventRecorder {
                 path = %self.path.display(),
                 error = %err,
                 "event recorder flush failed; recording may be truncated"
+            );
+        }
+    }
+
+    fn record(&mut self, event: &CuenvEvent) {
+        if let Err(err) = self.write_event(event) {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %err,
+                "event recorder write failed; recording will be incomplete"
+            );
+        }
+    }
+}
+
+impl Drop for EventRecorder {
+    fn drop(&mut self) {
+        if let Err(err) = self.writer.flush() {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %err,
+                "event recorder flush failed on drop; recording may be truncated"
             );
         }
     }
@@ -232,7 +275,8 @@ mod tests {
         let receiver = bus.subscribe();
 
         let recorder = EventRecorder::create(&path).unwrap();
-        let handle = tokio::spawn(recorder.run(receiver));
+        let (_stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(recorder.run(receiver, stop_rx));
 
         sender
             .send(make_event(EventCategory::Output(OutputEvent::Stdout {
@@ -254,5 +298,61 @@ mod tests {
             events[1].category,
             EventCategory::System(SystemEvent::Shutdown)
         ));
+    }
+
+    #[tokio::test]
+    async fn run_drains_tail_on_explicit_stop() {
+        use crate::bus::EventBus;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+
+        let bus = EventBus::new();
+        let sender = bus.sender().unwrap();
+        let receiver = bus.subscribe();
+
+        let recorder = EventRecorder::create(&path).unwrap();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let handle = tokio::spawn(recorder.run(receiver, stop_rx));
+
+        for n in 0..5 {
+            sender
+                .send(make_event(EventCategory::Output(OutputEvent::Stdout {
+                    content: format!("line-{n}"),
+                })))
+                .unwrap();
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let _ = stop_tx.send(());
+        handle.await.unwrap();
+
+        let events: Vec<CuenvEvent> = EventReplayReader::open(&path)
+            .unwrap()
+            .collect::<io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(events.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn write_event_redacts_registered_secrets() {
+        use crate::redaction::register_secret;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+
+        register_secret("op://vault/db-password");
+
+        {
+            let mut recorder = EventRecorder::create(&path).unwrap();
+            recorder
+                .write_event(&make_event(EventCategory::Output(OutputEvent::Stdout {
+                    content: "secret is op://vault/db-password here".to_string(),
+                })))
+                .unwrap();
+        }
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.contains("op://vault/db-password"),
+            "recording leaked the secret: {contents}"
+        );
     }
 }

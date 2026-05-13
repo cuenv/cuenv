@@ -256,9 +256,7 @@ impl CliRenderer {
                 eprintln!("> [{name}] stopping");
             }
             ServiceEvent::Stopped { name, exit_code } => {
-                let code = exit_code
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(|| "signal".to_string());
+                let code = exit_code.map_or_else(|| "signal".to_string(), |c| c.to_string());
                 eprintln!("> [{name}] stopped (exit: {code})");
             }
             ServiceEvent::Failed { name, error } => {
@@ -375,6 +373,9 @@ impl CliRenderer {
                 if self.config.verbose {
                     eprintln!("System shutdown");
                 }
+            }
+            SystemEvent::EventGap { skipped } => {
+                eprintln!("⚠  event bus lagged: {skipped} events dropped");
             }
         }
     }

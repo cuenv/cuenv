@@ -137,10 +137,6 @@ fn cli_tui_replay_subcommand_is_registered() {
         "expected help to mention replay; got: {stdout}"
     );
     assert!(stdout.contains("--fast"), "missing --fast flag: {stdout}");
-    assert!(
-        stdout.contains("--snapshot-frames-to"),
-        "missing --snapshot-frames-to flag: {stdout}"
-    );
 }
 
 #[test]
