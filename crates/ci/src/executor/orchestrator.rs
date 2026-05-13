@@ -757,19 +757,6 @@ const CI_MAX_PARALLEL: usize = 4;
 
 /// Execute a task with all its dependencies in correct order.
 ///
-/// Shared inputs needed to execute every task in a CI pipeline DAG.
-///
-/// Built once per `execute_task_with_deps` call so per-task spawn paths
-/// don't re-clone the project or hook environment.
-struct DagExecCtx {
-    config: Arc<Project>,
-    project_root: Arc<PathBuf>,
-    cache_policy_override: Option<CachePolicy>,
-    environment: Option<String>,
-    hook_env: Arc<BTreeMap<String, String>>,
-    continue_on_error: bool,
-}
-
 /// Per-call options for [`execute_task_with_deps`].
 struct TaskDagOptions<'a> {
     config: &'a Project,
@@ -799,7 +786,7 @@ struct TaskDagOptions<'a> {
 async fn execute_task_with_deps(
     opts: TaskDagOptions<'_>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
-    use tokio::task::JoinSet;
+    use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
 
     let TaskDagOptions {
         config,
@@ -838,134 +825,63 @@ async fn execute_task_with_deps(
             .collect::<Vec<_>>(),
         "Resolved task dependencies"
     );
+    drop(parallel_groups);
 
-    let ctx = DagExecCtx {
-        config: Arc::new(config.clone()),
-        project_root: Arc::new(project_root.to_path_buf()),
-        cache_policy_override,
-        environment: environment.map(str::to_string),
-        hook_env: Arc::new(hook_env.clone()),
+    let config = Arc::new(config.clone());
+    let project_root = Arc::new(project_root.to_path_buf());
+    let environment = environment.map(str::to_string);
+    let hook_env = Arc::new(hook_env.clone());
+
+    let policy = WalkPolicy {
+        max_parallel: CI_MAX_PARALLEL,
         continue_on_error,
     };
-
-    let mut outputs: HashMap<String, TaskOutput> = HashMap::new();
-    let mut tainted: HashSet<String> = HashSet::new();
-    let mut first_failure: Option<TaskOutput> = None;
-    'outer: for group in parallel_groups {
-        let mut join_set: JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)> =
-            JoinSet::new();
-        let mut queue: std::collections::VecDeque<_> = group
-            .into_iter()
-            .filter_map(|node| {
-                let failing_dep = node
-                    .task
-                    .dependency_names()
-                    .find(|dep| tainted.contains(*dep))
-                    .map(str::to_string);
-                if let Some(dep) = failing_dep {
-                    let reason = cuenv_events::SkipReason::DependencyFailed { dep };
-                    cuenv_events::emit_task_skipped!(&node.name, reason);
-                    tainted.insert(node.name.clone());
-                    return None;
-                }
-                Some(node)
-            })
-            .collect();
-
-        // Emit one Queued event per node that has to wait for the cap.
-        // Earlier versions re-emitted on every iteration of the priming
-        // loop, producing thousands of bogus events with runaway positions.
-        for (position, node) in queue.iter().enumerate().skip(CI_MAX_PARALLEL) {
-            cuenv_events::emit_task_queued!(&node.name, position - CI_MAX_PARALLEL);
-        }
-
-        while let Some(node) = queue.pop_front() {
-            if join_set.len() >= CI_MAX_PARALLEL {
-                queue.push_front(node);
-                let Some(joined) = join_set.join_next().await else {
-                    break;
-                };
-                if let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)? {
-                    first_failure.get_or_insert(failed);
-                    if !ctx.continue_on_error {
-                        break 'outer;
-                    }
-                }
-                continue;
-            }
-            spawn_node_task(&mut join_set, node, &ctx);
-        }
-
-        while let Some(joined) = join_set.join_next().await {
-            if let Some(failed) = handle_joined_result(joined, &mut outputs, &mut tainted)? {
-                first_failure.get_or_insert(failed);
-                if !ctx.continue_on_error {
-                    break 'outer;
+    let summary = walk_parallel_graph(
+        graph.inner(),
+        policy,
+        {
+            let config = Arc::clone(&config);
+            let project_root = Arc::clone(&project_root);
+            let hook_env = Arc::clone(&hook_env);
+            move |node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>| {
+                let config = Arc::clone(&config);
+                let project_root = Arc::clone(&project_root);
+                let environment = environment.clone();
+                let hook_env = Arc::clone(&hook_env);
+                async move {
+                    compile_and_execute_ir(
+                        config.as_ref(),
+                        &node.name,
+                        project_root.as_ref(),
+                        cache_policy_override,
+                        environment.as_deref(),
+                        hook_env.as_ref(),
+                    )
+                    .await
                 }
             }
-        }
-    }
+        },
+        |err: tokio::task::JoinError| {
+            ExecutorError::Compilation(format!("CI orchestrator panic: {err}"))
+        },
+    )
+    .await?;
 
-    if let Some(failed) = first_failure {
+    let mut outputs: HashMap<String, TaskOutput> = summary.outcomes.into_iter().collect();
+
+    // If any task failed, surface its TaskOutput so the caller can record
+    // a non-success status for the originally-requested task. Under
+    // continue_on_error we still want to return non-Ok behaviour up
+    // through the pipeline-level success bookkeeping.
+    if summary.failed > 0
+        && let Some(failed) = outputs.values().find(|o| !o.success).cloned()
+    {
         return Ok(failed);
     }
 
     outputs
         .remove(&canonical_name)
         .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
-}
-
-fn spawn_node_task(
-    join_set: &mut tokio::task::JoinSet<(String, std::result::Result<TaskOutput, ExecutorError>)>,
-    node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>,
-    ctx: &DagExecCtx,
-) {
-    let name = node.name;
-    let config = Arc::clone(&ctx.config);
-    let project_root = Arc::clone(&ctx.project_root);
-    let cache_policy_override = ctx.cache_policy_override;
-    let environment = ctx.environment.clone();
-    let hook_env = Arc::clone(&ctx.hook_env);
-    join_set.spawn(async move {
-        let result = compile_and_execute_ir(
-            config.as_ref(),
-            &name,
-            project_root.as_ref(),
-            cache_policy_override,
-            environment.as_deref(),
-            hook_env.as_ref(),
-        )
-        .await;
-        (name, result)
-    });
-}
-
-/// Reduce one `JoinSet::join_next` outcome into the running outputs map.
-///
-/// Returns `Ok(Some(failed_output))` when the joined task reported a
-/// non-success exit code so the caller can decide whether to keep going.
-/// Panics, spawn failures, and compilation errors are propagated via
-/// `Err` regardless of `continueOnError` — we cannot soundly continue
-/// past a panic, and a compilation error indicates the DAG itself is
-/// broken.
-fn handle_joined_result(
-    joined: std::result::Result<
-        (String, std::result::Result<TaskOutput, ExecutorError>),
-        tokio::task::JoinError,
-    >,
-    outputs: &mut HashMap<String, TaskOutput>,
-    tainted: &mut HashSet<String>,
-) -> std::result::Result<Option<TaskOutput>, ExecutorError> {
-    let (name, result) = joined
-        .map_err(|err| ExecutorError::Compilation(format!("CI orchestrator panic: {err}")))?;
-    let output = result?;
-    if !output.success {
-        tainted.insert(name.clone());
-        outputs.insert(name, output.clone());
-        return Ok(Some(output));
-    }
-    outputs.insert(name, output);
-    Ok(None)
 }
 
 /// Compile a single task to IR and execute it.
