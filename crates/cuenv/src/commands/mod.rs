@@ -179,6 +179,8 @@ pub enum Command {
         dry_run: DryRun,
         /// Additional arguments to pass to the task.
         task_args: Vec<String>,
+        /// Optional path to record every emitted event as JSONL.
+        record_events: Option<String>,
     },
     /// Execute an arbitrary command within the cuenv environment.
     Exec {
@@ -242,7 +244,19 @@ pub enum Command {
         args: ci::CiArgs,
     },
     /// Launch the terminal user interface.
-    Tui,
+    Tui {
+        /// Optional path to record every emitted event as JSONL.
+        record_events: Option<String>,
+    },
+    /// Replay a recorded JSONL event trace through the TUI.
+    TuiReplay {
+        /// Path to the JSONL recording.
+        path: String,
+        /// Play events as fast as possible instead of honoring recorded timestamps.
+        fast: bool,
+        /// Render snapshot frames to the given directory and exit (no interactive TUI).
+        snapshot_frames_to: Option<String>,
+    },
     /// Launch the web-based user interface.
     Web {
         /// Port number for the web server.
@@ -929,6 +943,7 @@ impl CommandExecutor {
                 skip_dependencies,
                 dry_run,
                 task_args,
+                record_events,
             } => {
                 self.run_command(handler::TaskHandler {
                     path,
@@ -946,6 +961,7 @@ impl CommandExecutor {
                     skip_dependencies,
                     dry_run,
                     task_args,
+                    record_events,
                 })
                 .await
             }
@@ -978,7 +994,8 @@ impl CommandExecutor {
             }
 
             // Commands handled directly in main.rs
-            Command::Tui
+            Command::Tui { .. }
+            | Command::TuiReplay { .. }
             | Command::Web { .. }
             | Command::Completions { .. }
             | Command::Info { .. }
