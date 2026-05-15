@@ -333,6 +333,11 @@ fn test_namespace_cache_contributor_active_with_config() {
         inputs.get("cache").and_then(|value| value.as_str()) == Some("nix"),
         "Namespace cache should enable Nix cache mode"
     );
+    assert_eq!(
+        github_action.get("if").and_then(|value| value.as_str()),
+        Some("runner.os == 'Linux'"),
+        "Namespace Nix cache mode should run only on Linux runners"
+    );
 
     let prepare_receipt = bootstrap_tasks
         .iter()

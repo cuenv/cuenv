@@ -73,6 +73,7 @@ jobs:
       with:
         fetch-depth: 2
     - name: Setup Namespace Nix Cache
+      if: runner.os == 'Linux'
       uses: namespacelabs/nscloud-cache-action@v1
       with:
         cache: nix

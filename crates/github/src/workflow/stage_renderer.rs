@@ -64,6 +64,10 @@ pub struct ActionSpec {
     /// Action inputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, serde_json::Value>,
+
+    /// GitHub Actions step condition
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 impl ActionSpec {
@@ -126,6 +130,9 @@ impl GitHubStageRenderer {
         // If a GitHub Action is specified in provider_hints, use it
         if let Some(action) = ActionSpec::from_task(task) {
             let mut step = Step::uses(&action.uses).with_name(task.label());
+            if let Some(condition) = action.if_condition {
+                step = step.with_if(condition);
+            }
 
             // Add action inputs (converting from serde_json::Value to serde_yaml::Value)
             for (key, value) in &action.inputs {
@@ -308,6 +315,10 @@ mod tests {
             "DeterminateSystems/determinate-nix-action@v3",
             inputs,
         ));
+        if let Some(hints) = task.provider_hints.as_mut() {
+            hints["github_action"]["if"] =
+                serde_json::Value::String("runner.os == 'Linux'".to_string());
+        }
 
         let renderer = GitHubStageRenderer::new();
         let step = renderer.render_task(&task);
@@ -319,6 +330,7 @@ mod tests {
         );
         assert!(step.run.is_none());
         assert!(step.with_inputs.contains_key("extra-conf"));
+        assert_eq!(step.if_condition, Some("runner.os == 'Linux'".to_string()));
     }
 
     #[test]
