@@ -37,7 +37,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.41.4"
+version = "0.41.5"
 edition = "2024"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
@@ -49,38 +49,38 @@ keywords = ["cue", "configuration", "validation", "ffi"]
 categories = ["config", "development-tools", "parsing"]
 
 [workspace.dependencies]
-cuenv-events = { path = "crates/events", version = "0.41.4" }
-cuenv-secrets = { path = "crates/secrets", version = "0.41.4" }
-cuenv-core = { path = "crates/core", version = "0.41.4" }
-cuenv-hooks = { path = "crates/hooks", version = "0.41.4" }
-cuenv-cas = { path = "crates/cas", version = "0.41.4" }
-cuenv-vcs = { path = "crates/vcs", version = "0.41.4" }
-cuenv-task-graph = { path = "crates/task-graph", version = "0.41.4" }
-cuenv-task-discovery = { path = "crates/task-discovery", version = "0.41.4" }
-cuenv-services = { path = "crates/services", version = "0.41.4" }
-cuenv-dagger = { path = "crates/dagger", version = "0.41.4" }
-cuenv-workspaces = { path = "crates/workspaces", version = "0.41.4" }
-cuenv-ci = { path = "crates/ci", version = "0.41.4" }
-cuenv-release = { path = "crates/release", version = "0.41.4" }
-cuenv-ignore = { path = "crates/ignore", version = "0.41.4" }
-cuenv-editorconfig = { path = "crates/editorconfig", version = "0.41.4" }
-cuenv-codeowners = { path = "crates/codeowners", version = "0.41.4" }
-cuenv-codegen = { path = "crates/codegen", version = "0.41.4" }
-cuengine = { path = "crates/cuengine", version = "0.41.4" }
+cuenv-events = { path = "crates/events", version = "0.41.5" }
+cuenv-secrets = { path = "crates/secrets", version = "0.41.5" }
+cuenv-core = { path = "crates/core", version = "0.41.5" }
+cuenv-hooks = { path = "crates/hooks", version = "0.41.5" }
+cuenv-cas = { path = "crates/cas", version = "0.41.5" }
+cuenv-vcs = { path = "crates/vcs", version = "0.41.5" }
+cuenv-task-graph = { path = "crates/task-graph", version = "0.41.5" }
+cuenv-task-discovery = { path = "crates/task-discovery", version = "0.41.5" }
+cuenv-services = { path = "crates/services", version = "0.41.5" }
+cuenv-dagger = { path = "crates/dagger", version = "0.41.5" }
+cuenv-workspaces = { path = "crates/workspaces", version = "0.41.5" }
+cuenv-ci = { path = "crates/ci", version = "0.41.5" }
+cuenv-release = { path = "crates/release", version = "0.41.5" }
+cuenv-ignore = { path = "crates/ignore", version = "0.41.5" }
+cuenv-editorconfig = { path = "crates/editorconfig", version = "0.41.5" }
+cuenv-codeowners = { path = "crates/codeowners", version = "0.41.5" }
+cuenv-codegen = { path = "crates/codegen", version = "0.41.5" }
+cuengine = { path = "crates/cuengine", version = "0.41.5" }
 # Platform-specific provider crates
-cuenv-github = { path = "crates/github", version = "0.41.4" }
-cuenv-gitlab = { path = "crates/gitlab", version = "0.41.4" }
-cuenv-bitbucket = { path = "crates/bitbucket", version = "0.41.4" }
-cuenv-buildkite = { path = "crates/buildkite", version = "0.41.4" }
-cuenv-homebrew = { path = "crates/homebrew", version = "0.41.4" }
+cuenv-github = { path = "crates/github", version = "0.41.5" }
+cuenv-gitlab = { path = "crates/gitlab", version = "0.41.5" }
+cuenv-bitbucket = { path = "crates/bitbucket", version = "0.41.5" }
+cuenv-buildkite = { path = "crates/buildkite", version = "0.41.5" }
+cuenv-homebrew = { path = "crates/homebrew", version = "0.41.5" }
 # Secret provider crates
-cuenv-1password = { path = "crates/1password", version = "0.41.4" }
+cuenv-1password = { path = "crates/1password", version = "0.41.5" }
 # Tool provider crates
-cuenv-tools-oci = { path = "crates/tools/oci", version = "0.41.4" }
-cuenv-tools-github = { path = "crates/tools/github", version = "0.41.4" }
-cuenv-tools-nix = { path = "crates/tools/nix", version = "0.41.4" }
-cuenv-tools-rustup = { path = "crates/tools/rustup", version = "0.41.4" }
-cuenv-tools-url = { path = "crates/tools/url", version = "0.41.4" }
+cuenv-tools-oci = { path = "crates/tools/oci", version = "0.41.5" }
+cuenv-tools-github = { path = "crates/tools/github", version = "0.41.5" }
+cuenv-tools-nix = { path = "crates/tools/nix", version = "0.41.5" }
+cuenv-tools-rustup = { path = "crates/tools/rustup", version = "0.41.5" }
+cuenv-tools-url = { path = "crates/tools/url", version = "0.41.5" }
 schemars = "1.2.1"
 thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }

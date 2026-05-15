@@ -25,7 +25,7 @@ cuenv records the CLI version used to sync a project in `cue.mod/module.cue`:
 
 ```cue
 custom: "github.com/cuenv/cuenv": {
-    version: "0.41.4"
+    version: "0.41.5"
 }
 ```
 
