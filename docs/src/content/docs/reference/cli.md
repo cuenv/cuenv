@@ -10,7 +10,7 @@ The `cuenv` CLI provides tools for managing environments, executing tasks, and i
 Commands that operate on a CUE module check `cue.mod/module.cue` for cuenv's compatibility marker:
 
 ```cue
-custom: "github.com/cuenv/cuenv": version: "0.41.4"
+custom: "github.com/cuenv/cuenv": version: "0.41.5"
 ```
 
 If the marker is newer than the running CLI, the command exits and asks you to upgrade cuenv. Missing markers are accepted for existing projects; `cuenv sync` adds the current CLI version.
