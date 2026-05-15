@@ -42,19 +42,31 @@ ignore = [
     "RUSTSEC-2025-0134",
     # proc-macro-error unmaintained - transitive dep from clap/derive_more
     "RUSTSEC-2025-0057",
-    # wasmtime f64.copysign segfault - transitive dep from extism 1.13.0
-    # extism requires ^37, no patched 37.x exists, awaiting upstream fix
-    # Vulnerability requires specific WASM input to trigger (low risk for us)
-    # TODO: Remove when extism releases version with patched wasmtime
+    # wasmtime advisories - transitive dep from extism 1.21.0
+    # extism currently requires wasmtime/wasi-common/wiggle ^41; patched versions are outside this range.
+    # A local lift to wasmtime 44 is not source-compatible with extism 1.21.0.
+    # TODO: Remove when extism releases a version with patched wasmtime.
     "RUSTSEC-2026-0006",
-    # wasmtime WASI guest-controlled resource exhaustion - transitive dep from extism 1.13.0
-    # extism currently constrains wasmtime to 37.x; patched versions are outside this range
-    # TODO: Remove when extism updates to a patched wasmtime release
     "RUSTSEC-2026-0020",
-    # wasmtime panic from excessive wasi:http/types.fields entries - transitive dep from extism 1.13.0
-    # extism currently constrains wasmtime to 37.x; patched versions are outside this range
-    # TODO: Remove when extism updates to a patched wasmtime release
     "RUSTSEC-2026-0021",
+    "RUSTSEC-2026-0085",
+    "RUSTSEC-2026-0086",
+    "RUSTSEC-2026-0087",
+    "RUSTSEC-2026-0088",
+    "RUSTSEC-2026-0089",
+    "RUSTSEC-2026-0091",
+    "RUSTSEC-2026-0092",
+    "RUSTSEC-2026-0093",
+    "RUSTSEC-2026-0094",
+    "RUSTSEC-2026-0095",
+    "RUSTSEC-2026-0096",
+    "RUSTSEC-2026-0114",
+    # rustls-webpki advisories - transitive dep from dagger-sdk 0.20.8
+    # dagger-sdk is at the latest published version and still depends on reqwest 0.11/graphql_client 0.13.
+    # TODO: Remove when dagger-sdk releases a version using reqwest 0.12+ / rustls 0.23+.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+    "RUSTSEC-2026-0104",
 ]
 [sources]
 # Lint level for what to happen when a crate from a crate registry that is
