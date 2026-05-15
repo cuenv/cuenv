@@ -15,6 +15,8 @@ on:
     - CLAUDE.md/**
     - contrib/**
     - cue.mod/**
+    - cuenv.lock
+    - cuenv.lock/**
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
@@ -41,6 +43,8 @@ on:
     - CLAUDE.md/**
     - contrib/**
     - cue.mod/**
+    - cuenv.lock
+    - cuenv.lock/**
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
