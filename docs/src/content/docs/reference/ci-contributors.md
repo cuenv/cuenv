@@ -215,7 +215,7 @@ ci: pipelines: [
 
 ### NamespaceCacheContributor
 
-Configures Namespace nscloud-cache for Nix store caching and removes Determinate Nix installer receipt metadata around the install step.
+Configures Namespace nscloud-cache for Nix store caching on Linux runners and removes Determinate Nix installer receipt metadata around the install step.
 
 **Activation:** `ci.provider.github.namespaceCache` is configured
 
@@ -225,7 +225,7 @@ Configures Namespace nscloud-cache for Nix store caching and removes Determinate
 
 **Dependencies:** none
 
-**Requirements:** the selected Namespace runner profile must attach a cache volume. This contributor does not install Nix. When used with Determinate Nix, it removes any restored `/nix/receipt.json` before installation, then prunes the new receipt before the Namespace cache saves state.
+**Requirements:** the selected Namespace Linux runner profile must attach a cache volume. This contributor does not install Nix. When used with Determinate Nix, it removes any restored `/nix/receipt.json` before installation, then prunes the new receipt before the Namespace cache saves state. macOS runners skip the Namespace `/nix` cache action because that mode needs to attach `/nix` before Nix is installed; the generated workflow still installs and uses Nix normally on macOS.
 
 **Configuration Example:**
 
@@ -253,7 +253,7 @@ ci: {
 }
 ```
 
-Use this on Namespace runners that already provide Nix and should persist `/nix` through Namespace cache volumes. Keep using `#Cachix` when a project is backed by Cachix.
+Use this on Namespace Linux runners that should persist `/nix` through Namespace cache volumes. Keep using `#Cachix` when a project is backed by Cachix. Mixed Linux/macOS workflows can still include `#NamespaceCache`; macOS jobs skip only the Namespace cache setup step.
 
 ---
 

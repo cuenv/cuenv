@@ -383,6 +383,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: namespacelabs/nscloud-cache-action@v1
+        if: runner.os == 'Linux'
         with:
           cache: nix
       - run: nix develop --command cuenv task ci

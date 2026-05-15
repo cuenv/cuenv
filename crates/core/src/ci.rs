@@ -344,6 +344,10 @@ pub struct GitHubActionConfig {
     /// Action inputs (optional)
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty", rename = "with")]
     pub inputs: BTreeMap<String, serde_json::Value>,
+
+    /// GitHub Actions step condition (optional)
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 /// Pipeline generation mode

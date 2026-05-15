@@ -96,6 +96,7 @@ package schema
 #GitHubActionConfig: close({
 	uses!: string        // Action reference (e.g., "Mozilla-Actions/sccache-action@v0.2")
 	with?: [string]: _   // Action inputs
+	if?:   string        // GitHub Actions step condition (e.g., "runner.os == 'Linux'")
 })
 
 // =============================================================================

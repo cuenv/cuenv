@@ -1403,6 +1403,12 @@ impl Compiler {
                         ),
                     );
                 }
+                if let Some(condition) = &gh.if_condition {
+                    github_action.insert(
+                        "if".to_string(),
+                        serde_json::Value::String(resolve_value(condition)),
+                    );
+                }
 
                 let mut hints = serde_json::Map::new();
                 hints.insert(
@@ -2492,6 +2498,7 @@ mod tests {
                 github: Some(GitHubActionConfig {
                     uses: "DeterminateSystems/determinate-nix-action@v3".to_string(),
                     inputs,
+                    if_condition: Some("runner.os == 'Linux'".to_string()),
                 }),
             }),
         };
@@ -2509,6 +2516,10 @@ mod tests {
         assert_eq!(
             github_action.get("uses").and_then(|v| v.as_str()),
             Some("DeterminateSystems/determinate-nix-action@v3")
+        );
+        assert_eq!(
+            github_action.get("if").and_then(|v| v.as_str()),
+            Some("runner.os == 'Linux'")
         );
     }
 

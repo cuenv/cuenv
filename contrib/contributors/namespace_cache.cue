@@ -45,6 +45,7 @@ let _removeDeterminateReceipt = """
 			priority: 0
 			provider: github: {
 				uses: "namespacelabs/nscloud-cache-action@v1"
+				if:   "runner.os == 'Linux'"
 				with: cache: "nix"
 			}
 		},
