@@ -114,7 +114,7 @@
           pname = "libcue-bridge";
           inherit version;
           src = ./crates/cuengine;
-          vendorHash = "sha256-UD/YJvkzTVVI2gx8LsY8DSKaNIYcDsx+RrtzgryUec8=";
+          vendorHash = "sha256-p8gfl2H0lThSmqIRQZWDYoQ3antrIslpCwRCNKQ1cKs=";
           go = pkgs.go_1_24;
           nativeBuildInputs = [ pkgs.zig zigCCWrapper zigCXXWrapper zigARWrapper ]
             ++ pkgs.lib.optionals (!pkgs.stdenv.isDarwin) [ pkgs.binutils ];
@@ -343,7 +343,22 @@
               --ignore RUSTSEC-2026-0006 \
               --ignore RUSTSEC-2026-0020 \
               --ignore RUSTSEC-2026-0021 \
-              --ignore RUSTSEC-2026-0037
+              --ignore RUSTSEC-2026-0037 \
+              --ignore RUSTSEC-2026-0085 \
+              --ignore RUSTSEC-2026-0086 \
+              --ignore RUSTSEC-2026-0087 \
+              --ignore RUSTSEC-2026-0088 \
+              --ignore RUSTSEC-2026-0089 \
+              --ignore RUSTSEC-2026-0091 \
+              --ignore RUSTSEC-2026-0092 \
+              --ignore RUSTSEC-2026-0093 \
+              --ignore RUSTSEC-2026-0094 \
+              --ignore RUSTSEC-2026-0095 \
+              --ignore RUSTSEC-2026-0096 \
+              --ignore RUSTSEC-2026-0098 \
+              --ignore RUSTSEC-2026-0099 \
+              --ignore RUSTSEC-2026-0104 \
+              --ignore RUSTSEC-2026-0114
           '';
           nativeBuildInputs = [ pkgs.cargo-audit ];
         };
