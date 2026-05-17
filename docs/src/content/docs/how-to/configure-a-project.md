@@ -53,17 +53,17 @@ env: {
 
 // Task definitions
 tasks: {
-    build: {
-        description: "Build the project"
-        command:     "bun"
-        args:        ["run", "build"]
-        dependsOn:   ["install"]
-    }
-
-    install: {
+    install: schema.#Task & {
         description: "Install dependencies"
         command:     "bun"
         args:        ["install"]
+    }
+
+    build: schema.#Task & {
+        description: "Build the project"
+        command:     "bun"
+        args:        ["run", "build"]
+        dependsOn:   [install]
     }
 }
 ```
@@ -136,7 +136,13 @@ if env == "development" {
 
 ```cue
 tasks: {
-    test: {
+    lint: schema.#Task & {
+        description: "Run linter"
+        command: "cargo"
+        args: ["clippy", "--", "-D", "warnings"]
+    }
+
+    test: schema.#Task & {
         description: "Run tests"
         command: "cargo"
         args: ["test"]
@@ -145,17 +151,11 @@ tasks: {
         }
     }
 
-    lint: {
-        description: "Run linter"
-        command: "cargo"
-        args: ["clippy", "--", "-D", "warnings"]
-    }
-
-    build: {
+    build: schema.#Task & {
         description: "Build project"
         command: "cargo"
         args: ["build", "--release"]
-        dependsOn: ["lint", "test"]
+        dependsOn: [lint, test]
     }
 }
 ```
@@ -167,21 +167,21 @@ Define complex dependency graphs:
 ```cue
 tasks: {
     // Parallel tasks (no dependencies)
-    "lint:rust": {
+    "lint:rust": schema.#Task & {
         command: "cargo"
         args: ["clippy"]
     }
 
-    "lint:js": {
+    "lint:js": schema.#Task & {
         command: "eslint"
         args: ["."]
     }
 
     // Sequential dependency
-    test: {
+    test: schema.#Task & {
         command: "cargo"
         args: ["test"]
-        dependsOn: ["lint:rust", "lint:js"]  // Waits for both
+        dependsOn: [tasks."lint:rust", tasks."lint:js"]  // Waits for both
     }
 }
 ```
@@ -278,7 +278,9 @@ Add custom validation constraints:
 
 ### Secret References
 
-cuenv uses exec-based secret resolvers. Reference external secrets using the built-in types:
+cuenv resolves secrets at runtime. Use `schema.#OnePasswordRef` for 1Password and
+`schema.#ExecSecret` for custom command-backed providers. AWS, GCP, and Vault
+schema types exist, but their default runtime resolvers are not registered yet.
 
 ```cue
 package cuenv
@@ -295,16 +297,10 @@ env: {
         ref: "op://vault-name/item-name/password"
     }
 
-    // GCP Secret Manager
-    API_KEY: schema.#GcpSecret & {
-        project: "my-gcp-project"
-        secret:  "api-key"
-    }
-
     // Custom exec-based resolver
-    CUSTOM_SECRET: schema.#Secret & {
+    API_KEY: schema.#ExecSecret & {
         command: "my-secret-tool"
-        args:    ["get", "my-secret"]
+        args:    ["get", "api-key"]
     }
 }
 ```

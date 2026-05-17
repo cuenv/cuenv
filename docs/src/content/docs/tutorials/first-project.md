@@ -73,5 +73,5 @@ cuenv task hello
 - [Configure a project](/how-to/configure-a-project/)
 - [Typed environments](/how-to/typed-environments/)
 - [Run tasks](/how-to/run-tasks/)
-- [Secrets](/how-to/how-to/secrets/)
+- [Secrets](/how-to/secrets/)
 - [CLI reference](/reference/cli/)

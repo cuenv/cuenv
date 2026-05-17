@@ -6,7 +6,9 @@ description: Integration with Nix package manager and development environments
 cuenv integrates with [Nix](https://nixos.org/) to provide reproducible development environments. When you have a `flake.nix` in your project, cuenv can automatically load the Nix development environment alongside your CUE configuration.
 
 :::note
-Nix integration is currently in active development. Some features described here may not be fully implemented yet.
+The Nix runtime and `#NixFlake` hook paths are implemented. Check the
+[schema status](/reference/schema/status/) page before relying on other runtime
+surfaces.
 :::
 
 ## Overview
@@ -51,6 +53,7 @@ my-project/
 ├── env.cue          # cuenv configuration
 ├── flake.nix        # Nix flake definition
 ├── flake.lock       # Locked dependencies
+├── cuenv.lock       # cuenv runtime/sync lock state
 └── src/
 ```
 
@@ -92,10 +95,14 @@ my-project/
 ```cue
 package cuenv
 
-import "github.com/cuenv/cuenv/schema"
+import (
+    "github.com/cuenv/cuenv/schema"
+    xNix "github.com/cuenv/cuenv/contrib/nix"
+)
 
 schema.#Project & {
   name: "my-project"
+  runtime: schema.#NixRuntime
 }
 
 env: {
@@ -106,7 +113,7 @@ env: {
 hooks: {
     onEnter: {
         // Load Nix flake environment
-        nix: schema.#NixFlake
+        nix: xNix.#NixFlake
     }
 }
 
@@ -120,14 +127,14 @@ tasks: {
 
 ## The #NixFlake Hook
 
-cuenv provides a built-in `#NixFlake` hook type that loads your Nix development environment:
+cuenv provides a contrib `#NixFlake` hook type that loads your Nix development environment:
 
 ```cue
-import "github.com/cuenv/cuenv/schema"
+import xNix "github.com/cuenv/cuenv/contrib/nix"
 
 hooks: {
     onEnter: {
-        nix: schema.#NixFlake
+        nix: xNix.#NixFlake
     }
 }
 ```
@@ -140,6 +147,10 @@ The `#NixFlake` hook:
 2. Runs `nix print-dev-env` to get the environment
 3. Sources the environment variables into your shell
 4. Tracks `flake.nix` and `flake.lock` as inputs for cache invalidation
+
+When the project also declares `runtime: schema.#NixRuntime`, `cuenv sync`
+records the Nix runtime state in `cuenv.lock` using a digest derived from the
+checked-in `flake.lock`.
 
 ### Hook Definition
 
@@ -154,6 +165,30 @@ The `#NixFlake` hook:
 }
 ```
 
+## Nix and cuenv Lockfiles
+
+Commit both lockfiles:
+
+- `flake.lock` pins Nix flake inputs.
+- `cuenv.lock` records cuenv-managed runtime state and sync-managed external
+  inputs.
+
+For a Nix runtime project, refresh cuenv's lock state after changing
+`flake.lock`:
+
+```bash
+cuenv sync lock
+```
+
+Validate drift in CI:
+
+```bash
+cuenv sync --check
+```
+
+See [Lockfiles](/how-to/lockfiles/) for the full `flake.lock` versus
+`cuenv.lock` boundary.
+
 ## Configuration Patterns
 
 ### Nix + Environment Variables
@@ -163,10 +198,14 @@ Combine Nix-provided tools with cuenv's typed environment:
 ```cue
 package cuenv
 
-import "github.com/cuenv/cuenv/schema"
+import (
+    "github.com/cuenv/cuenv/schema"
+    xNix "github.com/cuenv/cuenv/contrib/nix"
+)
 
 schema.#Project & {
   name: "my-project"
+  runtime: schema.#NixRuntime
 }
 
 // Environment variables (typed by CUE)
@@ -184,7 +223,7 @@ env: {
 hooks: {
     onEnter: {
         // Nix provides: bun, psql, redis-cli, etc.
-        nix: schema.#NixFlake
+        nix: xNix.#NixFlake
     }
 }
 
@@ -319,27 +358,35 @@ Nix evaluation can be slow on first run. Tips:
    cachix use my-cache
    ```
 
-### Lock File Issues
+### Lockfile Issues
 
 ```
 error: lock file needs to be updated
 ```
 
-**Fix:** Update your lock file:
+If Nix reports the lock issue, update `flake.lock`:
 
 ```bash
 nix flake update
 ```
 
+If cuenv reports that `cuenv.lock` is stale, refresh cuenv's lock state:
+
+```bash
+cuenv sync lock
+```
+
+Commit both lockfiles after the update.
+
 ## Best Practices
 
 ### 1. Pin Your Dependencies
 
-Always commit `flake.lock` for reproducibility:
+Always commit both `flake.lock` and `cuenv.lock` for reproducibility:
 
 ```bash
-git add flake.lock
-git commit -m "chore: update nix flake lock"
+git add flake.lock cuenv.lock
+git commit -m "chore: update lockfiles"
 ```
 
 ### 2. Separate Concerns
@@ -392,6 +439,7 @@ jobs:
 ## See Also
 
 - [Hooks Documentation](/how-to/configure-a-project/#hooks) - Hook configuration
+- [Lockfiles](/how-to/lockfiles/) - `flake.lock` and `cuenv.lock` guidance
 - [Shell Integration](/how-to/install/#shell-integration) - Shell setup
 - [Nix Flakes Manual](https://nixos.wiki/wiki/Flakes) - Official Nix flakes documentation
 - [direnv](https://direnv.net/) - Alternative environment loading
