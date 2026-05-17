@@ -1,22 +1,22 @@
 ---
 title: Ignore Files
-description: Managing .gitignore, .dockerignore, and other ignore files with cuenv
+description: Generate .gitignore, .dockerignore, and other ignore files from .rules.cue
 ---
 
-cuenv can generate and manage tool-specific ignore files (`.gitignore`, `.dockerignore`, etc.) from your CUE configuration. This keeps your ignore patterns in a single source of truth alongside your other project configuration.
+cuenv generates tool-specific ignore files from `.rules.cue`. This keeps
+`.gitignore`, `.dockerignore`, and related files in typed CUE configuration next
+to the directory they apply to.
 
 ## Quick Start
 
-Add an `ignore` field to your `env.cue`:
+Create a `.rules.cue` file:
 
 ```cue
 package cuenv
 
-import "github.com/cuenv/cuenv/schema"
+import "github.com/cuenv/cuenv/schema/rules"
 
-schema.#Project & {
-    name: "my-project"
-
+rules.#DirectoryRules & {
     ignore: {
         git: [
             "node_modules/",
@@ -38,37 +38,36 @@ Then run:
 cuenv sync
 ```
 
-This generates `.gitignore` and `.dockerignore` files in your project directory.
+This generates `.gitignore` and `.dockerignore` in the same directory as the
+`.rules.cue` file.
 
 ## Commands
 
-### Generate all ignore files
+Generate or update all rules-managed files:
 
 ```bash
 cuenv sync
 ```
 
-Runs all sync operations, including ignore file generation.
-
-### Generate only ignore files
-
-```bash
-cuenv sync ignore
-```
-
-Runs only the ignore file generation.
-
-### Preview changes (dry-run)
+Preview changes:
 
 ```bash
 cuenv sync --dry-run
 ```
 
-Shows what files would be created or updated without actually writing them.
+Validate generated files in CI:
+
+```bash
+cuenv sync --check
+```
+
+Use workspace sync when a repository has multiple `.rules.cue` files:
+
+```bash
+cuenv sync -A
+```
 
 ## Configuration
-
-### Simple Patterns
 
 The simplest form is a list of patterns for each tool:
 
@@ -87,16 +86,12 @@ Tool names map to ignore files as follows:
 - `npm` creates `.npmignore`
 - Any tool name `foo` creates `.fooignore`
 
-### Custom Filenames
-
 For tools with non-standard ignore file names, use the extended format:
 
 ```cue
 ignore: {
-    // Standard format
     git: ["node_modules/"]
 
-    // Extended format with custom filename
     custom: {
         patterns: ["*.tmp", "cache/"]
         filename: ".myignore"
@@ -110,20 +105,12 @@ When running `cuenv sync`, you'll see the status of each file:
 
 - **Created** - New file was created
 - **Updated** - Existing file was updated with new content
-- **Unchanged** - File exists and content matches (no write needed)
+- **Unchanged** - File exists and content matches
 
 In dry-run mode:
 
 - **Would create** - File would be created
 - **Would update** - File would be updated
-
-## Security
-
-cuenv sync has built-in security protections:
-
-1. **Git repository required** - `cuenv sync` must be run within a Git repository
-2. **Path traversal protection** - Tool names cannot contain path separators (`/`, `\`) or parent directory references (`..`)
-3. **Write containment** - Files are only written within the Git repository boundaries
 
 ## Examples
 
@@ -160,7 +147,6 @@ ignore: {
 ignore: {
     git: [
         "target/",
-        "Cargo.lock",  // for libraries
         "*.rs.bk",
     ]
     docker: [
@@ -171,101 +157,23 @@ ignore: {
 }
 ```
 
-### Python Project
-
-```cue
-ignore: {
-    git: [
-        "__pycache__/",
-        "*.py[cod]",
-        ".env",
-        "venv/",
-        ".venv/",
-        "*.egg-info/",
-        "dist/",
-        "build/",
-    ]
-    docker: [
-        "__pycache__/",
-        "*.py[cod]",
-        ".git/",
-        "venv/",
-        ".venv/",
-        "*.md",
-        "tests/",
-    ]
-}
-```
-
-## Codegen-Generated Files
-
-When using [Codegen](/how-to/codegen/) for code generation, files can automatically be added to `.gitignore` based on their `gitignore` field.
-
-### How It Works
-
-Files defined in codegen have a `gitignore` field that defaults based on their mode:
-
-- **Managed files** (`mode: "managed"`) default to `gitignore: true`
-- **Scaffold files** (`mode: "scaffold"`) default to `gitignore: false`
-
-```cue
-import gen "github.com/cuenv/cuenv/schema/codegen"
-
-codegen: {
-    files: {
-        // This file will be added to .gitignore (managed default)
-        "dist/bundle.js": gen.#JavaScriptFile & {
-            mode: "managed"
-            content: "..."
-        }
-
-        // This file won't be in .gitignore (scaffold default)
-        "src/main.ts": gen.#TypeScriptFile & {
-            mode: "scaffold"
-            content: "..."
-        }
-
-        // Override the default explicitly
-        "generated/api-types.ts": gen.#TypeScriptFile & {
-            mode: "managed"
-            gitignore: false  // Commit this generated file
-            content: "..."
-        }
-    }
-}
-```
-
-### Combined Output
-
-When you have both project-level ignore patterns and codegen files with `gitignore: true`, they're combined in the generated `.gitignore`:
-
-```gitignore
-# Generated by cuenv - do not edit
-# Source: env.cue
-
-# Project ignores
-node_modules/
-.env
-*.log
-
-# Codegen-generated files
-dist/bundle.js
-config/generated.json
-```
-
-This ensures generated files stay out of version control automatically.
-
 ## Generated File Format
 
-Generated ignore files include a header comment indicating they're managed by cuenv:
+Generated ignore files include a header comment:
 
-```gitignore
+```text
 # Generated by cuenv - do not edit
-# Source: env.cue
+# Source: .rules.cue
 
 node_modules/
 .env
 *.log
 ```
 
-This helps prevent accidental manual edits that would be overwritten on the next sync.
+Manual edits should be made in `.rules.cue`, then regenerated with `cuenv sync`.
+
+## See Also
+
+- [CODEOWNERS](/how-to/codeowners/) - `.rules.cue` ownership rules
+- [Codegen](/how-to/codegen/) - generated files and Git tracking
+- [Schema status](/reference/schema/status/) - current rules schema coverage

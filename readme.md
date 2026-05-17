@@ -37,7 +37,7 @@ cuenv exec -- cargo build --release
 Every command runs with:
 
 - **Validated environment** - CUE constraints ensure `NODE_ENV` is actually `"development" | "staging" | "production"`, not a typo
-- **Secrets resolved at runtime** - Pulled from 1Password, AWS, GCP, Vault—never stored in files, never in git history
+- **Secrets resolved at runtime** - Pulled from 1Password or custom exec providers, never stored in files or git history
 - **Environment-specific overrides** - Switch from dev to production with `-e production`
 
 ```cue
@@ -68,7 +68,7 @@ Every task runs with:
 
 - **Automatic dependency resolution** - `build` waits for `lint` and `test` if configured
 - **Parallel execution** - Independent subtasks run simultaneously
-- **Content-aware caching** - Skip tasks when inputs haven't changed
+- **Opt-in content-aware caching** - Reuse task results when cache policy and inputs allow it
 - **Same secret + environment benefits** as `exec`
 
 ```cue
@@ -102,7 +102,7 @@ tasks: {
 }
 ```
 
-**Why this matters**: Your test suite runs in parallel. Your CI is faster. If nothing changed, cached results are used. And every task inherits your validated environment and resolved secrets.
+**Why this matters**: Your test suite runs in parallel. Your CI is faster. Cacheable tasks can reuse results when inputs are unchanged. And every task inherits your validated environment and resolved secrets.
 
 ---
 
@@ -142,7 +142,7 @@ cuenv task dev
 # List available tasks
 cuenv task
 
-# Generate CI workflow (optional)
+# Generate CI workflows after adding ci.providers and ci.pipelines
 cuenv sync ci
 ```
 
@@ -285,7 +285,41 @@ cd ~/projects/myapp
 
 ### CI Integration
 
-Generate CI workflows from your CUE configuration. cuenv detects affected projects and runs only what's needed:
+Generate CI workflows from your CUE configuration. Workflow generation requires
+explicit provider configuration:
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    let _t = tasks
+
+    ci: {
+        providers: ["github"]
+        pipelines: {
+            ci: {
+                when: {
+                    pullRequest: true
+                    branch:      "main"
+                }
+                tasks: [_t.test]
+            }
+        }
+    }
+
+    tasks: {
+        test: schema.#Task & {
+            command: "npm"
+            args: ["test"]
+            inputs: ["package.json", "src/**"]
+        }
+    }
+}
+```
+
+Then run:
 
 ```bash
 # Generate configured GitHub Actions workflows
@@ -298,7 +332,8 @@ cuenv ci
 cuenv ci --dry-run
 ```
 
-cuenv automatically detects your CI provider (GitHub Actions, GitLab CI, etc.) and optimizes pipelines based on which files changed.
+GitHub workflow sync is the most complete provider path today. Check the schema
+status docs before relying on other provider surfaces.
 
 ---
 

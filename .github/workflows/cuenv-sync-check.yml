@@ -20,7 +20,11 @@ on:
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
+    - docs/src/content/docs/how-to/**
+    - docs/src/content/docs/index.mdx
+    - docs/src/content/docs/index.mdx/**
     - docs/src/content/docs/reference/schema/**
+    - docs/src/content/docs/tutorials/**
     - env.cue
     - env.cue/**
     - llms.txt
@@ -48,7 +52,11 @@ on:
     - docs/design/specs/schema-coverage-matrix.md
     - docs/design/specs/schema-coverage-matrix.md/**
     - docs/src/content/docs/agents/**
+    - docs/src/content/docs/how-to/**
+    - docs/src/content/docs/index.mdx
+    - docs/src/content/docs/index.mdx/**
     - docs/src/content/docs/reference/schema/**
+    - docs/src/content/docs/tutorials/**
     - env.cue
     - env.cue/**
     - llms.txt

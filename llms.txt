@@ -21,7 +21,7 @@ cuenv exec -e production -- ./deploy.sh
 
 ### `cuenv task <name>`
 
-Execute orchestrated tasks with dependencies, parallelism, and caching:
+Execute orchestrated tasks with dependencies, parallelism, and opt-in caching:
 
 ```bash
 cuenv task build
@@ -30,7 +30,7 @@ cuenv task -e staging test
 
 - Tasks can run in parallel (object syntax) or sequentially (array syntax)
 - Automatic dependency resolution via `dependsOn`
-- Content-aware caching based on declared `inputs` and `outputs`
+- Opt-in content-aware caching based on `cache.mode`, declared `inputs`, and `outputs`
 - Hermetic execution ensures reproducibility
 
 ## Configuration
@@ -84,7 +84,6 @@ If the repository already has `scripts/`, `bin/`, `ci/`, or many `.sh`, `.fish`,
 
 ```cue
 @extern(embed)
-
 package cuenv
 
 import "github.com/cuenv/cuenv/schema"
@@ -131,7 +130,7 @@ Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands an
 - **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets and `schema.#OnePasswordRef` for 1Password.
 - **Parallel Execution**: Object keys in task groups run concurrently
 - **Sequential Execution**: Array elements in task groups run in order
-- **Caching**: Tasks with declared inputs/outputs are cached by content hash
+- **Caching**: Tasks with `cache.mode` and declared inputs/outputs can reuse results by content hash
 - **Hermetic Builds**: Tasks run in isolated directories with only declared inputs
 
 ## CLI Reference

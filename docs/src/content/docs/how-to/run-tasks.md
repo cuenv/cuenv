@@ -96,6 +96,48 @@ cuenv task build
 cuenv task build --tui
 ```
 
+## Script Tasks
+
+Use `script` for short task-local logic that belongs in `env.cue`:
+
+```cue
+tasks: {
+    bootstrap: schema.#Task & {
+        script: """
+            npm ci
+            npm run build
+            """
+        scriptShell: "bash"
+    }
+}
+```
+
+When a script is long enough to need syntax highlighting, linting, or standalone
+review, keep the script in a repository file and embed it with CUE:
+
+```cue
+@extern(embed)
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    tasks: {
+        release: schema.#Task & {
+            script:      _ @embed(file=scripts/release.sh,type=text)
+            scriptShell: "bash"
+            inputs:      ["scripts/release.sh"]
+        }
+    }
+}
+```
+
+The embedded file is still CUE-native task configuration: cuenv receives the
+script body through `script`, while `inputs` tells hermetic execution and the
+task cache that the script file is part of the task's content.
+
 ### Rich TUI Mode
 
 The `--tui` flag enables an interactive terminal UI that provides:
@@ -126,12 +168,26 @@ In the example above:
 
 ## Caching
 
-cuenv supports computation caching. By defining `inputs` and `outputs`, cuenv can determine if a task needs to be re-run.
+cuenv supports task-result caching. Caching is opt-in per task through
+`cache.mode`; `inputs` and `outputs` define the content boundary for cache keys
+and materialized results.
 
-- **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the task might be skipped.
+- **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the cached task result may be reused.
 - **Outputs**: Files or directories created by the task.
+- **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
+- **Limitations**: Tasks with non-path inputs or task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
 
-_(Note: Full caching implementation is currently in development. Check the project status for updates.)_
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "cargo"
+        args: ["build", "--release"]
+        inputs: ["Cargo.toml", "Cargo.lock", "src/**"]
+        outputs: ["target/release/myapp"]
+        cache: mode: "read-write"
+    }
+}
+```
 
 ## Task Parameters
 
@@ -313,6 +369,27 @@ tasks: {
 }
 ```
 
-## Hermeticity (Planned)
+## Hermeticity
 
-Future versions of cuenv will support hermetic execution, where tasks run in isolated environments (sandboxes) with only declared inputs available. This ensures reproducibility and prevents "it works on my machine" issues.
+Tasks run hermetically by default: cuenv prepares an isolated working directory
+and makes declared `inputs` available to the command. This is why task examples
+should list every file, directory, generated output, or embedded script they
+read.
+
+Set `hermetic: false` only for tasks that intentionally operate on the live
+checkout, such as local development servers or commands that manage files
+outside the declared input/output boundary.
+
+```cue
+tasks: {
+    dev: schema.#Task & {
+        command: "npm"
+        args: ["run", "dev"]
+        hermetic: false
+    }
+}
+```
+
+See [Schema status](/reference/schema/status/) for the current implementation
+limits around task execution policies such as `timeout`, `retry`,
+`continueOnError`, and group `maxConcurrency`.

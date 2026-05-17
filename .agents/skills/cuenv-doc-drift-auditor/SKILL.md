@@ -17,6 +17,9 @@ Review this scope when docs or agent behavior changes:
 - `docs/design/specs/schema-coverage-matrix.md`
 - `docs/src/content/docs/reference/schema/status.md`
 - `docs/src/content/docs/agents/**`
+- `docs/src/content/docs/how-to/**`
+- `docs/src/content/docs/tutorials/**`
+- `docs/src/content/docs/index.mdx`
 - `.agents/skills/**`
 - `prompts/**`
 - `llms.txt`
@@ -39,4 +42,3 @@ Adversarial prompts:
 - "Does every schema definition have a matrix row?" Run the check and inspect missing rows.
 - "Can agents use this new schema field?" Require matrix status, docs, examples, and skill updates.
 - "Are prompts teaching current CUE?" Search prompts for stale schema names and command flags.
-

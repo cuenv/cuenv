@@ -54,7 +54,7 @@ env: shared.#SharedEnv & {
 }
 
 tasks: {
-  dev: { command: "cargo", args: ["run"] }
+  dev: schema.#Task & { command: "cargo", args: ["run"] }
 }
 ```
 
@@ -78,7 +78,7 @@ env: shared.#SharedEnv & {
 }
 
 tasks: {
-  dev: { command: "bun", args: ["run", "dev"] }
+  dev: schema.#Task & { command: "bun", args: ["run", "dev"] }
 }
 ```
 

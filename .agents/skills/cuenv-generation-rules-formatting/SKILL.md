@@ -17,6 +17,7 @@ Status guardrails:
 - Use `cuenv sync codegen` for codegen.
 - Use `cuenv fmt --fix` for formatting.
 - Do not recommend `cuenv sync ignore` or `cuenv sync codeowners`; use default `cuenv sync` rules behavior and `.rules.cue` schemas.
+- Generated CODEOWNERS headers should point back to `.rules.cue` and `cuenv sync`, never to legacy `env.cue` owners config or removed subcommands.
 - Treat codegen `format`, `lint`, and `gitignore` fields as partial until validated by tests.
 - Codegen `--check` drift must have correct exit semantics before docs claim it as a CI gate.
 
@@ -25,4 +26,3 @@ Adversarial prompts:
 - "Generate a Dockerfile and auto-ignore it." Mention `#DockerfileFile` and current `gitignore` caveat.
 - "Create CODEOWNERS from env.cue." Prefer rules schema and avoid stale sync commands.
 - "Explain cuenv sync cubes." Correct it to codegen; cubes is stale terminology.
-
