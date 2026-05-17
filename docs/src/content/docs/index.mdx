@@ -39,7 +39,7 @@ You've been here before: secrets in `.env` files that get committed, "works on m
     ```
   </Card>
   <Card title="cuenv task <name>" icon="list-format">
-    Run named tasks with automatic dependency resolution, parallel execution, and content-aware caching.
+    Run named tasks with automatic dependency resolution, parallel execution, and opt-in content-aware caching.
 
     ```bash
     cuenv task build
@@ -54,7 +54,7 @@ You've been here before: secrets in `.env` files that get committed, "works on m
 
 <CardGrid>
   <Card title="Secrets Never Leak" icon="lock">
-    Secrets are fetched at runtime from 1Password, AWS, GCP, Vault—never written to disk, never exported to your shell, redacted from logs.
+    Secrets are fetched at runtime from 1Password or custom exec providers, never written to disk, never exported to your shell, and redacted from logs.
   </Card>
   <Card title="Validate Before You Run" icon="approve-check-circle">
     CUE constraints catch `NODE_ENV: "prod"` typos before they become runtime failures. Type-safe configuration for your entire team.
@@ -91,17 +91,18 @@ env: {
 
 tasks: {
     // These run in parallel
-    test: {
-        unit:        { command: "npm", args: ["run", "test:unit"] }
-        integration: { command: "npm", args: ["run", "test:e2e"] }
-        lint:        { command: "npm", args: ["run", "lint"] }
+    test: schema.#TaskGroup & {
+        type: "group"
+        unit:        schema.#Task & { command: "npm", args: ["run", "test:unit"] }
+        integration: schema.#Task & { command: "npm", args: ["run", "test:e2e"] }
+        lint:        schema.#Task & { command: "npm", args: ["run", "lint"] }
     }
 
     // This waits for test to complete
-    build: {
+    build: schema.#Task & {
         command:   "npm"
         args:      ["run", "build"]
-        dependsOn: ["test"]
+        dependsOn: [test]
     }
 }
 ```

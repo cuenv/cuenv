@@ -117,6 +117,9 @@ stale_scope=(
 	readme.md
 	llms.txt
 	prompts
+	docs/src/content/docs/index.mdx
+	docs/src/content/docs/tutorials
+	docs/src/content/docs/how-to
 )
 
 stale_patterns=(
