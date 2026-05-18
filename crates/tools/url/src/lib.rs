@@ -2,7 +2,7 @@
 //!
 //! Downloads development tools from arbitrary HTTP/HTTPS URLs. Supports:
 //! - Template variables in URLs: `{version}`, `{os}`, `{arch}`
-//! - Automatic archive extraction (zip, tar.gz)
+//! - Automatic archive extraction (zip, tar.gz, tar.xz)
 //! - Path-based binary extraction from archives
 //! - Typed extraction rules (bin, lib, include, pkgconfig, file)
 
@@ -23,6 +23,7 @@ use std::sync::OnceLock;
 use tar::Archive;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
+use xz2::read::XzDecoder;
 
 /// Tool provider for arbitrary HTTP/HTTPS URLs.
 ///
@@ -351,11 +352,14 @@ impl UrlToolProvider {
         let url_path = url.split('?').next().unwrap_or(url);
         let is_zip = url_path.ends_with(".zip");
         let is_tar_gz = url_path.ends_with(".tar.gz") || url_path.ends_with(".tgz");
+        let is_tar_xz = url_path.ends_with(".tar.xz") || url_path.ends_with(".txz");
 
         if is_zip {
             self.extract_from_zip(data, binary_path, dest)
         } else if is_tar_gz {
             self.extract_from_tar_gz(data, binary_path, dest)
+        } else if is_tar_xz {
+            self.extract_from_tar_xz(data, binary_path, dest)
         } else {
             // Assume it's a raw binary
             std::fs::create_dir_all(dest)?;
@@ -486,9 +490,30 @@ impl UrlToolProvider {
         binary_path: Option<&str>,
         dest: &Path,
     ) -> Result<PathBuf> {
-        let cursor = Cursor::new(data);
-        let decoder = GzDecoder::new(cursor);
-        let mut archive = Archive::new(decoder);
+        let decoder = GzDecoder::new(Cursor::new(data));
+        self.extract_from_tar(decoder, binary_path, dest, "tar.gz")
+    }
+
+    /// Extract from a tar.xz archive.
+    fn extract_from_tar_xz(
+        &self,
+        data: &[u8],
+        binary_path: Option<&str>,
+        dest: &Path,
+    ) -> Result<PathBuf> {
+        let decoder = XzDecoder::new(Cursor::new(data));
+        self.extract_from_tar(decoder, binary_path, dest, "tar.xz")
+    }
+
+    /// Extract from a tar stream decoded by any `Read` (shared by tar.gz/tar.xz).
+    fn extract_from_tar(
+        &self,
+        reader: impl Read,
+        binary_path: Option<&str>,
+        dest: &Path,
+        archive_kind: &str,
+    ) -> Result<PathBuf> {
+        let mut archive = Archive::new(reader);
 
         std::fs::create_dir_all(dest)?;
 
@@ -531,8 +556,8 @@ impl UrlToolProvider {
             }
 
             return Err(cuenv_core::Error::tool_resolution(format!(
-                "Binary '{}' not found in tar.gz archive",
-                path
+                "Binary '{}' not found in {} archive",
+                path, archive_kind
             )));
         }
 
@@ -958,6 +983,24 @@ mod tests {
         encoder.finish().unwrap()
     }
 
+    fn build_tar_xz(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 6);
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (path, contents, mode) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(*mode);
+                header.set_cksum();
+                builder.append(&header, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.flush().unwrap();
+        encoder.finish().unwrap()
+    }
+
     fn temp_dir() -> TempDir {
         tempfile::Builder::new()
             .prefix("cuenv_url_provider_")
@@ -1251,6 +1294,122 @@ mod tests {
             }
             _ => panic!("Expected URL source"),
         }
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_specific_path() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_xz(&[
+            (
+                "weaver-aarch64-apple-darwin/weaver",
+                b"#!/bin/sh\necho weaver\n",
+                0o755,
+            ),
+            (
+                "weaver-aarch64-apple-darwin/README.md",
+                b"weaver readme\n",
+                0o644,
+            ),
+        ]);
+        let temp = temp_dir();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_from_tar_xz(&data, Some("weaver-aarch64-apple-darwin/weaver"), &dest)
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
+        let contents = std::fs::read(&extracted).unwrap();
+        assert_eq!(contents, b"#!/bin/sh\necho weaver\n");
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_extracts_all_and_flattens_prefix() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_xz(&[
+            (
+                "weaver-x86_64-unknown-linux-gnu/weaver",
+                b"#!/bin/sh\necho weaver\n",
+                0o755,
+            ),
+            ("weaver-x86_64-unknown-linux-gnu/LICENSE", b"MIT\n", 0o644),
+        ]);
+        let temp = temp_dir();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider.extract_from_tar_xz(&data, None, &dest).unwrap();
+
+        // The provider promotes the single-root directory and surfaces the
+        // first executable as the primary binary.
+        assert!(extracted.exists());
+        assert!(dest.join("weaver").exists());
+        assert!(dest.join("LICENSE").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_missing_binary_returns_error() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_xz(&[(
+            "weaver-aarch64-apple-darwin/weaver",
+            b"#!/bin/sh\necho weaver\n",
+            0o755,
+        )]);
+        let temp = temp_dir();
+        let dest = temp.path().join("weaver");
+
+        let err = provider
+            .extract_from_tar_xz(&data, Some("not/in/archive"), &dest)
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_extract_binary_detects_tar_xz_extension() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_xz(&[(
+            "weaver-aarch64-apple-darwin/weaver",
+            b"#!/bin/sh\necho weaver\n",
+            0o755,
+        )]);
+        let temp = temp_dir();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_binary(
+                &data,
+                "https://example.com/weaver-aarch64-apple-darwin.tar.xz",
+                Some("weaver-aarch64-apple-darwin/weaver"),
+                &dest,
+            )
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
+    }
+
+    #[test]
+    fn test_extract_binary_detects_txz_extension() {
+        let provider = UrlToolProvider::new();
+        let data = build_tar_xz(&[(
+            "weaver-aarch64-apple-darwin/weaver",
+            b"#!/bin/sh\necho weaver\n",
+            0o755,
+        )]);
+        let temp = temp_dir();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_binary(
+                &data,
+                "https://example.com/weaver.txz",
+                Some("weaver-aarch64-apple-darwin/weaver"),
+                &dest,
+            )
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
     }
 
     #[tokio::test]

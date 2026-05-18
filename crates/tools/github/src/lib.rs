@@ -2,7 +2,7 @@
 //!
 //! Fetches development tools from GitHub Releases. Supports:
 //! - Template variables in asset names: `{version}`, `{os}`, `{arch}`
-//! - Automatic archive extraction (zip, tar.gz, pkg)
+//! - Automatic archive extraction (zip, tar.gz, tar.xz, pkg)
 //! - Path-based binary extraction from archives
 
 use async_trait::async_trait;
@@ -29,6 +29,7 @@ use tar::Archive;
 use tempfile::Builder;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
+use xz2::read::XzDecoder;
 
 /// Rate limit information from GitHub API response headers.
 #[derive(Debug, Default)]
@@ -352,12 +353,15 @@ impl GitHubToolProvider {
         // Determine archive type
         let is_zip = asset_name.ends_with(".zip");
         let is_tar_gz = asset_name.ends_with(".tar.gz") || asset_name.ends_with(".tgz");
+        let is_tar_xz = asset_name.ends_with(".tar.xz") || asset_name.ends_with(".txz");
         let is_pkg = asset_name.ends_with(".pkg");
 
         if is_zip {
             self.extract_from_zip(data, binary_path, dest)
         } else if is_tar_gz {
             self.extract_from_tar_gz(data, binary_path, dest)
+        } else if is_tar_xz {
+            self.extract_from_tar_xz(data, binary_path, dest)
         } else if is_pkg {
             self.extract_from_pkg(data, binary_path, dest)
         } else {
@@ -405,7 +409,7 @@ impl GitHubToolProvider {
                 })?;
 
                 let name = file.name().to_string();
-                if name.ends_with(path) || name == path {
+                if name == path || name.ends_with(&format!("/{}", path)) {
                     std::fs::create_dir_all(dest)?;
                     let file_name = std::path::Path::new(&name)
                         .file_name()
@@ -506,9 +510,29 @@ impl GitHubToolProvider {
         binary_path: Option<&str>,
         dest: &std::path::Path,
     ) -> Result<PathBuf> {
-        let cursor = Cursor::new(data);
-        let decoder = GzDecoder::new(cursor);
-        let mut archive = Archive::new(decoder);
+        let decoder = GzDecoder::new(Cursor::new(data));
+        self.extract_from_tar(decoder, binary_path, dest)
+    }
+
+    /// Extract from a tar.xz archive.
+    fn extract_from_tar_xz(
+        &self,
+        data: &[u8],
+        binary_path: Option<&str>,
+        dest: &std::path::Path,
+    ) -> Result<PathBuf> {
+        let decoder = XzDecoder::new(Cursor::new(data));
+        self.extract_from_tar(decoder, binary_path, dest)
+    }
+
+    /// Extract from a tar stream decoded by any `Read` (shared by tar.gz/tar.xz).
+    fn extract_from_tar(
+        &self,
+        reader: impl Read,
+        binary_path: Option<&str>,
+        dest: &std::path::Path,
+    ) -> Result<PathBuf> {
+        let mut archive = Archive::new(reader);
 
         std::fs::create_dir_all(dest)?;
 
@@ -526,7 +550,7 @@ impl GitHubToolProvider {
                 })?;
 
                 let path_str = entry_path.to_string_lossy();
-                if path_str.ends_with(path) || path_str.as_ref() == path {
+                if path_str.as_ref() == path || path_str.ends_with(&format!("/{}", path)) {
                     let file_name = std::path::Path::new(path)
                         .file_name()
                         .and_then(|s| s.to_str())
@@ -1863,5 +1887,219 @@ mod tests {
         let json = r#"{"tag_name": "v0.1.0", "assets": []}"#;
         let release: Release = serde_json::from_str(json).unwrap();
         assert!(release.assets.is_empty());
+    }
+
+    // ==========================================================================
+    // tar.gz / tar.xz archive extraction tests
+    // ==========================================================================
+
+    fn build_tar_gz(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+        use std::io::Write;
+        use tar::{Builder, Header};
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (path, contents, mode) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(*mode);
+                header.set_cksum();
+                builder.append(&header, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.flush().unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn build_tar_xz(entries: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        use std::io::Write;
+        use tar::{Builder, Header};
+
+        let mut encoder = xz2::write::XzEncoder::new(Vec::new(), 6);
+        {
+            let mut builder = Builder::new(&mut encoder);
+            for (path, contents, mode) in entries {
+                let mut header = Header::new_gnu();
+                header.set_path(path).unwrap();
+                header.set_size(contents.len() as u64);
+                header.set_mode(*mode);
+                header.set_cksum();
+                builder.append(&header, *contents).unwrap();
+            }
+            builder.finish().unwrap();
+        }
+        encoder.flush().unwrap();
+        encoder.finish().unwrap()
+    }
+
+    #[test]
+    fn test_extract_from_tar_gz_specific_path() {
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_gz(&[
+            ("treefmt_linux_amd64/treefmt", b"#!/bin/sh\n", 0o755),
+            ("treefmt_linux_amd64/README", b"readme\n", 0o644),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("treefmt");
+
+        let extracted = provider
+            .extract_from_tar_gz(&data, Some("treefmt"), &dest)
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("treefmt"));
+        assert!(extracted.exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_specific_path() {
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[
+            (
+                "weaver-aarch64-apple-darwin/weaver",
+                b"#!/bin/sh\necho weaver\n",
+                0o755,
+            ),
+            ("weaver-aarch64-apple-darwin/README.md", b"readme\n", 0o644),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_from_tar_xz(&data, Some("weaver-aarch64-apple-darwin/weaver"), &dest)
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
+        let contents = std::fs::read(&extracted).unwrap();
+        assert_eq!(contents, b"#!/bin/sh\necho weaver\n");
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_extracts_all() {
+        // The github extractor doesn't flatten single-root prefixes (unlike URL).
+        // Lay the archive out with bin/weaver at the top level so
+        // `find_main_binary` can locate the primary executable.
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[
+            ("bin/weaver", b"#!/bin/sh\necho weaver\n", 0o755),
+            ("LICENSE", b"MIT\n", 0o644),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider.extract_from_tar_xz(&data, None, &dest).unwrap();
+
+        assert_eq!(extracted, dest.join("bin").join("weaver"));
+        assert!(extracted.exists());
+        assert!(dest.join("LICENSE").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_gz_extracts_all() {
+        // Parity with the tar.xz version: the github extractor doesn't flatten
+        // single-root prefixes, so we lay the archive out with bin/treefmt at
+        // the top level so `find_main_binary` can locate the primary executable.
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_gz(&[
+            ("bin/treefmt", b"#!/bin/sh\necho treefmt\n", 0o755),
+            ("LICENSE", b"MIT\n", 0o644),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("treefmt");
+
+        let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+
+        assert_eq!(extracted, dest.join("bin").join("treefmt"));
+        assert!(extracted.exists());
+        assert!(dest.join("LICENSE").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_matches_path_components_not_suffix() {
+        // Regression: an entry like `notweaver/x` must NOT match the
+        // requested binary path `weaver`. The match must be anchored on
+        // a `/` boundary (or full-string equality), never a raw suffix.
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[
+            ("notweaver/x", b"decoy\n", 0o755),
+            ("subweaver", b"another-decoy\n", 0o755),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let err = provider
+            .extract_from_tar_xz(&data, Some("weaver"), &dest)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected 'not found' error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_extract_from_tar_xz_missing_binary_errors() {
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[("weaver-aarch64-apple-darwin/weaver", b"#!/bin/sh\n", 0o755)]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let err = provider
+            .extract_from_tar_xz(&data, Some("not/in/archive"), &dest)
+            .unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_extract_binary_detects_tar_xz_extension() {
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[(
+            "weaver-aarch64-apple-darwin/weaver",
+            b"#!/bin/sh\necho weaver\n",
+            0o755,
+        )]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_binary(
+                &data,
+                "weaver-aarch64-apple-darwin.tar.xz",
+                Some("weaver-aarch64-apple-darwin/weaver"),
+                &dest,
+            )
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
+    }
+
+    #[test]
+    fn test_extract_binary_detects_txz_extension() {
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[(
+            "weaver-aarch64-apple-darwin/weaver",
+            b"#!/bin/sh\necho weaver\n",
+            0o755,
+        )]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let extracted = provider
+            .extract_binary(
+                &data,
+                "weaver.txz",
+                Some("weaver-aarch64-apple-darwin/weaver"),
+                &dest,
+            )
+            .unwrap();
+
+        assert_eq!(extracted, dest.join("weaver"));
+        assert!(extracted.exists());
     }
 }

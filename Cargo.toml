@@ -113,6 +113,7 @@ indicatif = "0.18"
 bytes = "1.11"
 flate2 = "1.1"
 tar = "0.4"
+xz2 = "0.1"
 
 # Workspace detection and parsing dependencies
 toml = "0.9"

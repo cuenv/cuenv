@@ -113,6 +113,9 @@ Downloads binaries from GitHub Releases. Supports template variables:
 - `{os}` - normalized OS name (darwin, linux)
 - `{arch}` - normalized architecture (arm64, x86_64)
 
+Archive formats auto-detected by file extension: `.zip`, `.tar.gz`/`.tgz`,
+`.tar.xz`/`.txz`, and `.pkg` (macOS only).
+
 ```cue
 tools: {
     gh: {
