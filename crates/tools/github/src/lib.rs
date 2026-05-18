@@ -409,7 +409,7 @@ impl GitHubToolProvider {
                 })?;
 
                 let name = file.name().to_string();
-                if name.ends_with(path) || name == path {
+                if name == path || name.ends_with(&format!("/{}", path)) {
                     std::fs::create_dir_all(dest)?;
                     let file_name = std::path::Path::new(&name)
                         .file_name()
@@ -550,7 +550,7 @@ impl GitHubToolProvider {
                 })?;
 
                 let path_str = entry_path.to_string_lossy();
-                if path_str.ends_with(path) || path_str.as_ref() == path {
+                if path_str.as_ref() == path || path_str.ends_with(&format!("/{}", path)) {
                     let file_name = std::path::Path::new(path)
                         .file_name()
                         .and_then(|s| s.to_str())
@@ -1997,6 +1997,49 @@ mod tests {
         assert_eq!(extracted, dest.join("bin").join("weaver"));
         assert!(extracted.exists());
         assert!(dest.join("LICENSE").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_gz_extracts_all() {
+        // Parity with the tar.xz version: the github extractor doesn't flatten
+        // single-root prefixes, so we lay the archive out with bin/treefmt at
+        // the top level so `find_main_binary` can locate the primary executable.
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_gz(&[
+            ("bin/treefmt", b"#!/bin/sh\necho treefmt\n", 0o755),
+            ("LICENSE", b"MIT\n", 0o644),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("treefmt");
+
+        let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+
+        assert_eq!(extracted, dest.join("bin").join("treefmt"));
+        assert!(extracted.exists());
+        assert!(dest.join("LICENSE").exists());
+    }
+
+    #[test]
+    fn test_extract_from_tar_matches_path_components_not_suffix() {
+        // Regression: an entry like `notweaver/x` must NOT match the
+        // requested binary path `weaver`. The match must be anchored on
+        // a `/` boundary (or full-string equality), never a raw suffix.
+        let provider = GitHubToolProvider::new();
+        let data = build_tar_xz(&[
+            ("notweaver/x", b"decoy\n", 0o755),
+            ("subweaver", b"another-decoy\n", 0o755),
+        ]);
+        let temp = TempDir::new().unwrap();
+        let dest = temp.path().join("weaver");
+
+        let err = provider
+            .extract_from_tar_xz(&data, Some("weaver"), &dest)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not found"),
+            "expected 'not found' error, got: {}",
+            err
+        );
     }
 
     #[test]
