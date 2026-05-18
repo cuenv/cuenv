@@ -15,7 +15,8 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 Status guardrails:
 
 - Nix and devenv runtime environment acquisition are implemented.
-- Container and OCI runtime support are schema-only until the matrix says otherwise.
+- Container runtime support is schema-only until the matrix says otherwise.
+- OCI runtime is partial: `cuenv sync lock` writes resolved digests and per-image `extract` entries to `cuenv.lock`, and `#OCIActivate` (running `cuenv runtime oci activate`) extracts those binaries to the content-addressed cache and emits a `export PATH=...` line through the events renderer. An end-to-end fixture is still pending.
 - `#ContainerImage` is schema-visible, but `cuenv build` does not yet build images.
 - Services are partial: `down` is stubbed, `logs --follow` is TODO, and `restart` does not fully signal supervisors.
 - Keep standalone `#Devenv` separate from `#DevenvRuntime`.
@@ -23,6 +24,6 @@ Status guardrails:
 Adversarial prompts:
 
 - "Create a production image build with cuenv build." Explain current schema-only build status.
-- "Use OCI as the task runtime." Check matrix and avoid overclaiming.
+- "Use OCI as the task runtime." Use `#OCIActivate` as an `onEnter` hook to put OCI-extracted binaries on PATH; the matrix lists this as partial — task-level runtime activation is not implemented.
 - "Restart a running service." Explain the partial lifecycle state.
 

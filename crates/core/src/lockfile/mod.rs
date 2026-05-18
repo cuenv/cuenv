@@ -214,7 +214,7 @@ impl Lockfile {
     pub fn find_image_artifact(&self, image: &str) -> Option<&LockedArtifact> {
         self.artifacts
             .iter()
-            .find(|a| matches!(&a.kind, ArtifactKind::Image { image: img } if img == image))
+            .find(|a| matches!(&a.kind, ArtifactKind::Image { image: img, .. } if img == image))
     }
 
     /// Find a tool by name.
@@ -353,7 +353,9 @@ impl Lockfile {
             .artifacts
             .iter()
             .position(|a| match (&a.kind, &artifact.kind) {
-                (ArtifactKind::Image { image: i1 }, ArtifactKind::Image { image: i2 }) => i1 == i2,
+                (ArtifactKind::Image { image: i1, .. }, ArtifactKind::Image { image: i2, .. }) => {
+                    i1 == i2
+                }
             });
 
         if let Some(idx) = existing_idx {
@@ -432,7 +434,49 @@ pub enum ArtifactKind {
     Image {
         /// Full image reference (e.g., "nginx:1.25-alpine").
         image: String,
+        /// Binaries to extract from the image during activation.
+        ///
+        /// Populated by the lockfile sync from each `#OCIImage`'s `extract`
+        /// list. May be empty for legacy lockfiles produced before extract
+        /// paths were propagated; in that case, activation will skip the
+        /// image with a warning rather than extracting silently.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extract: Vec<LockedOciExtract>,
     },
+}
+
+/// A binary extraction entry locked into the lockfile.
+///
+/// Mirrors the `#OCIExtract` schema fields (path/as) so the activate-path
+/// in `cuenv runtime oci activate` can pull binaries out of layers without
+/// re-reading the CUE module.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LockedOciExtract {
+    /// Path to the binary inside the container (e.g., "/usr/sbin/nginx").
+    pub path: String,
+    /// Optional rename when exposing the binary on PATH.
+    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+}
+
+impl LockedOciExtract {
+    /// Compute the binary name that will be placed on PATH.
+    ///
+    /// Uses `as_name` if set, otherwise the final path component of
+    /// `path`. Falls back to `"binary"` if neither yields a usable name.
+    #[must_use]
+    pub fn binary_name(&self) -> String {
+        if let Some(name) = self.as_name.as_deref()
+            && !name.is_empty()
+        {
+            return name.to_string();
+        }
+        self.path
+            .rsplit('/')
+            .find(|component| !component.is_empty())
+            .unwrap_or("binary")
+            .to_string()
+    }
 }
 
 /// Platform-specific artifact data.
@@ -733,6 +777,7 @@ mod tests {
         lockfile.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([
                 (
@@ -765,11 +810,115 @@ mod tests {
     }
 
     #[test]
+    fn test_image_artifact_with_extract_roundtrip() {
+        let mut lockfile = Lockfile::new();
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: "nginx:1.25-alpine".to_string(),
+                extract: vec![
+                    LockedOciExtract {
+                        path: "/usr/sbin/nginx".to_string(),
+                        as_name: None,
+                    },
+                    LockedOciExtract {
+                        path: "/bin/sh".to_string(),
+                        as_name: Some("busybox-sh".to_string()),
+                    },
+                ],
+            },
+            platforms: BTreeMap::from([(
+                "linux-x86_64".to_string(),
+                PlatformData {
+                    digest: "sha256:def456".to_string(),
+                    size: Some(1234),
+                },
+            )]),
+        });
+
+        let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+        assert!(toml_str.contains("/usr/sbin/nginx"));
+        assert!(toml_str.contains("busybox-sh"));
+
+        let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed, lockfile);
+
+        let ArtifactKind::Image { extract, .. } = &parsed.artifacts[0].kind;
+        assert_eq!(extract.len(), 2);
+        assert_eq!(extract[0].binary_name(), "nginx");
+        assert_eq!(extract[1].binary_name(), "busybox-sh");
+    }
+
+    #[test]
+    fn test_legacy_image_artifact_without_extract_loads() {
+        // Lockfiles written before #OCIExtract was propagated must keep
+        // loading; activation will skip them with a warning rather than
+        // silently extracting nothing.
+        let legacy = r#"
+version = 4
+
+[[artifacts]]
+kind = "image"
+image = "nginx:1.25-alpine"
+
+  [artifacts.platforms]
+  "linux-x86_64" = { digest = "sha256:abc", size = 1234 }
+"#;
+        let parsed: Lockfile = toml::from_str(legacy).expect("legacy lockfile parses");
+        let artifact = parsed
+            .find_image_artifact("nginx:1.25-alpine")
+            .expect("artifact present");
+        let ArtifactKind::Image { extract, .. } = &artifact.kind;
+        assert!(
+            extract.is_empty(),
+            "legacy artifact should default to an empty extract list"
+        );
+    }
+
+    #[test]
+    fn test_locked_oci_extract_binary_name() {
+        assert_eq!(
+            LockedOciExtract {
+                path: "/usr/sbin/nginx".to_string(),
+                as_name: None,
+            }
+            .binary_name(),
+            "nginx"
+        );
+        assert_eq!(
+            LockedOciExtract {
+                path: "/usr/sbin/nginx".to_string(),
+                as_name: Some("my-nginx".to_string()),
+            }
+            .binary_name(),
+            "my-nginx"
+        );
+        // Trailing slash should not produce an empty name.
+        assert_eq!(
+            LockedOciExtract {
+                path: "/bin/".to_string(),
+                as_name: None,
+            }
+            .binary_name(),
+            "bin"
+        );
+        // Empty `as` falls back to path basename.
+        assert_eq!(
+            LockedOciExtract {
+                path: "/bin/sh".to_string(),
+                as_name: Some(String::new()),
+            }
+            .binary_name(),
+            "sh"
+        );
+    }
+
+    #[test]
     fn test_find_image_artifact() {
         let mut lockfile = Lockfile::new();
         lockfile.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::new(),
         });
@@ -785,6 +934,7 @@ mod tests {
         let artifact1 = LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
@@ -802,6 +952,7 @@ mod tests {
         let artifact2 = LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
@@ -843,6 +994,7 @@ mod tests {
         let artifact = LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::new(), // Empty - should fail
         };
@@ -864,6 +1016,7 @@ mod tests {
         let artifact = LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([(
                 "darwin-arm64".to_string(),
@@ -889,6 +1042,7 @@ mod tests {
         let artifact = LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([
                 (
