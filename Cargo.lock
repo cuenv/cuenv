@@ -1649,6 +1649,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "xz2",
  "zip",
 ]
 
@@ -1714,6 +1715,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "xz2",
  "zip",
 ]
 

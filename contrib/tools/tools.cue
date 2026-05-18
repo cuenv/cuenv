@@ -242,6 +242,46 @@ import "github.com/cuenv/cuenv/schema"
 	]
 }
 
+// #Weaver provides the OpenTelemetry Weaver CLI from GitHub releases.
+//
+// Weaver ships its release assets as `tar.xz` archives whose contents are
+// rooted in a `weaver-<target>/` directory containing the `weaver` binary.
+//
+// Usage:
+//
+//	runtime: schema.#ToolsRuntime & {
+//	    tools: weaver: xTools.#Weaver & {version: "0.23.0"}
+//	}
+#Weaver: schema.#Tool & {
+	version!: string
+	overrides: [
+		{os: "darwin", arch: "arm64", source: schema.#GitHub & {
+			repo:      "open-telemetry/weaver"
+			tagPrefix: "v"
+			asset:     "weaver-aarch64-apple-darwin.tar.xz"
+			path:      "weaver-aarch64-apple-darwin/weaver"
+		}},
+		{os: "darwin", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "open-telemetry/weaver"
+			tagPrefix: "v"
+			asset:     "weaver-x86_64-apple-darwin.tar.xz"
+			path:      "weaver-x86_64-apple-darwin/weaver"
+		}},
+		{os: "linux", arch: "x86_64", source: schema.#GitHub & {
+			repo:      "open-telemetry/weaver"
+			tagPrefix: "v"
+			asset:     "weaver-x86_64-unknown-linux-gnu.tar.xz"
+			path:      "weaver-x86_64-unknown-linux-gnu/weaver"
+		}},
+		{os: "linux", arch: "arm64", source: schema.#GitHub & {
+			repo:      "open-telemetry/weaver"
+			tagPrefix: "v"
+			asset:     "weaver-aarch64-unknown-linux-gnu.tar.xz"
+			path:      "weaver-aarch64-unknown-linux-gnu/weaver"
+		}},
+	]
+}
+
 // #Go provides the Go toolchain from GitHub releases.
 // Includes gofmt for formatting Go files.
 //

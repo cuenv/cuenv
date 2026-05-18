@@ -21,6 +21,9 @@ sha2 = "0.10"
 tar = "0.4"
 tokio = { version = "1", features = ["fs", "io-util"] }
 tracing = "0.1"
+# xz2 prefers system liblzma via pkg-config and falls back to a bundled C build,
+# mirroring the linking posture of flate2 elsewhere in the workspace.
+xz2 = "0.1"
 zip = "2"
 
 [dev-dependencies]

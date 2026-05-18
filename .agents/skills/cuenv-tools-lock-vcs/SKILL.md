@@ -15,6 +15,7 @@ Status guardrails:
 
 - Nix, GitHub, Rustup, URL, and OCI tool providers are all registered.
 - The OCI provider (`crates/tools/oci`) extracts a single binary at `path` from the platform-specific manifest layers; `image` and `path` both honor `{version}`, `{os}`, and `{arch}` templates. Multi-arch image indexes are walked and the matching `os`/`architecture` entry is selected.
+- GitHub and URL providers auto-extract `.zip`, `.tar.gz`/`.tgz`, and `.tar.xz`/`.txz`. GitHub additionally extracts `.pkg` on macOS. Unknown extensions are treated as raw binaries — point users at a supported archive form rather than letting compressed bytes get written to disk.
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
 - `#VcsDependency.subdir` performs sparse-checkout of a single subtree. The lockfile records the subtree hash and re-syncs are deterministic; `vendor: false` ignores the materialized subtree instead of leaving a nested `.git` checkout.
