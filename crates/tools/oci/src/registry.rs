@@ -290,10 +290,19 @@ fn select_index_entry<'a>(
 }
 
 /// Render the set of platforms available in an image index for error messages.
+///
+/// Filters out attestation manifests, which Docker Hub and GHCR emit with
+/// `platform: { os: "unknown", architecture: "unknown" }`. Those entries are
+/// never selectable by [`select_index_entry`], so showing them in error
+/// messages is pure noise.
 fn available_platforms(entries: &[ImageIndexEntry]) -> String {
     let mut rendered: Vec<String> = entries
         .iter()
         .filter_map(|entry| entry.platform.as_ref())
+        .filter(|p| {
+            !(p.os.eq_ignore_ascii_case("unknown")
+                && p.architecture.eq_ignore_ascii_case("unknown"))
+        })
         .map(|p| format!("{}/{}", p.os, p.architecture))
         .collect();
     rendered.sort();
@@ -636,6 +645,46 @@ mod tests {
     #[test]
     fn test_available_platforms_empty() {
         assert_eq!(available_platforms(&[]), "<none>");
+    }
+
+    #[test]
+    fn test_select_index_entry_ignores_attestation_under_real_query() {
+        // Synthetic image index with one real entry and an attestation entry
+        // (Docker Hub / GHCR emit `unknown/unknown` for attestation manifests).
+        let entries = vec![
+            index_entry("linux", "amd64", "sha256:real"),
+            index_entry("unknown", "unknown", "sha256:attestation"),
+        ];
+
+        // Real platform query selects the real entry.
+        let picked = select_index_entry(&entries, "linux", "amd64").unwrap();
+        assert_eq!(picked.digest, "sha256:real");
+
+        // No real platform query should ever land on the attestation entry.
+        for (os, arch) in [
+            ("linux", "arm64"),
+            ("darwin", "arm64"),
+            ("darwin", "amd64"),
+            ("windows", "amd64"),
+        ] {
+            let picked = select_index_entry(&entries, os, arch);
+            assert!(
+                picked.is_none_or(|e| e.digest != "sha256:attestation"),
+                "attestation entry must not match real platform query {os}/{arch}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_available_platforms_filters_attestation_entries() {
+        let entries = vec![
+            index_entry("linux", "amd64", "sha256:real-amd64"),
+            index_entry("linux", "arm64", "sha256:real-arm64"),
+            index_entry("unknown", "unknown", "sha256:attestation"),
+        ];
+        let rendered = available_platforms(&entries);
+        assert_eq!(rendered, "linux/amd64, linux/arm64");
+        assert!(!rendered.contains("unknown"));
     }
 
     #[test]

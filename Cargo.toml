@@ -136,6 +136,12 @@ cucumber = "0.22"
 gherkin = "0.14"
 tokio-test = "0.4"
 
+# Trait helpers
+async-trait = "0.1"
+
+# OCI registry client
+oci-distribution = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+
 [workspace.metadata.crane]
 name = "cuenv"
 

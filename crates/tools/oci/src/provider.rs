@@ -65,13 +65,18 @@ impl OciToolProvider {
     }
 
     /// Expand `{version}`, `{os}`, `{arch}` placeholders.
+    ///
+    /// `{arch}` follows the same convention used by the URL and GitHub
+    /// providers (`aarch64`, `x86_64`) so that templates are portable across
+    /// providers. Image-index platform selection still uses the OCI
+    /// convention (`arm64`, `amd64`) internally via [`Self::to_oci_platform`].
     fn expand_template(template: &str, version: &str, platform: &CorePlatform) -> String {
         let os_str = match platform.os {
             CoreOs::Darwin => "darwin",
             CoreOs::Linux => "linux",
         };
         let arch_str = match platform.arch {
-            CoreArch::Arm64 => "arm64",
+            CoreArch::Arm64 => "aarch64",
             CoreArch::X86_64 => "x86_64",
         };
 
@@ -329,7 +334,7 @@ mod tests {
             "1.2.3",
             &Platform::new(Os::Linux, Arch::Arm64),
         );
-        assert_eq!(result, "ghcr.io/owner/linux/tool:1.2.3-arm64");
+        assert_eq!(result, "ghcr.io/owner/linux/tool:1.2.3-aarch64");
     }
 
     #[test]
@@ -396,7 +401,7 @@ mod tests {
         let resolved = provider.resolve(&request).await.unwrap();
         match resolved.source {
             ToolSource::Oci { image, path } => {
-                assert_eq!(image, "ghcr.io/owner/linux-arm64:9.9.9");
+                assert_eq!(image, "ghcr.io/owner/linux-aarch64:9.9.9");
                 assert_eq!(path, "/opt/linux/tool");
             }
             _ => panic!("expected OCI source"),
