@@ -45,6 +45,9 @@ fn create_registry(flakes: HashMap<String, String>) -> ToolRegistry {
     // Register URL provider
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
+    // Register OCI provider
+    registry.register(cuenv_tools_oci::OciToolProvider::new());
+
     registry
 }
 

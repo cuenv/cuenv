@@ -29,6 +29,9 @@ fn create_registry() -> ToolRegistry {
     // Register URL provider
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
+    // Register OCI provider
+    registry.register(cuenv_tools_oci::OciToolProvider::new());
+
     registry
 }
 

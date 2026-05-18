@@ -26,12 +26,14 @@ mod cache;
 mod error;
 mod extract;
 mod platform;
+mod provider;
 mod registry;
 
 pub use cache::OciCache;
 pub use error::{Error, Result};
 pub use extract::extract_from_layers;
 pub use platform::{Platform, current_platform, normalize_platform};
+pub use provider::OciToolProvider;
 pub use registry::OciClient;
 
 /// Media type for OCI image layers (gzip compressed tar).
