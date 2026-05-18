@@ -11,8 +11,8 @@ use clap::{Arg, Command};
 use cuenv_ci::flake::FlakeLockAnalyzer;
 use cuenv_core::Result;
 use cuenv_core::lockfile::{
-    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedNixRuntime, LockedRuntime, LockedTool,
-    LockedToolPlatform, Lockfile, PlatformData,
+    ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedNixRuntime, LockedOciExtract, LockedRuntime,
+    LockedTool, LockedToolPlatform, Lockfile, PlatformData,
 };
 use cuenv_core::manifest::{
     Base, GitHubExtract, GitHubProviderConfig, NixRuntime, Project, Runtime, SourceConfig, ToolSpec,
@@ -153,6 +153,20 @@ struct CollectedRuntime {
     runtime: LockedRuntime,
 }
 
+/// Collected OCI image specification.
+///
+/// Aggregates per-image data across all projects that reference the image:
+/// the union of requested platforms and the union of extract entries
+/// (deduplicated by `path` so the lockfile stays stable).
+#[derive(Debug, Default, Clone)]
+struct CollectedImage {
+    /// Platforms requested for this image (insertion-ordered, deduped).
+    platforms: Vec<String>,
+    /// Extract entries keyed by `path` so we never write duplicates even
+    /// when several projects extract the same binary from the same image.
+    extract: BTreeMap<String, LockedOciExtract>,
+}
+
 /// Key type for tool deduplication: (name, version, source_hash).
 type ToolIdentityKey = (String, String, String);
 
@@ -262,7 +276,7 @@ async fn execute_lock_sync(
         let module_root = module.root.clone();
         let lockfile_path = module_root.join(LOCKFILE_NAME);
 
-        let mut image_platforms: HashMap<String, Vec<String>> = HashMap::new();
+        let mut image_platforms: HashMap<String, CollectedImage> = HashMap::new();
         let mut all_platforms: Vec<String> = Vec::new();
         let mut scoped_project_paths = Vec::new();
         let mut collected_runtimes = Vec::new();
@@ -314,11 +328,24 @@ async fn execute_lock_sync(
                     for image_spec in &oci_runtime.images {
                         let image = &image_spec.image;
 
-                        let platforms = image_platforms.entry(image.clone()).or_default();
+                        let collected = image_platforms.entry(image.clone()).or_default();
                         for platform in resolve_platforms {
-                            if !platforms.contains(platform) {
-                                platforms.push(platform.clone());
+                            if !collected.platforms.contains(platform) {
+                                collected.platforms.push(platform.clone());
                             }
+                        }
+                        // Collect extract entries so the lockfile can drive
+                        // binary extraction during `cuenv runtime oci activate`
+                        // without re-reading the CUE module. Dedup by `path`
+                        // so duplicate references across projects stay stable.
+                        for extract in &image_spec.extract {
+                            collected
+                                .extract
+                                .entry(extract.path.clone())
+                                .or_insert_with(|| LockedOciExtract {
+                                    path: extract.path.clone(),
+                                    as_name: extract.as_name.clone(),
+                                });
                         }
                     }
                 }
@@ -473,11 +500,11 @@ async fn execute_lock_sync(
     let mut artifacts: Vec<LockedArtifact> = Vec::new();
 
     // Process OCI images
-    for (image, platforms) in &image_platforms {
-        debug!(%image, ?platforms, "Resolving image");
+    for (image, collected) in &image_platforms {
+        debug!(%image, platforms = ?collected.platforms, "Resolving image");
 
         let mut platforms_map = BTreeMap::new();
-        for platform_str in platforms {
+        for platform_str in &collected.platforms {
             let platform = Platform::parse(platform_str).ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
                     "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
@@ -503,9 +530,14 @@ async fn execute_lock_sync(
             );
         }
 
+        // Materialize the collected extract entries; values() is sorted by
+        // path because the underlying map is a BTreeMap.
+        let extract: Vec<LockedOciExtract> = collected.extract.values().cloned().collect();
+
         artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: (*image).clone(),
+                extract,
             },
             platforms: platforms_map,
         });
@@ -1235,6 +1267,7 @@ mod tests {
         existing.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([(
                 "linux-x86_64".to_string(),
@@ -1295,6 +1328,7 @@ mod tests {
         existing.artifacts.push(LockedArtifact {
             kind: ArtifactKind::Image {
                 image: "nginx:1.25-alpine".to_string(),
+                extract: vec![],
             },
             platforms: BTreeMap::from([(
                 "linux-x86_64".to_string(),
