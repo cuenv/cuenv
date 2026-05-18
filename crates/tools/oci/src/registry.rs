@@ -3,7 +3,7 @@
 //! Uses `oci-distribution` for registry operations.
 
 use oci_distribution::client::{ClientConfig, ClientProtocol};
-use oci_distribution::manifest::OciDescriptor;
+use oci_distribution::manifest::{ImageIndexEntry, OciDescriptor, OciManifest};
 use oci_distribution::secrets::RegistryAuth;
 use oci_distribution::{Client, Reference};
 use sha2::{Digest, Sha256};
@@ -11,7 +11,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::OnceLock;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::cache::OciCache;
 use crate::platform::Platform;
@@ -57,7 +57,10 @@ impl OciClient {
 
     /// Resolve an image reference to a digest for a specific platform.
     ///
-    /// Returns the manifest digest for the platform-specific image.
+    /// Returns the manifest digest for the platform-specific image. For
+    /// multi-arch image indexes, walks the entries and selects the one whose
+    /// `platform.os`/`platform.architecture` match the requested platform.
+    /// For single-arch manifests, returns the layers without further filtering.
     pub async fn resolve_digest(&self, image: &str, platform: &Platform) -> Result<ResolvedImage> {
         let reference = parse_reference(image)?;
         info!(%image, %platform, "Resolving image digest");
@@ -65,34 +68,102 @@ impl OciClient {
         let auth = self.get_auth(&reference);
         let client = self.client()?;
 
-        // Pull the manifest and config
-        let (manifest, digest, _config) = client
-            .pull_manifest_and_config(&reference, &auth)
+        // Pull the raw manifest so we can dispatch on image-index vs image-manifest
+        // without relying on the client's default (host-based) platform resolver.
+        let (manifest, top_digest) = client
+            .pull_manifest(&reference, &auth)
             .await
             .map_err(|e| Error::Oci(e.to_string()))?;
 
-        trace!(?manifest, "Got manifest");
+        match manifest {
+            OciManifest::Image(image_manifest) => {
+                trace!(?image_manifest, "Got single-arch image manifest");
+                let layer_descriptors: Vec<OciDescriptor> = image_manifest.layers.clone();
+                let layers: Vec<String> =
+                    layer_descriptors.iter().map(|l| l.digest.clone()).collect();
 
-        // Extract layer digests from manifest
-        let layers: Vec<String> = manifest.layers.iter().map(|l| l.digest.clone()).collect();
+                debug!(
+                    %image,
+                    %platform,
+                    digest = %top_digest,
+                    layer_count = layers.len(),
+                    "Resolved single-arch image"
+                );
 
-        // Also store layer descriptors for pulling
-        let layer_descriptors: Vec<OciDescriptor> = manifest.layers.clone();
+                Ok(ResolvedImage {
+                    reference,
+                    digest: top_digest,
+                    layers,
+                    layer_descriptors,
+                })
+            }
+            OciManifest::ImageIndex(index) => {
+                debug!(
+                    %image,
+                    entries = index.manifests.len(),
+                    "Got multi-arch image index"
+                );
 
-        debug!(
-            %image,
-            %platform,
-            %digest,
-            layer_count = layers.len(),
-            "Resolved image"
-        );
+                let expected_oci_platform = platform.to_oci_platform();
+                let (expected_os, expected_arch) = expected_oci_platform
+                    .split_once('/')
+                    .unwrap_or((platform.os.as_str(), platform.arch.as_str()));
 
-        Ok(ResolvedImage {
-            reference,
-            digest,
-            layers,
-            layer_descriptors,
-        })
+                let entry = select_index_entry(&index.manifests, expected_os, expected_arch)
+                    .ok_or_else(|| {
+                        let available = available_platforms(&index.manifests);
+                        warn!(
+                            %image,
+                            requested = %expected_oci_platform,
+                            available = %available,
+                            "Requested platform not found in image index"
+                        );
+                        Error::platform_not_available(
+                            format!("{image} (available: {available})"),
+                            expected_oci_platform.clone(),
+                        )
+                    })?;
+
+                let child_reference = Reference::with_digest(
+                    reference.registry().to_string(),
+                    reference.repository().to_string(),
+                    entry.digest.clone(),
+                );
+
+                let (child_manifest, child_digest) = client
+                    .pull_manifest(&child_reference, &auth)
+                    .await
+                    .map_err(|e| Error::Oci(e.to_string()))?;
+
+                let image_manifest = match child_manifest {
+                    OciManifest::Image(manifest) => manifest,
+                    OciManifest::ImageIndex(_) => {
+                        return Err(Error::Oci(format!(
+                            "Child manifest for platform '{expected_oci_platform}' in '{image}' was unexpectedly an image index"
+                        )));
+                    }
+                };
+
+                let layer_descriptors: Vec<OciDescriptor> = image_manifest.layers.clone();
+                let layers: Vec<String> =
+                    layer_descriptors.iter().map(|l| l.digest.clone()).collect();
+
+                debug!(
+                    %image,
+                    %platform,
+                    digest = %child_digest,
+                    layer_count = layers.len(),
+                    "Resolved multi-arch image"
+                );
+
+                Ok(ResolvedImage {
+                    reference,
+                    digest: child_digest,
+                    layers,
+                    layer_descriptors,
+                })
+            }
+        }
     }
 
     /// Pull a blob (layer) to a file using its descriptor.
@@ -199,6 +270,39 @@ fn parse_reference(image: &str) -> Result<Reference> {
     image
         .parse()
         .map_err(|e: oci_distribution::ParseError| Error::invalid_reference(image, e.to_string()))
+}
+
+/// Select the manifest entry matching the requested OS and architecture.
+///
+/// `expected_os` and `expected_arch` use OCI/GOOS-GOARCH conventions
+/// (e.g., `linux`/`amd64`, `darwin`/`arm64`).
+fn select_index_entry<'a>(
+    entries: &'a [ImageIndexEntry],
+    expected_os: &str,
+    expected_arch: &str,
+) -> Option<&'a ImageIndexEntry> {
+    entries.iter().find(|entry| {
+        entry.platform.as_ref().is_some_and(|p| {
+            p.os.eq_ignore_ascii_case(expected_os)
+                && p.architecture.eq_ignore_ascii_case(expected_arch)
+        })
+    })
+}
+
+/// Render the set of platforms available in an image index for error messages.
+fn available_platforms(entries: &[ImageIndexEntry]) -> String {
+    let mut rendered: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry.platform.as_ref())
+        .map(|p| format!("{}/{}", p.os, p.architecture))
+        .collect();
+    rendered.sort();
+    rendered.dedup();
+    if rendered.is_empty() {
+        "<none>".to_string()
+    } else {
+        rendered.join(", ")
+    }
 }
 
 /// Compute the SHA256 digest of a file.
@@ -443,5 +547,106 @@ mod tests {
 
         assert!(resolved.layers.is_empty());
         assert!(resolved.layer_descriptors.is_empty());
+    }
+
+    // ==========================================================================
+    // Image index platform selection tests
+    // ==========================================================================
+
+    fn index_entry(os: &str, arch: &str, digest: &str) -> ImageIndexEntry {
+        ImageIndexEntry {
+            media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+            digest: digest.to_string(),
+            size: 0,
+            platform: Some(oci_distribution::manifest::Platform {
+                architecture: arch.to_string(),
+                os: os.to_string(),
+                os_version: None,
+                os_features: None,
+                variant: None,
+                features: None,
+            }),
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn test_select_index_entry_picks_matching_platform() {
+        let entries = vec![
+            index_entry("linux", "amd64", "sha256:lin-amd64"),
+            index_entry("linux", "arm64", "sha256:lin-arm64"),
+            index_entry("darwin", "arm64", "sha256:dar-arm64"),
+        ];
+
+        let picked = select_index_entry(&entries, "linux", "arm64").unwrap();
+        assert_eq!(picked.digest, "sha256:lin-arm64");
+
+        let picked = select_index_entry(&entries, "darwin", "arm64").unwrap();
+        assert_eq!(picked.digest, "sha256:dar-arm64");
+
+        let picked = select_index_entry(&entries, "linux", "amd64").unwrap();
+        assert_eq!(picked.digest, "sha256:lin-amd64");
+    }
+
+    #[test]
+    fn test_select_index_entry_case_insensitive() {
+        let entries = vec![index_entry("Linux", "ARM64", "sha256:case")];
+        let picked = select_index_entry(&entries, "linux", "arm64").unwrap();
+        assert_eq!(picked.digest, "sha256:case");
+    }
+
+    #[test]
+    fn test_select_index_entry_no_match() {
+        let entries = vec![
+            index_entry("linux", "amd64", "sha256:a"),
+            index_entry("linux", "arm64", "sha256:b"),
+        ];
+        assert!(select_index_entry(&entries, "windows", "amd64").is_none());
+        assert!(select_index_entry(&entries, "darwin", "arm64").is_none());
+    }
+
+    #[test]
+    fn test_select_index_entry_skips_entries_without_platform() {
+        let mut entries = vec![index_entry("linux", "arm64", "sha256:has-plat")];
+        entries.insert(
+            0,
+            ImageIndexEntry {
+                media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+                digest: "sha256:no-plat".to_string(),
+                size: 0,
+                platform: None,
+                annotations: None,
+            },
+        );
+
+        let picked = select_index_entry(&entries, "linux", "arm64").unwrap();
+        assert_eq!(picked.digest, "sha256:has-plat");
+    }
+
+    #[test]
+    fn test_available_platforms_renders_sorted_unique() {
+        let entries = vec![
+            index_entry("linux", "arm64", "sha256:a"),
+            index_entry("linux", "amd64", "sha256:b"),
+            index_entry("linux", "amd64", "sha256:c"),
+        ];
+        assert_eq!(available_platforms(&entries), "linux/amd64, linux/arm64");
+    }
+
+    #[test]
+    fn test_available_platforms_empty() {
+        assert_eq!(available_platforms(&[]), "<none>");
+    }
+
+    #[test]
+    fn test_available_platforms_entries_without_platform() {
+        let entries = vec![ImageIndexEntry {
+            media_type: "application/vnd.oci.image.manifest.v1+json".to_string(),
+            digest: "sha256:no-plat".to_string(),
+            size: 0,
+            platform: None,
+            annotations: None,
+        }];
+        assert_eq!(available_platforms(&entries), "<none>");
     }
 }
