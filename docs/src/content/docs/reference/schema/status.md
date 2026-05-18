@@ -20,7 +20,7 @@ Agents and contributors must use the matrix before generating examples or answer
 ## High-risk current gaps
 
 - Secrets: `#ExecSecret` and feature-gated `#OnePasswordRef` are implemented; `#AwsSecret`, `#GcpSecret`, and `#VaultSecret` are schema-only until runtime resolvers are registered.
-- Runtime and tools: Nix, devenv, GitHub, Nix, Rustup, URL, and OCI tool sources are implemented; container and OCI runtime (`#OCIRuntime`) support are not complete.
+- Runtime and tools: Nix, devenv, GitHub, Nix, Rustup, URL, and OCI tool sources are implemented; container runtime is not complete. OCI runtime (`#OCIRuntime`) is partial: `cuenv sync lock` resolves digests and per-image `extract` paths into `cuenv.lock`, and the `#OCIActivate` hook (`cuenv runtime oci activate`) extracts those binaries and prepends them to `PATH`.
 - Images: `#ContainerImage` is schema-visible, but `cuenv build` currently validates/lists rather than building images.
 - Services: `cuenv up`, `ps`, and basic logs exist, but `down`, `restart`, and `logs --follow` are partial.
 - Tasks: groups, sequences, params, output refs, and caching are real; `timeout`, `retry`, `continueOnError`, and group `maxConcurrency` need explicit limitation notes.

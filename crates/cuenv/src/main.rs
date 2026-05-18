@@ -1275,9 +1275,7 @@ async fn run_coordinator() -> Result<(), CliError> {
 /// This command is typically invoked by the `#OCIActivate` hook defined in
 /// `schema/oci.cue` to add OCI-managed binaries to the PATH.
 async fn run_oci_activate() -> Result<(), CliError> {
-    use cuenv_core::lockfile::{ArtifactKind, Lockfile};
     use cuenv_tools_oci::{OciCache, OciClient, current_platform};
-    use std::collections::HashSet;
 
     // Find the lockfile by walking up from current directory
     let lockfile_path = find_lockfile().ok_or_else(|| {
@@ -1288,7 +1286,7 @@ async fn run_oci_activate() -> Result<(), CliError> {
     })?;
 
     // Load the lockfile
-    let lockfile = Lockfile::load(&lockfile_path)
+    let lockfile = cuenv_core::lockfile::Lockfile::load(&lockfile_path)
         .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
         .ok_or_else(|| {
             CliError::config_with_help(
@@ -1297,10 +1295,6 @@ async fn run_oci_activate() -> Result<(), CliError> {
             )
         })?;
 
-    // Get current platform
-    let platform = current_platform();
-    let platform_str = platform.to_string();
-
     // Initialize OCI client and cache
     let client = OciClient::new();
     let cache = OciCache::default();
@@ -1308,67 +1302,127 @@ async fn run_oci_activate() -> Result<(), CliError> {
         .ensure_dirs()
         .map_err(|e| CliError::other(format!("Failed to create cache directories: {e}")))?;
 
-    // Track directories to add to PATH
+    let platform = current_platform();
+    let bin_dirs = activate_lockfile_artifacts(&lockfile, &client, &cache, &platform).await?;
+
+    // Output PATH modification through the events system so renderers can
+    // capture / forward it. The shell-eval contract of `#OCIActivate` (see
+    // `schema/oci.cue`) requires that the hook stdout be a sourceable
+    // `export PATH=...` line; `println_redacted` is the existing
+    // pass-through mechanism in `cuenv_events`.
+    if !bin_dirs.is_empty() {
+        let mut path_additions: Vec<String> =
+            bin_dirs.iter().map(|p| p.display().to_string()).collect();
+        // Sort for deterministic ordering across runs.
+        path_additions.sort();
+        cuenv_events::println_redacted(&format!(
+            "export PATH=\"{}:$PATH\"",
+            path_additions.join(":")
+        ));
+    }
+
+    Ok(())
+}
+
+/// Activate every artifact in the lockfile that matches `platform`, returning
+/// the set of `bin/` directories that should be prepended to PATH.
+///
+/// Extracted from [`run_oci_activate`] so it can be unit-tested without
+/// depending on the user's home directory (`OciCache::default()`) or
+/// `find_lockfile()`.
+async fn activate_lockfile_artifacts(
+    lockfile: &cuenv_core::lockfile::Lockfile,
+    client: &cuenv_tools_oci::OciClient,
+    cache: &cuenv_tools_oci::OciCache,
+    platform: &cuenv_tools_oci::Platform,
+) -> Result<std::collections::HashSet<PathBuf>, CliError> {
+    use cuenv_core::lockfile::ArtifactKind;
+    use cuenv_tools_oci::extract_from_layers;
+    use std::collections::HashSet;
+
+    let platform_str = platform.to_string();
     let mut bin_dirs: HashSet<PathBuf> = HashSet::new();
 
     for artifact in &lockfile.artifacts {
-        // Check if this artifact has data for our platform
         let Some(platform_data) = artifact.platforms.get(&platform_str) else {
-            // Skip artifacts not available for this platform
             continue;
         };
 
-        match &artifact.kind {
-            ArtifactKind::Image { image } => {
-                let digest = &platform_data.digest;
-                let binary_name = extract_binary_name_from_image(image);
+        let ArtifactKind::Image { image, extract } = &artifact.kind;
 
-                // Check if binary is already cached
-                if let Some(cached_path) = cache.get_binary(digest, &binary_name) {
-                    if let Some(parent) = cached_path.parent() {
-                        bin_dirs.insert(parent.to_path_buf());
-                    }
-                    continue;
-                }
+        if extract.is_empty() {
+            ::tracing::warn!(
+                image = %image,
+                "OCI image has no extract entries in the lockfile; skipping activation. \
+                 Add `extract: [{{ path: ... }}]` to the image in your CUE and re-run `cuenv sync lock`."
+            );
+            continue;
+        }
 
-                // Need to pull and extract
-                let resolved = client.resolve_digest(image, &platform).await.map_err(|e| {
-                    CliError::other(format!("Failed to resolve '{}': {}", image, e))
-                })?;
+        let digest = &platform_data.digest;
 
-                let layer_paths = client.pull_layers(&resolved, &cache).await.map_err(|e| {
-                    CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
-                })?;
-
-                // Extract binary - requires explicit path in CUE config
-                // For now, skip OCI images without explicit extract paths
-                if layer_paths.is_empty() {
-                    #[allow(clippy::print_stderr)] // Diagnostic warning, no secrets
-                    {
-                        eprintln!("Warning: OCI image '{}' has no layers to extract", image);
-                    }
-                    continue;
-                }
-
-                let dest = cache.binary_path(digest, &binary_name);
-                if let Some(parent) = dest.parent() {
+        // Fast path: every extract entry is already in the binary cache.
+        let all_cached = extract
+            .iter()
+            .all(|entry| cache.get_binary(digest, &entry.binary_name()).is_some());
+        if all_cached {
+            for entry in extract {
+                if let Some(cached_path) = cache.get_binary(digest, &entry.binary_name())
+                    && let Some(parent) = cached_path.parent()
+                {
                     bin_dirs.insert(parent.to_path_buf());
                 }
+            }
+            continue;
+        }
+
+        // Need to pull layers and extract any missing binaries.
+        let resolved = client
+            .resolve_digest(image, platform)
+            .await
+            .map_err(|e| CliError::other(format!("Failed to resolve '{}': {}", image, e)))?;
+
+        let layer_paths = client.pull_layers(&resolved, cache).await.map_err(|e| {
+            CliError::other(format!("Failed to pull layers for '{}': {}", image, e))
+        })?;
+
+        if layer_paths.is_empty() {
+            ::tracing::warn!(
+                image = %image,
+                "OCI image has no layers to extract; skipping activation"
+            );
+            continue;
+        }
+
+        for entry in extract {
+            let binary_name = entry.binary_name();
+            let dest = cache.binary_path(digest, &binary_name);
+
+            if !dest.exists() {
+                extract_from_layers(&layer_paths, &entry.path, &dest).map_err(|e| {
+                    CliError::other(format!(
+                        "Failed to extract '{}' from '{}': {}",
+                        entry.path, image, e
+                    ))
+                })?;
+            }
+
+            if !dest.exists() {
+                return Err(CliError::other(format!(
+                    "Extraction of '{}' from '{}' did not produce a file at {}",
+                    entry.path,
+                    image,
+                    dest.display()
+                )));
+            }
+
+            if let Some(parent) = dest.parent() {
+                bin_dirs.insert(parent.to_path_buf());
             }
         }
     }
 
-    // Output PATH modification
-    if !bin_dirs.is_empty() {
-        let path_additions: Vec<String> =
-            bin_dirs.iter().map(|p| p.display().to_string()).collect();
-        #[allow(clippy::print_stdout)] // PATH export contains no secrets
-        {
-            println!("export PATH=\"{}:$PATH\"", path_additions.join(":"));
-        }
-    }
-
-    Ok(())
+    Ok(bin_dirs)
 }
 
 /// Find the lockfile by walking up from current directory
@@ -1392,23 +1446,6 @@ fn find_lockfile() -> Option<PathBuf> {
             return None;
         }
     }
-}
-
-/// Extract binary name from image reference
-///
-/// For example: `nginx:1.25-alpine` -> `nginx`
-/// Extracts the last path component before the tag.
-fn extract_binary_name_from_image(image: &str) -> String {
-    // Remove tag/digest suffix
-    let without_tag = image.split(':').next().unwrap_or(image);
-    let without_digest = without_tag.split('@').next().unwrap_or(without_tag);
-
-    // Get last path component
-    without_digest
-        .rsplit('/')
-        .next()
-        .unwrap_or("binary")
-        .to_string()
 }
 
 /// Run as a hook supervisor process
@@ -1898,5 +1935,134 @@ mod tests {
             Command::Version { format } => assert_eq!(format, "text"),
             _ => panic!("Expected Command::Version"),
         }
+    }
+
+    /// Build a synthetic lockfile with a single image artifact carrying the
+    /// provided `extract` entries for `platform_str`.
+    fn make_oci_lockfile(
+        image: &str,
+        digest: &str,
+        platform_str: &str,
+        extract: Vec<cuenv_core::lockfile::LockedOciExtract>,
+    ) -> cuenv_core::lockfile::Lockfile {
+        use cuenv_core::lockfile::{ArtifactKind, LockedArtifact, Lockfile, PlatformData};
+        use std::collections::BTreeMap;
+
+        let mut lockfile = Lockfile::new();
+        lockfile.artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: image.to_string(),
+                extract,
+            },
+            platforms: BTreeMap::from([(
+                platform_str.to_string(),
+                PlatformData {
+                    digest: digest.to_string(),
+                    size: None,
+                },
+            )]),
+        });
+        lockfile
+    }
+
+    #[tokio::test]
+    async fn test_activate_lockfile_artifacts_cache_hit_path() {
+        use cuenv_core::lockfile::LockedOciExtract;
+        use cuenv_tools_oci::{OciCache, OciClient, Platform};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = OciCache::new(tmp.path().to_path_buf());
+        cache.ensure_dirs().unwrap();
+
+        let digest = "sha256:cafebabe";
+        let binary_name = "nginx";
+
+        // Pre-stage the binary in the cache so activate_lockfile_artifacts
+        // hits the fast path and never touches the network.
+        let staged_source = tmp.path().join("source-nginx");
+        std::fs::write(&staged_source, b"#!/bin/sh\necho nginx\n").unwrap();
+        let staged = cache
+            .store_binary(digest, binary_name, &staged_source)
+            .unwrap();
+        assert!(staged.exists());
+
+        let platform = Platform::new("linux", "x86_64");
+        let lockfile = make_oci_lockfile(
+            "nginx:1.25-alpine",
+            digest,
+            &platform.to_string(),
+            vec![LockedOciExtract {
+                path: "/usr/sbin/nginx".to_string(),
+                as_name: None,
+            }],
+        );
+
+        let client = OciClient::new();
+        let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
+            .await
+            .expect("activation should succeed via cache hit");
+
+        let expected_parent = cache.binary_path(digest, binary_name);
+        let expected_parent = expected_parent.parent().unwrap().to_path_buf();
+        assert!(
+            bin_dirs.contains(&expected_parent),
+            "bin_dirs ({bin_dirs:?}) should contain {expected_parent:?}"
+        );
+        assert_eq!(bin_dirs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_activate_lockfile_artifacts_skips_when_no_extract() {
+        use cuenv_tools_oci::{OciCache, OciClient, Platform};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = OciCache::new(tmp.path().to_path_buf());
+        cache.ensure_dirs().unwrap();
+
+        let platform = Platform::new("linux", "x86_64");
+        // No extract entries — should warn + skip without contacting any
+        // network and return an empty set of PATH directories.
+        let lockfile = make_oci_lockfile(
+            "nginx:1.25-alpine",
+            "sha256:cafebabe",
+            &platform.to_string(),
+            vec![],
+        );
+
+        let client = OciClient::new();
+        let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
+            .await
+            .expect("activation should succeed by skipping the artifact");
+
+        assert!(bin_dirs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_activate_lockfile_artifacts_skips_when_platform_mismatch() {
+        use cuenv_core::lockfile::LockedOciExtract;
+        use cuenv_tools_oci::{OciCache, OciClient, Platform};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = OciCache::new(tmp.path().to_path_buf());
+        cache.ensure_dirs().unwrap();
+
+        // Lockfile only has darwin-arm64 data; we activate on linux-x86_64.
+        let lockfile = make_oci_lockfile(
+            "nginx:1.25-alpine",
+            "sha256:cafebabe",
+            "darwin-arm64",
+            vec![LockedOciExtract {
+                path: "/usr/sbin/nginx".to_string(),
+                as_name: None,
+            }],
+        );
+
+        let platform = Platform::new("linux", "x86_64");
+        let client = OciClient::new();
+        let bin_dirs = super::activate_lockfile_artifacts(&lockfile, &client, &cache, &platform)
+            .await
+            .expect("should succeed by skipping non-matching platform");
+
+        assert!(bin_dirs.is_empty());
     }
 }
