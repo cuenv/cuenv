@@ -22,6 +22,7 @@ tar = "0.4"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util"] }
 tracing = "0.1"
+xz2 = "0.1"
 zip = "2"
 
 [dev-dependencies]
