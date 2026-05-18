@@ -1672,10 +1672,9 @@ version = "0.41.5"
 dependencies = [
  "async-trait",
  "cuenv-core",
- "dirs 5.0.1",
+ "dirs 6.0.0",
  "flate2",
  "oci-distribution",
- "reqwest 0.13.3",
  "serde",
  "serde_json",
  "sha2",
