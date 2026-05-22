@@ -96,4 +96,4 @@ If any constraint fails (e.g., a required string is missing, or a value doesn't 
 
 ## Secret Management
 
-For sensitive values, use secret references instead of hardcoding them. The [secret management guide](/how-to/secrets/) walks through the built-in resolvers and patterns.
+For sensitive values, use secret references instead of hardcoding them. The [secret management guide](/how-to/secrets/) walks through the built-in resolvers, including command-backed secrets, 1Password, and Infisical.

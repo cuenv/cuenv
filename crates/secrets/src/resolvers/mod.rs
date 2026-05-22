@@ -8,6 +8,7 @@
 //! Additional providers are available via separate crates:
 //!
 //! - `onepassword` - 1Password (cuenv-1password crate)
+//! - `infisical` - Infisical (cuenv-infisical crate)
 
 mod env;
 mod exec;

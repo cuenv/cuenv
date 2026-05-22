@@ -16,7 +16,7 @@ cuenv exec -e production -- ./deploy.sh
 ```
 
 - Environment variables are validated against CUE constraints
-- Secrets are resolved at runtime. Exec and 1Password are implemented; AWS, GCP, and Vault have schema definitions but are not registered by default.
+- Secrets are resolved at runtime. Exec, 1Password, and Infisical are implemented; AWS, GCP, and Vault have schema definitions but are not registered by default.
 - Secrets are never written to disk or exported to shell history
 
 ### `cuenv task <name>`
@@ -49,6 +49,11 @@ schema.#Project & {
 env: {
     NODE_ENV: "development" | "staging" | "production"
     API_KEY:  schema.#OnePasswordRef & { ref: "op://vault/api/key" }
+    INFISICAL_API_KEY: schema.#InfisicalSecret & {
+        projectId:   "00000000-0000-0000-0000-000000000000"
+        environment: "prod"
+        secretName:  "API_KEY"
+    }
 }
 
 tasks: {
@@ -119,15 +124,20 @@ env: {
         args: ["read", "op://vault/db/url"]
     }
     API_KEY: schema.#OnePasswordRef & { ref: "op://vault/api/key" }
+    INFISICAL_API_KEY: schema.#InfisicalSecret & {
+        projectId:   "00000000-0000-0000-0000-000000000000"
+        environment: "prod"
+        secretName:  "API_KEY"
+    }
 }
 ```
 
-Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands and `schema.#OnePasswordRef` for 1Password references. `schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
+Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `schema.#OnePasswordRef` for 1Password references, and `schema.#InfisicalSecret` for Infisical REST API references. `schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
 
 ## Key Concepts
 
 - **Type Safety**: CUE constraints validate environment variables before execution
-- **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets and `schema.#OnePasswordRef` for 1Password.
+- **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets, `schema.#OnePasswordRef` for 1Password, and `schema.#InfisicalSecret` for Infisical.
 - **Parallel Execution**: Object keys in task groups run concurrently
 - **Sequential Execution**: Array elements in task groups run in order
 - **Caching**: Tasks with `cache.mode` and declared inputs/outputs can reuse results by content hash

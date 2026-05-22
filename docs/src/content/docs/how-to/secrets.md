@@ -10,6 +10,7 @@ redacted before it reaches the terminal.
 The current user-facing secret types are:
 
 - `schema.#OnePasswordRef` for 1Password references.
+- `schema.#InfisicalSecret` for Infisical REST API references.
 - `schema.#ExecSecret` for custom command-backed providers.
 
 `schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present
@@ -56,6 +57,55 @@ selected:
 cuenv exec -e production -- printenv API_KEY
 ```
 
+## Infisical
+
+Use `schema.#InfisicalSecret` when the secret already lives in Infisical:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    env: {
+        DATABASE_URL: schema.#InfisicalSecret & {
+            projectId:   "00000000-0000-0000-0000-000000000000"
+            environment: "prod"
+            secretName:  "DATABASE_URL"
+        }
+
+        API_KEY: schema.#InfisicalSecret & {
+            projectId:   "00000000-0000-0000-0000-000000000000"
+            environment: "prod"
+            secretName:  "API_KEY"
+            secretPath:  "/backend"
+        }
+    }
+}
+```
+
+For local development, set either Universal Auth credentials:
+
+```bash
+export INFISICAL_CLIENT_ID=...
+export INFISICAL_CLIENT_SECRET=...
+cuenv env print
+```
+
+or an existing access token:
+
+```bash
+export INFISICAL_TOKEN=...
+cuenv env print
+```
+
+`INFISICAL_API_URL` can point at another Infisical region or a self-hosted
+instance. A secret can also set `apiUrl` directly. `cuenv secrets setup
+infisical` performs an authentication-environment preflight; it does not
+download files or contact the API.
+
 ## Custom Command Secrets
 
 Use `schema.#ExecSecret` for any provider that has a CLI:
@@ -99,8 +149,10 @@ schema.#Project & {
             args: ["scripts/deploy.sh"]
             inputs: ["scripts/deploy.sh"]
             env: {
-                DEPLOY_TOKEN: schema.#OnePasswordRef & {
-                    ref: "op://Production/Deploy/token"
+                DEPLOY_TOKEN: schema.#InfisicalSecret & {
+                    projectId:   "00000000-0000-0000-0000-000000000000"
+                    environment: "prod"
+                    secretName:  "DEPLOY_TOKEN"
                 }
             }
         }
