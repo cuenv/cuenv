@@ -27,12 +27,17 @@ pub use cuenv_secrets::resolvers::{EnvSecretResolver, ExecSecretResolver};
 #[cfg(feature = "1password")]
 pub use cuenv_1password::secrets::{OnePasswordConfig, OnePasswordResolver};
 
+// Conditionally re-export Infisical resolver when feature is enabled
+#[cfg(feature = "infisical")]
+pub use cuenv_infisical::secrets::{InfisicalConfig, InfisicalResolver};
+
 /// Create a default secret registry with all built-in resolvers
 ///
 /// This registers:
 /// - `env`: Environment variable resolver
 /// - `exec`: Command execution resolver
 /// - `onepassword`: 1Password resolver (when `1password` feature is enabled)
+/// - `infisical`: Infisical resolver (when `infisical` feature is enabled)
 ///
 /// # Errors
 ///
@@ -54,6 +59,15 @@ pub fn create_default_registry() -> Result<SecretRegistry> {
         registry.register(Arc::new(op_resolver));
     }
 
+    // Register Infisical resolver if feature is enabled
+    #[cfg(feature = "infisical")]
+    {
+        let infisical_resolver = InfisicalResolver::new().map_err(|e| {
+            Error::configuration(format!("Failed to initialize Infisical resolver: {e}"))
+        })?;
+        registry.register(Arc::new(infisical_resolver));
+    }
+
     Ok(registry)
 }
 
@@ -73,12 +87,13 @@ pub struct ExecResolver {
 /// variable resolution. Supports multiple resolver types:
 /// - `exec`: Execute a command to get the secret
 /// - `onepassword`: Resolve from 1Password using `ref` field
+/// - `infisical`: Resolve from Infisical using explicit project/environment/secret fields
 /// - `aws`, `gcp`, `vault`: Cloud provider secrets
 ///
 /// Resolution is delegated to the trait-based [`SecretResolver`] system.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Secret {
-    /// Resolver type: "exec", "onepassword", "aws", "gcp", "vault"
+    /// Resolver type: "exec", "onepassword", "infisical", "aws", "gcp", "vault"
     pub resolver: String,
 
     /// Command to execute (for exec resolver)

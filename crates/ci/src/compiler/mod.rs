@@ -3405,6 +3405,63 @@ mod tests {
     }
 
     #[test]
+    fn test_value_has_provider_with_infisical_secret() {
+        use cuenv_core::environment::EnvValue;
+        use cuenv_core::secrets::Secret;
+        use serde_json::json;
+        use std::collections::HashMap;
+
+        let mut extra = HashMap::new();
+        extra.insert("projectId".to_string(), json!("project"));
+        extra.insert("environment".to_string(), json!("prod"));
+        extra.insert("secretName".to_string(), json!("API_KEY"));
+        let value = EnvValue::Secret(Secret {
+            resolver: "infisical".to_string(),
+            command: String::new(),
+            args: Vec::new(),
+            op_ref: None,
+            extra,
+        });
+
+        assert!(Compiler::value_has_provider(
+            &value,
+            &["infisical".to_string()]
+        ));
+        assert!(!Compiler::value_has_provider(
+            &value,
+            &["onepassword".to_string()]
+        ));
+    }
+
+    #[test]
+    fn test_value_has_provider_with_policies_infisical_secret() {
+        use cuenv_core::environment::{EnvValue, EnvValueSimple, EnvVarWithPolicies};
+        use cuenv_core::secrets::Secret;
+        use serde_json::json;
+        use std::collections::HashMap;
+
+        let mut extra = HashMap::new();
+        extra.insert("projectId".to_string(), json!("project"));
+        extra.insert("environment".to_string(), json!("prod"));
+        extra.insert("secretName".to_string(), json!("API_KEY"));
+        let value = EnvValue::WithPolicies(EnvVarWithPolicies {
+            value: EnvValueSimple::Secret(Secret {
+                resolver: "infisical".to_string(),
+                command: String::new(),
+                args: Vec::new(),
+                op_ref: None,
+                extra,
+            }),
+            policies: None,
+        });
+
+        assert!(Compiler::value_has_provider(
+            &value,
+            &["infisical".to_string()]
+        ));
+    }
+
+    #[test]
     fn test_value_has_provider_interpolated_only_literals() {
         use cuenv_core::environment::{EnvPart, EnvValue};
 

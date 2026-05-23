@@ -246,11 +246,17 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         }
     }
 
-    // Add OP_SERVICE_ACCOUNT_TOKEN to redaction list if set (it's a credential, not a secret from resolver)
-    if let Ok(token) = std::env::var("OP_SERVICE_ACCOUNT_TOKEN")
-        && !token.is_empty()
-    {
-        secrets_for_redaction.push(token);
+    // Add provider bootstrap credentials to redaction list if set.
+    for name in [
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "INFISICAL_TOKEN",
+        "INFISICAL_CLIENT_SECRET",
+    ] {
+        if let Ok(token) = std::env::var(name)
+            && !token.is_empty()
+        {
+            secrets_for_redaction.push(token);
+        }
     }
 
     // Ensure lockfile is up to date for tools declared in the current project.

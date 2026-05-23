@@ -178,9 +178,9 @@ Configures 1Password secret resolution for environments with `op://` references.
 
 **Activation:** Pipeline environment contains 1Password secret references (`op://...` URIs or `resolver: "onepassword"`)
 
-**Phase:** Setup (priority 15)
+**Phase:** Setup (priority 20)
 
-**Task ID:** `setup-1password`
+**Task ID:** `cuenv:contributor:1password.setup`
 
 **Environment Variables:**
 
@@ -209,6 +209,47 @@ ci: pipelines: [
         tasks: ["deploy"]
     },
 ]
+```
+
+---
+
+### InfisicalContributor
+
+Validates Infisical REST API secret resolution credentials for environments
+with `resolver: "infisical"` references.
+
+**Activation:** Pipeline environment contains Infisical secret references
+(`resolver: "infisical"`)
+
+**Phase:** Setup (priority 20)
+
+**Task ID:** `cuenv:contributor:infisical.setup`
+
+**Environment Variables:**
+
+- `INFISICAL_CLIENT_ID`: Injected from GitHub secrets when using Universal Auth
+- `INFISICAL_CLIENT_SECRET`: Injected from GitHub secrets when using Universal Auth
+- `INFISICAL_TOKEN`: Injected from GitHub secrets when using direct token auth
+- `INFISICAL_ORGANIZATION_SLUG`: Optional organization slug
+
+**Configuration Example:**
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "my-project"
+
+env: {
+    production: {
+        API_TOKEN: schema.#InfisicalSecret & {
+            projectId:   "00000000-0000-0000-0000-000000000000"
+            environment: "prod"
+            secretName:  "API_TOKEN"
+        }
+    }
+}
 ```
 
 ---
@@ -349,7 +390,7 @@ import "github.com/cuenv/cuenv/contrib/contributors"
 ci: contributors: contributors.#DefaultContributors
 
 // Or select specific sets
-ci: contributors: contributors.#CoreContributors    // Nix, Cuenv, 1Password only
+ci: contributors: contributors.#CoreContributors    // Nix, Cuenv, 1Password, Infisical
 ci: contributors: contributors.#GitHubContributors  // GitHub-specific only
 
 // Or pick individual contributors
@@ -367,7 +408,7 @@ For release pipelines, use the Nix cache contributor your project is configured 
 
 | Set                    | Contributors                                                |
 | ---------------------- | ----------------------------------------------------------- |
-| `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`                            |
+| `#CoreContributors`    | `#Nix`, `#Cuenv`, `#OnePassword`, `#Infisical`              |
 | `#GitHubContributors`  | `#Cachix`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing` |
 | `#DefaultContributors` | All of the above                                            |
 

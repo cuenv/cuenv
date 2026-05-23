@@ -43,6 +43,7 @@ pub use resolvers::{EnvSecretResolver, ExecSecretResolver};
 
 // Provider implementations are in separate crates:
 // - cuenv-1password: OnePasswordResolver, OnePasswordConfig
+// - cuenv-infisical: InfisicalResolver, InfisicalConfig
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

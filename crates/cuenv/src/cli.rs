@@ -1107,10 +1107,10 @@ pub enum SecretsCommands {
         /// Provider to set up.
         #[arg(help = "Provider to set up", value_enum)]
         provider: SecretsProvider,
-        /// Override the default WASM URL (for 1Password).
+        /// Override the default WASM URL (for providers that use a WASM setup step).
         #[arg(
             long,
-            help = "Override the default WASM URL (for 1Password)",
+            help = "Override the default WASM URL (for providers that use a WASM setup step)",
             value_name = "URL"
         )]
         wasm_url: Option<String>,
@@ -1122,6 +1122,8 @@ pub enum SecretsCommands {
 pub enum SecretsProvider {
     /// 1Password (downloads WASM SDK for HTTP mode).
     Onepassword,
+    /// Infisical (checks REST API authentication environment).
+    Infisical,
 }
 
 /// Runtime subcommands for managing runtime environments.

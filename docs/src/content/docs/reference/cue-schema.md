@@ -816,7 +816,7 @@ tasks: {
 
 ### #Secret
 
-Base secret type with exec-based resolution.
+Base secret type with resolver-based resolution.
 
 ```cue
 env: {
@@ -830,11 +830,11 @@ env: {
 
 **Fields:**
 
-| Field      | Type          | Description                |
-| ---------- | ------------- | -------------------------- |
-| `resolver` | `"exec"`      | Always "exec"              |
-| `command`  | `string`      | Command to retrieve secret |
-| `args`     | `[...string]` | Command arguments          |
+| Field      | Type                                                                | Description            |
+| ---------- | ------------------------------------------------------------------- | ---------------------- |
+| `resolver` | `exec`, `onepassword`, `infisical`, `aws`, `gcp`, `vault`           | Secret provider        |
+| `command`  | `string`                                                            | Exec command           |
+| `args`     | `[...string]`                                                       | Exec command arguments |
 
 ### #OnePasswordRef
 
@@ -853,6 +853,35 @@ env: {
 | Field | Type     | Description             |
 | ----- | -------- | ----------------------- |
 | `ref` | `string` | 1Password reference URI |
+
+### #InfisicalSecret
+
+Infisical REST API secret reference.
+
+```cue
+env: {
+    API_KEY: schema.#InfisicalSecret & {
+        projectId:   "00000000-0000-0000-0000-000000000000"
+        environment: "prod"
+        secretName:  "API_KEY"
+        secretPath:  "/" // default
+    }
+}
+```
+
+**Fields:**
+
+| Field                    | Type                  | Default     | Description                        |
+| ------------------------ | --------------------- | ----------- | ---------------------------------- |
+| `projectId`              | `string`              | required    | Infisical project ID               |
+| `environment`            | `string`              | required    | Infisical environment slug         |
+| `secretName`             | `string`              | required    | Secret name                        |
+| `secretPath`             | `string`              | "/"         | Secret folder path                 |
+| `type`                   | `shared`, `personal`  | "shared"    | Secret type                        |
+| `version`                | `int`                 | latest      | Optional secret version            |
+| `expandSecretReferences` | `bool`                | true        | Expand Infisical secret references |
+| `includeImports`         | `bool`                | true        | Include imported secrets           |
+| `apiUrl`                 | `string`              | env/default | Infisical API base URL             |
 
 ### #GcpSecret
 

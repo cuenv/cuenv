@@ -166,6 +166,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "ci-infisical",
+            min_task_count: 1, // deploy
+            has_hooks: false,
+            has_env: true, // Has production environment with Infisical refs
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "ci-cachix",
             min_task_count: 1, // build
             has_hooks: false,
