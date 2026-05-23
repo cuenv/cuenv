@@ -6,8 +6,9 @@ package schema
 // - GCP: GOOGLE_APPLICATION_CREDENTIALS → HTTP, otherwise CLI
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI
+// - Infisical: Universal Auth env vars or INFISICAL_TOKEN → HTTP
 #Secret: {
-	resolver: "aws" | "gcp" | "onepassword" | "vault" | "exec"
+	resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
 	...
 }
 

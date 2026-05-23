@@ -18,6 +18,7 @@ pub fn execute_secrets_setup(
 ) -> Result<(), CliError> {
     match provider {
         SecretsProvider::Onepassword => setup_onepassword(wasm_url),
+        SecretsProvider::Infisical => setup_infisical(),
     }
 }
 
@@ -79,4 +80,35 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     println!("Set OP_SERVICE_ACCOUNT_TOKEN to use HTTP mode instead of CLI.");
 
     Ok(())
+}
+
+/// Set up Infisical by validating required authentication environment variables.
+#[allow(clippy::print_stdout)] // Preflight status messages, no secrets
+fn setup_infisical() -> Result<(), CliError> {
+    let has_client_id = has_env("INFISICAL_CLIENT_ID");
+    let has_client_secret = has_env("INFISICAL_CLIENT_SECRET");
+    let has_token = has_env("INFISICAL_TOKEN");
+
+    match (has_client_id, has_client_secret, has_token) {
+        (true, true, _) => {
+            println!("Infisical Universal Auth environment detected.");
+            println!("cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.");
+            Ok(())
+        }
+        (false, false, true) => {
+            println!("Infisical token environment detected.");
+            println!("cuenv will use INFISICAL_TOKEN.");
+            Ok(())
+        }
+        (true, false, _) | (false, true, _) => Err(CliError::config(
+            "INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET must be set together.",
+        )),
+        (false, false, false) => Err(CliError::config(
+            "Set INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET, or set INFISICAL_TOKEN.",
+        )),
+    }
+}
+
+fn has_env(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
 }

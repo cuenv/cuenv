@@ -65,8 +65,16 @@ fn main() {
 
     // Register known credential environment variables for redaction.
     // This ensures any output containing these values is automatically redacted.
-    if let Ok(token) = std::env::var("OP_SERVICE_ACCOUNT_TOKEN") {
-        cuenv_events::register_secret(token);
+    for name in [
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "INFISICAL_TOKEN",
+        "INFISICAL_CLIENT_SECRET",
+    ] {
+        if let Ok(token) = std::env::var(name)
+            && !token.is_empty()
+        {
+            cuenv_events::register_secret(token);
+        }
     }
 
     // Handle shell completion requests first (before any other processing)
