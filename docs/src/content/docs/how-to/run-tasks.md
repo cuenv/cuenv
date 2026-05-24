@@ -40,7 +40,7 @@ tasks: {
         args: ["test"]
     }
 
-    // A task with dependencies (uses CUE references, not strings!)
+    // A task with dependencies (prefer CUE references for validation)
     build: schema.#Task & {
         description: "Build the application"
         command: "cargo"

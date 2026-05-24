@@ -205,10 +205,10 @@ tasks: {
         schema.#Task & { command: "notify" },
     ]
 
-    // Dependencies use CUE references (not strings)
+    // Dependencies prefer CUE references for validation
     release: schema.#Task & {
         command: "release"
-        dependsOn: [build, checks]  // References, not strings!
+        dependsOn: [build, checks]
     }
 }
 ```
