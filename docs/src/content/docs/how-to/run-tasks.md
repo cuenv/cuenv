@@ -78,7 +78,7 @@ tasks: {
 ```
 
 :::tip[CUE Reference Dependencies]
-Notice that `dependsOn: [lint, test]` uses **CUE references** (no quotes), not strings. This provides compile-time validation - if you reference a task that doesn't exist, CUE will report an error before execution.
+Prefer `dependsOn: [lint, test]` with **CUE references** (no quotes) for compile-time validation. String task ids such as `dependsOn: ["lint", "test"]` are also accepted when a reusable definition cannot name a task reference.
 :::
 
 ## Running Tasks

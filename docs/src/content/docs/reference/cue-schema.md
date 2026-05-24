@@ -310,7 +310,7 @@ schema.#Project & {
 | `scriptShell`    | `#ScriptShell`                                    | No       | Shell for script execution (default: bash) |
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
-| `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
+| `dependsOn`      | `[...(string \| #TaskNode \| #ContainerImage)]`  | No       | Task dependencies (ids or CUE references) |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
@@ -351,7 +351,7 @@ tasks: {
 | Field            | Type             | Required | Description                        |
 | ---------------- | ---------------- | -------- | ---------------------------------- |
 | `type`           | `"group"`        | Yes      | Type discriminator                 |
-| `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
+| `dependsOn`      | `[...(string \| #TaskNode)]` | No       | Dependencies (ids or CUE references) |
 | `maxConcurrency` | `int`            | No       | Limit concurrent tasks (0 = unlimited) |
 | `description`    | `string`         | No       | Human-readable description         |
 | `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|

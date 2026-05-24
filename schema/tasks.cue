@@ -125,8 +125,8 @@ package schema
 	// declared inputs available. When false, task runs directly in the workspace.
 	hermetic?: bool | *true
 
-	// Dependencies - reference other tasks or images for compile-time validation
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	// Dependencies - reference task/image nodes or string ids
+	dependsOn?: [...(string | #TaskNode | #ContainerImage)]
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]
@@ -178,8 +178,8 @@ package schema
 	// Type discriminator - must be "group"
 	type: "group"
 
-	// Dependencies on other tasks
-	dependsOn?: [...#TaskNode]
+	// Dependencies on other tasks by node reference or string id
+	dependsOn?: [...(string | #TaskNode)]
 
 	// Limit concurrent executions (0 = unlimited)
 	maxConcurrency?: int

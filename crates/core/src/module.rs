@@ -1061,6 +1061,70 @@ mod tests {
     }
 
     #[test]
+    fn test_depends_on_accepts_string_task_ids_without_references() {
+        let instance = json!({
+            "name": "string-dependency-contract",
+            "tasks": {
+                "migrate": {
+                    "command": "echo",
+                    "args": ["migrate"],
+                },
+                "deploy": {
+                    "command": "echo",
+                    "args": ["deploy"],
+                    "dependsOn": ["migrate"],
+                },
+            },
+            "ci": {
+                "pipelines": {
+                    "default": {
+                        "tasks": [
+                            {
+                                "command": "echo",
+                                "args": ["deploy"],
+                                "dependsOn": ["migrate"],
+                            },
+                        ],
+                    },
+                },
+            },
+        });
+
+        let project = deserialize_project_with_references(instance, ReferenceMap::new());
+        let deploy = project.tasks.get("deploy").expect("deploy task should exist");
+        let deploy_deps: Vec<&str> = deploy
+            .depends_on()
+            .iter()
+            .map(|dependency| dependency.task_name())
+            .collect();
+        assert_eq!(deploy_deps, vec!["migrate"]);
+
+        let pipeline_task = project
+            .ci
+            .as_ref()
+            .expect("ci should exist")
+            .pipelines
+            .get("default")
+            .expect("default pipeline should exist")
+            .tasks
+            .first()
+            .expect("pipeline task should exist");
+
+        assert!(matches!(
+            pipeline_task,
+            PipelineTask::Node(TaskNode::Task(_))
+        ));
+        if let PipelineTask::Node(TaskNode::Task(task)) = pipeline_task {
+            let task_deps: Vec<&str> = task
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.task_name())
+                .collect();
+            assert_eq!(task_deps, vec!["migrate"]);
+        }
+    }
+
+    #[test]
     fn test_service_depends_on_canonicalizes_task_and_service_references() {
         let instance = json!({
             "name": "service-contract",
