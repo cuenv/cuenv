@@ -18,6 +18,11 @@ pub type ReferenceMap = HashMap<String, String>;
 ///
 /// The CUE bridge exports raw reference paths which may include task or
 /// service prefixes, including common let-binding aliases.
+///
+/// Also handles reusable-definition paths such as `_svc.tasks.migrate` that
+/// arise when a task is composed through a hidden let-binding
+/// (`_svc: #Svc; tasks: _svc.tasks`). In that case CUE's ReferencePath may
+/// return `_svc.tasks.<name>` rather than the canonical `tasks.<name>`.
 fn strip_dependency_prefix(path: &str) -> &str {
     const DEP_PREFIXES: &[&str] = &[
         "tasks.",
@@ -35,6 +40,12 @@ fn strip_dependency_prefix(path: &str) -> &str {
             return stripped;
         }
     }
+    // Handle reusable-definition paths like `_svc.tasks.name` or
+    // `_def._inner.tasks.group.subtask`. Find the first `.tasks.` segment
+    // and return everything after it.
+    if let Some(idx) = path.find(".tasks.") {
+        return &path[idx + ".tasks.".len()..];
+    }
     path
 }
 
@@ -51,6 +62,29 @@ fn is_ci_matrix_task_object(
         || obj.get("type").and_then(serde_json::Value::as_str) == Some("matrix")
 }
 
+/// Build a fingerprint map from `tasks.*` values in the root JSON.
+///
+/// For each task in `root["tasks"]`, we serialize its JSON representation to a
+/// canonical string fingerprint and map it to the task name. This allows a
+/// fallback resolution path when CUE `ReferencePath()` metadata is absent or
+/// uses a hidden-binding path that `strip_dependency_prefix` cannot canonicalize
+/// (e.g., when a reusable definition is composed before task names are assigned).
+///
+/// Note: the fingerprints are built from the *immutable* snapshot of `root`
+/// before any `_name` injections so that the serialization is stable.
+fn build_task_fingerprints(root: &serde_json::Value) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Some(tasks_obj) = root.get("tasks").and_then(serde_json::Value::as_object) {
+        for (name, task_val) in tasks_obj {
+            // Use the compact JSON of the task as a unique fingerprint.
+            if let Ok(fp) = serde_json::to_string(task_val) {
+                map.entry(fp).or_insert_with(|| name.clone());
+            }
+        }
+    }
+    map
+}
+
 /// Enrich task references in a JSON value with _name fields using reference metadata.
 ///
 /// Walks the JSON structure recursively, finding task references and injecting
@@ -61,7 +95,10 @@ fn is_ci_matrix_task_object(
 /// - `task` fields (pipeline MatrixTask references)
 /// - Pipeline task arrays (`ci.pipelines.*.tasks`)
 fn enrich_task_refs(value: &mut serde_json::Value, instance_path: &str, references: &ReferenceMap) {
-    enrich_task_refs_recursive(value, instance_path, "", references);
+    // Build task fingerprints *before* mutating the JSON so that comparisons
+    // against the immutable task definitions remain valid.
+    let fingerprints = build_task_fingerprints(value);
+    enrich_task_refs_recursive(value, instance_path, "", references, &fingerprints);
 }
 
 /// Recursively walk JSON and enrich task references
@@ -70,6 +107,7 @@ fn enrich_task_refs_recursive(
     instance_path: &str,
     field_path: &str,
     references: &ReferenceMap,
+    fingerprints: &HashMap<String, String>,
 ) {
     match value {
         serde_json::Value::Object(obj) => {
@@ -81,7 +119,7 @@ fn enrich_task_refs_recursive(
                     format!("{}.dependsOn", field_path)
                 };
 
-                enrich_task_ref_array(deps, instance_path, &depends_on_path, references);
+                enrich_task_ref_array(deps, instance_path, &depends_on_path, references, fingerprints);
             }
 
             // Handle "task" field for CI matrix tasks only.
@@ -94,12 +132,27 @@ fn enrich_task_refs_recursive(
                     format!("{}.task", field_path)
                 };
                 let meta_key = format!("{}/{}", instance_path, task_path);
-                if let Some(reference) = references.get(&meta_key) {
-                    let task_name = strip_dependency_prefix(reference).to_string();
+                let task_name_opt = references
+                    .get(&meta_key)
+                    .map(|r| strip_dependency_prefix(r).to_string())
+                    .or_else(|| {
+                        // Fingerprint fallback for matrix task references
+                        if let Ok(fp) = serde_json::to_string(&*task_value) {
+                            fingerprints.get(&fp).cloned()
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(task_name) = task_name_opt {
                     match task_value {
                         serde_json::Value::Object(task_obj) => {
-                            // Skip if _name already set
-                            if !task_obj.contains_key("_name") {
+                            // Skip if _name already set to a non-empty value
+                            if task_obj
+                                .get("_name")
+                                .and_then(serde_json::Value::as_str)
+                                .is_none_or(str::is_empty)
+                            {
                                 task_obj.insert(
                                     "_name".to_string(),
                                     serde_json::Value::String(task_name),
@@ -129,7 +182,7 @@ fn enrich_task_refs_recursive(
                 } else {
                     format!("{}.{}", field_path, key)
                 };
-                enrich_task_refs_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references, fingerprints);
             }
         }
         serde_json::Value::Array(arr) => {
@@ -139,38 +192,64 @@ fn enrich_task_refs_recursive(
                 field_path.contains("pipelines.") && field_path.ends_with(".tasks");
 
             if is_pipeline_tasks {
-                enrich_task_ref_array(arr, instance_path, field_path, references);
+                enrich_task_ref_array(arr, instance_path, field_path, references, fingerprints);
             }
 
             for (i, child) in arr.iter_mut().enumerate() {
                 let child_path = format!("{}[{}]", field_path, i);
-                enrich_task_refs_recursive(child, instance_path, &child_path, references);
+                enrich_task_refs_recursive(child, instance_path, &child_path, references, fingerprints);
             }
         }
         _ => {}
     }
 }
 
-/// Enrich task reference objects in an array with _name from reference metadata
+/// Enrich task reference objects in an array with _name from reference metadata.
+///
+/// First tries the CUE reference metadata (`references`). If no metadata entry
+/// is found for an element (which happens for reusable-definition task refs when
+/// CUE's `ReferencePath()` returns a hidden-binding path the bridge didn't
+/// record), falls back to matching the element's JSON fingerprint against the
+/// project-level `tasks.*` map.
 fn enrich_task_ref_array(
     arr: &mut [serde_json::Value],
     instance_path: &str,
     array_path: &str,
     references: &ReferenceMap,
+    fingerprints: &HashMap<String, String>,
 ) {
     for (i, element) in arr.iter_mut().enumerate() {
+        // Skip elements that already have a valid _name set
+        if let serde_json::Value::Object(obj) = &*element {
+            if obj
+                .get("_name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+            {
+                continue;
+            }
+        }
+
         // Look up the reference in metadata
         let meta_key = format!("{}/{}[{}]", instance_path, array_path, i);
-        if let Some(reference) = references.get(&meta_key) {
-            // CUE ReferencePath already provides canonical path - just strip prefix
-            let task_name = strip_dependency_prefix(reference).to_string();
+        let task_name_opt = references
+            .get(&meta_key)
+            .map(|r| strip_dependency_prefix(r).to_string())
+            .or_else(|| {
+                // Fingerprint fallback: when no reference metadata exists (e.g.,
+                // the task object was composed through a reusable definition and
+                // the bridge did not record its canonical path), match the raw JSON
+                // of this element against the project-level task definitions.
+                if let Ok(fp) = serde_json::to_string(&*element) {
+                    fingerprints.get(&fp).cloned()
+                } else {
+                    None
+                }
+            });
 
+        if let Some(task_name) = task_name_opt {
             match element {
                 serde_json::Value::Object(obj) => {
-                    // Skip if _name already set
-                    if obj.contains_key("_name") {
-                        continue;
-                    }
                     obj.insert("_name".to_string(), serde_json::Value::String(task_name));
                 }
                 _ => {
@@ -1266,5 +1345,175 @@ mod tests {
             task_output.task, "producer",
             "non-CI task string fields must remain strings after enrichment"
         );
+    }
+
+    // ==========================================================================
+    // Reusable-definition / hidden-let-binding tests
+    //
+    // These tests cover the bug where `dependsOn` task references lose their
+    // project-level task identity when tasks are composed through hidden
+    // let-bindings like `_svc: #Svc; tasks: _svc.tasks`.
+    // ==========================================================================
+
+    #[test]
+    fn test_strip_dependency_prefix_reusable_definition_path() {
+        // CUE's ReferencePath returns `_svc.tasks.migrate` for a reference that
+        // lives inside a hidden let-binding composed into the project.
+        assert_eq!(
+            strip_dependency_prefix("_svc.tasks.migrate"),
+            "migrate",
+            "hidden binding paths with .tasks. infix should strip down to the task name"
+        );
+        assert_eq!(
+            strip_dependency_prefix("_def.tasks.deploy"),
+            "deploy",
+            "two-component hidden binding should strip correctly"
+        );
+        assert_eq!(
+            strip_dependency_prefix("_outer._inner.tasks.group.subtask"),
+            "group.subtask",
+            "deep nested hidden binding should strip at the .tasks. boundary"
+        );
+        // Standard prefixes must still take priority
+        assert_eq!(
+            strip_dependency_prefix("tasks.build"),
+            "build",
+            "standard tasks. prefix should not be affected"
+        );
+    }
+
+    #[test]
+    fn test_reusable_definition_depends_on_resolved_via_reference_metadata() {
+        // Simulate what the Go bridge returns for:
+        //   _svc: #Svc; tasks: _svc.tasks
+        // CUE's ReferencePath() returns `_svc.tasks.migrate` for the dependsOn entry.
+        let migrate_task = json!({"command": "echo", "args": ["migrate"]});
+        let deploy_task = json!({
+            "command": "echo",
+            "args": ["deploy"],
+            "dependsOn": [migrate_task.clone()],
+        });
+        let instance = json!({
+            "name": "reusable-def-test",
+            "tasks": {
+                "migrate": migrate_task,
+                "deploy": deploy_task,
+            },
+        });
+
+        // The bridge records the reference with the hidden-binding path.
+        let mut references = ReferenceMap::new();
+        references.insert(
+            "./tasks.deploy.dependsOn[0]".to_string(),
+            "_svc.tasks.migrate".to_string(),
+        );
+
+        let project = deserialize_project_with_references(instance, references);
+        let deploy_node = project.tasks.get("deploy").expect("deploy task should exist");
+        let dep_names: Vec<&str> = deploy_node
+            .depends_on()
+            .iter()
+            .map(|d| d.task_name())
+            .collect();
+
+        assert_eq!(
+            dep_names,
+            vec!["migrate"],
+            "dependsOn from reusable definition should resolve to 'migrate'"
+        );
+    }
+
+    #[test]
+    fn test_reusable_definition_depends_on_resolved_via_fingerprint_fallback() {
+        // Simulate the case where the bridge records NO reference for the
+        // dependsOn entry (CUE ReferencePath returned empty). The fingerprint
+        // fallback should still resolve the correct task name.
+        let migrate_task = json!({"command": "echo", "args": ["migrate"]});
+        let deploy_task = json!({
+            "command": "echo",
+            "args": ["deploy"],
+            "dependsOn": [migrate_task.clone()],
+        });
+        let instance = json!({
+            "name": "fingerprint-fallback-test",
+            "tasks": {
+                "migrate": migrate_task,
+                "deploy": deploy_task,
+            },
+        });
+
+        // No reference metadata at all — fingerprint fallback must handle this.
+        let project = deserialize_project_with_references(instance, ReferenceMap::new());
+        let deploy_node = project.tasks.get("deploy").expect("deploy task should exist");
+        let dep_names: Vec<&str> = deploy_node
+            .depends_on()
+            .iter()
+            .map(|d| d.task_name())
+            .collect();
+
+        assert_eq!(
+            dep_names,
+            vec!["migrate"],
+            "dependsOn should be resolved via fingerprint fallback when reference metadata is absent"
+        );
+    }
+
+    #[test]
+    fn test_reusable_definition_ci_pipeline_task_resolved_via_fingerprint_fallback() {
+        // Simulate the full minimal repro from the issue:
+        //   _svc: #Svc; tasks: _svc.tasks; ci: _svc.ci
+        // The CI pipeline task is the full deploy task object with no reference metadata.
+        let migrate_task = json!({"command": "echo", "args": ["migrate"]});
+        let deploy_task_with_dep = json!({
+            "command": "echo",
+            "args": ["deploy"],
+            "dependsOn": [migrate_task.clone()],
+        });
+        let instance = json!({
+            "name": "ci-pipeline-fingerprint-test",
+            "tasks": {
+                "migrate": migrate_task,
+                "deploy": deploy_task_with_dep.clone(),
+            },
+            "ci": {
+                "pipelines": {
+                    "default": {
+                        "tasks": [deploy_task_with_dep],
+                    },
+                },
+            },
+        });
+
+        // No reference metadata — both the pipeline task and its inner dependsOn
+        // must be resolved via fingerprint fallback.
+        let project = deserialize_project_with_references(instance, ReferenceMap::new());
+
+        // Verify ci.pipelines.default.tasks[0] resolved as a simple TaskRef for "deploy"
+        let pipeline = project
+            .ci
+            .as_ref()
+            .expect("ci should exist")
+            .pipelines
+            .get("default")
+            .expect("default pipeline should exist");
+        let pipeline_task = pipeline.tasks.first().expect("pipeline task should exist");
+        assert!(
+            pipeline_task.is_simple(),
+            "pipeline task should be a simple TaskRef after fingerprint resolution"
+        );
+        assert_eq!(
+            pipeline_task.task_name(),
+            "deploy",
+            "pipeline task should resolve to 'deploy'"
+        );
+
+        // Verify tasks.deploy.dependsOn[0] resolved as "migrate"
+        let deploy_node = project.tasks.get("deploy").expect("deploy task should exist");
+        let dep_names: Vec<&str> = deploy_node
+            .depends_on()
+            .iter()
+            .map(|d| d.task_name())
+            .collect();
+        assert_eq!(dep_names, vec!["migrate"]);
     }
 }
