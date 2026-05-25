@@ -381,8 +381,13 @@ checkout, such as local development servers or commands that manage files
 outside the declared input/output boundary.
 
 Non-hermetic tasks run from the directory containing the `env.cue` file where
-the task is defined. Set `dir` when a task must run somewhere else; `dir` is
-resolved relative to the CUE module root.
+the executable task is defined. This matters for imported tasks: a task imported
+from another package keeps the imported package's directory by default.
+
+Set `dir` when a task must run somewhere else. A string value is resolved
+relative to the CUE module root for backwards compatibility. The object form can
+resolve relative to the task definition, the importing caller, or the module
+root.
 
 ```cue
 tasks: {
@@ -390,6 +395,17 @@ tasks: {
         command: "npm"
         args: ["run", "dev"]
         hermetic: false
+    }
+
+    importedHere: imported.tasks.build & {
+        dir: from: "caller"
+    }
+
+    importedSubdir: imported.tasks.build & {
+        dir: {
+            from: "definition"
+            path: "frontend"
+        }
     }
 }
 ```

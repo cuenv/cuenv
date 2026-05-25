@@ -64,32 +64,13 @@ use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
-use cuenv_core::tasks::SourceLocation;
-use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
+use cuenv_core::{InstanceKind, ModuleEvaluation, ModuleEvaluationInput, Result};
+use module_utils::EvaluationMetadataBuilder;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
-
-fn source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
-    if meta.filename.is_empty() {
-        return None;
-    }
-
-    let file = if meta.filename.contains('/') || meta.directory.is_empty() || meta.directory == "."
-    {
-        meta.filename.clone()
-    } else {
-        format!("{}/{}", meta.directory, meta.filename)
-    };
-
-    Some(SourceLocation {
-        file,
-        line: u32::try_from(meta.line).unwrap_or(u32::MAX),
-        column: 0,
-    })
-}
 
 /// Represents all available CLI commands with their associated parameters.
 ///
@@ -586,8 +567,7 @@ impl CommandExecutor {
 
         let mut instances = HashMap::new();
         let mut projects = Vec::new();
-        let mut references = HashMap::new();
-        let mut sources = HashMap::new();
+        let mut metadata = EvaluationMetadataBuilder::default();
 
         for (path_str, value) in raw.instances {
             let rel_path = if path_str == "." {
@@ -611,21 +591,15 @@ impl CommandExecutor {
 
         for (meta_key, meta_value) in raw.meta {
             let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
-            if let Some(reference) = meta_value.reference.clone() {
-                references.insert(adjusted_key.clone(), reference);
-            }
-            if let Some(source) = source_location_from_meta(&meta_value) {
-                sources.insert(adjusted_key, source);
-            }
+            metadata.insert(adjusted_key, meta_value);
         }
 
-        Ok(ModuleEvaluation::from_raw_with_sources(
-            module_root,
-            instances,
-            projects,
-            (!references.is_empty()).then_some(references),
-            (!sources.is_empty()).then_some(sources),
-        ))
+        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root,
+            raw_instances: instances,
+            project_paths: projects,
+            metadata: metadata.finish(),
+        }))
     }
 
     fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
@@ -677,8 +651,7 @@ impl CommandExecutor {
 
         let mut all_instances = HashMap::new();
         let mut all_projects = Vec::new();
-        let mut all_references = HashMap::new();
-        let mut all_sources = HashMap::new();
+        let mut metadata = EvaluationMetadataBuilder::default();
         let mut eval_errors = Vec::new();
 
         for result in results {
@@ -706,12 +679,7 @@ impl CommandExecutor {
 
                     for (meta_key, meta_value) in raw.meta {
                         let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                        if let Some(reference) = meta_value.reference.clone() {
-                            all_references.insert(adjusted_key.clone(), reference);
-                        }
-                        if let Some(source) = source_location_from_meta(&meta_value) {
-                            all_sources.insert(adjusted_key, source);
-                        }
+                        metadata.insert(adjusted_key, meta_value);
                     }
                 }
                 Err((dir, e)) => eval_errors.push((dir, e)),
@@ -725,13 +693,12 @@ impl CommandExecutor {
             )));
         }
 
-        Ok(ModuleEvaluation::from_raw_with_sources(
-            module_root.to_path_buf(),
-            all_instances,
-            all_projects,
-            (!all_references.is_empty()).then_some(all_references),
-            (!all_sources.is_empty()).then_some(all_sources),
-        ))
+        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root.to_path_buf(),
+            raw_instances: all_instances,
+            project_paths: all_projects,
+            metadata: metadata.finish(),
+        }))
     }
 
     /// Get the module root path if at least one module has been loaded.

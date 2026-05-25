@@ -110,6 +110,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "imported-task-dirs",
+            min_task_count: 5, // definition, caller, definitionSubdir, callerSubdir, moduleRelative
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "hook",
             min_task_count: 2, // verify_env, show_env
             has_hooks: true,

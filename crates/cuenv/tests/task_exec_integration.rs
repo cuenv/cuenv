@@ -161,6 +161,100 @@ tasks: {
 }
 
 #[test]
+fn test_imported_task_working_directory_modes() {
+    let temp_dir = create_test_dir();
+    init_cue_module(temp_dir.path());
+
+    let shared_dir = temp_dir.path().join("shared");
+    let definition_fixture_dir = shared_dir.join("fixtures");
+    let caller_fixture_dir = temp_dir.path().join("fixtures");
+    fs::create_dir_all(&definition_fixture_dir).unwrap();
+    fs::create_dir_all(&caller_fixture_dir).unwrap();
+    fs::write(shared_dir.join("marker.txt"), "definition-root").unwrap();
+    fs::write(temp_dir.path().join("marker.txt"), "caller-root").unwrap();
+    fs::write(
+        definition_fixture_dir.join("marker.txt"),
+        "definition-fixture",
+    )
+    .unwrap();
+    fs::write(caller_fixture_dir.join("marker.txt"), "caller-fixture").unwrap();
+
+    fs::write(
+        shared_dir.join("tasks.cue"),
+        r#"package shared
+
+tasks: {
+    readMarker: {
+        command: "cat"
+        args: ["marker.txt"]
+        hermetic: false
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    fs::write(
+        temp_dir.path().join("env.cue"),
+        r#"package test
+
+import shared "test.example/test/shared"
+
+name: "test"
+
+tasks: {
+    definition: shared.tasks.readMarker
+    caller: shared.tasks.readMarker & {
+        dir: from: "caller"
+    }
+    definitionSubdir: shared.tasks.readMarker & {
+        dir: {
+            from: "definition"
+            path: "fixtures"
+        }
+    }
+    callerSubdir: shared.tasks.readMarker & {
+        dir: {
+            from: "caller"
+            path: "fixtures"
+        }
+    }
+    moduleRelative: shared.tasks.readMarker & {
+        dir: "."
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    for (task, marker) in [
+        ("definition", "definition-root"),
+        ("caller", "caller-root"),
+        ("definitionSubdir", "definition-fixture"),
+        ("callerSubdir", "caller-fixture"),
+        ("moduleRelative", "caller-root"),
+    ] {
+        let (stdout, stderr, success) = run_cuenv(&[
+            "task",
+            "-p",
+            temp_dir.path().to_str().unwrap(),
+            "--package",
+            "test",
+            task,
+        ]);
+
+        assert!(
+            success,
+            "task {task} should succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains(marker),
+            "task {task} should read {marker}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+}
+
+#[test]
 fn test_task_with_environment_propagation() {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());

@@ -7,14 +7,14 @@
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 use super::process_registry::global_registry;
-use super::{Task, TaskGraph, TaskGroup, TaskNode, Tasks};
+use super::{Task, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::OutputCapture;
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
 use async_recursion::async_recursion;
 use cuenv_workspaces::PackageManager;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -201,7 +201,7 @@ impl TaskExecutor {
         // record path without re-walking the inputs.
         let cache_handle: Option<(TaskCacheConfig, cuenv_cas::Digest, PathBuf)> =
             if let Some(cache) = self.config.cache.clone() {
-                let workdir = self.workdir_for_task(task);
+                let workdir = self.workdir_for_task(task)?;
                 let outcome = super::cache::build_action(BuildActionInput {
                     task,
                     task_name: name,
@@ -328,38 +328,102 @@ impl TaskExecutor {
     /// Extracted from `execute_task_non_hermetic` so that the cache wrapper
     /// in `execute_task` can resolve outputs against the same path the
     /// task itself ran in.
-    fn workdir_for_task(&self, task: &Task) -> PathBuf {
+    fn workdir_for_task(&self, task: &Task) -> Result<PathBuf> {
         if let Some(ref dir) = task.directory {
-            self.config
-                .cue_module_root
-                .as_ref()
-                .unwrap_or(&self.config.project_root)
-                .join(dir)
+            self.resolve_task_directory(task, dir)
         } else if let Some(ref project_root) = task.project_root {
-            project_root.clone()
+            Ok(project_root.clone())
         } else if let Some(ref source) = task.source {
             if let Some(dir) = source.directory() {
-                self.config
+                Ok(self
+                    .config
                     .cue_module_root
                     .as_ref()
                     .unwrap_or(&self.config.project_root)
-                    .join(dir)
+                    .join(dir))
             } else if let Some(ref project_root) = task.project_root {
-                project_root.clone()
+                Ok(project_root.clone())
             } else {
-                self.config
+                Ok(self
+                    .config
                     .cue_module_root
                     .clone()
-                    .unwrap_or_else(|| self.config.project_root.clone())
+                    .unwrap_or_else(|| self.config.project_root.clone()))
             }
         } else if !task.hermetic {
             if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
-                find_workspace_root(manager, &self.config.project_root)
+                Ok(find_workspace_root(manager, &self.config.project_root))
             } else {
-                self.config.project_root.clone()
+                Ok(self.config.project_root.clone())
             }
         } else {
-            self.config.project_root.clone()
+            Ok(self.config.project_root.clone())
+        }
+    }
+
+    fn resolve_task_directory(&self, task: &Task, directory: &TaskDirectory) -> Result<PathBuf> {
+        let module_root = self
+            .config
+            .cue_module_root
+            .as_ref()
+            .unwrap_or(&self.config.project_root);
+
+        let (base, path) = match directory {
+            TaskDirectory::ModuleRelative(path) => (module_root.clone(), path.as_str()),
+            TaskDirectory::Scoped(options) => {
+                let base = match options.from {
+                    TaskDirectoryBase::Definition => {
+                        self.source_base(task.source.as_ref(), "definition")?
+                    }
+                    TaskDirectoryBase::Caller => {
+                        self.source_base(task.caller_source.as_ref(), "caller")?
+                    }
+                    TaskDirectoryBase::Module => module_root.clone(),
+                };
+                (base, options.path.as_str())
+            }
+        };
+
+        self.resolve_directory_path(module_root, base, path)
+    }
+
+    fn source_base(
+        &self,
+        source: Option<&super::SourceLocation>,
+        base_name: &str,
+    ) -> Result<PathBuf> {
+        let module_root = self
+            .config
+            .cue_module_root
+            .as_ref()
+            .unwrap_or(&self.config.project_root);
+
+        let source = source.ok_or_else(|| {
+            Error::configuration(format!(
+                "Task dir from '{base_name}' requires source metadata"
+            ))
+        })?;
+
+        Ok(source
+            .directory()
+            .map_or_else(|| module_root.clone(), |dir| module_root.join(dir)))
+    }
+
+    fn resolve_directory_path(
+        &self,
+        module_root: &Path,
+        base: PathBuf,
+        path: &str,
+    ) -> Result<PathBuf> {
+        let resolved = normalize_join(base, path);
+        if resolved.starts_with(module_root) {
+            Ok(resolved)
+        } else {
+            Err(Error::configuration(format!(
+                "Task dir '{}' resolves outside the CUE module root '{}'",
+                path,
+                module_root.display()
+            )))
         }
     }
 
@@ -392,7 +456,7 @@ impl TaskExecutor {
         }
 
         // Determine working directory (in priority order: see `workdir_for_task`).
-        let workdir = self.workdir_for_task(task);
+        let workdir = self.workdir_for_task(task)?;
 
         tracing::info!(
             task = %name,
@@ -908,6 +972,23 @@ fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
     }
 }
 
+fn normalize_join(base: PathBuf, path: &str) -> PathBuf {
+    let candidate = base.join(path);
+    let mut normalized = PathBuf::new();
+
+    for component in candidate.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+
+    normalized
+}
+
 fn package_json_has_workspaces(dir: &Path) -> bool {
     let path = dir.join("package.json");
     let content = std::fs::read_to_string(&path);
@@ -1128,12 +1209,35 @@ pub async fn execute_command_with_redaction(
 mod tests {
     use super::*;
     use crate::tasks::cache::TaskCacheConfig;
-    use crate::tasks::{SourceLocation, TaskDependency};
+    use crate::tasks::{SourceLocation, TaskDependency, TaskDirectoryOptions};
     use cuenv_cas::{LocalActionCache, LocalCas};
     use cuenv_events::{EventBus, EventCategory, TaskEvent};
     use cuenv_vcs::WalkHasher;
     use std::collections::HashMap;
     use tempfile::TempDir;
+
+    fn executor_for(root: &Path) -> TaskExecutor {
+        TaskExecutor::new(ExecutorConfig {
+            project_root: root.to_path_buf(),
+            cue_module_root: Some(root.to_path_buf()),
+            ..ExecutorConfig::default()
+        })
+    }
+
+    fn source(file: &str) -> SourceLocation {
+        SourceLocation {
+            file: file.to_string(),
+            line: 1,
+            column: 1,
+        }
+    }
+
+    fn scoped_dir(from: TaskDirectoryBase, path: &str) -> TaskDirectory {
+        TaskDirectory::Scoped(TaskDirectoryOptions {
+            from,
+            path: path.to_string(),
+        })
+    }
 
     #[tokio::test]
     async fn test_executor_config_default() {
@@ -1810,25 +1914,104 @@ mod tests {
         )
         .unwrap();
 
-        let executor = TaskExecutor::new(ExecutorConfig {
-            project_root: tmp.path().to_path_buf(),
-            cue_module_root: Some(tmp.path().to_path_buf()),
-            ..ExecutorConfig::default()
-        });
+        let executor = executor_for(tmp.path());
 
         let task = Task {
             command: "bun".to_string(),
             args: vec!["run".to_string(), "build".to_string()],
             hermetic: false,
-            source: Some(SourceLocation {
-                file: "projects/app/env.cue".to_string(),
-                line: 1,
-                column: 1,
-            }),
+            source: Some(source("projects/app/env.cue")),
             ..Task::default()
         };
 
-        assert_eq!(executor.workdir_for_task(&task), app_dir);
+        assert_eq!(executor.workdir_for_task(&task).unwrap(), app_dir);
+    }
+
+    #[test]
+    fn test_workdir_legacy_string_dir_is_module_relative() {
+        let tmp = TempDir::new().unwrap();
+        let app_dir = tmp.path().join("apps").join("web");
+
+        let executor = executor_for(tmp.path());
+
+        let task = Task {
+            command: "pwd".to_string(),
+            directory: Some(TaskDirectory::ModuleRelative("apps/web".to_string())),
+            source: Some(source("templates/env.cue")),
+            ..Task::default()
+        };
+
+        assert_eq!(executor.workdir_for_task(&task).unwrap(), app_dir);
+    }
+
+    #[test]
+    fn test_workdir_scoped_dir_from_definition() {
+        let tmp = TempDir::new().unwrap();
+        let expected = tmp.path().join("templates").join("bun").join("frontend");
+
+        let executor = executor_for(tmp.path());
+
+        let task = Task {
+            command: "pwd".to_string(),
+            source: Some(source("templates/bun/env.cue")),
+            caller_source: Some(source("apps/web/env.cue")),
+            directory: Some(scoped_dir(TaskDirectoryBase::Definition, "frontend")),
+            ..Task::default()
+        };
+
+        assert_eq!(executor.workdir_for_task(&task).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_workdir_scoped_dir_from_caller() {
+        let tmp = TempDir::new().unwrap();
+        let expected = tmp.path().join("apps").join("web").join("frontend");
+
+        let executor = executor_for(tmp.path());
+
+        let task = Task {
+            command: "pwd".to_string(),
+            source: Some(source("templates/bun/env.cue")),
+            caller_source: Some(source("apps/web/env.cue")),
+            directory: Some(scoped_dir(TaskDirectoryBase::Caller, "frontend")),
+            ..Task::default()
+        };
+
+        assert_eq!(executor.workdir_for_task(&task).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_workdir_rejects_dir_escape_from_module_root() {
+        let tmp = TempDir::new().unwrap();
+
+        let executor = executor_for(tmp.path());
+
+        let task = Task {
+            command: "pwd".to_string(),
+            directory: Some(scoped_dir(TaskDirectoryBase::Module, "../outside")),
+            ..Task::default()
+        };
+
+        assert!(executor.workdir_for_task(&task).is_err());
+    }
+
+    #[test]
+    fn test_workdir_scoped_dir_requires_requested_source_metadata() {
+        let tmp = TempDir::new().unwrap();
+
+        let executor = executor_for(tmp.path());
+
+        let task = Task {
+            command: "pwd".to_string(),
+            directory: Some(scoped_dir(TaskDirectoryBase::Caller, ".")),
+            ..Task::default()
+        };
+
+        let err = executor.workdir_for_task(&task).unwrap_err();
+        assert!(
+            err.to_string().contains("requires source metadata"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

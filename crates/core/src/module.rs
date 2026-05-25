@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use crate::Error;
 use crate::tasks::SourceLocation;
 
+mod task_sources;
+
 /// Reference metadata extracted from CUE evaluation.
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
@@ -18,6 +20,22 @@ pub type ReferenceMap = HashMap<String, String>;
 /// Source metadata extracted from CUE evaluation.
 /// Maps field paths (e.g., "./tasks.build") to the source location of that field.
 pub type SourceMap = HashMap<String, SourceLocation>;
+
+/// Optional metadata extracted alongside evaluated CUE instances.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleEvaluationMetadata {
+    pub references: Option<ReferenceMap>,
+    pub sources: Option<SourceMap>,
+    pub caller_sources: Option<SourceMap>,
+}
+
+/// Raw CUE evaluation payload used to build a [`ModuleEvaluation`].
+pub struct ModuleEvaluationInput {
+    pub root: PathBuf,
+    pub raw_instances: HashMap<String, serde_json::Value>,
+    pub project_paths: Vec<String>,
+    pub metadata: ModuleEvaluationMetadata,
+}
 
 /// Strip known dependency reference prefixes from a reference path.
 ///
@@ -67,87 +85,6 @@ fn is_ci_matrix_task_object(
 /// - Pipeline task arrays (`ci.pipelines.*.tasks`)
 fn enrich_task_refs(value: &mut serde_json::Value, instance_path: &str, references: &ReferenceMap) {
     enrich_task_refs_recursive(value, instance_path, "", references);
-}
-
-/// Enrich executable task objects with `_source` metadata.
-///
-/// The executor uses task source locations to run non-hermetic tasks from the
-/// directory where their `env.cue` lives unless a task explicitly sets `dir`.
-fn enrich_task_sources(value: &mut serde_json::Value, instance_path: &str, sources: &SourceMap) {
-    enrich_task_sources_recursive(value, instance_path, "", sources);
-}
-
-fn enrich_task_sources_recursive(
-    value: &mut serde_json::Value,
-    instance_path: &str,
-    field_path: &str,
-    sources: &SourceMap,
-) {
-    match value {
-        serde_json::Value::Object(obj) => {
-            if is_executable_task_object(obj)
-                && !obj.contains_key("_source")
-                && let Some(source) = source_for_field(instance_path, field_path, obj, sources)
-                && let Ok(source_value) = serde_json::to_value(source)
-            {
-                obj.insert("_source".to_string(), source_value);
-            }
-
-            for (key, child) in obj.iter_mut() {
-                let child_path = if field_path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{field_path}.{key}")
-                };
-                enrich_task_sources_recursive(child, instance_path, &child_path, sources);
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            for (i, child) in arr.iter_mut().enumerate() {
-                let child_path = format!("{field_path}[{i}]");
-                enrich_task_sources_recursive(child, instance_path, &child_path, sources);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn is_executable_task_object(obj: &serde_json::Map<String, serde_json::Value>) -> bool {
-    obj.contains_key("command") || obj.contains_key("script")
-}
-
-fn source_for_field<'a>(
-    instance_path: &str,
-    field_path: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
-    sources: &'a SourceMap,
-) -> Option<&'a SourceLocation> {
-    let exact = format!("{instance_path}/{field_path}");
-    sources
-        .get(&exact)
-        .or_else(|| {
-            ["command", "script"]
-                .iter()
-                .filter(|field| obj.contains_key(**field))
-                .find_map(|field| sources.get(&format!("{exact}.{field}")))
-        })
-        .or_else(|| source_for_nearest_ancestor(instance_path, field_path, sources))
-}
-
-fn source_for_nearest_ancestor<'a>(
-    instance_path: &str,
-    field_path: &str,
-    sources: &'a SourceMap,
-) -> Option<&'a SourceLocation> {
-    let mut candidate = field_path;
-    while let Some((parent, _)) = candidate.rsplit_once(['.', '[']) {
-        candidate = parent;
-        let key = format!("{instance_path}/{candidate}");
-        if let Some(source) = sources.get(&key) {
-            return Some(source);
-        }
-    }
-    None
 }
 
 /// Recursively walk JSON and enrich task references
@@ -296,7 +233,15 @@ impl ModuleEvaluation {
         project_paths: Vec<String>,
         references: Option<ReferenceMap>,
     ) -> Self {
-        Self::from_raw_with_sources(root, raw_instances, project_paths, references, None)
+        Self::from_raw_parts(ModuleEvaluationInput {
+            root,
+            raw_instances,
+            project_paths,
+            metadata: ModuleEvaluationMetadata {
+                references,
+                ..ModuleEvaluationMetadata::default()
+            },
+        })
     }
 
     /// Create a new module evaluation from raw FFI result and source metadata.
@@ -304,13 +249,14 @@ impl ModuleEvaluation {
     /// Source locations are injected into task objects before deserialization so
     /// task execution can derive the correct default working directory.
     #[must_use]
-    pub fn from_raw_with_sources(
-        root: PathBuf,
-        raw_instances: HashMap<String, serde_json::Value>,
-        project_paths: Vec<String>,
-        references: Option<ReferenceMap>,
-        sources: Option<SourceMap>,
-    ) -> Self {
+    pub fn from_raw_parts(input: ModuleEvaluationInput) -> Self {
+        let ModuleEvaluationInput {
+            root,
+            raw_instances,
+            project_paths,
+            metadata,
+        } = input;
+
         // Convert project paths to a set for O(1) lookup
         let project_set: std::collections::HashSet<&str> =
             project_paths.iter().map(String::as_str).collect();
@@ -327,13 +273,20 @@ impl ModuleEvaluation {
                 };
 
                 // Enrich dependsOn arrays with _name using reference metadata
-                if let Some(ref refs) = references {
+                if let Some(ref refs) = metadata.references {
                     enrich_task_refs(&mut value, &path, refs);
                 }
 
                 // Enrich task objects with source metadata for default workdir resolution.
-                if let Some(ref source_map) = sources {
-                    enrich_task_sources(&mut value, &path, source_map);
+                if let Some(ref source_map) = metadata.sources {
+                    task_sources::enrich_task_sources(
+                        &mut value,
+                        &path,
+                        task_sources::TaskSourceMaps {
+                            definitions: source_map,
+                            callers: metadata.caller_sources.as_ref(),
+                        },
+                    );
                 }
 
                 // Process task output references: replace ref objects with
@@ -1117,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_raw_with_sources_injects_task_source_metadata() {
+    fn test_from_raw_parts_injects_task_source_metadata() {
         let mut raw = HashMap::new();
         raw.insert(
             "projects/web".to_string(),
@@ -1159,13 +1112,15 @@ mod tests {
             },
         );
 
-        let module = ModuleEvaluation::from_raw_with_sources(
-            PathBuf::from("/test/repo"),
-            raw,
-            vec!["projects/web".to_string()],
-            None,
-            Some(sources),
-        );
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["projects/web".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
 
         let project = module
             .get(Path::new("projects/web"))
@@ -1197,6 +1152,77 @@ mod tests {
         assert_eq!(
             main.source.as_ref().map(|source| source.file.as_str()),
             Some("projects/web/env.cue")
+        );
+    }
+
+    #[test]
+    fn test_from_raw_parts_injects_definition_and_caller_metadata() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            "apps/web".to_string(),
+            json!({
+                "name": "web",
+                "tasks": {
+                    "build": {
+                        "command": "bun",
+                        "args": ["run", "build"],
+                        "hermetic": false
+                    }
+                }
+            }),
+        );
+
+        let mut sources = SourceMap::new();
+        sources.insert(
+            "apps/web/tasks.build".to_string(),
+            SourceLocation {
+                file: "templates/bun/env.cue".to_string(),
+                line: 7,
+                column: 1,
+            },
+        );
+
+        let mut caller_sources = SourceMap::new();
+        caller_sources.insert(
+            "apps/web/tasks.build".to_string(),
+            SourceLocation {
+                file: "apps/web/env.cue".to_string(),
+                line: 12,
+                column: 1,
+            },
+        );
+
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["apps/web".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                caller_sources: Some(caller_sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
+
+        let project = module
+            .get(Path::new("apps/web"))
+            .expect("project should exist")
+            .deserialize::<Project>()
+            .expect("project should deserialize");
+
+        let TaskNode::Task(task) = project.tasks.get("build").expect("build task should exist")
+        else {
+            panic!("build should be a single task");
+        };
+
+        assert_eq!(
+            task.source.as_ref().map(|source| source.file.as_str()),
+            Some("templates/bun/env.cue")
+        );
+        assert_eq!(
+            task.caller_source
+                .as_ref()
+                .map(|source| source.file.as_str()),
+            Some("apps/web/env.cue")
         );
     }
 
