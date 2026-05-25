@@ -15,6 +15,7 @@ Generation rules:
 
 - Use explicit `schema.#Task`, `schema.#TaskGroup`, and `schema.#TaskSequence` in examples.
 - Use CUE references in `dependsOn` instead of stale string examples when possible.
+- Reusable or hidden task definitions preserve referenced task identity through CUE reference metadata; do not recommend JSON value matching as a fallback.
 - Explain that output refs imply dependencies.
 - Non-hermetic tasks default to the directory containing the `env.cue` file that defines the executable task body. Imported tasks keep their definition directory by default. Use `dir: "path"` for the legacy CUE-module-root-relative override, or `dir: {from: "definition" | "caller" | "module", path: "..."}` when imported/re-exported tasks need an explicit base.
 - Call out limitations for `timeout`, `retry`, `continueOnError`, group `maxConcurrency`, and hermetic filesystem behavior unless matrix status changes.
