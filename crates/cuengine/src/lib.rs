@@ -237,6 +237,15 @@ pub struct FieldMeta {
     /// Line number in the file
     #[serde(default)]
     pub line: usize,
+    /// Directory containing the original value definition (relative to module root)
+    #[serde(default, rename = "definitionDirectory")]
+    pub definition_directory: String,
+    /// Filename where the original value is defined
+    #[serde(default, rename = "definitionFilename")]
+    pub definition_filename: String,
+    /// Line number where the original value is defined
+    #[serde(default, rename = "definitionLine")]
+    pub definition_line: usize,
     /// If this value is a CUE reference, the path it refers to (e.g., "tasks.build")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,

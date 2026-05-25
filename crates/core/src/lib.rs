@@ -64,7 +64,9 @@ pub mod tools;
 pub use affected::{AffectedBy, matches_pattern};
 
 // Re-export module types for convenience
-pub use module::{Instance, InstanceKind, ModuleEvaluation};
+pub use module::{
+    Instance, InstanceKind, ModuleEvaluation, ModuleEvaluationInput, ModuleEvaluationMetadata,
+};
 
 /// Version of the `cuenv-core` crate (used by task cache metadata)
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
