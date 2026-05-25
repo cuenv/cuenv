@@ -21,6 +21,15 @@ fn strip_task_ref_prefix(reference: &str) -> &str {
             return stripped;
         }
     }
+
+    if reference.starts_with('_') || reference.starts_with('#') {
+        for infix in [".tasks.", "._tasks.", "._t."] {
+            if let Some((_, stripped)) = reference.split_once(infix) {
+                return stripped;
+            }
+        }
+    }
+
     reference
 }
 
@@ -235,6 +244,82 @@ fn extracts_task_node_references_for_depends_on_and_ci_paths() {
             normalized,
             Some(expected_task_name),
             "reference mismatch for {meta_key}"
+        );
+    }
+}
+
+#[test]
+fn extracts_hidden_reusable_task_definition_references() {
+    let temp = TempDir::new().expect("failed to create temp dir");
+    let module_root = temp.path();
+    let init = init_module(module_root, "example.com/reusable-task-ref-test");
+    assert!(
+        init.is_ok(),
+        "failed to initialize module fixture: {:?}",
+        init.err()
+    );
+
+    fs::write(
+        module_root.join("env.cue"),
+        r#"package cuenv
+
+#Svc: {
+    tasks: {
+        migrate: {
+            command: "echo"
+            args: ["migrate"]
+        }
+        deploy: {
+            command: "echo"
+            args: ["deploy"]
+            dependsOn: [migrate]
+        }
+    }
+    _tasks: tasks
+    ci: {
+        pipelines: {
+            default: {
+                tasks: [_tasks.deploy]
+            }
+        }
+    }
+}
+
+_svc: #Svc
+
+{
+    name: "reusable-task-ref-test"
+    tasks: _svc.tasks
+    ci: _svc.ci
+}
+"#,
+    )
+    .expect("failed to write env.cue");
+
+    let options = ModuleEvalOptions {
+        recursive: false,
+        with_meta: true,
+        with_references: true,
+        target_dir: Some(module_root.display().to_string()),
+        ..Default::default()
+    };
+
+    let result = evaluate_module(module_root, "cuenv", Some(&options))
+        .expect("module evaluation should succeed");
+
+    for (meta_key, expected_task_name) in [
+        ("./tasks.deploy.dependsOn[0]", "migrate"),
+        ("./ci.pipelines.default.tasks[0]", "deploy"),
+    ] {
+        let reference = result
+            .meta
+            .get(meta_key)
+            .and_then(|meta| meta.reference.as_deref());
+        let normalized = reference.map(strip_task_ref_prefix);
+        assert_eq!(
+            normalized,
+            Some(expected_task_name),
+            "reference mismatch for {meta_key}: {reference:?}"
         );
     }
 }
