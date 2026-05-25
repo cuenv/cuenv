@@ -6,6 +6,7 @@ use crate::cli::StatusFormat;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
+use cuenv_events::{print_redacted, println_redacted};
 use cuenv_hooks::{
     ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutionState,
     HookExecutor, StateManager, check_approval_status, compute_instance_hash,
@@ -562,18 +563,15 @@ pub async fn execute_allow(
     if !yes {
         let hooks = extract_hooks_from_config(&config);
         if !hooks.is_empty() {
-            #[allow(clippy::print_stdout)] // User-facing approval prompt, intentional display
-            {
-                println!("The following hooks will be allowed:");
-                for hook in &hooks {
-                    println!("  - Command: {}", hook.command);
-                    if !hook.args.is_empty() {
-                        println!("    Args: {:?}", hook.args);
-                    }
+            println_redacted("The following hooks will be allowed:");
+            for hook in &hooks {
+                println_redacted(&format!("  - Command: {}", hook.command));
+                if !hook.args.is_empty() {
+                    println_redacted(&format!("    Args: {:?}", hook.args));
                 }
-                println!();
-                print!("Do you want to allow this configuration? [y/N] ");
             }
+            println_redacted("");
+            print_redacted("Do you want to allow this configuration? [y/N] ");
             io::stdout()
                 .flush()
                 .map_err(|e| cuenv_core::Error::configuration(format!("IO error: {e}")))?;
