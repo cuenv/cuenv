@@ -380,6 +380,10 @@ Set `hermetic: false` only for tasks that intentionally operate on the live
 checkout, such as local development servers or commands that manage files
 outside the declared input/output boundary.
 
+Non-hermetic tasks run from the directory containing the `env.cue` file where
+the task is defined. Set `dir` when a task must run somewhere else; `dir` is
+resolved relative to the CUE module root.
+
 ```cue
 tasks: {
     dev: schema.#Task & {

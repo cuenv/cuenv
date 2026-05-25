@@ -64,12 +64,32 @@ use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
+use cuenv_core::tasks::SourceLocation;
 use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
+
+fn source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
+    if meta.filename.is_empty() {
+        return None;
+    }
+
+    let file = if meta.filename.contains('/') || meta.directory.is_empty() || meta.directory == "."
+    {
+        meta.filename.clone()
+    } else {
+        format!("{}/{}", meta.directory, meta.filename)
+    };
+
+    Some(SourceLocation {
+        file,
+        line: u32::try_from(meta.line).unwrap_or(u32::MAX),
+        column: 0,
+    })
+}
 
 /// Represents all available CLI commands with their associated parameters.
 ///
@@ -555,6 +575,7 @@ impl CommandExecutor {
         let target_rel_path = compute_relative_path(target_path, &module_root);
         let options = ModuleEvalOptions {
             recursive: false,
+            with_meta: true,
             with_references: true,
             target_dir: Some(target_path.to_string_lossy().to_string()),
             ..Default::default()
@@ -565,7 +586,8 @@ impl CommandExecutor {
 
         let mut instances = HashMap::new();
         let mut projects = Vec::new();
-        let mut meta = HashMap::new();
+        let mut references = HashMap::new();
+        let mut sources = HashMap::new();
 
         for (path_str, value) in raw.instances {
             let rel_path = if path_str == "." {
@@ -589,24 +611,20 @@ impl CommandExecutor {
 
         for (meta_key, meta_value) in raw.meta {
             let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
-            meta.insert(adjusted_key, meta_value);
+            if let Some(reference) = meta_value.reference.clone() {
+                references.insert(adjusted_key.clone(), reference);
+            }
+            if let Some(source) = source_location_from_meta(&meta_value) {
+                sources.insert(adjusted_key, source);
+            }
         }
 
-        let references = if meta.is_empty() {
-            None
-        } else {
-            Some(
-                meta.into_iter()
-                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                    .collect(),
-            )
-        };
-
-        Ok(ModuleEvaluation::from_raw(
+        Ok(ModuleEvaluation::from_raw_with_sources(
             module_root,
             instances,
             projects,
-            references,
+            (!references.is_empty()).then_some(references),
+            (!sources.is_empty()).then_some(sources),
         ))
     }
 
@@ -636,6 +654,7 @@ impl CommandExecutor {
                 tracing::debug!(dir = %dir.display(), "cuengine::evaluate_module begin");
                 let options = ModuleEvalOptions {
                     recursive: false,
+                    with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
                     ..Default::default()
@@ -658,7 +677,8 @@ impl CommandExecutor {
 
         let mut all_instances = HashMap::new();
         let mut all_projects = Vec::new();
-        let mut all_meta = HashMap::new();
+        let mut all_references = HashMap::new();
+        let mut all_sources = HashMap::new();
         let mut eval_errors = Vec::new();
 
         for result in results {
@@ -686,7 +706,12 @@ impl CommandExecutor {
 
                     for (meta_key, meta_value) in raw.meta {
                         let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                        all_meta.insert(adjusted_key, meta_value);
+                        if let Some(reference) = meta_value.reference.clone() {
+                            all_references.insert(adjusted_key.clone(), reference);
+                        }
+                        if let Some(source) = source_location_from_meta(&meta_value) {
+                            all_sources.insert(adjusted_key, source);
+                        }
                     }
                 }
                 Err((dir, e)) => eval_errors.push((dir, e)),
@@ -700,22 +725,12 @@ impl CommandExecutor {
             )));
         }
 
-        let references = if all_meta.is_empty() {
-            None
-        } else {
-            Some(
-                all_meta
-                    .into_iter()
-                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                    .collect(),
-            )
-        };
-
-        Ok(ModuleEvaluation::from_raw(
+        Ok(ModuleEvaluation::from_raw_with_sources(
             module_root.to_path_buf(),
             all_instances,
             all_projects,
-            references,
+            (!all_references.is_empty()).then_some(all_references),
+            (!all_sources.is_empty()).then_some(all_sources),
         ))
     }
 

@@ -1127,8 +1127,8 @@ pub async fn execute_command_with_redaction(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::TaskDependency;
     use crate::tasks::cache::TaskCacheConfig;
+    use crate::tasks::{SourceLocation, TaskDependency};
     use cuenv_cas::{LocalActionCache, LocalCas};
     use cuenv_events::{EventBus, EventCategory, TaskEvent};
     use cuenv_vcs::WalkHasher;
@@ -1792,6 +1792,43 @@ mod tests {
 
         let root = find_workspace_root(PackageManager::Npm, &subdir);
         assert_eq!(root, tmp.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_workdir_for_non_hermetic_package_task_prefers_source_directory() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("package.json"),
+            r#"{"workspaces": ["projects/*"]}"#,
+        )
+        .unwrap();
+        let app_dir = tmp.path().join("projects").join("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("package.json"),
+            r#"{"scripts": {"build": "echo app"}}"#,
+        )
+        .unwrap();
+
+        let executor = TaskExecutor::new(ExecutorConfig {
+            project_root: tmp.path().to_path_buf(),
+            cue_module_root: Some(tmp.path().to_path_buf()),
+            ..ExecutorConfig::default()
+        });
+
+        let task = Task {
+            command: "bun".to_string(),
+            args: vec!["run".to_string(), "build".to_string()],
+            hermetic: false,
+            source: Some(SourceLocation {
+                file: "projects/app/env.cue".to_string(),
+                line: 1,
+                column: 1,
+            }),
+            ..Task::default()
+        };
+
+        assert_eq!(executor.workdir_for_task(&task), app_dir);
     }
 
     #[test]
