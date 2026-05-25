@@ -21,6 +21,7 @@ import (
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
+	"cuelang.org/go/cue/token"
 	"cuelang.org/go/mod/modconfig"
 	"cuelang.org/go/mod/modfile"
 )
@@ -215,10 +216,13 @@ func cue_format_module_with_custom_version(moduleRootPath *C.char, namespace *C.
 
 // ValueMeta holds source location metadata for a concrete value
 type ValueMeta struct {
-	Directory string `json:"directory"`
-	Filename  string `json:"filename"`
-	Line      int    `json:"line"`
-	Reference string `json:"reference,omitempty"` // If this value is a reference, the path it refers to
+	Directory           string `json:"directory"`
+	Filename            string `json:"filename"`
+	Line                int    `json:"line"`
+	DefinitionDirectory string `json:"definitionDirectory,omitempty"`
+	DefinitionFilename  string `json:"definitionFilename,omitempty"`
+	DefinitionLine      int    `json:"definitionLine,omitempty"`
+	Reference           string `json:"reference,omitempty"` // If this value is a reference, the path it refers to
 }
 
 // MetaValue wraps a concrete value with its source metadata
@@ -345,6 +349,117 @@ func extractFieldMetaSeparate(inst *build.Instance, moduleRoot, instancePath str
 	}
 
 	return positions
+}
+
+// extractValueMetaSeparate walks evaluated values to extract the source
+// position of the concrete value. This differs from extractFieldMetaSeparate:
+// field meta describes the binding/caller location, while value meta describes
+// where the imported or referenced value was originally defined.
+func extractValueMetaSeparate(v cue.Value, moduleRoot, instancePath string) map[string]ValueMeta {
+	positions := make(map[string]ValueMeta)
+	collector := valueMetaCollector{
+		moduleRoot:   moduleRoot,
+		instancePath: instancePath,
+		positions:    positions,
+	}
+	collector.walk(v, "")
+	return positions
+}
+
+type valueMetaCollector struct {
+	moduleRoot   string
+	instancePath string
+	positions    map[string]ValueMeta
+}
+
+func (c valueMetaCollector) walk(v cue.Value, fieldPath string) {
+	if v.Err() != nil {
+		return
+	}
+
+	if fieldPath != "" {
+		if meta, ok := valueDefinitionMeta(v, c.moduleRoot); ok {
+			c.positions[makeMetaKey(c.instancePath, fieldPath)] = meta
+		}
+	}
+
+	switch v.Kind() {
+	case cue.StructKind:
+		iter, _ := v.Fields(cue.Definitions(false))
+		for iter.Next() {
+			label := iter.Label()
+			if strings.HasPrefix(label, "_") {
+				continue
+			}
+			childPath := label
+			if fieldPath != "" {
+				childPath = fieldPath + "." + label
+			}
+			c.walk(iter.Value(), childPath)
+		}
+	case cue.ListKind:
+		list, _ := v.List()
+		for i := 0; list.Next(); i++ {
+			childPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+			c.walk(list.Value(), childPath)
+		}
+	}
+}
+
+func valueDefinitionMeta(v cue.Value, moduleRoot string) (ValueMeta, bool) {
+	if root, path := safeReferenceRootPath(v); root.Exists() {
+		referenced := root.LookupPath(path)
+		if referenced.Exists() && referenced.Err() == nil {
+			if meta, ok := valueMetaFromPosition(referenced.Pos(), moduleRoot); ok {
+				return meta, true
+			}
+		}
+	}
+
+	return valueMetaFromPosition(v.Pos(), moduleRoot)
+}
+
+func valueMetaFromPosition(pos token.Pos, moduleRoot string) (ValueMeta, bool) {
+	if !pos.IsValid() {
+		return ValueMeta{}, false
+	}
+
+	filename := pos.Filename()
+	if filename == "" {
+		return ValueMeta{}, false
+	}
+
+	relPath := filename
+	if moduleRoot != "" && strings.HasPrefix(filename, moduleRoot) {
+		relPath = strings.TrimPrefix(filename, moduleRoot)
+		relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
+	}
+	if relPath == "" {
+		relPath = filepath.Base(filename)
+	}
+
+	dir := filepath.Dir(relPath)
+	if dir == "" {
+		dir = "."
+	}
+
+	return ValueMeta{
+		DefinitionDirectory: dir,
+		DefinitionFilename:  relPath,
+		DefinitionLine:      pos.Line(),
+	}, true
+}
+
+func safeReferenceRootPath(v cue.Value) (root cue.Value, path cue.Path) {
+	defer func() {
+		if r := recover(); r != nil {
+			root = cue.Value{}
+			path = cue.Path{}
+		}
+	}()
+
+	root, path = v.ReferencePath()
+	return root, path
 }
 
 // extractFieldMetaRecursive recursively extracts field metadata into the separate map
@@ -928,6 +1043,14 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 			var meta map[string]ValueMeta
 			if withMeta {
 				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
+				definitionMeta := extractValueMetaSeparate(b.value, moduleRoot, b.relPath)
+				for k, definition := range definitionMeta {
+					existing := meta[k]
+					existing.DefinitionDirectory = definition.DefinitionDirectory
+					existing.DefinitionFilename = definition.DefinitionFilename
+					existing.DefinitionLine = definition.DefinitionLine
+					meta[k] = existing
+				}
 			}
 
 			// Extract reference paths if requested - thread-safe (read-only)

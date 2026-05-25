@@ -369,6 +369,44 @@ impl SourceLocation {
     }
 }
 
+/// Base used to resolve an object-shaped task `dir`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskDirectoryBase {
+    /// Resolve relative to the directory where the executable task body is defined.
+    #[default]
+    Definition,
+    /// Resolve relative to the directory where the task is bound in the current CUE file.
+    Caller,
+    /// Resolve relative to the CUE module root.
+    Module,
+}
+
+fn default_task_directory_path() -> String {
+    ".".to_string()
+}
+
+/// Object-shaped working directory override.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskDirectoryOptions {
+    /// Base directory used to resolve `path`.
+    #[serde(default, rename = "from")]
+    pub from: TaskDirectoryBase,
+    /// Relative path from `from`.
+    #[serde(default = "default_task_directory_path")]
+    pub path: String,
+}
+
+/// Working directory override for a task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TaskDirectory {
+    /// Backwards-compatible form: resolve from the CUE module root.
+    ModuleRelative(String),
+    /// Explicit form: choose the resolution base.
+    Scoped(TaskDirectoryOptions),
+}
+
 /// A task dependency - an embedded task reference with _name field
 /// When tasks reference other tasks directly in CUE (e.g., `dependsOn: [build]`),
 /// the Go bridge injects the `_name` field to identify the dependency.
@@ -590,10 +628,20 @@ pub struct Task {
     #[serde(default, rename = "_source", skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceLocation>,
 
-    /// Working directory override (relative to cue.mod root).
-    /// Defaults to the directory of the source file if not set.
+    /// Source file location where this task is bound in the current CUE instance.
+    /// Used by object-shaped `dir` values with `from: "caller"`.
+    #[serde(
+        default,
+        rename = "_callerSource",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub caller_source: Option<SourceLocation>,
+
+    /// Working directory override.
+    /// String values remain relative to the cue.mod root. Object values can
+    /// resolve relative to the task definition, caller, or module root.
     #[serde(default, rename = "dir", skip_serializing_if = "Option::is_none")]
-    pub directory: Option<String>,
+    pub directory: Option<TaskDirectory>,
 }
 
 /// Retry configuration for failed tasks
@@ -669,8 +717,10 @@ impl<'de> serde::Deserialize<'de> for Task {
             project_root: Option<std::path::PathBuf>,
             #[serde(default, rename = "_source")]
             source: Option<SourceLocation>,
+            #[serde(default, rename = "_callerSource")]
+            caller_source: Option<SourceLocation>,
             #[serde(default, rename = "dir")]
-            directory: Option<String>,
+            directory: Option<TaskDirectory>,
         }
 
         let helper = TaskHelper::deserialize(deserializer)?;
@@ -711,6 +761,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             task_ref: helper.task_ref,
             project_root: helper.project_root,
             source: helper.source,
+            caller_source: helper.caller_source,
             directory: helper.directory,
         })
     }
@@ -883,6 +934,7 @@ impl Default for Task {
             task_ref: None,
             project_root: None,
             source: None,
+            caller_source: None,
             directory: None,
         }
     }

@@ -9,10 +9,33 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::Error;
+use crate::tasks::SourceLocation;
+
+mod task_sources;
 
 /// Reference metadata extracted from CUE evaluation.
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
+
+/// Source metadata extracted from CUE evaluation.
+/// Maps field paths (e.g., "./tasks.build") to the source location of that field.
+pub type SourceMap = HashMap<String, SourceLocation>;
+
+/// Optional metadata extracted alongside evaluated CUE instances.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleEvaluationMetadata {
+    pub references: Option<ReferenceMap>,
+    pub sources: Option<SourceMap>,
+    pub caller_sources: Option<SourceMap>,
+}
+
+/// Raw CUE evaluation payload used to build a [`ModuleEvaluation`].
+pub struct ModuleEvaluationInput {
+    pub root: PathBuf,
+    pub raw_instances: HashMap<String, serde_json::Value>,
+    pub project_paths: Vec<String>,
+    pub metadata: ModuleEvaluationMetadata,
+}
 
 /// Strip known dependency reference prefixes from a reference path.
 ///
@@ -210,6 +233,30 @@ impl ModuleEvaluation {
         project_paths: Vec<String>,
         references: Option<ReferenceMap>,
     ) -> Self {
+        Self::from_raw_parts(ModuleEvaluationInput {
+            root,
+            raw_instances,
+            project_paths,
+            metadata: ModuleEvaluationMetadata {
+                references,
+                ..ModuleEvaluationMetadata::default()
+            },
+        })
+    }
+
+    /// Create a new module evaluation from raw FFI result and source metadata.
+    ///
+    /// Source locations are injected into task objects before deserialization so
+    /// task execution can derive the correct default working directory.
+    #[must_use]
+    pub fn from_raw_parts(input: ModuleEvaluationInput) -> Self {
+        let ModuleEvaluationInput {
+            root,
+            raw_instances,
+            project_paths,
+            metadata,
+        } = input;
+
         // Convert project paths to a set for O(1) lookup
         let project_set: std::collections::HashSet<&str> =
             project_paths.iter().map(String::as_str).collect();
@@ -226,8 +273,20 @@ impl ModuleEvaluation {
                 };
 
                 // Enrich dependsOn arrays with _name using reference metadata
-                if let Some(ref refs) = references {
+                if let Some(ref refs) = metadata.references {
                     enrich_task_refs(&mut value, &path, refs);
+                }
+
+                // Enrich task objects with source metadata for default workdir resolution.
+                if let Some(ref source_map) = metadata.sources {
+                    task_sources::enrich_task_sources(
+                        &mut value,
+                        &path,
+                        task_sources::TaskSourceMaps {
+                            definitions: source_map,
+                            callers: metadata.caller_sources.as_ref(),
+                        },
+                    );
                 }
 
                 // Process task output references: replace ref objects with
@@ -496,7 +555,7 @@ mod tests {
     use super::*;
     use crate::ci::PipelineTask;
     use crate::manifest::Project;
-    use crate::tasks::TaskNode;
+    use crate::tasks::{SourceLocation, TaskNode};
     use serde_json::json;
 
     fn create_test_module() -> ModuleEvaluation {
@@ -1008,6 +1067,163 @@ mod tests {
             .expect("root instance should exist")
             .deserialize::<Project>()
             .expect("project deserialization should succeed")
+    }
+
+    #[test]
+    fn test_from_raw_parts_injects_task_source_metadata() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            "projects/web".to_string(),
+            json!({
+                "name": "web",
+                "tasks": {
+                    "build": {
+                        "command": "bun",
+                        "args": ["run", "build"],
+                        "hermetic": false
+                    },
+                    "deploy": {
+                        "type": "group",
+                        "main": {
+                            "command": "bun",
+                            "args": ["x", "wrangler", "deploy"],
+                            "hermetic": false
+                        }
+                    }
+                }
+            }),
+        );
+
+        let mut sources = SourceMap::new();
+        sources.insert(
+            "projects/web/tasks.build".to_string(),
+            SourceLocation {
+                file: "projects/web/env.cue".to_string(),
+                line: 10,
+                column: 1,
+            },
+        );
+        sources.insert(
+            "projects/web/tasks.deploy".to_string(),
+            SourceLocation {
+                file: "projects/web/env.cue".to_string(),
+                line: 20,
+                column: 1,
+            },
+        );
+
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["projects/web".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
+
+        let project = module
+            .get(Path::new("projects/web"))
+            .expect("project should exist")
+            .deserialize::<Project>()
+            .expect("project should deserialize");
+
+        let TaskNode::Task(task) = project.tasks.get("build").expect("build task should exist")
+        else {
+            panic!("build should be a single task");
+        };
+
+        assert_eq!(
+            task.source.as_ref().map(|source| source.file.as_str()),
+            Some("projects/web/env.cue")
+        );
+
+        let deploy = project
+            .tasks
+            .get("deploy")
+            .and_then(TaskNode::as_group)
+            .expect("deploy should be a task group");
+        let main = deploy
+            .children
+            .get("main")
+            .and_then(TaskNode::as_task)
+            .expect("deploy.main should be a single task");
+
+        assert_eq!(
+            main.source.as_ref().map(|source| source.file.as_str()),
+            Some("projects/web/env.cue")
+        );
+    }
+
+    #[test]
+    fn test_from_raw_parts_injects_definition_and_caller_metadata() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            "apps/web".to_string(),
+            json!({
+                "name": "web",
+                "tasks": {
+                    "build": {
+                        "command": "bun",
+                        "args": ["run", "build"],
+                        "hermetic": false
+                    }
+                }
+            }),
+        );
+
+        let mut sources = SourceMap::new();
+        sources.insert(
+            "apps/web/tasks.build".to_string(),
+            SourceLocation {
+                file: "templates/bun/env.cue".to_string(),
+                line: 7,
+                column: 1,
+            },
+        );
+
+        let mut caller_sources = SourceMap::new();
+        caller_sources.insert(
+            "apps/web/tasks.build".to_string(),
+            SourceLocation {
+                file: "apps/web/env.cue".to_string(),
+                line: 12,
+                column: 1,
+            },
+        );
+
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["apps/web".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                caller_sources: Some(caller_sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
+
+        let project = module
+            .get(Path::new("apps/web"))
+            .expect("project should exist")
+            .deserialize::<Project>()
+            .expect("project should deserialize");
+
+        let TaskNode::Task(task) = project.tasks.get("build").expect("build task should exist")
+        else {
+            panic!("build should be a single task");
+        };
+
+        assert_eq!(
+            task.source.as_ref().map(|source| source.file.as_str()),
+            Some("templates/bun/env.cue")
+        );
+        assert_eq!(
+            task.caller_source
+                .as_ref()
+                .map(|source| source.file.as_str()),
+            Some("apps/web/env.cue")
+        );
     }
 
     #[test]

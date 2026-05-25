@@ -1,9 +1,88 @@
 //! Module utilities for CUE evaluation and error conversion.
 
-use cuenv_core::ModuleEvaluation;
+use cuenv_core::tasks::SourceLocation;
+use cuenv_core::{ModuleEvaluation, ModuleEvaluationMetadata};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::MutexGuard;
+
+#[derive(Default)]
+pub(super) struct EvaluationMetadataBuilder {
+    references: HashMap<String, String>,
+    sources: HashMap<String, SourceLocation>,
+    caller_sources: HashMap<String, SourceLocation>,
+}
+
+impl EvaluationMetadataBuilder {
+    pub(super) fn insert(&mut self, key: String, meta: cuengine::FieldMeta) {
+        let source = source_location_from_meta(&meta);
+        let caller_source = caller_source_location_from_meta(&meta);
+
+        if let Some(reference) = meta.reference {
+            self.references.insert(key.clone(), reference);
+        }
+        if let Some(source) = source {
+            self.sources.insert(key.clone(), source);
+        }
+        if let Some(caller_source) = caller_source {
+            self.caller_sources.insert(key, caller_source);
+        }
+    }
+
+    pub(super) fn finish(self) -> ModuleEvaluationMetadata {
+        ModuleEvaluationMetadata {
+            references: non_empty(self.references),
+            sources: non_empty(self.sources),
+            caller_sources: non_empty(self.caller_sources),
+        }
+    }
+}
+
+fn source_location_from_parts(
+    directory: &str,
+    filename: &str,
+    line: usize,
+) -> Option<SourceLocation> {
+    if filename.is_empty() {
+        return None;
+    }
+
+    let file = if filename.contains('/')
+        || filename.contains('\\')
+        || directory.is_empty()
+        || directory == "."
+    {
+        filename.to_string()
+    } else {
+        format!("{directory}/{filename}")
+    };
+
+    Some(SourceLocation {
+        file,
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        column: 0,
+    })
+}
+
+fn source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
+    if !meta.definition_filename.is_empty() {
+        return source_location_from_parts(
+            &meta.definition_directory,
+            &meta.definition_filename,
+            meta.definition_line,
+        );
+    }
+
+    source_location_from_parts(&meta.directory, &meta.filename, meta.line)
+}
+
+fn caller_source_location_from_meta(meta: &cuengine::FieldMeta) -> Option<SourceLocation> {
+    source_location_from_parts(&meta.directory, &meta.filename, meta.line)
+}
+
+fn non_empty<K, V>(map: HashMap<K, V>) -> Option<HashMap<K, V>> {
+    (!map.is_empty()).then_some(map)
+}
 
 /// Convert cuengine error to `cuenv_core` error.
 #[must_use]

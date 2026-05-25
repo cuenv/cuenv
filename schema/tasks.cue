@@ -78,6 +78,17 @@ package schema
 	maxAge?: string
 }
 
+// Working directory base for object-shaped task dir values.
+#TaskDirBase: "definition" | "caller" | "module"
+
+// Working directory override. A string preserves legacy behavior and resolves
+// relative to the CUE module root. The object form can resolve relative to the
+// executable task definition, the importing/re-exporting caller, or the module.
+#TaskDir: string | {
+	from?: #TaskDirBase | *"definition"
+	path?: string | *"."
+}
+
 // =============================================================================
 // Single Executable Task
 // =============================================================================
@@ -119,7 +130,7 @@ package schema
 	env?: [string]: #EnvironmentVariable | #TaskOutputRef
 
 	// Working directory override
-	dir?: string
+	dir?: #TaskDir
 
 	// When true (default), task runs in an isolated hermetic directory with only
 	// declared inputs available. When false, task runs directly in the workspace.
