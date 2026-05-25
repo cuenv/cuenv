@@ -766,6 +766,22 @@ pub fn print_redacted(content: &str) {
     print!("{}", redact(content));
 }
 
+/// Print to stderr with automatic secret redaction (with newline).
+///
+/// Use this instead of `eprintln!` when output might contain secrets.
+#[allow(clippy::print_stderr)]
+pub fn eprintln_redacted(content: &str) {
+    eprintln!("{}", redact(content));
+}
+
+/// Print to stderr with automatic secret redaction (no newline).
+///
+/// Use this instead of `eprint!` when output might contain secrets.
+#[allow(clippy::print_stderr)]
+pub fn eprint_redacted(content: &str) {
+    eprint!("{}", redact(content));
+}
+
 #[cfg(test)]
 #[allow(clippy::cognitive_complexity)]
 mod tests {

@@ -10,6 +10,7 @@ use cuenv_core::tools::{
     ToolExtract, ToolOptions, ToolRegistry, ToolSource, apply_resolved_tool_activation,
     resolve_tool_activation, validate_tool_activation,
 };
+use cuenv_events::{eprintln_redacted, println_redacted};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -42,7 +43,6 @@ fn create_registry() -> ToolRegistry {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found or if any tool download fails.
-#[allow(clippy::print_stdout, clippy::print_stderr)] // Download progress messages, no secrets
 pub async fn execute_tools_download() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {
@@ -103,19 +103,19 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
         };
 
         let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
-            eprintln!(
+            eprintln_redacted(&format!(
                 "Warning: Unknown provider '{}' for tool '{}'",
                 locked.provider, name
-            );
+            ));
             continue;
         };
 
         // Get the provider
         let Some(provider) = registry.find_for_source(&source) else {
-            eprintln!(
+            eprintln_redacted(&format!(
                 "Warning: No provider found for source type of tool '{}'",
                 name
-            );
+            ));
             continue;
         };
 
@@ -134,28 +134,28 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
         }
 
         // Fetch the tool
-        println!("Downloading {} v{}...", name, tool.version);
+        println_redacted(&format!("Downloading {} v{}...", name, tool.version));
         match provider.fetch(&resolved, &options).await {
             Ok(fetched) => {
-                println!(
+                println_redacted(&format!(
                     "  -> {} ({})",
                     fetched.binary_path.display(),
                     fetched.sha256
-                );
+                ));
                 downloaded += 1;
             }
             Err(e) => {
-                eprintln!("  Error downloading '{}': {}", name, e);
+                eprintln_redacted(&format!("  Error downloading '{}': {}", name, e));
                 errors.push(format!("{}: {}", name, e));
             }
         }
     }
 
-    println!();
-    println!(
+    println_redacted("");
+    println_redacted(&format!(
         "Downloaded {} tools, {} already cached",
         downloaded, skipped
-    );
+    ));
 
     if !errors.is_empty() {
         return Err(CliError::other(format!(
@@ -510,7 +510,6 @@ pub fn resolve_tool_activation_steps(
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
-#[allow(clippy::print_stdout)] // Shell export statements, no secrets
 pub fn execute_tools_activate() -> Result<(), CliError> {
     let activation_steps = resolve_tool_activation_steps(None)?.ok_or_else(|| {
         CliError::config_with_help(
@@ -535,7 +534,7 @@ pub fn execute_tools_activate() -> Result<(), CliError> {
 
     for var in touched_vars {
         if let Some(value) = env.get(&var) {
-            println!("export {var}={}", shell_quote(value));
+            println_redacted(&format!("export {var}={}", shell_quote(value)));
         }
     }
 
@@ -553,7 +552,6 @@ fn shell_quote(value: &str) -> String {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
-#[allow(clippy::print_stdout)] // Tool listing info, no secrets
 pub fn execute_tools_list() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {
@@ -573,63 +571,54 @@ pub fn execute_tools_list() -> Result<(), CliError> {
             )
         })?;
 
-    // Get current platform for highlighting
-    let current_platform = cuenv_core::lockfile::current_platform();
-
-    if lockfile.tools.is_empty() {
-        println!("No tools configured.");
-        println!();
-        println!("To add tools, create a runtime in your env.cue:");
-        println!();
-        println!("  runtime: #ToolsRuntime & {{");
-        println!("      platforms: [\"darwin-arm64\", \"linux-x86_64\"]");
-        println!("      tools: {{");
-        println!("          jq: \"1.7.1\"");
-        println!("          yq: \"4.44.6\"");
-        println!("          foundationdb: {{");
-        println!("              version: \"7.3.63\"");
-        println!(
-            "              source: #GitHub & {{repo: \"apple/foundationdb\", asset: \"FoundationDB-{{version}}_arm64.pkg\", extract: [{{kind: \"lib\", path: \"libfdb_c.dylib\", env: \"FDB_CLIENT_LIB\"}}]}}"
-        );
-        println!("          }}");
-        println!("      }}");
-        println!("  }}");
-        return Ok(());
+    for line in render_tools_list(
+        &lockfile,
+        &lockfile_path,
+        &cuenv_core::lockfile::current_platform(),
+    ) {
+        println_redacted(&line);
     }
 
-    println!("Configured tools:");
-    println!();
+    Ok(())
+}
 
-    // Sort tools by name
+fn render_tools_list(
+    lockfile: &Lockfile,
+    lockfile_path: &Path,
+    current_platform: &str,
+) -> Vec<String> {
+    if lockfile.tools.is_empty() {
+        return no_tools_configured_lines();
+    }
+
+    let mut lines = vec!["Configured tools:".to_string(), String::new()];
+
     let mut tools: Vec<_> = lockfile.tools.iter().collect();
     tools.sort_by_key(|(name, _)| *name);
 
     for (name, tool) in tools {
-        println!("  {} v{}", name, tool.version);
+        lines.push(format!("  {} v{}", name, tool.version));
 
-        // Show platforms
         for (platform, locked) in &tool.platforms {
-            let marker = if platform == &current_platform {
+            let marker = if platform == current_platform {
                 " (current)"
             } else {
                 ""
             };
-            println!(
+            lines.push(format!(
                 "    - {}: {} ({}){}",
                 platform,
                 locked.provider,
-                &locked.digest[..20],
+                digest_preview(&locked.digest),
                 marker
-            );
+            ));
         }
     }
 
-    println!();
-    for line in activation_section_lines(&lockfile, &lockfile_path) {
-        println!("{line}");
-    }
-    println!();
-    println!(
+    lines.push(String::new());
+    lines.extend(activation_section_lines(lockfile, lockfile_path));
+    lines.push(String::new());
+    lines.push(format!(
         "Total: {} tools, {} platforms",
         lockfile.tools.len(),
         lockfile
@@ -637,9 +626,32 @@ pub fn execute_tools_list() -> Result<(), CliError> {
             .values()
             .map(|t| t.platforms.len())
             .sum::<usize>()
-    );
+    ));
+    lines
+}
 
-    Ok(())
+fn no_tools_configured_lines() -> Vec<String> {
+    vec![
+        "No tools configured.".to_string(),
+        String::new(),
+        "To add tools, create a runtime in your env.cue:".to_string(),
+        String::new(),
+        "  runtime: #ToolsRuntime & {".to_string(),
+        "      platforms: [\"darwin-arm64\", \"linux-x86_64\"]".to_string(),
+        "      tools: {".to_string(),
+        "          jq: \"1.7.1\"".to_string(),
+        "          yq: \"4.44.6\"".to_string(),
+        "          foundationdb: {".to_string(),
+        "              version: \"7.3.63\"".to_string(),
+        "              source: #GitHub & {repo: \"apple/foundationdb\", asset: \"FoundationDB-{version}_arm64.pkg\", extract: [{kind: \"lib\", path: \"libfdb_c.dylib\", env: \"FDB_CLIENT_LIB\"}]}".to_string(),
+        "          }".to_string(),
+        "      }".to_string(),
+        "  }".to_string(),
+    ]
+}
+
+fn digest_preview(digest: &str) -> &str {
+    digest.get(..20).unwrap_or(digest)
 }
 
 fn activation_section_lines(lockfile: &Lockfile, lockfile_path: &Path) -> Vec<String> {
@@ -944,6 +956,25 @@ mod tests {
         assert!(lines.iter().any(|line| {
             line == "  - No activation paths are currently materialized for this platform."
         }));
+    }
+
+    #[test]
+    fn test_render_tools_list_handles_short_digests() {
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .tools
+            .insert("jq".to_string(), github_tool("1.7.1"));
+
+        let lines = render_tools_list(&lockfile, &lockfile_path, &current_platform_key());
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("sha256:abc") && line.contains("(current)")),
+            "expected full short digest without slicing panic, got: {lines:?}"
+        );
     }
 
     #[test]

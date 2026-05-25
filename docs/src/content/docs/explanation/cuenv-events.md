@@ -3,15 +3,16 @@ title: cuenv-events
 description: Structured event system for multi-frontend applications
 ---
 
-The `cuenv-events` crate provides a unified event system that enables multiple UI frontends (CLI, TUI, Web) to subscribe to a single event stream. Events are emitted using tracing macros and captured by a custom tracing Layer.
+The `cuenv-events` crate provides a unified event system that enables multiple UI frontends (CLI, TUI, Web) to subscribe to a single event stream. Events are emitted through typed macros into a process-wide event bus; a tracing layer remains available for legacy structured tracing integration.
 
 ## Overview
 
 When building tools with multiple output modes (CLI, JSON, TUI), you need a consistent way to emit and render events. This crate provides:
 
 - Typed event schema for task execution, CI, commands, and more
+- Direct `emit_*!` macros backed by a process-wide event sender
 - Broadcast-based event bus for multiple subscribers
-- Tracing layer integration for automatic event capture
+- Optional tracing layer integration for older event producers
 - CLI and JSON renderers out of the box
 
 ## Architecture
@@ -26,10 +27,10 @@ When building tools with multiple output modes (CLI, JSON, TUI), you need a cons
 └─────────────────────────────────────────────────────────────────────────┘
 
 Event Flow:
-┌──────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
-│emit_*!() │────►│ Tracing Layer│────►│   EventBus    │────►│ Renderer │
-│ macros   │     │ (capture)    │     │ (broadcast)   │     │ (output) │
-└──────────┘     └──────────────┘     └───────────────┘     └──────────┘
+┌──────────┐     ┌───────────────┐     ┌──────────┐
+│emit_*!() │────►│   EventBus    │────►│ Renderer │
+│ macros   │     │ (broadcast)   │     │ (output) │
+└──────────┘     └───────────────┘     └──────────┘
 ```
 
 ### Key Components
@@ -41,7 +42,7 @@ Typed event definitions for tasks, CI, commands, interactive prompts, and system
 Broadcast channel for distributing events to multiple subscribers.
 
 **CuenvEventLayer**
-Tracing layer that captures events emitted via tracing macros.
+Optional tracing layer that captures legacy structured tracing events.
 
 **Renderers**
 CLI and JSON output formatters for events.
@@ -88,7 +89,7 @@ while let Ok(event) = receiver.recv().await {
 
 ### CuenvEventLayer
 
-Tracing layer for capturing events:
+Optional tracing layer for capturing legacy structured tracing events:
 
 ```rust
 use cuenv_events::{EventBus, CuenvEventLayer};
@@ -105,7 +106,7 @@ tracing_subscriber::registry()
 
 ### Emit Macros
 
-Type-safe macros for emitting events:
+Type-safe macros publish events directly to the installed process-wide event sender. If no sender has been installed, emitting is a no-op.
 
 #### Task Events
 
@@ -199,6 +200,15 @@ emit_supervisor_log!("supervisor", "started");
 emit_shutdown!();
 emit_stdout!("hello");
 emit_stderr!("error");
+```
+
+For direct command output that must write to stdout or stderr, use the redacted helpers instead of raw `print!` / `println!` / `eprint!` / `eprintln!`:
+
+```rust
+use cuenv_events::{eprintln_redacted, println_redacted};
+
+println_redacted("visible output");
+eprintln_redacted("warning output");
 ```
 
 ### Renderers
