@@ -79,6 +79,17 @@ tasks: {
 
 :::tip[CUE Reference Dependencies]
 Notice that `dependsOn: [lint, test]` uses **CUE references** (no quotes), not strings. This provides compile-time validation - if you reference a task that doesn't exist, CUE will report an error before execution.
+
+References keep their task identity when tasks come from reusable definitions:
+
+```cue
+#Service: tasks: {
+	migrate: schema.#Task & {command: "echo", args: ["migrate"]}
+	deploy: schema.#Task & {command: "echo", args: ["deploy"], dependsOn: [migrate]}
+}
+_svc: #Service
+tasks: _svc.tasks
+```
 :::
 
 ## Running Tasks

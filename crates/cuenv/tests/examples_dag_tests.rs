@@ -117,6 +117,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "reusable-task-refs",
+            min_task_count: 2, // migrate, deploy
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "hook",
             min_task_count: 2, // verify_env, show_env
             has_hooks: true,
@@ -445,6 +452,40 @@ fn test_task_basic_specific_tasks() {
             "task-basic example missing expected task '{task_name}'",
         );
     }
+}
+
+#[test]
+fn test_reusable_task_refs_example_preserves_dependencies() {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = getexamples_dir();
+    let example_path = examples_dir.join("reusable-task-refs");
+    let manifest = load_example_manifest(&example_path)
+        .unwrap_or_else(|e| panic!("Failed to load 'reusable-task-refs': {e}"));
+
+    let deploy = manifest
+        .tasks
+        .get("deploy")
+        .expect("deploy task should exist");
+    let dep_names: Vec<&str> = deploy
+        .depends_on()
+        .iter()
+        .map(|dep| dep.task_name())
+        .collect();
+    assert_eq!(dep_names, vec!["migrate"]);
+
+    let pipeline_task = manifest
+        .ci
+        .as_ref()
+        .expect("ci should exist")
+        .pipelines
+        .get("default")
+        .expect("default pipeline should exist")
+        .tasks
+        .first()
+        .expect("default pipeline should have one task");
+
+    assert_eq!(pipeline_task.task_name(), "deploy");
 }
 
 #[test]
