@@ -310,6 +310,7 @@ schema.#Project & {
 | `scriptShell`    | `#ScriptShell`                                    | No       | Shell for script execution (default: bash) |
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
+| `dir`            | `string \| #TaskDir`                             | No       | Working directory override; strings are module-root-relative, objects can resolve from task definition, caller, or module root |
 | `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
@@ -322,6 +323,30 @@ schema.#Project & {
 | `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
 
 *Either `command` or `script` should be provided.
+
+`dir` accepts the legacy string form or an object:
+
+```cue
+tasks: {
+    // CUE module root relative.
+    legacy: imported.tasks.build & {dir: "apps/web"}
+
+    // Imported task definition directory.
+    fromDefinition: imported.tasks.build & {
+        dir: {from: "definition", path: "frontend"}
+    }
+
+    // Importing env.cue directory.
+    fromCaller: imported.tasks.build & {
+        dir: {from: "caller"}
+    }
+
+    // CUE module root, explicit object form.
+    fromModule: imported.tasks.build & {
+        dir: {from: "module", path: "apps/web"}
+    }
+}
+```
 
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 

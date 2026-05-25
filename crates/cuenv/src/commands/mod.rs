@@ -64,7 +64,8 @@ use clap_complete::Shell;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::DryRun;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
-use cuenv_core::{InstanceKind, ModuleEvaluation, Result};
+use cuenv_core::{InstanceKind, ModuleEvaluation, ModuleEvaluationInput, Result};
+use module_utils::EvaluationMetadataBuilder;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -555,6 +556,7 @@ impl CommandExecutor {
         let target_rel_path = compute_relative_path(target_path, &module_root);
         let options = ModuleEvalOptions {
             recursive: false,
+            with_meta: true,
             with_references: true,
             target_dir: Some(target_path.to_string_lossy().to_string()),
             ..Default::default()
@@ -565,7 +567,7 @@ impl CommandExecutor {
 
         let mut instances = HashMap::new();
         let mut projects = Vec::new();
-        let mut meta = HashMap::new();
+        let mut metadata = EvaluationMetadataBuilder::default();
 
         for (path_str, value) in raw.instances {
             let rel_path = if path_str == "." {
@@ -589,25 +591,15 @@ impl CommandExecutor {
 
         for (meta_key, meta_value) in raw.meta {
             let adjusted_key = adjust_meta_key_path(&meta_key, &target_rel_path);
-            meta.insert(adjusted_key, meta_value);
+            metadata.insert(adjusted_key, meta_value);
         }
 
-        let references = if meta.is_empty() {
-            None
-        } else {
-            Some(
-                meta.into_iter()
-                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                    .collect(),
-            )
-        };
-
-        Ok(ModuleEvaluation::from_raw(
-            module_root,
-            instances,
-            projects,
-            references,
-        ))
+        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root,
+            raw_instances: instances,
+            project_paths: projects,
+            metadata: metadata.finish(),
+        }))
     }
 
     fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
@@ -636,6 +628,7 @@ impl CommandExecutor {
                 tracing::debug!(dir = %dir.display(), "cuengine::evaluate_module begin");
                 let options = ModuleEvalOptions {
                     recursive: false,
+                    with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
                     ..Default::default()
@@ -658,7 +651,7 @@ impl CommandExecutor {
 
         let mut all_instances = HashMap::new();
         let mut all_projects = Vec::new();
-        let mut all_meta = HashMap::new();
+        let mut metadata = EvaluationMetadataBuilder::default();
         let mut eval_errors = Vec::new();
 
         for result in results {
@@ -686,7 +679,7 @@ impl CommandExecutor {
 
                     for (meta_key, meta_value) in raw.meta {
                         let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                        all_meta.insert(adjusted_key, meta_value);
+                        metadata.insert(adjusted_key, meta_value);
                     }
                 }
                 Err((dir, e)) => eval_errors.push((dir, e)),
@@ -700,23 +693,12 @@ impl CommandExecutor {
             )));
         }
 
-        let references = if all_meta.is_empty() {
-            None
-        } else {
-            Some(
-                all_meta
-                    .into_iter()
-                    .filter_map(|(k, v)| v.reference.map(|r| (k, r)))
-                    .collect(),
-            )
-        };
-
-        Ok(ModuleEvaluation::from_raw(
-            module_root.to_path_buf(),
-            all_instances,
-            all_projects,
-            references,
-        ))
+        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root.to_path_buf(),
+            raw_instances: all_instances,
+            project_paths: all_projects,
+            metadata: metadata.finish(),
+        }))
     }
 
     /// Get the module root path if at least one module has been loaded.
