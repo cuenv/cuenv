@@ -188,11 +188,12 @@ workspace dependency trigger paths live in
 `crates/ci/src/compiler/triggers.rs`.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
-depending on broad complexity suppressions. CI task tool download and lockfile
-activation support lives in `crates/ci/src/executor/tools.rs`; CI hook-backed
-environment assembly lives in `crates/ci/src/executor/hook_env.rs`, keeping
-the orchestrator focused on pipeline scheduling. CI report writing, provider
-notification, annotation resolution, and CI redaction setup live in
+depending on broad complexity suppressions. CI task DAG execution and IR runner
+setup live in `crates/ci/src/executor/task_execution.rs`. CI task tool download
+and lockfile activation support lives in `crates/ci/src/executor/tools.rs`; CI
+hook-backed environment assembly lives in `crates/ci/src/executor/hook_env.rs`,
+keeping the orchestrator focused on pipeline scheduling. CI report writing,
+provider notification, annotation resolution, and CI redaction setup live in
 `crates/ci/src/executor/reporting.rs`; per-task environment precedence and
 passthrough handling live in `crates/ci/src/executor/task_env.rs`.
 

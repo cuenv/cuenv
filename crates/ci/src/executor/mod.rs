@@ -9,6 +9,7 @@ mod reporting;
 pub mod runner;
 pub mod secrets;
 mod task_env;
+mod task_execution;
 mod tools;
 
 pub use config::CIExecutorConfig;

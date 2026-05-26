@@ -14,7 +14,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `crates/cuenv/src/commands/sync/functions/github.rs` for GitHub workflow sync and matrix workflow emission behavior.
 - `crates/github/src/workflow/emitter.rs` for general GitHub Actions workflow emission, `crates/github/src/workflow/jobs.rs` for bootstrap/simple/matrix/artifact job construction, and `crates/github/src/workflow/release.rs` for release workflow matrix/publish jobs.
 - `crates/ci/src/compiler/triggers.rs` for CI trigger assembly, normalized GitHub path filters, and workspace dependency trigger paths.
-- `crates/ci/src/executor/orchestrator.rs` for pipeline scheduling, `crates/ci/src/executor/reporting.rs` for reports/provider notification/annotations, `crates/ci/src/executor/hook_env.rs` for hook-backed CI environments, `crates/ci/src/executor/task_env.rs` for task env precedence, and `crates/ci/src/executor/tools.rs` for CI task tool activation.
+- `crates/ci/src/executor/orchestrator.rs` for pipeline scheduling, `crates/ci/src/executor/task_execution.rs` for per-task DAG execution and IR runner setup, `crates/ci/src/executor/reporting.rs` for reports/provider notification/annotations, `crates/ci/src/executor/hook_env.rs` for hook-backed CI environments, `crates/ci/src/executor/task_env.rs` for task env precedence, and `crates/ci/src/executor/tools.rs` for CI task tool activation.
 
 Status guardrails:
 
