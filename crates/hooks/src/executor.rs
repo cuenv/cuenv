@@ -1,7 +1,7 @@
 //! Hook execution engine with background processing and state management
 
 use crate::state::{HookExecutionState, StateManager, compute_instance_hash};
-use crate::types::{ExecutionStatus, Hook, HookExecutionConfig, HookResult};
+use crate::types::{ExecutionStatus, Hook, HookExecutionConfig, HookFailure, HookResult};
 use crate::{Error, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -581,14 +581,14 @@ pub async fn execute_hooks(
                 let error_msg = format!("Hook execution error: {}", e);
                 state.record_hook_result(
                     index,
-                    HookResult::failure(
-                        hook.clone(),
-                        None,
-                        String::new(),
-                        error_msg.clone(),
-                        0,
-                        error_msg,
-                    ),
+                    HookResult::failure(HookFailure {
+                        hook: hook.clone(),
+                        exit_status: None,
+                        stdout: String::new(),
+                        stderr: error_msg.clone(),
+                        duration_ms: 0,
+                        error: error_msg,
+                    }),
                 );
                 if config.fail_fast {
                     warn!("Hook {} failed with error, stopping", index + 1);
@@ -951,26 +951,26 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
                 ))
             } else {
                 warn!("Hook failed with exit code: {:?}", output.status.code());
-                Ok(HookResult::failure(
+                Ok(HookResult::failure(HookFailure {
                     hook,
-                    Some(output.status),
+                    exit_status: Some(output.status),
                     stdout,
                     stderr,
                     duration_ms,
-                    format!("Command exited with status: {}", output.status),
-                ))
+                    error: format!("Command exited with status: {}", output.status),
+                }))
             }
         }
         Ok(Err(io_error)) => {
             error!("Failed to execute hook: {}", io_error);
-            Ok(HookResult::failure(
+            Ok(HookResult::failure(HookFailure {
                 hook,
-                None,
-                String::new(),
-                String::new(),
+                exit_status: None,
+                stdout: String::new(),
+                stderr: String::new(),
                 duration_ms,
-                format!("Failed to execute command: {}", io_error),
-            ))
+                error: format!("Failed to execute command: {}", io_error),
+            }))
         }
         Err(_timeout_error) => {
             warn!("Hook timed out after {} seconds", timeout_seconds);

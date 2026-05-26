@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{Hook, HookResult};
+use crate::types::{Hook, HookFailure, HookResult};
 use std::collections::HashMap;
 use std::os::unix::process::ExitStatusExt;
 use std::sync::Arc;
@@ -182,14 +182,14 @@ fn test_hook_execution_state() {
     assert!(!state.is_complete());
 
     // Record failed hook result
-    let failed_result = HookResult::failure(
+    let failed_result = HookResult::failure(HookFailure {
         hook,
-        Some(std::process::ExitStatus::from_raw(256)),
-        String::new(),
-        "error".to_string(),
-        50,
-        "Command failed".to_string(),
-    );
+        exit_status: Some(std::process::ExitStatus::from_raw(256)),
+        stdout: String::new(),
+        stderr: "error".to_string(),
+        duration_ms: 50,
+        error: "Command failed".to_string(),
+    });
 
     state.record_hook_result(1, failed_result);
     assert_eq!(state.completed_hooks, 2);
