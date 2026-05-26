@@ -106,6 +106,10 @@ The command-line interface built with `clap`.
 - `cuenv changeset|release` - Release management
 - `cuenv version` - Version information
 
+CLI parsing lives in `crates/cuenv/src/cli.rs`, conversion into the internal
+command model lives in `crates/cuenv/src/cli/command_conversion.rs`, and
+executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`.
+
 ### cuenv-workspaces
 
 Workspace management for monorepos.
