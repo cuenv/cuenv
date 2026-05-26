@@ -165,7 +165,8 @@ the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`
 named/label task selection resolution lives in
 `crates/cuenv/src/commands/task/execution/selection.rs`, while task-list
 rendering and format selection lives in
-`crates/cuenv/src/commands/task/execution/listing.rs`.
+`crates/cuenv/src/commands/task/execution/listing.rs`; interactive picker
+handoff lives in `crates/cuenv/src/commands/task/execution/picker.rs`.
 Startup, runtime selection, and early process routing stay in
 `crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.

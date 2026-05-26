@@ -20,7 +20,7 @@ Generation rules:
 - Reusable or hidden task definitions preserve referenced task identity through CUE reference metadata; do not recommend JSON value matching as a fallback.
 - Explain that output refs imply dependencies.
 - Task output ref ownership is split under `crates/core/src/tasks/output_refs/`: `model.rs` parses placeholders, `extraction.rs` rewrites raw CUE JSON and host passthrough markers, and `resolver.rs` resolves completed task output before execution.
-- CLI task execution phase ordering lives in `crates/cuenv/src/commands/task/execution.rs`; named/label selection resolution lives in `crates/cuenv/src/commands/task/execution/selection.rs`; task-list rendering and format selection lives in `crates/cuenv/src/commands/task/execution/listing.rs`.
+- CLI task execution phase ordering lives in `crates/cuenv/src/commands/task/execution.rs`; named/label selection resolution lives in `crates/cuenv/src/commands/task/execution/selection.rs`; task-list rendering and format selection lives in `crates/cuenv/src/commands/task/execution/listing.rs`; interactive picker handoff lives in `crates/cuenv/src/commands/task/execution/picker.rs`.
 - Non-hermetic tasks default to the directory containing the `env.cue` file that defines the executable task body. Imported tasks keep their definition directory by default. Use `dir: "path"` for the legacy CUE-module-root-relative override, or `dir: {from: "definition" | "caller" | "module", path: "..."}` when imported/re-exported tasks need an explicit base.
 - Call out limitations for `timeout`, `retry`, `continueOnError`, group `maxConcurrency`, and hermetic filesystem behavior unless matrix status changes.
 - Treat task-level `dagger` as legacy; prefer runtime Dagger only when the matrix says it is appropriate.
