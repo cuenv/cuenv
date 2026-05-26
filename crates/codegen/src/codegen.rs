@@ -112,8 +112,6 @@ impl Codegen {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        // For now, we'll use cuengine to evaluate the CUE file
-        // This is a placeholder - the actual implementation will use cuengine
         let data = Self::evaluate_cue(path)?;
 
         Ok(Self {
