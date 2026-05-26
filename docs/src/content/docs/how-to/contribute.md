@@ -80,9 +80,18 @@ cuenv sync ci --check
 cuenv fmt --fix
 ```
 
-Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. For mechanical refactors, test moves, or module splits with no behavior change, run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test. For docs, prompts, examples, and repo-local agent skills, run `cuenv task ci.schema-docs-check`. For CLI behavior changes, run focused Rust tests plus a direct CLI smoke test for the changed command.
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence, not the default proof for every draft commit.
 
-Do not spend the full `nix flake check -L --accept-flake-config` cycle on exploratory review work, docs-only edits, prompt or agent-guidance text, or mechanical test extraction commits while the PR is still draft. The full flake check is required before marking a PR ready for review, merging, release work, Nix/Cargo/build/check wiring changes, CI/release behavior changes, and broad cross-crate runtime changes.
+Run focused validation for:
+
+- Mechanical refactors, test moves, or module splits with no behavior change: `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test.
+- Docs, prompts, examples, and repo-local agent skills: `cuenv task ci.schema-docs-check`.
+- CLI behavior changes: focused Rust tests plus a direct CLI smoke test for the changed command.
+- CI workflow or sync-provider changes: `cuenv sync ci --check` plus focused tests for the touched provider.
+
+Run `nix flake check -L --accept-flake-config` before marking a PR ready for review, merging, release work, Nix/Cargo/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, or when a focused check suggests broader workspace breakage.
+
+Do not spend the full flake-check cycle on exploratory review work, docs-only edits, prompt or agent-guidance text, mechanical test extraction commits, behavior-preserving module splits, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
 
 5. **Commit and Push**
 

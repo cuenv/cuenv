@@ -50,7 +50,7 @@ cuenv task ci.schema-docs-check
 
 ## Validation Strategy
 
-Use the smallest validation set that proves the current change, then run the full Nix gate at review boundaries.
+Use the smallest validation set that proves the current change, then run the full Nix gate at review boundaries. Full flake checks are required evidence for review/merge readiness, not a default tax on every isolated draft commit.
 
 Run focused validation for isolated draft commits:
 
@@ -59,14 +59,21 @@ Run focused validation for isolated draft commits:
 - CI workflow or sync-provider changes: run `cuenv sync ci --check` plus the focused tests for the touched provider.
 - CLI behavior changes: run the focused Rust tests and at least one direct CLI smoke test for the changed command.
 
-Run `nix flake check -L --accept-flake-config` when:
+Run `nix flake check -L --accept-flake-config` when any of these are true:
 
 - Marking a PR ready for review, requesting review, merging, or cutting a release.
 - Changing Nix expressions, Cargo manifests or lockfiles, build/check wiring, CI/release behavior, or generated workflow contracts.
 - Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
 - A focused check fails in a way that could indicate broader workspace breakage.
 
-Do not run the full flake check just to validate exploratory review work, docs-only edits, prompt/agent-guidance text, or mechanical test extraction commits while the PR remains draft. Keep those commits isolated, push them, and update the PR with the focused validation that was actually run.
+Do not run the full flake check for:
+
+- Exploratory review work while deciding what to change.
+- Docs-only, prompt-only, or agent-guidance-only edits.
+- Mechanical test extraction, test moves, or behavior-preserving module splits while the PR remains draft.
+- Tiny scoped commits where a focused crate/module check proves the touched surface.
+
+Keep those commits isolated, push them, and update the PR with the focused validation that was actually run. If the PR is moving from draft to review, run the full flake check once after the focused commits have landed.
 
 ## Architecture
 
