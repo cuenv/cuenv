@@ -161,7 +161,9 @@ Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
 and workspace-wide module evaluation helpers live in
 `crates/cuenv/src/commands/module_evaluation.rs`; task CLI adapter construction
 lives in `crates/cuenv/src/commands/handler/task_handler.rs` and hands off to
-the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`.
+the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`;
+named/label task selection resolution lives in
+`crates/cuenv/src/commands/task/execution/selection.rs`.
 Startup, runtime selection, and early process routing stay in
 `crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
