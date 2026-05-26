@@ -18,6 +18,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `crates/ci/src/compiler/triggers.rs` for CI trigger assembly, normalized GitHub path filters, and workspace dependency trigger paths.
 - `crates/task-graph/src/graph/analysis.rs` for generic transitive closure helpers used by CI pipeline dependency expansion.
 - `crates/ci/src/executor/orchestrator.rs` for pipeline scheduling, `crates/ci/src/executor/task_execution.rs` for per-task DAG execution and IR runner setup, `crates/ci/src/executor/reporting.rs` for reports/provider notification/annotations, `crates/ci/src/executor/hook_env.rs` for hook-backed CI environments, `crates/ci/src/executor/task_env.rs` for task env precedence, and `crates/ci/src/executor/tools.rs` for CI task tool activation.
+- `crates/ci/src/diff.rs` for digest comparison and `crates/ci/src/diff/format.rs` for human-readable digest diff output.
 
 Status guardrails:
 

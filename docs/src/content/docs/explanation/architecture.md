@@ -231,7 +231,9 @@ hook-backed environment assembly lives in `crates/ci/src/executor/hook_env.rs`,
 keeping the orchestrator focused on pipeline scheduling. CI report writing,
 provider notification, annotation resolution, and CI redaction setup live in
 `crates/ci/src/executor/reporting.rs`; per-task environment precedence and
-passthrough handling live in `crates/ci/src/executor/task_env.rs`.
+passthrough handling live in `crates/ci/src/executor/task_env.rs`. CI digest
+diff comparison remains in `crates/ci/src/diff.rs`; human diff formatting lives
+in `crates/ci/src/diff/format.rs`.
 Core tool activation schema and environment mutation rules live in
 `crates/core/src/tools/activation.rs`; provider/cache/profile path discovery
 for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs`.
