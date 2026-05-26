@@ -23,7 +23,7 @@ use std::path::Path;
 use cuenv_events::emit_stderr;
 use cuenv_hooks::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status};
 
-use super::export::{extract_static_env_vars, get_environment_with_hooks};
+use super::export::{HookEnvironmentRequest, extract_static_env_vars, get_environment_with_hooks};
 use tracing::instrument;
 
 /// Represents the type of manifest found at a path.
@@ -240,7 +240,11 @@ async fn prepare_exec_environment(
         }
 
         let base_env_vars = if hooks_approved {
-            get_environment_with_hooks(directory, project, exec.package, Some(executor)).await?
+            get_environment_with_hooks(
+                HookEnvironmentRequest::new(directory, project, exec.package)
+                    .with_executor(executor),
+            )
+            .await?
         } else {
             extract_static_env_vars(project)
         };

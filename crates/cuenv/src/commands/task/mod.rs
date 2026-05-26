@@ -50,7 +50,7 @@ fn get_dagger_factory() -> Option<BackendFactory> {
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
-use super::export::get_environment_with_hooks;
+use super::export::{HookEnvironmentRequest, get_environment_with_hooks};
 use tracing::instrument;
 
 /// Resolve the on-disk root for the local CAS + action cache.
@@ -699,8 +699,10 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
     // Note: This may spawn a hook supervisor subprocess, so it must happen
     // AFTER the dry-run check to avoid fork-safety issues.
     let directory = project_root.clone();
-    let base_env_vars =
-        get_environment_with_hooks(&directory, &manifest, package, Some(executor)).await?;
+    let base_env_vars = get_environment_with_hooks(
+        HookEnvironmentRequest::new(&directory, &manifest, package).with_executor(executor),
+    )
+    .await?;
 
     // Apply task-specific policies and secret resolvers on top of the merged environment
     let mut runtime_env = Environment::new();
