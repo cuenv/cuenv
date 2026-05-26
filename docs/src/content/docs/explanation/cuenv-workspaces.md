@@ -175,6 +175,10 @@ Available implementations:
 - `YarnModernLockfileParser` - yarn.lock (v2+)
 - `CargoLockfileParser` - Cargo.lock
 
+Bun lockfile parsing keeps the public parser entrypoint small by separating
+binary-lockfile rejection, JSONC loading, lockfile-version validation, and
+entry materialization before package-specific locator parsing.
+
 ### Detection Functions
 
 ```rust
