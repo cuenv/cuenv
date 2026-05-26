@@ -4,21 +4,18 @@
 //! information in Cargo.toml files, specifically handling the workspace
 //! version inheritance pattern.
 
+mod packages;
+mod updates;
+
 use crate::error::{Error, Result};
 use crate::version::Version;
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use toml_edit::{DocumentMut, Item, Value};
+use toml_edit::DocumentMut;
 
 /// Handles reading and writing Cargo.toml manifest files.
 pub struct CargoManifest {
     root: PathBuf,
-}
-
-struct MemberManifest {
-    package_root: PathBuf,
-    doc: toml::Value,
 }
 
 impl CargoManifest {
@@ -31,12 +28,12 @@ impl CargoManifest {
     }
 
     /// Get the path to the root Cargo.toml.
-    fn root_manifest_path(&self) -> PathBuf {
+    pub(super) fn root_manifest_path(&self) -> PathBuf {
         self.root.join("Cargo.toml")
     }
 
     /// Read and parse the root Cargo.toml.
-    fn read_root_manifest(&self) -> Result<DocumentMut> {
+    pub(super) fn read_root_manifest(&self) -> Result<DocumentMut> {
         let path = self.root_manifest_path();
         let content = fs::read_to_string(&path).map_err(|e| {
             Error::manifest(
@@ -47,20 +44,6 @@ impl CargoManifest {
         content.parse::<DocumentMut>().map_err(|e| {
             Error::manifest(format!("Failed to parse root Cargo.toml: {e}"), Some(path))
         })
-    }
-
-    fn read_member_manifest(member_path: &Path) -> Result<Option<MemberManifest>> {
-        let manifest_path = member_path.join("Cargo.toml");
-        if !manifest_path.exists() {
-            return Ok(None);
-        }
-
-        let doc = read_toml_value(&manifest_path)?;
-
-        Ok(Some(MemberManifest {
-            package_root: member_path.to_path_buf(),
-            doc,
-        }))
     }
 
     /// Read the workspace version from the root Cargo.toml.
@@ -87,371 +70,13 @@ impl CargoManifest {
 
         version_str.parse::<Version>()
     }
-
-    /// Discover all workspace member directories.
-    fn discover_members(&self) -> Result<Vec<PathBuf>> {
-        let doc = self.read_root_manifest()?;
-
-        let members = doc
-            .get("workspace")
-            .and_then(|w| w.get("members"))
-            .and_then(|m| m.as_array())
-            .ok_or_else(|| {
-                Error::manifest(
-                    "No [workspace].members found",
-                    Some(self.root_manifest_path()),
-                )
-            })?;
-
-        let mut paths = Vec::new();
-        for member in members {
-            if let Some(pattern) = member.as_str() {
-                // Handle glob patterns
-                if pattern.contains('*') {
-                    let full_pattern = self.root.join(pattern);
-                    let pattern_str = full_pattern.to_str().ok_or_else(|| {
-                        Error::manifest(
-                            format!(
-                                "Workspace member glob pattern contains invalid UTF-8: {}",
-                                full_pattern.display()
-                            ),
-                            Some(full_pattern.clone()),
-                        )
-                    })?;
-                    let matches = glob::glob(pattern_str).map_err(|e| {
-                        Error::manifest(
-                            format!("Invalid glob pattern: {e}"),
-                            Some(full_pattern.clone()),
-                        )
-                    })?;
-                    for entry in matches.flatten() {
-                        if entry.is_dir() {
-                            paths.push(entry);
-                        }
-                    }
-                } else {
-                    paths.push(self.root.join(pattern));
-                }
-            }
-        }
-
-        Ok(paths)
-    }
-
-    /// Get all package names with their paths in the workspace.
-    ///
-    /// Returns a map of package names to their root directory paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace members cannot be discovered or parsed.
-    pub fn get_package_paths(&self) -> Result<HashMap<String, PathBuf>> {
-        let members = self.discover_members()?;
-        let mut paths_map = HashMap::new();
-
-        for member_path in members {
-            let Some(member) = Self::read_member_manifest(&member_path)? else {
-                continue;
-            };
-
-            if let Some(name) = package_name(&member.doc) {
-                paths_map.insert(name.to_string(), member.package_root);
-            }
-        }
-
-        Ok(paths_map)
-    }
-
-    /// Get all package names in the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if workspace members cannot be discovered or parsed.
-    pub fn get_package_names(&self) -> Result<Vec<String>> {
-        let members = self.discover_members()?;
-        let mut names = Vec::new();
-
-        for member_path in members {
-            let Some(member) = Self::read_member_manifest(&member_path)? else {
-                continue;
-            };
-
-            if let Some(name) = package_name(&member.doc) {
-                names.push(name.to_string());
-            }
-        }
-
-        Ok(names)
-    }
-
-    /// Read all package versions, resolving workspace inheritance.
-    ///
-    /// For packages with `version.workspace = true`, the workspace version is used.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if package manifests cannot be read or parsed.
-    pub fn read_package_versions(&self) -> Result<HashMap<String, Version>> {
-        let workspace_version = self.read_workspace_version()?;
-        let members = self.discover_members()?;
-        let mut versions = HashMap::new();
-
-        for member_path in members {
-            let Some(member) = Self::read_member_manifest(&member_path)? else {
-                continue;
-            };
-
-            let Some(package) = member.doc.get("package") else {
-                continue;
-            };
-
-            let Some(name) = package.get("name").and_then(|n| n.as_str()) else {
-                continue;
-            };
-
-            // Check if version uses workspace inheritance
-            let version = if let Some(version_table) =
-                package.get("version").and_then(|v| v.as_table())
-                && version_table
-                    .get("workspace")
-                    .is_some_and(|w| w.as_bool() == Some(true))
-            {
-                workspace_version.clone()
-            } else if package.get("version").and_then(|v| v.as_table()).is_some() {
-                // Edge case: 'version' is a table, but not a workspace inheritance table (i.e., not { workspace = true }).
-                // This is not a valid Cargo manifest configuration; skip this package.
-                continue;
-            } else if let Some(version_str) = package.get("version").and_then(|v| v.as_str()) {
-                version_str.parse::<Version>()?
-            } else {
-                continue;
-            };
-
-            versions.insert(name.to_string(), version);
-        }
-
-        Ok(versions)
-    }
-
-    /// Update the workspace version in the root Cargo.toml.
-    ///
-    /// This updates `[workspace.package].version`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read, parsed, or written.
-    pub fn update_workspace_version(&self, new_version: &Version) -> Result<()> {
-        let path = self.root_manifest_path();
-        let content = fs::read_to_string(&path).map_err(|e| {
-            Error::manifest(
-                format!("Failed to read root Cargo.toml: {e}"),
-                Some(path.clone()),
-            )
-        })?;
-
-        let mut doc = content.parse::<DocumentMut>().map_err(|e| {
-            Error::manifest(
-                format!("Failed to parse root Cargo.toml: {e}"),
-                Some(path.clone()),
-            )
-        })?;
-
-        // Update [workspace.package].version
-        if let Some(workspace) = doc.get_mut("workspace")
-            && let Some(package) = workspace.get_mut("package")
-            && let Item::Table(pkg_table) = package
-        {
-            pkg_table["version"] = toml_edit::value(new_version.to_string());
-        } else {
-            return Err(Error::manifest(
-                "Root manifest is missing [workspace.package] table".to_string(),
-                Some(path),
-            ));
-        }
-
-        fs::write(&path, doc.to_string()).map_err(|e| {
-            Error::manifest(format!("Failed to write root Cargo.toml: {e}"), Some(path))
-        })?;
-
-        Ok(())
-    }
-
-    /// Read package dependencies from member manifests.
-    ///
-    /// Returns a map of package names to their workspace-internal dependencies.
-    /// Only includes dependencies that are defined in `[workspace.dependencies]`
-    /// with a `path` key, indicating they are internal to the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if package manifests cannot be read or parsed.
-    pub fn read_package_dependencies(&self) -> Result<HashMap<String, Vec<String>>> {
-        // Step 1: Read workspace.dependencies to find internal packages
-        // Internal packages are those defined with `path = ...` in workspace.dependencies
-        let internal_packages = self.get_internal_package_names()?;
-
-        // Step 2: For each member, collect only internal workspace dependencies
-        let members = self.discover_members()?;
-        let mut dependencies_map = HashMap::new();
-
-        for member_path in members {
-            let Some(member) = Self::read_member_manifest(&member_path)? else {
-                continue;
-            };
-
-            let Some(package) = member.doc.get("package") else {
-                continue;
-            };
-
-            let Some(name) = package.get("name").and_then(|n| n.as_str()) else {
-                continue;
-            };
-
-            // Collect workspace-internal dependencies
-            let mut deps = Vec::new();
-
-            // Check [dependencies]
-            if let Some(dependencies) = member.doc.get("dependencies").and_then(|d| d.as_table()) {
-                for (dep_name, dep_value) in dependencies {
-                    // Check if it's a workspace dependency that references an internal package
-                    if let Some(dep_table) = dep_value.as_table() {
-                        let is_workspace =
-                            dep_table.get("workspace") == Some(&toml::Value::Boolean(true));
-                        let has_path = dep_table.contains_key("path");
-                        let is_internal = internal_packages.contains(dep_name);
-
-                        // Include if: has explicit path OR (is workspace dep AND is internal package)
-                        if has_path || (is_workspace && is_internal) {
-                            deps.push(dep_name.clone());
-                        }
-                    }
-                }
-            }
-
-            dependencies_map.insert(name.to_string(), deps);
-        }
-
-        Ok(dependencies_map)
-    }
-
-    /// Get the names of internal packages from `[workspace.dependencies]`.
-    ///
-    /// Internal packages are those defined with a `path` key.
-    fn get_internal_package_names(&self) -> Result<std::collections::HashSet<String>> {
-        use std::collections::HashSet;
-
-        let doc = self.read_root_manifest()?;
-        let mut internal_packages = HashSet::new();
-
-        if let Some(workspace) = doc.get("workspace")
-            && let Some(deps) = workspace.get("dependencies")
-            && let Some(deps_table) = deps.as_table()
-        {
-            for (name, value) in deps_table {
-                // Check for inline table: { path = "...", version = "..." }
-                if let Some(inline) = value.as_inline_table()
-                    && inline.contains_key("path")
-                {
-                    internal_packages.insert(name.to_string());
-                }
-                // Check for regular table (dotted keys)
-                if let Some(table) = value.as_table()
-                    && table.contains_key("path")
-                {
-                    internal_packages.insert(name.to_string());
-                }
-            }
-        }
-
-        Ok(internal_packages)
-    }
-
-    /// Update workspace dependency versions in the root Cargo.toml.
-    ///
-    /// This updates versions in `[workspace.dependencies]` for internal crates.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be read, parsed, or written.
-    pub fn update_workspace_dependency_versions(
-        &self,
-        packages: &HashMap<String, Version>,
-    ) -> Result<()> {
-        let path = self.root_manifest_path();
-        let content = fs::read_to_string(&path).map_err(|e| {
-            Error::manifest(
-                format!("Failed to read root Cargo.toml: {e}"),
-                Some(path.clone()),
-            )
-        })?;
-
-        let mut doc = content.parse::<DocumentMut>().map_err(|e| {
-            Error::manifest(
-                format!("Failed to parse root Cargo.toml: {e}"),
-                Some(path.clone()),
-            )
-        })?;
-
-        // Update [workspace.dependencies]
-        if let Some(workspace) = doc.get_mut("workspace")
-            && let Some(deps) = workspace.get_mut("dependencies")
-            && let Item::Table(deps_table) = deps
-        {
-            for (pkg_name, version) in packages {
-                if let Some(dep) = deps_table.get_mut(pkg_name) {
-                    // Dependencies can be either inline tables or dotted keys
-                    match dep {
-                        Item::Value(Value::InlineTable(table)) => {
-                            table.insert("version", new_version_value(version));
-                        }
-                        Item::Table(table) => {
-                            table["version"] = toml_edit::value(version.to_string());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        // Note: If [workspace.dependencies] doesn't exist, that's OK - not all workspaces use it
-
-        fs::write(&path, doc.to_string()).map_err(|e| {
-            Error::manifest(format!("Failed to write root Cargo.toml: {e}"), Some(path))
-        })?;
-
-        Ok(())
-    }
-}
-
-fn read_toml_value(path: &Path) -> Result<toml::Value> {
-    let content = fs::read_to_string(path).map_err(|e| {
-        Error::manifest(
-            format!("Failed to read {}: {e}", path.display()),
-            Some(path.to_path_buf()),
-        )
-    })?;
-
-    toml::from_str(&content).map_err(|e| {
-        Error::manifest(
-            format!("Failed to parse {}: {e}", path.display()),
-            Some(path.to_path_buf()),
-        )
-    })
-}
-
-fn package_name(doc: &toml::Value) -> Option<&str> {
-    doc.get("package")
-        .and_then(|p| p.get("name"))
-        .and_then(|n| n.as_str())
-}
-
-/// Create a new TOML value for a version string.
-fn new_version_value(version: &Version) -> Value {
-    Value::from(version.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version::Version;
+    use std::collections::HashMap;
     use tempfile::TempDir;
 
     fn create_test_workspace(temp: &TempDir) -> PathBuf {
@@ -863,14 +488,14 @@ version.workspace = true
     #[test]
     fn test_new_version_value() {
         let version = Version::new(1, 2, 3);
-        let value = new_version_value(&version);
+        let value = super::updates::new_version_value(&version);
         assert_eq!(value.as_str(), Some("1.2.3"));
     }
 
     #[test]
     fn test_new_version_value_prerelease() {
         let version = "1.0.0-alpha.1".parse::<Version>().unwrap();
-        let value = new_version_value(&version);
+        let value = super::updates::new_version_value(&version);
         assert_eq!(value.as_str(), Some("1.0.0-alpha.1"));
     }
 }
