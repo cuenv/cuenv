@@ -17,6 +17,7 @@ mod ci;
 mod command;
 mod interactive;
 mod service;
+mod system;
 mod task;
 
 /// CLI renderer configuration.
@@ -124,22 +125,6 @@ impl CliRenderer {
             }
             EventCategory::System(system_event) => self.render_system(system_event),
             EventCategory::Output(output_event) => self.render_output(output_event),
-        }
-    }
-
-    fn render_system(&self, event: &SystemEvent) {
-        match event {
-            SystemEvent::SupervisorLog { tag, message } => {
-                eprintln!("[{tag}] {message}");
-            }
-            SystemEvent::Shutdown => {
-                if self.config.verbose {
-                    eprintln!("System shutdown");
-                }
-            }
-            SystemEvent::EventGap { skipped } => {
-                eprintln!("⚠  event bus lagged: {skipped} events dropped");
-            }
         }
     }
 
