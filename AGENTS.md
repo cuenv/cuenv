@@ -5,9 +5,10 @@
 - Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We always use Nix for builds and checks, cuenv for everything Nix isn't good at.
-- We cannot commit any code if `nix flake check -L --accept-flake-config` is not passing.
+- `nix flake check -L --accept-flake-config` is the review/merge/release gate, not a per-commit tax for every draft PR commit.
 - Always update ./docs for all work.
-- Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, examples, prompts, or agent guidance must update `docs/design/specs/schema-coverage-matrix.md` and the affected skills under `.agents/skills/`.
+- Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
+- Every PR that changes prompts or agent guidance must update the affected docs and skills under `.agents/skills/`. Update the schema coverage matrix only when the change alters schema or CLI support status.
 - Run `cuenv task ci.schema-docs-check` before requesting review when schema, docs, prompts, examples, skills, or CLI surfaces change.
 
 ## Project Overview
@@ -46,6 +47,26 @@ cuenv sync ci
 # Verify schema coverage docs and repo-local agent skills
 cuenv task ci.schema-docs-check
 ```
+
+## Validation Strategy
+
+Use the smallest validation set that proves the current change, then run the full Nix gate at review boundaries.
+
+Run focused validation for isolated draft commits:
+
+- Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`.
+- Docs, prompts, examples, or skill changes: run `cuenv task ci.schema-docs-check`; add `cuenv fmt --fix` only when formatting applies.
+- CI workflow or sync-provider changes: run `cuenv sync ci --check` plus the focused tests for the touched provider.
+- CLI behavior changes: run the focused Rust tests and at least one direct CLI smoke test for the changed command.
+
+Run `nix flake check -L --accept-flake-config` when:
+
+- Marking a PR ready for review, requesting review, merging, or cutting a release.
+- Changing Nix expressions, Cargo manifests or lockfiles, build/check wiring, CI/release behavior, or generated workflow contracts.
+- Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
+- A focused check fails in a way that could indicate broader workspace breakage.
+
+Do not run the full flake check just to validate exploratory review work, docs-only edits, prompt/agent-guidance text, or mechanical test extraction commits while the PR remains draft. Keep those commits isolated, push them, and update the PR with the focused validation that was actually run.
 
 ## Architecture
 
@@ -167,7 +188,9 @@ cuenv exec -- cargo run -- env print --path examples/env-basic --package example
 
 ## Code Quality Checklist
 
-Before committing:
+Before each isolated draft commit, run the focused checks that match the files touched. Include `git diff --check` and `cuenv fmt --fix` for code changes, and include `cuenv task ci.schema-docs-check` for schema, docs, prompts, examples, skills, or CLI surfaces.
+
+Before requesting review or marking a PR ready:
 
 ```bash
 cuenv fmt --fix

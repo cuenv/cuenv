@@ -11,6 +11,12 @@ Start with `docs/design/specs/schema-coverage-matrix.md` and run:
 cuenv task ci.schema-docs-check
 ```
 
+Validation scope:
+
+- For docs, prompts, examples, skills, or agent-guidance text, `cuenv task ci.schema-docs-check` is the required focused gate.
+- Do not run `nix flake check -L --accept-flake-config` for docs-only, prompt-only, or agent-guidance-only edits unless preparing the PR for review/merge or touching Nix, Cargo, CI/release, build/check wiring, or broad runtime behavior.
+- If the change also alters CLI behavior or schema support, add focused CLI/schema tests and update the schema coverage matrix.
+
 Review this scope when docs or agent behavior changes:
 
 - `schema/**/*.cue`

@@ -65,20 +65,24 @@ git checkout -b feature/my-new-feature
 4. **Test Your Changes**
 
 ```bash
-# Run all tests
-cargo test --workspace
+# Run the full review/merge gate
+nix flake check -L --accept-flake-config
 
 # Run specific crate tests
-cargo test -p cuengine
-cargo test -p cuenv-core
-cargo test -p cuenv-cli
+cuenv exec -- cargo test -p cuengine
+cuenv exec -- cargo test -p cuenv-core
+cuenv exec -- cargo test -p cuenv --lib
 
-# Run linting
-cargo clippy -- -D warnings
+# Run generated workflow drift checks
+cuenv sync ci --check
 
 # Format code
-cargo fmt
+cuenv fmt --fix
 ```
+
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. For mechanical refactors, test moves, or module splits with no behavior change, run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test. For docs, prompts, examples, and repo-local agent skills, run `cuenv task ci.schema-docs-check`. For CLI behavior changes, run focused Rust tests plus a direct CLI smoke test for the changed command.
+
+Do not spend the full `nix flake check -L --accept-flake-config` cycle on exploratory review work, docs-only edits, prompt or agent-guidance text, or mechanical test extraction commits while the PR is still draft. The full flake check is required before marking a PR ready for review, merging, release work, Nix/Cargo/build/check wiring changes, CI/release behavior changes, and broad cross-crate runtime changes.
 
 5. **Commit and Push**
 
