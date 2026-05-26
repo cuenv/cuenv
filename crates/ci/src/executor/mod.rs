@@ -8,6 +8,7 @@ mod orchestrator;
 mod reporting;
 pub mod runner;
 pub mod secrets;
+mod task_env;
 mod tools;
 
 pub use config::CIExecutorConfig;

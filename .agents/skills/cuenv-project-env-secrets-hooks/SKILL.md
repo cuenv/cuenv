@@ -12,6 +12,7 @@ Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant
 - `schema/secrets.cue`, `schema/onepassword.cue`, `schema/infisical.cue`, `schema/aws.cue`, `schema/gcp.cue`, and `schema/vault.cue` for secret shapes.
 - `schema/hooks.cue` and `schema/shell.cue` for hooks and shell command variants.
 - `crates/ci/src/executor/hook_env.rs` for hook-backed environment assembly during CI task execution.
+- `crates/ci/src/executor/task_env.rs` for CI task env precedence and passthrough handling.
 
 Generation rules:
 
