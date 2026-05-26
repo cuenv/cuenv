@@ -1,7 +1,9 @@
 use crate::core::traits::LockfileParser;
 use crate::core::types::{DependencyRef, DependencySource, LockfileEntry};
 use crate::error::{Error, Result};
-use cargo_lock::{Lockfile, dependency::Dependency as CargoDependency, package::Package};
+use cargo_lock::{
+    Lockfile, dependency::Dependency as CargoDependency, package::Package, package::SourceId,
+};
 use cargo_toml::{Error as CargoManifestError, Manifest};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -333,7 +335,6 @@ fn is_workspace_member(package_name: &str, workspace_members: &WorkspaceMembers)
 /// - Git dependencies (via `SourceId::is_git()`)
 /// - Path dependencies (via `SourceId::is_path()`)
 /// - Registry dependencies (via `SourceId::is_registry()`)
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn determine_source(
     package: &Package,
     workspace_root: &Path,
@@ -344,24 +345,36 @@ fn determine_source(
         return DependencySource::Workspace(relative.clone());
     }
 
-    if let Some(source) = package.source.as_ref() {
-        if source.is_git() {
-            DependencySource::Git(source.url().to_string())
-        } else if source.is_path() {
-            let url_str = source.url().to_string();
-            DependencySource::Path(extract_path_from_url(&url_str, workspace_root))
-        } else if source.is_registry() {
-            DependencySource::Registry(source.url().to_string())
-        } else {
-            // Fallback for other source kinds (e.g., directory sources)
-            // Treat them as path dependencies
-            let url_str = source.url().to_string();
-            DependencySource::Path(extract_path_from_url(&url_str, workspace_root))
-        }
-    } else {
-        // No source means it's from the default registry (crates.io)
-        DependencySource::Registry("https://github.com/rust-lang/crates.io-index".to_string())
+    let Some(source) = package.source.as_ref() else {
+        return default_cargo_registry_source();
+    };
+
+    dependency_source_from_cargo_source(source, workspace_root)
+}
+
+fn dependency_source_from_cargo_source(
+    source: &SourceId,
+    workspace_root: &Path,
+) -> DependencySource {
+    let url = source.url().to_string();
+
+    if source.is_git() {
+        return DependencySource::Git(url);
     }
+
+    if source.is_path() {
+        return DependencySource::Path(extract_path_from_url(&url, workspace_root));
+    }
+
+    if source.is_registry() {
+        return DependencySource::Registry(url);
+    }
+
+    DependencySource::Path(extract_path_from_url(&url, workspace_root))
+}
+
+fn default_cargo_registry_source() -> DependencySource {
+    DependencySource::Registry("https://github.com/rust-lang/crates.io-index".to_string())
 }
 
 fn map_cargo_dependencies(deps: &[CargoDependency]) -> Vec<DependencyRef> {
@@ -397,10 +410,10 @@ fn extract_path_from_url(url_str: &str, workspace_root: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::uninlined_format_args, clippy::format_push_string)]
 mod tests {
     use super::*;
     use crate::error::Error;
+    use std::fmt::Write as _;
     use std::fs;
     use tempfile::TempDir;
 
@@ -539,14 +552,14 @@ version = "0.2.0"
         let mut content = String::from("[workspace]\n");
         content.push_str("members = [\n");
         for member in members {
-            content.push_str(&format!("    \"{}\",\n", member));
+            writeln!(&mut content, "    \"{member}\",").unwrap();
         }
         content.push_str("]\n");
 
         if !default_members.is_empty() {
             content.push_str("default-members = [\n");
             for member in default_members {
-                content.push_str(&format!("    \"{}\",\n", member));
+                writeln!(&mut content, "    \"{member}\",").unwrap();
             }
             content.push_str("]\n");
         }
@@ -554,7 +567,7 @@ version = "0.2.0"
         if !excludes.is_empty() {
             content.push_str("exclude = [\n");
             for exclude in excludes {
-                content.push_str(&format!("    \"{}\",\n", exclude));
+                writeln!(&mut content, "    \"{exclude}\",").unwrap();
             }
             content.push_str("]\n");
         }
@@ -859,6 +872,7 @@ source = "git+https://github.com/example/git-dep?branch=main#abcdef123456"
         let external_path = temp.path().join("external/path-dep");
         write_member_manifest(&external_path, "path-dep", "0.1.0");
 
+        let external_path_display = external_path.display();
         let lock_contents = format!(
             r#"version = 4
 
@@ -872,9 +886,8 @@ dependencies = [
 [[package]]
 name = "path-dep"
 version = "0.1.0"
-source = "path+file://{}"
-"#,
-            external_path.display()
+source = "path+file://{external_path_display}"
+"#
         );
         write_lockfile(workspace_root, &lock_contents);
 
