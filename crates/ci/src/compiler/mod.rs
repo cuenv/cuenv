@@ -11,19 +11,19 @@
 
 mod contributors;
 pub mod digest;
+mod triggers;
 
 use crate::flake::{FlakeLockAnalyzer, FlakeLockError, PurityAnalysis};
 use crate::ir::{
-    ArtifactDownload, CachePolicy, IntermediateRepresentation, IrValidator, ManualTriggerConfig,
-    OutputDeclaration, OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask,
-    TriggerCondition, WorkflowDispatchInputDef,
+    ArtifactDownload, CachePolicy, IntermediateRepresentation, IrValidator, OutputDeclaration,
+    OutputType, PurityMode, Runtime, SecretConfig, Task as IrTask,
 };
-use cuenv_core::ci::{CI, ManualTrigger, Pipeline, PipelineTask};
+use cuenv_core::ci::{Pipeline, PipelineTask};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -373,247 +373,6 @@ impl Compiler {
         Ok(ir)
     }
 
-    /// Build trigger condition for a pipeline from its configuration
-    fn build_trigger_condition(&self, pipeline: &Pipeline, _ci_config: &CI) -> TriggerCondition {
-        let when = pipeline.when.as_ref();
-
-        // Extract branch patterns
-        let branches = when
-            .and_then(|w| w.branch.as_ref())
-            .map(cuenv_core::ci::StringOrVec::to_vec)
-            .unwrap_or_default();
-
-        // Extract pull_request setting
-        let pull_request = when.and_then(|w| w.pull_request);
-
-        // Extract scheduled cron expressions
-        let scheduled = when
-            .and_then(|w| w.scheduled.as_ref())
-            .map(cuenv_core::ci::StringOrVec::to_vec)
-            .unwrap_or_default();
-
-        // Extract release types
-        let release = when.and_then(|w| w.release.clone()).unwrap_or_default();
-
-        // Build manual trigger config
-        let manual = when.and_then(|w| w.manual.as_ref()).map(|m| match m {
-            ManualTrigger::Enabled(enabled) => ManualTriggerConfig {
-                enabled: *enabled,
-                inputs: BTreeMap::new(),
-            },
-            ManualTrigger::WithInputs(inputs) => ManualTriggerConfig {
-                enabled: true,
-                inputs: inputs
-                    .iter()
-                    .map(|(k, v)| {
-                        (
-                            k.clone(),
-                            WorkflowDispatchInputDef {
-                                description: v.description.clone(),
-                                required: v.required.unwrap_or(false),
-                                default: v.default.clone(),
-                                input_type: v.input_type.clone(),
-                                options: v.options.clone().unwrap_or_default(),
-                            },
-                        )
-                    })
-                    .collect(),
-            },
-        });
-
-        // Determine whether to derive paths from task inputs
-        let should_derive_paths = pipeline.derive_paths.unwrap_or_else(|| {
-            // Default: derive paths if we have branch/PR triggers (not scheduled-only)
-            !branches.is_empty() || pull_request.is_some()
-        });
-
-        // Derive paths from task inputs
-        let paths = if should_derive_paths {
-            self.derive_trigger_paths(pipeline)
-        } else {
-            Vec::new()
-        };
-
-        TriggerCondition {
-            branches,
-            pull_request,
-            scheduled,
-            release,
-            manual,
-            paths,
-        }
-    }
-
-    /// Derive trigger paths from task inputs
-    fn derive_trigger_paths(&self, pipeline: &Pipeline) -> Vec<String> {
-        let mut task_inputs = HashSet::new();
-
-        // Collect inputs from all pipeline tasks (including transitive deps)
-        // These paths are relative to the project directory
-        for task in &pipeline.tasks {
-            self.collect_task_inputs(task.task_name(), &mut task_inputs);
-        }
-
-        let mut paths = HashSet::new();
-
-        // Add task inputs, canonicalized into repo-relative trigger filters.
-        //
-        // GitHub Actions path filters are glob-only — a bare `server/src`
-        // matches only the literal path, not its descendants. cuenv's own
-        // affected matching (`cuenv_core::matches_pattern`) treats non-glob
-        // patterns as prefixes, so to keep the two in agreement we also emit
-        // `<path>/**` for any user input that does not already contain glob
-        // metacharacters. This costs one extra entry per simple-path input
-        // and covers both "input is a file" and "input is a directory".
-        for input in &task_inputs {
-            match repo_relative_trigger_path(self.options.project_path.as_deref(), input) {
-                Some(path) => {
-                    if is_simple_path_pattern(input) {
-                        paths.insert(format!("{path}/**"));
-                    }
-                    paths.insert(path);
-                }
-                None => {
-                    tracing::warn!(
-                        project_path = self.options.project_path.as_deref().unwrap_or("."),
-                        input = input.as_str(),
-                        "Skipping task input that escapes the repository root or is absolute; \
-                         it will not contribute to derived GitHub path filters",
-                    );
-                }
-            }
-        }
-
-        // If no task inputs were collected, use the project directory as fallback
-        // This ensures workflows trigger on any file change within the project
-        if task_inputs.is_empty() {
-            match &self.options.project_path {
-                Some(pp) if pp == "." => paths.insert("**".to_string()),
-                Some(pp) => paths.insert(format!("{pp}/**")),
-                None => paths.insert("**".to_string()),
-            };
-        }
-
-        // Add implicit CUE inputs (changes here should always trigger)
-        if let Some(path) =
-            repo_relative_trigger_path(self.options.project_path.as_deref(), "env.cue")
-        {
-            paths.insert(path);
-        }
-        if let Some(path) =
-            repo_relative_trigger_path(self.options.project_path.as_deref(), "schema/**")
-        {
-            paths.insert(path);
-        }
-        // cue.mod is always at module root, not prefixed with project_path
-        paths.insert("cue.mod/**".to_string());
-
-        // Add workspace member dependency paths
-        self.add_workspace_dependency_paths(&mut paths);
-
-        // Sort for deterministic output
-        let mut result: Vec<_> = paths.into_iter().collect();
-        result.sort();
-        result
-    }
-
-    /// Adds paths for workspace member dependencies (direct and transitive).
-    ///
-    /// If the current project is a member of a workspace (JS/npm, pnpm, or Cargo),
-    /// this finds all other workspace members that this project depends on and
-    /// adds their paths to the trigger paths.
-    ///
-    /// # Supported Workspace Types
-    /// - npm/yarn workspaces (package.json)
-    /// - pnpm workspaces (pnpm-workspace.yaml)
-    /// - Cargo workspaces (Cargo.toml)
-    ///
-    /// # Testing
-    /// Core dependency resolution logic is tested in `cuenv_workspaces::Workspace`.
-    /// See `crates/workspaces/src/core/types.rs` for unit tests covering direct,
-    /// transitive, and circular dependency resolution.
-    fn add_workspace_dependency_paths(&self, paths: &mut HashSet<String>) {
-        use cuenv_workspaces::{
-            CargoTomlDiscovery, PackageJsonDiscovery, PnpmWorkspaceDiscovery, Workspace,
-            WorkspaceDiscovery,
-        };
-
-        let Some(ref project_path) = self.options.project_path else {
-            return; // Root project, no workspace dependency resolution needed
-        };
-
-        if project_path == "." {
-            return; // Root project
-        }
-
-        let module_root = self
-            .options
-            .module_root
-            .clone()
-            .or_else(|| self.options.project_root.clone())
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        // Try all workspace discovery methods
-        let workspace: Option<Workspace> = PackageJsonDiscovery
-            .discover(&module_root)
-            .ok()
-            .or_else(|| PnpmWorkspaceDiscovery.discover(&module_root).ok())
-            .or_else(|| CargoTomlDiscovery.discover(&module_root).ok());
-
-        let Some(workspace) = workspace else {
-            return; // Not in a supported workspace
-        };
-
-        // Find current project as a workspace member by path
-        let project_path_buf = Path::new(project_path);
-        let Some(current_member) = workspace.find_member_by_path(project_path_buf) else {
-            return; // Current project not found as workspace member
-        };
-
-        // Resolve transitive workspace dependencies
-        let dep_paths = workspace.resolve_workspace_dependency_paths(&current_member.name);
-
-        // Add each dependency's path as a glob pattern
-        for dep_path in dep_paths {
-            let mut pattern = dep_path.clone();
-            pattern.push("**");
-            paths.insert(pattern.to_string_lossy().into_owned());
-        }
-    }
-
-    /// Recursively collect task inputs including dependencies
-    fn collect_task_inputs(&self, task_name: &str, paths: &mut HashSet<String>) {
-        if let Some(node) = self.find_task_node(task_name) {
-            self.collect_inputs_from_node(node, paths);
-        }
-    }
-
-    /// Collect inputs from a task node (handles tasks, groups, and lists)
-    fn collect_inputs_from_node(&self, node: &TaskNode, paths: &mut HashSet<String>) {
-        match node {
-            TaskNode::Task(task) => {
-                // Add direct inputs
-                for input in task.iter_path_inputs() {
-                    paths.insert(input.clone());
-                }
-                // Recurse into dependencies
-                for dep in &task.depends_on {
-                    self.collect_task_inputs(dep.task_name(), paths);
-                }
-            }
-            TaskNode::Group(group) => {
-                for child_node in group.children.values() {
-                    self.collect_inputs_from_node(child_node, paths);
-                }
-            }
-            TaskNode::Sequence(steps) => {
-                for child_node in steps {
-                    self.collect_inputs_from_node(child_node, paths);
-                }
-            }
-        }
-    }
-
     /// Find a task node by name (handles dotted paths for nested tasks)
     /// Returns the TaskNode which can be a Task, Group, or List
     fn find_task_node(&self, name: &str) -> Option<&TaskNode> {
@@ -920,65 +679,6 @@ impl Compiler {
             }
         }
     }
-}
-
-/// Convert a project-relative input glob into a repo-relative trigger path.
-///
-/// GitHub Actions path filters compare changed file names as repo-relative
-/// strings. They do not normalize `server/../flake.nix`, so derived trigger
-/// paths must be cleaned before emission.
-fn repo_relative_trigger_path(project_path: Option<&str>, input: &str) -> Option<String> {
-    let mut path = PathBuf::new();
-
-    if let Some(project_path) = project_path.filter(|p| !p.is_empty() && *p != ".")
-        && !push_relative_components(&mut path, Path::new(project_path))
-    {
-        return None;
-    }
-
-    if !push_relative_components(&mut path, Path::new(input)) {
-        return None;
-    }
-
-    let rendered = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("/");
-
-    if rendered.is_empty() {
-        None
-    } else {
-        Some(rendered)
-    }
-}
-
-/// True when `input` contains none of the glob metacharacters that
-/// `cuenv_core::affected::matches_pattern` uses to switch between glob
-/// matching and prefix matching. Kept in sync with that function so derived
-/// GitHub trigger paths stay aligned with local affected detection.
-fn is_simple_path_pattern(input: &str) -> bool {
-    !input.contains('*') && !input.contains('?') && !input.contains('[')
-}
-
-fn push_relative_components(path: &mut PathBuf, input: &Path) -> bool {
-    for component in input.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => path.push(part),
-            Component::ParentDir => {
-                if !path.pop() {
-                    return false;
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => return false,
-        }
-    }
-
-    true
 }
 
 #[cfg(test)]

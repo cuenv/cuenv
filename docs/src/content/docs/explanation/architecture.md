@@ -179,6 +179,9 @@ intermediate representation before provider emitters render workflow files.
 The compiler entrypoint lives in `crates/ci/src/compiler/mod.rs`; contributor
 activation, provider-condition checks, priority-to-stage mapping, and
 contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
+Pipeline trigger condition assembly, normalized repo-relative path filters, and
+workspace dependency trigger paths live in
+`crates/ci/src/compiler/triggers.rs`.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. CI task tool download and lockfile
