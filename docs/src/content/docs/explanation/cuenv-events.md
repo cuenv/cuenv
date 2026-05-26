@@ -42,7 +42,10 @@ Typed event definitions for tasks, CI, commands, interactive prompts, and system
 Broadcast channel for distributing events to multiple subscribers.
 
 **CuenvEventLayer**
-Optional tracing layer that captures legacy structured tracing events.
+Optional tracing layer that captures legacy structured tracing events. The
+layer in `crates/events/src/layer.rs` handles target filtering and event
+dispatch; `crates/events/src/layer/visitor.rs` owns field extraction, redaction,
+and typed event construction.
 
 **Emit macros**
 Exported `emit_*!` macro definitions live in `crates/events/src/macros.rs`.
@@ -100,6 +103,10 @@ while let Ok(event) = receiver.recv().await {
 ### CuenvEventLayer
 
 Optional tracing layer for capturing legacy structured tracing events:
+
+The public layer is intentionally thin: it filters tracing targets and forwards
+accepted events to the visitor module that owns field extraction, redaction, and
+typed category construction.
 
 ```rust
 use cuenv_events::{EventBus, CuenvEventLayer};

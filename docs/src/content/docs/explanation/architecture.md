@@ -234,10 +234,12 @@ execution live in `crates/1password/src/secrets/cli.rs`.
 
 The canonical event path constructs typed `CuenvEvent` values and publishes
 them through the process-wide sender. The compatibility tracing layer in
-`crates/events/src/layer.rs` still translates tracing fields into typed events;
-field extraction and category-specific event construction stay separated so
-output, task, service, CI, command, interactive, and system events do not share
-one monolithic conversion path. Exported `emit_*!` macro definitions live in
+`crates/events/src/layer.rs` owns target filtering and dispatch; its visitor in
+`crates/events/src/layer/visitor.rs` translates tracing fields into typed
+events. Field extraction and category-specific event construction stay
+separated so output, task, service, CI, command, interactive, and system events
+do not share one monolithic conversion path. Exported `emit_*!` macro
+definitions live in
 `crates/events/src/macros.rs`, while crate-root hidden helpers remain available
 for `$crate` expansion and redacted print helpers.
 
