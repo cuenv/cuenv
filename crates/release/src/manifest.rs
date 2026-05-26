@@ -16,6 +16,11 @@ pub struct CargoManifest {
     root: PathBuf,
 }
 
+struct MemberManifest {
+    package_root: PathBuf,
+    doc: toml::Value,
+}
+
 impl CargoManifest {
     /// Create a new manifest handler for the given workspace root.
     #[must_use]
@@ -42,6 +47,20 @@ impl CargoManifest {
         content.parse::<DocumentMut>().map_err(|e| {
             Error::manifest(format!("Failed to parse root Cargo.toml: {e}"), Some(path))
         })
+    }
+
+    fn read_member_manifest(member_path: &Path) -> Result<Option<MemberManifest>> {
+        let manifest_path = member_path.join("Cargo.toml");
+        if !manifest_path.exists() {
+            return Ok(None);
+        }
+
+        let doc = read_toml_value(&manifest_path)?;
+
+        Ok(Some(MemberManifest {
+            package_root: member_path.to_path_buf(),
+            doc,
+        }))
     }
 
     /// Read the workspace version from the root Cargo.toml.
@@ -131,31 +150,12 @@ impl CargoManifest {
         let mut paths_map = HashMap::new();
 
         for member_path in members {
-            let manifest_path = member_path.join("Cargo.toml");
-            if !manifest_path.exists() {
+            let Some(member) = Self::read_member_manifest(&member_path)? else {
                 continue;
-            }
+            };
 
-            let content = fs::read_to_string(&manifest_path).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to read {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to parse {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            if let Some(name) = doc
-                .get("package")
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-            {
-                paths_map.insert(name.to_string(), member_path);
+            if let Some(name) = package_name(&member.doc) {
+                paths_map.insert(name.to_string(), member.package_root);
             }
         }
 
@@ -172,30 +172,11 @@ impl CargoManifest {
         let mut names = Vec::new();
 
         for member_path in members {
-            let manifest_path = member_path.join("Cargo.toml");
-            if !manifest_path.exists() {
+            let Some(member) = Self::read_member_manifest(&member_path)? else {
                 continue;
-            }
+            };
 
-            let content = fs::read_to_string(&manifest_path).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to read {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to parse {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            if let Some(name) = doc
-                .get("package")
-                .and_then(|p| p.get("name"))
-                .and_then(|n| n.as_str())
-            {
+            if let Some(name) = package_name(&member.doc) {
                 names.push(name.to_string());
             }
         }
@@ -216,26 +197,11 @@ impl CargoManifest {
         let mut versions = HashMap::new();
 
         for member_path in members {
-            let manifest_path = member_path.join("Cargo.toml");
-            if !manifest_path.exists() {
+            let Some(member) = Self::read_member_manifest(&member_path)? else {
                 continue;
-            }
+            };
 
-            let content = fs::read_to_string(&manifest_path).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to read {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to parse {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let Some(package) = doc.get("package") else {
+            let Some(package) = member.doc.get("package") else {
                 continue;
             };
 
@@ -329,26 +295,11 @@ impl CargoManifest {
         let mut dependencies_map = HashMap::new();
 
         for member_path in members {
-            let manifest_path = member_path.join("Cargo.toml");
-            if !manifest_path.exists() {
+            let Some(member) = Self::read_member_manifest(&member_path)? else {
                 continue;
-            }
+            };
 
-            let content = fs::read_to_string(&manifest_path).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to read {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let doc: toml::Value = toml::from_str(&content).map_err(|e| {
-                Error::manifest(
-                    format!("Failed to parse {}: {e}", manifest_path.display()),
-                    Some(manifest_path.clone()),
-                )
-            })?;
-
-            let Some(package) = doc.get("package") else {
+            let Some(package) = member.doc.get("package") else {
                 continue;
             };
 
@@ -360,7 +311,7 @@ impl CargoManifest {
             let mut deps = Vec::new();
 
             // Check [dependencies]
-            if let Some(dependencies) = doc.get("dependencies").and_then(|d| d.as_table()) {
+            if let Some(dependencies) = member.doc.get("dependencies").and_then(|d| d.as_table()) {
                 for (dep_name, dep_value) in dependencies {
                     // Check if it's a workspace dependency that references an internal package
                     if let Some(dep_table) = dep_value.as_table() {
@@ -469,6 +420,28 @@ impl CargoManifest {
 
         Ok(())
     }
+}
+
+fn read_toml_value(path: &Path) -> Result<toml::Value> {
+    let content = fs::read_to_string(path).map_err(|e| {
+        Error::manifest(
+            format!("Failed to read {}: {e}", path.display()),
+            Some(path.to_path_buf()),
+        )
+    })?;
+
+    toml::from_str(&content).map_err(|e| {
+        Error::manifest(
+            format!("Failed to parse {}: {e}", path.display()),
+            Some(path.to_path_buf()),
+        )
+    })
+}
+
+fn package_name(doc: &toml::Value) -> Option<&str> {
+    doc.get("package")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
 }
 
 /// Create a new TOML value for a version string.
