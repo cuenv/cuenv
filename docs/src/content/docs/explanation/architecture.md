@@ -88,8 +88,10 @@ helpers, failure-summary formatting, and workspace-root detection live in
 Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task path
 resolution for dotted/bracketed CUE task nodes lives in
 `crates/core/src/tasks/graph/resolver.rs`. Generic task DAG primitives live in
-`crates/task-graph/src/graph.rs`, while resolver-backed group expansion and
-sequence ordering live in `crates/task-graph/src/graph/resolver_build.rs`.
+`crates/task-graph/src/graph.rs`; affected-task and transitive-closure helpers
+live in `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group
+expansion and sequence ordering live in
+`crates/task-graph/src/graph/resolver_build.rs`.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in
