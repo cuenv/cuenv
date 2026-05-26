@@ -205,6 +205,9 @@ keeping the orchestrator focused on pipeline scheduling. CI report writing,
 provider notification, annotation resolution, and CI redaction setup live in
 `crates/ci/src/executor/reporting.rs`; per-task environment precedence and
 passthrough handling live in `crates/ci/src/executor/task_env.rs`.
+Core tool activation schema and environment mutation rules live in
+`crates/core/src/tools/activation.rs`; provider/cache/profile path discovery
+for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs`.
 
 ### cuenv-1password
 
