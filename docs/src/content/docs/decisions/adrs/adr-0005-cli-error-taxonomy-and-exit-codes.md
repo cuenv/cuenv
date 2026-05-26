@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-The cuenv CLI surfaces distinct error categories to users and automation. The implementation in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:14) defines `CliError::{Config, Eval, Other}`, each mapping to a specific exit code and diagnostic presentation. To maintain consistency across commands and documentation, we must formally accept this taxonomy.
+The cuenv CLI surfaces distinct error categories to users and automation. The implementation in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs) defines `CliError::{Config, Eval, Other}`, each mapping to a specific exit code and diagnostic presentation. To maintain consistency across commands and documentation, we must formally accept this taxonomy.
 
 This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/decisions/rfcs/rfc-0002-output-formatting-and-error-envelope-strategy/).
 
@@ -52,7 +52,7 @@ This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/dec
 ## Related Documents
 
 - [rfc-0002-output-formatting-and-error-envelope-strategy](/decisions/rfcs/rfc-0002-output-formatting-and-error-envelope-strategy/)
-- [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:14)
+- [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)
 - [readme.md](readme.md:770)
 
 ## Status

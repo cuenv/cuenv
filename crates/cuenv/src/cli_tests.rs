@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::Command;
 use crate::tracing::LogLevel;
 use clap::Parser;
 
