@@ -2,6 +2,7 @@
 
 mod git;
 mod materialization;
+mod paths;
 
 use async_trait::async_trait;
 use clap::{Arg, Command};
@@ -10,9 +11,12 @@ use cuenv_core::manifest::{Base, Project, VcsDependency};
 use cuenv_core::{Error, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 use materialization::{
-    TempPath, check_materialized, ensure_managed_internal_path, install_prepared_dependency,
-    locked_matches, prepare_dependency, prune_removed_vcs_dependencies, resolve_dependency,
-    should_update, temporary_cache_root, validate_materialization_path, validate_name,
+    check_materialized, install_prepared_dependency, locked_matches, prepare_dependency,
+    prune_removed_vcs_dependencies, resolve_dependency, should_update,
+};
+use paths::{
+    TempPath, ensure_managed_internal_path, temporary_cache_root, validate_materialization_path,
+    validate_name,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -24,7 +28,7 @@ use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncR
 #[cfg(test)]
 use git::run_git;
 #[cfg(test)]
-use materialization::validate_subdir;
+use paths::validate_subdir;
 
 const GITIGNORE_SECTION_NAME: &str = "cuenv vcs";
 const FETCH_HEAD_COMMIT: &str = "FETCH_HEAD^{commit}";

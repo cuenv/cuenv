@@ -10,7 +10,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/tools.cue` for `#ToolsRuntime`, `#Tool`, overrides, source unions, extracts, and activation.
 - `schema/vcs.cue` for VCS dependency definitions.
 - `crates/cuenv/src/commands/tools.rs` and sync providers when behavior matters.
-- `crates/cuenv/src/commands/sync/providers/vcs.rs` for VCS sync orchestration, `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs` for checkout/path/marker verification, and `crates/cuenv/src/commands/sync/providers/vcs/git.rs` for git subprocess execution.
+- `crates/cuenv/src/commands/sync/providers/vcs.rs` for VCS sync orchestration, `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs` for checkout and marker verification, `crates/cuenv/src/commands/sync/providers/vcs/paths.rs` for path/temp safety, and `crates/cuenv/src/commands/sync/providers/vcs/git.rs` for git subprocess execution.
 - `crates/ci/src/executor/tools.rs` for CI task tool downloads and lockfile activation.
 - `crates/tools/url/src/lib.rs` for URL resolution/cache placement and `crates/tools/url/src/extract.rs` for URL archive extraction behavior.
 

@@ -166,6 +166,10 @@ The lock provider keeps path/workspace orchestration in
 `crates/cuenv/src/commands/sync/providers/lock.rs`, while multi-source tool
 resolution, cache reuse, source template expansion, and provider registry
 setup live in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs`.
+The VCS sync provider keeps orchestration in
+`crates/cuenv/src/commands/sync/providers/vcs.rs`, checkout/marker verification
+in `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs`, and
+path/temp safety in `crates/cuenv/src/commands/sync/providers/vcs/paths.rs`.
 GitHub Actions release workflow construction is separated into
 `crates/github/src/workflow/release.rs`; bootstrap, simple, matrix, and
 artifact job construction lives in `crates/github/src/workflow/jobs.rs`;
