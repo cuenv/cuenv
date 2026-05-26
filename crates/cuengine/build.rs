@@ -104,6 +104,14 @@ impl BridgeBuild {
             "Bridge GO file exists: {}",
             self.bridge_dir.join("bridge.go").exists()
         );
+        println!(
+            "Go bridge source files: {}",
+            go_source_paths(&self.bridge_dir).len()
+        );
+        println!(
+            "Go bridge build files: {}",
+            go_build_source_paths(&self.bridge_dir).len()
+        );
     }
 }
 
@@ -131,18 +139,8 @@ impl BridgeOutputs {
 
 fn emit_rerun_directives(manifest_dir: &Path) {
     // Track all Go source files and module files for rebuild detection.
-    for path in [
-        "build.rs",
-        "bridge.go",
-        "bridge_test.go",
-        "bridge.h",
-        "go.mod",
-        "go.sum",
-    ] {
-        println!(
-            "cargo:rerun-if-changed={}",
-            manifest_dir.join(path).display()
-        );
+    for path in tracked_build_inputs(manifest_dir) {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
     println!("cargo:rerun-if-env-changed=CUE_BRIDGE_PATH");
 }
@@ -197,13 +195,44 @@ fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) {
         .unwrap_or_else(|e| panic!("Failed to write bridge fingerprint: {e}"));
 }
 
-fn tracked_go_paths(bridge_dir: &Path) -> [PathBuf; 4] {
-    [
-        bridge_dir.join("bridge.go"),
-        bridge_dir.join("bridge_test.go"),
+fn tracked_build_inputs(bridge_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![
+        bridge_dir.join("build.rs"),
+        bridge_dir.join("bridge.h"),
         bridge_dir.join("go.mod"),
         bridge_dir.join("go.sum"),
-    ]
+    ];
+    paths.extend(go_source_paths(bridge_dir));
+    paths.sort();
+    paths
+}
+
+fn tracked_go_paths(bridge_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = vec![bridge_dir.join("go.mod"), bridge_dir.join("go.sum")];
+    paths.extend(go_source_paths(bridge_dir));
+    paths.sort();
+    paths
+}
+
+fn go_source_paths(bridge_dir: &Path) -> Vec<PathBuf> {
+    let mut paths = fs::read_dir(bridge_dir)
+        .unwrap_or_else(|e| panic!("Failed to read bridge source directory: {e}"))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("go"))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths
+}
+
+fn go_build_source_paths(bridge_dir: &Path) -> Vec<PathBuf> {
+    go_source_paths(bridge_dir)
+        .into_iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| !name.ends_with("_test.go"))
+        })
+        .collect()
 }
 
 struct PrebuiltBridgeRequest<'a> {
@@ -420,7 +449,8 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
         .to_str()
         .expect("Failed to convert output path to string");
 
-    cmd.args(["-buildmode=c-archive", "-o", output_str, "bridge.go"]);
+    cmd.args(["-buildmode=c-archive", "-o", output_str]);
+    cmd.args(go_build_source_paths(bridge_dir));
 
     println!("Running Go command: {cmd:?}");
 
