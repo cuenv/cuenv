@@ -1,6 +1,6 @@
 use super::*;
 use crate::commands::CommandExecutor;
-use cuenv_core::tasks::TaskNode;
+use cuenv_core::tasks::{Task, TaskNode};
 use tokio::sync::mpsc;
 
 use std::fs;
@@ -69,6 +69,7 @@ fn test_format_task_results_variants() {
 
 #[test]
 fn test_render_task_tree() {
+    use super::rendering::render_task_tree;
     use cuenv_core::tasks::IndexedTask;
     // Helper to create a dummy task
     let make_task = |desc: Option<&str>| Task {

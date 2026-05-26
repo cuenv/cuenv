@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI implementation in [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:92) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
+`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI orchestration in [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
 
 ## Decision
 
@@ -51,7 +51,7 @@ superseded_by: []
 ## Related Documents
 
 - [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/)
-- [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10)
+- [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs)
 - cuenv-core task graph implementation (future documentation)
 
 ## Status

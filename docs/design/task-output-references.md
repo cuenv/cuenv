@@ -150,7 +150,7 @@ pub struct OutputRefResolver<'a> {
 | `crates/core/src/tasks/executor.rs` | `results_map` in `execute_graph`, `seq_results` in `execute_sequential` |
 | `crates/task-graph/src/graph.rs` | `get_task_mut()` |
 | `crates/cuenv/src/commands/task/workspace.rs` | `GlobalTasksResult`, `rewrite_output_ref_placeholders()` |
-| `crates/cuenv/src/commands/task/mod.rs` | Wiring: collect deps, pass to graph |
+| `crates/cuenv/src/commands/task/execution.rs` | Wiring: collect deps, pass to graph |
 
 ## Design Decisions
 
