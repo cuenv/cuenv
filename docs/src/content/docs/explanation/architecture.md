@@ -157,12 +157,13 @@ enums live in `crates/cuenv/src/cli/subcommands.rs`; conversion into the
 internal command model lives in `crates/cuenv/src/cli/command_conversion.rs`;
 output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
 and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
-Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; task CLI
-adapter construction lives in `crates/cuenv/src/commands/handler/task_handler.rs`
-and hands off to the structured `TaskExecutionRequest` owned by
-`crates/cuenv/src/commands/task/`. Startup, runtime selection, and early process
-routing stay in `crates/cuenv/src/main.rs`; command paths that bypass the
-executor are isolated in
+Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
+and workspace-wide module evaluation helpers live in
+`crates/cuenv/src/commands/module_evaluation.rs`; task CLI adapter construction
+lives in `crates/cuenv/src/commands/handler/task_handler.rs` and hands off to
+the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`.
+Startup, runtime selection, and early process routing stay in
+`crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
 The async dispatcher owns direct async commands plus changeset/release output
 envelopes; the hook supervisor process runs through
