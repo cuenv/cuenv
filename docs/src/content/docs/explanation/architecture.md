@@ -359,6 +359,10 @@ cd /project/dir
 2. **Content Hashing**: Approval is invalidated when configuration changes
 3. **Policy Enforcement**: Secrets are only accessible to authorized tasks
 
+The shell export formatter keeps the loaded-directory and pending-approval
+environment variable names as explicit constants that are interpolated into
+each supported shell snippet.
+
 ## Data Flow
 
 ### Environment Loading

@@ -483,10 +483,11 @@ fn collect_all_env_vars(
 }
 
 /// Generate script to print "Loaded" message if entering a new directory
-#[allow(clippy::uninlined_format_args)]
 fn format_loaded_check(dir: &Path, shell: Shell) -> String {
     let dir_display = dir.to_string_lossy();
     let escaped_dir = escape_shell_value(&dir_display);
+    let loaded = LOADED_DIR_ENV;
+    let pending = PENDING_APPROVAL_ENV;
 
     match shell {
         Shell::Bash | Shell::Zsh => format!(
@@ -494,10 +495,7 @@ fn format_loaded_check(dir: &Path, shell: Shell) -> String {
     echo "Project environment loaded" >&2
     export {loaded}="{escaped_dir}"
     unset {pending} 2>/dev/null
-fi"#,
-            loaded = LOADED_DIR_ENV,
-            pending = PENDING_APPROVAL_ENV,
-            escaped_dir = escaped_dir,
+fi"#
         ),
         Shell::Fish => format!(
             r#"if not set -q {loaded}
@@ -508,10 +506,7 @@ else if test "${loaded}" != "{escaped_dir}"
     echo "Project environment loaded" >&2
     set -x {loaded} "{escaped_dir}"
     set -e {pending} 2>/dev/null
-end"#,
-            loaded = LOADED_DIR_ENV,
-            pending = PENDING_APPROVAL_ENV,
-            escaped_dir = escaped_dir,
+end"#
         ),
         Shell::PowerShell => {
             let ps_dir = dir_display.replace('\'', "''");
@@ -520,10 +515,7 @@ end"#,
     Write-Host 'Project environment loaded'
     $env:{loaded} = '{ps_dir}'
     Remove-Item Env:{pending} -ErrorAction SilentlyContinue
-}}",
-                loaded = LOADED_DIR_ENV,
-                pending = PENDING_APPROVAL_ENV,
-                ps_dir = ps_dir,
+}}"
             )
         }
     }
@@ -611,26 +603,24 @@ fn format_env_diff_with_unset(
 
 /// Format "not allowed" message as an executable script snippet per shell.
 /// The script prints a helpful notice once per directory until approval is granted.
-#[allow(clippy::uninlined_format_args)]
 fn format_not_allowed(dir: &Path, shell: Shell, hook_count: usize) -> String {
     let dir_display = dir.to_string_lossy();
     let escaped = escape_shell_value(&dir_display);
     let hooks_str = if hook_count == 1 { "hook" } else { "hooks" };
+    let loaded = LOADED_DIR_ENV;
+    let pending = PENDING_APPROVAL_ENV;
+    let count = hook_count;
+    let hooks = hooks_str;
 
     match shell {
         Shell::Bash | Shell::Zsh => format!(
-            r#"if [ "${{{pending}:-}}" != "{dir}" ]; then
+            r#"if [ "${{{pending}:-}}" != "{escaped}" ]; then
     printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
     printf '%s\n' "Run 'cuenv allow' to approve."
-    export {pending}="{dir}"
+    export {pending}="{escaped}"
     unset {loaded} 2>/dev/null
 fi
-:"#,
-            pending = PENDING_APPROVAL_ENV,
-            loaded = LOADED_DIR_ENV,
-            dir = escaped,
-            count = hook_count,
-            hooks = hooks_str,
+:"#
         ),
         Shell::Fish => {
             let pending_ref = format!("${PENDING_APPROVAL_ENV}");
@@ -638,37 +628,26 @@ fi
                 r#"if not set -q {pending}
     printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
     printf '%s\n' "Run 'cuenv allow' to approve."
-    set -x {pending} "{dir}"
+    set -x {pending} "{escaped}"
     set -e {loaded} 2>/dev/null
-else if test "{pending_ref}" != "{dir}"
+else if test "{pending_ref}" != "{escaped}"
     printf '%s\n' "cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}."
     printf '%s\n' "Run 'cuenv allow' to approve."
-    set -x {pending} "{dir}"
+    set -x {pending} "{escaped}"
     set -e {loaded} 2>/dev/null
 end
-true"#,
-                pending = PENDING_APPROVAL_ENV,
-                pending_ref = pending_ref,
-                loaded = LOADED_DIR_ENV,
-                dir = escaped,
-                count = hook_count,
-                hooks = hooks_str,
+true"#
             )
         }
         Shell::PowerShell => {
             let ps_dir = dir_display.replace('\'', "''");
             format!(
-                r"if ($env:{pending} -ne '{dir}') {{
+                r"if ($env:{pending} -ne '{ps_dir}') {{
     Write-Host 'cuenv detected env.cue, but approval is required because this configuration contains {count} {hooks}.'
     Write-Host 'Run ''cuenv allow'' to approve.'
-    $env:{pending} = '{dir}'
+    $env:{pending} = '{ps_dir}'
     Remove-Item Env:{loaded} -ErrorAction SilentlyContinue
-}}",
-                pending = PENDING_APPROVAL_ENV,
-                loaded = LOADED_DIR_ENV,
-                dir = ps_dir,
-                count = hook_count,
-                hooks = hooks_str,
+}}"
             )
         }
     }
@@ -684,14 +663,14 @@ fn escape_shell_value(value: &str) -> String {
 }
 
 /// Format a safe no-op command for the shell while clearing pending approval notices
-#[allow(clippy::uninlined_format_args)]
 fn format_no_op(shell: Shell) -> String {
+    let loaded = LOADED_DIR_ENV;
+    let pending = PENDING_APPROVAL_ENV;
+
     match shell {
         Shell::Bash | Shell::Zsh => format!(
             r"unset {pending} {loaded} 2>/dev/null
-:",
-            pending = PENDING_APPROVAL_ENV,
-            loaded = LOADED_DIR_ENV,
+:"
         ),
         Shell::Fish => format!(
             r"if set -q {pending}
@@ -701,15 +680,11 @@ if set -q {loaded}
     set -e {loaded}
 end
 true",
-            pending = PENDING_APPROVAL_ENV,
-            loaded = LOADED_DIR_ENV,
         ),
         Shell::PowerShell => format!(
             r"if (Test-Path Env:{pending}) {{ Remove-Item Env:{pending} }}
 if (Test-Path Env:{loaded}) {{ Remove-Item Env:{loaded} }}
-# no changes",
-            pending = PENDING_APPROVAL_ENV,
-            loaded = LOADED_DIR_ENV,
+# no changes"
         ),
     }
 }
