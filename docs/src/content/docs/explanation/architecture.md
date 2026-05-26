@@ -132,6 +132,15 @@ and HTTP batch resolution live in `crates/1password/src/secrets/resolver.rs`;
 CLI authentication preflight, signed-out bootstrap reads, and `op read`
 execution live in `crates/1password/src/secrets/cli.rs`.
 
+### cuenv-events
+
+The canonical event path constructs typed `CuenvEvent` values and publishes
+them through the process-wide sender. The compatibility tracing layer in
+`crates/events/src/layer.rs` still translates tracing fields into typed events;
+field extraction and category-specific event construction stay separated so
+output, task, service, CI, command, interactive, and system events do not share
+one monolithic conversion path.
+
 ### cuenv-workspaces
 
 Workspace management for monorepos.

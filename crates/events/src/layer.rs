@@ -4,11 +4,7 @@
 //! converts them to `CuenvEvent` instances, and sends them to the `EventBus`.
 
 // These casts are intentional for tracing field extraction - values come from trusted sources
-#![allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::too_many_lines
-)]
+#![allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 use crate::event::{
     CacheSkipReason, CiEvent, CommandEvent, CuenvEvent, EventCategory, EventSource,
@@ -124,6 +120,12 @@ struct CuenvEventVisitor {
     tag: Option<String>,
 }
 
+struct RedactedText {
+    content: Option<String>,
+    message: Option<String>,
+    error: Option<String>,
+}
+
 impl CuenvEventVisitor {
     fn new(target: &str) -> Self {
         Self {
@@ -174,77 +176,105 @@ impl CuenvEventVisitor {
         }
     }
 
-    #[allow(clippy::cognitive_complexity)]
     fn build(self) -> Option<CuenvEvent> {
-        let event_type = self.event_type.as_deref()?;
+        let event_type = self.event_type.clone()?;
         let source = EventSource::new(&self.target);
         let correlation = correlation_id();
 
-        // Apply secret redaction to content fields before building events
-        let content = self.content.map(|c| redact(&c));
-        let message = self.message.map(|m| redact(&m));
-        let error = self.error.map(|e| redact(&e));
+        let text = RedactedText {
+            content: self.content.as_deref().map(redact),
+            message: self.message.as_deref().map(redact),
+            error: self.error.as_deref().map(redact),
+        };
 
-        let category = match event_type {
-            // Task events
-            "task.started" => EventCategory::Task(TaskEvent::Started {
+        let category = self.build_category(&event_type, text)?;
+        Some(CuenvEvent::new(correlation, source, category))
+    }
+
+    fn build_category(self, event_type: &str, text: RedactedText) -> Option<EventCategory> {
+        match event_type.split_once('.')?.0 {
+            "task" => self
+                .build_task_event(event_type, text)
+                .map(EventCategory::Task),
+            "service" => self
+                .build_service_event(event_type, text)
+                .map(EventCategory::Service),
+            "ci" => self.build_ci_event(event_type, text).map(EventCategory::Ci),
+            "command" => self
+                .build_command_event(event_type, text)
+                .map(EventCategory::Command),
+            "interactive" => self
+                .build_interactive_event(event_type, text)
+                .map(EventCategory::Interactive),
+            "system" => self
+                .build_system_event(event_type, text)
+                .map(EventCategory::System),
+            "output" => Self::build_output_event(event_type, text).map(EventCategory::Output),
+            _ => None,
+        }
+    }
+
+    fn build_task_event(self, event_type: &str, text: RedactedText) -> Option<TaskEvent> {
+        let content = text.content;
+        let event = match event_type {
+            "task.started" => TaskEvent::Started {
                 name: self.task_name?,
                 command: self.command?,
                 hermetic: self.hermetic.unwrap_or(false),
                 parent_group: self.parent_group,
                 task_kind: self.task_kind.unwrap_or_default(),
-            }),
-            "task.cache_hit" => EventCategory::Task(TaskEvent::CacheHit {
+            },
+            "task.cache_hit" => TaskEvent::CacheHit {
                 name: self.task_name?,
                 cache_key: self.cache_key?,
                 parent_group: self.parent_group,
-            }),
-            "task.cache_miss" => EventCategory::Task(TaskEvent::CacheMiss {
+            },
+            "task.cache_miss" => TaskEvent::CacheMiss {
                 name: self.task_name?,
                 parent_group: self.parent_group,
-            }),
-            "task.cache_skipped" => EventCategory::Task(TaskEvent::CacheSkipped {
+            },
+            "task.cache_skipped" => TaskEvent::CacheSkipped {
                 name: self.task_name?,
                 parent_group: self.parent_group,
                 reason: self.cache_skip_reason?,
-            }),
-            "task.queued" => EventCategory::Task(TaskEvent::Queued {
+            },
+            "task.queued" => TaskEvent::Queued {
                 name: self.task_name?,
                 parent_group: self.parent_group,
                 queue_position: self.queue_position.unwrap_or(0),
-            }),
-            "task.skipped" => EventCategory::Task(TaskEvent::Skipped {
+            },
+            "task.skipped" => TaskEvent::Skipped {
                 name: self.task_name?,
                 parent_group: self.parent_group,
                 reason: self.skip_reason?,
-            }),
-            "task.retrying" => EventCategory::Task(TaskEvent::Retrying {
+            },
+            "task.retrying" => TaskEvent::Retrying {
                 name: self.task_name?,
                 parent_group: self.parent_group,
                 attempt: self.attempt.unwrap_or(1),
                 max_attempts: self.max_attempts.unwrap_or(1),
-            }),
-            "task.output" => EventCategory::Task(TaskEvent::Output {
+            },
+            "task.output" => TaskEvent::Output {
                 name: self.task_name?,
                 stream: self.stream.unwrap_or(Stream::Stdout),
                 content: content?,
                 parent_group: self.parent_group,
-            }),
-            "task.completed" => EventCategory::Task(TaskEvent::Completed {
+            },
+            "task.completed" => TaskEvent::Completed {
                 name: self.task_name?,
                 success: self.success?,
                 exit_code: self.exit_code,
                 duration_ms: self.duration_ms.unwrap_or(0),
                 parent_group: self.parent_group,
-            }),
-            "task.group_started" => EventCategory::Task(TaskEvent::GroupStarted {
+            },
+            "task.group_started" => TaskEvent::GroupStarted {
                 name: self.task_name?,
                 sequential: self.sequential.unwrap_or(false),
                 task_count: self.task_count.unwrap_or(0),
                 parent_group: self.parent_group,
                 max_concurrency: self.max_concurrency,
-            }),
-            "task.group_completed" => EventCategory::Task(TaskEvent::GroupCompleted {
+            },
+            "task.group_completed" => TaskEvent::GroupCompleted {
                 name: self.task_name?,
                 success: self.success?,
                 duration_ms: self.duration_ms.unwrap_or(0),
@@ -252,41 +282,47 @@ impl CuenvEventVisitor {
                 succeeded: self.succeeded_count.unwrap_or(0),
                 failed: self.failed_count.unwrap_or(0),
                 skipped: self.skipped_count.unwrap_or(0),
-            }),
+            },
+            _ => return None,
+        };
+        Some(event)
+    }
 
-            // Service events
-            "service.pending" => EventCategory::Service(ServiceEvent::Pending {
+    fn build_service_event(self, event_type: &str, text: RedactedText) -> Option<ServiceEvent> {
+        let RedactedText { content, error, .. } = text;
+        let event = match event_type {
+            "service.pending" => ServiceEvent::Pending {
                 name: self.service_name?,
-            }),
-            "service.starting" => EventCategory::Service(ServiceEvent::Starting {
+            },
+            "service.starting" => ServiceEvent::Starting {
                 name: self.service_name?,
                 command: self.command.unwrap_or_default(),
-            }),
-            "service.output" => EventCategory::Service(ServiceEvent::Output {
+            },
+            "service.output" => ServiceEvent::Output {
                 name: self.service_name?,
                 stream: self.stream.unwrap_or(Stream::Stdout),
                 line: content?,
-            }),
-            "service.ready" => EventCategory::Service(ServiceEvent::Ready {
+            },
+            "service.ready" => ServiceEvent::Ready {
                 name: self.service_name?,
                 after_ms: self.after_ms.unwrap_or(0),
-            }),
-            "service.stopping" => EventCategory::Service(ServiceEvent::Stopping {
+            },
+            "service.stopping" => ServiceEvent::Stopping {
                 name: self.service_name?,
-            }),
-            "service.stopped" => EventCategory::Service(ServiceEvent::Stopped {
+            },
+            "service.stopped" => ServiceEvent::Stopped {
                 name: self.service_name?,
                 exit_code: self.exit_code,
-            }),
-            "service.failed" => EventCategory::Service(ServiceEvent::Failed {
+            },
+            "service.failed" => ServiceEvent::Failed {
                 name: self.service_name?,
                 error: error?,
-            }),
-            "service.ready_timeout" => EventCategory::Service(ServiceEvent::ReadyTimeout {
+            },
+            "service.ready_timeout" => ServiceEvent::ReadyTimeout {
                 name: self.service_name?,
                 after_ms: self.after_ms.unwrap_or(0),
-            }),
-            "service.restarting" => EventCategory::Service(ServiceEvent::Restarting {
+            },
+            "service.restarting" => ServiceEvent::Restarting {
                 name: self.service_name?,
                 reason: match self.reason.as_deref() {
                     Some("watch" | "watch_triggered") => RestartReason::WatchTriggered,
@@ -294,94 +330,114 @@ impl CuenvEventVisitor {
                     _ => RestartReason::Crashed,
                 },
                 attempt: self.attempt.unwrap_or(0),
-            }),
-            "service.watch" => EventCategory::Service(ServiceEvent::Watch {
+            },
+            "service.watch" => ServiceEvent::Watch {
                 name: self.service_name?,
-                changed: self.changed.clone().unwrap_or_default(),
-            }),
+                changed: self.changed.unwrap_or_default(),
+            },
+            _ => return None,
+        };
+        Some(event)
+    }
 
-            // CI events
-            "ci.context_detected" => EventCategory::Ci(CiEvent::ContextDetected {
+    fn build_ci_event(self, event_type: &str, text: RedactedText) -> Option<CiEvent> {
+        let error = text.error;
+        let event = match event_type {
+            "ci.context_detected" => CiEvent::ContextDetected {
                 provider: self.provider?,
                 event_type: self.event_type_ci?,
                 ref_name: self.ref_name?,
-            }),
-            "ci.changed_files" => {
-                EventCategory::Ci(CiEvent::ChangedFilesFound { count: self.count? })
-            }
-            "ci.projects_discovered" => {
-                EventCategory::Ci(CiEvent::ProjectsDiscovered { count: self.count? })
-            }
-            "ci.project_skipped" => EventCategory::Ci(CiEvent::ProjectSkipped {
+            },
+            "ci.changed_files" => CiEvent::ChangedFilesFound { count: self.count? },
+            "ci.projects_discovered" => CiEvent::ProjectsDiscovered { count: self.count? },
+            "ci.project_skipped" => CiEvent::ProjectSkipped {
                 path: self.path?,
                 reason: self.reason?,
-            }),
-            "ci.task_executing" => EventCategory::Ci(CiEvent::TaskExecuting {
+            },
+            "ci.task_executing" => CiEvent::TaskExecuting {
                 project: self.project?,
                 task: self.task?,
-            }),
-            "ci.task_result" => EventCategory::Ci(CiEvent::TaskResult {
+            },
+            "ci.task_result" => CiEvent::TaskResult {
                 project: self.project?,
                 task: self.task?,
                 success: self.success?,
                 error,
-            }),
-            "ci.report_generated" => {
-                EventCategory::Ci(CiEvent::ReportGenerated { path: self.path? })
-            }
+            },
+            "ci.report_generated" => CiEvent::ReportGenerated { path: self.path? },
+            _ => return None,
+        };
+        Some(event)
+    }
 
-            // Command events
-            "command.started" => EventCategory::Command(CommandEvent::Started {
+    fn build_command_event(self, event_type: &str, text: RedactedText) -> Option<CommandEvent> {
+        let message = text.message;
+        let event = match event_type {
+            "command.started" => CommandEvent::Started {
                 command: self.command?,
                 args: self.args.unwrap_or_default(),
-            }),
-            "command.progress" => EventCategory::Command(CommandEvent::Progress {
+            },
+            "command.progress" => CommandEvent::Progress {
                 command: self.command?,
                 progress: self.progress?,
                 message: message?,
-            }),
-            "command.completed" => EventCategory::Command(CommandEvent::Completed {
+            },
+            "command.completed" => CommandEvent::Completed {
                 command: self.command?,
                 success: self.success?,
                 duration_ms: self.duration_ms.unwrap_or(0),
-            }),
-
-            // Interactive events
-            "interactive.prompt_requested" => {
-                EventCategory::Interactive(InteractiveEvent::PromptRequested {
-                    prompt_id: self.prompt_id?,
-                    message: message?,
-                    options: self.options.unwrap_or_default(),
-                })
-            }
-            "interactive.prompt_resolved" => {
-                EventCategory::Interactive(InteractiveEvent::PromptResolved {
-                    prompt_id: self.prompt_id?,
-                    response: self.response?,
-                })
-            }
-            "interactive.wait_progress" => {
-                EventCategory::Interactive(InteractiveEvent::WaitProgress {
-                    target: self.task_name.or(self.path)?,
-                    elapsed_secs: self.elapsed_secs?,
-                })
-            }
-
-            // System events
-            "system.supervisor_log" => EventCategory::System(SystemEvent::SupervisorLog {
-                tag: self.tag?,
-                message: message?,
-            }),
-            "system.shutdown" => EventCategory::System(SystemEvent::Shutdown),
-
-            // Output events
-            "output.stdout" => EventCategory::Output(OutputEvent::Stdout { content: content? }),
-            "output.stderr" => EventCategory::Output(OutputEvent::Stderr { content: content? }),
-
+            },
             _ => return None,
         };
+        Some(event)
+    }
 
-        Some(CuenvEvent::new(correlation, source, category))
+    fn build_interactive_event(
+        self,
+        event_type: &str,
+        text: RedactedText,
+    ) -> Option<InteractiveEvent> {
+        let message = text.message;
+        let event = match event_type {
+            "interactive.prompt_requested" => InteractiveEvent::PromptRequested {
+                prompt_id: self.prompt_id?,
+                message: message?,
+                options: self.options.unwrap_or_default(),
+            },
+            "interactive.prompt_resolved" => InteractiveEvent::PromptResolved {
+                prompt_id: self.prompt_id?,
+                response: self.response?,
+            },
+            "interactive.wait_progress" => InteractiveEvent::WaitProgress {
+                target: self.task_name.or(self.path)?,
+                elapsed_secs: self.elapsed_secs?,
+            },
+            _ => return None,
+        };
+        Some(event)
+    }
+
+    fn build_system_event(self, event_type: &str, text: RedactedText) -> Option<SystemEvent> {
+        let message = text.message;
+        let event = match event_type {
+            "system.supervisor_log" => SystemEvent::SupervisorLog {
+                tag: self.tag?,
+                message: message?,
+            },
+            "system.shutdown" => SystemEvent::Shutdown,
+            _ => return None,
+        };
+        Some(event)
+    }
+
+    fn build_output_event(event_type: &str, text: RedactedText) -> Option<OutputEvent> {
+        let content = text.content;
+        let event = match event_type {
+            "output.stdout" => OutputEvent::Stdout { content: content? },
+            "output.stderr" => OutputEvent::Stderr { content: content? },
+            _ => return None,
+        };
+        Some(event)
     }
 }
 
