@@ -179,6 +179,15 @@ struct LockSyncInputs {
     github_config: Option<GitHubProviderConfig>,
 }
 
+struct ToolLockResolutionRequest<'a> {
+    tools: &'a [CollectedTool],
+    platforms: &'a [String],
+    flakes: HashMap<String, String>,
+    existing_lockfile: Option<&'a Lockfile>,
+    options: &'a SyncOptions,
+    github_token: Option<&'a str>,
+}
+
 #[derive(Clone, Copy)]
 enum LockSyncScope {
     Path,
@@ -444,6 +453,171 @@ async fn resolve_oci_artifacts(
     Ok(artifacts)
 }
 
+async fn resolve_tool_locks(
+    lockfile: &mut Lockfile,
+    request: ToolLockResolutionRequest<'_>,
+) -> Result<()> {
+    let ToolLockResolutionRequest {
+        tools,
+        platforms,
+        flakes,
+        existing_lockfile,
+        options,
+        github_token,
+    } = request;
+
+    if tools.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        "Resolving {} unique tools for {} platforms",
+        tools.len(),
+        platforms.len()
+    );
+
+    let registry = create_registry(flakes);
+
+    for tool in tools {
+        debug!(name = %tool.name, version = %tool.version, "Resolving tool");
+
+        for platform_str in &tool.platforms {
+            let platform = ToolPlatform::parse(platform_str).ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
+                    platform_str
+                ))
+            })?;
+
+            let source_config =
+                resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform)
+                    .ok_or_else(|| {
+                        cuenv_core::Error::configuration(format!(
+                            "Tool '{}' has no source configured for platform '{}'. \
+                                 Specify a source (github, nix, rustup, url, or oci) in your tool definition.",
+                            tool.name, platform_str
+                        ))
+                    })?;
+
+            let (provider_name, _tool_source, config) =
+                source_config_to_tool_source(&tool.version, &source_config, &platform);
+
+            let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
+
+            debug!(
+                tool = %tool.name,
+                %platform_str,
+                manifest_version = %tool.version,
+                config = %config,
+                "Checking lockfile cache"
+            );
+
+            let cached = if force_update {
+                debug!(tool = %tool.name, "Skipping cache: force update requested");
+                None
+            } else if options.mode == SyncMode::Check {
+                debug!(tool = %tool.name, "Skipping cache: check mode");
+                None
+            } else if let Some(existing) = existing_lockfile {
+                if let Some(locked_tool) = existing.find_tool(&tool.name) {
+                    get_valid_cached_resolution(locked_tool, &tool.version, platform_str, &config)
+                } else {
+                    debug!(tool = %tool.name, "Cache miss: tool not in lockfile");
+                    None
+                }
+            } else {
+                debug!(tool = %tool.name, "Cache miss: no existing lockfile");
+                None
+            };
+
+            if let Some(locked_platform) = cached {
+                debug!(
+                    tool = %tool.name,
+                    %platform_str,
+                    "Using cached resolution from lockfile"
+                );
+
+                lockfile
+                    .upsert_tool_platform(
+                        &tool.name,
+                        &tool.version,
+                        platform_str,
+                        locked_platform.clone(),
+                    )
+                    .map_err(|e| {
+                        cuenv_core::Error::configuration(format!(
+                            "Failed to add tool '{}' to lockfile: {}",
+                            tool.name, e
+                        ))
+                    })?;
+                continue;
+            }
+
+            let Some(provider) = registry.get(&provider_name) else {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "No provider '{}' registered for tool '{}'",
+                    provider_name, tool.name
+                )));
+            };
+
+            info!(
+                tool = %tool.name,
+                %platform_str,
+                provider = %provider_name,
+                "Resolving tool from provider"
+            );
+
+            let resolved = provider
+                .resolve(&ToolResolveRequest {
+                    tool_name: &tool.name,
+                    version: &tool.version,
+                    platform: &platform,
+                    config: &config,
+                    token: github_token,
+                })
+                .await
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to resolve tool '{}' for platform '{}': {}",
+                        tool.name, platform_str, e
+                    ))
+                })?;
+
+            debug!(
+                tool = %tool.name,
+                %platform_str,
+                provider = %provider_name,
+                "Resolved tool"
+            );
+
+            let resolved_source = serde_json::to_value(&resolved.source).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to serialize resolved source for '{}': {}",
+                    tool.name, e
+                ))
+            })?;
+            let locked_platform = LockedToolPlatform {
+                provider: provider_name.clone(),
+                digest: format!("sha256:{}", compute_tool_digest(&resolved)),
+                source: resolved_source,
+                size: None,
+                dependencies: vec![],
+            };
+
+            lockfile
+                .upsert_tool_platform(&tool.name, &resolved.version, platform_str, locked_platform)
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to add tool '{}' to lockfile: {}",
+                        tool.name, e
+                    ))
+                })?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Execute lock synchronization for a path.
 ///
 /// When `workspace` is `true`, scans all projects in the CUE module via
@@ -565,176 +739,18 @@ async fn execute_lock_sync(
         lockfile.upsert_runtime(runtime.project_path.clone(), runtime.runtime.clone())?;
     }
 
-    if !collected_tools.is_empty() {
-        info!(
-            "Resolving {} unique tools for {} platforms",
-            collected_tools.len(),
-            tools_platforms.len()
-        );
-
-        let registry = create_registry(collected_flakes);
-
-        for tool in &collected_tools {
-            debug!(name = %tool.name, version = %tool.version, "Resolving tool");
-
-            for platform_str in &tool.platforms {
-                let platform = ToolPlatform::parse(platform_str).ok_or_else(|| {
-                    cuenv_core::Error::configuration(format!(
-                        "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
-                        platform_str
-                    ))
-                })?;
-
-                // Determine source for this platform
-                let source_config =
-                    resolve_source_for_platform(tool.source.as_ref(), &tool.overrides, &platform)
-                        .ok_or_else(|| {
-                        cuenv_core::Error::configuration(format!(
-                            "Tool '{}' has no source configured for platform '{}'. \
-                                 Specify a source (github, nix, rustup, url, or oci) in your tool definition.",
-                            tool.name, platform_str
-                        ))
-                    })?;
-
-                // Convert SourceConfig to ToolSource
-                let (provider_name, _tool_source, config) =
-                    source_config_to_tool_source(&tool.version, &source_config, &platform);
-
-                // Check if we should use cached resolution from existing lockfile
-                let force_update = should_update_tool(&tool.name, options.update_tools.as_ref());
-
-                // Debug: log what we're comparing
-                debug!(
-                    tool = %tool.name,
-                    %platform_str,
-                    manifest_version = %tool.version,
-                    config = %config,
-                    "Checking lockfile cache"
-                );
-
-                // Check cache
-                let cached = if force_update {
-                    debug!(tool = %tool.name, "Skipping cache: force update requested");
-                    None
-                } else if check {
-                    debug!(tool = %tool.name, "Skipping cache: check mode");
-                    None
-                } else if let Some(ref existing) = existing_lockfile {
-                    if let Some(locked_tool) = existing.find_tool(&tool.name) {
-                        get_valid_cached_resolution(
-                            locked_tool,
-                            &tool.version,
-                            platform_str,
-                            &config,
-                        )
-                    } else {
-                        debug!(tool = %tool.name, "Cache miss: tool not in lockfile");
-                        None
-                    }
-                } else {
-                    debug!(tool = %tool.name, "Cache miss: no existing lockfile");
-                    None
-                };
-
-                if let Some(locked_platform) = cached {
-                    // Reuse cached resolution - skip provider call
-                    // The version is the same (verified by get_valid_cached_resolution)
-                    debug!(
-                        tool = %tool.name,
-                        %platform_str,
-                        "Using cached resolution from lockfile"
-                    );
-
-                    lockfile
-                        .upsert_tool_platform(
-                            &tool.name,
-                            &tool.version,
-                            platform_str,
-                            locked_platform.clone(),
-                        )
-                        .map_err(|e| {
-                            cuenv_core::Error::configuration(format!(
-                                "Failed to add tool '{}' to lockfile: {}",
-                                tool.name, e
-                            ))
-                        })?;
-                    continue;
-                }
-
-                // No valid cache or force update - resolve from provider
-                // Get the provider
-                let Some(provider) = registry.get(&provider_name) else {
-                    return Err(cuenv_core::Error::configuration(format!(
-                        "No provider '{}' registered for tool '{}'",
-                        provider_name, tool.name
-                    )));
-                };
-
-                info!(
-                    tool = %tool.name,
-                    %platform_str,
-                    provider = %provider_name,
-                    "Resolving tool from provider"
-                );
-
-                // Resolve the tool (pass GitHub token for authenticated API access)
-                let resolved = provider
-                    .resolve(&ToolResolveRequest {
-                        tool_name: &tool.name,
-                        version: &tool.version,
-                        platform: &platform,
-                        config: &config,
-                        token: github_token.as_deref(),
-                    })
-                    .await
-                    .map_err(|e| {
-                        cuenv_core::Error::configuration(format!(
-                            "Failed to resolve tool '{}' for platform '{}': {}",
-                            tool.name, platform_str, e
-                        ))
-                    })?;
-
-                debug!(
-                    tool = %tool.name,
-                    %platform_str,
-                    provider = %provider_name,
-                    "Resolved tool"
-                );
-
-                // Add to lockfile
-                // Use resolved.source instead of original config to capture expanded templates
-                // (e.g., GitHub tag "bun-v{version}" becomes "bun-v1.3.5")
-                let resolved_source = serde_json::to_value(&resolved.source).map_err(|e| {
-                    cuenv_core::Error::configuration(format!(
-                        "Failed to serialize resolved source for '{}': {}",
-                        tool.name, e
-                    ))
-                })?;
-                let locked_platform = LockedToolPlatform {
-                    provider: provider_name.clone(),
-                    digest: format!("sha256:{}", compute_tool_digest(&resolved)),
-                    source: resolved_source,
-                    size: None,
-                    dependencies: vec![],
-                };
-
-                // Use the resolved version from the provider
-                lockfile
-                    .upsert_tool_platform(
-                        &tool.name,
-                        &resolved.version,
-                        platform_str,
-                        locked_platform,
-                    )
-                    .map_err(|e| {
-                        cuenv_core::Error::configuration(format!(
-                            "Failed to add tool '{}' to lockfile: {}",
-                            tool.name, e
-                        ))
-                    })?;
-            }
-        }
-    }
+    resolve_tool_locks(
+        &mut lockfile,
+        ToolLockResolutionRequest {
+            tools: &collected_tools,
+            platforms: &tools_platforms,
+            flakes: collected_flakes,
+            existing_lockfile: existing_lockfile.as_ref(),
+            options,
+            github_token: github_token.as_deref(),
+        },
+    )
+    .await?;
 
     if workspace {
         lockfile.artifacts = artifacts;
