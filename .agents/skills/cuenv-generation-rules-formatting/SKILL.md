@@ -11,6 +11,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `crates/cuenv/src/commands/sync/functions/codegen.rs` for codegen sync check/write/diff behavior.
 - `schema/formatters.cue` for `cuenv fmt`.
 - `schema/rules/*` for `.rules.cue` ignore, editorconfig, and owners behavior.
+- `crates/editorconfig/src/section.rs` owns editorconfig section/value modeling; `builder.rs` owns file rendering and write/dry-run behavior; `result.rs` and `error.rs` own generated-file status and errors.
 - `schema/ignores.cue` and `schema/owners.cue` only as legacy top-level schemas.
 - `crates/ignore/src/lib.rs` for ignore file generation and `crates/ignore/src/sections.rs` for managed ignore-file sections.
 
