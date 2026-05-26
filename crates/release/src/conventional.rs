@@ -4,9 +4,6 @@
 //! following the Conventional Commits specification, and `gix` for git
 //! repository access.
 
-// Git repository traversal and commit parsing involves complex iteration
-#![allow(clippy::too_many_lines)]
-
 use crate::changeset::BumpType;
 use crate::config::TagType;
 use crate::error::{Error, Result};
@@ -51,6 +48,13 @@ impl ConventionalCommit {
 /// Parser for conventional commits from a git repository.
 pub struct CommitParser;
 
+#[derive(Clone, Copy)]
+struct TagSelection<'a> {
+    since_tag: Option<&'a str>,
+    tag_prefix: &'a str,
+    tag_type: TagType,
+}
+
 impl CommitParser {
     /// Parse all conventional commits since the given tag.
     ///
@@ -85,58 +89,12 @@ impl CommitParser {
             ))
             .all()
             .map_err(|e| Error::git(format!("Failed to create rev walk: {e}")))?;
-
-        // If we have a since_tag, find it and use as boundary
-        let boundary_oid = if let Some(tag) = since_tag {
-            if let Some(oid) = find_tag_oid(&repo, tag) {
-                Some(oid)
-            } else {
-                // Collect available tags for suggestions
-                let available_tags = list_tags_for_config(&repo, tag_prefix, tag_type);
-                let suggestion = if available_tags.is_empty() {
-                    String::new()
-                } else {
-                    // Find similar tags
-                    let similar: Vec<_> = available_tags
-                        .iter()
-                        .filter(|t| {
-                            t.contains(tag)
-                                || tag.contains(t.as_str())
-                                || levenshtein_distance(t, tag) <= 3
-                        })
-                        .take(3)
-                        .collect();
-
-                    if similar.is_empty() {
-                        format!(
-                            ". Available tags: {}",
-                            available_tags
-                                .iter()
-                                .take(5)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    } else {
-                        format!(
-                            ". Did you mean: {}?",
-                            similar
-                                .iter()
-                                .map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        )
-                    }
-                };
-                return Err(Error::git(format!(
-                    "Tag '{tag}' not found in repository{suggestion}"
-                )));
-            }
-        } else {
-            // Auto-detect latest tag matching the configured prefix and type
-            let tags = list_tags_for_config(&repo, tag_prefix, tag_type);
-            tags.first().and_then(|tag| find_tag_oid(&repo, tag))
+        let selection = TagSelection {
+            since_tag,
+            tag_prefix,
+            tag_type,
         };
+        let boundary_oid = resolve_boundary_oid(&repo, selection)?;
 
         let mut commits = Vec::new();
 
@@ -159,16 +117,8 @@ impl CommitParser {
             let message = commit.message_raw_sloppy().to_string();
             let hash = oid.to_string();
 
-            // Try to parse as conventional commit
-            if let Ok(parsed) = git_conventional::Commit::parse(&message) {
-                commits.push(ConventionalCommit {
-                    commit_type: parsed.type_().to_string(),
-                    scope: parsed.scope().map(|s| s.to_string()),
-                    breaking: parsed.breaking(),
-                    description: parsed.description().to_string(),
-                    body: parsed.body().map(|b| b.to_string()),
-                    hash,
-                });
+            if let Some(commit) = parse_conventional_message(&message, hash) {
+                commits.push(commit);
             }
         }
 
@@ -245,6 +195,76 @@ impl CommitParser {
 
         summary
     }
+}
+
+fn resolve_boundary_oid(
+    repo: &gix::Repository,
+    selection: TagSelection<'_>,
+) -> Result<Option<gix::ObjectId>> {
+    if let Some(tag) = selection.since_tag {
+        return find_tag_oid(repo, tag)
+            .map(Some)
+            .ok_or_else(|| tag_not_found(repo, selection, tag));
+    }
+
+    let tags = list_tags_for_config(repo, selection.tag_prefix, selection.tag_type);
+    Ok(tags.first().and_then(|tag| find_tag_oid(repo, tag)))
+}
+
+fn tag_not_found(repo: &gix::Repository, selection: TagSelection<'_>, tag: &str) -> Error {
+    let suggestion = tag_suggestion(repo, selection, tag);
+    Error::git(format!("Tag '{tag}' not found in repository{suggestion}"))
+}
+
+fn tag_suggestion(repo: &gix::Repository, selection: TagSelection<'_>, tag: &str) -> String {
+    let available_tags = list_tags_for_config(repo, selection.tag_prefix, selection.tag_type);
+    if available_tags.is_empty() {
+        return String::new();
+    }
+
+    let similar: Vec<_> = available_tags
+        .iter()
+        .filter(|candidate| {
+            candidate.contains(tag)
+                || tag.contains(candidate.as_str())
+                || levenshtein_distance(candidate, tag) <= 3
+        })
+        .take(3)
+        .collect();
+
+    if similar.is_empty() {
+        format!(
+            ". Available tags: {}",
+            available_tags
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        format!(
+            ". Did you mean: {}?",
+            similar
+                .iter()
+                .map(|tag| tag.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn parse_conventional_message(message: &str, hash: String) -> Option<ConventionalCommit> {
+    let parsed = git_conventional::Commit::parse(message).ok()?;
+
+    Some(ConventionalCommit {
+        commit_type: parsed.type_().to_string(),
+        scope: parsed.scope().map(|scope| scope.to_string()),
+        breaking: parsed.breaking(),
+        description: parsed.description().to_string(),
+        body: parsed.body().map(std::string::ToString::to_string),
+        hash,
+    })
 }
 
 /// Find the OID for a given tag name.
