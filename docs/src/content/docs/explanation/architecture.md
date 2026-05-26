@@ -102,7 +102,10 @@ the built-in Bun/npm/pnpm/Yarn setup catalog.
 Persistent hook execution state, marker files, cleanup, and execution hashes
 live under `crates/hooks/src/state/`; hook execution orchestration lives in
 `crates/hooks/src/executor.rs`; source-hook shell environment capture lives in
-`crates/hooks/src/executor/source_environment.rs`.
+`crates/hooks/src/executor/source_environment.rs`. CLI hook command
+orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
+snippet generation and status rendering live under
+`crates/cuenv/src/commands/hooks/`.
 Environment schema values, policy checks, interpolation, and secret-aware value
 resolution live in `crates/core/src/environment/values.rs`; runtime
 environment merging, PATH lookup, and filtered task/exec/service environment

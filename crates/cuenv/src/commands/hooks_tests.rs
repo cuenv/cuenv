@@ -130,15 +130,15 @@ fn test_extract_hooks_empty_config() {
 
 #[test]
 fn test_shell_integration_generation() {
-    let fish_script = generate_fish_integration();
+    let fish_script = execute_shell_init(crate::cli::ShellType::Fish);
     assert!(fish_script.contains("function __cuenv_hook"));
     assert!(fish_script.contains("on-variable PWD"));
 
-    let bash_script = generate_bash_integration();
+    let bash_script = execute_shell_init(crate::cli::ShellType::Bash);
     assert!(bash_script.contains("__cuenv_hook()"));
     assert!(bash_script.contains("PROMPT_COMMAND"));
 
-    let zsh_script = generate_zsh_integration();
+    let zsh_script = execute_shell_init(crate::cli::ShellType::Zsh);
     assert!(zsh_script.contains("add-zsh-hook"));
     assert!(zsh_script.contains("precmd"));
 }

@@ -1,5 +1,8 @@
 //! Hook-related command implementations
 
+mod shell;
+mod status;
+
 use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::cli::StatusFormat;
@@ -8,9 +11,10 @@ use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
 use cuenv_events::{print_redacted, println_redacted};
 use cuenv_hooks::{
-    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutionState,
-    HookExecutor, StateManager, check_approval_status, compute_instance_hash,
+    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutor,
+    StateManager, check_approval_status, compute_instance_hash,
 };
+use status::format_status;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -145,78 +149,6 @@ fn get_config_hash(
         // If not approved, compute it from current config
         let config = evaluate_config(directory, package, executor)?;
         Ok(cuenv_hooks::compute_approval_hash(config.hooks.as_ref()))
-    }
-}
-
-/// Format status based on requested format
-fn format_status(state: &HookExecutionState, format: StatusFormat) -> String {
-    match format {
-        StatusFormat::Text => state.progress_display(),
-        StatusFormat::Short => match state.status {
-            ExecutionStatus::Running => {
-                format!("[{}/{}]", state.completed_hooks, state.total_hooks)
-            }
-            ExecutionStatus::Completed => "[OK]".to_string(),
-            ExecutionStatus::Failed => "[ERR]".to_string(),
-            ExecutionStatus::Cancelled => "[X]".to_string(),
-        },
-        StatusFormat::Starship => format_starship_status(state),
-    }
-}
-
-/// Format status for starship integration with rich information
-fn format_starship_status(state: &HookExecutionState) -> String {
-    use cuenv_hooks::HookExecutionState;
-
-    match state.status {
-        ExecutionStatus::Running => {
-            // Show current hook name + duration
-            if let Some(hook_display) = state.current_hook_display() {
-                if let Some(duration) = state.current_hook_duration() {
-                    let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {hook_display} ({duration_str})")
-                } else {
-                    // Just started, no duration yet - use overall execution time
-                    let duration = state.duration();
-                    let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {hook_display} ({duration_str})")
-                }
-            } else {
-                // Fallback if no current hook (shouldn't happen in Running state)
-                format!("🔄 {}/{}", state.completed_hooks, state.total_hooks)
-            }
-        }
-        ExecutionStatus::Completed => {
-            // Only show if within display timeout (ensures at least one display)
-            if state.should_display_completed() {
-                let duration = state.duration();
-                let duration_str = HookExecutionState::format_duration(duration);
-                format!("✅ {duration_str}")
-            } else {
-                // State has expired, return empty string to hide from prompt
-                String::new()
-            }
-        }
-        ExecutionStatus::Failed => {
-            // Show failed state with error if within display timeout
-            if state.should_display_completed() {
-                if let Some(error_msg) = &state.error_message {
-                    // Extract just the command name from error if possible
-                    format!("❌ {}", error_msg.lines().next().unwrap_or("failed"))
-                } else {
-                    "❌ failed".to_string()
-                }
-            } else {
-                String::new()
-            }
-        }
-        ExecutionStatus::Cancelled => {
-            if state.should_display_completed() {
-                "🚫 cancelled".to_string()
-            } else {
-                String::new()
-            }
-        }
     }
 }
 
@@ -721,99 +653,12 @@ pub async fn execute_env_check(
 /// Generate shell integration script
 #[must_use]
 pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
-    match shell {
-        crate::cli::ShellType::Fish => generate_fish_integration(),
-        crate::cli::ShellType::Bash => generate_bash_integration(),
-        crate::cli::ShellType::Zsh => generate_zsh_integration(),
-    }
+    shell::generate_integration(shell)
 }
 
 /// Extract hooks from the configuration JSON
 fn extract_hooks_from_config(config: &Project) -> Vec<Hook> {
     config.on_enter_hooks()
-}
-
-/// Generate Fish shell integration script
-fn generate_fish_integration() -> String {
-    r"# cuenv Fish shell integration
-# Add this to your ~/.config/fish/config.fish
-
-# Mark that shell integration is active
-set -x CUENV_SHELL_INTEGRATION 1
-
-# Hook function that loads environment on each prompt
-function __cuenv_hook --on-variable PWD
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    source (cuenv export --shell fish 2>/dev/null | psub)
-end
-
-# Also run on shell startup
-source (cuenv export --shell fish 2>/dev/null | psub)"
-        .to_string()
-}
-
-/// Generate Bash shell integration script
-fn generate_bash_integration() -> String {
-    r#"# cuenv Bash shell integration
-# Add this to your ~/.bashrc
-
-# Mark that shell integration is active
-export CUENV_SHELL_INTEGRATION=1
-
-# Hook function that loads environment on each prompt
-__cuenv_hook() {
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    eval "$(cuenv export --shell bash 2>/dev/null)"
-}
-
-# Set up the hook via PROMPT_COMMAND
-if [[ -n "$PROMPT_COMMAND" ]]; then
-    PROMPT_COMMAND="__cuenv_hook; $PROMPT_COMMAND"
-else
-    PROMPT_COMMAND="__cuenv_hook"
-fi
-
-# Also run on shell startup
-__cuenv_hook"#
-        .to_string()
-}
-
-/// Generate Zsh shell integration script
-fn generate_zsh_integration() -> String {
-    r#"# cuenv Zsh shell integration
-# Add this to your ~/.zshrc
-
-# Mark that shell integration is active
-export CUENV_SHELL_INTEGRATION=1
-
-# Hook function that loads environment on each prompt
-__cuenv_hook() {
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    eval "$(cuenv export --shell zsh 2>/dev/null)"
-}
-
-# Set up the hook via precmd
-autoload -U add-zsh-hook
-add-zsh-hook precmd __cuenv_hook
-
-# Also run on shell startup
-__cuenv_hook"#
-        .to_string()
 }
 
 #[cfg(test)]
