@@ -86,8 +86,9 @@ resolution for dotted/bracketed CUE task nodes lives in
 `crates/core/src/tasks/graph/resolver.rs`. Generic task DAG primitives live in
 `crates/task-graph/src/graph.rs`, while resolver-backed group expansion and
 sequence ordering live in `crates/task-graph/src/graph/resolver_build.rs`.
-Task contributor injection is owned by `crates/core/src/contributors.rs`; the
-built-in package-manager workspace contributor definitions live in
+Task contributor schema models, activation context, DAG injection, and DAG
+verification helpers live under `crates/core/src/contributors/`; the built-in
+package-manager workspace contributor definitions live in
 `crates/core/src/contributors/workspace.rs` so DAG mutation stays separate from
 the built-in Bun/npm/pnpm/Yarn setup catalog.
 Persistent hook execution state, marker files, cleanup, and execution hashes

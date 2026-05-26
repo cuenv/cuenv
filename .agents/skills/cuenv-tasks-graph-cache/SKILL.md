@@ -11,7 +11,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/execution.cue` for shared command and script shapes.
 - `crates/core/src/tasks`, including `crates/core/src/tasks/params.rs` for task parameter models, `crates/core/src/tasks/retry.rs` for retry config, `crates/core/src/tasks/dagger.rs` for legacy task-level Dagger config, `crates/core/src/tasks/graph/resolver.rs` for task path resolution, and `crates/cuenv/src/commands/task` when behavior matters.
 - `crates/task-graph/src/graph.rs` and `crates/task-graph/src/graph/resolver_build.rs` when generic DAG construction, group expansion, or sequence ordering matters.
-- `crates/core/src/contributors.rs` and `crates/core/src/contributors/workspace.rs` when task contributor injection or auto-association affects the DAG.
+- `crates/core/src/contributors/{model,context,engine,dag}.rs` and `crates/core/src/contributors/workspace.rs` when task contributor injection or auto-association affects the DAG.
 
 Generation rules:
 
