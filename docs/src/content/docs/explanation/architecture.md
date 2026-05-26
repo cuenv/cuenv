@@ -161,8 +161,10 @@ Sync command provider adapters live under
 orchestration remains in `crates/cuenv/src/commands/sync/functions.rs`, and
 codegen file check/write/diff behavior lives in
 `crates/cuenv/src/commands/sync/functions/codegen.rs`. GitHub workflow
-sync and workflow-shape emission helpers live in
-`crates/cuenv/src/commands/sync/functions/github.rs`.
+sync and non-matrix workflow-shape emission helpers live in
+`crates/cuenv/src/commands/sync/functions/github.rs`; matrix workflow
+expansion and artifact aggregation live in
+`crates/cuenv/src/commands/sync/functions/github/matrix.rs`.
 The lock provider keeps path/workspace orchestration in
 `crates/cuenv/src/commands/sync/providers/lock.rs`, while multi-source tool
 resolution, cache reuse, source template expansion, and provider registry
