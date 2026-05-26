@@ -82,9 +82,11 @@ keeps the executable task and task-tree model, while params, retry config,
 legacy task-level Dagger config, cache policy, capture metadata, shell
 configuration, input references, and dependency references live in sibling
 modules under `crates/core/src/tasks/`. The task executor keeps
-graph orchestration in `crates/core/src/tasks/executor.rs`; command redaction
-helpers, failure-summary formatting, and workspace-root detection live in
-`command.rs`, `result.rs`, and `workspace.rs` beside it.
+graph orchestration in `crates/core/src/tasks/executor.rs`; host process
+spawning, process-registry lifecycle, output streaming, and result assembly
+live in `crates/core/src/tasks/process.rs`. Command redaction helpers,
+failure-summary formatting, and workspace-root detection live in `command.rs`,
+`result.rs`, and `workspace.rs` beside it.
 Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task path
 resolution for dotted/bracketed CUE task nodes lives in
 `crates/core/src/tasks/graph/resolver.rs`. Generic task DAG primitives live in

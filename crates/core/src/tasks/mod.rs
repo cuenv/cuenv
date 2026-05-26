@@ -25,6 +25,7 @@ pub mod index;
 mod inputs;
 pub mod output_refs;
 mod params;
+mod process;
 pub mod process_registry;
 mod result;
 mod retry;

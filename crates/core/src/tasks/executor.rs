@@ -7,7 +7,6 @@
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 pub use super::command::{execute_command, execute_command_with_redaction};
-use super::process_registry::global_registry;
 pub use super::result::{TASK_FAILURE_SNIPPET_LINES, TaskResult, summarize_task_failure};
 #[cfg(test)]
 use super::result::{format_failure_streams, summarize_stream};
@@ -25,35 +24,10 @@ use async_recursion::async_recursion;
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
-
-// Unix process group setup requires CommandExt trait for pre_exec method.
-// The unused_imports warning is a false positive - the trait is used via cmd.pre_exec().
-#[cfg(unix)]
-#[allow(unused_imports)]
-use std::os::unix::process::CommandExt;
-
-/// Set up process group on Unix so we can kill the entire process tree on Ctrl-C.
-///
-/// This creates a new process group with the spawned process as the leader,
-/// allowing us to send signals to all descendants when terminating.
-#[cfg(unix)]
-fn setup_process_group(cmd: &mut Command) {
-    // SAFETY: setpgid(0, 0) creates a new process group with this process as leader.
-    // This is safe to call in the pre-spawn hook as it only affects the child process.
-    // It allows us to send signals to the entire process group when terminating.
-    #[expect(unsafe_code, reason = "Required for POSIX process group management")]
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::setpgid(0, 0);
-            Ok(())
-        });
-    }
-}
 
 /// Emit a `task.group_completed` event with succeeded/failed/skipped counts
 /// derived from the inner result.
@@ -497,163 +471,7 @@ impl TaskExecutor {
             cmd.env("CLICOLOR_FORCE", "1");
         }
 
-        // Execute - always capture output for consistent behavior
-        // If not in capture mode, stream output to terminal in real-time
-        if self.config.capture_output.should_capture() {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-
-            let start_time = std::time::Instant::now();
-
-            // Set up process group on Unix so we can kill the entire tree on Ctrl-C
-            #[cfg(unix)]
-            setup_process_group(&mut cmd);
-
-            // Spawn with piped stdout/stderr for streaming
-            let mut child = cmd
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| Error::Io {
-                    source: e,
-                    path: None,
-                    operation: format!("spawn task {}", name),
-                })?;
-
-            // Register process with global registry for cleanup on Ctrl-C
-            let child_pid = child.id();
-            if let Some(pid) = child_pid {
-                global_registry().register(pid, name.to_string()).await;
-            }
-
-            // Take ownership of stdout/stderr handles
-            let stdout_handle = child.stdout.take();
-            let stderr_handle = child.stderr.take();
-
-            // Collect output while streaming events in real-time
-            let mut stdout_lines = Vec::new();
-            let mut stderr_lines = Vec::new();
-
-            // Stream stdout
-            let name_for_stdout = name.to_string();
-            let stdout_task = tokio::spawn(async move {
-                let mut lines = Vec::new();
-                if let Some(stdout) = stdout_handle {
-                    let mut reader = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        cuenv_events::emit_task_output!(name_for_stdout, "stdout", line);
-                        lines.push(line);
-                    }
-                }
-                lines
-            });
-
-            // Stream stderr
-            let name_for_stderr = name.to_string();
-            let stderr_task = tokio::spawn(async move {
-                let mut lines = Vec::new();
-                if let Some(stderr) = stderr_handle {
-                    let mut reader = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        cuenv_events::emit_task_output!(name_for_stderr, "stderr", line);
-                        lines.push(line);
-                    }
-                }
-                lines
-            });
-
-            // Wait for process to complete and collect output
-            let status = child.wait().await.map_err(|e| Error::Io {
-                source: e,
-                path: None,
-                operation: format!("wait for task {}", name),
-            })?;
-
-            // Unregister process from global registry now that it has completed
-            if let Some(pid) = child_pid {
-                global_registry().unregister(pid).await;
-            }
-
-            // Collect streamed output
-            if let Ok(lines) = stdout_task.await {
-                stdout_lines = lines;
-            }
-            if let Ok(lines) = stderr_task.await {
-                stderr_lines = lines;
-            }
-
-            let duration_ms = start_time.elapsed().as_millis() as u64;
-            let stdout = stdout_lines.join("\n");
-            let stderr = stderr_lines.join("\n");
-            let exit_code = status.code().unwrap_or(-1);
-            let success = status.success();
-
-            // Emit task completion event
-            cuenv_events::emit_task_completed!(name, success, Some(exit_code), duration_ms);
-
-            if !success {
-                tracing::warn!(task = %name, exit = exit_code, "Task failed");
-                tracing::error!(task = %name, "Task stdout:\n{}", stdout);
-                tracing::error!(task = %name, "Task stderr:\n{}", stderr);
-            }
-
-            Ok(TaskResult {
-                name: name.to_string(),
-                exit_code: Some(exit_code),
-                stdout,
-                stderr,
-                success,
-            })
-        } else {
-            // Stream output directly to terminal (interactive mode)
-
-            // Set up process group on Unix so we can kill the entire tree on Ctrl-C
-            #[cfg(unix)]
-            setup_process_group(&mut cmd);
-
-            // Use spawn + wait instead of status() to get access to the PID
-            let mut child = cmd
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .stdin(Stdio::inherit())
-                .spawn()
-                .map_err(|e| Error::Io {
-                    source: e,
-                    path: None,
-                    operation: format!("spawn task {}", name),
-                })?;
-
-            // Register process with global registry for cleanup on Ctrl-C
-            let child_pid = child.id();
-            if let Some(pid) = child_pid {
-                global_registry().register(pid, name.to_string()).await;
-            }
-
-            let status = child.wait().await.map_err(|e| Error::Io {
-                source: e,
-                path: None,
-                operation: format!("wait for task {}", name),
-            })?;
-
-            // Unregister process from global registry
-            if let Some(pid) = child_pid {
-                global_registry().unregister(pid).await;
-            }
-
-            let exit_code = status.code().unwrap_or(-1);
-            let success = status.success();
-
-            if !success {
-                tracing::warn!(task = %name, exit = exit_code, "Task failed");
-            }
-
-            Ok(TaskResult {
-                name: name.to_string(),
-                exit_code: Some(exit_code),
-                stdout: String::new(), // Output went to terminal
-                stderr: String::new(),
-                success,
-            })
-        }
+        super::process::run_task_process(name, cmd, self.config.capture_output).await
     }
 
     /// Execute a task node (single task, group, or list)
