@@ -7,7 +7,7 @@
 
 use crate::bus::EventReceiver;
 use crate::event::{
-    CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, SystemEvent,
+    CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, SystemEvent,
 };
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
@@ -15,6 +15,7 @@ use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
+mod ci;
 mod service;
 mod task;
 
@@ -126,48 +127,6 @@ impl CliRenderer {
         }
     }
 
-    fn render_ci(&self, event: &CiEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for CI rendering options later
-        match event {
-            CiEvent::ContextDetected {
-                provider,
-                event_type,
-                ref_name,
-            } => {
-                println!("Context: {provider} (event: {event_type}, ref: {ref_name})");
-            }
-            CiEvent::ChangedFilesFound { count } => {
-                println!("Changed files: {count}");
-            }
-            CiEvent::ProjectsDiscovered { count } => {
-                println!("Found {count} projects");
-            }
-            CiEvent::ProjectSkipped { path, reason } => {
-                println!("Project {path}: {reason}");
-            }
-            CiEvent::TaskExecuting { task, .. } => {
-                println!("  -> Executing {task}");
-            }
-            CiEvent::TaskResult {
-                task,
-                success,
-                error,
-                ..
-            } => {
-                if *success {
-                    println!("  -> {task} passed");
-                } else if let Some(err) = error {
-                    println!("  -> {task} failed: {err}");
-                } else {
-                    println!("  -> {task} failed");
-                }
-            }
-            CiEvent::ReportGenerated { path } => {
-                println!("Report written to: {path}");
-            }
-        }
-    }
-
     fn render_command(&self, event: &CommandEvent) {
         match event {
             CommandEvent::Started { command, .. } => {
@@ -260,7 +219,10 @@ impl Default for CliRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{EventSource, Stream, TaskEvent};
+    use crate::event::{
+        CiEvent, CommandEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent, Stream,
+        SystemEvent, TaskEvent,
+    };
     use uuid::Uuid;
 
     fn make_event(category: EventCategory) -> CuenvEvent {

@@ -28,6 +28,7 @@ Status guardrails:
 - `pipelines[*].continueOnError` (default `false`): when `true`, the per-project orchestrator does not abort on the first failure; dependents of the failing task become `task.skipped` events with a `DependencyFailed { dep }` reason while independent siblings keep running. A panic / `JoinError` is still fatal regardless of the flag — we don't reason about state after a panic. The pipeline still exits non-zero overall if any task failed; the flag controls scheduling, not success.
 - Per-project task execution is parallel (bounded `JoinSet`, cap `CI_MAX_PARALLEL = 4` in `crates/ci/src/executor/orchestrator.rs`). Ready-but-capped tasks emit one `task.queued` event each — the priming loop no longer re-emits on every iteration.
 - Cache eligibility skips emit `task.cache_skipped` events with a structured `CacheSkipReason` (`EmptyInputs`, `NonPathRef`, `NoResolvedInputs`, `RuntimeEnv`, `Disabled { reason }`, `NeverMode`, `HasherRootMismatch`, `HashFailed`).
+- CI event CLI output is rendered in `crates/events/src/renderers/cli/ci.rs`; keep wording aligned there when CI event semantics change.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--filter-matrix` and `--jobs` are accepted but not fully applied.
