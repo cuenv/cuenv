@@ -32,6 +32,11 @@ struct CollectedVcsDependency {
     spec: VcsDependency,
 }
 
+struct VcsSyncInputs {
+    module_root: PathBuf,
+    dependencies: Vec<CollectedVcsDependency>,
+}
+
 #[async_trait]
 impl SyncProvider for VcsSyncProvider {
     fn name(&self) -> &'static str {
@@ -85,20 +90,14 @@ impl SyncProvider for VcsSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let module = executor.get_module(path)?;
-        let root = module.root.clone();
-        let mut dependencies = Vec::new();
-        for instance in module.bases() {
-            let base: Base = instance.deserialize()?;
-            collect_project_vcs(&mut dependencies, &base.vcs)?;
-        }
-        for instance in module.projects() {
-            let project: Project = instance.deserialize()?;
-            collect_project_vcs(&mut dependencies, &project.vcs)?;
-        }
+        let collected = collect_vcs_sync_inputs(path, executor, VcsSyncScope::Path)?;
+        let VcsSyncInputs {
+            module_root,
+            dependencies,
+        } = collected;
         Ok(SyncResult::success(sync_vcs_dependencies(
             VcsSyncRequest {
-                module_root: &root,
+                module_root: &module_root,
                 dependencies,
                 options,
                 scope: VcsSyncScope::Path,
@@ -113,26 +112,47 @@ impl SyncProvider for VcsSyncProvider {
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let module = executor.discover_all_modules(path)?;
-        let root = module.root.clone();
-        let mut dependencies = Vec::new();
-        for instance in module.bases() {
-            let base: Base = instance.deserialize()?;
-            collect_project_vcs(&mut dependencies, &base.vcs)?;
-        }
-        for instance in module.projects() {
-            let project: Project = instance.deserialize()?;
-            collect_project_vcs(&mut dependencies, &project.vcs)?;
-        }
+        let collected = collect_vcs_sync_inputs(path, executor, VcsSyncScope::Workspace)?;
+        let VcsSyncInputs {
+            module_root,
+            dependencies,
+        } = collected;
         Ok(SyncResult::success(sync_vcs_dependencies(
             VcsSyncRequest {
-                module_root: &root,
+                module_root: &module_root,
                 dependencies,
                 options,
                 scope: VcsSyncScope::Workspace,
             },
         )?))
     }
+}
+
+fn collect_vcs_sync_inputs(
+    path: &Path,
+    executor: &CommandExecutor,
+    scope: VcsSyncScope,
+) -> Result<VcsSyncInputs> {
+    let module = match scope {
+        VcsSyncScope::Path => executor.get_module(path)?,
+        VcsSyncScope::Workspace => executor.discover_all_modules(path)?,
+    };
+    let module_root = module.root.clone();
+    let mut dependencies = Vec::new();
+
+    for instance in module.bases() {
+        let base: Base = instance.deserialize()?;
+        collect_project_vcs(&mut dependencies, &base.vcs)?;
+    }
+    for instance in module.projects() {
+        let project: Project = instance.deserialize()?;
+        collect_project_vcs(&mut dependencies, &project.vcs)?;
+    }
+
+    Ok(VcsSyncInputs {
+        module_root,
+        dependencies,
+    })
 }
 
 fn collect_project_vcs(
