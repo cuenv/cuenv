@@ -194,6 +194,12 @@ enum LockSyncScope {
     Workspace,
 }
 
+#[derive(Clone, Copy)]
+enum LockfileSeedMode {
+    ResetGeneratedSections,
+    PreserveGeneratedSections,
+}
+
 /// Key type for tool deduplication: (name, version, source_hash).
 type ToolIdentityKey = (String, String, String);
 
@@ -689,7 +695,10 @@ async fn execute_lock_sync(
         && collected_tools.is_empty()
         && collected_runtimes.is_empty()
     {
-        let lockfile = seed_lockfile(existing_lockfile.as_ref(), false);
+        let lockfile = seed_lockfile(
+            existing_lockfile.as_ref(),
+            LockfileSeedMode::ResetGeneratedSections,
+        );
         if lockfile_has_entries(&lockfile) {
             return match options.mode {
                 SyncMode::Check => {
@@ -727,7 +736,12 @@ async fn execute_lock_sync(
     let artifacts = resolve_oci_artifacts(&image_platforms).await?;
 
     // Process Tools runtime
-    let mut lockfile = seed_lockfile(existing_lockfile.as_ref(), path_local);
+    let seed_mode = if path_local {
+        LockfileSeedMode::PreserveGeneratedSections
+    } else {
+        LockfileSeedMode::ResetGeneratedSections
+    };
+    let mut lockfile = seed_lockfile(existing_lockfile.as_ref(), seed_mode);
 
     if path_local {
         for project_path in &scoped_project_paths {
@@ -877,19 +891,22 @@ fn reconcile_empty_lockfile_state(
     }
 }
 
-fn seed_lockfile(existing: Option<&Lockfile>, preserve_existing: bool) -> Lockfile {
-    if preserve_existing {
-        return existing.cloned().unwrap_or_else(Lockfile::new);
+fn seed_lockfile(existing: Option<&Lockfile>, mode: LockfileSeedMode) -> Lockfile {
+    match mode {
+        LockfileSeedMode::PreserveGeneratedSections => {
+            existing.cloned().unwrap_or_else(Lockfile::new)
+        }
+        LockfileSeedMode::ResetGeneratedSections => {
+            let mut lockfile = Lockfile::new();
+            if let Some(existing) = existing {
+                lockfile
+                    .tools_activation
+                    .clone_from(&existing.tools_activation);
+                lockfile.vcs.clone_from(&existing.vcs);
+            }
+            lockfile
+        }
     }
-
-    let mut lockfile = Lockfile::new();
-    if let Some(existing) = existing {
-        lockfile
-            .tools_activation
-            .clone_from(&existing.tools_activation);
-        lockfile.vcs.clone_from(&existing.vcs);
-    }
-    lockfile
 }
 
 fn lockfile_has_entries(lockfile: &Lockfile) -> bool {

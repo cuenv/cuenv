@@ -58,7 +58,7 @@ fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections()
         },
     );
 
-    let seeded = seed_lockfile(Some(&existing), false);
+    let seeded = seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
 
     assert_eq!(seeded.version, LOCKFILE_VERSION);
     assert_eq!(seeded.tools_activation, existing.tools_activation);
@@ -106,7 +106,7 @@ fn test_seeded_lockfile_remains_equal_when_generated_sections_are_rebuilt() {
         )]),
     });
 
-    let mut rebuilt = seed_lockfile(Some(&existing), false);
+    let mut rebuilt = seed_lockfile(Some(&existing), LockfileSeedMode::ResetGeneratedSections);
     rebuilt.tools = existing.tools.clone();
     rebuilt.artifacts = existing.artifacts.clone();
 
