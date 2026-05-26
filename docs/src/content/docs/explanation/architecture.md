@@ -118,7 +118,10 @@ while the hook supervisor process runs through
 `crates/cuenv/src/commands/release.rs`; binary artifact orchestration lives in
 `crates/cuenv/src/commands/release/binaries.rs`, and release-prepare analysis,
 version application, git publication, and PR creation live in
-`crates/cuenv/src/commands/release/prepare.rs`.
+`crates/cuenv/src/commands/release/prepare.rs`. Task-list data construction
+stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
+dashboard, and emoji renderers live in
+`crates/cuenv/src/commands/task_list/formatters.rs`.
 
 ### cuenv-ci
 
