@@ -6,7 +6,7 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::bus::EventReceiver;
-use crate::event::{CuenvEvent, EventCategory, OutputEvent, SystemEvent};
+use crate::event::{CuenvEvent, EventCategory, SystemEvent};
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
 use std::io::{self, IsTerminal};
@@ -16,6 +16,7 @@ use std::sync::Mutex;
 mod ci;
 mod command;
 mod interactive;
+mod output;
 mod service;
 mod system;
 mod task;
@@ -125,18 +126,6 @@ impl CliRenderer {
             }
             EventCategory::System(system_event) => self.render_system(system_event),
             EventCategory::Output(output_event) => self.render_output(output_event),
-        }
-    }
-
-    fn render_output(&self, event: &OutputEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for output rendering options later
-        match event {
-            OutputEvent::Stdout { content } => {
-                println!("{content}");
-            }
-            OutputEvent::Stderr { content } => {
-                eprintln!("{content}");
-            }
         }
     }
 }
