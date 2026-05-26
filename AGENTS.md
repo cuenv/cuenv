@@ -4,8 +4,8 @@
 
 - Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
-- We always use Nix for builds and checks, cuenv for everything Nix isn't good at.
-- `nix flake check -L --accept-flake-config` is the review/merge/release gate, not a per-commit tax for every draft PR commit.
+- We use Nix for builds and checks, cuenv for orchestration and workflow validation, and choose the smallest check that proves the current change.
+- `nix flake check -L --accept-flake-config` is the review/merge/release gate and broad-risk safety net, not a per-commit tax for every draft PR commit.
 - Always update ./docs for all work.
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
 - Every PR that changes prompts or agent guidance must update the affected docs and skills under `.agents/skills/`. Update the schema coverage matrix only when the change alters schema or CLI support status.
@@ -50,23 +50,23 @@ cuenv task ci.schema-docs-check
 
 ## Validation Strategy
 
-Default to the smallest validation set that proves the current change. Do not start a full flake check just because a draft commit changed code; decide from the risk and boundary touched. Full flake checks are required evidence for review/merge readiness, not a default tax on every isolated draft commit.
+Default to the smallest validation set that proves the current change. Do not start a full root flake check just because a draft commit changed code; decide from the risk and boundary touched. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit.
 
-Full flake check is not required for isolated draft commits when focused validation proves the touched surface:
+Use focused validation for isolated draft commits when it proves the touched surface:
 
-- Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`.
+- Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`, or an app-local Nix test/clippy check when that is the local boundary.
 - Docs, prompts, examples, or skill changes: run `cuenv task ci.schema-docs-check`; add `cuenv fmt --fix` only when formatting applies.
-- CI workflow or sync-provider changes: run `cuenv sync ci --check` plus the focused tests for the touched provider.
+- Sync-provider changes that do not alter generated workflow contracts: run `cuenv sync ci --check` plus the focused tests for the touched provider.
 - CLI behavior changes: run the focused Rust tests and at least one direct CLI smoke test for the changed command.
 
-Full flake check is required when any of these are true:
+Full root flake check is required when any of these are true:
 
 - Marking a PR ready for review, requesting review, merging, or cutting a release.
-- Changing Nix expressions, Cargo manifests or lockfiles, build/check wiring, CI/release behavior, or generated workflow contracts.
+- Changing Nix expressions, Cargo manifests or lockfiles, flake outputs, build/check wiring, CI/release behavior, or generated workflow contracts.
 - Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
 - A focused check fails in a way that could indicate broader workspace breakage.
 
-Full flake check is not required for:
+Full root flake check is not required for:
 
 - Exploratory review work while deciding what to change.
 - Docs-only, prompt-only, or agent-guidance-only edits.
@@ -195,7 +195,7 @@ cuenv exec -- cargo run -- env print --path examples/env-basic --package example
 
 ## Code Quality Checklist
 
-Before each isolated draft commit, run the focused checks that match the files touched. Include `git diff --check` and `cuenv fmt --fix` for code changes, and include `cuenv task ci.schema-docs-check` for schema, docs, prompts, examples, skills, or CLI surfaces.
+Before each isolated draft commit, run the focused checks that match the files touched. Include `git diff --check` and `cuenv fmt --fix` for code changes, app-local or crate-local checks for localized code, and `cuenv task ci.schema-docs-check` for schema, docs, prompts, examples, skills, or CLI surfaces.
 
 Before requesting review or marking a PR ready:
 
