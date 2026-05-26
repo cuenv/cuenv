@@ -100,7 +100,6 @@ fn detect_from_lockfiles(
 }
 
 /// Process a single lockfile and return the detected manager with confidence.
-#[allow(clippy::cognitive_complexity)]
 fn process_lockfile(
     root: &Path,
     manager: PackageManager,

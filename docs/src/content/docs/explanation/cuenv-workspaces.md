@@ -193,6 +193,11 @@ if let Some(manager) = detect_from_command("cargo build") {
 }
 ```
 
+Detection is split into lockfile processing, package.json hints, workspace
+config validation, command-name parsing, and priority ordering so Yarn version
+handling and confidence scoring stay isolated from the public detection entry
+points.
+
 ## Integration Patterns
 
 ### Discover Workspace Members
