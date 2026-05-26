@@ -6,9 +6,6 @@
 //! This module orchestrates complex async workflows with caching, concurrency control,
 //! and multi-project coordination. The complexity is inherent to the domain.
 
-// CI orchestration has inherent complexity - coordinates async tasks, caching, reporting
-#![allow(clippy::cognitive_complexity)]
-
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::compiler::Compiler;
 use crate::discovery::evaluate_module_from_cwd;
