@@ -143,7 +143,7 @@ pub struct OutputRefResolver<'a> {
 |------|--------|
 | `schema/tasks.cue` | `#TaskOutputRef`, `stdout`/`stderr`/`exitCode` on `#Task`, widened `args`/`env` |
 | `crates/cuengine/bridge.go` | `injectTaskNames()` + recursive walker + helpers |
-| `crates/core/src/tasks/output_refs.rs` | NEW: `TaskOutputRef`, `OutputRefResolver`, `process_output_refs()`, 28 tests |
+| `crates/core/src/tasks/output_refs/{model,extraction,resolver}.rs` | `TaskOutputRef` model, raw JSON extraction, passthrough markers, and runtime `OutputRefResolver` |
 | `crates/core/src/tasks/mod.rs` | Module + re-exports |
 | `crates/core/src/module.rs` | `Instance.output_ref_deps`, `process_output_refs()` in `from_raw()` |
 | `crates/core/src/tasks/graph.rs` | `add_output_ref_deps()` with petgraph edges |

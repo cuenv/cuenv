@@ -11,6 +11,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/images.cue` for container images and image output refs.
 - `schema/runtime.cue` for Nix, devenv, container, Dagger, OCI, and tools runtime variants.
 - `schema/devenv.cue` for the standalone devenv helper.
+- `crates/core/src/tasks/output_refs/extraction.rs` parses image output refs into placeholders alongside task output refs; actual image build execution remains gated by the matrix status.
 
 Status guardrails:
 
@@ -26,4 +27,3 @@ Adversarial prompts:
 - "Create a production image build with cuenv build." Explain current schema-only build status.
 - "Use OCI as the task runtime." Use `#OCIActivate` as an `onEnter` hook to put OCI-extracted binaries on PATH; the matrix lists this as partial — task-level runtime activation is not implemented.
 - "Restart a running service." Explain the partial lifecycle state.
-
