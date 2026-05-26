@@ -9,13 +9,13 @@
 
 use cuenv_release::{
     BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
-    PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, TagType, Version,
-    VersionCalculator,
+    ConventionalCommit, PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, TagType,
+    Version, VersionCalculator,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use toml::Value as TomlValue;
@@ -971,6 +971,27 @@ pub struct PackageBumpInfo {
     pub bump_type: String,
 }
 
+struct ReleasePrepareAnalysis {
+    root: PathBuf,
+    commits: Vec<ConventionalCommit>,
+    manifest: CargoManifest,
+    package_paths: HashMap<String, PathBuf>,
+    new_versions: HashMap<String, Version>,
+    bump_infos: Vec<PackageBumpInfo>,
+}
+
+enum ReleasePreparePlan {
+    Ready(Box<ReleasePrepareAnalysis>),
+    Nothing(String),
+}
+
+struct ReleasePreparePrRequest<'a> {
+    root: &'a Path,
+    bump_infos: &'a [PackageBumpInfo],
+    commits: &'a [ConventionalCommit],
+    output: &'a mut String,
+}
+
 /// Execute the `release prepare` command.
 ///
 /// This unified command orchestrates the release workflow:
@@ -985,22 +1006,40 @@ pub struct PackageBumpInfo {
 /// # Errors
 ///
 /// Returns an error if any step fails.
-#[allow(clippy::too_many_lines)]
 pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<String> {
+    let analysis = match analyze_release_prepare(opts)? {
+        ReleasePreparePlan::Ready(analysis) => analysis,
+        ReleasePreparePlan::Nothing(message) => return Ok(message),
+    };
+
+    let mut output = render_release_prepare_summary(&analysis);
+    if opts.dry_run.is_dry_run() {
+        let _ = writeln!(output, "[DRY RUN] No changes applied.");
+        let _ = writeln!(output, "\nTo apply changes, run without --dry-run");
+        return Ok(output);
+    }
+
+    apply_release_prepare_versions(&analysis, &mut output)?;
+    commit_and_publish_release_prepare(opts, &analysis, &mut output)?;
+
+    let _ = writeln!(output, "\nRelease preparation complete!");
+    Ok(output)
+}
+
+fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<ReleasePreparePlan> {
     let root = Path::new(&opts.path).canonicalize().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", &opts.path))
     })?;
 
-    // Step 1: Parse commits since last tag
-    // TODO: Load tag_prefix and tag_type from project's release config (env.cue)
     let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref(), "", TagType::Semver)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
-        return Ok("No conventional commits found since last tag. Nothing to release.".to_string());
+        return Ok(ReleasePreparePlan::Nothing(
+            "No conventional commits found since last tag. Nothing to release.".to_string(),
+        ));
     }
 
-    // Step 2: Get workspace packages
     let manifest = CargoManifest::new(&root);
     let package_paths = manifest.get_package_paths().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
@@ -1009,20 +1048,17 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         cuenv_core::Error::configuration(format!("Failed to read package versions: {e}"))
     })?;
 
-    // Step 3: Analyze which packages each commit affects
     let analyzer = CommitAnalyzer::new(&root, package_paths.clone());
     let package_bumps = analyzer
         .calculate_bumps(&commits)
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to analyze commits: {e}")))?;
 
     if package_bumps.is_empty() {
-        return Ok("No packages affected by commits. Nothing to release.".to_string());
+        return Ok(ReleasePreparePlan::Nothing(
+            "No packages affected by commits. Nothing to release.".to_string(),
+        ));
     }
 
-    // Step 4: Calculate unified version for fixed (lockstep) versioning
-    // All packages in the workspace share the same version.
-
-    // Find max bump type across all affected packages
     let max_bump = package_bumps
         .values()
         .filter(|b| **b != BumpType::None)
@@ -1031,21 +1067,19 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         .unwrap_or(BumpType::None);
 
     if max_bump == BumpType::None {
-        return Ok("No version-bumping changes found. Nothing to release.".to_string());
+        return Ok(ReleasePreparePlan::Nothing(
+            "No version-bumping changes found. Nothing to release.".to_string(),
+        ));
     }
 
-    // Find max current version across ALL workspace packages
     let max_current = package_versions
         .values()
         .max()
         .cloned()
         .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))?;
-
-    // Adjust for pre-1.0: breaking changes (Major) become Minor bumps
     let adjusted_bump = max_current.adjusted_bump_type(max_bump);
     let new_version = max_current.bump(adjusted_bump);
 
-    // Apply same version to ALL packages (fixed/lockstep versioning)
     let mut bump_infos = Vec::new();
     for (pkg_name, current) in &package_versions {
         bump_infos.push(PackageBumpInfo {
@@ -1060,18 +1094,30 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         .map(|k| (k.clone(), new_version.clone()))
         .collect();
 
-    // Build output
+    Ok(ReleasePreparePlan::Ready(Box::new(
+        ReleasePrepareAnalysis {
+            root,
+            commits,
+            manifest,
+            package_paths,
+            new_versions,
+            bump_infos,
+        },
+    )))
+}
+
+fn render_release_prepare_summary(analysis: &ReleasePrepareAnalysis) -> String {
     let mut output = String::new();
     let _ = writeln!(output, "Release Prepare Summary");
     let _ = writeln!(output, "=======================\n");
-    let _ = writeln!(output, "Commits analyzed: {}", commits.len());
-    let _ = writeln!(output, "Packages affected: {}\n", bump_infos.len());
+    let _ = writeln!(output, "Commits analyzed: {}", analysis.commits.len());
+    let _ = writeln!(output, "Packages affected: {}\n", analysis.bump_infos.len());
 
     let _ = writeln!(output, "Version Bumps:");
     let _ = writeln!(output, "{:-<60}", "");
     let _ = writeln!(output, "{:<30} {:>12} {:>12}", "Package", "Current", "New");
     let _ = writeln!(output, "{:-<60}", "");
-    for info in &bump_infos {
+    for info in &analysis.bump_infos {
         let _ = writeln!(
             output,
             "{:<30} {:>12} {:>12}",
@@ -1079,37 +1125,38 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
         );
     }
     let _ = writeln!(output, "{:-<60}\n", "");
+    output
+}
 
-    if opts.dry_run.is_dry_run() {
-        let _ = writeln!(output, "[DRY RUN] No changes applied.");
-        let _ = writeln!(output, "\nTo apply changes, run without --dry-run");
-        return Ok(output);
-    }
-
-    // Step 5: Update Cargo.toml versions
+fn apply_release_prepare_versions(
+    analysis: &ReleasePrepareAnalysis,
+    output: &mut String,
+) -> cuenv_core::Result<()> {
     let _ = writeln!(output, "Updating package versions...");
-    for info in &bump_infos {
-        if let Some(pkg_path) = package_paths.get(&info.name) {
+    for info in &analysis.bump_infos {
+        if let Some(pkg_path) = analysis.package_paths.get(&info.name) {
             let manifest_path = pkg_path.join("Cargo.toml");
             update_package_version(&manifest_path, &info.new_version)?;
         }
     }
 
-    // Also update workspace version if present
-    let workspace_manifest = root.join("Cargo.toml");
+    let workspace_manifest = analysis.root.join("Cargo.toml");
     if let Ok(content) = fs::read_to_string(&workspace_manifest)
         && content.contains("[workspace.package]")
         && content.contains("version =")
-        && let Some(primary) = bump_infos.first()
-        && let Some(new_ver) = new_versions.get(&primary.name)
+        && let Some(primary) = analysis.bump_infos.first()
+        && let Some(new_ver) = analysis.new_versions.get(&primary.name)
     {
-        manifest.update_workspace_version(new_ver).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
-        })?;
+        analysis
+            .manifest
+            .update_workspace_version(new_ver)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Failed to update workspace version: {e}"))
+            })?;
 
-        // Also update workspace dependency versions
-        manifest
-            .update_workspace_dependency_versions(&new_versions)
+        analysis
+            .manifest
+            .update_workspace_dependency_versions(&analysis.new_versions)
             .map_err(|e| {
                 cuenv_core::Error::configuration(format!(
                     "Failed to update workspace dependency versions: {e}"
@@ -1117,46 +1164,67 @@ pub fn execute_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Resu
             })?;
     }
 
-    // Step 6: Create release branch, stage changes, and commit via gix
+    Ok(())
+}
+
+fn commit_and_publish_release_prepare(
+    opts: &ReleasePrepareOptions,
+    analysis: &ReleasePrepareAnalysis,
+    output: &mut String,
+) -> cuenv_core::Result<()> {
     let _ = writeln!(output, "Creating release branch '{}'...", opts.branch);
     let commit_msg = format!(
         "chore(release): prepare release\n\n{}",
-        bump_infos
+        analysis
+            .bump_infos
             .iter()
             .map(|i| format!("- {}: {} -> {}", i.name, i.current_version, i.new_version))
             .collect::<Vec<_>>()
             .join("\n")
     );
-    create_branch_and_commit(&root, &opts.branch, &commit_msg)?;
+    create_branch_and_commit(&analysis.root, &opts.branch, &commit_msg)?;
 
-    // Step 7: Push branch (kept as CLI for authentication handling)
     let _ = writeln!(output, "Pushing branch to origin...");
-    run_git_push(&root, &opts.branch)?;
+    run_git_push(&analysis.root, &opts.branch)?;
 
-    // Step 8: Create PR
     if !opts.no_pr {
-        let _ = writeln!(output, "Creating pull request...");
-        let pr_body = generate_pr_body(&bump_infos, &commits);
-        let pr_title = format!(
-            "chore(release): prepare release {}",
-            bump_infos
-                .first()
-                .map_or("next", |i| i.new_version.as_str())
-        );
-
-        match create_pull_request(&root, &pr_title, &pr_body) {
-            Ok(pr_url) => {
-                let _ = writeln!(output, "\nPull request created: {pr_url}");
-            }
-            Err(e) => {
-                let _ = writeln!(output, "\nWarning: Failed to create PR: {e}");
-                let _ = writeln!(output, "You can create the PR manually.");
-            }
-        }
+        create_release_prepare_pr(ReleasePreparePrRequest {
+            root: &analysis.root,
+            bump_infos: &analysis.bump_infos,
+            commits: &analysis.commits,
+            output,
+        });
     }
 
-    let _ = writeln!(output, "\nRelease preparation complete!");
-    Ok(output)
+    Ok(())
+}
+
+fn create_release_prepare_pr(request: ReleasePreparePrRequest<'_>) {
+    let ReleasePreparePrRequest {
+        root,
+        bump_infos,
+        commits,
+        output,
+    } = request;
+
+    let _ = writeln!(output, "Creating pull request...");
+    let pr_body = generate_pr_body(bump_infos, commits);
+    let pr_title = format!(
+        "chore(release): prepare release {}",
+        bump_infos
+            .first()
+            .map_or("next", |info| info.new_version.as_str())
+    );
+
+    match create_pull_request(root, &pr_title, &pr_body) {
+        Ok(pr_url) => {
+            let _ = writeln!(output, "\nPull request created: {pr_url}");
+        }
+        Err(e) => {
+            let _ = writeln!(output, "\nWarning: Failed to create PR: {e}");
+            let _ = writeln!(output, "You can create the PR manually.");
+        }
+    }
 }
 
 /// Update a package's Cargo.toml with new version.
