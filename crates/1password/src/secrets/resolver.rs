@@ -1,19 +1,12 @@
 //! 1Password secret resolver with auto-negotiating dual-mode (HTTP via WASM SDK + CLI)
 
-// Complex WASM+CLI dual-mode resolver with mutex-based shared core management
-#![allow(
-    clippy::cognitive_complexity,
-    clippy::too_many_lines,
-    clippy::significant_drop_tightening
-)]
-
+use super::cli::CliResolver;
 use super::core::SharedCore;
 use super::wasm;
 use async_trait::async_trait;
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec, SecureSecret};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::{process::Command, sync::Mutex};
 
 /// Configuration for 1Password secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -49,14 +42,7 @@ pub struct OnePasswordResolver {
     /// Client ID for WASM SDK (when using HTTP mode)
     client_id: Option<u64>,
     /// One-time CLI auth preflight state for `op whoami` in CLI mode.
-    cli_auth_state: Mutex<CliAuthState>,
-}
-
-#[derive(Debug, Clone)]
-enum CliAuthState {
-    Unknown,
-    Authenticated,
-    Failed(String),
+    cli: CliResolver,
 }
 
 impl std::fmt::Debug for OnePasswordResolver {
@@ -99,7 +85,7 @@ impl OnePasswordResolver {
 
         Ok(Self {
             client_id,
-            cli_auth_state: Mutex::new(CliAuthState::Unknown),
+            cli: CliResolver::default(),
         })
     }
 
@@ -191,168 +177,6 @@ impl OnePasswordResolver {
         Ok(secret)
     }
 
-    /// Resolve using the op CLI
-    async fn resolve_cli(
-        &self,
-        name: &str,
-        config: &OnePasswordConfig,
-    ) -> Result<String, SecretError> {
-        tracing::debug!(
-            name = name,
-            reference = config.reference,
-            "1Password resolve_cli"
-        );
-        let output = Command::new("op")
-            .args(["read", &config.reference])
-            .output()
-            .await
-            .map_err(|e| SecretError::ResolutionFailed {
-                name: name.to_string(),
-                message: format!("Failed to execute op CLI: {e}"),
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(SecretError::ResolutionFailed {
-                name: name.to_string(),
-                message: format!("op CLI failed: {stderr}"),
-            });
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
-    /// Ensure CLI auth is valid once per resolver instance.
-    ///
-    /// Returns `Some(secret_value)` when auth bootstrap consumed the current
-    /// secret read, allowing caller to skip a second `op read` call.
-    async fn ensure_cli_authenticated(
-        &self,
-        name: &str,
-        config: &OnePasswordConfig,
-    ) -> Result<Option<String>, SecretError> {
-        let mut state = self.cli_auth_state.lock().await;
-        match &*state {
-            CliAuthState::Authenticated => return Ok(None),
-            CliAuthState::Failed(message) => {
-                return Err(SecretError::ResolutionFailed {
-                    name: name.to_string(),
-                    message: message.clone(),
-                });
-            }
-            CliAuthState::Unknown => {}
-        }
-
-        let preflight_result = Command::new("op").arg("whoami").output().await;
-
-        match preflight_result {
-            Ok(output) if output.status.success() => {
-                *state = CliAuthState::Authenticated;
-                Ok(None)
-            }
-            Ok(output) => {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let details = if stderr.is_empty() {
-                    "no error output from 1Password CLI".to_string()
-                } else {
-                    stderr
-                };
-
-                // Interactive local workflows may be signed out before the first read.
-                // In this case, allow one bootstrap read to trigger signin once,
-                // then keep all remaining reads parallel.
-                if details.to_lowercase().contains("not signed in") {
-                    let read_result = Command::new("op")
-                        .args(["read", &config.reference])
-                        .output()
-                        .await;
-
-                    match read_result {
-                        Ok(read_output) if read_output.status.success() => {
-                            *state = CliAuthState::Authenticated;
-                            let secret = String::from_utf8_lossy(&read_output.stdout)
-                                .trim()
-                                .to_string();
-                            return Ok(Some(secret));
-                        }
-                        Ok(read_output) => {
-                            let read_stderr = String::from_utf8_lossy(&read_output.stderr)
-                                .trim()
-                                .to_string();
-                            let read_details = if read_stderr.is_empty() {
-                                "no error output from 1Password CLI".to_string()
-                            } else {
-                                read_stderr
-                            };
-                            let message = format!(
-                                "1Password CLI authentication check failed (`op whoami`) and \
-                                bootstrap secret read failed. Run `op signin` and retry. \
-                                Details: {read_details}"
-                            );
-                            *state = CliAuthState::Failed(message.clone());
-                            return Err(SecretError::ResolutionFailed {
-                                name: name.to_string(),
-                                message,
-                            });
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                            let message = "1Password CLI not found (`op` command unavailable). \
-                                Install the 1Password CLI and retry."
-                                .to_string();
-                            *state = CliAuthState::Failed(message.clone());
-                            return Err(SecretError::ResolutionFailed {
-                                name: name.to_string(),
-                                message,
-                            });
-                        }
-                        Err(e) => {
-                            let message = format!(
-                                "Failed to execute 1Password bootstrap secret read (`op read`): {e}. \
-                                Run `op signin` and retry."
-                            );
-                            *state = CliAuthState::Failed(message.clone());
-                            return Err(SecretError::ResolutionFailed {
-                                name: name.to_string(),
-                                message,
-                            });
-                        }
-                    }
-                }
-
-                let message = format!(
-                    "1Password CLI authentication check failed (`op whoami`). \
-                    Run `op signin` and retry. Details: {details}"
-                );
-                *state = CliAuthState::Failed(message.clone());
-                Err(SecretError::ResolutionFailed {
-                    name: name.to_string(),
-                    message,
-                })
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let message = "1Password CLI not found (`op` command unavailable). \
-                    Install the 1Password CLI and retry."
-                    .to_string();
-                *state = CliAuthState::Failed(message.clone());
-                Err(SecretError::ResolutionFailed {
-                    name: name.to_string(),
-                    message,
-                })
-            }
-            Err(e) => {
-                let message = format!(
-                    "Failed to execute 1Password CLI authentication check (`op whoami`): {e}. \
-                    Run `op signin` and retry."
-                );
-                *state = CliAuthState::Failed(message.clone());
-                Err(SecretError::ResolutionFailed {
-                    name: name.to_string(),
-                    message,
-                })
-            }
-        }
-    }
-
     /// Resolve a secret - tries HTTP first if available, falls back to CLI
     async fn resolve_with_config(
         &self,
@@ -365,10 +189,14 @@ impl OnePasswordResolver {
         }
 
         // Fallback to CLI
-        if let Some(secret) = self.ensure_cli_authenticated(name, config).await? {
+        if let Some(secret) = self
+            .cli
+            .ensure_authenticated(name, &config.reference)
+            .await?
+        {
             return Ok(secret);
         }
-        self.resolve_cli(name, config).await
+        self.cli.resolve(name, &config.reference).await
     }
 
     /// Resolve multiple secrets using Secrets.ResolveAll (HTTP mode)
