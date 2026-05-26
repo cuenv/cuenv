@@ -3,7 +3,7 @@
 //! Renders events to stdout/stderr for terminal display.
 //! This module is allowed to use println!/eprintln! as it's the output layer.
 
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::too_many_lines)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::bus::EventReceiver;
 use crate::event::{
@@ -123,6 +123,15 @@ impl CliRenderer {
 
     fn render_task(&self, event: &TaskEvent) {
         #[cfg(feature = "spinner")]
+        if self.render_task_with_spinner(event) {
+            return;
+        }
+
+        self.render_task_plain(event);
+    }
+
+    #[cfg(feature = "spinner")]
+    fn render_task_with_spinner(&self, event: &TaskEvent) -> bool {
         if let Some(spinner) = self.spinner.as_ref() {
             // Best-effort lock — if a renderer panicked while holding it we
             // still surface the event via the fallback path below rather
@@ -146,9 +155,14 @@ impl CliRenderer {
                     };
                     guard.print_above(&format!("{prefix}[{name}] {content}"));
                 }
-                return;
+                return true;
             }
         }
+
+        false
+    }
+
+    fn render_task_plain(&self, event: &TaskEvent) {
         match event {
             TaskEvent::Started {
                 name,
