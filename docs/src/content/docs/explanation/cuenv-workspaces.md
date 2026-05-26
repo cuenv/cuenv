@@ -222,10 +222,10 @@ if let Some(manager) = detect_from_command("cargo build") {
 
 Detection orchestration stays in `crates/workspaces/src/detection.rs`, while
 shell command parsing lives in `detection/command.rs` and lockfile/workspace
-config scanning lives in `detection/filesystem.rs`. Package.json hints and
-priority ordering remain with the public entrypoints so command hints, Yarn
-version handling, config validation, and confidence scoring stay in focused
-boundaries.
+config scanning lives in `detection/filesystem.rs`. Package.json manager hints
+and fallback npm detection live in `detection/package_json.rs`; priority
+ordering remains with the public entrypoints so command hints, Yarn version
+handling, config validation, and confidence scoring stay in focused boundaries.
 
 ## Integration Patterns
 
