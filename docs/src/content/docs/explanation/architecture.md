@@ -186,8 +186,9 @@ discovery, version inheritance, and internal dependency lookup live in
 `crates/release/src/manifest/updates.rs`. Release pipeline dispatch
 stays in `crates/release/src/orchestrator.rs`; package artifact handling lives
 in `crates/release/src/orchestrator/package.rs`, and backend publication lives
-in `crates/release/src/orchestrator/publish.rs`. Task-list data construction
-stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
+in `crates/release/src/orchestrator/publish.rs`. Archive/checksum primitives
+for release binaries live in `crates/release/src/artifact.rs`. Task-list data
+construction stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
 dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
 The rich TUI keeps event-driven task/output state in
