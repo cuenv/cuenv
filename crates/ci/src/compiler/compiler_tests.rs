@@ -1,6 +1,8 @@
 use super::*;
+use crate::ir::{BuildStage, TaskCondition};
 use cuenv_core::ci::{
-    CI, Pipeline, PipelineCondition, PipelineMode, PipelineTask, StringOrVec, TaskRef,
+    ActivationCondition, CI, Contributor, ContributorTask, Pipeline, PipelineCondition,
+    PipelineMode, PipelineTask, SecretRef, StringOrVec, TaskCondition as CueTaskCondition, TaskRef,
 };
 use cuenv_core::tasks::{Input, Task, TaskDependency, TaskNode};
 
@@ -601,7 +603,6 @@ fn test_derive_trigger_paths_root_project_no_inputs_fallback() {
 // Contributor Activation Tests
 // =========================================================================
 
-use cuenv_core::ci::ActivationCondition;
 use std::collections::HashMap;
 
 /// Helper to create a minimal Contributor for testing

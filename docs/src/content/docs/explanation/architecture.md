@@ -116,6 +116,14 @@ while the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
 `crates/cuenv/src/oci_activate.rs`.
 
+### cuenv-ci
+
+CI support compiles project tasks and CUE-defined CI contributors into an
+intermediate representation before provider emitters render workflow files.
+The compiler entrypoint lives in `crates/ci/src/compiler/mod.rs`; contributor
+activation, provider-condition checks, priority-to-stage mapping, and
+contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
+
 ### cuenv-workspaces
 
 Workspace management for monorepos.
