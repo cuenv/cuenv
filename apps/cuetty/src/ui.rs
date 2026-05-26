@@ -18,9 +18,14 @@ use crate::terminal_responses::TerminalResponseScanner;
 use crate::theme::Theme;
 use crate::{CloseTab, FocusNextPane, NewTab, SplitDown, SplitRight};
 
+mod layout;
+
+use layout::{
+    DIVIDER_THICKNESS, PaneNode, PixelRegion, SplitAxis, TerminalId, TerminalTab, split_region,
+};
+
 const TITLEBAR_HEIGHT: f32 = 40.0;
 const SIDEBAR_WIDTH: f32 = 220.0;
-const DIVIDER_THICKNESS: f32 = 1.0;
 // Reserve space inside the titlebar for the macOS traffic lights overlay.
 const TITLEBAR_LEFT_INSET: f32 = 80.0;
 const CLOSE_HOVER_COLOR: u32 = 0xd35a4e;
@@ -549,7 +554,10 @@ impl RootView {
         };
 
         div()
-            .id(SharedString::from(format!("cuetty-pane-{}", terminal_id.0)))
+            .id(SharedString::from(format!(
+                "cuetty-pane-{}",
+                terminal_id.as_u64()
+            )))
             .flex_1()
             .size_full()
             .overflow_hidden()
@@ -659,7 +667,7 @@ impl RootView {
     }
 
     fn allocate_terminal_id(&mut self) -> TerminalId {
-        let id = TerminalId(self.next_terminal_id);
+        let id = TerminalId::new(self.next_terminal_id);
         self.next_terminal_id += 1;
         id
     }
@@ -729,125 +737,11 @@ impl RootView {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct TerminalId(u64);
-
-struct TerminalTab {
-    title: String,
-    layout: PaneNode,
-    active_pane: TerminalId,
-}
-
 struct TerminalPane {
     id: TerminalId,
     view: Entity<TerminalView>,
     master: Arc<dyn portable_pty::MasterPty + Send>,
     focus_handle: FocusHandle,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum PaneNode {
-    Leaf(TerminalId),
-    Split {
-        axis: SplitAxis,
-        first: Box<PaneNode>,
-        second: Box<PaneNode>,
-    },
-}
-
-impl PaneNode {
-    fn split_leaf(&mut self, target: TerminalId, axis: SplitAxis, new_leaf: TerminalId) -> bool {
-        match self {
-            PaneNode::Leaf(id) if *id == target => {
-                *self = PaneNode::Split {
-                    axis,
-                    first: Box::new(PaneNode::Leaf(target)),
-                    second: Box::new(PaneNode::Leaf(new_leaf)),
-                };
-                true
-            }
-            PaneNode::Leaf(_) => false,
-            PaneNode::Split { first, second, .. } => {
-                first.split_leaf(target, axis, new_leaf)
-                    || second.split_leaf(target, axis, new_leaf)
-            }
-        }
-    }
-
-    fn contains(&self, terminal_id: TerminalId) -> bool {
-        match self {
-            PaneNode::Leaf(id) => *id == terminal_id,
-            PaneNode::Split { first, second, .. } => {
-                first.contains(terminal_id) || second.contains(terminal_id)
-            }
-        }
-    }
-
-    fn active_or_first_leaf(&self, active: TerminalId) -> Option<TerminalId> {
-        if self.contains(active) {
-            Some(active)
-        } else {
-            self.first_leaf()
-        }
-    }
-
-    fn first_leaf(&self) -> Option<TerminalId> {
-        match self {
-            PaneNode::Leaf(id) => Some(*id),
-            PaneNode::Split { first, .. } => first.first_leaf(),
-        }
-    }
-
-    fn leaf_ids(&self, ids: &mut Vec<TerminalId>) {
-        match self {
-            PaneNode::Leaf(id) => ids.push(*id),
-            PaneNode::Split { first, second, .. } => {
-                first.leaf_ids(ids);
-                second.leaf_ids(ids);
-            }
-        }
-    }
-
-    fn leaf_count(&self) -> usize {
-        match self {
-            PaneNode::Leaf(_) => 1,
-            PaneNode::Split { first, second, .. } => first.leaf_count() + second.leaf_count(),
-        }
-    }
-
-    fn remove_leaf(self, target: TerminalId) -> Option<PaneNode> {
-        match self {
-            PaneNode::Leaf(id) if id == target => None,
-            PaneNode::Leaf(_) => Some(self),
-            PaneNode::Split {
-                axis,
-                first,
-                second,
-            } => match (first.remove_leaf(target), second.remove_leaf(target)) {
-                (None, None) => None,
-                (Some(node), None) | (None, Some(node)) => Some(node),
-                (Some(f), Some(s)) => Some(PaneNode::Split {
-                    axis,
-                    first: Box::new(f),
-                    second: Box::new(s),
-                }),
-            },
-        }
-    }
-}
-
-impl Default for PaneNode {
-    fn default() -> Self {
-        // TerminalId(0) is never allocated (next_terminal_id starts at 1) so this is a safe
-        // placeholder for std::mem::take during layout surgery.
-        PaneNode::Leaf(TerminalId(0))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SplitAxis {
-    Row,
-    Column,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -974,12 +868,6 @@ fn start_output_pump(window: &mut Window, input: OutputPumpInput, cx: &mut GpuiC
         .detach();
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct PixelRegion {
-    width: f32,
-    height: f32,
-}
-
 struct ResizeLayoutInput<'a, 'b> {
     panes: &'a mut [TerminalPane],
     cell_width: f32,
@@ -1024,37 +912,6 @@ fn resize_pane(
     pane.view.update(input.cx, |terminal, cx| {
         terminal.resize_terminal(grid_size.cols, grid_size.rows, cx);
     });
-}
-
-fn split_region(region: PixelRegion, axis: SplitAxis) -> (PixelRegion, PixelRegion) {
-    match axis {
-        SplitAxis::Row => {
-            let width = ((region.width - DIVIDER_THICKNESS) / 2.0).max(1.0);
-            (
-                PixelRegion {
-                    width,
-                    height: region.height,
-                },
-                PixelRegion {
-                    width,
-                    height: region.height,
-                },
-            )
-        }
-        SplitAxis::Column => {
-            let height = ((region.height - DIVIDER_THICKNESS) / 2.0).max(1.0);
-            (
-                PixelRegion {
-                    width: region.width,
-                    height,
-                },
-                PixelRegion {
-                    width: region.width,
-                    height,
-                },
-            )
-        }
-    }
 }
 
 fn terminal_region(window: &mut Window) -> PixelRegion {
@@ -1118,110 +975,9 @@ fn collapse_home(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::path::PathBuf;
 
-    #[test]
-    fn split_leaf_replaces_target_with_ordered_split() {
-        let first = TerminalId(1);
-        let second = TerminalId(2);
-        let mut layout = PaneNode::Leaf(first);
-
-        assert!(layout.split_leaf(first, SplitAxis::Row, second));
-
-        assert_eq!(
-            layout,
-            PaneNode::Split {
-                axis: SplitAxis::Row,
-                first: Box::new(PaneNode::Leaf(first)),
-                second: Box::new(PaneNode::Leaf(second)),
-            }
-        );
-    }
-
-    #[test]
-    fn remove_leaf_collapses_split_to_sibling() {
-        let layout = PaneNode::Split {
-            axis: SplitAxis::Row,
-            first: Box::new(PaneNode::Leaf(TerminalId(1))),
-            second: Box::new(PaneNode::Leaf(TerminalId(2))),
-        };
-
-        assert_eq!(
-            layout.remove_leaf(TerminalId(1)),
-            Some(PaneNode::Leaf(TerminalId(2)))
-        );
-    }
-
-    #[test]
-    fn remove_leaf_returns_none_when_tree_empties() {
-        let layout = PaneNode::Leaf(TerminalId(1));
-        assert_eq!(layout.remove_leaf(TerminalId(1)), None);
-    }
-
-    #[test]
-    fn remove_leaf_collapses_nested_split() {
-        let layout = PaneNode::Split {
-            axis: SplitAxis::Row,
-            first: Box::new(PaneNode::Leaf(TerminalId(1))),
-            second: Box::new(PaneNode::Split {
-                axis: SplitAxis::Column,
-                first: Box::new(PaneNode::Leaf(TerminalId(2))),
-                second: Box::new(PaneNode::Leaf(TerminalId(3))),
-            }),
-        };
-
-        assert_eq!(
-            layout.remove_leaf(TerminalId(2)),
-            Some(PaneNode::Split {
-                axis: SplitAxis::Row,
-                first: Box::new(PaneNode::Leaf(TerminalId(1))),
-                second: Box::new(PaneNode::Leaf(TerminalId(3))),
-            })
-        );
-    }
-
-    #[test]
-    fn leaf_ids_preserve_focus_order() {
-        let layout = PaneNode::Split {
-            axis: SplitAxis::Row,
-            first: Box::new(PaneNode::Leaf(TerminalId(1))),
-            second: Box::new(PaneNode::Split {
-                axis: SplitAxis::Column,
-                first: Box::new(PaneNode::Leaf(TerminalId(2))),
-                second: Box::new(PaneNode::Leaf(TerminalId(3))),
-            }),
-        };
-        let mut ids = Vec::new();
-
-        layout.leaf_ids(&mut ids);
-
-        assert_eq!(ids, vec![TerminalId(1), TerminalId(2), TerminalId(3)]);
-    }
-
-    #[test]
-    fn split_region_accounts_for_divider() {
-        let (left, right) = split_region(
-            PixelRegion {
-                width: 101.0,
-                height: 80.0,
-            },
-            SplitAxis::Row,
-        );
-
-        assert_eq!(
-            (left, right),
-            (
-                PixelRegion {
-                    width: 50.0,
-                    height: 80.0,
-                },
-                PixelRegion {
-                    width: 50.0,
-                    height: 80.0,
-                },
-            )
-        );
-    }
+    use super::collapse_home;
 
     #[test]
     fn collapse_home_returns_tilde_for_home() {
