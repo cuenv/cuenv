@@ -1,9 +1,15 @@
+use super::tool_resolution::source_config_to_tool_source;
 use super::*;
-use cuenv_core::lockfile::{LOCKFILE_VERSION, LockedToolPlatform, LockedVcsDependency};
+use cuenv_core::lockfile::{
+    ArtifactKind, LOCKFILE_VERSION, LockedArtifact, LockedTool, LockedToolPlatform,
+    LockedVcsDependency, Lockfile, PlatformData,
+};
 use cuenv_core::manifest::SourceConfig;
 use cuenv_core::tools::{
-    Arch, Os, ToolActivationOperation, ToolActivationSource, ToolActivationStep,
+    Arch, Os, Platform as ToolPlatform, ToolActivationOperation, ToolActivationSource,
+    ToolActivationStep, ToolExtract, ToolSource,
 };
+use std::collections::BTreeMap;
 
 #[test]
 fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections() {
