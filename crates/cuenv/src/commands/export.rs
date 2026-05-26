@@ -15,8 +15,8 @@ use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result, shell::Shell};
 use cuenv_hooks::{
-    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutor, StateManager,
-    check_approval_status,
+    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, HookExecutionState,
+    HookExecutor, StateManager, check_approval_status,
 };
 use std::collections::HashMap;
 use std::path::Path;
@@ -215,7 +215,6 @@ pub fn execute_export_sync(
 /// # Errors
 ///
 /// Returns an error if CUE evaluation fails or approval management fails.
-#[allow(clippy::too_many_lines, clippy::uninlined_format_args)]
 pub async fn execute_export(
     shell_type: Option<&str>,
     path: &str,
@@ -225,12 +224,65 @@ pub async fn execute_export(
     let shell = Shell::detect(shell_type);
     let target_dir = Path::new(path);
 
-    // Check if env.cue exists with matching package
-    let directory = match env_file::find_env_file(target_dir, package)? {
-        EnvFileStatus::Match(dir) => dir,
+    let Some(directory) = find_export_directory(target_dir, package)? else {
+        return Ok(format_no_op(shell));
+    };
+
+    // Always evaluate CUE to get current config (uses executor cache if available)
+    debug!("Evaluating CUE for {}", directory.display());
+    let config: Project = evaluate_project(&directory, package, executor)?;
+
+    if let Some(output) = render_approval_required(&directory, &config, shell).await? {
+        return Ok(output);
+    }
+
+    // Compute config hash for this directory + config (only hooks are included)
+    let config_hash = cuenv_hooks::compute_approval_hash(config.hooks.as_ref());
+
+    // Check if state is ready
+    let executor = HookExecutor::with_default_config()?;
+    let context = ExportHookContext {
+        executor: &executor,
+        directory: &directory,
+        config: &config,
+        config_hash: &config_hash,
+        shell,
+    };
+
+    match inspect_initial_hook_state(context).await? {
+        InitialHookState::Rendered(output) => return Ok(output),
+        InitialHookState::Running => {}
+        InitialHookState::Missing => start_hook_execution(context).await?,
+    }
+
+    // Wait briefly for fast hooks (10ms)
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Check again
+    if let Some(output) = render_completed_hook_state(context).await? {
+        return Ok(output);
+    }
+
+    // Still not ready - return partial environment (just static vars from CUE)
+    let static_env = extract_static_env_vars(context.config);
+    if !static_env.is_empty() {
+        debug!(
+            "Returning partial environment ({} vars) while hooks run",
+            static_env.len()
+        );
+        return Ok(format_env_diff(context.directory, static_env, shell));
+    }
+
+    // No environment available yet - return safe no-op
+    Ok(format_no_op(shell))
+}
+
+fn find_export_directory(target_dir: &Path, package: &str) -> Result<Option<std::path::PathBuf>> {
+    match env_file::find_env_file(target_dir, package)? {
+        EnvFileStatus::Match(dir) => Ok(Some(dir)),
         EnvFileStatus::Missing => {
             debug!("No env.cue found in {}", target_dir.display());
-            return Ok(format_no_op(shell));
+            Ok(None)
         }
         EnvFileStatus::PackageMismatch { found_package } => {
             debug!(
@@ -239,118 +291,129 @@ pub async fn execute_export(
                 found_package,
                 package
             );
-            return Ok(format_no_op(shell));
+            Ok(None)
         }
-    };
+    }
+}
 
-    // Always evaluate CUE to get current config (uses executor cache if available)
-    debug!("Evaluating CUE for {}", directory.display());
-    let config: Project = evaluate_project(&directory, package, executor)?;
-
-    // Load approval manager and check approval status
+async fn render_approval_required(
+    directory: &Path,
+    config: &Project,
+    shell: Shell,
+) -> Result<Option<String>> {
     let mut approval_manager = ApprovalManager::with_default_file()?;
     approval_manager.load_approvals().await?;
 
     debug!("Checking approval for directory: {}", directory.display());
     let approval_status =
-        check_approval_status(&approval_manager, &directory, config.hooks.as_ref())?;
+        check_approval_status(&approval_manager, directory, config.hooks.as_ref())?;
 
     match approval_status {
         ApprovalStatus::NotApproved { .. } | ApprovalStatus::RequiresApproval { .. } => {
             let summary = ConfigSummary::from_hooks(config.hooks.as_ref());
-            // Only require approval if there are hooks
             if summary.has_hooks {
-                // Return a comment that tells user to approve
-                return Ok(format_not_allowed(&directory, shell, summary.hook_count));
+                return Ok(Some(format_not_allowed(
+                    directory,
+                    shell,
+                    summary.hook_count,
+                )));
             }
             debug!("Auto-approving configuration with no hooks");
+            Ok(None)
         }
-        ApprovalStatus::Approved => {
-            // Continue with loading
+        ApprovalStatus::Approved => Ok(None),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ExportHookContext<'a> {
+    executor: &'a HookExecutor,
+    directory: &'a Path,
+    config: &'a Project,
+    config_hash: &'a str,
+    shell: Shell,
+}
+
+enum InitialHookState {
+    Rendered(String),
+    Running,
+    Missing,
+}
+
+async fn inspect_initial_hook_state(context: ExportHookContext<'_>) -> Result<InitialHookState> {
+    let Some(state) = context
+        .executor
+        .get_execution_status_for_instance(context.directory, context.config_hash)
+        .await?
+    else {
+        return Ok(InitialHookState::Missing);
+    };
+
+    match state.status {
+        ExecutionStatus::Completed => Ok(InitialHookState::Rendered(render_ready_environment(
+            context, &state,
+        ))),
+        ExecutionStatus::Failed => {
+            debug!(
+                "Hooks failed for {}: {:?}",
+                context.directory.display(),
+                state.error_message
+            );
+            Ok(InitialHookState::Rendered(format_no_op(context.shell)))
         }
+        ExecutionStatus::Running => {
+            debug!("Hooks still running for {}", context.directory.display());
+            Ok(InitialHookState::Running)
+        }
+        ExecutionStatus::Cancelled => Ok(InitialHookState::Rendered(format_no_op(context.shell))),
+    }
+}
+
+async fn start_hook_execution(context: ExportHookContext<'_>) -> Result<()> {
+    info!(
+        "Starting hook execution for {}",
+        context.directory.display()
+    );
+
+    let hooks = extract_hooks_from_config(context.config);
+    if !hooks.is_empty() {
+        context
+            .executor
+            .execute_hooks_background(
+                context.directory.to_path_buf(),
+                context.config_hash.to_string(),
+                hooks,
+            )
+            .await?;
     }
 
-    // Compute config hash for this directory + config (only hooks are included)
-    let config_hash = cuenv_hooks::compute_approval_hash(config.hooks.as_ref());
+    Ok(())
+}
 
-    // Check if state is ready
-    let executor = HookExecutor::with_default_config()?;
-    if let Some(state) = executor
-        .get_execution_status_for_instance(&directory, &config_hash)
+async fn render_completed_hook_state(context: ExportHookContext<'_>) -> Result<Option<String>> {
+    let Some(state) = context
+        .executor
+        .get_execution_status_for_instance(context.directory, context.config_hash)
         .await?
-    {
-        match state.status {
-            ExecutionStatus::Completed => {
-                // Environment is ready - format and return with diff support
-                let env_vars = collect_all_env_vars(&config, &state.environment_vars);
-                return Ok(format_env_diff_with_unset(
-                    &directory,
-                    env_vars,
-                    state.previous_env.as_ref(),
-                    shell,
-                ));
-            }
-            ExecutionStatus::Failed => {
-                // Hooks failed - return safe no-op
-                debug!(
-                    "Hooks failed for {}: {:?}",
-                    directory.display(),
-                    state.error_message
-                );
-                return Ok(format_no_op(shell));
-            }
-            ExecutionStatus::Running => {
-                // Still running - wait briefly
-                debug!("Hooks still running for {}", directory.display());
-            }
-            ExecutionStatus::Cancelled => {
-                // Cancelled - return safe no-op
-                return Ok(format_no_op(shell));
-            }
-        }
+    else {
+        return Ok(None);
+    };
+
+    if state.status == ExecutionStatus::Completed {
+        Ok(Some(render_ready_environment(context, &state)))
     } else {
-        // No state - need to start supervisor
-        info!("Starting hook execution for {}", directory.display());
-
-        // Extract hooks from config
-        let hooks = extract_hooks_from_config(&config);
-        if !hooks.is_empty() {
-            executor
-                .execute_hooks_background(directory.clone(), config_hash.clone(), hooks)
-                .await?;
-        }
+        Ok(None)
     }
+}
 
-    // Wait briefly for fast hooks (10ms)
-    tokio::time::sleep(Duration::from_millis(10)).await;
-
-    // Check again
-    if let Some(state) = executor
-        .get_execution_status_for_instance(&directory, &config_hash)
-        .await?
-        && state.status == ExecutionStatus::Completed
-    {
-        let env_vars = collect_all_env_vars(&config, &state.environment_vars);
-        return Ok(format_env_diff_with_unset(
-            &directory,
-            env_vars,
-            state.previous_env.as_ref(),
-            shell,
-        ));
-    }
-
-    // Still not ready - return partial environment (just static vars from CUE)
-    let static_env = extract_static_env_vars(&config);
-    if !static_env.is_empty() {
-        debug!(
-            "Returning partial environment ({} vars) while hooks run",
-            static_env.len()
-        );
-        return Ok(format_env_diff(&directory, static_env, shell));
-    }
-
-    // No environment available yet - return safe no-op
-    Ok(format_no_op(shell))
+fn render_ready_environment(context: ExportHookContext<'_>, state: &HookExecutionState) -> String {
+    let env_vars = collect_all_env_vars(context.config, &state.environment_vars);
+    format_env_diff_with_unset(
+        context.directory,
+        env_vars,
+        state.previous_env.as_ref(),
+        context.shell,
+    )
 }
 
 /// Extract hooks from CUE config
