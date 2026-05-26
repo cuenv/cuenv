@@ -96,7 +96,10 @@ Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
 affected-task and transitive-closure helpers live in
 `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
 and sequence ordering live in
-`crates/task-graph/src/graph/resolver_build.rs`.
+`crates/task-graph/src/graph/resolver_build.rs`. Read-only DAG callers only
+need `TaskNodeData`; resolver-backed expansion and output-reference injection
+require `MutableTaskNodeData` so dependency mutation is explicit instead of a
+default panic on the base trait.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

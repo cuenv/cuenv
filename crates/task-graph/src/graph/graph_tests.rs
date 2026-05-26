@@ -1,4 +1,5 @@
 use super::*;
+use crate::MutableTaskNodeData;
 
 /// Simple test task implementation
 #[derive(Clone, Debug, Default)]
@@ -18,7 +19,9 @@ impl TaskNodeData for TestTask {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.depends_on.iter().map(String::as_str)
     }
+}
 
+impl MutableTaskNodeData for TestTask {
     fn add_dependency(&mut self, dep: String) {
         if !self.depends_on.contains(&dep) {
             self.depends_on.push(dep);

@@ -5,9 +5,9 @@ use std::collections::{HashMap, HashSet};
 use tracing::debug;
 
 use super::TaskGraph;
-use crate::{Result, TaskNodeData, TaskResolution, TaskResolver};
+use crate::{MutableTaskNodeData, Result, TaskResolution, TaskResolver};
 
-impl<T: TaskNodeData> TaskGraph<T> {
+impl<T: MutableTaskNodeData> TaskGraph<T> {
     /// Build graph for a specific task using a resolver that handles group expansion.
     ///
     /// This method uses the [`TaskResolver`] trait to resolve task names, which enables
@@ -31,7 +31,7 @@ impl<T: TaskNodeData> TaskGraph<T> {
 
 struct ResolverGraphBuilder<'graph, 'resolver, T, R>
 where
-    T: TaskNodeData,
+    T: MutableTaskNodeData,
     R: TaskResolver<T>,
 {
     graph: &'graph mut TaskGraph<T>,
@@ -44,7 +44,7 @@ where
 
 impl<'graph, 'resolver, T, R> ResolverGraphBuilder<'graph, 'resolver, T, R>
 where
-    T: TaskNodeData,
+    T: MutableTaskNodeData,
     R: TaskResolver<T>,
 {
     fn new(graph: &'graph mut TaskGraph<T>, resolver: &'resolver R) -> Self {

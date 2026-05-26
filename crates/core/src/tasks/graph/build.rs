@@ -1,7 +1,7 @@
 use super::TaskGraph;
 use crate::Result;
 use crate::tasks::{TaskGroup, TaskNode, Tasks};
-use cuenv_task_graph::TaskNodeData;
+use cuenv_task_graph::MutableTaskNodeData;
 use petgraph::graph::NodeIndex;
 use tracing::debug;
 

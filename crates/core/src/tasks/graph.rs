@@ -10,7 +10,7 @@
 use super::Tasks;
 use super::{Task, TaskDependency};
 use crate::Result;
-use cuenv_task_graph::{GraphNode, TaskNodeData};
+use cuenv_task_graph::{GraphNode, MutableTaskNodeData, TaskNodeData};
 use petgraph::graph::NodeIndex;
 
 mod build;
@@ -22,7 +22,9 @@ impl TaskNodeData for Task {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.depends_on.iter().map(|d| d.task_name())
     }
+}
 
+impl MutableTaskNodeData for Task {
     fn add_dependency(&mut self, dep: String) {
         if !self.has_dependency(&dep) {
             self.depends_on.push(TaskDependency::from_name(dep));

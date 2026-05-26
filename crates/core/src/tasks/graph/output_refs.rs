@@ -1,7 +1,7 @@
 use super::TaskGraph;
 use crate::Result;
 use crate::tasks::Tasks;
-use cuenv_task_graph::TaskNodeData;
+use cuenv_task_graph::{MutableTaskNodeData, TaskNodeData};
 
 impl TaskGraph {
     /// Add implicit dependency edges inferred from task output references.
