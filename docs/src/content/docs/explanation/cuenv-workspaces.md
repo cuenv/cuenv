@@ -179,6 +179,11 @@ Bun lockfile parsing keeps the public parser entrypoint small by separating
 binary-lockfile rejection, JSONC loading, lockfile-version validation, and
 entry materialization before package-specific locator parsing.
 
+Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
+small parser state that handles headers, version/resolved/integrity fields, and
+dependency lines without keeping the fallback path as one monolithic parser
+function.
+
 ### Detection Functions
 
 ```rust
