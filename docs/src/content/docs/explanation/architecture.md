@@ -113,7 +113,8 @@ runtime selection, and early process routing stay in `crates/cuenv/src/main.rs`;
 command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`,
 while the hook supervisor process runs through
-`crates/cuenv/src/hook_supervisor.rs`.
+`crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
+`crates/cuenv/src/oci_activate.rs`.
 
 ### cuenv-workspaces
 
