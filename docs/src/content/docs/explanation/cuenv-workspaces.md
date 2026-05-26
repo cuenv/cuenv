@@ -175,6 +175,10 @@ Available implementations:
 - `YarnModernLockfileParser` - yarn.lock (v2+)
 - `CargoLockfileParser` - Cargo.lock
 
+npm parser coverage keeps nested `node_modules` fixture setup separate from
+workspace and registry assertions so npm workspace membership rules stay easy
+to audit.
+
 Bun lockfile parsing keeps the public parser entrypoint small by separating
 binary-lockfile rejection, JSONC loading, lockfile-version validation, and
 entry materialization before package-specific locator parsing.
