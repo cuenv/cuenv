@@ -16,6 +16,7 @@ Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant
 - `crates/cuenv/src/commands/hooks.rs` for CLI hook command orchestration; `crates/cuenv/src/commands/hooks/status.rs` for status/starship rendering; `crates/cuenv/src/commands/hooks/shell.rs` for `cuenv shell init` snippets.
 - `crates/ci/src/executor/hook_env.rs` for hook-backed environment assembly during CI task execution.
 - `crates/ci/src/executor/task_env.rs` for CI task env precedence and passthrough handling.
+- Interactive prompt and wait-progress CLI output is rendered in `crates/events/src/renderers/cli/interactive.rs`; keep approval-facing wording aligned there when prompt semantics change.
 
 Generation rules:
 

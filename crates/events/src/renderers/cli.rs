@@ -6,15 +6,16 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::bus::EventReceiver;
-use crate::event::{CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, SystemEvent};
+use crate::event::{CuenvEvent, EventCategory, OutputEvent, SystemEvent};
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 #[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
 mod ci;
 mod command;
+mod interactive;
 mod service;
 mod task;
 
@@ -123,32 +124,6 @@ impl CliRenderer {
             }
             EventCategory::System(system_event) => self.render_system(system_event),
             EventCategory::Output(output_event) => self.render_output(output_event),
-        }
-    }
-
-    fn render_interactive(&self, event: &InteractiveEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for interactive rendering options later
-        match event {
-            InteractiveEvent::PromptRequested {
-                message, options, ..
-            } => {
-                println!("{message}");
-                for (i, option) in options.iter().enumerate() {
-                    println!("  [{i}] {option}");
-                }
-                print!("> ");
-                let _ = io::stdout().flush();
-            }
-            InteractiveEvent::PromptResolved { .. } => {
-                // Response handled elsewhere
-            }
-            InteractiveEvent::WaitProgress {
-                target,
-                elapsed_secs,
-            } => {
-                eprint!("\r\x1b[KWaiting for `{target}`... [{elapsed_secs}s]");
-                let _ = io::stderr().flush();
-            }
         }
     }
 
