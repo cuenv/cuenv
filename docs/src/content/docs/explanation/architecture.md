@@ -114,7 +114,11 @@ command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`,
 while the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
-`crates/cuenv/src/oci_activate.rs`.
+`crates/cuenv/src/oci_activate.rs`. Release command flows stay under
+`crates/cuenv/src/commands/release.rs`; binary artifact orchestration is split
+into `crates/cuenv/src/commands/release/binaries.rs` so changesets, crates
+publishing, release preparation, and binary distribution do not share one
+monolithic command module.
 
 ### cuenv-ci
 

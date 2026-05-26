@@ -9,7 +9,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 
 - `schema/ci.cue` for providers, pipelines, contributors, matrix tasks, artifacts, secrets, and action overrides.
 - `schema/release.cue` for release targets, backends, git/tag config, versioning, changelogs, changesets, and package changes.
-- `crates/cuenv/src/commands/sync` and `crates/cuenv/src/commands/release.rs` when behavior matters.
+- `crates/cuenv/src/commands/sync`, `crates/cuenv/src/commands/release.rs`, and `crates/cuenv/src/commands/release/` when behavior matters.
 
 Status guardrails:
 
