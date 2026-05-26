@@ -16,25 +16,31 @@ use discovery::{evaluate_manifest, find_tasks_with_labels, format_label_root, no
 use list_builder::prepare_task_index;
 use rendering::{format_task_detail, get_task_cli_help, render_task_tree};
 
-use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::tasks::cache::TaskCacheConfig;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_core::tasks::{
-    BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskNode, Tasks,
+    BackendFactory, ExecutorConfig, Task, TaskExecutor, TaskGraph, TaskIndex, TaskNode, Tasks,
 };
 use cuenv_core::tools::apply_resolved_tool_activation;
-use std::collections::BTreeMap;
+use cuenv_core::{DryRun, OutputCapture, Result};
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use super::env_file::find_cue_module_root;
 use super::relative_path_from_root;
+use super::task_list::{
+    DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListFormatter,
+    TextFormatter, build_task_list,
+};
+use super::task_picker::{PickerResult, SelectableTask, run_picker};
 use super::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 use cuenv_core::runtime::resolve_runtime_environment;
+use std::io::IsTerminal;
 
 /// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
@@ -248,6 +254,94 @@ pub async fn execute(request: TaskExecutionRequest<'_>) -> Result<String> {
     execute_task_impl(&request).await
 }
 
+struct TaskExecutionInput<'a> {
+    selection: &'a TaskSelection,
+    output: &'a OutputConfig,
+    execution_mode: &'a ExecutionMode,
+    path: &'a str,
+    package: &'a str,
+    environment: Option<&'a str>,
+    format: &'a str,
+    capture_output: OutputCapture,
+    materialize_outputs: Option<&'a str>,
+    backend: Option<&'a str>,
+    skip_dependencies: bool,
+    continue_on_error: bool,
+    dry_run: DryRun,
+    executor: &'a crate::commands::CommandExecutor,
+    task_name: Option<&'a str>,
+    labels: &'a [String],
+    task_args: &'a [String],
+}
+
+impl<'a> TaskExecutionInput<'a> {
+    fn from_request(request: &'a TaskExecutionRequest<'_>) -> Self {
+        let (task_name, labels, task_args) = match &request.selection {
+            TaskSelection::Named { name, args } => (Some(name.as_str()), &[][..], args.as_slice()),
+            TaskSelection::Labels(labels) => (None, labels.as_slice(), &[][..]),
+            TaskSelection::List | TaskSelection::Interactive => (None, &[][..], &[][..]),
+        };
+
+        Self {
+            selection: &request.selection,
+            output: &request.output,
+            execution_mode: &request.execution_mode,
+            path: &request.path,
+            package: &request.package,
+            environment: request.environment.as_deref(),
+            format: &request.output.format,
+            capture_output: request.output.capture_output,
+            materialize_outputs: request
+                .output
+                .materialize_outputs
+                .as_ref()
+                .and_then(|path| path.to_str()),
+            backend: request.backend.as_deref(),
+            skip_dependencies: request.skip_dependencies,
+            continue_on_error: request.continue_on_error,
+            dry_run: request.dry_run,
+            executor: request.executor,
+            task_name,
+            labels,
+            task_args,
+        }
+    }
+
+    fn should_show_general_help(&self) -> bool {
+        self.task_name.is_none() && self.output.help
+    }
+
+    fn uses_interactive_picker(&self) -> bool {
+        matches!(self.selection, TaskSelection::Interactive)
+            && self.task_name.is_none()
+            && self.labels.is_empty()
+    }
+
+    fn lists_tasks(&self) -> bool {
+        self.task_name.is_none() && self.labels.is_empty()
+    }
+
+    fn shows_cache_path(&self) -> bool {
+        self.output.show_cache_path
+    }
+
+    fn shows_help(&self) -> bool {
+        self.output.help
+    }
+
+    fn uses_tui(&self) -> bool {
+        self.execution_mode == &ExecutionMode::Tui
+    }
+}
+
+struct TaskExecutionContext {
+    manifest: Project,
+    project_root: PathBuf,
+    cue_module_root: Option<PathBuf>,
+    task_index: TaskIndex,
+    local_tasks: Tasks,
+}
+
 /// Resolved task context from either named-task or label-based resolution.
 struct TaskResolution {
     display_name: String,
@@ -255,6 +349,11 @@ struct TaskResolution {
     tasks: Tasks,
     graph_root_name: String,
     output_ref_deps: Vec<(String, String)>,
+}
+
+struct PreparedTaskRuntime {
+    env: Environment,
+    cache: Option<TaskCacheConfig>,
 }
 
 fn current_instance_output_ref_deps(
@@ -269,399 +368,420 @@ fn current_instance_output_ref_deps(
         .map_or_else(Vec::new, |instance| instance.output_ref_deps.clone()))
 }
 
-/// Internal implementation of task execution.
-#[allow(clippy::too_many_lines)]
-async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String> {
-    // Extract derived values from the structured request
-    let (task_name, labels, task_args, interactive) = match &request.selection {
-        TaskSelection::Named { name, args } => {
-            (Some(name.as_str()), &[][..], args.as_slice(), false)
-        }
-        TaskSelection::Labels(l) => (None, l.as_slice(), &[][..], false),
-        TaskSelection::List => (None, &[][..], &[][..], false),
-        TaskSelection::Interactive => (None, &[][..], &[][..], true),
-    };
-
-    let path = &request.path;
-    let package = &request.package;
-    let environment = request.environment.as_deref();
-    let format: &str = &request.output.format;
-    let capture_output = request.output.capture_output;
-    let materialize_outputs = request
-        .output
-        .materialize_outputs
-        .as_ref()
-        .and_then(|p| p.to_str());
-    let show_cache_path = request.output.show_cache_path;
-    let backend = request.backend.as_deref();
-    let tui = request.execution_mode == ExecutionMode::Tui;
-    let help = request.output.help;
-    let skip_dependencies = request.skip_dependencies;
-    let continue_on_error = request.continue_on_error;
-    let dry_run = request.dry_run;
-    let executor = request.executor;
-    // Handle CLI help immediately if no task specified
-    if task_name.is_none() && help {
-        return Ok(get_task_cli_help());
-    }
-
-    tracing::info!(
-        "Executing task from path: {}, package: {}, task: {:?}",
-        path,
-        package,
-        task_name
-    );
-
-    // Evaluate CUE to get tasks and environment using module-wide evaluation
-    let mut manifest: Project = evaluate_manifest(Path::new(path), package, executor)?;
+fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExecutionContext> {
+    let mut manifest: Project =
+        evaluate_manifest(Path::new(input.path), input.package, input.executor)?;
     tracing::debug!("CUE evaluation successful");
-
     tracing::debug!(
         "Successfully parsed CUE evaluation, found {} tasks",
         manifest.tasks.len()
     );
 
-    // Canonicalize project root for consistent paths
     let project_root =
-        std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+        std::fs::canonicalize(input.path).unwrap_or_else(|_| Path::new(input.path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
-
-    // Build a canonical index to support nested task paths (with auto-detected workspace tasks)
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
 
-    // Handle interactive mode: show picker and execute selected task
-    if interactive && task_name.is_none() && labels.is_empty() {
-        use super::task_picker::{PickerResult, SelectableTask, run_picker};
+    Ok(TaskExecutionContext {
+        manifest,
+        project_root,
+        cue_module_root,
+        task_index,
+        local_tasks,
+    })
+}
 
-        let tasks = task_index.list();
-        let selectable: Vec<SelectableTask> = tasks
-            .iter()
-            .map(|t| {
-                let description = match &t.node {
-                    TaskNode::Task(task) => task.description.clone(),
-                    TaskNode::Group(g) => g.description.clone(),
-                    TaskNode::Sequence(_) => None,
-                };
-                SelectableTask {
-                    name: t.name.clone(),
-                    description,
-                }
-            })
-            .collect();
+/// Internal implementation of task execution.
+async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String> {
+    let input = TaskExecutionInput::from_request(request);
 
-        match run_picker(selectable) {
-            Ok(PickerResult::Selected(selected_task)) => {
-                // Build a new request for the selected task
-                let mut request =
-                    TaskExecutionRequest::named(path, package, &selected_task, executor)
-                        .with_format(format);
-
-                if let Some(env) = environment {
-                    request = request.with_environment(env);
-                }
-                if capture_output.should_capture() {
-                    request = request.with_capture();
-                }
-                if let Some(mat_path) = materialize_outputs {
-                    request = request.with_materialize_outputs(mat_path);
-                }
-                if show_cache_path {
-                    request = request.with_show_cache_path();
-                }
-                if let Some(be) = backend {
-                    request = request.with_backend(be);
-                }
-                if tui {
-                    request = request.with_tui();
-                }
-                if help {
-                    request = request.with_help();
-                }
-                if skip_dependencies {
-                    request = request.with_skip_dependencies();
-                }
-
-                return Box::pin(execute(request)).await;
-            }
-            Ok(PickerResult::Cancelled) => {
-                return Ok(String::new());
-            }
-            Err(e) => {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "Interactive picker failed: {e}"
-                )));
-            }
-        }
+    // Handle CLI help immediately if no task specified
+    if input.should_show_general_help() {
+        return Ok(get_task_cli_help());
     }
 
-    // If no task specified, list available tasks
-    if task_name.is_none() && labels.is_empty() {
-        use super::task_list::{
-            DashboardFormatter, EmojiFormatter, RichFormatter, TablesFormatter, TaskListFormatter,
-            TextFormatter, build_task_list,
-        };
-        use std::io::IsTerminal;
+    tracing::info!(
+        "Executing task from path: {}, package: {}, task: {:?}",
+        input.path,
+        input.package,
+        input.task_name
+    );
 
-        tracing::debug!("Listing available tasks");
-        let tasks = task_index.list();
-        tracing::debug!("Found {} tasks to list", tasks.len());
+    let context = load_task_execution_context(&input)?;
 
-        if format == "json" {
-            return serde_json::to_string(&tasks).map_err(|e| {
-                cuenv_core::Error::configuration(format!("Failed to serialize tasks: {e}"))
-            });
-        }
-
-        if tasks.is_empty() {
-            return Ok("No tasks defined in the configuration".to_string());
-        }
-
-        // Calculate current working directory relative to cue.mod root
-        let project_root =
-            std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
-        let cwd_relative = cue_module_root.as_ref().and_then(|root| {
-            project_root
-                .strip_prefix(root)
-                .ok()
-                .map(|p| p.to_string_lossy().to_string())
-        });
-
-        // Build task list data
-        let task_data = build_task_list(&tasks, cwd_relative.as_deref(), &project_root);
-
-        // Determine effective format: CLI flag > config > auto-detect
-        let effective_format = if format.is_empty() {
-            // No CLI flag provided, check config
-            manifest
-                .config
-                .as_ref()
-                .and_then(|c| c.task_list_format())
-                .map(|f| f.as_str())
-        } else {
-            Some(format)
-        };
-
-        // Select formatter based on effective format
-        let output = match effective_format {
-            Some("rich") => {
-                let formatter = RichFormatter::new();
-                formatter.format(&task_data)
-            }
-            Some("text") => {
-                let formatter = TextFormatter;
-                formatter.format(&task_data)
-            }
-            Some("tables") => {
-                let formatter = TablesFormatter::new();
-                formatter.format(&task_data)
-            }
-            Some("dashboard") => {
-                let formatter = DashboardFormatter::new();
-                formatter.format(&task_data)
-            }
-            Some("emoji") => {
-                let formatter = EmojiFormatter;
-                formatter.format(&task_data)
-            }
-            _ => {
-                // Auto-detect: rich for TTY, text otherwise
-                if std::io::stdout().is_terminal() {
-                    let formatter = RichFormatter::new();
-                    formatter.format(&task_data)
-                } else {
-                    let formatter = TextFormatter;
-                    formatter.format(&task_data)
-                }
-            }
-        };
-
+    if let Some(output) = maybe_run_interactive_picker(&input, &context).await? {
         return Ok(output);
     }
 
-    if !labels.is_empty() && task_name.is_some() {
+    if let Some(output) = maybe_render_task_list(&input, &context)? {
+        return Ok(output);
+    }
+
+    let normalized_labels = validate_task_selection(&input)?;
+    if let Some(output) = maybe_render_task_help(&input, &context)? {
+        return Ok(output);
+    }
+    let resolution = resolve_task_selection(&input, &context, &normalized_labels)?;
+
+    let task_graph = build_execution_graph(&input, &resolution)?;
+
+    // Handle dry-run mode: export DAG as JSON without executing
+    if input.dry_run.is_dry_run() {
+        return export_task_graph(&task_graph);
+    }
+
+    let runtime = prepare_task_runtime(&input, &context, &resolution).await?;
+    execute_resolved_task(TaskRunRequest {
+        input: &input,
+        context: &context,
+        resolution: &resolution,
+        task_graph: &task_graph,
+        runtime,
+    })
+    .await
+}
+
+async fn maybe_run_interactive_picker(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+) -> Result<Option<String>> {
+    if !input.uses_interactive_picker() {
+        return Ok(None);
+    }
+
+    let selectable = context
+        .task_index
+        .list()
+        .iter()
+        .map(|task| SelectableTask {
+            name: task.name.clone(),
+            description: task_description(&task.node),
+        })
+        .collect();
+
+    match run_picker(selectable) {
+        Ok(PickerResult::Selected(selected_task)) => {
+            let request = selected_task_request(input, &selected_task);
+            Box::pin(execute(request)).await.map(Some)
+        }
+        Ok(PickerResult::Cancelled) => Ok(Some(String::new())),
+        Err(e) => Err(cuenv_core::Error::configuration(format!(
+            "Interactive picker failed: {e}"
+        ))),
+    }
+}
+
+fn task_description(node: &TaskNode) -> Option<String> {
+    match node {
+        TaskNode::Task(task) => task.description.clone(),
+        TaskNode::Group(group) => group.description.clone(),
+        TaskNode::Sequence(_) => None,
+    }
+}
+
+fn selected_task_request<'a>(
+    input: &TaskExecutionInput<'a>,
+    selected_task: &str,
+) -> TaskExecutionRequest<'a> {
+    let mut request =
+        TaskExecutionRequest::named(input.path, input.package, selected_task, input.executor)
+            .with_format(input.format);
+
+    if let Some(env) = input.environment {
+        request = request.with_environment(env);
+    }
+    if input.capture_output.should_capture() {
+        request = request.with_capture();
+    }
+    if let Some(path) = input.materialize_outputs {
+        request = request.with_materialize_outputs(path);
+    }
+    if input.shows_cache_path() {
+        request = request.with_show_cache_path();
+    }
+    if let Some(backend) = input.backend {
+        request = request.with_backend(backend);
+    }
+    if input.uses_tui() {
+        request = request.with_tui();
+    }
+    if input.shows_help() {
+        request = request.with_help();
+    }
+    if input.skip_dependencies {
+        request = request.with_skip_dependencies();
+    }
+
+    request
+}
+
+fn maybe_render_task_list(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+) -> Result<Option<String>> {
+    if !input.lists_tasks() {
+        return Ok(None);
+    }
+
+    tracing::debug!("Listing available tasks");
+    let tasks = context.task_index.list();
+    tracing::debug!("Found {} tasks to list", tasks.len());
+
+    if input.format == "json" {
+        return serde_json::to_string(&tasks).map(Some).map_err(|e| {
+            cuenv_core::Error::configuration(format!("Failed to serialize tasks: {e}"))
+        });
+    }
+
+    if tasks.is_empty() {
+        return Ok(Some("No tasks defined in the configuration".to_string()));
+    }
+
+    let cwd_relative = context.cue_module_root.as_ref().and_then(|root| {
+        context
+            .project_root
+            .strip_prefix(root)
+            .ok()
+            .map(|path| path.to_string_lossy().to_string())
+    });
+    let task_data = build_task_list(&tasks, cwd_relative.as_deref(), &context.project_root);
+    let effective_format = if input.format.is_empty() {
+        context
+            .manifest
+            .config
+            .as_ref()
+            .and_then(|config| config.task_list_format())
+            .map(|format| format.as_str())
+    } else {
+        Some(input.format)
+    };
+
+    let output = match effective_format {
+        Some("rich") => RichFormatter::new().format(&task_data),
+        Some("text") => TextFormatter.format(&task_data),
+        Some("tables") => TablesFormatter::new().format(&task_data),
+        Some("dashboard") => DashboardFormatter::new().format(&task_data),
+        Some("emoji") => EmojiFormatter.format(&task_data),
+        _ if std::io::stdout().is_terminal() => RichFormatter::new().format(&task_data),
+        _ => TextFormatter.format(&task_data),
+    };
+
+    Ok(Some(output))
+}
+
+fn validate_task_selection(input: &TaskExecutionInput<'_>) -> Result<Vec<String>> {
+    if !input.labels.is_empty() && input.task_name.is_some() {
         return Err(cuenv_core::Error::configuration(
             "Cannot specify both a task name and --label",
         ));
     }
-    if !labels.is_empty() && !task_args.is_empty() {
+    if !input.labels.is_empty() && !input.task_args.is_empty() {
         return Err(cuenv_core::Error::configuration(
             "Task arguments are not supported when selecting tasks by label",
         ));
     }
 
-    // Validate that labels are non-empty after normalization
-    let normalized_labels = normalize_labels(labels);
-    if !labels.is_empty() && normalized_labels.is_empty() {
+    let normalized_labels = normalize_labels(input.labels);
+    if !input.labels.is_empty() && normalized_labels.is_empty() {
         return Err(cuenv_core::Error::configuration(
             "Labels cannot be empty or whitespace-only",
         ));
     }
 
-    let resolution = if normalized_labels.is_empty() {
-        // Execute a named task
-        let requested_task = task_name.ok_or_else(|| {
-            cuenv_core::Error::configuration("task name required when no labels provided")
-        })?;
-        tracing::debug!("Looking for specific task: {}", requested_task);
+    Ok(normalized_labels)
+}
 
-        // If help requested for specific task/group
-        if help {
-            let tasks = task_index.list();
-            let prefix = format!("{requested_task}.");
-            let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = tasks
-                .iter()
-                .filter(|t| t.name == requested_task || t.name.starts_with(&prefix))
-                .copied()
-                .collect();
+fn maybe_render_task_help(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+) -> Result<Option<String>> {
+    if !input.shows_help() {
+        return Ok(None);
+    }
 
-            if subtasks.is_empty() {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "Task '{requested_task}' not found",
-                )));
-            }
+    let requested_task = input.task_name.ok_or_else(|| {
+        cuenv_core::Error::configuration("task name required when no labels provided")
+    })?;
+    let prefix = format!("{requested_task}.");
+    let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = context
+        .task_index
+        .list()
+        .iter()
+        .filter(|task| task.name == requested_task || task.name.starts_with(&prefix))
+        .copied()
+        .collect();
 
-            // If it's a single task without subtasks
-            if subtasks.len() == 1 && subtasks[0].name == requested_task {
-                return Ok(format_task_detail(subtasks[0]));
-            }
+    if subtasks.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Task '{requested_task}' not found",
+        )));
+    }
 
-            // It's a group or task with subtasks
-            // Note: For help on specific groups, we don't need cwd-relative sorting
-            return Ok(render_task_tree(subtasks, None));
-        }
+    if subtasks.len() == 1 && subtasks[0].name == requested_task {
+        return Ok(Some(format_task_detail(subtasks[0])));
+    }
 
-        // Resolve task via canonical index (supports nested paths and ':' alias)
-        let task_entry = task_index.resolve(requested_task)?;
-        let canonical_task_name = task_entry.name.clone();
-        tracing::debug!(
-            "Task index entries: {:?}",
-            task_index
-                .list()
-                .iter()
-                .map(|t| t.name.as_str())
-                .collect::<Vec<_>>()
-        );
-        tracing::debug!(
-            "Indexed tasks for execution: {:?}",
-            local_tasks.list_tasks()
-        );
-        tracing::debug!(
-            "Requested task '{}' present: {}",
-            requested_task,
-            local_tasks.get(requested_task).is_some()
-        );
-        let original_task_node = local_tasks.get(&canonical_task_name).ok_or_else(|| {
-            cuenv_core::Error::configuration(format!("Task '{canonical_task_name}' not found"))
-        })?;
-        let display_task_name = canonical_task_name;
+    Ok(Some(render_task_tree(subtasks, None)))
+}
 
-        tracing::debug!("Found task node: {:?}", original_task_node);
-
-        let mut tasks_in_scope = local_tasks.clone();
-        let output_ref_deps = current_instance_output_ref_deps(executor, &project_root)?;
-
-        // If args were provided, apply them to the selected task definition in the
-        // local task registry so graph build uses the interpolated version.
-        let selected_task_node = if task_args.is_empty() {
-            tasks_in_scope
-                .get(&display_task_name)
-                .cloned()
-                .ok_or_else(|| {
-                    cuenv_core::Error::configuration(format!(
-                        "Task '{display_task_name}' not found in local tasks"
-                    ))
-                })?
-        } else {
-            let node = tasks_in_scope
-                .get(&display_task_name)
-                .cloned()
-                .ok_or_else(|| {
-                    cuenv_core::Error::configuration(format!(
-                        "Task '{display_task_name}' not found in local tasks"
-                    ))
-                })?;
-            if let TaskNode::Task(task) = node {
-                let resolved_args = resolve_task_args(task.params.as_ref(), task_args)?;
-                tracing::debug!("Resolved task args: {:?}", resolved_args);
-
-                let modified_task = apply_args_to_task(&task, &resolved_args);
-                let modified_node = TaskNode::Task(Box::new(modified_task.clone()));
-                tasks_in_scope
-                    .tasks
-                    .insert(display_task_name.clone(), modified_node.clone());
-                modified_node
-            } else {
-                return Err(cuenv_core::Error::configuration(
-                    "Task arguments are not supported for task groups or lists".to_string(),
-                ));
-            }
-        };
-
-        TaskResolution {
-            display_name: display_task_name.clone(),
-            node: selected_task_node,
-            tasks: tasks_in_scope,
-            graph_root_name: display_task_name,
-            output_ref_deps,
-        }
+fn resolve_task_selection(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+    normalized_labels: &[String],
+) -> Result<TaskResolution> {
+    if normalized_labels.is_empty() {
+        resolve_named_task(input, context)
     } else {
-        let mut tasks_in_scope = local_tasks.clone();
-        let matching_tasks = find_tasks_with_labels(&local_tasks, &normalized_labels);
+        resolve_label_tasks(input, context, normalized_labels)
+    }
+}
 
-        if matching_tasks.is_empty() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "No tasks with labels {normalized_labels:?} were found in this scope"
-            )));
-        }
+fn resolve_named_task(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+) -> Result<TaskResolution> {
+    let requested_task = input.task_name.ok_or_else(|| {
+        cuenv_core::Error::configuration("task name required when no labels provided")
+    })?;
+    tracing::debug!("Looking for specific task: {}", requested_task);
 
-        let display_task_name = format_label_root(&normalized_labels);
-        let synthetic = Task {
-            script: Some("true".to_string()),
-            hermetic: false,
-            depends_on: matching_tasks
-                .into_iter()
-                .map(cuenv_core::tasks::TaskDependency::from_name)
-                .collect(),
-            project_root: Some(project_root.clone()),
-            description: Some(format!(
-                "Run all tasks matching labels: {}",
-                normalized_labels.join(", ")
-            )),
-            ..Default::default()
-        };
+    let task_entry = context.task_index.resolve(requested_task)?;
+    let display_task_name = task_entry.name.clone();
+    log_task_resolution_context(context, requested_task);
+    let original_task_node = context.local_tasks.get(&display_task_name).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!("Task '{display_task_name}' not found"))
+    })?;
+    tracing::debug!("Found task node: {:?}", original_task_node);
 
-        tasks_in_scope.tasks.insert(
-            display_task_name.clone(),
-            TaskNode::Task(Box::new(synthetic)),
-        );
+    let mut tasks_in_scope = context.local_tasks.clone();
+    let selected_task_node = selected_task_node(input, &mut tasks_in_scope, &display_task_name)?;
 
-        let resolved_node = tasks_in_scope
-            .get(&display_task_name)
-            .cloned()
-            .ok_or_else(|| {
-                cuenv_core::Error::execution("synthetic task missing after insertion")
-            })?;
+    Ok(TaskResolution {
+        display_name: display_task_name.clone(),
+        node: selected_task_node,
+        tasks: tasks_in_scope,
+        graph_root_name: display_task_name,
+        output_ref_deps: current_instance_output_ref_deps(input.executor, &context.project_root)?,
+    })
+}
 
-        TaskResolution {
-            display_name: display_task_name.clone(),
-            node: resolved_node,
-            tasks: tasks_in_scope,
-            graph_root_name: display_task_name,
-            output_ref_deps: current_instance_output_ref_deps(executor, &project_root)?,
-        }
+fn log_task_resolution_context(context: &TaskExecutionContext, requested_task: &str) {
+    tracing::debug!(
+        "Task index entries: {:?}",
+        context
+            .task_index
+            .list()
+            .iter()
+            .map(|task| task.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    tracing::debug!(
+        "Indexed tasks for execution: {:?}",
+        context.local_tasks.list_tasks()
+    );
+    tracing::debug!(
+        "Requested task '{}' present: {}",
+        requested_task,
+        context.local_tasks.get(requested_task).is_some()
+    );
+}
+
+fn selected_task_node(
+    input: &TaskExecutionInput<'_>,
+    tasks_in_scope: &mut Tasks,
+    display_task_name: &str,
+) -> Result<TaskNode> {
+    let node = tasks_in_scope
+        .get(display_task_name)
+        .cloned()
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "Task '{display_task_name}' not found in local tasks"
+            ))
+        })?;
+
+    if input.task_args.is_empty() {
+        return Ok(node);
+    }
+
+    let TaskNode::Task(task) = node else {
+        return Err(cuenv_core::Error::configuration(
+            "Task arguments are not supported for task groups or lists".to_string(),
+        ));
     };
 
-    // Build task graph for dependency-aware execution
+    let resolved_args = resolve_task_args(task.params.as_ref(), input.task_args)?;
+    tracing::debug!("Resolved task args: {:?}", resolved_args);
+
+    let modified_task = apply_args_to_task(&task, &resolved_args);
+    let modified_node = TaskNode::Task(Box::new(modified_task.clone()));
+    tasks_in_scope
+        .tasks
+        .insert(display_task_name.to_string(), modified_node.clone());
+    Ok(modified_node)
+}
+
+fn resolve_label_tasks(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+    normalized_labels: &[String],
+) -> Result<TaskResolution> {
+    let mut tasks_in_scope = context.local_tasks.clone();
+    let matching_tasks = find_tasks_with_labels(&context.local_tasks, normalized_labels);
+
+    if matching_tasks.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No tasks with labels {normalized_labels:?} were found in this scope"
+        )));
+    }
+
+    let display_task_name = format_label_root(normalized_labels);
+    let synthetic = Task {
+        script: Some("true".to_string()),
+        hermetic: false,
+        depends_on: matching_tasks
+            .into_iter()
+            .map(cuenv_core::tasks::TaskDependency::from_name)
+            .collect(),
+        project_root: Some(context.project_root.clone()),
+        description: Some(format!(
+            "Run all tasks matching labels: {}",
+            normalized_labels.join(", ")
+        )),
+        ..Default::default()
+    };
+
+    tasks_in_scope.tasks.insert(
+        display_task_name.clone(),
+        TaskNode::Task(Box::new(synthetic)),
+    );
+
+    let resolved_node = tasks_in_scope
+        .get(&display_task_name)
+        .cloned()
+        .ok_or_else(|| cuenv_core::Error::execution("synthetic task missing after insertion"))?;
+
+    Ok(TaskResolution {
+        display_name: display_task_name.clone(),
+        node: resolved_node,
+        tasks: tasks_in_scope,
+        graph_root_name: display_task_name,
+        output_ref_deps: current_instance_output_ref_deps(input.executor, &context.project_root)?,
+    })
+}
+
+fn build_execution_graph(
+    input: &TaskExecutionInput<'_>,
+    resolution: &TaskResolution,
+) -> Result<TaskGraph> {
     tracing::debug!(
         "Building task graph for task: {}",
         resolution.graph_root_name
     );
     let mut task_graph = TaskGraph::new();
 
-    if skip_dependencies {
-        // When skipping dependencies, just add the target task without its dependency tree.
-        // This is used by CI orchestrators (like GitHub Actions) that handle dependencies externally.
+    if input.skip_dependencies {
         tracing::debug!("Skipping dependencies - adding only the target task");
         if let Some(TaskNode::Task(task)) = resolution.tasks.get(&resolution.graph_root_name) {
             task_graph.add_task(&resolution.graph_root_name, (**task).clone())?;
@@ -675,9 +795,6 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
             })?;
     }
 
-    // Inject implicit dependency edges from task output references.
-    // Output ref deps are collected during CUE JSON processing for the selected
-    // instance and use the same canonical local task names as `tasks_in_scope`.
     if !resolution.output_ref_deps.is_empty() {
         task_graph.add_output_ref_deps(&resolution.output_ref_deps, &resolution.tasks)?;
     }
@@ -687,79 +804,109 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         task_graph.task_count()
     );
 
-    // Handle dry-run mode: export DAG as JSON without executing
-    if dry_run.is_dry_run() {
-        let dag_export = dag_export::DagExport::from_task_graph(&task_graph)?;
-        return serde_json::to_string_pretty(&dag_export).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}"))
-        });
-    }
+    Ok(task_graph)
+}
 
-    // Get environment with hook-generated vars merged in
-    // Note: This may spawn a hook supervisor subprocess, so it must happen
-    // AFTER the dry-run check to avoid fork-safety issues.
-    let directory = project_root.clone();
+fn export_task_graph(task_graph: &TaskGraph) -> Result<String> {
+    let dag_export = dag_export::DagExport::from_task_graph(task_graph)?;
+    serde_json::to_string_pretty(&dag_export)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize DAG: {e}")))
+}
+
+async fn prepare_task_runtime(
+    input: &TaskExecutionInput<'_>,
+    context: &TaskExecutionContext,
+    resolution: &TaskResolution,
+) -> Result<PreparedTaskRuntime> {
+    let directory = context.project_root.clone();
     let base_env_vars = get_environment_with_hooks(
-        HookEnvironmentRequest::new(&directory, &manifest, package).with_executor(executor),
+        HookEnvironmentRequest::new(&directory, &context.manifest, input.package)
+            .with_executor(input.executor),
     )
     .await?;
 
-    // Apply task-specific policies and secret resolvers on top of the merged environment
+    let mut runtime_env = base_runtime_environment(context).await?;
+    apply_task_environment(TaskEnvironmentApplication {
+        input,
+        context,
+        resolution,
+        runtime_env: &mut runtime_env,
+        base_env_vars,
+    })
+    .await?;
+    activate_lockfile_tools(&context.manifest, &context.project_root, &mut runtime_env).await?;
+
+    Ok(PreparedTaskRuntime {
+        env: runtime_env,
+        cache: task_cache_for_context(context),
+    })
+}
+
+async fn base_runtime_environment(context: &TaskExecutionContext) -> Result<Environment> {
     let mut runtime_env = Environment::new();
     let runtime_env_vars =
-        resolve_runtime_environment(&project_root, manifest.runtime.as_ref()).await?;
+        resolve_runtime_environment(&context.project_root, context.manifest.runtime.as_ref())
+            .await?;
     for (key, value) in runtime_env_vars {
         runtime_env.set(key, value);
     }
+    Ok(runtime_env)
+}
 
-    if let Some(env) = &manifest.env {
-        // First apply the base environment (static + hooks)
-        for (key, value) in &base_env_vars {
-            runtime_env.set(key.clone(), value.clone());
+struct TaskEnvironmentApplication<'a, 'input> {
+    input: &'a TaskExecutionInput<'input>,
+    context: &'a TaskExecutionContext,
+    resolution: &'a TaskResolution,
+    runtime_env: &'a mut Environment,
+    base_env_vars: HashMap<String, String>,
+}
+
+async fn apply_task_environment(application: TaskEnvironmentApplication<'_, '_>) -> Result<()> {
+    if let Some(env) = &application.context.manifest.env {
+        for (key, value) in &application.base_env_vars {
+            application.runtime_env.set(key.clone(), value.clone());
         }
 
-        // Get environment variables, applying environment-specific overrides if specified
-        let env_vars = if let Some(env_name) = environment {
+        let env_vars = if let Some(env_name) = application.input.environment {
             env.for_environment(env_name)
         } else {
             env.base.clone()
         };
 
-        // Then apply task-specific overrides with policies and secret resolution
         let (task_env_vars, secrets) =
             cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-                resolution.display_name.as_str(),
+                application.resolution.display_name.as_str(),
                 &env_vars,
             )
             .await?;
 
-        // Register resolved secrets for global redaction in the events system.
-        // This ensures they're redacted from ALL output, not just this task's output.
         cuenv_events::register_secrets(secrets);
 
         for (key, value) in task_env_vars {
-            runtime_env.set(key, value);
+            application.runtime_env.set(key, value);
         }
     } else {
-        // No manifest env, just use hook-generated environment
-        for (key, value) in base_env_vars {
-            runtime_env.set(key, value);
+        for (key, value) in application.base_env_vars {
+            application.runtime_env.set(key, value);
         }
     }
 
-    if should_activate_lockfile_tools(&manifest) {
-        // Download and activate tools from lockfile by prepending to PATH and library path.
-        // This happens automatically without requiring hook approval since tool
-        // activation is a controlled, safe operation (just adds paths to the environment).
-        // Use project_root to scope tool activation to this project only.
-        // Tool activation failures are fatal - tasks require their tools to run.
-        ensure_tools_downloaded(Some(&project_root))
+    Ok(())
+}
+
+async fn activate_lockfile_tools(
+    manifest: &Project,
+    project_root: &Path,
+    runtime_env: &mut Environment,
+) -> Result<()> {
+    if should_activate_lockfile_tools(manifest) {
+        ensure_tools_downloaded(Some(project_root))
             .await
             .map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to download tools: {e}"))
             })?;
         if let Some(activation_steps) =
-            resolve_tool_activation_steps(Some(&project_root)).map_err(|e| {
+            resolve_tool_activation_steps(Some(project_root)).map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to resolve tools activation: {e}"))
             })?
         {
@@ -777,86 +924,113 @@ async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Result<String>
         }
     }
 
-    // Build the task cache (CAS + ActionCache + VcsHasher) once and share it
-    // between the regular and TUI executor configs. Cache writes are
-    // best-effort, so failure to open the local store degrades to "no
-    // caching" rather than aborting the user's command.
-    let module_root = cue_module_root.as_deref().unwrap_or(project_root.as_path());
+    Ok(())
+}
+
+fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCacheConfig> {
+    let module_root = context
+        .cue_module_root
+        .as_deref()
+        .unwrap_or(context.project_root.as_path());
     let runtime_identity = resolve_runtime_cache_identity(
         module_root,
-        project_root.as_path(),
-        manifest.runtime.as_ref(),
+        context.project_root.as_path(),
+        context.manifest.runtime.as_ref(),
     );
     if let Some(reason) = &runtime_identity.cache_disabled_reason {
         tracing::warn!(reason, "task cache disabled for this invocation");
     }
-    let task_cache = build_task_cache(&project_root, runtime_identity);
+    build_task_cache(&context.project_root, runtime_identity)
+}
 
-    // Create executor with environment
-    let config = ExecutorConfig {
-        capture_output,
-        max_parallel: 0,
-        continue_on_error,
-        environment: runtime_env.clone(),
-        working_dir: None,
-        cue_module_root: cue_module_root.clone(),
-        project_root: project_root.clone(),
-        materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
-        cache_dir: None,
-        show_cache_path,
-        backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
-        cli_backend: backend.map(ToString::to_string),
-        cache: task_cache.clone(),
-    };
+struct TaskRunRequest<'a, 'input> {
+    input: &'a TaskExecutionInput<'input>,
+    context: &'a TaskExecutionContext,
+    resolution: &'a TaskResolution,
+    task_graph: &'a TaskGraph,
+    runtime: PreparedTaskRuntime,
+}
 
-    let executor = TaskExecutor::with_dagger_factory(config, get_dagger_factory());
+async fn execute_resolved_task(request: TaskRunRequest<'_, '_>) -> Result<String> {
+    let executor_config = task_executor_config(&TaskExecutorConfigSpec {
+        input: request.input,
+        context: request.context,
+        runtime: &request.runtime,
+        capture_output: request.input.capture_output,
+    });
+    let executor = TaskExecutor::with_dagger_factory(executor_config, get_dagger_factory());
 
-    // If TUI is requested and we have a task graph, launch the rich TUI
-    if tui && task_graph.task_count() > 0 {
-        // For TUI mode, we MUST capture output so it goes through the event system
-        // rather than directly to stdout/stderr (which would corrupt the TUI display).
-        let tui_config = ExecutorConfig {
-            capture_output: cuenv_core::OutputCapture::Capture, // Force capture for TUI mode
-            max_parallel: 0,
-            continue_on_error,
-            environment: runtime_env.clone(),
-            working_dir: None,
-            cue_module_root: cue_module_root.clone(),
-            project_root: project_root.clone(),
-            materialize_outputs: materialize_outputs.map(|s| Path::new(s).to_path_buf()),
-            cache_dir: None,
-            show_cache_path,
-            backend_config: manifest.config.as_ref().and_then(|c| c.backend.clone()),
-            cli_backend: backend.map(ToString::to_string),
-            cache: task_cache.clone(),
-        };
+    if request.input.uses_tui() && request.task_graph.task_count() > 0 {
+        let tui_config = task_executor_config(&TaskExecutorConfigSpec {
+            input: request.input,
+            context: request.context,
+            runtime: &request.runtime,
+            capture_output: OutputCapture::Capture,
+        });
         let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
 
-        return execute_with_rich_tui(&tui_executor, resolution.display_name.as_str(), &task_graph)
-            .await;
+        return execute_with_rich_tui(
+            &tui_executor,
+            request.resolution.display_name.as_str(),
+            request.task_graph,
+        )
+        .await;
     }
 
-    // Execute using the appropriate method
     let results = execute_task_with_strategy(
         &executor,
-        resolution.display_name.as_str(),
-        &resolution.node,
-        &task_graph,
-        &resolution.tasks,
+        request.resolution.display_name.as_str(),
+        &request.resolution.node,
+        request.task_graph,
+        &request.resolution.tasks,
     )
     .await?;
 
-    // Check for any failed tasks first and return a rich summary
-    if let Some(failed) = results.iter().find(|r| !r.success) {
+    if let Some(failed) = results.iter().find(|result| !result.success) {
         return Err(cuenv_core::Error::configuration(summarize_task_failure(
             failed,
             TASK_FAILURE_SNIPPET_LINES,
         )));
     }
 
-    // Format results
-    let output = format_task_results(results, capture_output, resolution.display_name.as_str());
-    Ok(output)
+    Ok(format_task_results(
+        results,
+        request.input.capture_output,
+        request.resolution.display_name.as_str(),
+    ))
+}
+
+struct TaskExecutorConfigSpec<'a, 'input> {
+    input: &'a TaskExecutionInput<'input>,
+    context: &'a TaskExecutionContext,
+    runtime: &'a PreparedTaskRuntime,
+    capture_output: OutputCapture,
+}
+
+fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig {
+    ExecutorConfig {
+        capture_output: spec.capture_output,
+        max_parallel: 0,
+        continue_on_error: spec.input.continue_on_error,
+        environment: spec.runtime.env.clone(),
+        working_dir: None,
+        cue_module_root: spec.context.cue_module_root.clone(),
+        project_root: spec.context.project_root.clone(),
+        materialize_outputs: spec
+            .input
+            .materialize_outputs
+            .map(|path| Path::new(path).to_path_buf()),
+        cache_dir: None,
+        show_cache_path: spec.input.shows_cache_path(),
+        backend_config: spec
+            .context
+            .manifest
+            .config
+            .as_ref()
+            .and_then(|config| config.backend.clone()),
+        cli_backend: spec.input.backend.map(ToString::to_string),
+        cache: spec.runtime.cache.clone(),
+    }
 }
 
 fn should_activate_lockfile_tools(project: &Project) -> bool {
