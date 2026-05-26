@@ -134,6 +134,12 @@ pub struct ReleaseOrchestrator {
     backends: Vec<Box<dyn ReleaseBackend>>,
 }
 
+struct BackendPublishRequest<'a> {
+    backend: &'a dyn ReleaseBackend,
+    context: &'a BackendContext,
+    artifacts: &'a [PackagedArtifact],
+}
+
 impl ReleaseOrchestrator {
     /// Creates a new release orchestrator.
     #[must_use]
@@ -275,21 +281,13 @@ impl ReleaseOrchestrator {
     }
 
     /// Publishes artifacts to all configured backends.
-    #[allow(clippy::too_many_lines)] // Multi-backend publishing has multiple iterations
     async fn publish_artifacts(&self, artifacts: &[PackagedArtifact]) -> Result<ReleaseReport> {
         if self.backends.is_empty() {
             warn!("No backends configured");
             return Ok(ReleaseReport::empty(ReleasePhase::Publish));
         }
 
-        let ctx = BackendContext::new(&self.config.name, &self.config.version)
-            .with_dry_run(self.config.dry_run);
-
-        let ctx = if let Some(url) = &self.config.download_base_url {
-            ctx.with_download_url(url)
-        } else {
-            ctx
-        };
+        let context = self.backend_context();
 
         info!(
             backend_count = self.backends.len(),
@@ -301,41 +299,73 @@ impl ReleaseOrchestrator {
         let mut results = Vec::new();
 
         for backend in &self.backends {
-            info!(backend = backend.name(), "Publishing to backend");
-
-            match backend.publish(&ctx, artifacts).await {
-                Ok(result) => {
-                    if result.success {
-                        info!(
-                            backend = backend.name(),
-                            message = %result.message,
-                            url = ?result.url,
-                            "Backend publish succeeded"
-                        );
-                    } else {
-                        warn!(
-                            backend = backend.name(),
-                            message = %result.message,
-                            "Backend publish failed"
-                        );
-                    }
-                    results.push(result);
-                }
-                Err(e) => {
-                    warn!(
-                        backend = backend.name(),
-                        error = %e,
-                        "Backend publish error"
-                    );
-                    results.push(PublishResult::failure(backend.name(), e.to_string()));
-                }
-            }
+            results.push(
+                Self::publish_backend(BackendPublishRequest {
+                    backend: backend.as_ref(),
+                    context: &context,
+                    artifacts,
+                })
+                .await,
+            );
         }
 
         let mut report = ReleaseReport::empty(ReleasePhase::Publish);
         report.add_backend_results(results);
 
         Ok(report)
+    }
+
+    fn backend_context(&self) -> BackendContext {
+        let context = BackendContext::new(&self.config.name, &self.config.version)
+            .with_dry_run(self.config.dry_run);
+
+        if let Some(url) = &self.config.download_base_url {
+            context.with_download_url(url)
+        } else {
+            context
+        }
+    }
+
+    async fn publish_backend(request: BackendPublishRequest<'_>) -> PublishResult {
+        let BackendPublishRequest {
+            backend,
+            context,
+            artifacts,
+        } = request;
+
+        info!(backend = backend.name(), "Publishing to backend");
+
+        match backend.publish(context, artifacts).await {
+            Ok(result) => {
+                Self::log_publish_result(backend.name(), &result);
+                result
+            }
+            Err(e) => {
+                warn!(
+                    backend = backend.name(),
+                    error = %e,
+                    "Backend publish error"
+                );
+                PublishResult::failure(backend.name(), e.to_string())
+            }
+        }
+    }
+
+    fn log_publish_result(backend_name: &str, result: &PublishResult) {
+        if result.success {
+            info!(
+                backend = backend_name,
+                message = %result.message,
+                url = ?result.url,
+                "Backend publish succeeded"
+            );
+        } else {
+            warn!(
+                backend = backend_name,
+                message = %result.message,
+                "Backend publish failed"
+            );
+        }
     }
 
     /// Finds the binary for a given target.
