@@ -74,9 +74,10 @@ while the implementation is split by schema concern: hooks, VCS dependencies,
 formatters, codegen, directory rules, runtimes, services/images, and project
 conversion each live in sibling modules under `crates/core/src/manifest/`.
 Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
-keeps the executable task and task-tree model, while cache policy, capture
-metadata, shell configuration, input references, and dependency references live
-in sibling modules under `crates/core/src/tasks/`. The task executor keeps
+keeps the executable task and task-tree model, while params, retry config,
+legacy task-level Dagger config, cache policy, capture metadata, shell
+configuration, input references, and dependency references live in sibling
+modules under `crates/core/src/tasks/`. The task executor keeps
 graph orchestration in `crates/core/src/tasks/executor.rs`; command redaction
 helpers, failure-summary formatting, and workspace-root detection live in
 `command.rs`, `result.rs`, and `workspace.rs` beside it.

@@ -15,6 +15,7 @@ mod cache_policy;
 mod capture_types;
 pub mod captures;
 mod command;
+mod dagger;
 mod dependency;
 pub(crate) mod env;
 pub mod executor;
@@ -23,8 +24,10 @@ pub mod graph_walk;
 pub mod index;
 mod inputs;
 pub mod output_refs;
+mod params;
 pub mod process_registry;
 mod result;
+mod retry;
 mod shell;
 mod workspace;
 
@@ -35,6 +38,7 @@ pub use backend::{
 };
 pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
 pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
+pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
 pub use executor::*;
 pub use graph::*;
@@ -46,7 +50,9 @@ pub use inputs::{
 pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
 };
+pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use process_registry::global_registry;
+pub use retry::RetryConfig;
 pub(crate) use shell::TaskCommandSpec;
 pub use shell::{ScriptShell, Shell, ShellOptions};
 
@@ -203,21 +209,6 @@ pub struct Task {
     pub directory: Option<TaskDirectory>,
 }
 
-/// Retry configuration for failed tasks
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RetryConfig {
-    /// Number of retry attempts (default: 3)
-    #[serde(default = "default_retry_attempts")]
-    pub attempts: u32,
-    /// Delay between retries (e.g., "5s")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delay: Option<String>,
-}
-
-fn default_retry_attempts() -> u32 {
-    3
-}
-
 // Custom deserialization for Task to ensure either command or script is present.
 // This is necessary for untagged enum deserialization in TaskNode to work correctly.
 impl<'de> serde::Deserialize<'de> for Task {
@@ -323,146 +314,6 @@ impl<'de> serde::Deserialize<'de> for Task {
             caller_source: helper.caller_source,
             directory: helper.directory,
         })
-    }
-}
-
-/// Dagger-specific task configuration
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct DaggerTaskConfig {
-    /// Base container image for running the task (e.g., "ubuntu:22.04")
-    /// Overrides the global backend.options.image if set.
-    #[serde(default)]
-    pub image: Option<String>,
-
-    /// Use container from a previous task as base instead of an image.
-    /// The referenced task must have run first (use dependsOn to ensure ordering).
-    #[serde(default)]
-    pub from: Option<String>,
-
-    /// Secrets to mount or expose as environment variables.
-    /// Secrets are resolved using cuenv's secret resolvers and securely passed to Dagger.
-    #[serde(default)]
-    pub secrets: Option<Vec<DaggerSecret>>,
-
-    /// Cache volumes to mount for persistent build caching.
-    #[serde(default)]
-    pub cache: Option<Vec<DaggerCacheMount>>,
-}
-
-/// Secret configuration for Dagger containers
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct DaggerSecret {
-    /// Name identifier for the secret in Dagger
-    pub name: String,
-
-    /// Mount secret as a file at this path (e.g., "/root/.npmrc")
-    #[serde(default)]
-    pub path: Option<String>,
-
-    /// Expose secret as an environment variable with this name
-    #[serde(default, rename = "envVar")]
-    pub env_var: Option<String>,
-
-    /// Secret resolver configuration
-    pub resolver: crate::secrets::Secret,
-}
-
-/// Cache volume mount configuration for Dagger
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct DaggerCacheMount {
-    /// Path inside the container to mount the cache (e.g., "/root/.npm")
-    pub path: String,
-
-    /// Unique name for the cache volume
-    pub name: String,
-}
-
-/// Task parameter definitions for CLI arguments
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct TaskParams {
-    /// Positional arguments (order matters, consumed left-to-right)
-    /// Referenced in args as {{0}}, {{1}}, etc.
-    #[serde(default)]
-    pub positional: Vec<ParamDef>,
-
-    /// Named arguments (--flag style) as direct fields
-    /// Referenced in args as {{name}} where name matches the field name
-    #[serde(flatten, default)]
-    pub named: HashMap<String, ParamDef>,
-}
-
-/// Parameter type for validation
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ParamType {
-    #[default]
-    String,
-    Bool,
-    Int,
-}
-
-/// Parameter definition for task arguments
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct ParamDef {
-    /// Human-readable description shown in --help
-    #[serde(default)]
-    pub description: Option<String>,
-
-    /// Whether the argument must be provided (default: false)
-    #[serde(default)]
-    pub required: bool,
-
-    /// Default value if not provided
-    #[serde(default)]
-    pub default: Option<String>,
-
-    /// Type hint for documentation (default: "string", not enforced at runtime)
-    #[serde(default, rename = "type")]
-    pub param_type: ParamType,
-
-    /// Short flag (single character, e.g., "t" for -t)
-    #[serde(default)]
-    pub short: Option<String>,
-}
-
-/// Resolved task arguments ready for interpolation
-#[derive(Debug, Clone, Default)]
-pub struct ResolvedArgs {
-    /// Positional argument values by index
-    pub positional: Vec<String>,
-    /// Named argument values by name
-    pub named: HashMap<String, String>,
-}
-
-impl ResolvedArgs {
-    /// Create empty resolved args
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Interpolate placeholders in a string
-    /// Supports {{0}}, {{1}} for positional and {{name}} for named args
-    pub fn interpolate(&self, template: &str) -> String {
-        let mut result = template.to_string();
-
-        // Replace positional placeholders {{0}}, {{1}}, etc.
-        for (i, value) in self.positional.iter().enumerate() {
-            let placeholder = format!("{{{{{}}}}}", i);
-            result = result.replace(&placeholder, value);
-        }
-
-        // Replace named placeholders {{name}}
-        for (name, value) in &self.named {
-            let placeholder = format!("{{{{{}}}}}", name);
-            result = result.replace(&placeholder, value);
-        }
-
-        result
-    }
-
-    /// Interpolate all args in a list
-    pub fn interpolate_args(&self, args: &[String]) -> Vec<String> {
-        args.iter().map(|arg| self.interpolate(arg)).collect()
     }
 }
 
