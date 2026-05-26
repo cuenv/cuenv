@@ -50,30 +50,30 @@ cuenv task ci.schema-docs-check
 
 ## Validation Strategy
 
-Use the smallest validation set that proves the current change, then run the full Nix gate at review boundaries. Full flake checks are required evidence for review/merge readiness, not a default tax on every isolated draft commit.
+Default to the smallest validation set that proves the current change. Do not start a full flake check just because a draft commit changed code; decide from the risk and boundary touched. Full flake checks are required evidence for review/merge readiness, not a default tax on every isolated draft commit.
 
-Run focused validation for isolated draft commits:
+Full flake check is not required for isolated draft commits when focused validation proves the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`.
 - Docs, prompts, examples, or skill changes: run `cuenv task ci.schema-docs-check`; add `cuenv fmt --fix` only when formatting applies.
 - CI workflow or sync-provider changes: run `cuenv sync ci --check` plus the focused tests for the touched provider.
 - CLI behavior changes: run the focused Rust tests and at least one direct CLI smoke test for the changed command.
 
-Run `nix flake check -L --accept-flake-config` when any of these are true:
+Full flake check is required when any of these are true:
 
 - Marking a PR ready for review, requesting review, merging, or cutting a release.
 - Changing Nix expressions, Cargo manifests or lockfiles, build/check wiring, CI/release behavior, or generated workflow contracts.
 - Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
 - A focused check fails in a way that could indicate broader workspace breakage.
 
-Do not run the full flake check for:
+Full flake check is not required for:
 
 - Exploratory review work while deciding what to change.
 - Docs-only, prompt-only, or agent-guidance-only edits.
 - Mechanical test extraction, test moves, or behavior-preserving module splits while the PR remains draft.
 - Tiny scoped commits where a focused crate/module check proves the touched surface.
 
-Keep those commits isolated, push them, and update the PR with the focused validation that was actually run. If the PR is moving from draft to review, run the full flake check once after the focused commits have landed.
+Keep draft commits isolated, push them, and update the PR with the focused validation that was actually run. If the PR is moving from draft to review, run the full flake check once after the focused commits have landed.
 
 ## Architecture
 
