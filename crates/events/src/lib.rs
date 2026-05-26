@@ -62,6 +62,8 @@ pub use redaction::{REDACTED_PLACEHOLDER, redact, register_secret, register_secr
 pub use renderers::SpinnerRenderer;
 pub use renderers::{CliRenderer, JsonRenderer};
 
+use std::io::{self, Write};
+
 /// Internal helpers used by the `emit_*!` macros.
 ///
 /// Not part of the stable public API — exposed only because exported macros
@@ -109,33 +111,49 @@ pub mod __macro_helpers {
 /// Use this instead of `println!` when output might contain secrets.
 /// This function applies `redact()` to the input before printing,
 /// ensuring any registered secrets are replaced with `*_*`.
-#[allow(clippy::print_stdout)]
 pub fn println_redacted(content: &str) {
-    println!("{}", redact(content));
+    let stdout = io::stdout();
+    writeln_redacted_to(stdout.lock(), content);
 }
 
 /// Print to stdout with automatic secret redaction (no newline).
 ///
 /// Use this instead of `print!` when output might contain secrets.
-#[allow(clippy::print_stdout)]
 pub fn print_redacted(content: &str) {
-    print!("{}", redact(content));
+    let stdout = io::stdout();
+    write_redacted_to(stdout.lock(), content);
 }
 
 /// Print to stderr with automatic secret redaction (with newline).
 ///
 /// Use this instead of `eprintln!` when output might contain secrets.
-#[allow(clippy::print_stderr)]
 pub fn eprintln_redacted(content: &str) {
-    eprintln!("{}", redact(content));
+    let stderr = io::stderr();
+    writeln_redacted_to(stderr.lock(), content);
 }
 
 /// Print to stderr with automatic secret redaction (no newline).
 ///
 /// Use this instead of `eprint!` when output might contain secrets.
-#[allow(clippy::print_stderr)]
 pub fn eprint_redacted(content: &str) {
-    eprint!("{}", redact(content));
+    let stderr = io::stderr();
+    write_redacted_to(stderr.lock(), content);
+}
+
+fn writeln_redacted_to(mut writer: impl Write, content: &str) {
+    if let Err(error) = writeln!(writer, "{}", redact(content)) {
+        log_redacted_write_error(&error);
+    }
+}
+
+fn write_redacted_to(mut writer: impl Write, content: &str) {
+    if let Err(error) = write!(writer, "{}", redact(content)) {
+        log_redacted_write_error(&error);
+    }
+}
+
+fn log_redacted_write_error(error: &io::Error) {
+    tracing::debug!(%error, "failed to write redacted output");
 }
 
 #[cfg(test)]
@@ -249,5 +267,18 @@ mod tests {
             emit_service_stopped!("db", Some(0));
             emit_service_failed!("api", "readiness timeout");
         });
+    }
+
+    #[test]
+    fn redacted_writers_apply_redaction() {
+        register_secret("writer-secret-token");
+
+        let mut line_output = Vec::new();
+        writeln_redacted_to(&mut line_output, "value=writer-secret-token");
+        assert_eq!(line_output, b"value=*_*\n");
+
+        let mut output = Vec::new();
+        write_redacted_to(&mut output, "value=writer-secret-token");
+        assert_eq!(output, b"value=*_*");
     }
 }

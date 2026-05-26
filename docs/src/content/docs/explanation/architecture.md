@@ -274,7 +274,9 @@ separated so output, task, service, CI, command, interactive, and system events
 do not share one monolithic conversion path. Exported `emit_*!` macro
 definitions live in
 `crates/events/src/macros.rs`, while crate-root hidden helpers remain available
-for `$crate` expansion and redacted print helpers. The CLI renderer keeps all
+for `$crate` expansion and redacted print helpers. Redacted print helpers write
+through explicit stdout/stderr handles so command output stays in the
+redaction boundary without raw print macros. The CLI renderer keeps all
 category-specific output in `crates/events/src/renderers/cli/`, leaving the
 renderer root focused on configuration, event consumption, and dispatch.
 
