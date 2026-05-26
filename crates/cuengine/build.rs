@@ -3,7 +3,7 @@
 //! Build scripts should panic on failure - there's no recovery path for build errors.
 
 // Build scripts are expected to panic/expect on failure - no runtime recovery needed
-#![allow(clippy::panic, clippy::expect_used, clippy::too_many_lines)]
+#![allow(clippy::panic, clippy::expect_used)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::env;
@@ -11,6 +11,7 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 
 fn main() {
     // Skip entire build script on docs.rs - no Go toolchain available
@@ -19,9 +20,116 @@ fn main() {
         return;
     }
 
-    let manifest_dir =
-        PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let build = BridgeBuild::from_env();
+    emit_rerun_directives(&build.bridge_dir);
+    build.log_debug_context();
+    report_go_version();
 
+    // Try to use prebuilt artifacts first (produced by Nix/flake builds), but
+    // force a local rebuild when the tracked Go sources changed since the last
+    // successful build in this OUT_DIR. This avoids stale prebuilt archives when
+    // iterating on bridge.go.
+    let workspace_root = workspace_root(&build.bridge_dir);
+    let source_fingerprint = bridge_source_fingerprint(&build.bridge_dir);
+    let fingerprint_path = build.out_dir.join("libcue_bridge.fingerprint");
+    let sources_changed = bridge_sources_changed(&fingerprint_path, &source_fingerprint);
+
+    if sources_changed {
+        println!("cargo:warning=Go bridge sources changed; rebuilding bridge from source");
+    }
+
+    let prebuilt_request = PrebuiltBridgeRequest {
+        lib_filename: build.outputs.lib_filename,
+        bridge_dir: &build.bridge_dir,
+        workspace_root: &workspace_root,
+        output_path: &build.outputs.output_path,
+        header_path: &build.outputs.header_path,
+    };
+
+    if sources_changed || !try_use_prebuilt(&prebuilt_request) {
+        build_go_bridge(
+            &build.bridge_dir,
+            &build.outputs.output_path,
+            &build.target_triple,
+        );
+
+        // Verify the library was actually created
+        assert!(
+            build.outputs.output_path.exists(),
+            "Go bridge library was not created at expected path: {}",
+            build.outputs.output_path.display()
+        );
+        println!(
+            "Successfully created library at: {}",
+            build.outputs.output_path.display()
+        );
+    }
+
+    write_bridge_fingerprint(&fingerprint_path, &source_fingerprint);
+    configure_rustc_linking(&build.target_triple, &build.out_dir);
+}
+
+struct BridgeBuild {
+    bridge_dir: PathBuf,
+    out_dir: PathBuf,
+    target_triple: String,
+    outputs: BridgeOutputs,
+}
+
+impl BridgeBuild {
+    fn from_env() -> Self {
+        let bridge_dir =
+            PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+        let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set by cargo"));
+        let target_triple = env::var("TARGET")
+            .unwrap_or_else(|_| env::var("HOST").expect("Neither TARGET nor HOST set by cargo"));
+        let outputs = BridgeOutputs::new(&out_dir, &target_triple);
+
+        Self {
+            bridge_dir,
+            out_dir,
+            target_triple,
+            outputs,
+        }
+    }
+
+    fn log_debug_context(&self) {
+        println!("=== CUENGINE BUILD SCRIPT DEBUG ===");
+        println!("Building for target: {}", self.target_triple);
+        println!("Is Windows: {}", self.target_triple.contains("windows"));
+        println!("Expected library: {}", self.outputs.output_path.display());
+        println!("Bridge directory: {}", self.bridge_dir.display());
+        println!("Out directory: {}", self.out_dir.display());
+        println!(
+            "Bridge GO file exists: {}",
+            self.bridge_dir.join("bridge.go").exists()
+        );
+    }
+}
+
+struct BridgeOutputs {
+    lib_filename: &'static str,
+    output_path: PathBuf,
+    header_path: PathBuf,
+}
+
+impl BridgeOutputs {
+    fn new(out_dir: &Path, target_triple: &str) -> Self {
+        let lib_filename = if target_triple.contains("windows") {
+            "libcue_bridge.lib"
+        } else {
+            "libcue_bridge.a"
+        };
+
+        Self {
+            lib_filename,
+            output_path: out_dir.join(lib_filename),
+            header_path: out_dir.join("libcue_bridge.h"),
+        }
+    }
+}
+
+fn emit_rerun_directives(manifest_dir: &Path) {
     // Track all Go source files and module files for rebuild detection.
     for path in [
         "build.rs",
@@ -37,37 +145,10 @@ fn main() {
         );
     }
     println!("cargo:rerun-if-env-changed=CUE_BRIDGE_PATH");
+}
 
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set by cargo"));
-    let bridge_dir = manifest_dir;
-
-    // Determine target triple early for platform-specific behavior
-    let target_triple = env::var("TARGET")
-        .unwrap_or_else(|_| env::var("HOST").expect("Neither TARGET nor HOST set by cargo"));
-    let is_windows = target_triple.contains("windows");
-
-    let lib_filename = if is_windows {
-        "libcue_bridge.lib"
-    } else {
-        "libcue_bridge.a"
-    };
-
-    let output_path = out_dir.join(lib_filename);
-    let header_path = out_dir.join("libcue_bridge.h");
-
-    println!("=== CUENGINE BUILD SCRIPT DEBUG ===");
-    println!("Building for target: {target_triple}");
-    println!("Is Windows: {is_windows}");
-    println!("Expected library: {}", output_path.display());
-    println!("Bridge directory: {}", bridge_dir.display());
-    println!("Out directory: {}", out_dir.display());
-    println!(
-        "Bridge GO file exists: {}",
-        bridge_dir.join("bridge.go").exists()
-    );
-
-    // Check if Go is available
-    match std::process::Command::new("go").arg("version").output() {
+fn report_go_version() {
+    match Command::new("go").arg("version").output() {
         Ok(output) if output.status.success() => {
             println!(
                 "Go version: {}",
@@ -77,51 +158,19 @@ fn main() {
         Ok(_) => println!("Go command failed"),
         Err(e) => println!("Go not available: {e}"),
     }
+}
 
-    // Try to use prebuilt artifacts first (produced by Nix/flake builds), but
-    // force a local rebuild when the tracked Go sources changed since the last
-    // successful build in this OUT_DIR. This avoids stale prebuilt archives when
-    // iterating on bridge.go.
-    let workspace_root = env::var("CARGO_WORKSPACE_DIR").map_or_else(
+fn workspace_root(bridge_dir: &Path) -> PathBuf {
+    env::var("CARGO_WORKSPACE_DIR").map_or_else(
         |_| {
             bridge_dir
                 .parent()
-                .and_then(|p| p.parent())
+                .and_then(Path::parent)
                 .expect("Failed to derive workspace root from crate manifest directory")
                 .to_path_buf()
         },
         PathBuf::from,
-    );
-    let source_fingerprint = bridge_source_fingerprint(&bridge_dir);
-    let fingerprint_path = out_dir.join("libcue_bridge.fingerprint");
-    let sources_changed = bridge_sources_changed(&fingerprint_path, &source_fingerprint);
-
-    if sources_changed {
-        println!("cargo:warning=Go bridge sources changed; rebuilding bridge from source");
-    }
-
-    if sources_changed
-        || !try_use_prebuilt(
-            lib_filename,
-            &bridge_dir,
-            &workspace_root,
-            &output_path,
-            &header_path,
-        )
-    {
-        build_go_bridge(&bridge_dir, &output_path, &target_triple);
-
-        // Verify the library was actually created
-        assert!(
-            output_path.exists(),
-            "Go bridge library was not created at expected path: {}",
-            output_path.display()
-        );
-        println!("Successfully created library at: {}", output_path.display());
-    }
-
-    write_bridge_fingerprint(&fingerprint_path, &source_fingerprint);
-    configure_rustc_linking(&target_triple, &out_dir);
+    )
 }
 
 fn bridge_source_fingerprint(bridge_dir: &Path) -> String {
@@ -157,111 +206,150 @@ fn tracked_go_paths(bridge_dir: &Path) -> [PathBuf; 4] {
     ]
 }
 
-fn try_use_prebuilt(
-    lib_filename: &str,
-    bridge_dir: &Path,
-    workspace_root: &Path,
-    output_path: &PathBuf,
-    header_path: &PathBuf,
-) -> bool {
-    // Get modification times of all Go source files.
-    // If any source is newer than a prebuilt library, we must rebuild.
-    let newest_source_time = tracked_go_paths(bridge_dir)
-        .iter()
-        .filter_map(|p| p.metadata().ok())
-        .filter_map(|m| m.modified().ok())
-        .max();
+struct PrebuiltBridgeRequest<'a> {
+    lib_filename: &'a str,
+    bridge_dir: &'a Path,
+    workspace_root: &'a Path,
+    output_path: &'a Path,
+    header_path: &'a Path,
+}
 
-    let prebuilt_locations = [
-        // Nix flake puts prebuilt artifacts in workspace target/
-        (
-            workspace_root.join("target/debug").join(lib_filename),
-            workspace_root.join("target/debug/libcue_bridge.h"),
-        ),
-        (
-            workspace_root.join("target/release").join(lib_filename),
-            workspace_root.join("target/release/libcue_bridge.h"),
-        ),
-        // Local development builds
-        (
-            bridge_dir.join("target/debug").join(lib_filename),
-            bridge_dir.join("target/debug/libcue_bridge.h"),
-        ),
-        (
-            bridge_dir.join("target/release").join(lib_filename),
-            bridge_dir.join("target/release/libcue_bridge.h"),
-        ),
-        // Environment variable override (useful for CI/Nix)
-        (
-            PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default())
-                .join("debug")
-                .join(lib_filename),
-            PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default())
-                .join("debug/libcue_bridge.h"),
-        ),
-        (
-            PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default())
-                .join("release")
-                .join(lib_filename),
-            PathBuf::from(env::var("CUE_BRIDGE_PATH").unwrap_or_default())
-                .join("release/libcue_bridge.h"),
-        ),
-    ];
+fn try_use_prebuilt(request: &PrebuiltBridgeRequest<'_>) -> bool {
+    let newest_source_time = newest_tracked_source_time(request.bridge_dir);
 
-    // Prefer release, then debug
-    for (lib_path, header_path_candidate) in &prebuilt_locations {
-        if lib_path.is_file()
-            && header_path_candidate.is_file()
-            && !lib_path.to_string_lossy().is_empty()
-        {
-            // Check if prebuilt is newer than all source files
-            // If sources are newer, skip this prebuilt and rebuild from source
-            if let Some(source_time) = newest_source_time
-                && let Ok(lib_meta) = lib_path.metadata()
-                && let Ok(lib_time) = lib_meta.modified()
-                && lib_time < source_time
-            {
-                println!(
-                    "cargo:warning=Prebuilt {} is older than source files, will rebuild",
-                    lib_path.display()
-                );
-                continue; // Skip this prebuilt, try next or fall through to rebuild
-            }
+    for (lib_path, header_path_candidate) in prebuilt_locations(request) {
+        if !prebuilt_bridge_exists(&lib_path, &header_path_candidate) {
+            continue;
+        }
 
-            // Remove destination files if they exist (might be read-only)
-            let _ = std::fs::remove_file(output_path);
-            let _ = std::fs::remove_file(header_path);
-
-            std::fs::copy(lib_path, output_path).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to copy pre-built bridge from {}: {}",
-                    lib_path.display(),
-                    e
-                )
-            });
-            std::fs::copy(header_path_candidate, header_path).unwrap_or_else(|e| {
-                panic!(
-                    "Failed to copy pre-built header from {}: {}",
-                    header_path_candidate.display(),
-                    e
-                )
-            });
-
-            let build_type = if lib_path.to_string_lossy().contains("release") {
-                "release"
-            } else {
-                "debug"
-            };
+        if prebuilt_is_stale(&lib_path, newest_source_time) {
             println!(
-                "Using pre-built Go bridge ({}) from: {}",
-                build_type,
+                "cargo:warning=Prebuilt {} is older than source files, will rebuild",
                 lib_path.display()
             );
-            return true;
+            continue;
         }
+
+        copy_prebuilt_bridge(&lib_path, &header_path_candidate, request);
+        println!(
+            "Using pre-built Go bridge ({}) from: {}",
+            prebuilt_build_type(&lib_path),
+            lib_path.display()
+        );
+        return true;
     }
 
     false
+}
+
+fn newest_tracked_source_time(bridge_dir: &Path) -> Option<SystemTime> {
+    tracked_go_paths(bridge_dir)
+        .iter()
+        .filter_map(|path| path.metadata().ok())
+        .filter_map(|metadata| metadata.modified().ok())
+        .max()
+}
+
+fn prebuilt_locations(request: &PrebuiltBridgeRequest<'_>) -> [(PathBuf, PathBuf); 6] {
+    let bridge_path = env::var("CUE_BRIDGE_PATH").unwrap_or_default();
+    let bridge_override = PathBuf::from(bridge_path);
+    let debug_override = bridge_override.join("debug");
+    let release_override = bridge_override.join("release");
+
+    [
+        // Nix flake puts prebuilt artifacts in workspace target/
+        (
+            request
+                .workspace_root
+                .join("target/debug")
+                .join(request.lib_filename),
+            request.workspace_root.join("target/debug/libcue_bridge.h"),
+        ),
+        (
+            request
+                .workspace_root
+                .join("target/release")
+                .join(request.lib_filename),
+            request
+                .workspace_root
+                .join("target/release/libcue_bridge.h"),
+        ),
+        // Local development builds
+        (
+            request
+                .bridge_dir
+                .join("target/debug")
+                .join(request.lib_filename),
+            request.bridge_dir.join("target/debug/libcue_bridge.h"),
+        ),
+        (
+            request
+                .bridge_dir
+                .join("target/release")
+                .join(request.lib_filename),
+            request.bridge_dir.join("target/release/libcue_bridge.h"),
+        ),
+        // Environment variable override (useful for CI/Nix)
+        (
+            debug_override.clone().join(request.lib_filename),
+            debug_override.join("libcue_bridge.h"),
+        ),
+        (
+            release_override.clone().join(request.lib_filename),
+            release_override.join("libcue_bridge.h"),
+        ),
+    ]
+}
+
+fn prebuilt_bridge_exists(lib_path: &Path, header_path: &Path) -> bool {
+    lib_path.is_file() && header_path.is_file()
+}
+
+fn prebuilt_is_stale(lib_path: &Path, newest_source_time: Option<SystemTime>) -> bool {
+    let Some(source_time) = newest_source_time else {
+        return false;
+    };
+
+    let Ok(lib_meta) = lib_path.metadata() else {
+        return false;
+    };
+
+    lib_meta
+        .modified()
+        .is_ok_and(|lib_time| lib_time < source_time)
+}
+
+fn copy_prebuilt_bridge(
+    lib_path: &Path,
+    header_path_candidate: &Path,
+    request: &PrebuiltBridgeRequest<'_>,
+) {
+    // Remove destination files if they exist (might be read-only).
+    let _ = std::fs::remove_file(request.output_path);
+    let _ = std::fs::remove_file(request.header_path);
+
+    std::fs::copy(lib_path, request.output_path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to copy pre-built bridge from {}: {}",
+            lib_path.display(),
+            e
+        )
+    });
+    std::fs::copy(header_path_candidate, request.header_path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to copy pre-built header from {}: {}",
+            header_path_candidate.display(),
+            e
+        )
+    });
+}
+
+fn prebuilt_build_type(lib_path: &Path) -> &'static str {
+    if lib_path.to_string_lossy().contains("release") {
+        "release"
+    } else {
+        "debug"
+    }
 }
 
 fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
