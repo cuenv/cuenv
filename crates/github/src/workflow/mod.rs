@@ -26,6 +26,7 @@
 //! ```
 
 pub mod emitter;
+pub mod release;
 pub mod schema;
 pub mod stage_renderer;
 
