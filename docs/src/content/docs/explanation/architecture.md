@@ -278,7 +278,9 @@ for `$crate` expansion and redacted print helpers. Redacted print helpers write
 through explicit stdout/stderr handles so command output stays in the
 redaction boundary without raw print macros. The CLI renderer keeps all
 category-specific output in `crates/events/src/renderers/cli/`, leaving the
-renderer root focused on configuration, event consumption, and dispatch.
+renderer root focused on configuration, event consumption, and dispatch; the
+JSON renderer exposes a writer boundary so JSON-line output can be tested
+without direct print macros.
 
 ### cuenv-workspaces
 

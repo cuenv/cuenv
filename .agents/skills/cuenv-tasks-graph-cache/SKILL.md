@@ -37,6 +37,7 @@ Event surface (`cuenv-events`):
 - `ExecutorConfig::continue_on_error` makes `cuenv task` and library callers honour the same DAG semantics as `ci.pipelines[*].continueOnError` — dependents of a failing task get `task.skipped { DependencyFailed }` and independent siblings keep running. Panics / `JoinError` are still fatal.
 - `cuenv-events` emits via a process-wide `EventSender` installed by `set_global_sender` at startup. The `emit_*!` macros and `cuenv_events::emit(category)` / `emit_with_source(source, category)` both go through it directly. `CuenvEventLayer` is retained as a public type so callers that emit via `tracing::info!(target: "cuenv::...")` still flow into the bus, but the in-tree macros bypass it. Its thin layer stays in `crates/events/src/layer.rs`; tracing field extraction, redaction, and typed event construction live in `crates/events/src/layer/visitor.rs`.
 - The exported `emit_*!` macro definitions live in `crates/events/src/macros.rs`; crate-root hidden helpers remain available for `$crate` expansion and redacted print helpers.
+- JSON event rendering should go through `JsonRenderer::render_to_writer` for testable JSON-lines output instead of raw print macros.
 
 Adversarial prompts:
 
