@@ -144,6 +144,13 @@ struct GithubSyncRequest<'a> {
     projects: &'a [ProjectInfo],
 }
 
+#[derive(Clone, Copy)]
+struct GithubWorkflowFilesSyncRequest<'a> {
+    workflows_dir: &'a Path,
+    workflows: &'a [(String, String)],
+    options: CiSyncOptions<'a>,
+}
+
 struct BuildkiteSyncRequest<'a> {
     repo_root: &'a Path,
     options: CiSyncOptions<'a>,
@@ -737,7 +744,6 @@ pub async fn execute_sync_ci_workspace(
 }
 
 /// Sync GitHub Actions workflow files from CUE configuration.
-#[allow(clippy::too_many_lines)]
 #[instrument(name = "sync_github", skip_all)]
 async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
     let GithubSyncRequest {
@@ -769,12 +775,25 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
     }
 
     let workflows_dir = repo_root.join(".github/workflows");
+    sync_github_workflow_files(GithubWorkflowFilesSyncRequest {
+        workflows_dir: &workflows_dir,
+        workflows: &all_workflows,
+        options,
+    })
+}
+
+fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Result<String> {
+    let GithubWorkflowFilesSyncRequest {
+        workflows_dir,
+        workflows,
+        options,
+    } = request;
     let mut output_lines = Vec::new();
 
     // Check mode: compare generated content with existing files
     if options.check {
         let mut out_of_sync = Vec::new();
-        for (filename, content) in &all_workflows {
+        for (filename, content) in workflows {
             let path = workflows_dir.join(filename);
             if path.exists() {
                 let existing =
@@ -796,14 +815,11 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
                 out_of_sync.join(", ")
             )));
         }
-        return Ok(format!(
-            "GitHub: {} workflow(s) in sync",
-            all_workflows.len()
-        ));
+        return Ok(format!("GitHub: {} workflow(s) in sync", workflows.len()));
     }
 
     // Dry-run or normal mode
-    for (filename, content) in &all_workflows {
+    for (filename, content) in workflows {
         let workflow_path = workflows_dir.join(filename);
         let exists = workflow_path.exists();
 
@@ -825,9 +841,9 @@ async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Result<String> {
         } else {
             // Create directory if needed
             if !workflows_dir.exists() {
-                std::fs::create_dir_all(&workflows_dir).map_err(|e| cuenv_core::Error::Io {
+                std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
                     source: e,
-                    path: Some(workflows_dir.clone().into_boxed_path()),
+                    path: Some(workflows_dir.to_path_buf().into_boxed_path()),
                     operation: "create directory".to_string(),
                 })?;
             }
