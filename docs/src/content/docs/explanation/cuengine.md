@@ -32,6 +32,12 @@ Provides structured error types via `CueEngineError` with proper error codes.
 **JSON Bridge**
 Handles serialization/deserialization between Rust and Go data structures.
 
+**Go Bridge Package**
+Keeps `bridge.go` focused on exported cgo functions and evaluation
+orchestration. Source metadata/reference extraction lives in `metadata.go`, and
+clean CUE-to-JSON value rendering lives in `values.go`; the build script compiles
+every non-test Go file in `crates/cuengine`.
+
 Module evaluation is split into four Rust-side phases: C string preparation,
 a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
 parsing. Keeping those phases separate makes the Go boundary, timeout behavior,
