@@ -106,10 +106,12 @@ The command-line interface built with `clap`.
 - `cuenv changeset|release` - Release management
 - `cuenv version` - Version information
 
-CLI parsing lives in `crates/cuenv/src/cli.rs`, conversion into the internal
-command model lives in `crates/cuenv/src/cli/command_conversion.rs`, output
-formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`, and
-CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
+CLI parser setup lives in `crates/cuenv/src/cli.rs`; the top-level Clap
+command enum lives in `crates/cuenv/src/cli/commands.rs`; nested subcommand
+enums live in `crates/cuenv/src/cli/subcommands.rs`; conversion into the
+internal command model lives in `crates/cuenv/src/cli/command_conversion.rs`;
+output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
+and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`. Startup,
 runtime selection, and early process routing stay in `crates/cuenv/src/main.rs`;
 command paths that bypass the executor are isolated in
