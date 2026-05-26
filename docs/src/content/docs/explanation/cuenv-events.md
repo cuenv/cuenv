@@ -47,6 +47,10 @@ Optional tracing layer that captures legacy structured tracing events.
 **Renderers**
 CLI and JSON output formatters for events.
 
+Macro compile tests are grouped by event category, matching the schema
+categories above so task, CI, command, interactive, system, and service emitters
+can be validated without one catch-all test body.
+
 ## API Reference
 
 ### Event Types

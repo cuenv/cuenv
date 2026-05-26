@@ -783,7 +783,6 @@ pub fn eprint_redacted(content: &str) {
 }
 
 #[cfg(test)]
-#[allow(clippy::cognitive_complexity)]
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
