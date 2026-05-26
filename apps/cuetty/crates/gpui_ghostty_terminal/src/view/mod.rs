@@ -3,17 +3,25 @@ use ghostty_vt::{KeyModifiers, StyleRun, encode_key_named};
 use gpui::{
     App, Bounds, ClipboardItem, Context, FocusHandle, IntoElement, KeyBinding, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Render, ScrollDelta,
-    ScrollWheelEvent, SharedString, Window, actions, div, point, prelude::*, px,
+    ScrollWheelEvent, SharedString, Window, actions, div, prelude::*, px,
 };
 use std::ops::Range;
 use std::sync::Once;
 
 mod element;
+mod geometry;
 mod input_handler;
+mod links;
 
 #[cfg(test)]
 pub(crate) use element::box_drawing_mask;
 use element::terminal_text_element;
+use geometry::{
+    TerminalGridGeometry, local_position_to_cell, row_index_for_local_position,
+    window_position_to_local,
+};
+pub(crate) use geometry::{byte_index_for_column_in_line, cell_metrics};
+use links::{url_at_byte_index, url_at_column_in_line};
 
 actions!(terminal_view, [Copy, Paste, SelectAll, Tab, TabPrev]);
 
@@ -98,150 +106,9 @@ pub(crate) fn sgr_mouse_button_value(
     value
 }
 
-fn window_position_to_local(
-    last_bounds: Option<Bounds<Pixels>>,
-    position: gpui::Point<gpui::Pixels>,
-) -> gpui::Point<gpui::Pixels> {
-    let origin = last_bounds
-        .map(|bounds| bounds.origin)
-        .unwrap_or_else(|| point(px(0.0), px(0.0)));
-    point(position.x - origin.x, position.y - origin.y)
-}
-
-#[derive(Clone, Copy)]
-struct TerminalGridGeometry {
-    cols: u16,
-    rows: u16,
-    cell_width: f32,
-    cell_height: f32,
-}
-
-fn row_index_for_local_position(
-    rows: usize,
-    cell_height: f32,
-    position: gpui::Point<gpui::Pixels>,
-) -> usize {
-    let y = f32::from(position.y);
-    let mut row_index = (y / cell_height).floor() as i32;
-    if row_index < 0 {
-        row_index = 0;
-    }
-    if row_index >= rows as i32 {
-        row_index = rows as i32 - 1;
-    }
-    row_index as usize
-}
-
-fn local_position_to_cell(
-    geometry: TerminalGridGeometry,
-    position: gpui::Point<gpui::Pixels>,
-) -> (u16, u16) {
-    let x = f32::from(position.x);
-    let y = f32::from(position.y);
-
-    let mut col = (x / geometry.cell_width).floor() as i32 + 1;
-    let mut row = (y / geometry.cell_height).floor() as i32 + 1;
-
-    if col < 1 {
-        col = 1;
-    }
-    if row < 1 {
-        row = 1;
-    }
-    if col > geometry.cols as i32 {
-        col = geometry.cols as i32;
-    }
-    if row > geometry.rows as i32 {
-        row = geometry.rows as i32;
-    }
-
-    (col as u16, row as u16)
-}
-
 pub(crate) fn sgr_mouse_sequence(button_value: u8, col: u16, row: u16, pressed: bool) -> String {
     let suffix = if pressed { 'M' } else { 'm' };
     format!("\x1b[<{};{};{}{}", button_value, col, row, suffix)
-}
-
-fn is_url_byte(b: u8) -> bool {
-    matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9')
-        || matches!(
-            b,
-            b'-' | b'.'
-                | b'_'
-                | b'~'
-                | b':'
-                | b'/'
-                | b'?'
-                | b'#'
-                | b'['
-                | b']'
-                | b'@'
-                | b'!'
-                | b'$'
-                | b'&'
-                | b'\''
-                | b'('
-                | b')'
-                | b'*'
-                | b'+'
-                | b','
-                | b';'
-                | b'='
-                | b'%'
-        )
-}
-
-fn url_at_byte_index(text: &str, index: usize) -> Option<String> {
-    let bytes = text.as_bytes();
-    if bytes.is_empty() {
-        return None;
-    }
-
-    let mut idx = index.min(bytes.len().saturating_sub(1));
-
-    if !is_url_byte(bytes[idx]) && idx > 0 && is_url_byte(bytes[idx - 1]) {
-        idx -= 1;
-    }
-
-    if !is_url_byte(bytes[idx]) {
-        return None;
-    }
-
-    let mut start = idx;
-    while start > 0 && is_url_byte(bytes[start - 1]) {
-        start -= 1;
-    }
-
-    let mut end = idx + 1;
-    while end < bytes.len() && is_url_byte(bytes[end]) {
-        end += 1;
-    }
-
-    while end > start
-        && matches!(
-            bytes[end - 1],
-            b'.' | b',' | b')' | b']' | b'}' | b';' | b':' | b'!' | b'?'
-        )
-    {
-        end -= 1;
-    }
-
-    let candidate = std::str::from_utf8(&bytes[start..end]).ok()?;
-    if candidate.starts_with("https://") || candidate.starts_with("http://") {
-        Some(candidate.to_string())
-    } else {
-        None
-    }
-}
-
-fn url_at_column_in_line(line: &str, col: u16) -> Option<String> {
-    if line.is_empty() {
-        return None;
-    }
-
-    let local = byte_index_for_column_in_line(line, col).min(line.len().saturating_sub(1));
-    url_at_byte_index(line, local)
 }
 
 type TerminalSendFn = dyn Fn(&[u8]) + Send + Sync + 'static;
@@ -1152,36 +1019,6 @@ impl TerminalView {
     }
 }
 
-pub(crate) fn byte_index_for_column_in_line(line: &str, col: u16) -> usize {
-    use unicode_width::UnicodeWidthChar as _;
-
-    let col = col.max(1) as usize;
-    if col == 1 {
-        return 0;
-    }
-
-    let mut current_col = 1usize;
-    for (byte_index, ch) in line.char_indices() {
-        let width = ch.width().unwrap_or(0);
-        if width == 0 {
-            continue;
-        }
-
-        if current_col == col {
-            return byte_index;
-        }
-
-        let next_col = current_col.saturating_add(width);
-        if col < next_col {
-            return byte_index;
-        }
-
-        current_col = next_col;
-    }
-
-    line.len()
-}
-
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         ensure_key_bindings(cx);
@@ -1234,93 +1071,5 @@ impl Render for TerminalView {
             .font(self.font.clone())
             .whitespace_nowrap()
             .child(terminal_text_element(cx.entity()))
-    }
-}
-
-pub(crate) fn cell_metrics(window: &mut gpui::Window, font: &gpui::Font) -> Option<(f32, f32)> {
-    let mut style = window.text_style();
-    style.font_family = font.family.clone();
-    style.font_features = crate::default_terminal_font_features();
-    style.font_fallbacks = font.fallbacks.clone();
-
-    let rem_size = window.rem_size();
-    let font_size = style.font_size.to_pixels(rem_size);
-    let line_height = style.line_height.to_pixels(style.font_size, rem_size);
-
-    let run = style.to_run(1);
-    let lines = window
-        .text_system()
-        .shape_text(
-            gpui::SharedString::from("M"),
-            font_size,
-            &[run],
-            None,
-            Some(1),
-        )
-        .ok()?;
-    let line = lines.first()?;
-
-    let cell_width = f32::from(line.width()).max(1.0);
-    let cell_height = f32::from(line_height).max(1.0);
-    Some((cell_width, cell_height))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        TerminalGridGeometry, local_position_to_cell, row_index_for_local_position,
-        url_at_byte_index, url_at_column_in_line, window_position_to_local,
-    };
-
-    #[test]
-    fn url_detection_finds_https_links() {
-        let text = "Visit https://google.com for search";
-        let idx = text.find("google").unwrap();
-        assert_eq!(
-            url_at_byte_index(text, idx).as_deref(),
-            Some("https://google.com")
-        );
-    }
-
-    #[test]
-    fn url_detection_finds_https_links_by_cell_column() {
-        let line = "https://google.com";
-        assert_eq!(
-            url_at_column_in_line(line, 1).as_deref(),
-            Some("https://google.com")
-        );
-        assert_eq!(
-            url_at_column_in_line(line, 10).as_deref(),
-            Some("https://google.com")
-        );
-    }
-
-    #[test]
-    fn mouse_position_to_local_accounts_for_bounds_origin() {
-        let bounds = Some(gpui::Bounds::new(
-            gpui::point(gpui::px(100.0), gpui::px(20.0)),
-            gpui::size(gpui::px(200.0), gpui::px(80.0)),
-        ));
-
-        let local = window_position_to_local(bounds, gpui::point(gpui::px(110.0), gpui::px(30.0)));
-        assert_eq!(local, gpui::point(gpui::px(10.0), gpui::px(10.0)));
-    }
-
-    #[test]
-    fn local_selection_coordinates_ignore_shell_chrome_origin() {
-        let bounds = Some(gpui::Bounds::new(
-            gpui::point(gpui::px(220.0), gpui::px(40.0)),
-            gpui::size(gpui::px(800.0), gpui::px(600.0)),
-        ));
-        let local = window_position_to_local(bounds, gpui::point(gpui::px(244.0), gpui::px(70.0)));
-        let geometry = TerminalGridGeometry {
-            cols: 100,
-            rows: 30,
-            cell_width: 8.0,
-            cell_height: 15.0,
-        };
-
-        assert_eq!(row_index_for_local_position(30, 15.0, local), 2);
-        assert_eq!(local_position_to_cell(geometry, local), (4, 3));
     }
 }
