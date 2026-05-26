@@ -80,6 +80,9 @@ in sibling modules under `crates/core/src/tasks/`. The task executor keeps
 graph orchestration in `crates/core/src/tasks/executor.rs`; command redaction
 helpers, failure-summary formatting, and workspace-root detection live in
 `command.rs`, `result.rs`, and `workspace.rs` beside it.
+Generic task DAG primitives live in `crates/task-graph/src/graph.rs`, while
+resolver-backed group expansion and sequence ordering live in
+`crates/task-graph/src/graph/resolver_build.rs`.
 Task contributor injection is owned by `crates/core/src/contributors.rs`; the
 built-in package-manager workspace contributor definitions live in
 `crates/core/src/contributors/workspace.rs` so DAG mutation stays separate from

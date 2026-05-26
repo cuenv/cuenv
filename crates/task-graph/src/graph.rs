@@ -3,12 +3,14 @@
 //! This module builds directed acyclic graphs (DAGs) from task definitions
 //! to handle dependencies and determine execution order.
 
-use crate::{Error, Result, TaskNodeData, TaskResolution, TaskResolver};
+use crate::{Error, Result, TaskNodeData};
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::IntoNodeReferences;
 use std::collections::{HashMap, HashSet};
 use tracing::debug;
+
+mod resolver_build;
 
 /// Discriminator for the kind of node in a mixed task/service graph.
 #[derive(Debug, Default, Clone, Copy, Eq, PartialEq, Hash)]
@@ -368,126 +370,6 @@ impl<T: TaskNodeData> TaskGraph<T> {
         self.add_dependency_edges()?;
 
         Ok(())
-    }
-
-    /// Build graph for a specific task using a resolver that handles group expansion.
-    ///
-    /// This method uses the [`TaskResolver`] trait to resolve task names, which enables
-    /// unified handling of single tasks and groups (sequential/parallel).
-    ///
-    /// # Arguments
-    ///
-    /// * `task_name` - The name of the task to build the graph for
-    /// * `resolver` - Implementation of [`TaskResolver`] that provides task lookup and group expansion
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if dependencies cannot be resolved.
-    pub fn build_for_task_with_resolver<R>(&mut self, task_name: &str, resolver: &R) -> Result<()>
-    where
-        R: TaskResolver<T>,
-    {
-        let mut to_process = vec![task_name.to_string()];
-        let mut processed = HashSet::new();
-        // Track sequential orderings for second pass
-        let mut sequential_orderings: Vec<Vec<String>> = Vec::new();
-        // Track parallel group depends_on to apply to leaf tasks
-        let mut pending_group_deps: HashMap<String, Vec<String>> = HashMap::new();
-
-        debug!("Building graph with resolver for '{}'", task_name);
-
-        // First pass: Collect all tasks and track sequential groups
-        while let Some(current_name) = to_process.pop() {
-            if processed.contains(&current_name) {
-                continue;
-            }
-            processed.insert(current_name.clone());
-
-            match resolver.resolve(&current_name) {
-                Some(TaskResolution::Single(mut task)) => {
-                    // Apply any pending group-level dependencies
-                    // Walk up the path to find parent groups
-                    let path_parts: Vec<&str> = current_name.split('.').collect();
-                    for i in 1..path_parts.len() {
-                        let parent_path = path_parts[..i].join(".");
-                        if let Some(deps) = pending_group_deps.get(&parent_path) {
-                            for dep in deps {
-                                task.add_dependency(dep.clone());
-                            }
-                        }
-                    }
-                    // Also check for bracket notation parents (e.g., "build[0]" -> "build")
-                    if let Some(bracket_idx) = current_name.find('[') {
-                        let parent_path = &current_name[..bracket_idx];
-                        if let Some(deps) = pending_group_deps.get(parent_path) {
-                            for dep in deps {
-                                task.add_dependency(dep.clone());
-                            }
-                        }
-                    }
-
-                    self.add_task(&current_name, task.clone())?;
-
-                    // Add dependencies to processing queue
-                    for dep in task.dependency_names() {
-                        if !processed.contains(dep) {
-                            to_process.push(dep.to_string());
-                        }
-                    }
-                }
-                Some(TaskResolution::Sequential { children }) => {
-                    self.register_group(&current_name, children.clone());
-                    // Track ordering for second pass
-                    sequential_orderings.push(children.clone());
-                    for child in children {
-                        if !processed.contains(&child) {
-                            to_process.push(child);
-                        }
-                    }
-                }
-                Some(TaskResolution::Parallel {
-                    children,
-                    depends_on,
-                }) => {
-                    self.register_group(&current_name, children.clone());
-                    // Store group-level deps to apply to leaf tasks
-                    if !depends_on.is_empty() {
-                        pending_group_deps.insert(current_name.clone(), depends_on.clone());
-                        // Also add the group deps to processing queue
-                        for dep in &depends_on {
-                            if !processed.contains(dep) {
-                                to_process.push(dep.clone());
-                            }
-                        }
-                    }
-                    for child in children {
-                        if !processed.contains(&child) {
-                            to_process.push(child);
-                        }
-                    }
-                }
-                None => {
-                    debug!("Task '{}' not found while building graph", current_name);
-                }
-            }
-        }
-
-        // Second pass: Add sequential ordering edges
-        for ordering in sequential_orderings {
-            for window in ordering.windows(2) {
-                if let [prev, next] = window {
-                    // Add edge from prev to next (prev must complete before next)
-                    if let (Some(prev_idx), Some(next_idx)) =
-                        (self.get_node_index(prev), self.get_node_index(next))
-                    {
-                        self.add_edge(prev_idx, next_idx);
-                    }
-                }
-            }
-        }
-
-        // Third pass: Add dependency edges from task.depends_on
-        self.add_dependency_edges()
     }
 
     /// Compute which tasks from a pipeline are affected, using transitive dependency propagation.
