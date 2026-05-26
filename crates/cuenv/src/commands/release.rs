@@ -9,8 +9,9 @@
 
 use cuenv_release::{
     BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
-    ConventionalCommit, PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, TagType,
-    Version, VersionCalculator,
+    ConventionalCommit, OrchestratorConfig, PackageChange, PublishPackage, PublishPlan,
+    ReleaseBackend, ReleaseOrchestrator, ReleasePackagesConfig, ReleasePhase, ReleaseReport,
+    TagType, Target, Version, VersionCalculator,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -769,149 +770,203 @@ impl ReleaseBinariesOptions {
 /// # Errors
 ///
 /// Returns an error if the release process fails.
-#[allow(clippy::format_push_string, clippy::too_many_lines)]
 pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_core::Result<String> {
-    use cuenv_release::{
-        CargoManifest, OrchestratorConfig, ReleaseOrchestrator, ReleasePhase, Target,
-    };
-    use std::path::Path;
+    let ReleaseBinariesOptions {
+        path,
+        dry_run,
+        backends,
+        phase,
+        targets,
+        version,
+    } = opts;
 
-    let root = Path::new(&opts.path);
-
-    // Get version from Cargo.toml if not provided
-    let release_version = if let Some(v) = opts.version {
-        v
-    } else {
-        let manifest = CargoManifest::new(root);
-        manifest
-            .read_workspace_version()
-            .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read version: {e}")))?
-            .to_string()
-    };
-
-    // Get binary name from Cargo.toml (use first package name or workspace name)
+    let root = Path::new(&path);
     let manifest = CargoManifest::new(root);
-    let binary_name = manifest
+    let release_version = release_binary_version(version, &manifest)?;
+    let binary_name = release_binary_name(&manifest)?;
+    let release_targets = release_binary_targets(targets.as_deref())?;
+    let config = OrchestratorConfig::new(&binary_name, &release_version)
+        .with_targets(release_targets)
+        .with_output_dir("target/release-artifacts")
+        .with_dry_run(dry_run);
+    let phase = release_binary_phase(phase);
+    let backends = release_binary_backends(root, &binary_name, backends.as_deref());
+    let report = run_release_binaries(config, backends, phase).await?;
+
+    Ok(format_release_binaries_output(&ReleaseBinariesOutput {
+        dry_run,
+        binary_name: &binary_name,
+        release_version: &release_version,
+        report: &report,
+    }))
+}
+
+fn release_binary_version(
+    requested: Option<String>,
+    manifest: &CargoManifest,
+) -> cuenv_core::Result<String> {
+    if let Some(version) = requested {
+        return Ok(version);
+    }
+
+    manifest
+        .read_workspace_version()
+        .map(|version| version.to_string())
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read version: {e}")))
+}
+
+fn release_binary_name(manifest: &CargoManifest) -> cuenv_core::Result<String> {
+    manifest
         .get_package_names()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read packages: {e}")))?
         .into_iter()
         .next()
-        .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))?;
+        .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))
+}
 
-    // Parse targets
-    let release_targets: Vec<Target> = if let Some(target_strs) = opts.targets {
-        target_strs
-            .iter()
-            .map(|t| {
-                t.parse::<Target>().map_err(|e| {
-                    cuenv_core::Error::configuration(format!("Invalid target '{t}': {e}"))
-                })
-            })
-            .collect::<cuenv_core::Result<Vec<_>>>()?
-    } else {
-        vec![Target::LinuxX64, Target::LinuxArm64, Target::DarwinArm64]
+fn release_binary_targets(targets: Option<&[String]>) -> cuenv_core::Result<Vec<Target>> {
+    let Some(targets) = targets else {
+        return Ok(vec![
+            Target::LinuxX64,
+            Target::LinuxArm64,
+            Target::DarwinArm64,
+        ]);
     };
 
-    // Build config
-    let config = OrchestratorConfig::new(&binary_name, &release_version)
-        .with_targets(release_targets)
-        .with_output_dir("target/release-artifacts")
-        .with_dry_run(opts.dry_run);
+    targets
+        .iter()
+        .map(|target| {
+            target.parse::<Target>().map_err(|e| {
+                cuenv_core::Error::configuration(format!("Invalid target '{target}': {e}"))
+            })
+        })
+        .collect()
+}
 
-    // Determine phase
-    let phase = match opts.phase {
+const fn release_binary_phase(phase: ReleaseBinariesPhase) -> ReleasePhase {
+    match phase {
         ReleaseBinariesPhase::Build => ReleasePhase::Build,
         ReleaseBinariesPhase::Package => ReleasePhase::Package,
         ReleaseBinariesPhase::Publish => ReleasePhase::Publish,
         ReleaseBinariesPhase::Full => ReleasePhase::Full,
-    };
+    }
+}
 
-    // Create backends
-    let mut backends: Vec<Box<dyn cuenv_release::ReleaseBackend>> = Vec::new();
+fn release_binary_backends(
+    root: &Path,
+    binary_name: &str,
+    filter: Option<&[String]>,
+) -> Vec<Box<dyn ReleaseBackend>> {
+    let mut backends: Vec<Box<dyn ReleaseBackend>> = Vec::new();
 
-    // Add GitHub Releases backend if available
     #[cfg(feature = "github")]
-    {
-        if let Ok(token) = std::env::var("GITHUB_TOKEN") {
-            // Try to get repo info from git remote
-            if let Some((owner, repo)) = get_github_repo_from_remote(root) {
-                let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token);
-                backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
-            }
-        }
-    }
+    add_github_release_backend(&mut backends, root);
+    #[cfg(not(feature = "github"))]
+    let _ = root;
 
-    // Add Homebrew backend if available
     #[cfg(feature = "homebrew")]
-    {
-        // Only add if token is available (indicates intent to publish)
-        if std::env::var("HOMEBREW_TAP_TOKEN").is_ok() {
-            // TODO: Load tap config from CUE release config
-            // For now, use a sensible default based on project name
-            let tap = format!("{binary_name}/homebrew-tap");
-            let config = cuenv_homebrew::HomebrewConfig::new(&tap, &binary_name)
-                .with_license("AGPL-3.0-or-later")
-                .with_homepage(format!("https://github.com/{binary_name}"));
-            backends.push(Box::new(cuenv_homebrew::HomebrewBackend::new(config)));
-        }
-    }
+    add_homebrew_release_backend(&mut backends, binary_name);
+    #[cfg(not(feature = "homebrew"))]
+    let _ = binary_name;
 
-    // Apply backend filter if specified
-    if let Some(ref filter) = opts.backends {
+    if let Some(filter) = filter {
         let filter_lower: Vec<String> = filter.iter().map(|s| s.to_lowercase()).collect();
-        backends.retain(|b| filter_lower.contains(&b.name().to_lowercase()));
+        backends.retain(|backend| filter_lower.contains(&backend.name().to_lowercase()));
     }
 
-    // Create orchestrator with backends
-    let orchestrator = ReleaseOrchestrator::new(config).with_backends(backends);
+    backends
+}
 
-    // Run orchestrator
-    let report = orchestrator
+#[cfg(feature = "github")]
+fn add_github_release_backend(backends: &mut Vec<Box<dyn ReleaseBackend>>, root: &Path) {
+    if let Ok(token) = std::env::var("GITHUB_TOKEN")
+        && let Some((owner, repo)) = get_github_repo_from_remote(root)
+    {
+        let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token);
+        backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
+    }
+}
+
+#[cfg(feature = "homebrew")]
+fn add_homebrew_release_backend(backends: &mut Vec<Box<dyn ReleaseBackend>>, binary_name: &str) {
+    if std::env::var("HOMEBREW_TAP_TOKEN").is_err() {
+        return;
+    }
+
+    // TODO: Load tap config from CUE release config.
+    let tap = format!("{binary_name}/homebrew-tap");
+    let config = cuenv_homebrew::HomebrewConfig::new(&tap, binary_name)
+        .with_license("AGPL-3.0-or-later")
+        .with_homepage(format!("https://github.com/{binary_name}"));
+    backends.push(Box::new(cuenv_homebrew::HomebrewBackend::new(config)));
+}
+
+async fn run_release_binaries(
+    config: OrchestratorConfig,
+    backends: Vec<Box<dyn ReleaseBackend>>,
+    phase: ReleasePhase,
+) -> cuenv_core::Result<ReleaseReport> {
+    ReleaseOrchestrator::new(config)
+        .with_backends(backends)
         .run(phase)
         .await
-        .map_err(|e| cuenv_core::Error::configuration(format!("Release failed: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("Release failed: {e}")))
+}
 
-    // Format output
+struct ReleaseBinariesOutput<'a> {
+    dry_run: cuenv_core::DryRun,
+    binary_name: &'a str,
+    release_version: &'a str,
+    report: &'a ReleaseReport,
+}
+
+fn format_release_binaries_output(summary: &ReleaseBinariesOutput<'_>) -> String {
     let mut output = String::new();
 
-    if opts.dry_run.is_dry_run() {
+    if summary.dry_run.is_dry_run() {
         output.push_str("[dry-run] ");
     }
 
-    output.push_str(&format!("Release {binary_name} v{release_version}\n"));
-    output.push_str(&format!("Phase: {:?}\n", report.phase));
+    let _ = writeln!(
+        output,
+        "Release {} v{}",
+        summary.binary_name, summary.release_version
+    );
+    let _ = writeln!(output, "Phase: {:?}", summary.report.phase);
 
-    if !report.artifacts.is_empty() {
+    if !summary.report.artifacts.is_empty() {
         output.push_str("\nArtifacts:\n");
-        for artifact in &report.artifacts {
-            output.push_str(&format!(
-                "  - {} ({})\n",
+        for artifact in &summary.report.artifacts {
+            let _ = writeln!(
+                output,
+                "  - {} ({})",
                 artifact.archive_name, artifact.sha256
-            ));
+            );
         }
     }
 
-    if !report.backend_results.is_empty() {
+    if !summary.report.backend_results.is_empty() {
         output.push_str("\nBackend results:\n");
-        for result in &report.backend_results {
+        for result in &summary.report.backend_results {
             let status = if result.success { "✓" } else { "✗" };
-            output.push_str(&format!(
-                "  {} {}: {}\n",
+            let _ = writeln!(
+                output,
+                "  {} {}: {}",
                 status, result.backend, result.message
-            ));
+            );
             if let Some(url) = &result.url {
-                output.push_str(&format!("      URL: {url}\n"));
+                let _ = writeln!(output, "      URL: {url}");
             }
         }
     }
 
-    if report.success {
+    if summary.report.success {
         output.push_str("\nRelease completed successfully.\n");
     } else {
         output.push_str("\nRelease completed with errors.\n");
     }
 
-    Ok(output)
+    output
 }
 
 /// Gets the GitHub owner/repo from the git remote origin.
