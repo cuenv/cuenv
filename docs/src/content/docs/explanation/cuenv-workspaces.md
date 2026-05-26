@@ -184,6 +184,10 @@ small parser state that handles headers, version/resolved/integrity fields, and
 dependency lines without keeping the fallback path as one monolithic parser
 function.
 
+Yarn Modern parsing keeps descriptor splitting, protocol detection, and
+git-resolution parsing in separate helpers so scoped package handling stays out
+of the lockfile entry assembly path.
+
 ### Detection Functions
 
 ```rust
