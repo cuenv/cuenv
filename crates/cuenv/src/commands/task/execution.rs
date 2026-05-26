@@ -1,7 +1,7 @@
 use super::dag_export;
 use super::discovery::evaluate_manifest;
 use super::list_builder::prepare_task_index;
-use super::rendering::{format_task_detail, get_task_cli_help, render_task_tree};
+use super::rendering::get_task_cli_help;
 use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 use super::{
     build_task_cache, execute_task_with_strategy, execute_with_rich_tui, format_task_results,
@@ -21,10 +21,12 @@ use cuenv_core::{DryRun, OutputCapture, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+mod help;
 mod listing;
 mod picker;
 mod selection;
 
+use help::maybe_render_task_help;
 use listing::maybe_render_task_list;
 use picker::maybe_run_interactive_picker;
 use selection::{TaskResolution, resolve_task_selection, validate_task_selection};
@@ -194,39 +196,6 @@ pub(super) async fn execute_task_impl(request: &TaskExecutionRequest<'_>) -> Res
         runtime,
     })
     .await
-}
-
-fn maybe_render_task_help(
-    input: &TaskExecutionInput<'_>,
-    context: &TaskExecutionContext,
-) -> Result<Option<String>> {
-    if !input.shows_help() {
-        return Ok(None);
-    }
-
-    let requested_task = input.task_name.ok_or_else(|| {
-        cuenv_core::Error::configuration("task name required when no labels provided")
-    })?;
-    let prefix = format!("{requested_task}.");
-    let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = context
-        .task_index
-        .list()
-        .iter()
-        .filter(|task| task.name == requested_task || task.name.starts_with(&prefix))
-        .copied()
-        .collect();
-
-    if subtasks.is_empty() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "Task '{requested_task}' not found",
-        )));
-    }
-
-    if subtasks.len() == 1 && subtasks[0].name == requested_task {
-        return Ok(Some(format_task_detail(subtasks[0])));
-    }
-
-    Ok(Some(render_task_tree(subtasks, None)))
 }
 
 fn build_execution_graph(
