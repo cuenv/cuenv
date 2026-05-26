@@ -31,6 +31,7 @@ Event surface (`cuenv-events`):
 - `cuenv-events::register_secret(...)` / `register_secrets(...)` enroll values; `redact(str)` rewrites them to `*_*`. The CLI renderer applies this automatically to anything routed through its output path; direct command output should use `println_redacted`, `print_redacted`, `eprintln_redacted`, or `eprint_redacted` instead of raw print macros.
 - `ExecutorConfig::continue_on_error` makes `cuenv task` and library callers honour the same DAG semantics as `ci.pipelines[*].continueOnError` — dependents of a failing task get `task.skipped { DependencyFailed }` and independent siblings keep running. Panics / `JoinError` are still fatal.
 - `cuenv-events` emits via a process-wide `EventSender` installed by `set_global_sender` at startup. The `emit_*!` macros and `cuenv_events::emit(category)` / `emit_with_source(source, category)` both go through it directly. `CuenvEventLayer` is retained as a public type so callers that emit via `tracing::info!(target: "cuenv::...")` still flow into the bus, but the in-tree macros bypass it.
+- The exported `emit_*!` macro definitions live in `crates/events/src/macros.rs`; crate-root hidden helpers remain available for `$crate` expansion and redacted print helpers.
 
 Adversarial prompts:
 

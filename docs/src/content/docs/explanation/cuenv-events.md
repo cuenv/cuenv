@@ -44,6 +44,12 @@ Broadcast channel for distributing events to multiple subscribers.
 **CuenvEventLayer**
 Optional tracing layer that captures legacy structured tracing events.
 
+**Emit macros**
+Exported `emit_*!` macro definitions live in `crates/events/src/macros.rs`.
+They publish typed event categories directly through the process-wide sender;
+the crate root keeps only the hidden parsing helpers required by `$crate` macro
+expansion and the redacted print helpers.
+
 **Renderers**
 CLI and JSON output formatters for events.
 
