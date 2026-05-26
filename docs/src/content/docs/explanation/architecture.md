@@ -110,8 +110,9 @@ CLI parsing lives in `crates/cuenv/src/cli.rs`, conversion into the internal
 command model lives in `crates/cuenv/src/cli/command_conversion.rs`, and
 executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`. Startup,
 runtime selection, and internal supervisor entrypoints stay in
-`crates/cuenv/src/main.rs`; the no-Tokio fast path for sync commands is isolated
-in `crates/cuenv/src/sync_dispatch.rs`.
+`crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated
+in `crates/cuenv/src/sync_dispatch.rs` and
+`crates/cuenv/src/async_dispatch.rs`.
 
 ### cuenv-workspaces
 
