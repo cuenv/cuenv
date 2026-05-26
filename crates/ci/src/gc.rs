@@ -3,7 +3,7 @@
 //! LRU-based cleanup for local cache and optionally Nix store closures.
 
 // GC involves complex file system traversal with LRU and size calculations
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+#![allow(clippy::cognitive_complexity)]
 
 use cuenv_core::DryRun;
 use std::fs::{self, Metadata};
@@ -54,6 +54,11 @@ struct CacheEntry {
     path: PathBuf,
     size: u64,
     last_accessed: SystemTime,
+}
+
+struct CacheSweep {
+    entries: Vec<CacheEntry>,
+    current_size: u64,
 }
 
 /// Garbage collector configuration
@@ -147,12 +152,24 @@ impl GarbageCollector {
         let start = std::time::Instant::now();
         let mut stats = GCStats::default();
 
+        let Some(sweep) = self.prepare_cache_sweep(&mut stats)? else {
+            return Ok(stats);
+        };
+
+        stats.current_size = self.remove_stale_or_oversized_entries(sweep, &mut stats);
+        self.run_nix_gc_if_requested();
+        Self::finish_run(start, &mut stats);
+
+        Ok(stats)
+    }
+
+    fn prepare_cache_sweep(&self, stats: &mut GCStats) -> Result<Option<CacheSweep>, GCError> {
         if !self.config.cache_dir.exists() {
             tracing::debug!(
                 dir = %self.config.cache_dir.display(),
                 "Cache directory does not exist, nothing to clean"
             );
-            return Ok(stats);
+            return Ok(None);
         }
 
         // Collect all cache entries
@@ -170,12 +187,19 @@ impl GarbageCollector {
         // Sort by last accessed (oldest first)
         entries.sort_by_key(|e| e.last_accessed);
 
+        Ok(Some(CacheSweep {
+            entries,
+            current_size: total_size,
+        }))
+    }
+
+    fn remove_stale_or_oversized_entries(&self, sweep: CacheSweep, stats: &mut GCStats) -> u64 {
         let now = SystemTime::now();
         let max_age = Duration::from_secs(u64::from(self.config.max_age_days) * 24 * 60 * 60);
-        let mut current_size = total_size;
+        let mut current_size = sweep.current_size;
 
         // Remove entries that are too old or exceed size limit
-        for entry in entries {
+        for entry in sweep.entries {
             let age = now
                 .duration_since(entry.last_accessed)
                 .unwrap_or(Duration::ZERO);
@@ -219,16 +243,19 @@ impl GarbageCollector {
             }
         }
 
-        stats.current_size = current_size;
+        current_size
+    }
 
-        // Run Nix GC if configured
+    fn run_nix_gc_if_requested(&self) {
         if self.config.run_nix_gc
             && !self.config.dry_run.is_dry_run()
             && let Err(e) = Self::run_nix_gc()
         {
             tracing::warn!(error = %e, "Nix garbage collection failed");
         }
+    }
 
+    fn finish_run(start: std::time::Instant, stats: &mut GCStats) {
         stats.duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         tracing::info!(
@@ -238,8 +265,6 @@ impl GarbageCollector {
             duration_ms = stats.duration_ms,
             "Garbage collection complete"
         );
-
-        Ok(stats)
     }
 
     /// Scan the cache directory and collect all cache entries with their metadata.
