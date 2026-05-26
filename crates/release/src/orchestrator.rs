@@ -175,8 +175,8 @@ impl ReleaseOrchestrator {
     /// - Backend publish failed
     pub async fn run(&self, phase: ReleasePhase) -> Result<ReleaseReport> {
         match phase {
-            ReleasePhase::Build => self.build().await,
-            ReleasePhase::Package => self.package().await,
+            ReleasePhase::Build => Ok(self.build()),
+            ReleasePhase::Package => self.package(),
             ReleasePhase::Publish => self.publish_only().await,
             ReleasePhase::Full => self.full_pipeline().await,
         }
@@ -187,8 +187,7 @@ impl ReleaseOrchestrator {
     /// This phase compiles the project for each target platform.
     /// Currently a placeholder - actual cross-compilation is handled
     /// by CI matrix builds.
-    #[allow(clippy::unused_async)]
-    async fn build(&self) -> Result<ReleaseReport> {
+    fn build(&self) -> ReleaseReport {
         info!(
             targets = ?self.config.targets,
             "Build phase (cross-compilation handled by CI)"
@@ -201,27 +200,18 @@ impl ReleaseOrchestrator {
             );
         }
 
-        Ok(ReleaseReport::empty(ReleasePhase::Build))
+        ReleaseReport::empty(ReleasePhase::Build)
     }
 
     /// Packages binaries into tarballs with checksums.
-    #[allow(clippy::unused_async, clippy::too_many_lines)]
-    async fn package(&self) -> Result<ReleaseReport> {
+    fn package(&self) -> Result<ReleaseReport> {
         info!(
             targets = ?self.config.targets,
             output_dir = %self.config.output_dir.display(),
             "Packaging artifacts"
         );
 
-        // Ensure output directory exists
-        if !self.config.dry_run.is_dry_run() {
-            std::fs::create_dir_all(&self.config.output_dir).map_err(|e| {
-                Error::artifact(
-                    format!("Failed to create output directory: {e}"),
-                    Some(self.config.output_dir.clone()),
-                )
-            })?;
-        }
+        self.ensure_output_dir()?;
 
         let mut packaged_artifacts = Vec::new();
         let mut checksums = ChecksumsManifest::new();
@@ -233,24 +223,9 @@ impl ReleaseOrchestrator {
         );
 
         for target in &self.config.targets {
-            let binary_path = self.find_binary_for_target(*target)?;
-
-            if self.config.dry_run.is_dry_run() {
-                info!(
-                    target = %target.short_id(),
-                    binary = %binary_path.display(),
-                    "[dry-run] Would package artifact"
-                );
+            let Some(packaged) = self.package_target(&builder, *target)? else {
                 continue;
-            }
-
-            let artifact = Artifact {
-                target: *target,
-                binary_path,
-                name: self.config.name.clone(),
             };
-
-            let packaged = builder.package(&artifact)?;
 
             debug!(
                 archive = %packaged.archive_name,
@@ -262,12 +237,7 @@ impl ReleaseOrchestrator {
             packaged_artifacts.push(packaged);
         }
 
-        // Write checksums file
-        if !self.config.dry_run.is_dry_run() && !packaged_artifacts.is_empty() {
-            let checksums_path = self.config.output_dir.join("CHECKSUMS.txt");
-            checksums.write(&checksums_path)?;
-            info!(path = %checksums_path.display(), "Wrote checksums file");
-        }
+        self.write_checksums_if_needed(&checksums, &packaged_artifacts)?;
 
         Ok(ReleaseReport::with_artifacts(
             ReleasePhase::Package,
@@ -291,10 +261,10 @@ impl ReleaseOrchestrator {
     /// Runs the full pipeline: build, package, publish.
     async fn full_pipeline(&self) -> Result<ReleaseReport> {
         // Build phase
-        self.build().await?;
+        self.build();
 
         // Package phase
-        let package_report = self.package().await?;
+        let package_report = self.package()?;
 
         // Publish phase
         let mut report = self.publish_artifacts(&package_report.artifacts).await?;
@@ -400,68 +370,128 @@ impl ReleaseOrchestrator {
         ))
     }
 
-    /// Loads existing packaged artifacts from the output directory.
-    #[allow(clippy::too_many_lines)] // Artifact loading has multiple file operations
-    fn load_existing_artifacts(&self) -> Result<Vec<PackagedArtifact>> {
-        let mut artifacts = Vec::new();
+    fn ensure_output_dir(&self) -> Result<()> {
+        if self.config.dry_run.is_dry_run() {
+            return Ok(());
+        }
 
-        // Load checksums first
-        let checksums_path = self.config.output_dir.join("CHECKSUMS.txt");
-        let checksums: std::collections::HashMap<String, String> = if checksums_path.exists() {
-            let content = std::fs::read_to_string(&checksums_path).map_err(|e| {
-                Error::artifact(
-                    format!("Failed to read checksums: {e}"),
-                    Some(checksums_path.clone()),
-                )
-            })?;
+        std::fs::create_dir_all(&self.config.output_dir).map_err(|e| {
+            Error::artifact(
+                format!("Failed to create output directory: {e}"),
+                Some(self.config.output_dir.clone()),
+            )
+        })
+    }
 
-            content
-                .lines()
-                .filter_map(|line| {
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    if parts.len() >= 2 {
-                        Some((parts[1].to_string(), parts[0].to_string()))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        } else {
-            std::collections::HashMap::new()
+    fn package_target(
+        &self,
+        builder: &ArtifactBuilder,
+        target: Target,
+    ) -> Result<Option<PackagedArtifact>> {
+        let binary_path = self.find_binary_for_target(target)?;
+
+        if self.config.dry_run.is_dry_run() {
+            info!(
+                target = %target.short_id(),
+                binary = %binary_path.display(),
+                "[dry-run] Would package artifact"
+            );
+            return Ok(None);
+        }
+
+        let artifact = Artifact {
+            target,
+            binary_path,
+            name: self.config.name.clone(),
         };
 
-        // Find all tarballs
+        builder.package(&artifact).map(Some)
+    }
+
+    fn write_checksums_if_needed(
+        &self,
+        checksums: &ChecksumsManifest,
+        packaged_artifacts: &[PackagedArtifact],
+    ) -> Result<()> {
+        if self.config.dry_run.is_dry_run() || packaged_artifacts.is_empty() {
+            return Ok(());
+        }
+
+        let checksums_path = self.config.output_dir.join("CHECKSUMS.txt");
+        checksums.write(&checksums_path)?;
+        info!(path = %checksums_path.display(), "Wrote checksums file");
+        Ok(())
+    }
+
+    /// Loads existing packaged artifacts from the output directory.
+    fn load_existing_artifacts(&self) -> Result<Vec<PackagedArtifact>> {
+        let mut artifacts = Vec::new();
+        let checksums = self.load_checksums_manifest()?;
+
         for target in &self.config.targets {
-            let archive_name = format!(
-                "{}-{}-{}-{}.tar.gz",
-                self.config.name,
-                self.config.version,
-                target.os(),
-                target.arch()
-            );
-            let archive_path = self.config.output_dir.join(&archive_name);
-            let checksum_path = self
-                .config
-                .output_dir
-                .join(format!("{archive_name}.sha256"));
-
-            if archive_path.exists() {
-                let sha256 = checksums
-                    .get(&archive_name)
-                    .cloned()
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                artifacts.push(PackagedArtifact {
-                    target: *target,
-                    archive_path,
-                    checksum_path,
-                    archive_name,
-                    sha256,
-                });
+            if let Some(artifact) = self.load_existing_target_artifact(*target, &checksums) {
+                artifacts.push(artifact);
             }
         }
 
         Ok(artifacts)
+    }
+
+    fn load_checksums_manifest(&self) -> Result<std::collections::HashMap<String, String>> {
+        let checksums_path = self.config.output_dir.join("CHECKSUMS.txt");
+        if !checksums_path.exists() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let content = std::fs::read_to_string(&checksums_path).map_err(|e| {
+            Error::artifact(
+                format!("Failed to read checksums: {e}"),
+                Some(checksums_path.clone()),
+            )
+        })?;
+
+        Ok(content
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                (parts.len() >= 2).then(|| (parts[1].to_string(), parts[0].to_string()))
+            })
+            .collect())
+    }
+
+    fn load_existing_target_artifact(
+        &self,
+        target: Target,
+        checksums: &std::collections::HashMap<String, String>,
+    ) -> Option<PackagedArtifact> {
+        let archive_name = format!(
+            "{}-{}-{}-{}.tar.gz",
+            self.config.name,
+            self.config.version,
+            target.os(),
+            target.arch()
+        );
+        let archive_path = self.config.output_dir.join(&archive_name);
+        if !archive_path.exists() {
+            return None;
+        }
+
+        let checksum_path = self
+            .config
+            .output_dir
+            .join(format!("{archive_name}.sha256"));
+        let sha256 = checksums
+            .get(&archive_name)
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string());
+
+        Some(PackagedArtifact {
+            target,
+            archive_path,
+            checksum_path,
+            archive_name,
+            sha256,
+        })
     }
 }
 
