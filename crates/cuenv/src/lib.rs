@@ -22,11 +22,14 @@
 //! use cuenv::{Cuenv, SyncCapability};
 //!
 //! fn main() -> cuenv::Result<()> {
-//!     Cuenv::builder()
+//!     let cuenv = Cuenv::builder()
 //!         .with_defaults()
 //!         .with_sync_provider(my_provider::CustomProvider::new())
-//!         .build()
-//!         .run()
+//!         .build();
+//!
+//!     let sync_command = cuenv.build_sync_command();
+//!     // Wire sync_command into your own CLI dispatcher.
+//!     Ok(())
 //! }
 //! ```
 //!
@@ -81,8 +84,6 @@ pub use builder::CuenvBuilder;
 pub use cuenv_core::Result;
 pub use provider::{Provider, RuntimeCapability, SecretCapability, SyncCapability};
 pub use registry::ProviderRegistry;
-
-use crate::cli::EXIT_OK;
 
 /// The main cuenv application.
 ///
@@ -166,42 +167,6 @@ impl Cuenv {
 
         sync_cmd
     }
-
-    /// Run the cuenv CLI (placeholder).
-    ///
-    /// **Note**: This method is a placeholder for future library-driven CLI execution.
-    /// Currently, the full CLI logic remains in the binary (`main.rs`).
-    ///
-    /// For now, use the `cuenv` binary directly or the individual provider APIs
-    /// like [`build_sync_command()`](Self::build_sync_command).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if command execution fails.
-    #[doc(hidden)]
-    pub fn run(self) -> Result<()> {
-        // Placeholder: In the future, this will parse args using build_sync_command()
-        // and dispatch to providers. For now, return success as the binary handles CLI.
-        let exit_code = run_cli_with_registry(self);
-        if exit_code == EXIT_OK {
-            Ok(())
-        } else {
-            Err(cuenv_core::Error::configuration(format!(
-                "Command failed with exit code {exit_code}"
-            )))
-        }
-    }
-}
-
-/// Run the CLI with the given cuenv instance.
-///
-/// This is a placeholder that will be expanded to use the registry
-/// for dynamic CLI generation in the future.
-fn run_cli_with_registry(_cuenv: Cuenv) -> i32 {
-    // For now, this just returns OK
-    // The actual CLI logic remains in main.rs
-    // Future: Use cuenv.registry to build dynamic CLI
-    EXIT_OK
 }
 
 /// Exit code for SIGINT (128 + signal number 2)
@@ -254,22 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn test_run_with_empty_registry() {
-        let cuenv = Cuenv::builder().build();
-        let result = cuenv.run();
-        // Should succeed (placeholder returns OK)
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_run_with_defaults() {
-        let cuenv = Cuenv::with_defaults();
-        let result = cuenv.run();
-        // Should succeed (placeholder returns OK)
-        assert!(result.is_ok());
-    }
-
-    #[test]
     fn test_exit_sigint_constant() {
         // SIGINT exit code is 128 + 2 = 130
         assert_eq!(EXIT_SIGINT, 130);
@@ -296,11 +245,5 @@ mod tests {
         assert!(args.contains(&"dry-run"));
         assert!(args.contains(&"check"));
         assert!(args.contains(&"all"));
-    }
-
-    #[test]
-    fn test_run_cli_with_registry_returns_ok() {
-        let exit_code = run_cli_with_registry(Cuenv::builder().build());
-        assert_eq!(exit_code, EXIT_OK);
     }
 }

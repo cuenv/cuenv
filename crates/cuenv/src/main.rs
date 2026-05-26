@@ -6,19 +6,10 @@
 //! ## Future Direction
 //!
 //! This binary is transitioning to a library-first architecture (ADR-0006).
-//! The eventual goal is:
-//!
-//! ```ignore
-//! fn main() -> cuenv::Result<()> {
-//!     cuenv::Cuenv::builder()
-//!         .with_defaults()
-//!         .build()
-//!         .run()
-//! }
-//! ```
-//!
-//! Currently, the CLI logic remains here while the library infrastructure
-//! is being developed. See `cuenv::Cuenv` for the library API.
+//! The eventual goal is to move CLI dispatch behind the library provider
+//! registry. Currently, command dispatch remains here while the library exposes
+//! provider registration and dynamic sync command construction through
+//! `cuenv::Cuenv`.
 
 // expect_used is allowed for infallible operations like writing to strings
 #![allow(clippy::expect_used)]

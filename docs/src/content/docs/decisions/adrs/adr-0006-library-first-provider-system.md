@@ -45,12 +45,18 @@ The binary becomes a thin wrapper:
 
 ```rust
 fn main() -> cuenv::Result<()> {
-    cuenv::Cuenv::builder()
+    let cuenv = cuenv::Cuenv::builder()
         .with_defaults()
-        .build()
-        .run()
+        .build();
+
+    cuenv.run_cli()
 }
 ```
+
+The library should only expose that entrypoint once command dispatch actually
+lives behind the provider registry. Until then, the binary remains the canonical
+CLI dispatcher and the library exposes provider registration plus dynamic command
+construction.
 
 ### 2. Unified Provider System
 
@@ -112,7 +118,6 @@ Cuenv::builder()
     .with_runtime_provider(DaggerRuntime::new()) // RuntimeCapability
     .with_secret_provider(VaultProvider::new())  // SecretCapability
     .build()
-    .run()
 ```
 
 For multi-capability providers, register them for each capability they implement:
@@ -211,7 +216,10 @@ static _: &dyn Provider = &CiProvider;
 
 ## Status
 
-Accepted — implemented in PR #234.
+Accepted — partially implemented in PR #234. The library target, provider
+traits, registry, builder, and dynamic sync command construction are implemented.
+Full CLI dispatch still lives in `crates/cuenv/src/main.rs`; a library-level
+`run_cli` entrypoint should be added only when it dispatches real commands.
 
 ## Implementation Order
 

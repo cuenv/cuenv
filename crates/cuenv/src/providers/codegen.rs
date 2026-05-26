@@ -26,10 +26,10 @@ use crate::provider::{Provider, SyncCapability};
 /// use cuenv::Cuenv;
 /// use cuenv::providers::CodegenProvider;
 ///
-/// Cuenv::builder()
+/// let cuenv = Cuenv::builder()
 ///     .with_sync_provider(CodegenProvider::new())
-///     .build()
-///     .run()
+///     .build();
+/// let sync_command = cuenv.build_sync_command();
 /// ```
 pub struct CodegenProvider;
 

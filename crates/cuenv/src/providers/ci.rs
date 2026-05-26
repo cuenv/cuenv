@@ -27,10 +27,10 @@ use crate::provider::{Provider, SyncCapability};
 /// use cuenv::Cuenv;
 /// use cuenv::providers::CiProvider;
 ///
-/// Cuenv::builder()
+/// let cuenv = Cuenv::builder()
 ///     .with_sync_provider(CiProvider::new())
-///     .build()
-///     .run()
+///     .build();
+/// let sync_command = cuenv.build_sync_command();
 /// ```
 pub struct CiProvider;
 

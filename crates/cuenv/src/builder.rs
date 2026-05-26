@@ -8,12 +8,13 @@
 //! ```no_run
 //! use cuenv::Cuenv;
 //!
-//! fn main() -> cuenv::Result<()> {
-//!     Cuenv::builder()
+//! fn main() {
+//!     let cuenv = Cuenv::builder()
 //!         .with_defaults()
 //!         // .with_sync_provider(my_provider::CustomProvider::new())
-//!         .build()
-//!         .run()
+//!         .build();
+//!
+//!     let _sync_command = cuenv.build_sync_command();
 //! }
 //! ```
 
