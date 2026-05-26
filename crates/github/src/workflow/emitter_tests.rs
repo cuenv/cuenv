@@ -1,5 +1,5 @@
 use super::*;
-use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, TriggerCondition};
+use cuenv_ci::ir::{CachePolicy, PipelineMetadata, ResourceRequirements, Task, TriggerCondition};
 use cuenv_core::ci::PipelineMode;
 use std::collections::BTreeMap;
 

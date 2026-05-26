@@ -130,8 +130,10 @@ codegen file check/write/diff behavior lives in
 sync and workflow-shape emission helpers live in
 `crates/cuenv/src/commands/sync/functions/github.rs`.
 GitHub Actions release workflow construction is separated into
-`crates/github/src/workflow/release.rs`, leaving the general emitter focused on
-normal workflow triggers, permissions, and job construction.
+`crates/github/src/workflow/release.rs`; bootstrap, simple, matrix, and
+artifact job construction lives in `crates/github/src/workflow/jobs.rs`;
+the general emitter stays focused on workflow naming, triggers, permissions,
+and serialization.
 
 ### cuenv-ci
 
