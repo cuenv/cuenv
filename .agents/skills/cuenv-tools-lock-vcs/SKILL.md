@@ -10,6 +10,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/tools.cue` for `#ToolsRuntime`, `#Tool`, overrides, source unions, extracts, and activation.
 - `schema/vcs.cue` for VCS dependency definitions.
 - `crates/cuenv/src/commands/tools.rs` and sync providers when behavior matters.
+- `crates/ci/src/executor/tools.rs` for CI task tool downloads and lockfile activation.
 - `crates/tools/url/src/lib.rs` for URL resolution/cache placement and `crates/tools/url/src/extract.rs` for URL archive extraction behavior.
 
 Status guardrails:

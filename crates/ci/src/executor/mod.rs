@@ -6,6 +6,7 @@ pub mod config;
 mod orchestrator;
 pub mod runner;
 pub mod secrets;
+mod tools;
 
 pub use config::CIExecutorConfig;
 pub use orchestrator::run_ci;

@@ -11,6 +11,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/release.cue` for release targets, backends, git/tag config, versioning, changelogs, changesets, and package changes.
 - `crates/cuenv/src/commands/sync`, `crates/cuenv/src/commands/release.rs`, and `crates/cuenv/src/commands/release/` when behavior matters.
 - `crates/cuenv/src/commands/sync/functions/github.rs` for GitHub workflow sync and matrix workflow emission behavior.
+- `crates/ci/src/executor/orchestrator.rs` for pipeline scheduling/reporting and `crates/ci/src/executor/tools.rs` for CI task tool activation.
 
 Status guardrails:
 
