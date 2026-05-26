@@ -32,7 +32,9 @@ use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
 use cuenv_events::renderers::{CliRenderer, JsonRenderer};
-use cuenv_hooks::{ExecutionStatus, Hook, HookExecutionConfig, StateManager, execute_hooks};
+use cuenv_hooks::{
+    ExecutionStatus, Hook, HookExecutionConfig, HookExecutionState, StateManager, execute_hooks,
+};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::instrument;
@@ -1456,50 +1458,102 @@ fn find_lockfile() -> Option<PathBuf> {
     }
 }
 
-/// Run as a hook supervisor process
-#[allow(clippy::too_many_lines)]
-async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
-    // Parse supervisor arguments
-    let mut directory_path = PathBuf::new();
-    let mut instance_hash = String::new();
-    let mut hooks_file = PathBuf::new();
-    let mut config_file = PathBuf::new();
+struct HookSupervisorArgs {
+    directory_path: PathBuf,
+    instance_hash: String,
+    hooks_file: PathBuf,
+    config_file: PathBuf,
+}
 
-    let mut i = 2; // Skip program name and "__hook-supervisor"
+struct HookSupervisorFiles {
+    hooks: Vec<Hook>,
+    config: HookExecutionConfig,
+}
+
+struct HookSupervisorState {
+    manager: StateManager,
+    pid_file: PathBuf,
+}
+
+struct HookSupervisorRun<'a> {
+    files: HookSupervisorFiles,
+    args: &'a HookSupervisorArgs,
+    state_context: &'a HookSupervisorState,
+    state: &'a mut HookExecutionState,
+}
+
+/// Run as a hook supervisor process.
+async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
+    let supervisor_args = parse_hook_supervisor_args(&args);
+
+    init_hook_supervisor_logging();
+    enter_hook_supervisor_directory(&supervisor_args.directory_path)?;
+    log_hook_supervisor_start(&supervisor_args, &args);
+
+    let files = load_hook_supervisor_files(&supervisor_args)?;
+    let state_context = prepare_hook_supervisor_state(&supervisor_args, &files.config)?;
+    let mut state =
+        load_hook_supervisor_state(&state_context, &supervisor_args.instance_hash).await?;
+
+    execute_hook_supervisor_run(HookSupervisorRun {
+        files,
+        args: &supervisor_args,
+        state_context: &state_context,
+        state: &mut state,
+    })
+    .await?;
+
+    std::fs::remove_file(&state_context.pid_file).ok();
+    cuenv_events::emit_supervisor_log!("supervisor", "Completed successfully");
+    Ok(())
+}
+
+fn parse_hook_supervisor_args(args: &[String]) -> HookSupervisorArgs {
+    let mut parsed = HookSupervisorArgs {
+        directory_path: PathBuf::new(),
+        instance_hash: String::new(),
+        hooks_file: PathBuf::new(),
+        config_file: PathBuf::new(),
+    };
+
+    let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--directory" => {
-                directory_path = PathBuf::from(&args[i + 1]);
+                parsed.directory_path = PathBuf::from(&args[i + 1]);
                 i += 2;
             }
             "--instance-hash" => {
-                instance_hash.clone_from(&args[i + 1]);
+                parsed.instance_hash.clone_from(&args[i + 1]);
                 i += 2;
             }
             "--config-hash" => {
-                // Config hash is passed but not currently used in supervisor
                 i += 2;
             }
             "--hooks-file" => {
-                hooks_file = PathBuf::from(&args[i + 1]);
+                parsed.hooks_file = PathBuf::from(&args[i + 1]);
                 i += 2;
             }
             "--config-file" => {
-                config_file = PathBuf::from(&args[i + 1]);
+                parsed.config_file = PathBuf::from(&args[i + 1]);
                 i += 2;
             }
             _ => i += 1,
         }
     }
 
-    // Initialize basic logging for supervisor to stderr
+    parsed
+}
+
+fn init_hook_supervisor_logging() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .try_init();
+}
 
-    // Change to the target directory so hooks run in the correct context
-    if let Err(e) = std::env::set_current_dir(&directory_path) {
+fn enter_hook_supervisor_directory(directory_path: &PathBuf) -> Result<(), CliError> {
+    if let Err(e) = std::env::set_current_dir(directory_path) {
         cuenv_events::emit_supervisor_log!(
             "supervisor",
             format!(
@@ -1511,37 +1565,52 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         return Err(CliError::other(format!("Failed to change directory: {e}")));
     }
 
-    cuenv_events::emit_supervisor_log!("supervisor", format!("Starting with args: {args:?}"));
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Directory: {}", directory_path.display())
-    );
-    cuenv_events::emit_supervisor_log!("supervisor", format!("Instance hash: {instance_hash}"));
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Hooks file: {}", hooks_file.display())
-    );
-    cuenv_events::emit_supervisor_log!(
-        "supervisor",
-        format!("Config file: {}", config_file.display())
-    );
+    Ok(())
+}
 
-    // Read and deserialize hooks and config from files
-    let hooks_json = std::fs::read_to_string(&hooks_file)
+fn log_hook_supervisor_start(supervisor_args: &HookSupervisorArgs, raw_args: &[String]) {
+    cuenv_events::emit_supervisor_log!("supervisor", format!("Starting with args: {raw_args:?}"));
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Directory: {}", supervisor_args.directory_path.display())
+    );
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Instance hash: {}", supervisor_args.instance_hash)
+    );
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Hooks file: {}", supervisor_args.hooks_file.display())
+    );
+    cuenv_events::emit_supervisor_log!(
+        "supervisor",
+        format!("Config file: {}", supervisor_args.config_file.display())
+    );
+}
+
+fn load_hook_supervisor_files(
+    supervisor_args: &HookSupervisorArgs,
+) -> Result<HookSupervisorFiles, CliError> {
+    let hooks_json = std::fs::read_to_string(&supervisor_args.hooks_file)
         .map_err(|e| CliError::other(format!("Failed to read hooks file: {e}")))?;
-    let config_json = std::fs::read_to_string(&config_file)
+    let config_json = std::fs::read_to_string(&supervisor_args.config_file)
         .map_err(|e| CliError::other(format!("Failed to read config file: {e}")))?;
 
-    let hooks: Vec<Hook> = serde_json::from_str(&hooks_json)
+    let hooks = serde_json::from_str(&hooks_json)
         .map_err(|e| CliError::other(format!("Failed to deserialize hooks: {e}")))?;
-    let config: HookExecutionConfig = serde_json::from_str(&config_json)
+    let config = serde_json::from_str(&config_json)
         .map_err(|e| CliError::other(format!("Failed to deserialize config: {e}")))?;
 
-    // Clean up temp files after reading
-    std::fs::remove_file(&hooks_file).ok();
-    std::fs::remove_file(&config_file).ok();
+    std::fs::remove_file(&supervisor_args.hooks_file).ok();
+    std::fs::remove_file(&supervisor_args.config_file).ok();
 
-    // Write PID file
+    Ok(HookSupervisorFiles { hooks, config })
+}
+
+fn prepare_hook_supervisor_state(
+    supervisor_args: &HookSupervisorArgs,
+    config: &HookExecutionConfig,
+) -> Result<HookSupervisorState, CliError> {
     let state_dir = match config.state_dir.clone() {
         Some(dir) => dir,
         None => StateManager::default_state_dir()
@@ -1551,8 +1620,9 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
         "supervisor",
         format!("Using state dir: {}", state_dir.display())
     );
-    let state_manager = StateManager::new(state_dir);
-    let state_file = state_manager.get_state_file_path(&instance_hash);
+
+    let manager = StateManager::new(state_dir);
+    let state_file = manager.get_state_file_path(&supervisor_args.instance_hash);
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!("Looking for state file: {}", state_file.display())
@@ -1562,37 +1632,69 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
     std::fs::write(&pid_file, format!("{}", std::process::id()))
         .map_err(|e| CliError::other(format!("Failed to write PID file: {e}")))?;
 
-    // Load the current state
-    let mut state = state_manager
-        .load_state(&instance_hash)
+    Ok(HookSupervisorState { manager, pid_file })
+}
+
+async fn load_hook_supervisor_state(
+    state_context: &HookSupervisorState,
+    instance_hash: &str,
+) -> Result<HookExecutionState, CliError> {
+    state_context
+        .manager
+        .load_state(instance_hash)
         .await
         .map_err(|e| CliError::other(format!("Failed to load state: {e}")))?
-        .ok_or_else(|| CliError::other("State not found for supervisor"))?;
+        .ok_or_else(|| CliError::other("State not found for supervisor"))
+}
 
-    // Execute the hooks
+async fn execute_hook_supervisor_run(run: HookSupervisorRun<'_>) -> Result<(), CliError> {
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!(
             "Executing {} hooks for directory: {}",
-            hooks.len(),
-            directory_path.display()
+            run.files.hooks.len(),
+            run.args.directory_path.display()
         )
     );
-    let result = execute_hooks(hooks, &directory_path, &config, &state_manager, &mut state).await;
+
+    let result = execute_hooks(
+        run.files.hooks,
+        &run.args.directory_path,
+        &run.files.config,
+        &run.state_context.manager,
+        run.state,
+    )
+    .await;
 
     if let Err(e) = result {
-        cuenv_events::emit_supervisor_log!("supervisor", format!("Hook execution failed: {e}"));
-        state.status = ExecutionStatus::Failed;
-        state.error_message = Some(e.to_string());
-        state.finished_at = Some(chrono::Utc::now());
-        state_manager
-            .save_state(&state)
-            .await
-            .map_err(|e| CliError::other(format!("Failed to save error state: {e}")))?;
-        return Err(CliError::other(format!("Hook execution failed: {e}")));
+        let error = e.to_string();
+        save_hook_supervisor_failure(run.state_context, run.state, &error).await?;
+        return Err(CliError::other(format!("Hook execution failed: {error}")));
     }
 
-    // Save the final state with environment variables from source hooks
+    save_hook_supervisor_success(run.state_context, run.state).await
+}
+
+async fn save_hook_supervisor_failure(
+    state_context: &HookSupervisorState,
+    state: &mut HookExecutionState,
+    error: &str,
+) -> Result<(), CliError> {
+    cuenv_events::emit_supervisor_log!("supervisor", format!("Hook execution failed: {error}"));
+    state.status = ExecutionStatus::Failed;
+    state.error_message = Some(error.to_string());
+    state.finished_at = Some(chrono::Utc::now());
+    state_context
+        .manager
+        .save_state(state)
+        .await
+        .map_err(|e| CliError::other(format!("Failed to save error state: {e}")))
+}
+
+async fn save_hook_supervisor_success(
+    state_context: &HookSupervisorState,
+    state: &HookExecutionState,
+) -> Result<(), CliError> {
     cuenv_events::emit_supervisor_log!(
         "supervisor",
         format!(
@@ -1600,16 +1702,11 @@ async fn run_hook_supervisor(args: Vec<String>) -> Result<(), CliError> {
             state.environment_vars.len()
         )
     );
-    state_manager
-        .save_state(&state)
+    state_context
+        .manager
+        .save_state(state)
         .await
-        .map_err(|e| CliError::other(format!("Failed to save final state: {e}")))?;
-
-    // Clean up PID file
-    std::fs::remove_file(&pid_file).ok();
-
-    cuenv_events::emit_supervisor_log!("supervisor", "Completed successfully");
-    Ok(())
+        .map_err(|e| CliError::other(format!("Failed to save final state: {e}")))
 }
 
 /// Execute changeset add command safely
