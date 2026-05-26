@@ -38,7 +38,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::ExecutorError;
-use super::config::CIExecutorConfig;
 use super::runner::{IRTaskRunner, TaskOutput};
 
 /// Run the CI pipeline logic
@@ -353,7 +352,6 @@ pub struct PipelineExecutionRequest<'a> {
 /// Execute a project's pipeline and handle reporting
 ///
 /// Returns the pipeline status and a list of task failures (project path, error).
-#[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
     request: &PipelineExecutionRequest<'_>,
 ) -> Result<(PipelineStatus, Vec<(String, cuenv_core::Error)>)> {
@@ -368,38 +366,8 @@ async fn execute_project_pipeline(
     let project_configs = request.project_configs;
 
     let start_time = Utc::now();
-    let mut tasks_reports = Vec::new();
-    let mut pipeline_status = PipelineStatus::Success;
-    let mut task_errors: Vec<(String, cuenv_core::Error)> = Vec::new();
     let project_display = project_path.display().to_string();
-    // Collect resolved captures per task for annotation resolution
-    let mut all_captures: HashMap<String, HashMap<String, String>> = HashMap::new();
-
-    // Determine cache policy override based on context
-    let cache_policy_override = if is_fork_pr(context) {
-        Some(CachePolicy::Readonly)
-    } else {
-        None
-    };
-
-    // Create executor configuration with salt rotation support
-    let mut executor_config = CIExecutorConfig::new(project_path.to_path_buf())
-        .with_capture_output(cuenv_core::OutputCapture::Capture)
-        .with_dry_run(DryRun::No)
-        .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
-
-    // Add previous salt for rotation support
-    if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV")
-        && !prev_salt.is_empty()
-    {
-        executor_config = executor_config.with_secret_salt_prev(prev_salt);
-    }
-
-    let _executor_config = if let Some(policy) = cache_policy_override {
-        executor_config.with_cache_policy_override(policy)
-    } else {
-        executor_config
-    };
+    let cache_policy_override = cache_policy_override_for(context);
 
     // Register common CI secret patterns for redaction.
     // These are typically passed via GitHub Actions secrets or similar.
@@ -411,110 +379,24 @@ async fn execute_project_pipeline(
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
 
-    // Execute tasks
-    for task_name in tasks_to_run {
-        let inputs_matched =
-            matched_inputs_for_task(task_name, config, changed_files, project_path);
-        let outputs = task_index
-            .resolve(task_name)
-            .ok()
-            .and_then(|indexed| indexed.node.as_task())
-            .map(|task| task.outputs.clone())
-            .unwrap_or_default();
-
-        cuenv_events::emit_ci_task_executing!(&project_display, task_name);
-        let task_start = std::time::Instant::now();
-
-        // Execute the task with all dependencies (uses TaskGraph for proper ordering).
-        // `continueOnError` is read off the pipeline config — when true, a
-        // failing task does not abort the rest of the dependency chain.
-        let pipeline_continue_on_error = config
-            .ci
-            .as_ref()
-            .and_then(|ci| ci.pipelines.get(pipeline_name))
-            .is_some_and(|p| p.continue_on_error);
-        let result = execute_task_with_deps(TaskDagOptions {
-            config,
-            task_name,
-            project_root: project_path,
-            cache_policy_override,
-            environment,
-            hook_env: &hook_env,
-            continue_on_error: pipeline_continue_on_error,
-        })
-        .await;
-
-        let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
-
-        let (status, exit_code, cache_key, task_captures) = match result {
-            Ok(output) => {
-                // Resolve captures from task output
-                let task_captures = task_index
-                    .resolve(task_name)
-                    .ok()
-                    .and_then(|indexed| indexed.node.as_task())
-                    .filter(|task| !task.captures.is_empty())
-                    .map(|task| resolve_captures(&task.captures, &output.stdout, &output.stderr))
-                    .unwrap_or_default();
-
-                if !task_captures.is_empty() {
-                    all_captures.insert(task_name.clone(), task_captures.clone());
-                }
-
-                if output.success {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, true);
-                    (
-                        TaskStatus::Success,
-                        Some(output.exit_code),
-                        if output.from_cache {
-                            Some(format!("cached:{}", output.task_id))
-                        } else {
-                            Some(output.task_id)
-                        },
-                        task_captures,
-                    )
-                } else {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
-                    pipeline_status = PipelineStatus::Failed;
-                    // Capture task failure with structured error
-                    task_errors.push((
-                        project_display.clone(),
-                        cuenv_core::Error::task_failed(
-                            task_name,
-                            output.exit_code,
-                            &output.stdout,
-                            &output.stderr,
-                        ),
-                    ));
-                    (
-                        TaskStatus::Failed,
-                        Some(output.exit_code),
-                        None,
-                        task_captures,
-                    )
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, task = task_name, "Task execution error");
-                cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
-                pipeline_status = PipelineStatus::Failed;
-                // Capture execution error with structured error
-                task_errors.push((project_display.clone(), e.into()));
-                (TaskStatus::Failed, None, None, HashMap::new())
-            }
-        };
-
-        tasks_reports.push(TaskReport {
-            name: task_name.clone(),
-            status,
-            duration_ms: duration,
-            exit_code,
-            cache_key,
-            inputs_matched,
-            outputs,
-            captures: task_captures,
-        });
-    }
+    let PipelineTaskResults {
+        reports: tasks_reports,
+        status: pipeline_status,
+        errors: task_errors,
+        captures: all_captures,
+    } = execute_pipeline_tasks(PipelineTasksRequest {
+        project_path,
+        project_display: &project_display,
+        config,
+        task_names: tasks_to_run,
+        environment,
+        changed_files,
+        task_index: &task_index,
+        cache_policy_override,
+        hook_env: &hook_env,
+        continue_on_error: pipeline_continue_on_error(config, pipeline_name),
+    })
+    .await;
 
     let completed_at = Utc::now();
     #[allow(clippy::cast_sign_loss)]
@@ -559,6 +441,242 @@ async fn execute_project_pipeline(
     notify_provider(provider, &report, pipeline_name).await;
 
     Ok((pipeline_status, task_errors))
+}
+
+fn cache_policy_override_for(context: &crate::context::CIContext) -> Option<CachePolicy> {
+    if is_fork_pr(context) {
+        Some(CachePolicy::Readonly)
+    } else {
+        None
+    }
+}
+
+fn pipeline_continue_on_error(config: &Project, pipeline_name: &str) -> bool {
+    config
+        .ci
+        .as_ref()
+        .and_then(|ci| ci.pipelines.get(pipeline_name))
+        .is_some_and(|pipeline| pipeline.continue_on_error)
+}
+
+#[derive(Clone, Copy)]
+struct PipelineTasksRequest<'a> {
+    project_path: &'a Path,
+    project_display: &'a str,
+    config: &'a Project,
+    task_names: &'a [String],
+    environment: Option<&'a str>,
+    changed_files: &'a [PathBuf],
+    task_index: &'a TaskIndex,
+    cache_policy_override: Option<CachePolicy>,
+    hook_env: &'a BTreeMap<String, String>,
+    continue_on_error: bool,
+}
+
+struct PipelineTaskResults {
+    reports: Vec<TaskReport>,
+    status: PipelineStatus,
+    errors: Vec<(String, cuenv_core::Error)>,
+    captures: HashMap<String, HashMap<String, String>>,
+}
+
+impl PipelineTaskResults {
+    fn new() -> Self {
+        Self {
+            reports: Vec::new(),
+            status: PipelineStatus::Success,
+            errors: Vec::new(),
+            captures: HashMap::new(),
+        }
+    }
+
+    fn record(&mut self, project_display: &str, task_name: &str, outcome: PipelineTaskOutcome) {
+        if !outcome.captures.is_empty() {
+            self.captures
+                .insert(task_name.to_string(), outcome.captures.clone());
+        }
+
+        if let Some(error) = outcome.error {
+            self.status = PipelineStatus::Failed;
+            self.errors.push((project_display.to_string(), error));
+        }
+
+        self.reports.push(outcome.report);
+    }
+}
+
+struct PipelineTaskOutcome {
+    report: TaskReport,
+    captures: HashMap<String, String>,
+    error: Option<cuenv_core::Error>,
+}
+
+async fn execute_pipeline_tasks(request: PipelineTasksRequest<'_>) -> PipelineTaskResults {
+    let mut results = PipelineTaskResults::new();
+    for task_name in request.task_names {
+        let outcome = execute_pipeline_task(PipelineTaskRequest {
+            task_name,
+            pipeline: request,
+        })
+        .await;
+        results.record(request.project_display, task_name, outcome);
+    }
+    results
+}
+
+#[derive(Clone, Copy)]
+struct PipelineTaskRequest<'a> {
+    task_name: &'a str,
+    pipeline: PipelineTasksRequest<'a>,
+}
+
+async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTaskOutcome {
+    let PipelineTaskRequest {
+        task_name,
+        pipeline,
+    } = request;
+    let inputs_matched = matched_inputs_for_task(
+        task_name,
+        pipeline.config,
+        pipeline.changed_files,
+        pipeline.project_path,
+    );
+    let outputs = task_outputs(pipeline.task_index, task_name);
+
+    cuenv_events::emit_ci_task_executing!(pipeline.project_display, task_name);
+    let task_start = std::time::Instant::now();
+
+    let result = execute_task_with_deps(TaskDagOptions {
+        config: pipeline.config,
+        task_name,
+        project_root: pipeline.project_path,
+        cache_policy_override: pipeline.cache_policy_override,
+        environment: pipeline.environment,
+        hook_env: pipeline.hook_env,
+        continue_on_error: pipeline.continue_on_error,
+    })
+    .await;
+
+    let duration_ms = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
+    match result {
+        Ok(output) => task_outcome_from_output(TaskOutputOutcomeRequest {
+            task_name,
+            project_display: pipeline.project_display,
+            task_index: pipeline.task_index,
+            output,
+            inputs_matched,
+            outputs,
+            duration_ms,
+        }),
+        Err(error) => {
+            tracing::error!(error = %error, task = task_name, "Task execution error");
+            cuenv_events::emit_ci_task_result!(pipeline.project_display, task_name, false);
+            PipelineTaskOutcome {
+                report: TaskReport {
+                    name: task_name.to_string(),
+                    status: TaskStatus::Failed,
+                    duration_ms,
+                    exit_code: None,
+                    cache_key: None,
+                    inputs_matched,
+                    outputs,
+                    captures: HashMap::new(),
+                },
+                captures: HashMap::new(),
+                error: Some(error.into()),
+            }
+        }
+    }
+}
+
+struct TaskOutputOutcomeRequest<'a> {
+    task_name: &'a str,
+    project_display: &'a str,
+    task_index: &'a TaskIndex,
+    output: TaskOutput,
+    inputs_matched: Vec<String>,
+    outputs: Vec<String>,
+    duration_ms: u64,
+}
+
+fn task_outcome_from_output(request: TaskOutputOutcomeRequest<'_>) -> PipelineTaskOutcome {
+    let TaskOutputOutcomeRequest {
+        task_name,
+        project_display,
+        task_index,
+        output,
+        inputs_matched,
+        outputs,
+        duration_ms,
+    } = request;
+    let captures = task_captures(task_index, task_name, &output);
+
+    if output.success {
+        cuenv_events::emit_ci_task_result!(project_display, task_name, true);
+        return PipelineTaskOutcome {
+            report: TaskReport {
+                name: task_name.to_string(),
+                status: TaskStatus::Success,
+                duration_ms,
+                exit_code: Some(output.exit_code),
+                cache_key: Some(task_cache_key(&output)),
+                inputs_matched,
+                outputs,
+                captures: captures.clone(),
+            },
+            captures,
+            error: None,
+        };
+    }
+
+    cuenv_events::emit_ci_task_result!(project_display, task_name, false);
+    let error =
+        cuenv_core::Error::task_failed(task_name, output.exit_code, &output.stdout, &output.stderr);
+    PipelineTaskOutcome {
+        report: TaskReport {
+            name: task_name.to_string(),
+            status: TaskStatus::Failed,
+            duration_ms,
+            exit_code: Some(output.exit_code),
+            cache_key: None,
+            inputs_matched,
+            outputs,
+            captures: captures.clone(),
+        },
+        captures,
+        error: Some(error),
+    }
+}
+
+fn task_outputs(task_index: &TaskIndex, task_name: &str) -> Vec<String> {
+    task_index
+        .resolve(task_name)
+        .ok()
+        .and_then(|indexed| indexed.node.as_task())
+        .map(|task| task.outputs.clone())
+        .unwrap_or_default()
+}
+
+fn task_captures(
+    task_index: &TaskIndex,
+    task_name: &str,
+    output: &TaskOutput,
+) -> HashMap<String, String> {
+    task_index
+        .resolve(task_name)
+        .ok()
+        .and_then(|indexed| indexed.node.as_task())
+        .filter(|task| !task.captures.is_empty())
+        .map(|task| resolve_captures(&task.captures, &output.stdout, &output.stderr))
+        .unwrap_or_default()
+}
+
+fn task_cache_key(output: &TaskOutput) -> String {
+    if output.from_cache {
+        format!("cached:{}", output.task_id)
+    } else {
+        output.task_id.clone()
+    }
 }
 
 /// Apply task-level environment variables to the merged task environment.
