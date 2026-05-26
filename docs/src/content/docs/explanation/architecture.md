@@ -69,6 +69,11 @@ Core library containing shared types, configuration parsing, and domain logic.
 - `cache` - Task caching with content-aware invalidation
 - `config` - Configuration file handling
 
+Manifest schema types stay re-exported from `crates/core/src/manifest/mod.rs`,
+while the implementation is split by schema concern: hooks, VCS dependencies,
+formatters, codegen, directory rules, runtimes, services/images, and project
+conversion each live in sibling modules under `crates/core/src/manifest/`.
+
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
 

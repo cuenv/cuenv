@@ -1,5 +1,5 @@
 use super::*;
-use crate::tasks::{TaskDependency, TaskGroup, TaskNode};
+use crate::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
 use crate::test_utils::create_test_hook;
 
 #[test]
