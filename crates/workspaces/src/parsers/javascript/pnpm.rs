@@ -260,33 +260,40 @@ fn strip_peer_suffix(version: &str) -> &str {
         .trim_end_matches(')')
 }
 
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn determine_source(name: &str, package_info: &PnpmPackage) -> DependencySource {
-    if let Some(resolution) = &package_info.resolution {
-        match resolution {
-            PnpmResolution::Registry { tarball, .. } => DependencySource::Registry(tarball.clone()),
-            PnpmResolution::Git { repo, commit } => {
-                DependencySource::Git(format!("{repo}#{commit}"))
-            }
-            PnpmResolution::Object(map) => {
-                // Check for various resolution types
-                if let Some(tarball) = map.get("tarball").and_then(|v| v.as_str()) {
-                    DependencySource::Registry(tarball.to_string())
-                } else if let Some(repo) = map.get("repo").and_then(|v| v.as_str()) {
-                    let commit = map.get("commit").and_then(|v| v.as_str()).unwrap_or("HEAD");
-                    DependencySource::Git(format!("{repo}#{commit}"))
-                } else if let Some(dir) = map.get("directory").and_then(|v| v.as_str()) {
-                    DependencySource::Path(PathBuf::from(dir))
-                } else {
-                    // Default to registry with package name
-                    DependencySource::Registry(format!("npm:{name}"))
-                }
-            }
-        }
-    } else {
-        // No resolution info, assume npm registry
-        DependencySource::Registry(format!("npm:{name}"))
+    let Some(resolution) = &package_info.resolution else {
+        return default_registry_source(name);
+    };
+
+    match resolution {
+        PnpmResolution::Registry { tarball, .. } => DependencySource::Registry(tarball.clone()),
+        PnpmResolution::Git { repo, commit } => DependencySource::Git(format!("{repo}#{commit}")),
+        PnpmResolution::Object(map) => source_from_resolution_object(name, map),
     }
+}
+
+fn source_from_resolution_object(
+    name: &str,
+    map: &BTreeMap<String, serde_yaml::Value>,
+) -> DependencySource {
+    if let Some(tarball) = map.get("tarball").and_then(|v| v.as_str()) {
+        return DependencySource::Registry(tarball.to_string());
+    }
+
+    if let Some(repo) = map.get("repo").and_then(|v| v.as_str()) {
+        let commit = map.get("commit").and_then(|v| v.as_str()).unwrap_or("HEAD");
+        return DependencySource::Git(format!("{repo}#{commit}"));
+    }
+
+    if let Some(dir) = map.get("directory").and_then(|v| v.as_str()) {
+        return DependencySource::Path(PathBuf::from(dir));
+    }
+
+    default_registry_source(name)
+}
+
+fn default_registry_source(name: &str) -> DependencySource {
+    DependencySource::Registry(format!("npm:{name}"))
 }
 
 fn push_dependencies(target: &mut Vec<DependencyRef>, deps: &BTreeMap<String, String>) {
@@ -299,7 +306,6 @@ fn push_dependencies(target: &mut Vec<DependencyRef>, deps: &BTreeMap<String, St
 }
 
 #[cfg(test)]
-#[allow(clippy::needless_raw_string_hashes, clippy::uninlined_format_args)]
 mod tests {
     use super::*;
     use std::io::Write;
@@ -307,7 +313,7 @@ mod tests {
 
     #[test]
     fn parses_basic_pnpm_lock() {
-        let yaml = r#"
+        let yaml = r"
 lockfileVersion: '6.0'
 
 importers:
@@ -321,7 +327,7 @@ packages:
       integrity: sha512-test123
       tarball: https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
     dev: false
-"#;
+";
 
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(yaml.as_bytes()).unwrap();
@@ -347,7 +353,7 @@ packages:
 
     #[test]
     fn parses_scoped_packages() {
-        let yaml = r#"
+        let yaml = r"
 lockfileVersion: '6.0'
 
 importers:
@@ -360,7 +366,7 @@ packages:
       integrity: sha512-xyz
       tarball: https://registry.npmjs.org/@babel/core/-/core-7.22.5.tgz
     dev: false
-"#;
+";
 
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(yaml.as_bytes()).unwrap();
@@ -387,8 +393,8 @@ packages:
         // Test that we accept various lockfile versions (5.4, 6.0, 9.0, etc.)
         for version in ["5.4", "6.0", "7.0", "9.0", "10.0"] {
             let yaml = format!(
-                r#"
-lockfileVersion: '{}'
+                r"
+lockfileVersion: '{version}'
 
 importers:
   .:
@@ -401,8 +407,7 @@ packages:
       integrity: sha512-test
       tarball: https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
     dev: false
-"#,
-                version
+"
             );
 
             let mut file = NamedTempFile::new().unwrap();
@@ -412,16 +417,15 @@ packages:
             let result = parser.parse(file.path());
             assert!(
                 result.is_ok(),
-                "Version {} should be accepted, got error: {:?}",
-                version,
-                result.err()
+                "Version {version} should be accepted, got error: {:?}",
+                result.as_ref().err()
             );
         }
     }
 
     #[test]
     fn rejects_invalid_lockfile_version_format() {
-        let yaml = r#"
+        let yaml = r"
 lockfileVersion: 'invalid'
 
 importers:
@@ -429,7 +433,7 @@ importers:
     dependencies: {}
 
 packages: {}
-"#;
+";
 
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(yaml.as_bytes()).unwrap();
@@ -442,7 +446,7 @@ packages: {}
                 assert!(message.contains("Invalid pnpm lockfileVersion format"));
                 assert!(message.contains("invalid"));
             }
-            other => panic!("Expected LockfileParseFailed, got: {:?}", other),
+            other => panic!("Expected LockfileParseFailed, got: {other:?}"),
         }
     }
 
@@ -450,8 +454,8 @@ packages: {}
     fn accepts_supported_versions() {
         for version in ["6.0", "9.0"] {
             let yaml = format!(
-                r#"
-lockfileVersion: '{}'
+                r"
+lockfileVersion: '{version}'
 
 importers:
   .:
@@ -464,8 +468,7 @@ packages:
       integrity: sha512-test
       tarball: https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
     dev: false
-"#,
-                version
+"
             );
 
             let mut file = NamedTempFile::new().unwrap();
@@ -475,9 +478,8 @@ packages:
             let result = parser.parse(file.path());
             assert!(
                 result.is_ok(),
-                "Version {} should be supported, got error: {:?}",
-                version,
-                result.err()
+                "Version {version} should be supported, got error: {:?}",
+                result.as_ref().err()
             );
         }
     }
@@ -485,7 +487,7 @@ packages:
     #[test]
     fn accepts_missing_lockfile_version() {
         // Older pnpm versions may not have lockfileVersion
-        let yaml = r#"
+        let yaml = r"
 importers:
   .:
     dependencies:
@@ -497,7 +499,7 @@ packages:
       integrity: sha512-test
       tarball: https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz
     dev: false
-"#;
+";
 
         let mut file = NamedTempFile::new().unwrap();
         file.write_all(yaml.as_bytes()).unwrap();
@@ -507,7 +509,7 @@ packages:
         assert!(
             result.is_ok(),
             "Missing lockfileVersion should be accepted, got error: {:?}",
-            result.err()
+            result.as_ref().err()
         );
     }
 }

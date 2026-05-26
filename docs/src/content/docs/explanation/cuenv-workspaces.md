@@ -179,6 +179,10 @@ Bun lockfile parsing keeps the public parser entrypoint small by separating
 binary-lockfile rejection, JSONC loading, lockfile-version validation, and
 entry materialization before package-specific locator parsing.
 
+pnpm parsing keeps package-key parsing separate from source selection, so
+scoped-name handling, peer suffix stripping, and tarball/git/path resolution
+stay in focused helpers instead of one nested parser branch.
+
 Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
 small parser state that handles headers, version/resolved/integrity fields, and
 dependency lines without keeping the fallback path as one monolithic parser
