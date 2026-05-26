@@ -184,9 +184,10 @@ dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
 The rich TUI keeps event-driven task/output state in
 `crates/cuenv/src/tui/state/activity.rs`, input-driven view state in
-`crates/cuenv/src/tui/state/view.rs`, and uses
-`crates/cuenv/src/tui/state.rs` as the coordinator that preserves the
-renderer-facing accessors and event-application boundary.
+`crates/cuenv/src/tui/state/view.rs`, tree flattening/navigation in
+`crates/cuenv/src/tui/state/tree.rs`, and uses `crates/cuenv/src/tui/state.rs`
+as the coordinator that preserves the renderer-facing accessors and
+event-application boundary.
 Sync command provider adapters live under
 `crates/cuenv/src/commands/sync/providers/`; shared sync command
 orchestration remains in `crates/cuenv/src/commands/sync/functions.rs`, and
