@@ -73,6 +73,10 @@ Manifest schema types stay re-exported from `crates/core/src/manifest/mod.rs`,
 while the implementation is split by schema concern: hooks, VCS dependencies,
 formatters, codegen, directory rules, runtimes, services/images, and project
 conversion each live in sibling modules under `crates/core/src/manifest/`.
+Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
+keeps the executable task and task-tree model, while cache policy, capture
+metadata, shell configuration, input references, and dependency references live
+in sibling modules under `crates/core/src/tasks/`.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
