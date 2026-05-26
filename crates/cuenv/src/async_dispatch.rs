@@ -1,10 +1,5 @@
-use super::{
-    ensure_command_module_compatibility, execute_changeset_add_safe,
-    execute_changeset_from_commits_safe, execute_changeset_status_safe,
-    execute_release_binaries_safe, execute_release_prepare_safe, execute_release_publish_safe,
-    execute_release_version_safe, execute_web_command, run_oci_activate,
-};
-use cuenv::cli::{self, CliError, OutputFormat};
+use super::{ensure_command_module_compatibility, run_oci_activate};
+use cuenv::cli::{self, CliError, OkEnvelope, OutputFormat};
 use cuenv::commands::{self, Command, CommandExecutor};
 use tracing::instrument;
 
@@ -13,6 +8,20 @@ struct InfoAsyncRequest<'a> {
     path: Option<&'a str>,
     package: &'a str,
     meta: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ChangesetAddRequest<'a> {
+    path: &'a str,
+    summary: Option<&'a str>,
+    description: Option<&'a str>,
+    packages: &'a [(String, String)],
+}
+
+#[derive(Clone, Copy)]
+enum EnvelopeField {
+    Message,
+    Result,
 }
 
 /// Execute a command using the event-driven async path.
@@ -62,6 +71,21 @@ async fn execute_direct_command(command: &Command) -> Option<Result<(), CliError
         Command::ToolsList => Some(commands::tools::execute_tools_list()),
         _ => None,
     }
+}
+
+/// Execute Web command - starts web server for event streaming
+#[instrument(name = "cuenv_execute_web")]
+async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
+    cuenv_events::emit_command_started!("web");
+
+    // Full web server implementation would require adding a web framework dependency.
+    cuenv_events::emit_stdout!(format!(
+        "Web server would start on http://{}:{}\nThis feature is not yet implemented.",
+        host, port
+    ));
+
+    cuenv_events::emit_command_completed!("web", true, 0_u64);
+    Ok(())
 }
 
 async fn execute_service_command(
@@ -198,7 +222,7 @@ async fn execute_output_command(
         command @ (Command::ChangesetAdd { .. }
         | Command::ChangesetStatus { .. }
         | Command::ChangesetFromCommits { .. }) => {
-            Some(execute_changeset_command(command, json_format).await)
+            Some(execute_changeset_command(command, json_format))
         }
         command @ (Command::ReleasePrepare { .. }
         | Command::ReleaseVersion { .. }
@@ -233,10 +257,7 @@ fn execute_info_command(
     }
 }
 
-async fn execute_changeset_command(
-    command: &Command,
-    json_format: OutputFormat,
-) -> Result<(), CliError> {
+fn execute_changeset_command(command: &Command, json_format: OutputFormat) -> Result<(), CliError> {
     match command {
         Command::ChangesetAdd {
             path,
@@ -244,21 +265,20 @@ async fn execute_changeset_command(
             description,
             packages,
         } => {
-            execute_changeset_add_safe(
-                path.clone(),
-                summary.clone(),
-                description.clone(),
-                packages.clone(),
-                json_format,
-            )
-            .await
+            let request = ChangesetAddRequest {
+                path,
+                summary: summary.as_deref(),
+                description: description.as_deref(),
+                packages,
+            };
+            execute_changeset_add(request, json_format)
         }
         Command::ChangesetStatus { path, json } => {
             let merged_format = OutputFormat::from_json_flag(*json || json_format.is_json());
-            execute_changeset_status_safe(path.clone(), merged_format).await
+            execute_changeset_status(path, merged_format)
         }
         Command::ChangesetFromCommits { path, since } => {
-            execute_changeset_from_commits_safe(path.clone(), since.clone(), json_format).await
+            execute_changeset_from_commits(path, since.as_deref(), json_format)
         }
         _ => unreachable!("changeset dispatch called for another command family"),
     }
@@ -276,21 +296,20 @@ async fn execute_release_command(
             branch,
             no_pr,
         } => {
-            execute_release_prepare_safe(
-                path.clone(),
-                since.clone(),
-                *dry_run,
-                branch.clone(),
-                *no_pr,
-                json_format,
-            )
-            .await
+            let opts = commands::release::ReleasePrepareOptions {
+                path: path.clone(),
+                since: since.clone(),
+                dry_run: *dry_run,
+                branch: branch.clone(),
+                no_pr: *no_pr,
+            };
+            execute_release_prepare(&opts, json_format)
         }
         Command::ReleaseVersion { path, dry_run } => {
-            execute_release_version_safe(path.clone(), *dry_run, json_format).await
+            execute_release_version(path, *dry_run, json_format)
         }
         Command::ReleasePublish { path, dry_run } => {
-            execute_release_publish_safe(path.clone(), *dry_run, json_format).await
+            execute_release_publish(path, *dry_run, json_format)
         }
         Command::ReleaseBinaries {
             path,
@@ -319,8 +338,132 @@ async fn execute_release_command(
                 .with_targets(targets.clone())
                 .with_version(version.clone());
 
-            execute_release_binaries_safe(opts, json_format).await
+            execute_release_binaries(opts, json_format).await
         }
         _ => unreachable!("release dispatch called for another command family"),
     }
+}
+
+fn execute_changeset_add(
+    request: ChangesetAddRequest<'_>,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    match commands::release::execute_changeset_add(
+        request.path,
+        request.packages,
+        request.summary,
+        request.description,
+    ) {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Message),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset add failed: {e}"),
+            "Check package names and bump types (major, minor, patch)",
+        )),
+    }
+}
+
+fn execute_changeset_status(path: &str, json_format: OutputFormat) -> Result<(), CliError> {
+    match commands::release::execute_changeset_status_with_format(path, json_format) {
+        Ok(output) => {
+            cuenv_events::println_redacted(&output);
+            Ok(())
+        }
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset status failed: {e}"),
+            "Check that the path is valid",
+        )),
+    }
+}
+
+fn execute_changeset_from_commits(
+    path: &str,
+    since: Option<&str>,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    match commands::release::execute_changeset_from_commits(path, since) {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Message),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Changeset from-commits failed: {e}"),
+            "Check that the path is a valid git repository",
+        )),
+    }
+}
+
+fn execute_release_prepare(
+    opts: &commands::release::ReleasePrepareOptions,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_prepare(opts) {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Result),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release prepare failed: {e}"),
+            "Check git history and workspace configuration",
+        )),
+    }
+}
+
+fn execute_release_version(
+    path: &str,
+    dry_run: cuenv_core::DryRun,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_version(path, dry_run) {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Result),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release version failed: {e}"),
+            "Create changesets first with 'cuenv changeset add'",
+        )),
+    }
+}
+
+fn execute_release_publish(
+    path: &str,
+    dry_run: cuenv_core::DryRun,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    let format = if json_format.is_json() {
+        commands::release::OutputFormat::Json
+    } else {
+        commands::release::OutputFormat::Human
+    };
+    match commands::release::execute_release_publish(path, dry_run, format) {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Result),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release publish failed: {e}"),
+            "Check that packages are ready for publishing",
+        )),
+    }
+}
+
+async fn execute_release_binaries(
+    opts: commands::release::ReleaseBinariesOptions,
+    json_format: OutputFormat,
+) -> Result<(), CliError> {
+    match commands::release::execute_release_binaries(opts).await {
+        Ok(output) => print_enveloped_output(&output, json_format, EnvelopeField::Result),
+        Err(e) => Err(CliError::eval_with_help(
+            format!("Release binaries failed: {e}"),
+            "Check that binaries are built and artifacts directory exists",
+        )),
+    }
+}
+
+fn print_enveloped_output(
+    output: &str,
+    json_format: OutputFormat,
+    field: EnvelopeField,
+) -> Result<(), CliError> {
+    if json_format.is_json() {
+        let payload = match field {
+            EnvelopeField::Message => serde_json::json!({ "message": output }),
+            EnvelopeField::Result => serde_json::json!({ "result": output }),
+        };
+        let envelope = OkEnvelope::new(payload);
+        let json = serde_json::to_string(&envelope)
+            .map_err(|e| CliError::other(format!("JSON serialization failed: {e}")))?;
+        cuenv_events::println_redacted(&json);
+    } else {
+        cuenv_events::println_redacted(output);
+    }
+    Ok(())
 }

@@ -154,8 +154,9 @@ and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`. Startup,
 runtime selection, and early process routing stay in `crates/cuenv/src/main.rs`;
 command paths that bypass the executor are isolated in
-`crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`,
-while the hook supervisor process runs through
+`crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
+The async dispatcher owns direct async commands plus changeset/release output
+envelopes; the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
 `crates/cuenv/src/oci_activate.rs`. Release command flows stay under
 `crates/cuenv/src/commands/release.rs`; binary artifact orchestration lives in
