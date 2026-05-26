@@ -198,88 +198,14 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
     let mut next_lockfile = existing_lockfile.clone().unwrap_or_default();
     next_lockfile.version = LOCKFILE_VERSION;
     let mut outputs = Vec::new();
-    let mut next_vcs = if scope.prunes_unconfigured() {
-        BTreeMap::new()
-    } else {
-        next_lockfile.vcs.clone()
-    };
-    let mut plans = Vec::new();
-    let cache_root = if options.mode == SyncMode::Write {
-        None
-    } else {
-        Some(TempPath::new(temporary_cache_root()?))
-    };
-    let default_cache_root = module_root.join(".cuenv/vcs/cache");
-    if options.mode == SyncMode::Write {
-        ensure_managed_internal_path(&git_root, &default_cache_root)?;
-    }
-
-    let mut seen_names = HashMap::new();
-    let mut seen_paths = HashMap::new();
-    for dependency in dependencies {
-        if let Some(previous_spec) =
-            seen_names.insert(dependency.name.clone(), dependency.spec.clone())
-        {
-            if previous_spec == dependency.spec {
-                continue;
-            }
-            return Err(Error::configuration(format!(
-                "VCS dependency '{}' is declared multiple times with different configuration",
-                dependency.name
-            )));
-        }
-        let path = validate_materialization_path(&git_root, &dependency.spec.path)?;
-        let path_key = path.clone();
-        if let Some((previous_name, previous_path)) = overlapping_vcs_path(&seen_paths, &path_key) {
-            return Err(Error::configuration(format!(
-                "VCS dependencies '{}' and '{}' use overlapping paths '{}' and '{}'",
-                previous_name,
-                dependency.name,
-                previous_path.display(),
-                dependency.spec.path
-            )));
-        }
-        seen_paths.insert(path_key, dependency.name.clone());
-
-        let locked_by_name = existing_lockfile
-            .as_ref()
-            .and_then(|lockfile| lockfile.find_vcs(&dependency.name));
-        let locked_by_path = existing_lockfile
-            .as_ref()
-            .and_then(|lockfile| find_vcs_by_materialized_path(&git_root, lockfile, &path));
-        let locked = locked_by_name.or(locked_by_path);
-        let should_update = should_update(&dependency.name, options.update_tools.as_ref());
-        if options.mode == SyncMode::Check && !locked_matches(locked_by_name, &dependency.spec) {
-            return Err(Error::configuration(format!(
-                "VCS dependency '{}' is out of sync with cuenv.lock. Run 'cuenv sync vcs' to update.",
-                dependency.name
-            )));
-        }
-        let resolved = if !should_update && locked_matches(locked, &dependency.spec) {
-            locked.cloned().ok_or_else(|| {
-                Error::configuration(format!(
-                    "VCS dependency '{}' is missing from cuenv.lock. Run 'cuenv sync vcs' to update.",
-                    dependency.name
-                ))
-            })?
-        } else {
-            resolve_dependency(
-                cache_root
-                    .as_ref()
-                    .map_or(default_cache_root.as_path(), TempPath::path),
-                &dependency.name,
-                &dependency.spec,
-            )?
-        };
-
-        plans.push(VcsSyncPlan {
-            name: dependency.name.clone(),
-            path,
-            resolved: resolved.clone(),
-            locked: locked.cloned(),
-        });
-        next_vcs.insert(dependency.name, resolved);
-    }
+    let VcsPlanOutput { next_vcs, plans } = plan_vcs_dependencies(VcsPlanRequest {
+        git_root: &git_root,
+        module_root,
+        dependencies,
+        existing_lockfile: existing_lockfile.as_ref(),
+        options,
+        scope,
+    })?;
 
     let removed_vcs =
         removed_vcs_dependencies(existing_lockfile.as_ref(), &git_root, &next_vcs, scope);
@@ -365,6 +291,20 @@ struct VcsSyncPlan {
     locked: Option<LockedVcsDependency>,
 }
 
+struct VcsPlanOutput {
+    next_vcs: BTreeMap<String, LockedVcsDependency>,
+    plans: Vec<VcsSyncPlan>,
+}
+
+struct VcsPlanRequest<'a> {
+    git_root: &'a Path,
+    module_root: &'a Path,
+    dependencies: Vec<CollectedVcsDependency>,
+    existing_lockfile: Option<&'a Lockfile>,
+    options: &'a SyncOptions,
+    scope: VcsSyncScope,
+}
+
 struct VcsSyncRequest<'a> {
     module_root: &'a Path,
     dependencies: Vec<CollectedVcsDependency>,
@@ -376,6 +316,101 @@ impl VcsSyncScope {
     fn prunes_unconfigured(self) -> bool {
         matches!(self, Self::Workspace)
     }
+}
+
+fn plan_vcs_dependencies(request: VcsPlanRequest<'_>) -> Result<VcsPlanOutput> {
+    let VcsPlanRequest {
+        git_root,
+        module_root,
+        dependencies,
+        existing_lockfile,
+        options,
+        scope,
+    } = request;
+    let mut next_vcs = if scope.prunes_unconfigured() {
+        BTreeMap::new()
+    } else {
+        existing_lockfile
+            .map(|lockfile| lockfile.vcs.clone())
+            .unwrap_or_default()
+    };
+    let mut plans = Vec::new();
+    let cache_root = if options.mode == SyncMode::Write {
+        None
+    } else {
+        Some(TempPath::new(temporary_cache_root()?))
+    };
+    let default_cache_root = module_root.join(".cuenv/vcs/cache");
+    if options.mode == SyncMode::Write {
+        ensure_managed_internal_path(git_root, &default_cache_root)?;
+    }
+
+    let mut seen_names = HashMap::new();
+    let mut seen_paths = HashMap::new();
+    for dependency in dependencies {
+        if let Some(previous_spec) =
+            seen_names.insert(dependency.name.clone(), dependency.spec.clone())
+        {
+            if previous_spec == dependency.spec {
+                continue;
+            }
+            return Err(Error::configuration(format!(
+                "VCS dependency '{}' is declared multiple times with different configuration",
+                dependency.name
+            )));
+        }
+        let path = validate_materialization_path(git_root, &dependency.spec.path)?;
+        let path_key = path.clone();
+        if let Some((previous_name, previous_path)) = overlapping_vcs_path(&seen_paths, &path_key) {
+            return Err(Error::configuration(format!(
+                "VCS dependencies '{}' and '{}' use overlapping paths '{}' and '{}'",
+                previous_name,
+                dependency.name,
+                previous_path.display(),
+                dependency.spec.path
+            )));
+        }
+        seen_paths.insert(path_key, dependency.name.clone());
+
+        let locked_by_name =
+            existing_lockfile.and_then(|lockfile| lockfile.find_vcs(&dependency.name));
+        let locked_by_path = existing_lockfile
+            .and_then(|lockfile| find_vcs_by_materialized_path(git_root, lockfile, &path));
+        let locked = locked_by_name.or(locked_by_path);
+        let should_update = should_update(&dependency.name, options.update_tools.as_ref());
+        if options.mode == SyncMode::Check && !locked_matches(locked_by_name, &dependency.spec) {
+            return Err(Error::configuration(format!(
+                "VCS dependency '{}' is out of sync with cuenv.lock. Run 'cuenv sync vcs' to update.",
+                dependency.name
+            )));
+        }
+        let resolved = if !should_update && locked_matches(locked, &dependency.spec) {
+            locked.cloned().ok_or_else(|| {
+                Error::configuration(format!(
+                    "VCS dependency '{}' is missing from cuenv.lock. Run 'cuenv sync vcs' to update.",
+                    dependency.name
+                ))
+            })?
+        } else {
+            resolve_dependency(
+                cache_root
+                    .as_ref()
+                    .map_or(default_cache_root.as_path(), TempPath::path),
+                &dependency.name,
+                &dependency.spec,
+            )?
+        };
+
+        plans.push(VcsSyncPlan {
+            name: dependency.name.clone(),
+            path,
+            resolved: resolved.clone(),
+            locked: locked.cloned(),
+        });
+        next_vcs.insert(dependency.name, resolved);
+    }
+
+    Ok(VcsPlanOutput { next_vcs, plans })
 }
 
 fn gitignore_paths_from_lockfile(
