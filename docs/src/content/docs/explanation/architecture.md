@@ -244,6 +244,11 @@ Workspace management for monorepos.
 - Package manager integration (bun, pnpm, yarn, cargo)
 - Workspace-aware task execution
 
+Core workspace data models live under `crates/workspaces/src/core/types/`:
+workspace/member traversal in `workspace.rs`, package-manager metadata in
+`package_manager.rs`, and dependency/lockfile shapes in `dependency.rs`.
+`types.rs` re-exports the public API used by downstream crates.
+
 Cargo lockfile parsing keeps workspace member discovery in
 `crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from
 `Cargo.lock` package entry and `SourceId` conversion in
