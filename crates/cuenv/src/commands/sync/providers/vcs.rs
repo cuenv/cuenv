@@ -228,8 +228,12 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
         ensure_managed_internal_path(&git_root, &temp_root)?;
         let mut prepared = Vec::new();
         for plan in plans {
-            let temp =
-                prepare_dependency(&temp_root, &plan.path, &plan.resolved, plan.locked.as_ref())?;
+            let temp = prepare_dependency(PrepareDependencyRequest {
+                temp_root: &temp_root,
+                target: &plan.path,
+                locked: &plan.resolved,
+                previous: plan.locked.as_ref(),
+            })?;
             prepared.push((plan, temp));
         }
         prune_removed_vcs_dependencies(&git_root, &removed_vcs)?;
@@ -303,6 +307,22 @@ struct VcsPlanRequest<'a> {
     existing_lockfile: Option<&'a Lockfile>,
     options: &'a SyncOptions,
     scope: VcsSyncScope,
+}
+
+#[derive(Clone, Copy)]
+struct PrepareDependencyRequest<'a> {
+    temp_root: &'a Path,
+    target: &'a Path,
+    locked: &'a LockedVcsDependency,
+    previous: Option<&'a LockedVcsDependency>,
+}
+
+#[derive(Clone, Copy)]
+struct PrepareSubdirDependencyRequest<'a> {
+    temp_root: &'a Path,
+    target: &'a Path,
+    locked: &'a LockedVcsDependency,
+    subdir: &'a str,
 }
 
 struct VcsSyncRequest<'a> {
@@ -889,19 +909,25 @@ fn resolve_dependency(
     })
 }
 
-fn prepare_dependency(
-    temp_root: &Path,
-    target: &Path,
-    locked: &LockedVcsDependency,
-    previous: Option<&LockedVcsDependency>,
-) -> Result<TempPath> {
+fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Result<TempPath> {
+    let PrepareDependencyRequest {
+        temp_root,
+        target,
+        locked,
+        previous,
+    } = request;
     validate_git_input("url", &locked.url)?;
     validate_git_input("reference", &locked.reference)?;
     validate_git_input("commit", &locked.commit)?;
     ensure_replaceable_target(target, previous)?;
     fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
     if let Some(ref subdir) = locked.subdir {
-        return prepare_subdir_dependency(temp_root, target, locked, subdir);
+        return prepare_subdir_dependency(PrepareSubdirDependencyRequest {
+            temp_root,
+            target,
+            locked,
+            subdir,
+        });
     }
     let temp_target = temporary_target_path(temp_root, target, "tmp")?;
     let temp_guard = TempPath::new(temp_target);
@@ -945,12 +971,13 @@ fn prepare_dependency(
 
 /// Sparse-checkout subdir path: only the requested `subdir` of the repo lands
 /// at `target`, with no `.git` directory.
-fn prepare_subdir_dependency(
-    temp_root: &Path,
-    target: &Path,
-    locked: &LockedVcsDependency,
-    subdir: &str,
-) -> Result<TempPath> {
+fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Result<TempPath> {
+    let PrepareSubdirDependencyRequest {
+        temp_root,
+        target,
+        locked,
+        subdir,
+    } = request;
     let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
         Error::configuration(format!(
             "VCS dependency '{}': locked entry has subdir but no subtree hash",
