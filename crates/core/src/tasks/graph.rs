@@ -6,12 +6,15 @@
 //! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
 //! types like `TaskNode`, `TaskGroup`, and `TaskList`.
 
-use super::{Task, TaskDependency, TaskGroup, TaskNode, Tasks};
+#[cfg(test)]
+use super::Tasks;
+use super::{Task, TaskDependency};
 use crate::Result;
 use cuenv_task_graph::{GraphNode, TaskNodeData};
 use petgraph::graph::NodeIndex;
-use tracing::debug;
 
+mod build;
+mod output_refs;
 mod resolver;
 
 // Implement the TaskNodeData trait for Task
@@ -54,102 +57,6 @@ impl TaskGraph {
     #[must_use]
     pub const fn inner(&self) -> &cuenv_task_graph::TaskGraph<Task> {
         &self.inner
-    }
-
-    /// Build a graph from a task node.
-    pub fn build_from_node(
-        &mut self,
-        name: &str,
-        node: &TaskNode,
-        all_tasks: &Tasks,
-    ) -> Result<Vec<NodeIndex>> {
-        match node {
-            TaskNode::Task(task) => {
-                let idx = self.add_task(name, task.as_ref().clone())?;
-                Ok(vec![idx])
-            }
-            TaskNode::Group(group) => self.build_parallel_group(name, group, all_tasks),
-            TaskNode::Sequence(steps) => self.build_sequential_list(name, steps, all_tasks),
-        }
-    }
-
-    /// Build a sequential task list (steps run one after another).
-    fn build_sequential_list(
-        &mut self,
-        prefix: &str,
-        steps: &[TaskNode],
-        all_tasks: &Tasks,
-    ) -> Result<Vec<NodeIndex>> {
-        let mut nodes = Vec::new();
-        let mut previous: Option<NodeIndex> = None;
-
-        // Track child names for group dependency expansion
-        let child_names: Vec<String> = (0..steps.len())
-            .map(|i| format!("{}[{}]", prefix, i))
-            .collect();
-
-        for (i, step) in steps.iter().enumerate() {
-            let task_name = format!("{}[{}]", prefix, i);
-            let task_nodes = self.build_from_node(&task_name, step, all_tasks)?;
-
-            // For sequential execution, link previous task to current
-            if let Some(prev) = previous
-                && let Some(first) = task_nodes.first()
-            {
-                self.inner.add_edge(prev, *first);
-            }
-
-            if let Some(last) = task_nodes.last() {
-                previous = Some(*last);
-            }
-
-            nodes.extend(task_nodes);
-        }
-
-        // Register this group for dependency expansion
-        self.inner.register_group(prefix, child_names);
-
-        Ok(nodes)
-    }
-
-    /// Build a parallel task group (tasks can run concurrently).
-    fn build_parallel_group(
-        &mut self,
-        prefix: &str,
-        group: &TaskGroup,
-        all_tasks: &Tasks,
-    ) -> Result<Vec<NodeIndex>> {
-        let mut nodes = Vec::new();
-
-        // Track child names for group dependency expansion
-        let child_names: Vec<String> = group
-            .children
-            .keys()
-            .map(|name| format!("{}.{}", prefix, name))
-            .collect();
-
-        for (name, child_node) in &group.children {
-            let task_name = format!("{}.{}", prefix, name);
-            let task_nodes = self.build_from_node(&task_name, child_node, all_tasks)?;
-
-            // Apply group-level dependencies to each subtask
-            if !group.depends_on.is_empty() {
-                for node_idx in &task_nodes {
-                    if let Some(node) = self.inner.get_node_mut(*node_idx) {
-                        for dep in &group.depends_on {
-                            node.task.add_dependency(dep.task_name().to_string());
-                        }
-                    }
-                }
-            }
-
-            nodes.extend(task_nodes);
-        }
-
-        // Register this group for dependency expansion
-        self.inner.register_group(prefix, child_names);
-
-        Ok(nodes)
     }
 
     /// Add a single task to the graph.
@@ -197,92 +104,6 @@ impl TaskGraph {
     #[must_use]
     pub fn contains_task(&self, name: &str) -> bool {
         self.inner.contains_task(name)
-    }
-
-    /// Build a complete graph from tasks with proper dependency resolution.
-    /// This performs a two-pass build: first adding all nodes, then all edges.
-    pub fn build_complete_graph(&mut self, tasks: &Tasks) -> Result<()> {
-        // First pass: Add all tasks as nodes
-        for (name, node) in tasks.tasks.iter() {
-            if let TaskNode::Task(task) = node {
-                self.add_task(name, task.as_ref().clone())?;
-            }
-            // Groups and Lists are handled by build_from_node
-        }
-
-        // Second pass: Add all dependency edges
-        self.add_dependency_edges()
-    }
-
-    /// Build graph for a specific task and all its transitive dependencies.
-    ///
-    /// This uses the [`cuenv_task_graph::TaskResolver`] trait implementation for [`Tasks`] to handle
-    /// nested paths and group expansion in a unified way.
-    pub fn build_for_task(&mut self, task_name: &str, all_tasks: &Tasks) -> Result<()> {
-        debug!(
-            "Building graph for '{}' with tasks {:?}",
-            task_name,
-            all_tasks.list_tasks()
-        );
-
-        self.inner
-            .build_for_task_with_resolver(task_name, all_tasks)
-            .map_err(|e| crate::Error::configuration(e.to_string()))
-    }
-
-    /// Add implicit dependency edges inferred from task output references.
-    ///
-    /// Each pair `(from_task, to_task)` means `from_task` references an output
-    /// of `to_task` and therefore depends on it. This creates both:
-    /// - A `dependsOn` entry on the task data (for consistency)
-    /// - An actual petgraph edge (so topological sort / parallel groups work)
-    ///
-    /// When a referenced target task is not yet in the graph, it is added
-    /// (along with its transitive dependencies) from `all_tasks`. This is
-    /// necessary because `build_for_task` only follows explicit `dependsOn`
-    /// edges and won't discover tasks that are only referenced via output refs.
-    pub fn add_output_ref_deps(
-        &mut self,
-        deps: &[(String, String)],
-        all_tasks: &Tasks,
-    ) -> Result<()> {
-        for (from, to) in deps {
-            // Only process pairs where the source task is already in the graph.
-            // This avoids pulling in unrelated tasks (e.g., pipeline[1]→pipeline[0]
-            // when the user only asked to run "work").
-            if self.inner.get_node_index(from).is_none() {
-                continue;
-            }
-
-            // Ensure the target task is in the graph (it may not be if the
-            // only link to it is through an output reference).
-            if self.inner.get_node_index(to).is_none() {
-                self.inner
-                    .build_for_task_with_resolver(to, all_tasks)
-                    .map_err(|e| crate::Error::configuration(e.to_string()))?;
-            }
-
-            let from_idx = self.inner.get_node_index(from);
-            let to_idx = self.inner.get_node_index(to);
-
-            if let (Some(from_idx), Some(to_idx)) = (from_idx, to_idx) {
-                // Skip if this dependency already exists (e.g., user also has explicit dependsOn)
-                let already_exists = self
-                    .inner
-                    .get_task_mut(from)
-                    .is_some_and(|d| d.has_dependency(to));
-
-                if !already_exists {
-                    // Add dependency to task data for consistency
-                    if let Some(from_data) = self.inner.get_task_mut(from) {
-                        from_data.add_dependency(to.clone());
-                    }
-                    // Create actual petgraph edge (to -> from means "to must run before from")
-                    self.inner.add_edge(to_idx, from_idx);
-                }
-            }
-        }
-        Ok(())
     }
 }
 

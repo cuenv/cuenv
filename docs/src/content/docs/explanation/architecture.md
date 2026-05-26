@@ -87,12 +87,15 @@ spawning, process-registry lifecycle, output streaming, and result assembly
 live in `crates/core/src/tasks/process.rs`. Command redaction helpers,
 failure-summary formatting, and workspace-root detection live in `command.rs`,
 `result.rs`, and `workspace.rs` beside it.
-Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task path
-resolution for dotted/bracketed CUE task nodes lives in
-`crates/core/src/tasks/graph/resolver.rs`. Generic task DAG primitives live in
-`crates/task-graph/src/graph.rs`; affected-task and transitive-closure helpers
-live in `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group
-expansion and sequence ordering live in
+Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task graph
+construction lives in `crates/core/src/tasks/graph/build.rs`, task output-ref
+dependency edge materialization lives in
+`crates/core/src/tasks/graph/output_refs.rs`, and task path resolution for
+dotted/bracketed CUE task nodes lives in `crates/core/src/tasks/graph/resolver.rs`.
+Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
+affected-task and transitive-closure helpers live in
+`crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
+and sequence ordering live in
 `crates/task-graph/src/graph/resolver_build.rs`.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
