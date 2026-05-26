@@ -3,6 +3,7 @@
 //! Orchestrates CI pipeline execution with provider integration.
 
 pub mod config;
+mod hook_env;
 mod orchestrator;
 pub mod runner;
 pub mod secrets;

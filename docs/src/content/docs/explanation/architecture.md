@@ -140,8 +140,9 @@ contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. CI task tool download and lockfile
-activation support lives in `crates/ci/src/executor/tools.rs`, keeping the
-orchestrator focused on pipeline scheduling and reporting.
+activation support lives in `crates/ci/src/executor/tools.rs`; CI hook-backed
+environment assembly lives in `crates/ci/src/executor/hook_env.rs`, keeping
+the orchestrator focused on pipeline scheduling and reporting.
 
 ### cuenv-1password
 
