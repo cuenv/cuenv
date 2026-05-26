@@ -26,7 +26,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 // Bridge error codes - keep in sync with Go side constants
 // These match the constants defined in bridge.go
@@ -38,6 +40,7 @@ const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
 const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
 const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
 const ERROR_CODE_DEPENDENCY_RES: &str = "DEPENDENCY_RESOLUTION";
+const MODULE_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error response from the Go bridge
 #[derive(Debug, Deserialize, Serialize)]
@@ -276,6 +279,14 @@ struct FormattedModuleFile {
     content: String,
 }
 
+struct ModuleEvalWorker {
+    c_module_root: CString,
+    c_package: CString,
+    c_options: CString,
+    module_root: PathBuf,
+    span: tracing::Span,
+}
+
 /// Evaluates CUE instances in a module and returns results with optional source metadata
 ///
 /// This function evaluates CUE files in a module using native CUE loading patterns:
@@ -311,75 +322,90 @@ struct FormattedModuleFile {
     level = "info",
     skip(options)
 )]
-#[allow(clippy::cognitive_complexity)] // FFI orchestration has inherent complexity
 pub fn evaluate_module(
     module_root: &Path,
     package_name: &str,
     options: Option<&ModuleEvalOptions>,
 ) -> Result<ModuleResult> {
     tracing::info!("Starting module-wide CUE evaluation");
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
     let c_module_root = path_to_cstring(module_root, "cue_eval_module", "module root")?;
     let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
     let c_options = options_to_cstring(options)?;
+    let worker = ModuleEvalWorker {
+        c_module_root,
+        c_package,
+        c_options,
+        module_root: module_root.to_path_buf(),
+        span: tracing::Span::current(),
+    };
 
-    // Run the blocking FFI call in a worker thread so we can enforce a timeout.
-    // A pathological CUE evaluation (e.g. exponential unification from a deeply
-    // disjunctive schema) can allocate unbounded Go-side memory. If it does not
-    // complete within the timeout we surface an error rather than letting a
-    // hung evaluator consume the host. The worker thread is detached: we cannot
-    // safely abort an in-flight Go call, but returning an error allows the
-    // caller to fail fast and exit the process.
-    let timeout = std::time::Duration::from_secs(10);
-    let module_root_owned = module_root.to_path_buf();
-    let span = tracing::Span::current();
+    let rx = spawn_module_eval_worker(worker);
+    let module_result =
+        receive_module_eval_result(&rx, module_root, package_name, MODULE_EVAL_TIMEOUT)?;
+    log_module_eval_success(&module_result, start_time);
+
+    Ok(module_result)
+}
+
+fn spawn_module_eval_worker(worker: ModuleEvalWorker) -> Receiver<Result<ModuleResult>> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Result<ModuleResult>>(1);
 
     std::thread::spawn(move || {
-        let _entered = span.enter();
-        let result = (|| {
-            let json_str = call_ffi_eval_module(&c_module_root, &c_package, &c_options)?;
-            let envelope = parse_bridge_envelope(&json_str)?;
-            process_bridge_response(envelope, &module_root_owned)
-        })();
+        let result = worker.run();
         let _ = tx.send(result);
     });
 
-    let module_result = match rx.recv_timeout(timeout) {
-        Ok(inner) => inner?,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+    rx
+}
+
+impl ModuleEvalWorker {
+    fn run(self) -> Result<ModuleResult> {
+        let _entered = self.span.enter();
+        let json_str = call_ffi_eval_module(&self.c_module_root, &self.c_package, &self.c_options)?;
+        let envelope = parse_bridge_envelope(&json_str)?;
+        process_bridge_response(envelope, &self.module_root)
+    }
+}
+
+fn receive_module_eval_result(
+    rx: &Receiver<Result<ModuleResult>>,
+    module_root: &Path,
+    package_name: &str,
+    timeout: Duration,
+) -> Result<ModuleResult> {
+    match rx.recv_timeout(timeout) {
+        Ok(inner) => inner,
+        Err(RecvTimeoutError::Timeout) => {
             tracing::error!(
                 timeout_secs = timeout.as_secs(),
                 module_root = %module_root.display(),
                 package_name,
                 "CUE evaluation timed out"
             );
-            return Err(Error::ffi(
+            Err(Error::ffi(
                 "cue_eval_module",
                 format!(
                     "CUE evaluation timed out after {}s for module {}",
                     timeout.as_secs(),
                     module_root.display()
                 ),
-            ));
+            ))
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            return Err(Error::ffi(
-                "cue_eval_module",
-                "CUE evaluation worker thread disconnected unexpectedly".to_string(),
-            ));
-        }
-    };
+        Err(RecvTimeoutError::Disconnected) => Err(Error::ffi(
+            "cue_eval_module",
+            "CUE evaluation worker thread disconnected unexpectedly".to_string(),
+        )),
+    }
+}
 
-    let total_duration = start_time.elapsed();
+fn log_module_eval_success(module_result: &ModuleResult, start_time: Instant) {
     tracing::info!(
-        total_duration_ms = total_duration.as_millis(),
+        total_duration_ms = start_time.elapsed().as_millis(),
         instance_count = module_result.instances.len(),
         "Module evaluation completed successfully"
     );
-
-    Ok(module_result)
 }
 
 /// Convert a path to a `CString` for FFI.
@@ -411,14 +437,13 @@ fn options_to_cstring(options: Option<&ModuleEvalOptions>) -> Result<CString> {
 }
 
 /// Call the FFI function and return the JSON string result.
-#[allow(clippy::cognitive_complexity)] // FFI error handling requires multiple branches
 fn call_ffi_eval_module(
     c_module_root: &CString,
     c_package: &CString,
     c_options: &CString,
 ) -> Result<String> {
     tracing::debug!("Calling FFI function cue_eval_module");
-    let ffi_start = std::time::Instant::now();
+    let ffi_start = Instant::now();
 
     // Safety: cue_eval_module is an FFI function that:
     // - Takes three valid C string pointers (guaranteed by CString::as_ptr())
@@ -432,25 +457,18 @@ fn call_ffi_eval_module(
         )
     };
 
-    let ffi_duration = ffi_start.elapsed();
     tracing::debug!(
-        ffi_duration_ms = ffi_duration.as_millis(),
+        ffi_duration_ms = ffi_start.elapsed().as_millis(),
         "FFI call completed"
     );
 
     // Safety: CStringPtr::new is safe because result_ptr is from cue_eval_module
     let result = unsafe { CStringPtr::new(result_ptr) };
-
-    if result.is_null() {
-        tracing::error!("FFI function returned null pointer");
-        return Err(Error::ffi(
-            "cue_eval_module",
-            "Module evaluation returned null".to_string(),
-        ));
-    }
-
-    // Safety: result.to_str() is safe because we checked result is not null
-    unsafe { result.to_str() }.map(String::from)
+    extract_ffi_string_with_null_message(
+        &result,
+        "cue_eval_module",
+        "Module evaluation returned null",
+    )
 }
 
 /// Parse the JSON envelope from the Go bridge.
@@ -530,11 +548,18 @@ fn parse_module_result(json_data: &str) -> Result<ModuleResult> {
 }
 
 /// Extract a string from an FFI result wrapper.
-#[allow(clippy::needless_pass_by_value)] // CStringPtr Drop impl manages FFI memory - must take ownership
-fn extract_ffi_string(wrapper: CStringPtr, fn_name: &'static str) -> Result<String> {
+fn extract_ffi_string(wrapper: &CStringPtr, fn_name: &'static str) -> Result<String> {
+    extract_ffi_string_with_null_message(wrapper, fn_name, &format!("{fn_name} returned null"))
+}
+
+fn extract_ffi_string_with_null_message(
+    wrapper: &CStringPtr,
+    fn_name: &'static str,
+    null_message: &str,
+) -> Result<String> {
     if wrapper.is_null() {
         tracing::error!("{} returned null pointer", fn_name);
-        return Err(Error::ffi(fn_name, format!("{fn_name} returned null")));
+        return Err(Error::ffi(fn_name, null_message.to_string()));
     }
 
     // Safety: wrapper.to_str() is safe because we checked wrapper is not null
@@ -566,7 +591,7 @@ pub fn get_bridge_version() -> Result<String> {
     // Safety: CStringPtr::new is safe because version_ptr is from cue_bridge_version
     let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
 
-    let bridge_version = extract_ffi_string(version_wrapper, "cue_bridge_version")?;
+    let bridge_version = extract_ffi_string(&version_wrapper, "cue_bridge_version")?;
 
     tracing::info!(bridge_version = bridge_version, "Retrieved bridge version");
     Ok(bridge_version)
@@ -621,7 +646,7 @@ pub fn module_custom_version(module_root: &Path, namespace: &str) -> Result<Modu
     let result_ptr =
         unsafe { cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr()) };
     let result = unsafe { CStringPtr::new(result_ptr) };
-    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     process_bridge_json(&json_str, module_root, FUNCTION_NAME)
 }
 
@@ -653,7 +678,7 @@ pub fn format_module_with_custom_version(
         )
     };
     let result = unsafe { CStringPtr::new(result_ptr) };
-    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     let formatted: FormattedModuleFile =
         process_bridge_json(&json_str, module_root, FUNCTION_NAME)?;
     Ok(formatted.content)
@@ -753,7 +778,6 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     ),
     level = "info"
 )]
-#[allow(clippy::cognitive_complexity)] // Generic deserialization with error handling is inherently complex
 pub fn evaluate_cue_package_typed<T>(dir_path: &Path, package_name: &str) -> Result<T>
 where
     T: serde::de::DeserializeOwned,

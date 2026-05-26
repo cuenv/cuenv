@@ -32,6 +32,11 @@ Provides structured error types via `CueEngineError` with proper error codes.
 **JSON Bridge**
 Handles serialization/deserialization between Rust and Go data structures.
 
+Module evaluation is split into four Rust-side phases: C string preparation,
+a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
+parsing. Keeping those phases separate makes the Go boundary, timeout behavior,
+and response decoding auditable without changing the public API.
+
 ## API Reference
 
 ### Module Evaluation (Recommended)
