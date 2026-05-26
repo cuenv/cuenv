@@ -89,6 +89,9 @@ Task contributor injection is owned by `crates/core/src/contributors.rs`; the
 built-in package-manager workspace contributor definitions live in
 `crates/core/src/contributors/workspace.rs` so DAG mutation stays separate from
 the built-in Bun/npm/pnpm/Yarn setup catalog.
+Hook execution state and supervisor orchestration live in
+`crates/hooks/src/executor.rs`; source-hook shell environment capture lives in
+`crates/hooks/src/executor/source_environment.rs`.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
