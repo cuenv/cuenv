@@ -253,10 +253,10 @@ separated so output, task, service, CI, command, interactive, and system events
 do not share one monolithic conversion path. Exported `emit_*!` macro
 definitions live in
 `crates/events/src/macros.rs`, while crate-root hidden helpers remain available
-for `$crate` expansion and redacted print helpers. The CLI renderer keeps
-task-specific plain/spinner output in
-`crates/events/src/renderers/cli/task.rs`, leaving the renderer root focused on
-configuration, event dispatch, and non-task event categories.
+for `$crate` expansion and redacted print helpers. The CLI renderer keeps task
+plain/spinner output and service output in
+`crates/events/src/renderers/cli/{task,service}.rs`, leaving the renderer root
+focused on configuration, event dispatch, and the remaining event categories.
 
 ### cuenv-workspaces
 

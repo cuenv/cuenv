@@ -7,8 +7,7 @@
 
 use crate::bus::EventReceiver;
 use crate::event::{
-    CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, ServiceEvent,
-    Stream, SystemEvent,
+    CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, SystemEvent,
 };
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
@@ -16,6 +15,7 @@ use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
+mod service;
 mod task;
 
 /// CLI renderer configuration.
@@ -123,52 +123,6 @@ impl CliRenderer {
             }
             EventCategory::System(system_event) => self.render_system(system_event),
             EventCategory::Output(output_event) => self.render_output(output_event),
-        }
-    }
-
-    fn render_service(&self, event: &ServiceEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for service rendering options later
-        match event {
-            ServiceEvent::Pending { name } => {
-                eprintln!("> [{name}] pending (waiting for dependencies)");
-            }
-            ServiceEvent::Starting { name, command } => {
-                eprintln!("> [{name}] starting: {command}");
-            }
-            ServiceEvent::Output { name, stream, line } => match stream {
-                Stream::Stdout => {
-                    println!("[{name}] {line}");
-                }
-                Stream::Stderr => {
-                    eprintln!("[{name}] {line}");
-                }
-            },
-            ServiceEvent::Ready { name, after_ms } => {
-                eprintln!("> [{name}] ready ({after_ms}ms)");
-            }
-            ServiceEvent::ReadyTimeout { name, after_ms } => {
-                eprintln!("> [{name}] readiness timeout after {after_ms}ms");
-            }
-            ServiceEvent::Restarting {
-                name,
-                reason,
-                attempt,
-            } => {
-                eprintln!("> [{name}] restarting (reason: {reason:?}, attempt: {attempt})");
-            }
-            ServiceEvent::Stopping { name } => {
-                eprintln!("> [{name}] stopping");
-            }
-            ServiceEvent::Stopped { name, exit_code } => {
-                let code = exit_code.map_or_else(|| "signal".to_string(), |c| c.to_string());
-                eprintln!("> [{name}] stopped (exit: {code})");
-            }
-            ServiceEvent::Failed { name, error } => {
-                eprintln!("> [{name}] FAILED: {error}");
-            }
-            ServiceEvent::Watch { name, changed } => {
-                eprintln!("> [{name}] files changed: {}", changed.join(", "));
-            }
         }
     }
 

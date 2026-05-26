@@ -20,6 +20,7 @@ Status guardrails:
 - OCI runtime is partial: `cuenv sync lock` writes resolved digests and per-image `extract` entries to `cuenv.lock`, and `#OCIActivate` (running `cuenv runtime oci activate`) extracts those binaries to the content-addressed cache and emits a `export PATH=...` line through the events renderer. An end-to-end fixture is still pending.
 - `#ContainerImage` is schema-visible, but `cuenv build` does not yet build images.
 - Services are partial: `down` is stubbed, `logs --follow` is TODO, and `restart` does not fully signal supervisors.
+- Service lifecycle CLI output is rendered in `crates/events/src/renderers/cli/service.rs`; keep service-event wording aligned there when lifecycle semantics change.
 - Keep standalone `#Devenv` separate from `#DevenvRuntime`.
 
 Adversarial prompts:

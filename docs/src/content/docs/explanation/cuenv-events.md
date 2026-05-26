@@ -58,7 +58,8 @@ CLI and JSON output formatters for events. The CLI renderer keeps terminal
 color and verbosity settings at the top level of `CliRendererConfig`, while
 spinner-specific toggles live under `CliSpinnerConfig` so task progress display
 can evolve independently from plain log rendering. Task-specific CLI output and
-spinner integration live in `crates/events/src/renderers/cli/task.rs`.
+spinner integration live in `crates/events/src/renderers/cli/task.rs`; service
+event output lives in `crates/events/src/renderers/cli/service.rs`.
 
 Macro compile tests are grouped by event category, matching the schema
 categories above so task, CI, command, interactive, system, and service emitters
