@@ -10,6 +10,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/tasks.cue` for `#Task`, `#TaskGroup`, `#TaskSequence`, params, inputs, outputs, cache, captures, and Dagger compatibility fields.
 - `schema/execution.cue` for shared command and script shapes.
 - `crates/core/src/tasks` and `crates/cuenv/src/commands/task` when behavior matters.
+- `crates/core/src/contributors.rs` and `crates/core/src/contributors/workspace.rs` when task contributor injection or auto-association affects the DAG.
 
 Generation rules:
 
