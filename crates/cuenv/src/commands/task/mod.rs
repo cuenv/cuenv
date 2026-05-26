@@ -17,7 +17,7 @@ use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
 use cuenv_core::tasks::cache::TaskCacheConfig;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_core::tasks::{BackendFactory, TaskExecutor, TaskGraph, TaskNode, Tasks};
+use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskNode, Tasks};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -25,16 +25,14 @@ use super::relative_path_from_root;
 use crate::tui::rich::RichTui;
 use crate::tui::state::TaskInfo;
 
-/// Get the dagger backend factory if the feature is enabled
 #[cfg(feature = "dagger-backend")]
-#[allow(clippy::unnecessary_wraps)] // Both cfg variants need same return type
-fn get_dagger_factory() -> Option<BackendFactory> {
-    Some(cuenv_dagger::create_dagger_backend)
+fn build_task_executor(config: ExecutorConfig) -> TaskExecutor {
+    TaskExecutor::with_dagger_factory(config, Some(cuenv_dagger::create_dagger_backend))
 }
 
 #[cfg(not(feature = "dagger-backend"))]
-fn get_dagger_factory() -> Option<BackendFactory> {
-    None
+fn build_task_executor(config: ExecutorConfig) -> TaskExecutor {
+    TaskExecutor::new(config)
 }
 use std::fmt::Write;
 use std::path::{Path, PathBuf};

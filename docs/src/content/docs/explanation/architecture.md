@@ -112,7 +112,11 @@ snippet generation and status rendering live under
 Environment schema values, policy checks, interpolation, and secret-aware value
 resolution live in `crates/core/src/environment/values.rs`; runtime
 environment merging, PATH lookup, and filtered task/exec/service environment
-construction stay in `crates/core/src/environment.rs`.
+construction stay in `crates/core/src/environment.rs`. CLI task execution
+keeps feature-gated executor construction in
+`crates/cuenv/src/commands/task/mod.rs`, while
+`crates/cuenv/src/commands/task/execution.rs` owns task selection, runtime
+preparation, and execution orchestration.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:

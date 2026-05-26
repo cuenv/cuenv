@@ -4,8 +4,8 @@ use super::list_builder::prepare_task_index;
 use super::rendering::get_task_cli_help;
 use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 use super::{
-    build_task_cache, execute_task_with_strategy, execute_with_rich_tui, format_task_results,
-    get_dagger_factory, resolve_runtime_cache_identity,
+    build_task_cache, build_task_executor, execute_task_with_strategy, execute_with_rich_tui,
+    format_task_results, resolve_runtime_cache_identity,
 };
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::{HookEnvironmentRequest, get_environment_with_hooks};
@@ -15,7 +15,7 @@ use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::runtime::resolve_runtime_environment;
 use cuenv_core::tasks::cache::TaskCacheConfig;
 use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskIndex, TaskNode, Tasks};
+use cuenv_core::tasks::{ExecutorConfig, TaskGraph, TaskIndex, TaskNode, Tasks};
 use cuenv_core::tools::apply_resolved_tool_activation;
 use cuenv_core::{DryRun, OutputCapture, Result};
 use std::collections::HashMap;
@@ -389,7 +389,7 @@ async fn execute_resolved_task(request: TaskRunRequest<'_, '_>) -> Result<String
         runtime: &request.runtime,
         capture_output: request.input.capture_output,
     });
-    let executor = TaskExecutor::with_dagger_factory(executor_config, get_dagger_factory());
+    let executor = build_task_executor(executor_config);
 
     if request.input.uses_tui() && request.task_graph.task_count() > 0 {
         let tui_config = task_executor_config(&TaskExecutorConfigSpec {
@@ -398,7 +398,7 @@ async fn execute_resolved_task(request: TaskRunRequest<'_, '_>) -> Result<String
             runtime: &request.runtime,
             capture_output: OutputCapture::Capture,
         });
-        let tui_executor = TaskExecutor::with_dagger_factory(tui_config, get_dagger_factory());
+        let tui_executor = build_task_executor(tui_config);
 
         return execute_with_rich_tui(
             &tui_executor,
