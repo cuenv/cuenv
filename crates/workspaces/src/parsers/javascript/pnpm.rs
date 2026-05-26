@@ -212,87 +212,52 @@ fn entry_from_package(
     })
 }
 
-#[allow(clippy::option_if_let_else, clippy::too_many_lines)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_package_key(lockfile_path: &Path, package_key: &str) -> Result<(String, String)> {
-    // Remove leading "/" if present
     let key = package_key.trim_start_matches('/');
 
-    // Handle scoped packages like "@babel/core/7.22.5" or "/@babel/core@7.22.5"
-    if key.starts_with('@') {
-        // Find the second slash which separates the package name from the version
-        // For example: "@babel/core/7.22.5" -> ["@babel", "core", "7.22.5"]
-        let parts: Vec<&str> = key.splitn(3, '/').collect();
-        if parts.len() >= 3 {
-            // parts[0] = "@babel", parts[1] = "core", parts[2] = "7.22.5"
-            let name = format!("{}/{}", parts[0], parts[1]);
-            let version_part = parts[2];
-
-            // Remove pnpm peer dependency suffixes like "(@types/node@20.0.0)"
-            let version = version_part
-                .split('(')
-                .next()
-                .unwrap_or(version_part)
-                .trim_end_matches(')');
-
-            return Ok((name, version.to_string()));
-        } else if parts.len() == 2 {
-            // Handle "@babel/core@7.22.5" format (with @)
-            let name = format!(
-                "{}/{}",
-                parts[0],
-                parts[1].split('@').next().unwrap_or(parts[1])
-            );
-            let version = parts[1]
-                .split('@')
-                .nth(1)
-                .ok_or_else(|| Error::LockfileParseFailed {
-                    path: lockfile_path.to_path_buf(),
-                    message: format!("Invalid scoped package key format: {package_key}"),
-                })?;
-
-            let version = version
-                .split('(')
-                .next()
-                .unwrap_or(version)
-                .trim_end_matches(')');
-
-            return Ok((name, version.to_string()));
-        }
-    }
-
-    // Handle regular packages like "left-pad@1.3.0" or "left-pad/1.3.0"
-    // pnpm uses @ as separator between name and version
-    if let Some(at_idx) = key.rfind('@') {
-        let name = &key[..at_idx];
-        let version = &key[at_idx + 1..];
-
-        // Remove pnpm peer dependency suffixes
-        let version = version
-            .split('(')
-            .next()
-            .unwrap_or(version)
-            .trim_end_matches(')');
-
-        Ok((name.to_string(), version.to_string()))
-    } else if let Some(last_slash) = key.rfind('/') {
-        // Fallback to slash separator
-        let name = &key[..last_slash];
-        let version = &key[last_slash + 1..];
-
-        // Remove pnpm peer dependency suffixes
-        let version = version
-            .split('(')
-            .next()
-            .unwrap_or(version)
-            .trim_end_matches(')');
-
-        Ok((name.to_string(), version.to_string()))
-    } else {
-        Err(Error::LockfileParseFailed {
+    parse_scoped_package_key(key)
+        .or_else(|| parse_regular_package_key(key))
+        .ok_or_else(|| Error::LockfileParseFailed {
             path: lockfile_path.to_path_buf(),
             message: format!("Invalid pnpm package key format: {package_key}"),
         })
+}
+
+fn parse_scoped_package_key(key: &str) -> Option<(String, String)> {
+    if !key.starts_with('@') {
+        return None;
     }
+
+    let mut parts = key.splitn(3, '/');
+    let scope = parts.next()?;
+    let package = parts.next()?;
+
+    if let Some(version) = parts.next() {
+        Some((
+            format!("{scope}/{package}"),
+            strip_peer_suffix(version).to_string(),
+        ))
+    } else {
+        let (package, version) = package.rsplit_once('@')?;
+        Some((
+            format!("{scope}/{package}"),
+            strip_peer_suffix(version).to_string(),
+        ))
+    }
+}
+
+fn parse_regular_package_key(key: &str) -> Option<(String, String)> {
+    key.rsplit_once('@')
+        .or_else(|| key.rsplit_once('/'))
+        .map(|(name, version)| (name.to_string(), strip_peer_suffix(version).to_string()))
+}
+
+fn strip_peer_suffix(version: &str) -> &str {
+    version
+        .split('(')
+        .next()
+        .unwrap_or(version)
+        .trim_end_matches(')')
 }
 
 #[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
