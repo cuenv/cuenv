@@ -6,12 +6,6 @@ use crate::{Error, OutputCapture, Result};
 use std::process::Stdio;
 use tokio::process::Command;
 
-// Unix process group setup requires CommandExt trait for pre_exec method.
-// The unused_imports warning is a false positive - the trait is used via cmd.pre_exec().
-#[cfg(unix)]
-#[allow(unused_imports)]
-use std::os::unix::process::CommandExt;
-
 /// Run a host task process in captured or inherited-output mode.
 pub async fn run_task_process(
     name: &str,

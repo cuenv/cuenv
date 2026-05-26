@@ -84,7 +84,9 @@ configuration, input references, and dependency references live in sibling
 modules under `crates/core/src/tasks/`. The task executor keeps
 graph orchestration in `crates/core/src/tasks/executor.rs`; host process
 spawning, process-registry lifecycle, output streaming, and result assembly
-live in `crates/core/src/tasks/process.rs`. Command redaction helpers,
+live in `crates/core/src/tasks/process.rs`. Unix process-group setup is kept in
+that host-process boundary so `pre_exec` and signal-tree management do not leak
+into task orchestration. Command redaction helpers,
 failure-summary formatting, and workspace-root detection live in `command.rs`,
 `result.rs`, and `workspace.rs` beside it.
 Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task graph
