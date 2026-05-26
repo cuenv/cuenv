@@ -11,6 +11,7 @@ Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant
 - `schema/env.cue` and `schema/policy.cue` for env values, policies, interpolation, and passthrough.
 - `schema/secrets.cue`, `schema/onepassword.cue`, `schema/infisical.cue`, `schema/aws.cue`, `schema/gcp.cue`, and `schema/vault.cue` for secret shapes.
 - `schema/hooks.cue` and `schema/shell.cue` for hooks and shell command variants.
+- `crates/core/src/environment/values.rs` for env value shapes, policy checks, interpolation, and secret-aware value resolution; `crates/core/src/environment.rs` for runtime environment merging, PATH lookup, and filtered env construction.
 - `crates/hooks/src/executor.rs` for hook execution state/supervisor orchestration, and `crates/hooks/src/executor/source_environment.rs` for source-hook environment capture.
 - `crates/ci/src/executor/hook_env.rs` for hook-backed environment assembly during CI task execution.
 - `crates/ci/src/executor/task_env.rs` for CI task env precedence and passthrough handling.

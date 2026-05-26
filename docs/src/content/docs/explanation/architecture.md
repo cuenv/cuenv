@@ -93,6 +93,10 @@ the built-in Bun/npm/pnpm/Yarn setup catalog.
 Hook execution state and supervisor orchestration live in
 `crates/hooks/src/executor.rs`; source-hook shell environment capture lives in
 `crates/hooks/src/executor/source_environment.rs`.
+Environment schema values, policy checks, interpolation, and secret-aware value
+resolution live in `crates/core/src/environment/values.rs`; runtime
+environment merging, PATH lookup, and filtered task/exec/service environment
+construction stay in `crates/core/src/environment.rs`.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
