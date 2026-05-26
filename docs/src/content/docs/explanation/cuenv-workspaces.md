@@ -218,10 +218,12 @@ if let Some(manager) = detect_from_command("cargo build") {
 }
 ```
 
-Detection is split into lockfile processing, package.json hints, workspace
-config validation, command-name parsing, and priority ordering so Yarn version
-handling and confidence scoring stay isolated from the public detection entry
-points.
+Detection orchestration stays in `crates/workspaces/src/detection.rs`, while
+shell command parsing lives in `detection/command.rs` and lockfile/workspace
+config scanning lives in `detection/filesystem.rs`. Package.json hints and
+priority ordering remain with the public entrypoints so command hints, Yarn
+version handling, config validation, and confidence scoring stay in focused
+boundaries.
 
 ## Integration Patterns
 

@@ -36,8 +36,15 @@ use crate::core::types::PackageManager;
 use crate::error::{Error, Result};
 use std::collections::HashSet;
 use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod command;
+mod filesystem;
+
+pub use command::{command_name, detect_from_command};
+#[cfg(test)]
+use filesystem::read_first_lines;
+use filesystem::{detect_yarn_version, find_lockfiles, validate_workspace_config};
 
 /// Detects all package managers present in the given directory.
 ///
@@ -168,95 +175,6 @@ fn detect_from_workspace_configs(
     Ok(())
 }
 
-/// Returns the effective command name from a shell-like command string.
-///
-/// This skips common environment variable prefixes such as `FOO=bar cargo test`
-/// and `env -i FOO=bar bun run build`, while respecting shell quoting rules.
-#[must_use]
-pub fn command_name(command: &str) -> Option<String> {
-    let tokens = shlex::split(command)?;
-    let mut parsing_env_options = false;
-
-    for token in tokens {
-        if token == "env" {
-            parsing_env_options = true;
-            continue;
-        }
-
-        if parsing_env_options {
-            if token == "--" {
-                parsing_env_options = false;
-                continue;
-            }
-
-            if token.starts_with('-') {
-                continue;
-            }
-        }
-
-        if is_env_assignment(&token) {
-            continue;
-        }
-
-        return Some(token);
-    }
-
-    None
-}
-
-fn is_env_assignment(token: &str) -> bool {
-    let Some((name, _)) = token.split_once('=') else {
-        return false;
-    };
-
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-/// Infers the package manager from a command string.
-///
-/// Maps common command names to their corresponding package managers.
-///
-/// # Examples
-///
-/// ```
-/// use cuenv_workspaces::detection::detect_from_command;
-/// use cuenv_workspaces::PackageManager;
-///
-/// assert_eq!(detect_from_command("cargo"), Some(PackageManager::Cargo));
-/// assert_eq!(detect_from_command("npm"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("bun"), Some(PackageManager::Bun));
-/// assert_eq!(detect_from_command("pnpm"), Some(PackageManager::Pnpm));
-/// assert_eq!(detect_from_command("node"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("unknown"), None);
-/// ```
-pub fn detect_from_command(command: &str) -> Option<PackageManager> {
-    let cmd = command_name(command)?;
-
-    match cmd.as_str() {
-        "cargo" => Some(PackageManager::Cargo),
-        "npm" | "npx" | "node" => Some(PackageManager::Npm),
-        "bun" | "bunx" => Some(PackageManager::Bun),
-        "pnpm" => Some(PackageManager::Pnpm),
-        "deno" => Some(PackageManager::Deno),
-        "yarn" => {
-            tracing::warn!(
-                "'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version()."
-            );
-            Some(PackageManager::YarnClassic)
-        }
-        _ => None,
-    }
-}
-
 /// Combines filesystem and command-based detection with command hint prioritization.
 ///
 /// If a command hint is provided, the corresponding package manager will be
@@ -300,32 +218,6 @@ pub fn detect_with_command_hint(root: &Path, command: Option<&str>) -> Result<Ve
     }
 
     Ok(managers)
-}
-
-/// Scans the root directory for package manager lockfiles.
-///
-/// Returns a list of tuples containing the detected package manager and the
-/// path to its lockfile.
-fn find_lockfiles(root: &Path) -> Vec<(PackageManager, PathBuf)> {
-    let mut lockfiles = Vec::new();
-
-    let candidates = [
-        PackageManager::Npm,
-        PackageManager::Bun,
-        PackageManager::Pnpm,
-        PackageManager::YarnClassic,
-        PackageManager::Cargo,
-        PackageManager::Deno,
-    ];
-
-    for manager in candidates {
-        let lockfile_path = root.join(manager.lockfile_name());
-        if lockfile_path.exists() {
-            lockfiles.push((manager, lockfile_path));
-        }
-    }
-
-    lockfiles
 }
 
 fn detect_manager_from_package_json(
@@ -439,114 +331,6 @@ fn has_js_manager(detected_managers: &HashSet<PackageManager>) -> bool {
         || detected_managers.contains(&PackageManager::Deno)
 }
 
-/// Validates that a workspace configuration file exists and is parseable.
-///
-/// Returns `Ok(true)` if the config is valid, `Ok(false)` if it doesn't exist,
-/// or `Err` if it exists but is invalid.
-fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<bool> {
-    let config_path = root.join(manager.workspace_config_name());
-
-    // Check if file exists
-    if !config_path.exists() {
-        return Ok(false);
-    }
-
-    // Read the file content
-    let content = fs::read_to_string(&config_path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(config_path.clone()),
-        operation: "reading workspace config".to_string(),
-    })?;
-
-    // Try to parse based on file type
-    match manager {
-        PackageManager::Npm
-        | PackageManager::Bun
-        | PackageManager::YarnClassic
-        | PackageManager::YarnModern
-        | PackageManager::Deno => {
-            // Parse as JSON (package.json or deno.json)
-            serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid JSON: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-        PackageManager::Cargo => {
-            // Parse as TOML (Cargo.toml)
-            toml::from_str::<toml::Value>(&content).map_err(|e| Error::InvalidWorkspaceConfig {
-                path: config_path,
-                message: format!("Invalid TOML: {e}"),
-            })?;
-            Ok(true)
-        }
-        PackageManager::Pnpm => {
-            // Parse as YAML (pnpm-workspace.yaml)
-            serde_yaml::from_str::<serde_yaml::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid YAML: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-    }
-}
-
-/// Distinguishes between Yarn Classic (v1) and Yarn Modern (v2+).
-///
-/// Reads the lockfile format to determine the version:
-/// - Yarn Classic uses a custom format starting with `# THIS IS AN AUTOGENERATED FILE`
-/// - Yarn Modern (v2+) uses YAML format starting with `__metadata:`
-fn detect_yarn_version(lockfile_path: &Path) -> Result<PackageManager> {
-    let file = fs::File::open(lockfile_path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(lockfile_path.to_path_buf()),
-        operation: "reading yarn.lock".to_string(),
-    })?;
-    let first_lines = read_first_lines(BufReader::new(file), 5, lockfile_path)?;
-
-    if has_yarn_modern_metadata(&first_lines) {
-        Ok(PackageManager::YarnModern)
-    } else if has_yarn_classic_header(&first_lines) {
-        Ok(PackageManager::YarnClassic)
-    } else {
-        // Default to Classic if we can't determine
-        tracing::warn!(
-            "Could not determine Yarn version from lockfile format, defaulting to Classic"
-        );
-        Ok(PackageManager::YarnClassic)
-    }
-}
-
-fn read_first_lines<R: BufRead>(
-    reader: R,
-    limit: usize,
-    lockfile_path: &Path,
-) -> Result<Vec<String>> {
-    reader
-        .lines()
-        .take(limit)
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|source| Error::Io {
-            source,
-            path: Some(lockfile_path.to_path_buf()),
-            operation: "reading yarn.lock".to_string(),
-        })
-}
-
-fn has_yarn_modern_metadata(lines: &[String]) -> bool {
-    lines.iter().any(|line| line.contains("__metadata:"))
-}
-
-fn has_yarn_classic_header(lines: &[String]) -> bool {
-    lines.iter().any(|line| {
-        line.contains("# yarn lockfile v1") || line.contains("# THIS IS AN AUTOGENERATED FILE")
-    })
-}
-
 /// Calculates a confidence score (0-100) based on detection signals.
 ///
 /// Scoring:
@@ -604,6 +388,8 @@ const fn manager_priority(manager: PackageManager) -> u8 {
 #[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
+    use std::io::BufReader;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     // Helper function to create a test workspace directory
