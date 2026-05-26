@@ -122,6 +122,11 @@ version application, git publication, and PR creation live in
 stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
 dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
+Sync command provider adapters live under
+`crates/cuenv/src/commands/sync/providers/`; shared sync command
+orchestration remains in `crates/cuenv/src/commands/sync/functions.rs`, and
+codegen file check/write/diff behavior lives in
+`crates/cuenv/src/commands/sync/functions/codegen.rs`.
 
 ### cuenv-ci
 

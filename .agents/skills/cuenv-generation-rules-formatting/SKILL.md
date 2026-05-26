@@ -8,6 +8,7 @@ description: Use for cuenv codegen, generated file language schemas, formatting,
 Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 
 - `schema/codegen.cue` and `schema/codegen/codegen.cue` for generated files.
+- `crates/cuenv/src/commands/sync/functions/codegen.rs` for codegen sync check/write/diff behavior.
 - `schema/formatters.cue` for `cuenv fmt`.
 - `schema/rules/*` for `.rules.cue` ignore, editorconfig, and owners behavior.
 - `schema/ignores.cue` and `schema/owners.cue` only as legacy top-level schemas.
