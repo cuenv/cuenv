@@ -7,7 +7,7 @@
 //! and multi-project coordination. The complexity is inherent to the domain.
 
 // CI orchestration has inherent complexity - coordinates async tasks, caching, reporting
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+#![allow(clippy::cognitive_complexity)]
 
 use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
 use crate::compiler::Compiler;
@@ -56,7 +56,6 @@ use super::runner::{IRTaskRunner, TaskOutput};
 ///
 /// # Errors
 /// Returns error if IO errors occur or tasks fail
-#[allow(clippy::too_many_lines)]
 pub async fn run_ci(
     provider: Arc<dyn CIProvider>,
     dry_run: DryRun,
@@ -71,12 +70,47 @@ pub async fn run_ci(
     let changed_files = provider.changed_files().await?;
     cuenv_events::emit_ci_changed_files!(changed_files.len());
 
+    let Some(discovered) = load_ci_projects(path_filter)? else {
+        return Ok(());
+    };
+
+    let failures = run_ci_projects(CiProjectRunRequest {
+        provider: provider.as_ref(),
+        dry_run,
+        specific_pipeline: specific_pipeline.as_deref(),
+        environment: environment.as_deref(),
+        context,
+        changed_files: &changed_files,
+        discovered: &discovered,
+    })
+    .await?;
+
+    if !failures.is_empty() {
+        return Err(cuenv_core::Error::execution(format!(
+            "CI pipeline failed:\n\n{}",
+            format_pipeline_failures(&failures)
+        )));
+    }
+
+    Ok(())
+}
+
+struct DiscoveredCiProjects {
+    projects: Vec<(PathBuf, Project)>,
+    project_map: ProjectDependencyMap,
+    project_configs: ProjectConfigMap,
+}
+
+type ProjectDependencyMap = HashMap<String, (PathBuf, Project)>;
+type ProjectConfigMap = HashMap<PathBuf, Project>;
+
+fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProjects>> {
     // Evaluate module and discover projects
     let module = evaluate_module_from_cwd()?;
     let project_count = module.project_count();
     if project_count == 0 {
         tracing::info!("No cuenv projects discovered; skipping CI run.");
-        return Ok(());
+        return Ok(None);
     }
     cuenv_events::emit_ci_projects_discovered!(project_count);
 
@@ -105,13 +139,24 @@ pub async fn run_ci(
             filter = path_filter.unwrap_or("."),
             "No projects under path filter; skipping"
         );
-        return Ok(());
+        return Ok(None);
     }
 
-    // Build project maps for cross-project dependency resolution and hook lookup.
+    let (project_map, project_configs) = build_project_lookup(&projects);
+
+    Ok(Some(DiscoveredCiProjects {
+        projects,
+        project_map,
+        project_configs,
+    }))
+}
+
+fn build_project_lookup(
+    projects: &[(PathBuf, Project)],
+) -> (ProjectDependencyMap, ProjectConfigMap) {
     let mut project_map = HashMap::new();
     let mut project_configs = HashMap::new();
-    for (path, config) in &projects {
+    for (path, config) in projects {
         let name = config.name.trim();
         if !name.is_empty() {
             project_map.insert(name.to_string(), (path.clone(), config.clone()));
@@ -123,65 +168,53 @@ pub async fn run_ci(
         }
     }
 
+    (project_map, project_configs)
+}
+
+struct CiProjectRunRequest<'a> {
+    provider: &'a dyn CIProvider,
+    dry_run: DryRun,
+    specific_pipeline: Option<&'a str>,
+    environment: Option<&'a str>,
+    context: &'a crate::context::CIContext,
+    changed_files: &'a [PathBuf],
+    discovered: &'a DiscoveredCiProjects,
+}
+
+async fn run_ci_projects(
+    request: CiProjectRunRequest<'_>,
+) -> Result<Vec<(String, cuenv_core::Error)>> {
+    let CiProjectRunRequest {
+        provider,
+        dry_run,
+        specific_pipeline,
+        environment,
+        context,
+        changed_files,
+        discovered,
+    } = request;
+
     // Track failures with structured errors
     let mut failures: Vec<(String, cuenv_core::Error)> = Vec::new();
 
     // Process each project
-    for (project_path, config) in &projects {
-        // Determine pipeline to run
-        let pipeline_name = specific_pipeline
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-
-        // Find pipeline in config
-        let Some(ci) = &config.ci else {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Project {} has no CI configuration",
-                project_path.display()
-            )));
-        };
-
-        let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
-        let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Pipeline '{}' not found in project {}. Available pipelines: {}",
-                pipeline_name,
-                project_path.display(),
-                available_pipelines.join(", ")
-            )));
-        };
-
-        let resolved_environment =
-            resolve_environment(environment.as_deref(), pipeline.environment.as_deref());
-
-        // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
-        let pipeline_task_names: Vec<String> = pipeline
-            .tasks
-            .iter()
-            .map(|t| t.task_name().to_string())
-            .collect();
-
-        // For release events, run all tasks unconditionally (no affected-file filtering)
-        let tasks_to_run = if context.event == "release" {
-            pipeline_task_names
-        } else {
-            compute_affected_tasks(
-                &changed_files,
-                &pipeline_task_names,
-                project_path,
-                config,
-                &project_map,
-            )
-        };
-
-        if tasks_to_run.is_empty() {
-            cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
+    for (project_path, config) in &discovered.projects {
+        let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
+            project_path,
+            config,
+            requested_pipeline: specific_pipeline,
+            requested_environment: environment,
+            context,
+            changed_files,
+            project_map: &discovered.project_map,
+        })?
+        else {
             continue;
-        }
+        };
 
         tracing::info!(
             project = %project_path.display(),
-            tasks = ?tasks_to_run,
+            tasks = ?plan.tasks_to_run,
             "Running tasks for project"
         );
 
@@ -189,13 +222,13 @@ pub async fn run_ci(
             let result = execute_project_pipeline(&PipelineExecutionRequest {
                 project_path,
                 config,
-                pipeline_name: &pipeline_name,
-                tasks_to_run: &tasks_to_run,
-                environment: resolved_environment.as_deref(),
+                pipeline_name: &plan.pipeline_name,
+                tasks_to_run: &plan.tasks_to_run,
+                environment: plan.environment.as_deref(),
                 context,
-                changed_files: &changed_files,
-                provider: provider.as_ref(),
-                project_configs: &project_configs,
+                changed_files,
+                provider,
+                project_configs: &discovered.project_configs,
             })
             .await;
 
@@ -214,18 +247,94 @@ pub async fn run_ci(
         }
     }
 
-    if !failures.is_empty() {
-        let details = failures
-            .iter()
-            .map(|(project, err)| format!("  [{project}]\n    {err}"))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        return Err(cuenv_core::Error::execution(format!(
-            "CI pipeline failed:\n\n{details}"
+    Ok(failures)
+}
+
+#[derive(Clone, Copy)]
+struct ProjectPipelinePlanRequest<'a> {
+    project_path: &'a Path,
+    config: &'a Project,
+    requested_pipeline: Option<&'a str>,
+    requested_environment: Option<&'a str>,
+    context: &'a crate::context::CIContext,
+    changed_files: &'a [PathBuf],
+    project_map: &'a ProjectDependencyMap,
+}
+
+struct ProjectPipelinePlan {
+    pipeline_name: String,
+    tasks_to_run: Vec<String>,
+    environment: Option<String>,
+}
+
+fn plan_project_pipeline(
+    request: ProjectPipelinePlanRequest<'_>,
+) -> Result<Option<ProjectPipelinePlan>> {
+    let ProjectPipelinePlanRequest {
+        project_path,
+        config,
+        requested_pipeline,
+        requested_environment,
+        context,
+        changed_files,
+        project_map,
+    } = request;
+
+    let pipeline_name = requested_pipeline.unwrap_or("default").to_string();
+    let Some(ci) = &config.ci else {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Project {} has no CI configuration",
+            project_path.display()
         )));
+    };
+
+    let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
+    let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Pipeline '{}' not found in project {}. Available pipelines: {}",
+            pipeline_name,
+            project_path.display(),
+            available_pipelines.join(", ")
+        )));
+    };
+
+    let environment = resolve_environment(requested_environment, pipeline.environment.as_deref());
+    let pipeline_task_names: Vec<String> = pipeline
+        .tasks
+        .iter()
+        .map(|task| task.task_name().to_string())
+        .collect();
+
+    let tasks_to_run = if context.event == "release" {
+        pipeline_task_names
+    } else {
+        compute_affected_tasks(
+            changed_files,
+            &pipeline_task_names,
+            project_path,
+            config,
+            project_map,
+        )
+    };
+
+    if tasks_to_run.is_empty() {
+        cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
+        return Ok(None);
     }
 
-    Ok(())
+    Ok(Some(ProjectPipelinePlan {
+        pipeline_name,
+        tasks_to_run,
+        environment,
+    }))
+}
+
+fn format_pipeline_failures(failures: &[(String, cuenv_core::Error)]) -> String {
+    failures
+        .iter()
+        .map(|(project, err)| format!("  [{project}]\n    {err}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// All parameters needed to execute a project pipeline.
