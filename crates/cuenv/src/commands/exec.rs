@@ -36,6 +36,15 @@ enum ManifestKind {
     None,
 }
 
+impl ManifestKind {
+    fn project(&self) -> Option<&Project> {
+        match self {
+            Self::Project(project) => Some(project),
+            Self::Base(_) | Self::None => None,
+        }
+    }
+}
+
 /// Command execution request for `exec`.
 #[derive(Debug)]
 pub struct ExecRequest<'a> {
@@ -51,6 +60,53 @@ pub struct ExecRequest<'a> {
     pub environment_override: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
+struct ExecEnvironmentRequest<'a, 'b> {
+    exec: &'a ExecRequest<'b>,
+    directory: &'a Path,
+    manifest_kind: &'a ManifestKind,
+    executor: &'a CommandExecutor,
+}
+
+struct PreparedExecEnvironment {
+    runtime_env: Environment,
+    secrets_for_redaction: Vec<String>,
+}
+
+fn load_manifest_kind(target_path: &Path, executor: &CommandExecutor) -> Result<ManifestKind> {
+    match executor.get_module(target_path) {
+        Ok(module) => {
+            tracing::debug!("Using cached module evaluation from executor");
+            let rel_path = relative_path_from_root(&module.root, target_path);
+
+            let instance = module.get(&rel_path).ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "No CUE instance found at path: {} (relative: {})",
+                    target_path.display(),
+                    rel_path.display()
+                ))
+            })?;
+
+            match instance.kind {
+                cuenv_core::InstanceKind::Project => {
+                    Ok(ManifestKind::Project(Box::new(instance.deserialize()?)))
+                }
+                cuenv_core::InstanceKind::Base => {
+                    Ok(ManifestKind::Base(Box::new(instance.deserialize()?)))
+                }
+            }
+        }
+        Err(e) => {
+            if e.to_string().contains("No CUE module found") {
+                tracing::debug!("No CUE module found");
+                Ok(ManifestKind::None)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
 /// Run a command with the CUE environment.
 ///
 /// Uses the executor's cached module evaluation.
@@ -61,7 +117,6 @@ pub struct ExecRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation fails or command execution fails.
-#[allow(clippy::too_many_lines)]
 #[instrument(
     name = "exec_run",
     skip(executor),
@@ -86,178 +141,20 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
                 operation: "canonicalize path".to_string(),
             })?;
 
-    // Try to get the manifest - can be Project, Base, or None
-    let manifest_kind: ManifestKind = match executor.get_module(&target_path) {
-        Ok(module) => {
-            tracing::debug!("Using cached module evaluation from executor");
-            let rel_path = relative_path_from_root(&module.root, &target_path);
-
-            let instance = module.get(&rel_path).ok_or_else(|| {
-                cuenv_core::Error::configuration(format!(
-                    "No CUE instance found at path: {} (relative: {})",
-                    target_path.display(),
-                    rel_path.display()
-                ))
-            })?;
-
-            // Handle both Project and Base
-            match instance.kind {
-                cuenv_core::InstanceKind::Project => {
-                    ManifestKind::Project(Box::new(instance.deserialize()?))
-                }
-                cuenv_core::InstanceKind::Base => {
-                    ManifestKind::Base(Box::new(instance.deserialize()?))
-                }
-            }
-        }
-        Err(e) => {
-            // Check if this is a "no module found" error
-            let err_msg = e.to_string();
-            if err_msg.contains("No CUE module found") {
-                tracing::debug!("No CUE module found");
-                ManifestKind::None
-            } else {
-                return Err(e);
-            }
-        }
-    };
-
-    // Extract env config and project reference based on manifest type
-    let env_config = match &manifest_kind {
-        ManifestKind::Project(project) => project.env.clone(),
-        ManifestKind::Base(base) => base.env.clone(),
-        ManifestKind::None => None,
-    };
-
-    // For Project, we need the full manifest for hooks
-    let project_for_hooks: Option<&Project> = match &manifest_kind {
-        ManifestKind::Project(p) => Some(p),
-        _ => None,
-    };
+    let manifest_kind = load_manifest_kind(&target_path, executor)?;
+    let project_for_hooks = manifest_kind.project();
 
     // Get environment with hook-generated vars merged in
     let directory = std::fs::canonicalize(request.path)
         .unwrap_or_else(|_| Path::new(request.path).to_path_buf());
 
-    // Build base environment based on manifest type
-    let mut runtime_env = Environment::new();
-    let mut secrets_for_redaction: Vec<String> = Vec::new();
-
-    // For Project: check hooks approval and run hooks if approved
-    // For Base/None: just extract static env vars (no hooks)
-    if let Some(project) = project_for_hooks {
-        let summary = ConfigSummary::from_hooks(project.hooks.as_ref());
-
-        let hooks_approved = if summary.has_hooks {
-            let mut approval_manager = ApprovalManager::with_default_file()?;
-            approval_manager.load_approvals().await?;
-            let approval_status =
-                check_approval_status(&approval_manager, &directory, project.hooks.as_ref())?;
-            matches!(approval_status, ApprovalStatus::Approved)
-        } else {
-            true // No hooks = nothing to approve
-        };
-
-        if !hooks_approved {
-            emit_stderr!(
-                "\x1b[1;33mWarning:\x1b[0m Hooks not run (approval required). Run '\x1b[36mcuenv allow\x1b[0m' to enable."
-            );
-        }
-
-        let base_env_vars = if hooks_approved {
-            get_environment_with_hooks(&directory, project, request.package, Some(executor)).await?
-        } else {
-            extract_static_env_vars(project)
-        };
-        tracing::debug!(
-            "Base environment variables after hooks: {:?}",
-            base_env_vars
-        );
-
-        let runtime_env_vars =
-            resolve_runtime_environment(&directory, project.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
-
-        // Apply base environment
-        for (key, value) in &base_env_vars {
-            runtime_env.set(key.clone(), value.clone());
-        }
-
-        // Apply command-specific policies and secret resolution for Project
-        if let Some(env) = &project.env {
-            let env_vars = if let Some(env_name) = request.environment_override {
-                env.for_environment(env_name)
-            } else {
-                env.base.clone()
-            };
-
-            let (exec_env_vars, secrets) =
-                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
-                    request.command,
-                    &env_vars,
-                )
-                .await?;
-            secrets_for_redaction = secrets;
-
-            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
-
-            for (key, value) in exec_env_vars {
-                runtime_env.set(key, value);
-            }
-        }
-    } else if let ManifestKind::Base(ref base) = manifest_kind {
-        // For Base: resolve runtime environment + secrets, no hooks
-        tracing::debug!("Using Base configuration");
-
-        let runtime_env_vars =
-            resolve_runtime_environment(&directory, base.runtime.as_ref()).await?;
-        for (key, value) in runtime_env_vars {
-            runtime_env.set(key, value);
-        }
-
-        if let Some(env) = &env_config {
-            let env_vars = if let Some(env_name) = request.environment_override {
-                env.for_environment(env_name)
-            } else {
-                env.base.clone()
-            };
-
-            let (exec_env_vars, secrets) =
-                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
-                    request.command,
-                    &env_vars,
-                )
-                .await?;
-            secrets_for_redaction = secrets;
-
-            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
-
-            for (key, value) in exec_env_vars {
-                runtime_env.set(key, value);
-            }
-        }
-    } else {
-        // No manifest at all - inherit host PATH
-        tracing::debug!("No CUE manifest found, using host environment");
-        if let Ok(host_path) = std::env::var("PATH") {
-            runtime_env.set("PATH".to_string(), host_path);
-        }
-    }
-
-    // Add provider bootstrap credentials to redaction list if set.
-    for name in [
-        "OP_SERVICE_ACCOUNT_TOKEN",
-        "INFISICAL_TOKEN",
-        "INFISICAL_CLIENT_SECRET",
-    ] {
-        if let Ok(token) = std::env::var(name)
-            && !token.is_empty()
-        {
-            secrets_for_redaction.push(token);
-        }
-    }
+    let mut prepared = prepare_exec_environment(ExecEnvironmentRequest {
+        exec: &request,
+        directory: &directory,
+        manifest_kind: &manifest_kind,
+        executor,
+    })
+    .await?;
 
     // Ensure lockfile is up to date for tools declared in the current project.
     // This keeps `cuenv exec` self-healing when runtime tool definitions change.
@@ -287,9 +184,9 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             );
 
             for step in activation_steps {
-                let current = runtime_env.get(&step.var);
+                let current = prepared.runtime_env.get(&step.var);
                 if let Some(new_value) = apply_resolved_tool_activation(current, &step) {
-                    runtime_env.set(step.var.clone(), new_value);
+                    prepared.runtime_env.set(step.var.clone(), new_value);
                 }
             }
         }
@@ -297,18 +194,145 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
 
     // Resolve the command path using the runtime environment's PATH (with host fallback)
     // This is necessary because the child process will have hermetic PATH
-    let resolved_command = runtime_env.resolve_command(request.command);
+    let resolved_command = prepared.runtime_env.resolve_command(request.command);
 
     // Execute the command with the environment, redacting any secrets from output
     let exit_code = execute_command_with_redaction(
         &resolved_command,
         request.args,
-        &runtime_env,
-        &secrets_for_redaction,
+        &prepared.runtime_env,
+        &prepared.secrets_for_redaction,
     )
     .await?;
 
     Ok(exit_code)
+}
+
+async fn prepare_exec_environment(
+    request: ExecEnvironmentRequest<'_, '_>,
+) -> Result<PreparedExecEnvironment> {
+    let ExecEnvironmentRequest {
+        exec,
+        directory,
+        manifest_kind,
+        executor,
+    } = request;
+    let mut runtime_env = Environment::new();
+    let mut secrets_for_redaction: Vec<String> = Vec::new();
+
+    if let Some(project) = manifest_kind.project() {
+        let summary = ConfigSummary::from_hooks(project.hooks.as_ref());
+
+        let hooks_approved = if summary.has_hooks {
+            let mut approval_manager = ApprovalManager::with_default_file()?;
+            approval_manager.load_approvals().await?;
+            let approval_status =
+                check_approval_status(&approval_manager, directory, project.hooks.as_ref())?;
+            matches!(approval_status, ApprovalStatus::Approved)
+        } else {
+            true
+        };
+
+        if !hooks_approved {
+            emit_stderr!(
+                "\x1b[1;33mWarning:\x1b[0m Hooks not run (approval required). Run '\x1b[36mcuenv allow\x1b[0m' to enable."
+            );
+        }
+
+        let base_env_vars = if hooks_approved {
+            get_environment_with_hooks(directory, project, exec.package, Some(executor)).await?
+        } else {
+            extract_static_env_vars(project)
+        };
+        tracing::debug!(
+            "Base environment variables after hooks: {:?}",
+            base_env_vars
+        );
+
+        let runtime_env_vars =
+            resolve_runtime_environment(directory, project.runtime.as_ref()).await?;
+        for (key, value) in runtime_env_vars {
+            runtime_env.set(key, value);
+        }
+
+        for (key, value) in &base_env_vars {
+            runtime_env.set(key.clone(), value.clone());
+        }
+
+        if let Some(env) = &project.env {
+            let env_vars = if let Some(env_name) = exec.environment_override {
+                env.for_environment(env_name)
+            } else {
+                env.base.clone()
+            };
+
+            let (exec_env_vars, secrets) =
+                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
+                    exec.command,
+                    &env_vars,
+                )
+                .await?;
+            secrets_for_redaction = secrets;
+
+            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
+
+            for (key, value) in exec_env_vars {
+                runtime_env.set(key, value);
+            }
+        }
+    } else if let ManifestKind::Base(base) = manifest_kind {
+        tracing::debug!("Using Base configuration");
+
+        let runtime_env_vars =
+            resolve_runtime_environment(directory, base.runtime.as_ref()).await?;
+        for (key, value) in runtime_env_vars {
+            runtime_env.set(key, value);
+        }
+
+        if let Some(env) = &base.env {
+            let env_vars = if let Some(env_name) = exec.environment_override {
+                env.for_environment(env_name)
+            } else {
+                env.base.clone()
+            };
+
+            let (exec_env_vars, secrets) =
+                cuenv_core::environment::Environment::resolve_for_exec_with_secrets(
+                    exec.command,
+                    &env_vars,
+                )
+                .await?;
+            secrets_for_redaction = secrets;
+
+            cuenv_events::register_secrets(secrets_for_redaction.iter().cloned());
+
+            for (key, value) in exec_env_vars {
+                runtime_env.set(key, value);
+            }
+        }
+    } else {
+        tracing::debug!("No CUE manifest found, using host environment");
+        if let Ok(host_path) = std::env::var("PATH") {
+            runtime_env.set("PATH".to_string(), host_path);
+        }
+    }
+
+    for name in [
+        "OP_SERVICE_ACCOUNT_TOKEN",
+        "INFISICAL_TOKEN",
+        "INFISICAL_CLIENT_SECRET",
+    ] {
+        if let Ok(token) = std::env::var(name)
+            && !token.is_empty()
+        {
+            secrets_for_redaction.push(token);
+        }
+    }
+
+    Ok(PreparedExecEnvironment {
+        runtime_env,
+        secrets_for_redaction,
+    })
 }
 
 fn should_activate_lockfile_tools(project: Option<&Project>) -> bool {
