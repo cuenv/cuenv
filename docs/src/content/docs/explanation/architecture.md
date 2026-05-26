@@ -292,6 +292,10 @@ Core workspace data models live under `crates/workspaces/src/core/types/`:
 workspace/member traversal in `workspace.rs`, package-manager metadata in
 `package_manager.rs`, and dependency/lockfile shapes in `dependency.rs`.
 `types.rs` re-exports the public API used by downstream crates.
+Workspace detection stays in `crates/workspaces/src/detection.rs`, with command
+parsing, filesystem lock/config scanning, and package-manager hints split into
+`detection/command.rs`, `detection/filesystem.rs`, and
+`detection/package_json.rs`.
 
 Cargo lockfile parsing keeps workspace member discovery in
 `crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from

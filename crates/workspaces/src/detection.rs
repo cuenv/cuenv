@@ -288,7 +288,6 @@ const fn manager_priority(manager: PackageManager) -> u8 {
 }
 
 #[cfg(test)]
-#[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
     use crate::error::Error;
@@ -322,12 +321,10 @@ mod tests {
     fn create_workspace_config(dir: &Path, manager: PackageManager) -> PathBuf {
         let config_path = dir.join(manager.workspace_config_name());
         let content = match manager {
-            PackageManager::Npm | PackageManager::Bun => {
-                r#"{"name": "test", "workspaces": ["packages/*"]}"#
-            }
-            PackageManager::YarnClassic | PackageManager::YarnModern => {
-                r#"{"name": "test", "workspaces": ["packages/*"]}"#
-            }
+            PackageManager::Npm
+            | PackageManager::Bun
+            | PackageManager::YarnClassic
+            | PackageManager::YarnModern => r#"{"name": "test", "workspaces": ["packages/*"]}"#,
             PackageManager::Pnpm => "packages:\n  - 'packages/*'\n",
             PackageManager::Cargo => "[workspace]\nmembers = [\"crates/*\"]\n",
             PackageManager::Deno => r#"{"name": "test", "workspace": ["packages/*"]}"#,
