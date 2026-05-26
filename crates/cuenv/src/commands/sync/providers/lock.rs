@@ -116,22 +116,34 @@ impl SyncProvider for LockSyncProvider {
     async fn sync_path(
         &self,
         path: &Path,
-        package: &str,
+        _package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let output = execute_lock_sync(path, package, options, executor, false).await?;
+        let output = execute_lock_sync(LockSyncRequest {
+            path,
+            options,
+            executor,
+            scope: LockSyncScope::Path,
+        })
+        .await?;
         Ok(SyncResult::success(output))
     }
 
     async fn sync_workspace(
         &self,
         _path: &Path,
-        package: &str,
+        _package: &str,
         options: &SyncOptions,
         executor: &CommandExecutor,
     ) -> Result<SyncResult> {
-        let output = execute_lock_sync(Path::new("."), package, options, executor, true).await?;
+        let output = execute_lock_sync(LockSyncRequest {
+            path: Path::new("."),
+            options,
+            executor,
+            scope: LockSyncScope::Workspace,
+        })
+        .await?;
         Ok(SyncResult::success(output))
     }
 }
@@ -177,6 +189,13 @@ struct LockSyncInputs {
     tools_platforms: Vec<String>,
     flakes: HashMap<String, String>,
     github_config: Option<GitHubProviderConfig>,
+}
+
+struct LockSyncRequest<'a> {
+    path: &'a Path,
+    options: &'a SyncOptions,
+    executor: &'a CommandExecutor,
+    scope: LockSyncScope,
 }
 
 struct ToolLockResolutionRequest<'a> {
@@ -637,19 +656,15 @@ async fn resolve_tool_locks(
 /// If the lockfile already contains valid resolutions for tools (same version
 /// and source config), those are reused without contacting the provider,
 /// unless `-u/--update` is specified.
-async fn execute_lock_sync(
-    path: &Path,
-    _package: &str,
-    options: &SyncOptions,
-    executor: &CommandExecutor,
-    workspace: bool,
-) -> Result<String> {
+async fn execute_lock_sync(request: LockSyncRequest<'_>) -> Result<String> {
+    let LockSyncRequest {
+        path,
+        options,
+        executor,
+        scope,
+    } = request;
+    let workspace = matches!(scope, LockSyncScope::Workspace);
     let check = options.mode == SyncMode::Check;
-    let scope = if workspace {
-        LockSyncScope::Workspace
-    } else {
-        LockSyncScope::Path
-    };
     let inputs = collect_lock_sync_inputs(path, executor, scope)?;
     let LockSyncInputs {
         lockfile_path,
