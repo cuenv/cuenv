@@ -1,4 +1,4 @@
-use super::*;
+use super::github::has_matrix_tasks;
 use cuenv_core::ci::{MatrixTask, PipelineTask, TaskRef};
 use std::collections::BTreeMap;
 
