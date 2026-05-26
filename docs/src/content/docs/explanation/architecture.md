@@ -213,6 +213,11 @@ Workspace management for monorepos.
 - Package manager integration (bun, pnpm, yarn, cargo)
 - Workspace-aware task execution
 
+Cargo lockfile parsing keeps workspace member discovery in
+`crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from
+`Cargo.lock` package entry and `SourceId` conversion in
+`crates/workspaces/src/parsers/rust/cargo.rs`.
+
 ## FFI Bridge
 
 The Go-Rust FFI bridge is a critical component enabling CUE evaluation from Rust.

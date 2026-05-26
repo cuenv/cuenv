@@ -196,9 +196,11 @@ Yarn Modern parsing keeps descriptor splitting, protocol detection, and
 git-resolution parsing in separate helpers so scoped package handling stays out
 of the lockfile entry assembly path.
 
-Cargo lockfile parsing separates workspace-member lookup from Cargo `SourceId`
-conversion, so registry, git, path, and unknown source fallback handling stay in
-one focused boundary.
+Cargo lockfile parsing separates workspace-member discovery into
+`crates/workspaces/src/parsers/rust/cargo/workspace.rs`, while Cargo
+`SourceId` conversion stays with lockfile entry assembly. That keeps
+Cargo.toml glob/default/exclude handling separate from registry, git, path, and
+unknown source fallback handling.
 
 ### Detection Functions
 
