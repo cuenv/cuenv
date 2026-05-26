@@ -6,15 +6,25 @@
 
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
+pub use super::command::{execute_command, execute_command_with_redaction};
 use super::process_registry::global_registry;
+pub use super::result::{TASK_FAILURE_SNIPPET_LINES, TaskResult, summarize_task_failure};
+#[cfg(test)]
+use super::result::{format_failure_streams, summarize_stream};
+#[cfg(test)]
+use super::workspace::{
+    cargo_toml_has_workspace, deno_json_has_workspace, package_json_has_workspaces,
+};
+use super::workspace::{find_workspace_root, normalize_join};
 use super::{Task, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks};
 use crate::OutputCapture;
 use crate::config::BackendConfig;
 use crate::environment::Environment;
 use crate::{Error, Result};
 use async_recursion::async_recursion;
+#[cfg(test)]
 use cuenv_workspaces::PackageManager;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
@@ -44,25 +54,6 @@ fn setup_process_group(cmd: &mut Command) {
         });
     }
 }
-
-/// Task execution result
-#[derive(Debug, Clone)]
-pub struct TaskResult {
-    pub name: String,
-    pub exit_code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub success: bool,
-}
-
-impl super::graph_walk::WalkOutcome for TaskResult {
-    fn is_success(&self) -> bool {
-        self.success
-    }
-}
-
-/// Number of lines from stdout/stderr to include when summarizing failures
-pub const TASK_FAILURE_SNIPPET_LINES: usize = 20;
 
 /// Emit a `task.group_completed` event with succeeded/failed/skipped counts
 /// derived from the inner result.
@@ -944,265 +935,6 @@ fn emit_cached_output_events(name: &str, stream: &'static str, content: &str) {
     for line in content.lines() {
         cuenv_events::emit_task_output!(name, stream, line);
     }
-}
-
-fn find_workspace_root(manager: PackageManager, start: &Path) -> PathBuf {
-    let mut current = start.canonicalize().unwrap_or_else(|_| start.to_path_buf());
-
-    loop {
-        let is_root = match manager {
-            PackageManager::Npm
-            | PackageManager::Bun
-            | PackageManager::YarnClassic
-            | PackageManager::YarnModern => package_json_has_workspaces(&current),
-            PackageManager::Pnpm => current.join("pnpm-workspace.yaml").exists(),
-            PackageManager::Cargo => cargo_toml_has_workspace(&current),
-            PackageManager::Deno => deno_json_has_workspace(&current),
-        };
-
-        if is_root {
-            return current;
-        }
-
-        if let Some(parent) = current.parent() {
-            current = parent.to_path_buf();
-        } else {
-            return start.to_path_buf();
-        }
-    }
-}
-
-fn normalize_join(base: PathBuf, path: &str) -> PathBuf {
-    let candidate = base.join(path);
-    let mut normalized = PathBuf::new();
-
-    for component in candidate.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-
-    normalized
-}
-
-fn package_json_has_workspaces(dir: &Path) -> bool {
-    let path = dir.join("package.json");
-    let content = std::fs::read_to_string(&path);
-    let Ok(json) = content.and_then(|s| {
-        serde_json::from_str::<serde_json::Value>(&s)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    }) else {
-        return false;
-    };
-
-    match json.get("workspaces") {
-        Some(serde_json::Value::Array(arr)) => !arr.is_empty(),
-        Some(serde_json::Value::Object(map)) => map
-            .get("packages")
-            .and_then(|packages| packages.as_array())
-            .map(|arr| !arr.is_empty())
-            .unwrap_or(false),
-        _ => false,
-    }
-}
-
-fn cargo_toml_has_workspace(dir: &Path) -> bool {
-    let path = dir.join("Cargo.toml");
-    let Ok(content) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-
-    content.contains("[workspace]")
-}
-
-fn deno_json_has_workspace(dir: &Path) -> bool {
-    let path = dir.join("deno.json");
-    let content = std::fs::read_to_string(&path);
-    let Ok(json) = content.and_then(|s| {
-        serde_json::from_str::<serde_json::Value>(&s)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-    }) else {
-        return false;
-    };
-
-    // Deno uses "workspace" (not "workspaces") for workspace configuration
-    match json.get("workspace") {
-        Some(serde_json::Value::Array(arr)) => !arr.is_empty(),
-        Some(serde_json::Value::Object(_)) => true,
-        _ => false,
-    }
-}
-
-/// Build a compact, user-friendly summary for a failed task, including the
-/// exit code and the tail of stdout/stderr to help with diagnostics.
-pub fn summarize_task_failure(result: &TaskResult, max_output_lines: usize) -> String {
-    let exit_code = result
-        .exit_code
-        .map(|c| c.to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let mut sections = Vec::new();
-    sections.push(format!(
-        "Task '{}' failed with exit code {}.",
-        result.name, exit_code
-    ));
-
-    let output = format_failure_streams(result, max_output_lines);
-    if output.is_empty() {
-        sections.push(
-            "No stdout/stderr were captured; rerun with RUST_LOG=debug to stream task logs."
-                .to_string(),
-        );
-    } else {
-        sections.push(output);
-    }
-
-    sections.join("\n\n")
-}
-
-fn format_failure_streams(result: &TaskResult, max_output_lines: usize) -> String {
-    let mut streams = Vec::new();
-
-    if let Some(stdout) = summarize_stream("stdout", &result.stdout, max_output_lines) {
-        streams.push(stdout);
-    }
-
-    if let Some(stderr) = summarize_stream("stderr", &result.stderr, max_output_lines) {
-        streams.push(stderr);
-    }
-
-    streams.join("\n\n")
-}
-
-fn summarize_stream(label: &str, content: &str, max_output_lines: usize) -> Option<String> {
-    let normalized = content.trim_end();
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let lines: Vec<&str> = normalized.lines().collect();
-    let total = lines.len();
-    let start = total.saturating_sub(max_output_lines);
-    let snippet = lines[start..].join("\n");
-
-    let header = if total > max_output_lines {
-        format!("{label} (last {max_output_lines} of {total} lines):")
-    } else {
-        format!("{label}:")
-    };
-
-    Some(format!("{header}\n{snippet}"))
-}
-
-/// Execute an arbitrary command with the cuenv environment
-///
-/// If `secrets` is provided, output will be captured and redacted before printing.
-pub async fn execute_command(
-    command: &str,
-    args: &[String],
-    environment: &Environment,
-) -> Result<i32> {
-    execute_command_with_redaction(command, args, environment, &[]).await
-}
-
-/// Execute a command with secret redaction
-///
-/// Secret values in stdout/stderr are replaced with [REDACTED].
-pub async fn execute_command_with_redaction(
-    command: &str,
-    args: &[String],
-    environment: &Environment,
-    secrets: &[String],
-) -> Result<i32> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-
-    tracing::info!("Executing command: {} {:?}", command, args);
-    let mut cmd = Command::new(command);
-    cmd.args(args);
-    // Use hermetic environment - no host PATH pollution
-    let env_vars = environment.merge_with_system_hermetic();
-    for (key, value) in env_vars {
-        cmd.env(key, value);
-    }
-
-    if secrets.is_empty() {
-        // No secrets to redact - inherit stdio directly
-        cmd.stdout(Stdio::inherit());
-        cmd.stderr(Stdio::inherit());
-        cmd.stdin(Stdio::inherit());
-        let status = cmd.status().await.map_err(|e| {
-            Error::configuration(format!("Failed to execute command '{}': {}", command, e))
-        })?;
-        return Ok(status.code().unwrap_or(1));
-    }
-
-    // Capture output for redaction
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-    cmd.stdin(Stdio::inherit());
-
-    let mut child = cmd.spawn().map_err(|e| {
-        Error::configuration(format!("Failed to execute command '{}': {}", command, e))
-    })?;
-
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::execution("stdout pipe not available"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| Error::execution("stderr pipe not available"))?;
-
-    // Build sorted secrets for greedy matching (longer first)
-    let mut sorted_secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-    sorted_secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
-    let sorted_secrets: Vec<String> = sorted_secrets.into_iter().map(String::from).collect();
-
-    // Stream stdout with redaction
-    let secrets_clone = sorted_secrets.clone();
-    let stdout_task = tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut redacted = line;
-            for secret in &secrets_clone {
-                if secret.len() >= 4 {
-                    redacted = redacted.replace(secret, "[REDACTED]");
-                }
-            }
-            cuenv_events::emit_stdout!(&redacted);
-        }
-    });
-
-    // Stream stderr with redaction
-    let stderr_task = tokio::spawn(async move {
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let mut redacted = line;
-            for secret in &sorted_secrets {
-                if secret.len() >= 4 {
-                    redacted = redacted.replace(secret, "[REDACTED]");
-                }
-            }
-            cuenv_events::emit_stderr!(&redacted);
-        }
-    });
-
-    // Wait for command and streams
-    let status = child.wait().await.map_err(|e| {
-        Error::configuration(format!("Failed to wait for command '{}': {}", command, e))
-    })?;
-
-    let _ = stdout_task.await;
-    let _ = stderr_task.await;
-
-    Ok(status.code().unwrap_or(1))
 }
 
 #[cfg(test)]

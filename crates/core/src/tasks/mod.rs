@@ -14,6 +14,7 @@ pub mod cache;
 mod cache_policy;
 mod capture_types;
 pub mod captures;
+mod command;
 mod dependency;
 pub(crate) mod env;
 pub mod executor;
@@ -23,7 +24,9 @@ pub mod index;
 mod inputs;
 pub mod output_refs;
 pub mod process_registry;
+mod result;
 mod shell;
+mod workspace;
 
 // Re-export executor and graph modules
 pub use backend::{
