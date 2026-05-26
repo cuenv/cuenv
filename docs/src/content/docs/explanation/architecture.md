@@ -109,10 +109,11 @@ The command-line interface built with `clap`.
 CLI parsing lives in `crates/cuenv/src/cli.rs`, conversion into the internal
 command model lives in `crates/cuenv/src/cli/command_conversion.rs`, and
 executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`. Startup,
-runtime selection, and internal supervisor entrypoints stay in
-`crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated
-in `crates/cuenv/src/sync_dispatch.rs` and
-`crates/cuenv/src/async_dispatch.rs`.
+runtime selection, and early process routing stay in `crates/cuenv/src/main.rs`;
+command paths that bypass the executor are isolated in
+`crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`,
+while the hook supervisor process runs through
+`crates/cuenv/src/hook_supervisor.rs`.
 
 ### cuenv-workspaces
 
