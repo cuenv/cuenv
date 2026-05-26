@@ -80,20 +80,20 @@ cuenv sync ci --check
 cuenv fmt --fix
 ```
 
-Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Do not start a full root flake check just because a draft commit changed code; decide from the risk and boundary touched. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit.
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit.
 
-Run the full root flake check when the change can affect repository-wide build, CI, release, generated workflow, dependency, or cross-crate runtime behavior. Use focused validation when the change is isolated and the focused gate directly covers the touched surface.
-
-Use focused validation for isolated draft commits when it proves the touched surface:
+Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test, or an app-local Nix test/clippy check when that is the local boundary.
 - Docs, prompts, examples, repo-local agent skills, and agent-guidance text such as `AGENTS.md`: `cuenv task ci.schema-docs-check`.
 - CLI behavior changes: focused Rust tests plus a direct CLI smoke test for the changed command.
 - Sync-provider changes that do not alter generated workflow contracts: `cuenv sync ci --check` plus focused tests for the touched provider.
 
+Do not run the full root flake check for exploratory review work, docs-only edits, prompt or agent-guidance text including `AGENTS.md`, repo-local skill-only edits, mechanical test extraction commits, behavior-preserving module splits, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
+
 Full root flake check is required before marking a PR ready for review, merging, release work, Nix/Cargo/flake output/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, schema or CLI support changes that focused checks cannot fully cover, or when a focused check suggests broader workspace breakage.
 
-Full root flake check is not required for exploratory review work, docs-only edits, prompt or agent-guidance text including `AGENTS.md`, repo-local skill-only edits, mechanical test extraction commits, behavior-preserving module splits, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
+If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 
 5. **Commit and Push**
 
