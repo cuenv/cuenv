@@ -5,6 +5,7 @@
 pub mod config;
 mod hook_env;
 mod orchestrator;
+mod reporting;
 pub mod runner;
 pub mod secrets;
 mod tools;

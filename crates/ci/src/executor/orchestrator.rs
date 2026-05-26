@@ -11,10 +11,8 @@ use crate::compiler::Compiler;
 use crate::discovery::evaluate_module_from_cwd;
 use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
-use crate::report::json::write_report;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
 use chrono::Utc;
-use cuenv_core::ci::AnnotationValue;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::captures::resolve_captures;
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
@@ -25,6 +23,10 @@ use std::sync::Arc;
 
 use super::ExecutorError;
 use super::hook_env::build_hook_environment;
+use super::reporting::{
+    cache_policy_override_for, notify_provider, register_ci_secrets, resolve_annotations,
+    write_pipeline_report,
+};
 use super::runner::{IRTaskRunner, TaskOutput};
 use super::tools::{
     apply_tool_activation_steps, ensure_tools_downloaded, resolve_tool_activation_steps,
@@ -433,14 +435,6 @@ async fn execute_project_pipeline(
     Ok((pipeline_status, task_errors))
 }
 
-fn cache_policy_override_for(context: &crate::context::CIContext) -> Option<CachePolicy> {
-    if is_fork_pr(context) {
-        Some(CachePolicy::Readonly)
-    } else {
-        None
-    }
-}
-
 fn pipeline_continue_on_error(config: &Project, pipeline_name: &str) -> bool {
     config
         .ci
@@ -687,131 +681,6 @@ fn apply_task_env(env: &mut BTreeMap<String, String>, task_env: &BTreeMap<String
             }
         } else if !value.starts_with("cuenv:ref:") {
             env.insert(key.clone(), value.clone());
-        }
-    }
-}
-
-/// Write pipeline report to disk
-fn write_pipeline_report(
-    report: &PipelineReport,
-    context: &crate::context::CIContext,
-    project_path: &Path,
-) {
-    // Ensure report directory exists
-    let report_dir = Path::new(".cuenv/reports");
-    if let Err(e) = std::fs::create_dir_all(report_dir) {
-        tracing::warn!(error = %e, "Failed to create report directory");
-        return;
-    }
-
-    let sha_dir = report_dir.join(&context.sha);
-    let _ = std::fs::create_dir_all(&sha_dir);
-
-    let project_filename = project_path.display().to_string().replace(['/', '\\'], "-") + ".json";
-    let report_path = sha_dir.join(project_filename);
-
-    if let Err(e) = write_report(report, &report_path) {
-        tracing::warn!(error = %e, "Failed to write report");
-    } else {
-        cuenv_events::emit_ci_report!(report_path.display());
-    }
-
-    // Write GitHub Job Summary
-    if let Err(e) = crate::report::markdown::write_job_summary(report) {
-        tracing::warn!(error = %e, "Failed to write job summary");
-    }
-}
-
-/// Notify CI provider about pipeline results
-async fn notify_provider(provider: &dyn CIProvider, report: &PipelineReport, pipeline_name: &str) {
-    // Post results to CI provider
-    let check_name = format!("cuenv: {pipeline_name}");
-    match provider.create_check(&check_name).await {
-        Ok(handle) => {
-            if let Err(e) = provider.complete_check(&handle, report).await {
-                tracing::warn!(error = %e, "Failed to complete check run");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to create check run");
-        }
-    }
-
-    // Post PR comment with report summary
-    if let Err(e) = provider.upload_report(report).await {
-        tracing::warn!(error = %e, "Failed to post PR comment");
-    }
-}
-
-/// Resolve pipeline annotation values from capture refs and literals.
-fn resolve_annotations(
-    annotations: &HashMap<String, AnnotationValue>,
-    all_captures: &HashMap<String, HashMap<String, String>>,
-) -> HashMap<String, String> {
-    annotations
-        .iter()
-        .filter_map(|(label, value)| {
-            let resolved = match value {
-                AnnotationValue::Literal(s) => Some(s.clone()),
-                AnnotationValue::CaptureRef {
-                    cuenv_capture_ref,
-                    cuenv_task,
-                    cuenv_capture,
-                } => {
-                    if !cuenv_capture_ref {
-                        tracing::warn!(label, "Annotation has cuenvCaptureRef=false, skipping");
-                        return None;
-                    }
-                    all_captures
-                        .get(cuenv_task.as_str())
-                        .and_then(|caps| caps.get(cuenv_capture.as_str()))
-                        .cloned()
-                }
-            };
-            resolved.map(|v| (label.clone(), v))
-        })
-        .collect()
-}
-
-/// Check if this is a fork PR (should use readonly cache)
-fn is_fork_pr(context: &crate::context::CIContext) -> bool {
-    // Fork PRs typically have a different head repo than base repo
-    // This is a simplified check - providers may need more sophisticated detection
-    context.event == "pull_request" && context.ref_name.starts_with("refs/pull/")
-}
-
-/// Register common CI secret environment variables for redaction.
-///
-/// This ensures that secrets passed via CI provider (GitHub Actions, etc.)
-/// are automatically redacted from task output.
-fn register_ci_secrets() {
-    // Common secret environment variable patterns
-    const SECRET_PATTERNS: &[&str] = &[
-        "GITHUB_TOKEN",
-        "GH_TOKEN",
-        "ACTIONS_RUNTIME_TOKEN",
-        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AZURE_CLIENT_SECRET",
-        "GCP_SERVICE_ACCOUNT_KEY",
-        "CACHIX_AUTH_TOKEN",
-        "CODECOV_TOKEN",
-        "CUE_REGISTRY_TOKEN",
-        "VSCE_PAT",
-        "NPM_TOKEN",
-        "CARGO_REGISTRY_TOKEN",
-        "PYPI_TOKEN",
-        "DOCKER_PASSWORD",
-        "CLOUDFLARE_API_TOKEN",
-        "OP_SERVICE_ACCOUNT_TOKEN",
-        "CUENV_SECRET_SALT",
-        "CUENV_SECRET_SALT_PREV",
-    ];
-
-    for pattern in SECRET_PATTERNS {
-        if let Ok(value) = std::env::var(pattern) {
-            cuenv_events::register_secret(value);
         }
     }
 }

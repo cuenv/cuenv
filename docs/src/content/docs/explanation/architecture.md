@@ -142,7 +142,9 @@ execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. CI task tool download and lockfile
 activation support lives in `crates/ci/src/executor/tools.rs`; CI hook-backed
 environment assembly lives in `crates/ci/src/executor/hook_env.rs`, keeping
-the orchestrator focused on pipeline scheduling and reporting.
+the orchestrator focused on pipeline scheduling. CI report writing, provider
+notification, annotation resolution, and CI redaction setup live in
+`crates/ci/src/executor/reporting.rs`.
 
 ### cuenv-1password
 
