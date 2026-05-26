@@ -204,46 +204,7 @@ impl CommandExecutor {
     }
 
     async fn execute_task_handler(&self, command: Command) -> Result<()> {
-        match command {
-            Command::Task {
-                path,
-                package,
-                name,
-                labels,
-                environment,
-                format,
-                materialize_outputs,
-                show_cache_path,
-                backend,
-                tui,
-                interactive,
-                help,
-                skip_dependencies,
-                continue_on_error,
-                dry_run,
-                task_args,
-            } => {
-                self.run_command(handler::TaskHandler {
-                    path,
-                    package,
-                    name,
-                    labels,
-                    environment,
-                    format,
-                    materialize_outputs,
-                    show_cache_path,
-                    backend,
-                    tui,
-                    interactive,
-                    help,
-                    skip_dependencies,
-                    continue_on_error,
-                    dry_run,
-                    task_args,
-                })
-                .await
-            }
-            _ => unreachable!("task dispatch called for another command family"),
-        }
+        let handler = handler::TaskHandler::from_command(command, self)?;
+        self.run_command(handler).await
     }
 }
