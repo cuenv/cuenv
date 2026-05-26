@@ -73,6 +73,10 @@ Manifest schema types stay re-exported from `crates/core/src/manifest/mod.rs`,
 while the implementation is split by schema concern: hooks, VCS dependencies,
 formatters, codegen, directory rules, runtimes, services/images, and project
 conversion each live in sibling modules under `crates/core/src/manifest/`.
+Module-wide CUE evaluation assembly lives in `crates/core/src/module.rs`;
+task-reference/source enrichment lives in `crates/core/src/module/task_refs.rs`
+and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
+live in `crates/core/src/module/deserialize.rs`.
 Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
 keeps the executable task and task-tree model, while params, retry config,
 legacy task-level Dagger config, cache policy, capture metadata, shell
