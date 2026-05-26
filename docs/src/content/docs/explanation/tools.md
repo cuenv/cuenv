@@ -12,7 +12,7 @@ cuenv's tools system provides **hermetic, reproducible CLI tools** without requi
 1. **Version pinning**: Every tool has an explicit version locked in `cuenv.lock`
 2. **Platform isolation**: Tools are resolved per-platform, supporting cross-platform teams
 3. **Content-addressed caching**: Tools are cached by SHA256 digest for integrity
-4. **Multiple sources**: Support for GitHub, OCI, Nix, and Rustup
+4. **Multiple sources**: Support for GitHub, URL, OCI, Nix, and Rustup
 
 ## Architecture Overview
 
@@ -88,6 +88,7 @@ pub trait ToolProvider: Send + Sync {
 | Provider   | Source Type | Prerequisites | Use Case                        |
 | ---------- | ----------- | ------------- | ------------------------------- |
 | **GitHub** | `#GitHub`   | None          | Tools with GitHub Releases      |
+| **URL**    | `#URL`      | None          | Direct HTTP/HTTPS assets        |
 | **OCI**    | `#Oci`      | None          | Tools distributed as containers |
 | **Nix**    | `#Nix`      | `nix` CLI     | Complex toolchains              |
 | **Rustup** | `#Rustup`   | `rustup` CLI  | Rust toolchains with components |
@@ -99,6 +100,7 @@ Providers are registered in a `ToolRegistry` that routes tool sources to the app
 ```rust
 let mut registry = ToolRegistry::new();
 registry.register(GitHubToolProvider::new());
+registry.register(UrlToolProvider::new());
 registry.register(OciToolProvider::new());
 registry.register(NixToolProvider::with_flakes(flakes));
 registry.register(RustupToolProvider::new());
@@ -107,6 +109,11 @@ registry.register(RustupToolProvider::new());
 let source = ToolSource::GitHub { repo: "jqlang/jq", ... };
 let provider = registry.find_for_source(&source);
 ```
+
+Provider resolution and fetch orchestration stay in each provider root module.
+For direct URL tools, archive detection and extraction live in
+`crates/tools/url/src/extract.rs`, while `crates/tools/url/src/lib.rs` owns
+HTTP resolution, cache target planning, and typed extract placement.
 
 ## Resolution Flow
 

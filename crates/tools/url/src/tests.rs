@@ -114,12 +114,12 @@ fn test_expand_template_all() {
 
 #[test]
 fn test_path_looks_like_library() {
-    assert!(UrlToolProvider::path_looks_like_library("libfoo.so"));
-    assert!(UrlToolProvider::path_looks_like_library("libfoo.dylib"));
-    assert!(UrlToolProvider::path_looks_like_library("foo.dll"));
-    assert!(UrlToolProvider::path_looks_like_library("libfoo.so.1"));
-    assert!(!UrlToolProvider::path_looks_like_library("foo"));
-    assert!(!UrlToolProvider::path_looks_like_library("foo.tar.gz"));
+    assert!(extract::path_looks_like_library("libfoo.so"));
+    assert!(extract::path_looks_like_library("libfoo.dylib"));
+    assert!(extract::path_looks_like_library("foo.dll"));
+    assert!(extract::path_looks_like_library("libfoo.so.1"));
+    assert!(!extract::path_looks_like_library("foo"));
+    assert!(!extract::path_looks_like_library("foo.tar.gz"));
 }
 
 #[test]
@@ -158,7 +158,6 @@ fn test_cannot_handle_github_source() {
 
 #[test]
 fn test_extract_from_tar_gz_flattens_node24_prefix_layout() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_gz(&[
         (
             "node-v24.14.0-linux-x64/bin/node",
@@ -194,7 +193,7 @@ fn test_extract_from_tar_gz_flattens_node24_prefix_layout() {
     let temp = temp_dir();
     let dest = temp.path().join("node");
 
-    let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+    let extracted = extract::extract_from_tar_gz(&data, None, &dest).unwrap();
 
     assert_eq!(extracted, dest.join("bin").join("node"));
     assert!(dest.join("bin").join("npm").exists());
@@ -212,7 +211,6 @@ fn test_extract_from_tar_gz_flattens_node24_prefix_layout() {
 
 #[test]
 fn test_extract_from_tar_gz_preserves_node25_without_corepack() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_gz(&[
         (
             "node-v25.8.1-linux-x64/bin/node",
@@ -238,7 +236,7 @@ fn test_extract_from_tar_gz_preserves_node25_without_corepack() {
     let temp = temp_dir();
     let dest = temp.path().join("node");
 
-    let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+    let extracted = extract::extract_from_tar_gz(&data, None, &dest).unwrap();
 
     assert_eq!(extracted, dest.join("bin").join("node"));
     assert!(dest.join("bin").join("node").exists());
@@ -249,7 +247,6 @@ fn test_extract_from_tar_gz_preserves_node25_without_corepack() {
 
 #[test]
 fn test_extract_from_tar_gz_prefers_tool_name_for_versioned_cache_dir() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_gz(&[
         (
             "node-v24.14.0-linux-x64/bin/node",
@@ -270,7 +267,7 @@ fn test_extract_from_tar_gz_prefers_tool_name_for_versioned_cache_dir() {
     let temp = temp_dir();
     let dest = temp.path().join("node").join("24.14.0");
 
-    let extracted = provider.extract_from_tar_gz(&data, None, &dest).unwrap();
+    let extracted = extract::extract_from_tar_gz(&data, None, &dest).unwrap();
 
     assert_eq!(extracted, dest.join("bin").join("node"));
 }
@@ -339,7 +336,6 @@ async fn test_resolve_url_with_path() {
 
 #[test]
 fn test_extract_from_tar_xz_specific_path() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_xz(&[
         (
             "weaver-aarch64-apple-darwin/weaver",
@@ -355,9 +351,9 @@ fn test_extract_from_tar_xz_specific_path() {
     let temp = temp_dir();
     let dest = temp.path().join("weaver");
 
-    let extracted = provider
-        .extract_from_tar_xz(&data, Some("weaver-aarch64-apple-darwin/weaver"), &dest)
-        .unwrap();
+    let extracted =
+        extract::extract_from_tar_xz(&data, Some("weaver-aarch64-apple-darwin/weaver"), &dest)
+            .unwrap();
 
     assert_eq!(extracted, dest.join("weaver"));
     assert!(extracted.exists());
@@ -367,7 +363,6 @@ fn test_extract_from_tar_xz_specific_path() {
 
 #[test]
 fn test_extract_from_tar_xz_extracts_all_and_flattens_prefix() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_xz(&[
         (
             "weaver-x86_64-unknown-linux-gnu/weaver",
@@ -379,7 +374,7 @@ fn test_extract_from_tar_xz_extracts_all_and_flattens_prefix() {
     let temp = temp_dir();
     let dest = temp.path().join("weaver");
 
-    let extracted = provider.extract_from_tar_xz(&data, None, &dest).unwrap();
+    let extracted = extract::extract_from_tar_xz(&data, None, &dest).unwrap();
 
     // The provider promotes the single-root directory and surfaces the
     // first executable as the primary binary.
@@ -390,7 +385,6 @@ fn test_extract_from_tar_xz_extracts_all_and_flattens_prefix() {
 
 #[test]
 fn test_extract_from_tar_xz_missing_binary_returns_error() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_xz(&[(
         "weaver-aarch64-apple-darwin/weaver",
         b"#!/bin/sh\necho weaver\n",
@@ -399,15 +393,12 @@ fn test_extract_from_tar_xz_missing_binary_returns_error() {
     let temp = temp_dir();
     let dest = temp.path().join("weaver");
 
-    let err = provider
-        .extract_from_tar_xz(&data, Some("not/in/archive"), &dest)
-        .unwrap_err();
+    let err = extract::extract_from_tar_xz(&data, Some("not/in/archive"), &dest).unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
 
 #[test]
 fn test_extract_binary_detects_tar_xz_extension() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_xz(&[(
         "weaver-aarch64-apple-darwin/weaver",
         b"#!/bin/sh\necho weaver\n",
@@ -416,14 +407,13 @@ fn test_extract_binary_detects_tar_xz_extension() {
     let temp = temp_dir();
     let dest = temp.path().join("weaver");
 
-    let extracted = provider
-        .extract_binary(
-            &data,
-            "https://example.com/weaver-aarch64-apple-darwin.tar.xz",
-            Some("weaver-aarch64-apple-darwin/weaver"),
-            &dest,
-        )
-        .unwrap();
+    let extracted = extract::extract_binary(
+        &data,
+        "https://example.com/weaver-aarch64-apple-darwin.tar.xz",
+        Some("weaver-aarch64-apple-darwin/weaver"),
+        &dest,
+    )
+    .unwrap();
 
     assert_eq!(extracted, dest.join("weaver"));
     assert!(extracted.exists());
@@ -431,7 +421,6 @@ fn test_extract_binary_detects_tar_xz_extension() {
 
 #[test]
 fn test_extract_binary_detects_txz_extension() {
-    let provider = UrlToolProvider::new();
     let data = build_tar_xz(&[(
         "weaver-aarch64-apple-darwin/weaver",
         b"#!/bin/sh\necho weaver\n",
@@ -440,14 +429,13 @@ fn test_extract_binary_detects_txz_extension() {
     let temp = temp_dir();
     let dest = temp.path().join("weaver");
 
-    let extracted = provider
-        .extract_binary(
-            &data,
-            "https://example.com/weaver.txz",
-            Some("weaver-aarch64-apple-darwin/weaver"),
-            &dest,
-        )
-        .unwrap();
+    let extracted = extract::extract_binary(
+        &data,
+        "https://example.com/weaver.txz",
+        Some("weaver-aarch64-apple-darwin/weaver"),
+        &dest,
+    )
+    .unwrap();
 
     assert_eq!(extracted, dest.join("weaver"));
     assert!(extracted.exists());
