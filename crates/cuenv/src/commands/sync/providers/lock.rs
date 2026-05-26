@@ -167,6 +167,24 @@ struct CollectedImage {
     extract: BTreeMap<String, LockedOciExtract>,
 }
 
+struct LockSyncInputs {
+    lockfile_path: PathBuf,
+    image_platforms: HashMap<String, CollectedImage>,
+    all_platforms: Vec<String>,
+    scoped_project_paths: Vec<String>,
+    runtimes: Vec<CollectedRuntime>,
+    tools: Vec<CollectedTool>,
+    tools_platforms: Vec<String>,
+    flakes: HashMap<String, String>,
+    github_config: Option<GitHubProviderConfig>,
+}
+
+#[derive(Clone, Copy)]
+enum LockSyncScope {
+    Path,
+    Workspace,
+}
+
 /// Key type for tool deduplication: (name, version, source_hash).
 type ToolIdentityKey = (String, String, String);
 
@@ -233,6 +251,149 @@ fn tool_identity_key(name: &str, version: &str, source: Option<&SourceConfig>) -
     (name.to_string(), version.to_string(), source_hash)
 }
 
+fn collect_lock_sync_inputs(
+    path: &Path,
+    executor: &CommandExecutor,
+    scope: LockSyncScope,
+) -> Result<LockSyncInputs> {
+    let module = match scope {
+        LockSyncScope::Path => executor.get_module(path)?,
+        LockSyncScope::Workspace => executor.discover_all_modules(path)?,
+    };
+    let module_root = module.root.clone();
+    let lockfile_path = module_root.join(LOCKFILE_NAME);
+
+    let mut image_platforms: HashMap<String, CollectedImage> = HashMap::new();
+    let mut all_platforms: Vec<String> = Vec::new();
+    let mut scoped_project_paths = Vec::new();
+    let mut runtimes = Vec::new();
+    let mut tools_map: HashMap<ToolIdentityKey, CollectedTool> = HashMap::new();
+    let mut tools_platforms: Vec<String> = Vec::new();
+    let mut flakes: HashMap<String, String> = HashMap::new();
+    let mut github_config: Option<GitHubProviderConfig> = None;
+
+    for instance in module.projects() {
+        scoped_project_paths.push(display_project_path(&instance.path));
+
+        let project: Project = match instance.deserialize() {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(error = %e, "Failed to deserialize project, skipping");
+                continue;
+            }
+        };
+
+        match &project.runtime {
+            Some(Runtime::Nix(nix_runtime)) => {
+                runtimes.push(collect_nix_runtime_lock(
+                    &module_root,
+                    &instance.path,
+                    nix_runtime,
+                )?);
+            }
+            Some(Runtime::Oci(oci_runtime)) => {
+                let resolve_platforms = &oci_runtime.platforms;
+                if resolve_platforms.is_empty() {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "Project '{}' uses OCI runtime but has no platforms configured",
+                        project.name
+                    )));
+                }
+
+                for platform in resolve_platforms {
+                    if !all_platforms.contains(platform) {
+                        all_platforms.push(platform.clone());
+                    }
+                }
+
+                for image_spec in &oci_runtime.images {
+                    let image = &image_spec.image;
+                    let collected = image_platforms.entry(image.clone()).or_default();
+
+                    for platform in resolve_platforms {
+                        if !collected.platforms.contains(platform) {
+                            collected.platforms.push(platform.clone());
+                        }
+                    }
+
+                    for extract in &image_spec.extract {
+                        collected
+                            .extract
+                            .entry(extract.path.clone())
+                            .or_insert_with(|| LockedOciExtract {
+                                path: extract.path.clone(),
+                                as_name: extract.as_name.clone(),
+                            });
+                    }
+                }
+            }
+            Some(Runtime::Tools(tools_runtime)) => {
+                let resolve_platforms = &tools_runtime.platforms;
+                if resolve_platforms.is_empty() {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "Project '{}' uses Tools runtime but has no platforms configured",
+                        project.name
+                    )));
+                }
+
+                for platform in resolve_platforms {
+                    if !tools_platforms.contains(platform) {
+                        tools_platforms.push(platform.clone());
+                    }
+                }
+
+                flakes.extend(tools_runtime.flakes.clone());
+
+                if github_config.is_none() {
+                    github_config.clone_from(&tools_runtime.github);
+                }
+
+                for (name, spec) in &tools_runtime.tools {
+                    let (version, source, overrides) = match spec {
+                        ToolSpec::Version(v) => (v.clone(), None, vec![]),
+                        ToolSpec::Full(config) => (
+                            config.version.clone(),
+                            config.source.clone(),
+                            config.overrides.clone(),
+                        ),
+                    };
+
+                    let key = tool_identity_key(name, &version, source.as_ref());
+                    tools_map
+                        .entry(key)
+                        .and_modify(|existing| {
+                            for platform in resolve_platforms {
+                                if !existing.platforms.contains(platform) {
+                                    existing.platforms.push(platform.clone());
+                                }
+                            }
+                        })
+                        .or_insert_with(|| CollectedTool {
+                            name: name.clone(),
+                            version,
+                            source,
+                            overrides,
+                            platforms: resolve_platforms.clone(),
+                        });
+                }
+            }
+            Some(_) | None => {}
+        }
+    }
+
+    Ok(LockSyncInputs {
+        lockfile_path,
+        image_platforms,
+        all_platforms,
+        scoped_project_paths,
+        runtimes,
+        tools: tools_map.into_values().collect(),
+        tools_platforms,
+        flakes,
+        github_config,
+    })
+}
+
 /// Execute lock synchronization for a path.
 ///
 /// When `workspace` is `true`, scans all projects in the CUE module via
@@ -254,179 +415,23 @@ async fn execute_lock_sync(
     workspace: bool,
 ) -> Result<String> {
     let check = options.mode == SyncMode::Check;
-    // Collect all OCI artifacts and tools from projects
-    // Note: We collect all data before async operations to avoid holding
-    // the module guard across await points (MutexGuard is not Send).
-    let (
+    let scope = if workspace {
+        LockSyncScope::Workspace
+    } else {
+        LockSyncScope::Path
+    };
+    let inputs = collect_lock_sync_inputs(path, executor, scope)?;
+    let LockSyncInputs {
         lockfile_path,
         image_platforms,
         all_platforms,
         scoped_project_paths,
-        collected_runtimes,
-        collected_tools,
+        runtimes: collected_runtimes,
+        tools: collected_tools,
         tools_platforms,
-        collected_flakes,
+        flakes: collected_flakes,
         github_config,
-    ) = {
-        let module = if workspace {
-            executor.discover_all_modules(path)?
-        } else {
-            executor.get_module(path)?
-        };
-        let module_root = module.root.clone();
-        let lockfile_path = module_root.join(LOCKFILE_NAME);
-
-        let mut image_platforms: HashMap<String, CollectedImage> = HashMap::new();
-        let mut all_platforms: Vec<String> = Vec::new();
-        let mut scoped_project_paths = Vec::new();
-        let mut collected_runtimes = Vec::new();
-        // Use HashMap for tool deduplication: same tool in multiple projects is resolved once
-        let mut tools_map: HashMap<ToolIdentityKey, CollectedTool> = HashMap::new();
-        let mut tools_platforms: Vec<String> = Vec::new();
-        let mut collected_flakes: HashMap<String, String> = HashMap::new();
-        let mut github_config: Option<GitHubProviderConfig> = None;
-
-        for instance in module.projects() {
-            scoped_project_paths.push(display_project_path(&instance.path));
-
-            // Deserialize the instance to get the Project struct
-            let project: Project = match instance.deserialize() {
-                Ok(p) => p,
-                Err(e) => {
-                    warn!(error = %e, "Failed to deserialize project, skipping");
-                    continue;
-                }
-            };
-
-            match &project.runtime {
-                Some(Runtime::Nix(nix_runtime)) => {
-                    collected_runtimes.push(collect_nix_runtime_lock(
-                        &module_root,
-                        &instance.path,
-                        nix_runtime,
-                    )?);
-                }
-                // Handle OCI runtime (legacy)
-                Some(Runtime::Oci(oci_runtime)) => {
-                    // Collect platforms from this project's config
-                    let resolve_platforms = &oci_runtime.platforms;
-                    if resolve_platforms.is_empty() {
-                        return Err(cuenv_core::Error::configuration(format!(
-                            "Project '{}' uses OCI runtime but has no platforms configured",
-                            project.name
-                        )));
-                    }
-
-                    // Track all platforms for summary
-                    for platform in resolve_platforms {
-                        if !all_platforms.contains(platform) {
-                            all_platforms.push(platform.clone());
-                        }
-                    }
-
-                    // Process all images (unified API - everything is an image)
-                    for image_spec in &oci_runtime.images {
-                        let image = &image_spec.image;
-
-                        let collected = image_platforms.entry(image.clone()).or_default();
-                        for platform in resolve_platforms {
-                            if !collected.platforms.contains(platform) {
-                                collected.platforms.push(platform.clone());
-                            }
-                        }
-                        // Collect extract entries so the lockfile can drive
-                        // binary extraction during `cuenv runtime oci activate`
-                        // without re-reading the CUE module. Dedup by `path`
-                        // so duplicate references across projects stay stable.
-                        for extract in &image_spec.extract {
-                            collected
-                                .extract
-                                .entry(extract.path.clone())
-                                .or_insert_with(|| LockedOciExtract {
-                                    path: extract.path.clone(),
-                                    as_name: extract.as_name.clone(),
-                                });
-                        }
-                    }
-                }
-                // Handle Tools runtime (new)
-                Some(Runtime::Tools(tools_runtime)) => {
-                    let resolve_platforms = &tools_runtime.platforms;
-                    if resolve_platforms.is_empty() {
-                        return Err(cuenv_core::Error::configuration(format!(
-                            "Project '{}' uses Tools runtime but has no platforms configured",
-                            project.name
-                        )));
-                    }
-
-                    // Track all platforms for summary
-                    for platform in resolve_platforms {
-                        if !tools_platforms.contains(platform) {
-                            tools_platforms.push(platform.clone());
-                        }
-                    }
-
-                    // Collect flakes for Nix tool resolution
-                    for (name, url) in &tools_runtime.flakes {
-                        collected_flakes.insert(name.clone(), url.clone());
-                    }
-
-                    // Collect GitHub provider config (first one wins)
-                    if github_config.is_none() {
-                        github_config.clone_from(&tools_runtime.github);
-                    }
-
-                    // Collect all tools with deduplication across projects
-                    for (name, spec) in &tools_runtime.tools {
-                        let (version, source, overrides) = match spec {
-                            ToolSpec::Version(v) => (v.clone(), None, vec![]),
-                            ToolSpec::Full(config) => (
-                                config.version.clone(),
-                                config.source.clone(),
-                                config.overrides.clone(),
-                            ),
-                        };
-
-                        let key = tool_identity_key(name, &version, source.as_ref());
-                        tools_map
-                            .entry(key)
-                            .and_modify(|existing| {
-                                // Merge platforms from this project into existing entry
-                                for platform in resolve_platforms {
-                                    if !existing.platforms.contains(platform) {
-                                        existing.platforms.push(platform.clone());
-                                    }
-                                }
-                            })
-                            .or_insert_with(|| CollectedTool {
-                                name: name.clone(),
-                                version,
-                                source,
-                                overrides,
-                                platforms: resolve_platforms.clone(),
-                            });
-                    }
-                }
-                // Skip projects without OCI/Tools runtime
-                Some(_) | None => {}
-            }
-        }
-
-        // Convert deduplicated tools map to Vec
-        let collected_tools: Vec<CollectedTool> = tools_map.into_values().collect();
-
-        (
-            lockfile_path,
-            image_platforms,
-            all_platforms,
-            scoped_project_paths,
-            collected_runtimes,
-            collected_tools,
-            tools_platforms,
-            collected_flakes,
-            github_config,
-        )
-    };
+    } = inputs;
     // Module guard is now dropped, we can safely use async operations
 
     // Load existing lockfile once so we can preserve metadata and compare in check mode.
