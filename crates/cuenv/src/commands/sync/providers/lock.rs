@@ -394,6 +394,56 @@ fn collect_lock_sync_inputs(
     })
 }
 
+async fn resolve_oci_artifacts(
+    image_platforms: &HashMap<String, CollectedImage>,
+) -> Result<Vec<LockedArtifact>> {
+    let client = OciClient::new();
+    let mut artifacts = Vec::new();
+
+    for (image, collected) in image_platforms {
+        debug!(%image, platforms = ?collected.platforms, "Resolving image");
+
+        let mut platforms_map = BTreeMap::new();
+        for platform_str in &collected.platforms {
+            let platform = Platform::parse(platform_str).ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
+                    platform_str
+                ))
+            })?;
+
+            let resolved = client.resolve_digest(image, &platform).await.map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to resolve '{}' for platform '{}': {}",
+                    image, platform_str, e
+                ))
+            })?;
+
+            debug!(%image, %platform_str, digest = %resolved.digest, "Resolved digest");
+
+            platforms_map.insert(
+                platform_str.clone(),
+                PlatformData {
+                    digest: resolved.digest,
+                    size: None,
+                },
+            );
+        }
+
+        let extract: Vec<LockedOciExtract> = collected.extract.values().cloned().collect();
+
+        artifacts.push(LockedArtifact {
+            kind: ArtifactKind::Image {
+                image: image.clone(),
+                extract,
+            },
+            platforms: platforms_map,
+        });
+    }
+
+    Ok(artifacts)
+}
+
 /// Execute lock synchronization for a path.
 ///
 /// When `workspace` is `true`, scans all projects in the CUE module via
@@ -499,54 +549,8 @@ async fn execute_lock_sync(
         image_platforms.len(),
         all_platforms.len()
     );
-
-    let client = OciClient::new();
     let path_local = !workspace;
-    let mut artifacts: Vec<LockedArtifact> = Vec::new();
-
-    // Process OCI images
-    for (image, collected) in &image_platforms {
-        debug!(%image, platforms = ?collected.platforms, "Resolving image");
-
-        let mut platforms_map = BTreeMap::new();
-        for platform_str in &collected.platforms {
-            let platform = Platform::parse(platform_str).ok_or_else(|| {
-                cuenv_core::Error::configuration(format!(
-                    "Invalid platform '{}': expected format 'os-arch' (e.g., 'darwin-arm64')",
-                    platform_str
-                ))
-            })?;
-
-            let resolved = client.resolve_digest(image, &platform).await.map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "Failed to resolve '{}' for platform '{}': {}",
-                    image, platform_str, e
-                ))
-            })?;
-
-            debug!(%image, %platform_str, digest = %resolved.digest, "Resolved digest");
-
-            platforms_map.insert(
-                platform_str.clone(),
-                PlatformData {
-                    digest: resolved.digest,
-                    size: None,
-                },
-            );
-        }
-
-        // Materialize the collected extract entries; values() is sorted by
-        // path because the underlying map is a BTreeMap.
-        let extract: Vec<LockedOciExtract> = collected.extract.values().cloned().collect();
-
-        artifacts.push(LockedArtifact {
-            kind: ArtifactKind::Image {
-                image: (*image).clone(),
-                extract,
-            },
-            platforms: platforms_map,
-        });
-    }
+    let artifacts = resolve_oci_artifacts(&image_platforms).await?;
 
     // Process Tools runtime
     let mut lockfile = seed_lockfile(existing_lockfile.as_ref(), path_local);
