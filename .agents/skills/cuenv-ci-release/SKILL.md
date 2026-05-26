@@ -11,6 +11,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `schema/release.cue` for release targets, backends, git/tag config, versioning, changelogs, changesets, and package changes.
 - `crates/core/src/contributors/{model,context,engine,dag}.rs` for task contributor schema models, activation context, DAG injection, and verification helpers; `crates/core/src/contributors/workspace.rs` for built-in package-manager workspace contributors.
 - `crates/release/src/manifest.rs` for Cargo workspace manifest discovery, package version inheritance, internal dependency lookup, and version writes.
+- `crates/release/src/orchestrator.rs` for the release pipeline entry point, `crates/release/src/orchestrator/package.rs` for build/package artifact handling, and `crates/release/src/orchestrator/publish.rs` for backend publish orchestration.
 - `crates/cuenv/src/commands/sync`, `crates/cuenv/src/commands/release.rs`, and `crates/cuenv/src/commands/release/` when behavior matters.
 - `crates/cuenv/src/commands/sync/functions/github.rs` for GitHub workflow sync and non-matrix workflow emission, and `crates/cuenv/src/commands/sync/functions/github/matrix.rs` for matrix workflow expansion and artifact aggregation behavior.
 - `crates/github/src/workflow/emitter.rs` for general GitHub Actions workflow emission, `crates/github/src/workflow/jobs.rs` for bootstrap/simple/matrix/artifact job construction, and `crates/github/src/workflow/release.rs` for release workflow matrix/publish jobs.

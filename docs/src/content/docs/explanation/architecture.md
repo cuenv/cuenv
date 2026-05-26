@@ -159,7 +159,10 @@ while the hook supervisor process runs through
 version application, git publication, and PR creation live in
 `crates/cuenv/src/commands/release/prepare.rs`. Cargo workspace manifest
 discovery, package version inheritance, internal dependency lookup, and version
-writes live in `crates/release/src/manifest.rs`. Task-list data construction
+writes live in `crates/release/src/manifest.rs`. Release pipeline dispatch
+stays in `crates/release/src/orchestrator.rs`; package artifact handling lives
+in `crates/release/src/orchestrator/package.rs`, and backend publication lives
+in `crates/release/src/orchestrator/publish.rs`. Task-list data construction
 stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
 dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
