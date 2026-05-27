@@ -28,6 +28,7 @@ members = [
     "crates/homebrew",
     # Secret provider crates
     "crates/1password",
+    "crates/gcp",
     "crates/infisical",
     # Tool provider crates
     "crates/tools/oci",
@@ -76,6 +77,7 @@ cuenv-buildkite = { path = "crates/buildkite", version = "0.43.0" }
 cuenv-homebrew = { path = "crates/homebrew", version = "0.43.0" }
 # Secret provider crates
 cuenv-1password = { path = "crates/1password", version = "0.43.0" }
+cuenv-gcp = { path = "crates/gcp", version = "0.43.0" }
 cuenv-infisical = { path = "crates/infisical", version = "0.43.0" }
 # Tool provider crates
 cuenv-tools-oci = { path = "crates/tools/oci", version = "0.43.0" }
