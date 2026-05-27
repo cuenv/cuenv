@@ -23,6 +23,7 @@ Status guardrails:
 - Services are partial: `down` is stubbed, `logs --follow` is TODO, and `restart` does not fully signal supervisors.
 - Service/image orchestration builds a read-only mixed graph in `crates/services/src/controller.rs`; it should implement `TaskNodeData` for declared dependency names only, not `MutableTaskNodeData`, unless the controller starts injecting dependencies itself.
 - Per-service process wrapping lives in `crates/services/src/supervisor.rs`: Linux relies on `PR_SET_PDEATHSIG`, while macOS wraps service commands with `cuenv __supervise` when the current executable can be resolved.
+- Log readiness probes in `crates/services/src/probes/log.rs` borrow the manifest stream selector; do not clone `l.source` just to pass `"stdout"`, `"stderr"`, or `"either"` through probe construction. `StateUpdate` in `crates/services/src/supervisor.rs` is a copyable value bundle for lifecycle persistence/logging.
 - Service lifecycle CLI output is rendered in `crates/events/src/renderers/cli/service.rs`; keep service-event wording aligned there when lifecycle semantics change.
 - Keep standalone `#Devenv` separate from `#DevenvRuntime`.
 

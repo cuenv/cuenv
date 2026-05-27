@@ -127,7 +127,10 @@ default panic on the base trait. Affected-task analysis accepts the named
 borrowed `ExternalAffectedResolver`, keeping the generic graph API focused on
 task data instead of encoding resolver ownership in its type parameters.
 Service/image orchestration uses read-only mixed graph nodes with declared
-dependency names only.
+dependency names only. Service readiness log probes borrow their stream selector
+from manifest state instead of cloning it into probe construction, and
+supervisor state-update parameters are copyable value bundles so lifecycle
+persistence and warning logs share the same update without ownership churn.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

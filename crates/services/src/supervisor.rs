@@ -124,6 +124,7 @@ pub struct ServiceSupervisor {
 }
 
 /// Parameters for a state update.
+#[derive(Clone, Copy)]
 pub struct StateUpdate<'a> {
     /// New lifecycle state.
     pub lifecycle: ServiceLifecycle,
@@ -268,7 +269,7 @@ impl ServiceSupervisor {
             // Create log probe if needed
             let log_probe = self.service.readiness.as_ref().and_then(|r| match r {
                 cuenv_core::manifest::Readiness::Log(l) => {
-                    let source = l.source.clone().unwrap_or("either".to_string());
+                    let source = l.source.as_deref().unwrap_or("either");
                     LogProbe::new(&l.pattern, source).ok()
                 }
                 _ => None,
