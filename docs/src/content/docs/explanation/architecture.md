@@ -262,7 +262,9 @@ guards.
 The lock provider keeps path/workspace orchestration in
 `crates/cuenv/src/commands/sync/providers/lock.rs`, while multi-source tool
 resolution, cache reuse, source template expansion, and provider registry
-setup live in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs`.
+setup live in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs`;
+template placeholders stay named constants so literal `{version}`, `{os}`, and
+`{arch}` replacement does not need formatting-lint suppressions.
 The VCS sync provider keeps orchestration in
 `crates/cuenv/src/commands/sync/providers/vcs.rs`, checkout/marker verification
 in `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs`, and

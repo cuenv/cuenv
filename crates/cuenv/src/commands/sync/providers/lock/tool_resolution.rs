@@ -10,6 +10,10 @@ use tracing::{debug, info};
 
 use crate::commands::sync::provider::{SyncMode, SyncOptions};
 
+const VERSION_TEMPLATE: &str = "{version}";
+const OS_TEMPLATE: &str = "{os}";
+const ARCH_TEMPLATE: &str = "{arch}";
+
 /// Collected tool specification from manifest.
 #[derive(Debug, Clone)]
 pub(super) struct CollectedTool {
@@ -502,13 +506,10 @@ fn expand_source_template(value: &str, version: &str, platform: &ToolPlatform) -
         cuenv_core::tools::Arch::X86_64 => "x86_64",
     };
 
-    #[allow(clippy::literal_string_with_formatting_args)]
-    {
-        value
-            .replace("{version}", version)
-            .replace("{os}", os_str)
-            .replace("{arch}", arch_str)
-    }
+    value
+        .replace(VERSION_TEMPLATE, version)
+        .replace(OS_TEMPLATE, os_str)
+        .replace(ARCH_TEMPLATE, arch_str)
 }
 
 /// Compute a SHA256 digest for a resolved tool (for lockfile).
