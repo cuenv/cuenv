@@ -1,18 +1,38 @@
-#![allow(clippy::unwrap_used)]
-
 use super::{create_test_dir, init_cue_module, run_cuenv};
+use std::error::Error;
 use std::fs;
+use std::io;
+use std::path::Path;
+use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
+    fs::write(temp_dir.path().join("env.cue"), cue_content)?;
+    Ok(())
+}
+
+fn write_project_env(project_dir: &Path, cue_content: &str) -> TestResult {
+    fs::create_dir_all(project_dir)?;
+    fs::write(project_dir.join("env.cue"), cue_content)?;
+    Ok(())
+}
+
+fn path_arg(path: &Path) -> TestResult<&str> {
+    path.to_str()
+        .ok_or_else(|| io::Error::other(format!("path is not valid UTF-8: {}", path.display())))
+        .map_err(Into::into)
+}
 
 #[test]
-fn test_task_label_execution_is_path_scoped() {
+fn test_task_label_execution_is_path_scoped() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
 
     // All projects must use `package cuenv` - this is enforced by cuenv
     let project_a = temp_dir.path().join("project-a");
-    fs::create_dir_all(&project_a).unwrap();
-    fs::write(
-        project_a.join("env.cue"),
+    write_project_env(
+        &project_a,
         r#"package cuenv
 
 name: "project-a"
@@ -27,13 +47,11 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     let project_b = temp_dir.path().join("project-b");
-    fs::create_dir_all(&project_b).unwrap();
-    fs::write(
-        project_b.join("env.cue"),
+    write_project_env(
+        &project_b,
         r#"package cuenv
 
 name: "project-b"
@@ -48,13 +66,12 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     let (stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        project_a.to_str().unwrap(),
+        path_arg(&project_a)?,
         "--package",
         "cuenv",
         "-l",
@@ -70,16 +87,17 @@ tasks: {
         !stdout.contains("B-PROJEN"),
         "Label execution must be scoped to the selected path"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_label_multiple_labels_and_semantics() {
+fn test_task_label_multiple_labels_and_semantics() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
 
     // Create a project with multiple tasks having different label combinations
-    fs::write(
-        temp_dir.path().join("env.cue"),
+    write_env(
+        &temp_dir,
         r#"package test
 
 name: "test"
@@ -104,14 +122,13 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     // Test: Multiple labels with AND semantics - only unit_tests has both "test" AND "unit"
     let (stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "-l",
@@ -138,14 +155,15 @@ tasks: {
         !stdout.contains("BUILD"),
         "Should NOT execute build (has neither label)"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_label_error_conflicting_task_name_and_label() {
+fn test_task_label_error_conflicting_task_name_and_label() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
-    fs::write(
-        temp_dir.path().join("env.cue"),
+    write_env(
+        &temp_dir,
         r#"package test
 name: "test"
 env: {}
@@ -157,14 +175,13 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     // Test: Cannot specify both task name and --label
     let (_stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "mytask",
@@ -181,14 +198,15 @@ tasks: {
         stderr.contains("Cannot specify both a task name") && stderr.contains("--label"),
         "Error message should mention conflict. Got: {stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_label_error_trailing_args_become_task_name() {
+fn test_task_label_error_trailing_args_become_task_name() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
-    fs::write(
-        temp_dir.path().join("env.cue"),
+    write_env(
+        &temp_dir,
         r#"package test
 name: "test"
 env: {}
@@ -199,15 +217,14 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     // Test: Trailing args after -- are interpreted as task name (first positional)
     // Since task name conflicts with --label, we get the conflict error
     let (_stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "-l",
@@ -227,14 +244,15 @@ tasks: {
         stderr.contains("Cannot specify both a task name") && stderr.contains("--label"),
         "Error message should mention conflict (trailing arg becomes task name). Got: {stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_label_error_no_matching_tasks() {
+fn test_task_label_error_no_matching_tasks() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
-    fs::write(
-        temp_dir.path().join("env.cue"),
+    write_env(
+        &temp_dir,
         r#"package test
 name: "test"
 env: {}
@@ -246,14 +264,13 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     // Test: No tasks match the given label
     let (_stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "-l",
@@ -265,14 +282,15 @@ tasks: {
         stderr.contains("No tasks with labels") && stderr.contains("nonexistent"),
         "Error message should mention no matching tasks. Got: {stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_label_error_empty_labels() {
+fn test_task_label_error_empty_labels() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
-    fs::write(
-        temp_dir.path().join("env.cue"),
+    write_env(
+        &temp_dir,
         r#"package test
 name: "test"
 env: {}
@@ -283,14 +301,13 @@ tasks: {
   }
 }
 "#,
-    )
-    .unwrap();
+    )?;
 
     // Test: Empty/whitespace-only labels should error
     let (_stdout, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "-l",
@@ -302,4 +319,5 @@ tasks: {
         stderr.contains("empty") || stderr.contains("whitespace"),
         "Error message should mention empty/whitespace labels. Got: {stderr}"
     );
+    Ok(())
 }
