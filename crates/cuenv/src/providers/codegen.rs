@@ -2,7 +2,6 @@
 //!
 //! Syncs codegen-generated files from CUE configuration.
 
-use std::any::Any;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -54,14 +53,6 @@ impl Provider for CodegenProvider {
 
     fn description(&self) -> &'static str {
         "Sync files from CUE codegen configurations"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -218,20 +209,6 @@ mod tests {
         let provider = CodegenProvider::new();
         assert!(!provider.description().is_empty());
         assert!(provider.description().contains("codegen"));
-    }
-
-    #[test]
-    fn test_codegen_provider_as_any() {
-        let provider = CodegenProvider::new();
-        let any = provider.as_any();
-        assert!(any.is::<CodegenProvider>());
-    }
-
-    #[test]
-    fn test_codegen_provider_as_any_mut() {
-        let mut provider = CodegenProvider::new();
-        let any = provider.as_any_mut();
-        assert!(any.is::<CodegenProvider>());
     }
 
     #[test]

@@ -5,12 +5,9 @@
 //!
 //! # Architecture
 //!
-//! cuenv uses a unified provider system where providers implement one or more
-//! capability traits:
+//! cuenv uses a provider system where sync providers implement:
 //!
 //! - [`SyncCapability`] - Sync files from CUE configuration
-//! - [`RuntimeCapability`] - Execute tasks (future)
-//! - [`SecretCapability`] - Resolve secrets (future)
 //!
 //! # Example: Custom CLI with Additional Providers
 //!
@@ -29,25 +26,6 @@
 //! }
 //! ```
 //!
-//! # Example: Multi-Capability Provider
-//!
-//! A single provider can implement multiple capabilities:
-//!
-//! ```ignore
-//! use cuenv::{Provider, SyncCapability, RuntimeCapability};
-//!
-//! pub struct DaggerProvider;
-//!
-//! impl Provider for DaggerProvider {
-//!     fn name(&self) -> &'static str { "dagger" }
-//!     fn description(&self) -> &'static str { "Dagger-based sync and execution" }
-//!     fn as_any(&self) -> &dyn std::any::Any { self }
-//!     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-//! }
-//!
-//! // Implement both SyncCapability and RuntimeCapability...
-//! ```
-
 mod builder;
 /// CLI argument parsing and exit codes.
 pub mod cli;
@@ -75,7 +53,7 @@ pub mod tui;
 // Re-export public API
 pub use builder::CuenvBuilder;
 pub use cuenv_core::Result;
-pub use provider::{Provider, RuntimeCapability, SecretCapability, SyncCapability};
+pub use provider::{Provider, SyncCapability};
 pub use registry::ProviderRegistry;
 
 /// The main cuenv application.

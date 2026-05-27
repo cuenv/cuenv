@@ -12,6 +12,11 @@ Status values:
 - `docs-misleading`: current docs or examples overclaim support and must be corrected before agents rely on them.
 - `needs-decision`: ownership or intended user surface is unclear.
 
+Provider dispatch note: the public `crates/cuenv` provider registry is sync-only.
+`Provider` plus `SyncCapability` back generated-file sync command construction.
+Runtime execution and secret resolution remain on their existing task and
+resolver paths until a real registry-backed dispatch path exists.
+
 | Schema file | Definition | Feature | Audience | Implementation owner | CLI surface | Docs page | Example | Test/eval | Skill | Status | Drift/UX note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `schema/ignores.cue` | `#IgnoreEntry` | top-level ignore schema | legacy project-facing | `crates/core/src/rules` | `cuenv sync` rules provider | `docs/src/content/docs/reference/schema/status.md` | none: prefer `.rules.cue` | `cuenv task ci.schema-docs-check` | `cuenv-generation-rules-formatting` | `legacy` | Top-level ignore is not exposed on `#Project`; agents should prefer `schema/rules/ignores.cue`. |

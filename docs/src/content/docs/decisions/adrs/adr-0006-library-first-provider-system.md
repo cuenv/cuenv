@@ -17,13 +17,13 @@ The cuenv CLI currently has a tightly coupled architecture:
 1. **Hardcoded Providers**: Sync providers (ci, cubes, rules) are registered via a static `default_registry()` factory function
 2. **Binary-Only**: The `cuenv` crate is only consumable as a binary, not as a library
 3. **Hardcoded CLI**: The `SyncCommands` enum in `cli.rs` must be modified for each new provider
-4. **Single-Capability Providers**: Each provider type (sync, runtime, secret) has a separate registration mechanism
+4. **Sync-Only Provider Dispatch**: Only generated-file sync has a library-facing dispatch path today
 
 This prevents:
 
 - External crates from extending cuenv without forking
 - Building custom cuenv distributions with different provider sets
-- Providers that offer multiple capabilities (e.g., Dagger providing both sync and runtime)
+- Sync providers from external crates without inventing placeholder runtime or secret dispatch APIs
 
 ## Decision
 
@@ -58,17 +58,17 @@ lives behind the provider registry. Until then, the binary remains the canonical
 CLI dispatcher and the library exposes provider registration plus dynamic command
 construction.
 
-### 2. Unified Provider System
+### 2. Sync Provider System
 
-A provider is a unit that implements one or more capability traits:
+A provider is a sync extension point. Runtime and secret provider traits should
+only be added when task execution or secret resolution actually dispatches
+through the registry.
 
 ```rust
 /// Base trait for all providers
 pub trait Provider: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
-    fn as_any(&self) -> &dyn Any;           // For capability detection
-    fn as_any_mut(&mut self) -> &mut dyn Any; // For mutable capability detection
 }
 
 /// Capability: Sync files from CUE configuration
@@ -91,54 +91,26 @@ pub trait SyncCapability: Provider {
     fn has_config(&self, manifest: &Base) -> bool;
     fn parse_sync_args(&self, matches: &ArgMatches) -> SyncOptions; // Has default impl
 }
-
-/// Capability: Execute tasks (future)
-#[async_trait]
-pub trait RuntimeCapability: Provider {
-    async fn execute_task(&self, task_name: &str, executor: &CommandExecutor) -> Result<String>;
-    fn can_handle(&self, task_name: &str) -> bool;
-}
-
-/// Capability: Resolve secrets (future)
-#[async_trait]
-pub trait SecretCapability: Provider {
-    async fn resolve(&self, reference: &str) -> Result<String>;
-    fn can_resolve(&self, reference: &str) -> bool;
-}
 ```
 
 ### 3. Type-Safe Registration via Builder Pattern
 
-Separate builder methods provide compile-time type safety for each capability:
+The builder exposes the implemented capability only:
 
 ```rust
 Cuenv::builder()
     .with_sync_provider(CiProvider::new())      // SyncCapability
     .with_sync_provider(CubesProvider::new())   // SyncCapability
-    .with_runtime_provider(DaggerRuntime::new()) // RuntimeCapability
-    .with_secret_provider(VaultProvider::new())  // SecretCapability
     .build()
 ```
 
-For multi-capability providers, register them for each capability they implement:
-
-```rust
-let dagger = Arc::new(DaggerProvider::new());
-Cuenv::builder()
-    .with_sync_provider(dagger.clone())    // Dagger as SyncCapability
-    .with_runtime_provider(dagger)          // Dagger as RuntimeCapability
-    .build()
-```
-
-The `ProviderRegistry` provides O(1) lookup by name and iteration by capability:
+The `ProviderRegistry` provides O(1) lookup by name and iteration over sync
+providers:
 
 ```rust
 impl ProviderRegistry {
     pub fn sync_providers(&self) -> impl Iterator<Item = &Arc<dyn SyncCapability>>;
-    pub fn runtime_providers(&self) -> impl Iterator<Item = &Arc<dyn RuntimeCapability>>;
-    pub fn secret_providers(&self) -> impl Iterator<Item = &Arc<dyn SecretCapability>>;
     pub fn get_sync_provider(&self, name: &str) -> Option<&Arc<dyn SyncCapability>>;
-    // ... similar for other capabilities
 }
 ```
 
@@ -153,7 +125,6 @@ impl Cuenv {
         for provider in self.registry.sync_providers() {
             sync_cmd = sync_cmd.subcommand(provider.build_sync_command());
         }
-        // ... other capability-based commands
     }
 }
 ```
@@ -163,7 +134,7 @@ impl Cuenv {
 ### Positive
 
 1. **Extensibility**: External crates can add providers without forking
-2. **Multi-Capability Providers**: A single provider (e.g., Dagger) can offer sync, runtime, and secret capabilities
+2. **Honest Extension Surface**: The public API exposes only dispatch paths that exist today
 3. **Custom Distributions**: Organizations can build cuenv variants with specific provider sets
 4. **Cleaner Architecture**: Removes hardcoded CLI enums and static registries
 5. **Testability**: Providers can be mocked individually
@@ -171,13 +142,13 @@ impl Cuenv {
 ### Negative
 
 1. **Breaking Internal Change**: Provider registration mechanism changes entirely
-2. **Runtime Dispatch**: Capability detection uses `as_any()` downcast (minor perf cost)
+2. **Future Capability Work**: Runtime or secret providers will need a new ADR or ADR update once a real registry-backed dispatch path exists
 3. **Migration Effort**: Existing providers must be refactored to implement base `Provider` trait
 
 ### Neutral
 
 1. **No CLI Breaking Changes**: `cuenv sync ci` continues to work unchanged
-2. **Incremental Capability Addition**: New capability traits can be added without modifying existing providers
+2. **Incremental Capability Addition**: Runtime or secret capability traits can be added later without changing existing sync providers
 
 ## Alternatives Considered
 
@@ -186,11 +157,13 @@ impl Cuenv {
 ```rust
 Cuenv::builder()
     .with_provider(CiProvider)           // Auto-detect SyncCapability
-    .with_provider(DaggerProvider::new()) // Auto-detect Sync + Runtime
     .build()
 ```
 
-**Rejected**: Rust's type system doesn't allow ergonomic runtime trait detection via `as_any()` downcasting for this use case. The `dyn Provider` cannot be downcast to `dyn SyncCapability` without concrete type knowledge. Separate type-safe methods provide better compile-time guarantees.
+**Rejected**: The current implemented extension point is sync-only, so runtime
+capability detection and downcasting would be speculative. A direct
+`with_sync_provider()` method provides better compile-time guarantees and avoids
+placeholder APIs.
 
 ### 2. Plugin System with Dynamic Loading
 
@@ -216,17 +189,17 @@ static _: &dyn Provider = &CiProvider;
 
 ## Status
 
-Accepted — partially implemented in PR #234. The library target, provider
-traits, registry, builder, and dynamic sync command construction are implemented.
+Accepted — partially implemented in PR #234. The library target, sync provider
+trait, registry, builder, and dynamic sync command construction are implemented.
 Full CLI dispatch still lives in `crates/cuenv/src/main.rs`; a library-level
 `run_cli` entrypoint should be added only when it dispatches real commands.
 
 ## Implementation Order
 
 1. ✅ Add library target to Cargo.toml
-2. ✅ Create `Provider` base trait and capability traits (`provider.rs`)
+2. ✅ Create `Provider` base trait and sync capability trait (`provider.rs`)
 3. ✅ Create `ProviderRegistry` with O(1) lookup (`registry.rs`)
-4. ✅ Create `CuenvBuilder` with type-safe `with_sync_provider()` etc. (`builder.rs`)
+4. ✅ Create `CuenvBuilder` with type-safe `with_sync_provider()` (`builder.rs`)
 5. ✅ Refactor existing providers (ci, cubes, rules) to `providers/` module
 6. ✅ Dynamic CLI generation via `build_sync_command()`
 7. ✅ Main binary uses builder pattern

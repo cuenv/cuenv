@@ -2,7 +2,6 @@
 //!
 //! Syncs CI workflow files (GitHub Actions, Buildkite) from CUE configuration.
 
-use std::any::Any;
 use std::path::Path;
 
 use async_trait::async_trait;
@@ -55,14 +54,6 @@ impl Provider for CiProvider {
 
     fn description(&self) -> &'static str {
         "Sync CI workflow files (GitHub Actions, Buildkite)"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
     }
 }
 
@@ -166,20 +157,6 @@ mod tests {
         let provider = CiProvider::new();
         assert!(!provider.description().is_empty());
         assert!(provider.description().contains("CI"));
-    }
-
-    #[test]
-    fn test_ci_provider_as_any() {
-        let provider = CiProvider::new();
-        let any = provider.as_any();
-        assert!(any.is::<CiProvider>());
-    }
-
-    #[test]
-    fn test_ci_provider_as_any_mut() {
-        let mut provider = CiProvider::new();
-        let any = provider.as_any_mut();
-        assert!(any.is::<CiProvider>());
     }
 
     #[test]
