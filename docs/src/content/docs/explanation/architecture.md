@@ -163,9 +163,10 @@ lookup, cuenv command execution, fixture writes, UTF-8 path arguments,
 ordered-output checks, and PATH-line lookup on fallible helpers instead of
 parent/module-level unwrap allowances or raw stderr skip messages. Nix runtime
 integration tests keep fixture setup, state/cache/runtime directory creation,
-command execution, and Nix-hook retries behind fallible helpers so they can
-skip missing-Nix or sandboxed-FFI cases quietly without file-level unwrap/expect
-or raw stderr allowances.
+`CARGO_BIN_EXE_cuenv` command construction, and Nix-hook retries behind
+fallible helpers so they can skip missing-Nix or sandboxed-FFI cases quietly
+without deprecated test harness APIs, file-level unwrap/expect, or raw stderr
+allowances.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:

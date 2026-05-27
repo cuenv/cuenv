@@ -1,11 +1,10 @@
 //! Integration test for NixFlake onEnter hook behavior
 
-use assert_cmd::Command;
 use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -93,9 +92,8 @@ hooks: {
         Ok(())
     }
 
-    fn command(&self) -> TestResult<Command> {
-        #[allow(deprecated)]
-        let mut cmd = Command::cargo_bin("cuenv")?;
+    fn command(&self) -> Command {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_cuenv"));
         cmd.current_dir(self.path())
             .env("CUENV_EXECUTABLE", env!("CARGO_BIN_EXE_cuenv"))
             .env("CUENV_FOREGROUND_HOOKS", "1")
@@ -103,11 +101,11 @@ hooks: {
             .env("CUENV_CACHE_DIR", self.cache_root.as_os_str())
             .env("CUENV_RUNTIME_DIR", self.runtime_root.as_os_str())
             .env("NIX_CONFIG", NIX_CONFIG);
-        Ok(cmd)
+        cmd
     }
 
     fn run(&self, args: &[&str]) -> TestResult<Output> {
-        let mut cmd = self.command()?;
+        let mut cmd = self.command();
         for arg in args {
             cmd.arg(arg);
         }

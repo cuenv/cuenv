@@ -3,11 +3,10 @@
 //! Verifies that tools provided by the Nix flake dev shell appear on PATH when
 //! using `cuenv exec` and `cuenv task` via `runtime: schema.#NixRuntime`.
 
-use assert_cmd::Command;
 use std::error::Error;
 use std::fs;
 use std::path::Path;
-use std::process::Output;
+use std::process::{Command, Output};
 use tempfile::TempDir;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -101,8 +100,7 @@ fn common_env(path: &Path) -> TestResult<Vec<(&'static str, std::ffi::OsString)>
 }
 
 fn run_cuenv(path: &Path, args: &[&str]) -> TestResult<Output> {
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv")?;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cuenv"));
     cmd.current_dir(path);
     for (key, value) in common_env(path)? {
         cmd.env(key, value);
