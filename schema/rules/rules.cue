@@ -3,7 +3,7 @@ package rules
 // #DirectoryRules defines directory-scoped configuration.
 // Place in .rules.cue files throughout the repository.
 // Each file is evaluated independently (no CUE unification).
-#DirectoryRules: {
+#DirectoryRules: close({
 	// Ignore patterns for tool-specific ignore files
 	// Generates files in the same directory as .rules.cue
 	ignore?: #Ignore
@@ -16,4 +16,4 @@ package rules
 	// EditorConfig settings
 	// Generates .editorconfig in the same directory as .rules.cue
 	editorconfig?: #EditorConfig
-}
+})

@@ -120,6 +120,31 @@ Owner values are schema-validated. Supported forms are:
 - `@org/team-name`
 - `email@example.com`
 
+## Precedence
+
+CODEOWNERS uses the last matching rule for a path. Use `order` to emit broad
+fallback rules first and narrower override rules later:
+
+```cue
+owners: rules: {
+    fallback: {
+        pattern: "**"
+        owners: ["@myorg/maintainers"]
+        order: 0
+    }
+    rust: {
+        pattern: "*.rs"
+        owners: ["@myorg/rust"]
+        description: "Rust files override the fallback owner"
+        section: "Language owners"
+        order: 10
+    }
+}
+```
+
+The generated CODEOWNERS output places `/** @myorg/maintainers` before
+`/*.rs @myorg/rust`, so Rust files match the narrower owner rule.
+
 ## Generated File
 
 cuenv detects the repository provider and writes the conventional CODEOWNERS
@@ -143,5 +168,6 @@ Manual edits should be made in `.rules.cue`, then regenerated with `cuenv sync`.
 ## See Also
 
 - [Ignore files](/how-to/ignore-files/) - `.rules.cue` ignore generation
+- [EditorConfig](/how-to/editorconfig/) - `.rules.cue` editor settings
 - [Schema status](/reference/schema/status/) - current rules schema coverage
 - [cuenv-codeowners](/explanation/cuenv-codeowners/) - provider internals

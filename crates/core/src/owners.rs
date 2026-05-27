@@ -32,6 +32,7 @@ pub struct OwnersOutput {
 
 /// A single code ownership rule.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct OwnerRule {
     /// File pattern (glob syntax) - same as CODEOWNERS format.
     pub pattern: String,
@@ -195,6 +196,21 @@ mod tests {
         assert_eq!(
             owners.output.as_ref().unwrap().platform,
             Some("gitlab".to_string())
+        );
+    }
+
+    #[test]
+    fn test_owner_rule_rejects_unknown_fields() {
+        let err = serde_json::from_value::<OwnerRule>(serde_json::json!({
+            "pattern": "*.rs",
+            "owners": ["@rust-team"],
+            "priority": 10
+        }))
+        .expect_err("unknown owner rule field should fail");
+
+        assert!(
+            err.to_string().contains("unknown field `priority`"),
+            "expected unknown field error, got: {err}"
         );
     }
 }
