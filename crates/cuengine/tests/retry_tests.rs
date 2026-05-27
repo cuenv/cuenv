@@ -1,19 +1,44 @@
 //! Tests for retry logic with exponential backoff
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::significant_drop_tightening
-)]
-
 use cuengine::CueEngineError;
 use cuengine::retry::{RetryConfig, with_retry};
+use std::error::Error;
+use std::io;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn test_config(max_attempts: u32) -> RetryConfig {
+    RetryConfig {
+        max_attempts,
+        initial_delay: Duration::from_millis(10),
+        max_delay: Duration::from_secs(1),
+        exponential_base: 2.0,
+    }
+}
+
+fn record_attempt_time(
+    attempt_times: &Mutex<Vec<Duration>>,
+    elapsed: Duration,
+) -> Result<(), CueEngineError> {
+    let mut times = attempt_times
+        .lock()
+        .map_err(|_| CueEngineError::configuration("attempt time capture mutex poisoned"))?;
+    times.push(elapsed);
+    Ok(())
+}
+
+fn captured_attempt_times(attempt_times: &Mutex<Vec<Duration>>) -> TestResult<Vec<Duration>> {
+    attempt_times
+        .lock()
+        .map(|times| times.clone())
+        .map_err(|_| io::Error::other("attempt time capture mutex poisoned").into())
+}
+
 #[test]
-fn test_retry_success_first_attempt() {
+fn test_retry_success_first_attempt() -> TestResult {
     let config = RetryConfig::default();
     let mut attempt_count = 0;
 
@@ -22,63 +47,49 @@ fn test_retry_success_first_attempt() {
         Ok::<String, CueEngineError>("success".to_string())
     });
 
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "success");
+    assert_eq!(result?, "success");
     assert_eq!(attempt_count, 1); // Should succeed on first attempt
+    Ok(())
 }
 
 #[test]
-fn test_retry_eventual_success() {
-    let config = RetryConfig {
-        max_attempts: 3,
-        initial_delay: Duration::from_millis(10),
-        max_delay: Duration::from_secs(1),
-        exponential_base: 2.0,
-    };
-
-    let attempt_count = Arc::new(Mutex::new(0));
+fn test_retry_eventual_success() -> TestResult {
+    let config = test_config(3);
+    let attempt_count = Arc::new(AtomicU32::new(0));
     let attempt_count_clone = attempt_count.clone();
 
     let result = with_retry(&config, || {
-        let mut count = attempt_count_clone.lock().unwrap();
-        *count += 1;
+        let count = attempt_count_clone.fetch_add(1, Ordering::SeqCst) + 1;
 
-        if *count < 3 {
+        if count < 3 {
             Err(CueEngineError::configuration("temporary failure"))
         } else {
             Ok("success after retries".to_string())
         }
     });
 
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "success after retries");
-    assert_eq!(*attempt_count.lock().unwrap(), 3);
+    assert_eq!(result?, "success after retries");
+    assert_eq!(attempt_count.load(Ordering::SeqCst), 3);
+    Ok(())
 }
 
 #[test]
 fn test_retry_max_attempts_exceeded() {
-    let config = RetryConfig {
-        max_attempts: 2,
-        initial_delay: Duration::from_millis(10),
-        max_delay: Duration::from_secs(1),
-        exponential_base: 2.0,
-    };
-
-    let attempt_count = Arc::new(Mutex::new(0));
+    let config = test_config(2);
+    let attempt_count = Arc::new(AtomicU32::new(0));
     let attempt_count_clone = attempt_count.clone();
 
     let result = with_retry(&config, || {
-        let mut count = attempt_count_clone.lock().unwrap();
-        *count += 1;
+        attempt_count_clone.fetch_add(1, Ordering::SeqCst);
         Err::<String, CueEngineError>(CueEngineError::configuration("persistent failure"))
     });
 
     assert!(result.is_err());
-    assert_eq!(*attempt_count.lock().unwrap(), 2); // Should stop after max_attempts
+    assert_eq!(attempt_count.load(Ordering::SeqCst), 2); // Should stop after max_attempts
 }
 
 #[test]
-fn test_retry_exponential_backoff() {
+fn test_retry_exponential_backoff() -> TestResult {
     let config = RetryConfig {
         max_attempts: 4,
         initial_delay: Duration::from_millis(50),
@@ -92,12 +103,11 @@ fn test_retry_exponential_backoff() {
     let start = Instant::now();
 
     let _ = with_retry(&config, || {
-        let mut times = attempt_times_clone.lock().unwrap();
-        times.push(start.elapsed());
+        record_attempt_time(&attempt_times_clone, start.elapsed())?;
         Err::<String, CueEngineError>(CueEngineError::configuration("failure"))
     });
 
-    let times = attempt_times.lock().unwrap();
+    let times = captured_attempt_times(&attempt_times)?;
     assert_eq!(times.len(), 4);
 
     // Verify delays are increasing (with some tolerance for timing)
@@ -115,10 +125,12 @@ fn test_retry_exponential_backoff() {
     if times.len() > 3 {
         assert!(times[3] >= Duration::from_millis(190)); // ~50ms + 100ms + 200ms
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_retry_max_delay_capping() {
+fn test_retry_max_delay_capping() -> TestResult {
     let config = RetryConfig {
         max_attempts: 5,
         initial_delay: Duration::from_millis(100),
@@ -132,12 +144,11 @@ fn test_retry_max_delay_capping() {
     let start = Instant::now();
 
     let _ = with_retry(&config, || {
-        let mut times = attempt_times_clone.lock().unwrap();
-        times.push(start.elapsed());
+        record_attempt_time(&attempt_times_clone, start.elapsed())?;
         Err::<String, CueEngineError>(CueEngineError::configuration("failure"))
     });
 
-    let times = attempt_times.lock().unwrap();
+    let times = captured_attempt_times(&attempt_times)?;
 
     // After the second attempt, delays should be capped at max_delay
     // The total time for attempts 3-5 should reflect the capped delay
@@ -154,6 +165,8 @@ fn test_retry_max_delay_capping() {
         assert!(delay_4_to_5 >= Duration::from_millis(100)); // Should be at least close to max_delay
         assert!(delay_4_to_5 <= Duration::from_millis(400)); // More generous upper bound
     }
+
+    Ok(())
 }
 
 #[test]
@@ -168,12 +181,7 @@ fn test_retry_config_default() {
 
 #[test]
 fn test_retry_with_different_error_types() {
-    let config = RetryConfig {
-        max_attempts: 2,
-        initial_delay: Duration::from_millis(10),
-        max_delay: Duration::from_secs(1),
-        exponential_base: 2.0,
-    };
+    let config = test_config(2);
 
     // Test with Validation error
     let result = with_retry(&config, || {
@@ -189,7 +197,7 @@ fn test_retry_with_different_error_types() {
 }
 
 #[test]
-fn test_retry_immediate_success_no_delay() {
+fn test_retry_immediate_success_no_delay() -> TestResult {
     let config = RetryConfig {
         max_attempts: 3,
         initial_delay: Duration::from_secs(10), // Long delay that shouldn't be used
@@ -205,8 +213,8 @@ fn test_retry_immediate_success_no_delay() {
 
     let elapsed = start.elapsed();
 
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "immediate success");
+    assert_eq!(result?, "immediate success");
     // Should complete quickly without any delays
     assert!(elapsed < Duration::from_millis(100));
+    Ok(())
 }

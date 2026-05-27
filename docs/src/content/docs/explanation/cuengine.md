@@ -57,6 +57,9 @@ FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
 of empty match arms or local lint suppressions.
 Module-evaluation fixture tests return `Result` from setup/evaluation helpers
 instead of carrying file-level expect allowances.
+Retry integration tests use atomics for attempt counters and fallible helpers
+for captured backoff timings, keeping exponential-backoff coverage explicit
+without file-level unwrap/expect allowances.
 CUE evaluation benchmarks keep fixture setup explicit as `Result` values and
 pass those results through Criterion helpers instead of using benchmark-wide
 unwrap/expect allowances.
