@@ -27,6 +27,7 @@ Status guardrails:
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
 - `#VcsDependency.subdir` performs sparse-checkout of a single subtree. The lockfile records the subtree hash and re-syncs are deterministic; `vendor: false` ignores the materialized subtree instead of leaving a nested `.git` checkout.
+- Keep `crates/cuenv/tests/vcs_subdir_e2e.rs` network-free by seeding a local git source repo from the checkout's `.agents/skills`, rewriting `examples/vcs-subdir/env.cue` to that local remote, and returning `Result` from temp repo setup, recursive copy, git, and cuenv command execution instead of file-level unwrap/expect allowances.
 
 Adversarial prompts:
 
