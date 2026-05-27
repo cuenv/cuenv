@@ -190,6 +190,9 @@ pnpm and Yarn Modern metadata fields that must be accepted for lockfile shape
 compatibility but are not used for dependency entries are stored as
 underscore-prefixed serde fields, making the ignored-data boundary explicit
 without local dead-code suppressions.
+The crate root keeps only the dependency-version lint allowance required by the
+workspace dependency graph; parser and derive warnings are handled at their
+actual source rather than by a crate-wide `unused_assignments` suppression.
 
 Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
 small parser state that handles headers, version/resolved/integrity fields, and
