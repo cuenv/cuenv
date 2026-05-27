@@ -51,6 +51,8 @@ Unit tests assert returned bridge data directly instead of printing successful
 FFI diagnostics; environment-dependent diagnostics stay in integration tests.
 FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
 of empty match arms or local lint suppressions.
+Module-evaluation fixture tests return `Result` from setup/evaluation helpers
+instead of carrying file-level expect allowances.
 
 ## API Reference
 
