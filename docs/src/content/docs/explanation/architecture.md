@@ -140,6 +140,9 @@ persistence and warning logs share the same update without ownership churn.
 `cuenv down` operates through persisted session state: whole-session shutdown
 signals the active `cuenv up` controller, stale sessions are cleaned, and
 named-service shutdown fails clearly until supervisor IPC exists.
+`cuenv logs --follow` uses the same persisted session boundary, tailing
+appended log file content until the controller exits instead of claiming
+real-time follow support without streaming.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

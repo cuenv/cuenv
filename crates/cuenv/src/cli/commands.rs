@@ -477,14 +477,18 @@ pub enum Commands {
             default_value = "cuenv"
         )]
         package: String,
-        /// Follow log output.
-        #[arg(long, short = 'f', help = "Follow log output")]
+        /// Stream appended persisted log lines until the active session exits.
+        #[arg(
+            long,
+            short = 'f',
+            help = "Stream appended persisted log lines until the active session exits"
+        )]
         follow: bool,
-        /// Number of lines to show.
+        /// Number of lines to show before following.
         #[arg(
             long,
             short = 'n',
-            help = "Number of lines to show",
+            help = "Number of lines to show before following",
             default_value = "100"
         )]
         lines: usize,

@@ -412,9 +412,9 @@ pub enum Command {
         package: String,
         /// Specific service names to view logs for (empty = all).
         services: Vec<String>,
-        /// Follow log output.
+        /// Stream appended persisted log lines until the active session exits.
         follow: bool,
-        /// Number of lines to show.
+        /// Number of lines to show before following.
         lines: usize,
     },
     /// List running services and their status.

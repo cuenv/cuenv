@@ -267,8 +267,8 @@ cuenv logs [SERVICES...] [OPTIONS]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `-f, --follow`: Follow log output (stream in real-time).
-- `-n, --lines <N>`: Number of lines to show. Default: `50`
+- `-f, --follow`: Stream appended persisted log lines until the active service session exits.
+- `-n, --lines <N>`: Number of lines to show before following. Default: `100`
 
 ### `cuenv restart`
 
