@@ -3,14 +3,14 @@
 //! These tests assert how `cuenv sync` behaves from root vs nested paths and
 //! how `-A` affects CI workflow generation.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
+use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const CUENV_BIN: &str = env!("CARGO_BIN_EXE_cuenv");
 
@@ -24,76 +24,76 @@ fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repo root should resolve")
+struct CuenvOutput {
+    stdout: String,
+    stderr: String,
+    success: bool,
 }
 
-fn copy_dir_recursive(src: &Path, dst: &Path) {
-    fs::create_dir_all(dst).unwrap();
-    for entry in fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
+fn repo_root() -> TestResult<PathBuf> {
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> TestResult {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
         let path = entry.path();
-        let file_name = path.file_name().unwrap();
-        let dst_path = dst.join(file_name);
+        let dst_path = dst.join(entry.file_name());
 
         if path.is_dir() {
-            copy_dir_recursive(&path, &dst_path);
+            copy_dir_recursive(&path, &dst_path)?;
         } else if path.extension().and_then(|s| s.to_str()) == Some("cue") {
-            fs::copy(&path, &dst_path).unwrap();
+            fs::copy(&path, &dst_path)?;
         }
     }
+
+    Ok(())
 }
 
-fn write_local_cuenv_module(root: &Path) {
+fn write_local_cuenv_module(root: &Path) -> TestResult {
     let cue_mod_dir = root.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).unwrap();
+    fs::create_dir_all(&cue_mod_dir)?;
     fs::write(
         cue_mod_dir.join("module.cue"),
         "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}\n",
-    )
-    .unwrap();
+    )?;
 
-    let schema_src = repo_root().join("schema");
+    let schema_src = repo_root()?.join("schema");
     let schema_dst = root.join("schema");
-    copy_dir_recursive(&schema_src, &schema_dst);
+    copy_dir_recursive(&schema_src, &schema_dst)?;
+
+    Ok(())
 }
 
-fn init_git_repo(root: &Path) {
-    let output = Command::new("git")
-        .args(["init"])
-        .current_dir(root)
-        .output()
-        .expect("Failed to init git repo");
+fn run_git(root: &Path, args: &[&str]) -> TestResult {
+    let output = Command::new("git").args(args).current_dir(root).output()?;
     assert!(
         output.status.success(),
-        "git init failed: {}",
+        "git {} failed: {}",
+        args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
 
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(root)
-        .output()
-        .expect("Failed to configure git email");
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(root)
-        .output()
-        .expect("Failed to configure git name");
+    Ok(())
 }
 
-fn create_repo() -> TempDir {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("cuenv_test_")
-        .tempdir()
-        .expect("Failed to create temp directory");
+fn init_git_repo(root: &Path) -> TestResult {
+    run_git(root, &["init"])?;
+    run_git(root, &["config", "user.email", "test@example.com"])?;
+    run_git(root, &["config", "user.name", "Test User"])?;
+
+    Ok(())
+}
+
+fn create_repo() -> TestResult<TempDir> {
+    let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
     let root = temp_dir.path();
-    write_local_cuenv_module(root);
-    init_git_repo(root);
-    temp_dir
+    write_local_cuenv_module(root)?;
+    init_git_repo(root)?;
+    Ok(temp_dir)
 }
 
 fn project_env_cue(name: &str, pipeline: &str, task: &str, _owner: &str) -> String {
@@ -266,84 +266,85 @@ fn minimal_flake_lock(nar_hash: &str) -> String {
     )
 }
 
-fn run_cuenv(current_dir: &Path, args: &[&str]) -> (String, String, bool) {
+fn run_cuenv(current_dir: &Path, args: &[&str]) -> TestResult<CuenvOutput> {
     let output = clean_environment_command(CUENV_BIN)
         .args(args)
         .current_dir(current_dir)
-        .output()
-        .expect("Failed to run cuenv");
+        .output()?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    (stdout, stderr, output.status.success())
+    Ok(CuenvOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        success: output.status.success(),
+    })
 }
 
 #[test]
-fn sync_root_project_only_generates_root_ci() {
-    let tmp = create_repo();
+fn sync_root_project_only_generates_root_ci() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
     fs::write(
         root.join("env.cue"),
         project_env_cue("root", "build", "build", "@root"),
-    )
-    .unwrap();
+    )?;
 
-    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
 
     let workflows_dir = root.join(".github/workflows");
     assert!(workflows_dir.join("root-build.yml").exists());
     assert!(!workflows_dir.join("service-test.yml").exists());
+
+    Ok(())
 }
 
 #[test]
-fn sync_nested_project_only_generates_nested_ci_in_repo_root() {
-    let tmp = create_repo();
+fn sync_nested_project_only_generates_nested_ci_in_repo_root() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
 
     let nested = root.join("apps/service");
-    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
         project_env_cue("service", "test", "test", "@service"),
-    )
-    .unwrap();
+    )?;
 
-    let (_stdout, stderr, success) = run_cuenv(&nested, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
+    let output = run_cuenv(&nested, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
 
     let workflows_dir = root.join(".github/workflows");
     assert!(workflows_dir.join("service-test.yml").exists());
     assert!(!workflows_dir.join("root-build.yml").exists());
     assert!(!nested.join(".github").exists());
+
+    Ok(())
 }
 
 #[test]
-fn sync_nested_project_normalizes_parent_trigger_paths() {
-    let tmp = create_repo();
+fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
-    fs::write(root.join("flake.nix"), "{}").unwrap();
-    fs::create_dir_all(root.join("infrastructure/waddle.cloud/gitops/waddle-server")).unwrap();
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join("flake.nix"), "{}")?;
+    fs::create_dir_all(root.join("infrastructure/waddle.cloud/gitops/waddle-server"))?;
 
     let nested = root.join("server");
-    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
         project_env_cue_with_trigger_inputs("server", "deploy", "deploy"),
-    )
-    .unwrap();
+    )?;
 
-    let (_stdout, stderr, success) = run_cuenv(&nested, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
+    let output = run_cuenv(&nested, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
 
     let workflow_path = root.join(".github/workflows/server-deploy.yml");
-    let workflow = fs::read_to_string(&workflow_path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", workflow_path.display()));
+    let workflow = fs::read_to_string(&workflow_path)?;
 
     assert!(workflow.contains("flake.nix"), "{workflow}");
     assert!(
@@ -353,136 +354,142 @@ fn sync_nested_project_normalizes_parent_trigger_paths() {
     assert!(workflow.contains("server/env.cue"), "{workflow}");
     assert!(!workflow.contains("server/../"), "{workflow}");
     assert!(!workflow.contains("../"), "{workflow}");
+
+    Ok(())
 }
 
 #[test]
-fn sync_all_from_nested_generates_all_ci_in_repo_root() {
-    let tmp = create_repo();
+fn sync_all_from_nested_generates_all_ci_in_repo_root() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
 
     let nested = root.join("apps/service");
-    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
         project_env_cue("service", "test", "test", "@service"),
-    )
-    .unwrap();
+    )?;
 
     let other = root.join("apps/api");
-    fs::create_dir_all(&other).unwrap();
+    fs::create_dir_all(&other)?;
     fs::write(
         other.join("env.cue"),
         project_env_cue("api", "build", "build", "@api"),
-    )
-    .unwrap();
+    )?;
 
-    let (_stdout, stderr, success) = run_cuenv(&nested, &["sync", "-A"]);
-    assert!(success, "sync -A failed: {stderr}");
+    let output = run_cuenv(&nested, &["sync", "-A"])?;
+    assert!(output.success, "sync -A failed: {}", output.stderr);
 
     let workflows_dir = root.join(".github/workflows");
     assert!(workflows_dir.join("service-test.yml").exists());
     assert!(workflows_dir.join("api-build.yml").exists());
     assert!(!nested.join(".github").exists());
+
+    Ok(())
 }
 
 #[test]
-fn sync_outside_project_errors() {
-    let tmp = create_repo();
+fn sync_outside_project_errors() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
 
     let nested = root.join("apps/service");
-    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
         project_env_cue("service", "test", "test", "@service"),
-    )
-    .unwrap();
+    )?;
 
     let non_project = root.join("shared");
-    fs::create_dir_all(&non_project).unwrap();
-    fs::write(non_project.join("env.cue"), base_env_cue("@shared", false)).unwrap();
+    fs::create_dir_all(&non_project)?;
+    fs::write(non_project.join("env.cue"), base_env_cue("@shared", false))?;
 
-    let (stdout, stderr, success) = run_cuenv(&non_project, &["sync"]);
-    assert!(!success, "sync should fail outside a project");
+    let output = run_cuenv(&non_project, &["sync"])?;
+    assert!(!output.success, "sync should fail outside a project");
 
-    let output = format!("{stdout}{stderr}");
-    assert!(output.contains("project"));
-    assert!(output.contains("cuenv"));
-    assert!(output.contains("info"));
-    assert!(output.contains("-A"));
+    let combined = format!("{}{}", output.stdout, output.stderr);
+    assert!(combined.contains("project"));
+    assert!(combined.contains("cuenv"));
+    assert!(combined.contains("info"));
+    assert!(combined.contains("-A"));
+
+    Ok(())
 }
 
 #[test]
-fn sync_creates_lockfile_for_tools_projects() {
-    let tmp = create_repo();
+fn sync_creates_lockfile_for_tools_projects() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), tools_project_env_cue("tools-project")).unwrap();
+    fs::write(root.join("env.cue"), tools_project_env_cue("tools-project"))?;
 
-    let (stdout, stderr, success) = run_cuenv(root, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
     assert!(
         root.join("cuenv.lock").exists(),
         "cuenv sync should create or update cuenv.lock"
     );
     assert!(
-        stdout.contains("[lock]"),
-        "sync output should include the lock provider: {stdout}"
+        output.stdout.contains("[lock]"),
+        "sync output should include the lock provider: {}",
+        output.stdout
     );
+
+    Ok(())
 }
 
 #[test]
-fn sync_all_creates_lockfile_for_tools_projects() {
-    let tmp = create_repo();
+fn sync_all_creates_lockfile_for_tools_projects() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
-    fs::write(root.join("env.cue"), base_env_cue("@root", false)).unwrap();
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
 
     let nested = root.join("apps/tools");
-    fs::create_dir_all(&nested).unwrap();
+    fs::create_dir_all(&nested)?;
     fs::write(
         nested.join("env.cue"),
         tools_project_env_cue("tools-project"),
-    )
-    .unwrap();
+    )?;
 
-    let (stdout, stderr, success) = run_cuenv(root, &["sync", "-A"]);
-    assert!(success, "sync -A failed: {stderr}");
+    let output = run_cuenv(root, &["sync", "-A"])?;
+    assert!(output.success, "sync -A failed: {}", output.stderr);
     assert!(
         root.join("cuenv.lock").exists(),
         "cuenv sync -A should create or update cuenv.lock"
     );
     assert!(
-        stdout.contains("[lock]"),
-        "sync -A output should include the lock provider: {stdout}"
+        output.stdout.contains("[lock]"),
+        "sync -A output should include the lock provider: {}",
+        output.stdout
     );
+
+    Ok(())
 }
 
 #[test]
-fn sync_creates_runtime_lockfile_for_nix_runtime_projects() {
-    let tmp = create_repo();
+fn sync_creates_runtime_lockfile_for_nix_runtime_projects() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
     fs::write(
         root.join("env.cue"),
         nix_runtime_project_env_cue("nix-project"),
-    )
-    .unwrap();
+    )?;
     fs::write(
         root.join("flake.lock"),
         minimal_flake_lock("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
-    )
-    .unwrap();
-    fs::write(root.join("cuenv.lock"), stale_lockfile()).unwrap();
+    )?;
+    fs::write(root.join("cuenv.lock"), stale_lockfile())?;
 
-    let (stdout, stderr, success) = run_cuenv(root, &["sync"]);
-    assert!(success, "sync failed: {stderr}");
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
 
-    let lockfile = fs::read_to_string(root.join("cuenv.lock")).unwrap();
+    let lockfile = fs::read_to_string(root.join("cuenv.lock"))?;
     assert!(
         root.join("cuenv.lock").exists(),
         "cuenv sync should keep cuenv.lock for Nix runtime projects"
@@ -500,45 +507,47 @@ fn sync_creates_runtime_lockfile_for_nix_runtime_projects() {
         "cuenv.lock should record the flake.lock path: {lockfile}"
     );
     assert!(
-        stdout.contains("[lock]"),
-        "sync output should include the lock provider: {stdout}"
+        output.stdout.contains("[lock]"),
+        "sync output should include the lock provider: {}",
+        output.stdout
     );
+
+    Ok(())
 }
 
 #[test]
-fn sync_check_fails_when_nix_runtime_lockfile_digest_changes() {
-    let tmp = create_repo();
+fn sync_check_fails_when_nix_runtime_lockfile_digest_changes() -> TestResult {
+    let tmp = create_repo()?;
     let root = tmp.path();
 
     fs::write(
         root.join("env.cue"),
         nix_runtime_project_env_cue("nix-project"),
-    )
-    .unwrap();
+    )?;
     fs::write(
         root.join("flake.lock"),
         minimal_flake_lock("sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
-    )
-    .unwrap();
+    )?;
 
-    let (_stdout, stderr, success) = run_cuenv(root, &["sync"]);
-    assert!(success, "initial sync failed: {stderr}");
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "initial sync failed: {}", output.stderr);
 
     fs::write(
         root.join("flake.lock"),
         minimal_flake_lock("sha256-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB="),
-    )
-    .unwrap();
+    )?;
 
-    let (stdout, stderr, success) = run_cuenv(root, &["sync", "--check"]);
+    let output = run_cuenv(root, &["sync", "--check"])?;
     assert!(
-        !success,
+        !output.success,
         "sync --check should fail after flake.lock changes"
     );
 
-    let output = format!("{stdout}{stderr}");
+    let output = format!("{}{}", output.stdout, output.stderr);
     assert!(
         output.contains("Lockfile is out of date"),
         "sync --check should report lock drift: {output}"
     );
+
+    Ok(())
 }

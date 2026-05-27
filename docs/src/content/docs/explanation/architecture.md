@@ -309,6 +309,10 @@ contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
 Pipeline trigger condition assembly, normalized repo-relative path filters, and
 workspace dependency trigger paths live in
 `crates/ci/src/compiler/triggers.rs`.
+Sync-scope integration tests keep temp module setup, git initialization, CUE
+fixture writes, and cuenv command execution on `Result` helpers so root versus
+nested workflow generation and lockfile drift assertions do not need file-level
+unwrap/expect allowances.
 Compiler regression tests are grouped under
 `crates/ci/src/compiler/compiler_tests/` by compile, purity, trigger,
 contributor, path, dependency, and provider-detection boundaries instead of one
