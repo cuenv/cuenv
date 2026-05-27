@@ -84,24 +84,18 @@ fn test_evaluate_cue_package_various_error_conditions() {
     let long_name = "a".repeat(1000);
     let result = evaluate_cue_package(temp_dir.path(), &long_name);
     // Should process (may fail for other reasons but not the name itself)
-    match result {
-        Ok(_) => {} // FFI worked
-        Err(e) => {
-            // Should not be about the package name being invalid
-            assert!(!e.to_string().contains("Invalid package name"));
-        }
+    if let Err(e) = result {
+        // Should not be about the package name being invalid
+        assert!(!e.to_string().contains("Invalid package name"));
     }
 
     // Test 3: Package name with special but valid characters
     let special_name = "test_package-123";
     let result = evaluate_cue_package(temp_dir.path(), special_name);
     // Should process (may fail for other reasons but not the name itself)
-    match result {
-        Ok(_) => {} // FFI worked
-        Err(e) => {
-            // Should not be about invalid characters
-            assert!(!e.to_string().contains("Invalid package name"));
-        }
+    if let Err(e) = result {
+        // Should not be about invalid characters
+        assert!(!e.to_string().contains("Invalid package name"));
     }
 }
 
@@ -146,14 +140,9 @@ fn test_evaluate_cue_mock_null_response() {
 
     // Create a scenario that might cause null response
     // (empty directory, no CUE files)
-    let result = evaluate_cue_package(temp_dir.path(), "nonexistent");
-
-    // Just verify it handles the case without crashing
-    // Either success or expected error is fine - we're testing null handling
-    #[allow(clippy::single_match)]
-    match result {
-        Ok(_) | Err(_) => {} // Both outcomes are valid for this edge case test
-    }
+    // Just verify it handles the case without crashing. Either success or
+    // expected error is fine for this edge-case test.
+    let _ = evaluate_cue_package(temp_dir.path(), "nonexistent");
 }
 
 #[test]

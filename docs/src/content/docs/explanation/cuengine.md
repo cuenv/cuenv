@@ -49,6 +49,8 @@ and response decoding auditable without changing the public API.
 
 Unit tests assert returned bridge data directly instead of printing successful
 FFI diagnostics; environment-dependent diagnostics stay in integration tests.
+FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
+of empty match arms or local lint suppressions.
 
 ## API Reference
 
