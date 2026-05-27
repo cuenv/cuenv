@@ -129,7 +129,10 @@ fn is_cuenv_process(pid: i32) -> bool {
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Required to send SIGTERM after coordinator process verification"
+)]
 fn terminate_coordinator_process(pid: i32) {
     // SAFETY: `libc::kill` is called with SIGTERM only after the caller has
     // verified that the PID still belongs to a cuenv coordinator process.

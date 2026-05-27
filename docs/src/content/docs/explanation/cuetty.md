@@ -46,6 +46,8 @@ Output is event-driven: each PTY reader thread pushes byte chunks through a
 `flume` channel that its GPUI task awaits asynchronously, then batches anything
 else already buffered before handing the batch to that pane's terminal view.
 There is no fixed-interval polling loop.
+The login-shell lookup is the only app-shell libc boundary; its unsafe-code
+lint expectation stays on the small passwd helper instead of the PTY module.
 
 Tabs and splits are intentionally app-owned. Each leaf in the split tree points
 at a terminal pane, and each pane owns its own PTY plus Ghostty-backed terminal

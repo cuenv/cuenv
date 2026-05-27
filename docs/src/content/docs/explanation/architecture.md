@@ -273,7 +273,7 @@ before converting between header and allocation sizes, so oversized frames fail
 without relying on module-wide cast truncation allowances.
 Stale coordinator cleanup keeps the Unix `libc::kill` call inside a small
 helper after process-name verification, avoiding a module-wide unsafe-code
-allowance.
+allowance and keeping the required lint expectation tied to that helper.
 `crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
 guards, and macros directly. Its summary average uses a checked/saturating
 operation-count divisor, so it does not need cast-truncation or module-level
