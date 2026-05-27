@@ -322,6 +322,8 @@ local `unnecessary_wraps` suppression.
 Secret batch convenience APIs accept caller-owned maps generically over their
 `BuildHasher`, while the object-safe resolver trait keeps its internal concrete
 map boundary for provider implementations.
+Batch env resolver tests scope environment fixtures through the test
+environment helper instead of unsafe process-wide mutation.
 The exec resolver's JSON command shape stays private inside
 `crates/secrets/src/resolvers/exec.rs`; callers configure it through
 `schema.#ExecSecret` rather than a public Rust constructor.
