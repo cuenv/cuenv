@@ -363,7 +363,8 @@ cuenv shell init <SHELL>
 
 #### `cuenv env status`
 
-Show hook execution status.
+Show hook execution status. With `--wait`, prints the final hook status after
+the hook execution completes or fails.
 
 ```bash
 cuenv env status [OPTIONS]

@@ -189,10 +189,6 @@ impl CommandHandler for EnvStatusHandler {
         "env status"
     }
 
-    fn should_print_output(&self) -> bool {
-        false
-    }
-
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
         hooks::execute_env_status(
             &self.path,
@@ -639,6 +635,29 @@ impl ShellInitHandler {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn env_status_handler_prints_wait_result() {
+        let handler = EnvStatusHandler {
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            wait: true,
+            timeout: 1,
+            format: StatusFormat::Text,
+        };
+
+        assert!(handler.should_print_output());
+    }
+
+    #[test]
+    fn env_load_handler_stays_quiet() {
+        let handler = EnvLoadHandler {
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+        };
+
+        assert!(!handler.should_print_output());
+    }
 
     #[test]
     fn module_root_detection_does_not_require_root_env_file() {
