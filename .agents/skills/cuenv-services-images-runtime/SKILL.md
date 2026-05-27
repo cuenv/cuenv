@@ -16,6 +16,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 Status guardrails:
 
 - Nix and devenv runtime environment acquisition are implemented.
+- Nix runtime integration tests in `crates/cuenv/tests/nix_flake_path.rs` and `crates/cuenv/tests/nix_flake_hook.rs` should keep fixture setup, runtime state directories, command execution, and shellHook retry diagnostics behind fallible helpers. Skip missing-Nix, nextest, and sandboxed-FFI cases quietly instead of carrying file-level unwrap/expect or stderr-print allowances.
 - Container runtime support is schema-only until the matrix says otherwise.
 - OCI runtime is partial: `cuenv sync lock` writes resolved digests and per-image `extract` entries to `cuenv.lock`, and `#OCIActivate` (running `cuenv runtime oci activate`) extracts those binaries to the content-addressed cache and emits a `export PATH=...` line through the events renderer. An end-to-end fixture is still pending.
 - `#ContainerImage` is schema-visible, but `cuenv build` does not yet build images.

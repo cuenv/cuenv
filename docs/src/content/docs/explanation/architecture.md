@@ -136,7 +136,11 @@ construction stay in `crates/core/src/environment.rs`. CLI task execution
 keeps feature-gated executor construction in
 `crates/cuenv/src/commands/task/mod.rs`, while
 `crates/cuenv/src/commands/task/execution.rs` owns task selection, runtime
-preparation, and execution orchestration.
+preparation, and execution orchestration. Nix runtime integration tests keep
+fixture setup, state/cache/runtime directory creation, command execution, and
+Nix-hook retries behind fallible helpers so they can skip missing-Nix or
+sandboxed-FFI cases quietly without file-level unwrap/expect or raw stderr
+allowances.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:

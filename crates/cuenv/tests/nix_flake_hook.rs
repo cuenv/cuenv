@@ -1,54 +1,57 @@
 //! Integration test for NixFlake onEnter hook behavior
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
-
 use assert_cmd::Command;
+use std::error::Error;
 use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::Duration;
 use tempfile::TempDir;
 
 const MAX_ATTEMPTS: usize = 5;
+const NIX_CONFIG: &str = "experimental-features = nix-command flakes";
 
-/// Create a test directory with non-hidden name and CUE module setup
-fn create_test_dir() -> TempDir {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("cuenv_test_")
-        .tempdir()
-        .expect("Failed to create temp directory");
-    let path = temp_dir.path();
-    // Create CUE module for module-wide evaluation
-    fs::create_dir_all(path.join("cue.mod")).unwrap();
-    fs::write(
-        path.join("cue.mod/module.cue"),
-        "module: \"test.example/nix-flake\"\nlanguage: version: \"v0.9.0\"\n",
-    )
-    .unwrap();
-    temp_dir
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+struct NixFlakeHookFixture {
+    temp_dir: TempDir,
+    state_root: PathBuf,
+    cache_root: PathBuf,
+    runtime_root: PathBuf,
 }
 
-fn nix_available() -> bool {
-    Command::new("nix").arg("--version").output().is_ok()
-}
+impl NixFlakeHookFixture {
+    fn new() -> TestResult<Self> {
+        let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
+        let path = temp_dir.path();
+        fs::create_dir_all(path.join("cue.mod"))?;
+        fs::write(
+            path.join("cue.mod/module.cue"),
+            "module: \"test.example/nix-flake\"\nlanguage: version: \"v0.9.0\"\n",
+        )?;
 
-#[test]
-fn test_nix_flake_hook_runs_shell_hook() {
-    if !nix_available() {
-        eprintln!("Skipping test: nix is not available on PATH");
-        return;
+        let state_root = path.join(".cuenv-state");
+        let cache_root = path.join(".cuenv-cache");
+        let runtime_root = path.join(".cuenv-runtime");
+        fs::create_dir_all(&state_root)?;
+        fs::create_dir_all(&cache_root)?;
+        fs::create_dir_all(&runtime_root)?;
+
+        Ok(Self {
+            temp_dir,
+            state_root,
+            cache_root,
+            runtime_root,
+        })
     }
-    if std::env::var_os("NEXTEST").is_some() {
-        eprintln!(
-            "Skipping test under nextest: Nix shellHook propagation is flaky in this harness"
-        );
-        return;
+
+    fn path(&self) -> &Path {
+        self.temp_dir.path()
     }
 
-    let temp_dir = create_test_dir();
-    let path = temp_dir.path();
-
-    // Minimal flake with shellHook export
-    let flake = r#"
+    fn write_nix_hook_project(&self) -> TestResult {
+        let flake = r#"
 {
   description = "cuenv nix flake hook test";
 
@@ -66,10 +69,9 @@ fn test_nix_flake_hook_runs_shell_hook() {
   };
 }
 "#;
-    fs::write(path.join("flake.nix"), flake).unwrap();
+        fs::write(self.path().join("flake.nix"), flake)?;
 
-    // Create env.cue with Nix flake hook (mirrors contrib/nix #NixFlake)
-    let cue_content = r#"
+        let cue_content = r#"
 package cuenv
 
 name: "test"
@@ -87,42 +89,58 @@ hooks: {
     }
 }
 "#;
-    fs::write(path.join("env.cue"), cue_content).unwrap();
+        fs::write(self.path().join("env.cue"), cue_content)?;
+        Ok(())
+    }
 
-    let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
-    let nix_config = "experimental-features = nix-command flakes";
-    let state_dir = path.join(".cuenv-state");
-    let cache_dir = path.join(".cuenv-cache");
-    let runtime_dir = path.join(".cuenv-runtime");
+    fn command(&self) -> TestResult<Command> {
+        #[allow(deprecated)]
+        let mut cmd = Command::cargo_bin("cuenv")?;
+        cmd.current_dir(self.path())
+            .env("CUENV_EXECUTABLE", env!("CARGO_BIN_EXE_cuenv"))
+            .env("CUENV_FOREGROUND_HOOKS", "1")
+            .env("CUENV_STATE_DIR", self.state_root.as_os_str())
+            .env("CUENV_CACHE_DIR", self.cache_root.as_os_str())
+            .env("CUENV_RUNTIME_DIR", self.runtime_root.as_os_str())
+            .env("NIX_CONFIG", NIX_CONFIG);
+        Ok(cmd)
+    }
 
-    fs::create_dir_all(&state_dir).unwrap();
-    fs::create_dir_all(&cache_dir).unwrap();
-    fs::create_dir_all(&runtime_dir).unwrap();
+    fn run(&self, args: &[&str]) -> TestResult<Output> {
+        let mut cmd = self.command()?;
+        for arg in args {
+            cmd.arg(arg);
+        }
+        Ok(cmd.output()?)
+    }
+}
 
-    // 1. Approve config
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let allow_output = cmd
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .env("CUENV_FOREGROUND_HOOKS", "1")
-        .env("CUENV_STATE_DIR", state_dir.as_os_str())
-        .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
-        .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
-        .env("NIX_CONFIG", nix_config)
-        .arg("allow")
-        .arg("--yes")
-        .output()
-        .unwrap();
+fn nix_available() -> bool {
+    Command::new("nix").arg("--version").output().is_ok()
+}
 
-    // Handle FFI error in sandbox during allow
+fn should_skip_nix_hook_test() -> bool {
+    !nix_available() || std::env::var_os("NEXTEST").is_some()
+}
+
+#[test]
+fn test_nix_flake_hook_runs_shell_hook() -> TestResult {
+    if should_skip_nix_hook_test() {
+        return Ok(());
+    }
+
+    let fixture = NixFlakeHookFixture::new()?;
+    fixture.write_nix_hook_project()?;
+
+    let allow_output = fixture.run(&["allow", "--yes"])?;
+
     if allow_output.status.code() == Some(3) {
         let stderr = String::from_utf8_lossy(&allow_output.stderr);
         assert!(
             stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
             "Expected FFI or Unexpected error in sandbox during allow, got: {stderr}"
         );
-        return; // Skip rest of test in sandbox
+        return Ok(());
     }
     assert!(
         allow_output.status.success(),
@@ -130,59 +148,32 @@ hooks: {
         String::from_utf8_lossy(&allow_output.stderr)
     );
 
-    // 2. Exec command to check shellHook-exported variable
-    let mut last_output: Option<std::process::Output> = None;
-    let mut last_inspect_output: Option<std::process::Output> = None;
+    let mut last_output: Option<Output> = None;
+    let mut last_inspect_output: Option<Output> = None;
     for attempt in 1..=MAX_ATTEMPTS {
-        #[allow(deprecated)]
-        let mut cmd = Command::cargo_bin("cuenv").unwrap();
-        let output = cmd
-            .current_dir(path)
-            .env("CUENV_EXECUTABLE", cuenv_bin)
-            .env("CUENV_FOREGROUND_HOOKS", "1")
-            .env("CUENV_STATE_DIR", state_dir.as_os_str())
-            .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
-            .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
-            .env("NIX_CONFIG", nix_config)
-            .arg("exec")
-            .arg("--")
-            .arg("sh")
-            .arg("-c")
-            .arg(
-                "if [ \"$NIX_SHELL_HOOK_VAR\" = \"from_nix_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
-            )
-            .output()
-            .unwrap();
+        let output = fixture.run(&[
+            "exec",
+            "--",
+            "sh",
+            "-c",
+            "if [ \"$NIX_SHELL_HOOK_VAR\" = \"from_nix_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
+        ])?;
 
-        // Handle FFI error in sandbox
         if output.status.code() == Some(3) {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
                 "Expected FFI or Unexpected error in sandbox, got: {stderr}"
             );
-            return;
+            return Ok(());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if output.status.success() && stdout.contains("FOUND") {
-            return;
+            return Ok(());
         }
 
-        #[allow(deprecated)]
-        let mut inspect_cmd = Command::cargo_bin("cuenv").unwrap();
-        let inspect_output = inspect_cmd
-            .current_dir(path)
-            .env("CUENV_EXECUTABLE", cuenv_bin)
-            .env("CUENV_FOREGROUND_HOOKS", "1")
-            .env("CUENV_STATE_DIR", state_dir.as_os_str())
-            .env("CUENV_CACHE_DIR", cache_dir.as_os_str())
-            .env("CUENV_RUNTIME_DIR", runtime_dir.as_os_str())
-            .env("NIX_CONFIG", nix_config)
-            .arg("env")
-            .arg("inspect")
-            .output()
-            .unwrap();
+        let inspect_output = fixture.run(&["env", "inspect"])?;
 
         last_output = Some(output);
         last_inspect_output = Some(inspect_output);
@@ -192,8 +183,9 @@ hooks: {
         }
     }
 
-    let output = last_output.expect("expected at least one failed attempt");
-    let inspect_output = last_inspect_output.expect("expected inspect output for failed attempt");
+    let output = last_output.ok_or_else(|| io::Error::other("expected a failed exec attempt"))?;
+    let inspect_output =
+        last_inspect_output.ok_or_else(|| io::Error::other("expected inspect output"))?;
 
     assert!(
         output.status.success(),
@@ -210,4 +202,5 @@ hooks: {
         stdout.contains("FOUND"),
         "Expected FOUND in stdout after {MAX_ATTEMPTS} attempts, got: {stdout}"
     );
+    Ok(())
 }
