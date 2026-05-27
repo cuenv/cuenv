@@ -204,14 +204,14 @@ fn validate_section_pattern(pattern: &str) -> Result<()> {
         });
     }
 
-    if pattern.contains(['[', ']']) {
+    if pattern.contains('[') || pattern.contains(']') {
         return Err(Error::InvalidSectionPattern {
             pattern: pattern.to_string(),
             reason: "pattern cannot contain '[' or ']'".to_string(),
         });
     }
 
-    if pattern.contains(['\r', '\n']) {
+    if pattern.contains('\r') || pattern.contains('\n') {
         return Err(Error::InvalidSectionPattern {
             pattern: pattern.to_string(),
             reason: "pattern cannot contain line breaks".to_string(),
