@@ -142,7 +142,6 @@ NUMBER: 42
         }
         Ok(json) => {
             // If it works, verify the JSON contains our values
-            println!("Got JSON response: {json}");
             // The JSON wraps everything in an "env" object
             assert!(
                 json.contains("env"),

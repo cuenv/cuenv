@@ -47,6 +47,9 @@ a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
 parsing. Keeping those phases separate makes the Go boundary, timeout behavior,
 and response decoding auditable without changing the public API.
 
+Unit tests assert returned bridge data directly instead of printing successful
+FFI diagnostics; environment-dependent diagnostics stay in integration tests.
+
 ## API Reference
 
 ### Module Evaluation (Recommended)
