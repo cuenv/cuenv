@@ -15,7 +15,7 @@
 //! read APIs while keeping mutation boundaries explicit.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cuenv_events::{CuenvEvent, EventCategory, Stream, TaskEvent};
 
@@ -28,6 +28,14 @@ pub use view::{OutputMode, TreeNodeType, TreeViewItem, UiState};
 
 #[cfg(test)]
 use activity::MAX_OUTPUT_LINES;
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn elapsed_millis_since(start: Instant) -> u64 {
+    duration_millis(start.elapsed())
+}
 
 /// Global TUI state for task execution.
 ///
@@ -227,9 +235,7 @@ impl TuiState {
             | TaskStatus::Cached
             | TaskStatus::Skipped => {
                 if let Some(start) = task.start_time {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let duration = start.elapsed().as_millis() as u64;
-                    task.duration_ms = Some(duration);
+                    task.duration_ms = Some(elapsed_millis_since(start));
                 }
                 self.model.running_tasks.retain(|t| t != name);
             }
@@ -366,6 +372,17 @@ impl Default for TuiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_millis_saturates_at_u64_max() {
+        assert_eq!(duration_millis(Duration::from_millis(42)), 42);
+        assert_eq!(
+            duration_millis(
+                Duration::from_millis(u64::MAX).saturating_add(Duration::from_millis(1))
+            ),
+            u64::MAX
+        );
+    }
 
     #[test]
     fn test_task_status_symbol() {

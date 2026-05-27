@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
+use super::elapsed_millis_since;
+
 /// Status of a task in the execution graph
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -82,10 +84,8 @@ impl TaskInfo {
 
     /// Get elapsed time in milliseconds for running tasks
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn elapsed_ms(&self) -> Option<u64> {
-        self.start_time
-            .map(|start| start.elapsed().as_millis() as u64)
+        self.start_time.map(elapsed_millis_since)
     }
 }
 
@@ -246,8 +246,7 @@ impl ActivityModel {
 
     /// Milliseconds elapsed since [`ActivityModel`] construction.
     #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
     pub fn elapsed_ms(&self) -> u64 {
-        self.start_time.elapsed().as_millis() as u64
+        elapsed_millis_since(self.start_time)
     }
 }
