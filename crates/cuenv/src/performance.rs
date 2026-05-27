@@ -72,13 +72,7 @@ impl PerformanceRegistry {
         let successful_operations = ops.iter().filter(|op| op.success).count();
         let total_duration: Duration = ops.iter().map(|op| op.duration).sum();
 
-        let avg_duration = if total_operations > 0 {
-            #[allow(clippy::cast_possible_truncation)]
-            let divisor = total_operations as u32;
-            total_duration / divisor
-        } else {
-            Duration::ZERO
-        };
+        let avg_duration = average_duration(total_duration, total_operations);
 
         PerformanceSummary {
             total_operations,
@@ -89,6 +83,15 @@ impl PerformanceRegistry {
             operations: ops.clone(),
         }
     }
+}
+
+fn average_duration(total_duration: Duration, operation_count: usize) -> Duration {
+    if operation_count == 0 {
+        return Duration::ZERO;
+    }
+
+    let divisor = u32::try_from(operation_count).unwrap_or(u32::MAX);
+    total_duration / divisor
 }
 
 /// Performance summary with aggregated metrics
@@ -351,6 +354,21 @@ mod tests {
         assert_eq!(after.failed_operations, 0);
         assert!(after.total_duration >= Duration::from_millis(5));
         assert_eq!(after.operations.len(), 1);
+    }
+
+    #[test]
+    fn test_average_duration_handles_empty_registry() {
+        assert_eq!(average_duration(Duration::from_secs(1), 0), Duration::ZERO);
+    }
+
+    #[test]
+    fn test_average_duration_saturates_large_operation_count() {
+        let oversized_count = usize::try_from(u32::MAX).unwrap() + 1;
+
+        assert_eq!(
+            average_duration(Duration::from_secs(1), oversized_count),
+            Duration::from_secs(1) / u32::MAX
+        );
     }
 
     #[test]
