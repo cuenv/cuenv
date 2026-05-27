@@ -3,8 +3,6 @@
 //! These tests focus on memory management, concurrency safety,
 //! and proper resource cleanup across the FFI boundary.
 
-#![allow(unsafe_code)] // Testing FFI requires unsafe code
-
 use cuengine::{CStringPtr, evaluate_cue_package};
 use std::error::Error;
 use std::ffi::CString;
@@ -19,6 +17,7 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// Test that `CStringPtr` properly handles memory across FFI boundary
 #[test]
+#[allow(unsafe_code)]
 fn test_cstring_ptr_raii_memory_management() -> TestResult {
     // Create multiple CStringPtr instances to test RAII
     let test_strings = vec!["test1", "test2", "test3", "longer test string", ""];
@@ -41,10 +40,15 @@ fn test_cstring_ptr_raii_memory_management() -> TestResult {
     Ok(())
 }
 
+#[allow(unsafe_code)]
 fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
     let c_string = CString::new(value)?;
+    // SAFETY: c_string.as_ptr() is a valid, null-terminated C string for the
+    // duration of this call, and strdup returns a C-allocated copy.
     let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
     assert!(!ptr.is_null(), "libc::strdup returned null");
+    // SAFETY: ptr was allocated by strdup, is non-null, and is transferred to
+    // CStringPtr so Drop frees it through the FFI string-free boundary.
     Ok(unsafe { CStringPtr::new(ptr) })
 }
 

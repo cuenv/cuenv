@@ -46,6 +46,11 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 - `CStringPtr` - RAII wrapper for C strings returned from FFI
 - Response envelope parsing with structured error handling
 
+Cuengine FFI tests keep allocator-backed `CStringPtr` fixtures behind local
+unsafe allowances and explicit safety comments instead of file-level
+`unsafe_code` suppressions, so each raw-pointer boundary stays visible at the
+call site.
+
 ```rust
 use cuengine::evaluate_module;
 use std::path::Path;

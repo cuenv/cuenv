@@ -1,7 +1,5 @@
 //! Regression tests for `CStringPtr` thread-safety marker fixtures
 
-#![allow(unsafe_code)]
-
 use cuengine::CStringPtr;
 use std::error::Error;
 use std::ffi::CString;
@@ -16,6 +14,7 @@ fn cstring_ptr_marker_allows_owned_pointer_lifecycle() -> TestResult {
 }
 
 #[test]
+#[allow(unsafe_code)]
 fn cstring_ptr_marker_preserves_string_access() -> TestResult {
     let cstring_ptr = c_allocated_cstring_ptr("test")?;
 
@@ -25,9 +24,14 @@ fn cstring_ptr_marker_preserves_string_access() -> TestResult {
     Ok(())
 }
 
+#[allow(unsafe_code)]
 fn c_allocated_cstring_ptr(value: &str) -> Result<CStringPtr, std::ffi::NulError> {
     let c_string = CString::new(value)?;
+    // SAFETY: c_string.as_ptr() is a valid, null-terminated C string for the
+    // duration of this call, and strdup returns a C-allocated copy.
     let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
     assert!(!ptr.is_null(), "libc::strdup returned null");
+    // SAFETY: ptr was allocated by strdup, is non-null, and is transferred to
+    // CStringPtr so Drop frees it through the FFI string-free boundary.
     Ok(unsafe { CStringPtr::new(ptr) })
 }
