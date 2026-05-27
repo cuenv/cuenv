@@ -192,6 +192,9 @@ task help/detail rendering lives in
 Startup, runtime selection, and early process routing stay in
 `crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
+The CLI startup path installs the rustls ring provider before HTTP clients are
+created and treats an already-installed provider as acceptable instead of
+requiring a crate-wide `expect_used` allowance.
 The internal event coordinator keeps the client registry to the active message
 sender only; registration metadata is logged at connect time rather than stored
 as unread per-client state.

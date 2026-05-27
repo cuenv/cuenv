@@ -11,9 +11,6 @@
 //! provider registration and dynamic sync command construction through
 //! `cuenv::Cuenv`.
 
-// expect_used is allowed for infallible operations like writing to strings
-#![allow(clippy::expect_used)]
-
 // Import everything from the library
 use crossterm::ExecutableCommand;
 use cuenv::cli::{self, CliError, EXIT_OK, OutputFormat, exit_code_for, parse, render_error};
@@ -45,9 +42,7 @@ const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt
 fn main() {
     // Install the rustls crypto provider before any HTTP clients are created.
     // Required because reqwest uses `rustls-no-provider` to avoid bundling aws-lc-sys.
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install default rustls crypto provider");
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Set up error handling first. Use direct redacted stderr output because
     // tracing infrastructure may be corrupted during a panic.
