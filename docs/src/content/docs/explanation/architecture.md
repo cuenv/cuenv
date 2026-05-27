@@ -380,6 +380,8 @@ Workspace detection stays in `crates/workspaces/src/detection.rs`, with command
 parsing, filesystem lock/config scanning, and package-manager hints split into
 `detection/command.rs`, `detection/filesystem.rs`, and
 `detection/package_json.rs`.
+Node module materializer tests scope cache-directory home overrides through the
+test environment helper instead of process-wide unsafe mutation.
 
 Cargo lockfile parsing keeps workspace member discovery in
 `crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from

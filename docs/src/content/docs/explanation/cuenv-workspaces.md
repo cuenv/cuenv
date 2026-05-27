@@ -179,6 +179,10 @@ npm parser coverage keeps nested `node_modules` fixture setup separate from
 workspace and registry assertions so npm workspace membership rules stay easy
 to audit.
 
+Node module materializer cache-directory coverage scopes `HOME` through the
+test environment helper, so package-manager cache path assertions do not need
+process-wide unsafe environment mutation.
+
 Bun lockfile parsing keeps the public parser entrypoint small by separating
 binary-lockfile rejection, JSONC loading, lockfile-version validation, and
 entry materialization before package-specific locator parsing.
