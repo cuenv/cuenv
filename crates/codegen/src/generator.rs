@@ -163,6 +163,7 @@ mod tests {
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
 
@@ -187,6 +188,7 @@ mod tests {
                 mode: FileMode::Scaffold,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
 
@@ -404,6 +406,7 @@ mod tests {
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
 
@@ -443,6 +446,7 @@ mod tests {
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
         files.insert(
@@ -453,6 +457,7 @@ mod tests {
                 mode: FileMode::Scaffold,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
 

@@ -43,6 +43,17 @@ pub struct FormatConfig {
     pub quotes: Option<String>,
 }
 
+/// Lint configuration for a generated file
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LintConfig {
+    /// Whether linting is enabled for this generated file.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional linter-specific rules.
+    #[serde(default)]
+    pub rules: serde_json::Value,
+}
+
 impl Default for FormatConfig {
     fn default() -> Self {
         Self {
@@ -72,6 +83,9 @@ pub struct ProjectFileDefinition {
     /// Whether to add this file path to .gitignore
     #[serde(default)]
     pub gitignore: bool,
+    /// Optional validation/linting configuration.
+    #[serde(default)]
+    pub lint: Option<LintConfig>,
 }
 
 /// CUE codegen data containing file definitions
@@ -339,6 +353,7 @@ mod tests {
             mode: FileMode::Scaffold,
             format: FormatConfig::default(),
             gitignore: true,
+            lint: None,
         };
         let json = serde_json::to_string(&def).unwrap();
         let deserialized: ProjectFileDefinition = serde_json::from_str(&json).unwrap();
@@ -368,6 +383,7 @@ mod tests {
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
         let data = CodegenData {
@@ -399,6 +415,7 @@ mod tests {
                 mode: FileMode::Managed,
                 format: FormatConfig::default(),
                 gitignore: false,
+                lint: None,
             },
         );
         let codegen = Codegen {

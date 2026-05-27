@@ -4,6 +4,7 @@ use crate::commands::sync::formatters;
 use crate::commands::{CommandExecutor, relative_path_from_root};
 use cuenv_core::manifest::Project;
 use cuenv_core::{DryRun, Result};
+use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 use similar::TextDiff;
 use std::path::{Path, PathBuf};
 use tracing::instrument;
@@ -142,13 +143,20 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
     };
     let sync_result = sync_codegen_files(&sync_request)?;
 
-    // Run formatters only on files that were actually written
+    if options.should_check() && sync_result.had_drift {
+        return Err(cuenv_core::Error::configuration(sync_result.output));
+    }
+
+    // Run formatters on files that were actually written, or all configured files in check/dry-run.
     let format_result = if let Some(ref formatters_config) = manifest.formatters {
-        if sync_result.written_files.is_empty() && !options.dry_run.is_dry_run() {
+        if sync_result.written_files.is_empty()
+            && !options.dry_run.is_dry_run()
+            && !options.should_check()
+        {
             // No files were written, skip formatting
             String::new()
-        } else if options.dry_run.is_dry_run() {
-            // In dry-run mode, show what would be formatted based on all configured files
+        } else if options.dry_run.is_dry_run() || options.should_check() {
+            // In dry-run and check mode, inspect all configured files.
             let file_paths: Vec<std::path::PathBuf> = codegen_config
                 .files
                 .keys()
@@ -195,6 +203,13 @@ struct SyncResult {
     output: String,
     /// Files that were actually written to disk
     written_files: Vec<PathBuf>,
+    /// Whether check mode found missing or stale generated state.
+    had_drift: bool,
+}
+
+struct FileSyncOutcome {
+    written: bool,
+    drift: bool,
 }
 
 /// Sync codegen files for a single project
@@ -208,31 +223,44 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
 
     let mut output_lines = Vec::new();
     let mut written_files = Vec::new();
+    let mut had_drift = false;
 
     for (file_path, file_def) in &codegen_config.files {
         let output_path = project_root.join(file_path);
+        validate_lint_config(
+            file_path,
+            &file_def.language,
+            &file_def.content,
+            file_def.lint.as_ref(),
+        )?;
+        let content =
+            format_codegen_content(&file_def.content, &file_def.language, &file_def.format)?;
         let mut file_request = CodegenFileSyncRequest {
             output_lines: &mut output_lines,
             output_path: &output_path,
             file_path,
-            content: &file_def.content,
+            content: &content,
         };
 
         match file_def.mode {
             FileMode::Managed => {
-                let was_written = sync_managed_file(&mut file_request, options)?;
-                if was_written {
+                let outcome = sync_managed_file(&mut file_request, options)?;
+                had_drift |= outcome.drift;
+                if outcome.written {
                     written_files.push(output_path);
                 }
             }
             FileMode::Scaffold => {
-                let was_written = sync_scaffold_file(&mut file_request, options)?;
-                if was_written {
+                let outcome = sync_scaffold_file(&mut file_request, options)?;
+                had_drift |= outcome.drift;
+                if outcome.written {
                     written_files.push(output_path);
                 }
             }
         }
     }
+
+    had_drift |= sync_gitignore_entries(&mut output_lines, project_root, codegen_config, options)?;
 
     tracing::info!(
         project = project_name,
@@ -244,6 +272,7 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
     Ok(SyncResult {
         output: output_lines.join("\n"),
         written_files,
+        had_drift,
     })
 }
 
@@ -253,10 +282,17 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
 fn sync_managed_file(
     request: &mut CodegenFileSyncRequest<'_>,
     options: CodegenSyncOptions,
-) -> Result<bool> {
+) -> Result<FileSyncOutcome> {
     if options.should_check() {
+        let mut drift = false;
         if request.output_path.exists() {
-            let contents = std::fs::read_to_string(request.output_path).unwrap_or_default();
+            let contents = std::fs::read_to_string(request.output_path).map_err(|e| {
+                cuenv_core::Error::Io {
+                    source: e,
+                    path: Some(request.output_path.to_path_buf().into_boxed_path()),
+                    operation: "read generated file".to_string(),
+                }
+            })?;
             if contents == request.content {
                 request
                     .output_lines
@@ -266,14 +302,19 @@ fn sync_managed_file(
                     .output_lines
                     .push(format!("  Out of sync: {}", request.file_path));
                 maybe_push_diff(request, Some(&contents), options);
+                drift = true;
             }
         } else {
             request
                 .output_lines
                 .push(format!("  Missing: {}", request.file_path));
             maybe_push_diff(request, None, options);
+            drift = true;
         }
-        Ok(false)
+        Ok(FileSyncOutcome {
+            written: false,
+            drift,
+        })
     } else if options.dry_run.is_dry_run() {
         if request.output_path.exists() {
             request
@@ -284,7 +325,10 @@ fn sync_managed_file(
                 .output_lines
                 .push(format!("  Would create: {}", request.file_path));
         }
-        Ok(false)
+        Ok(FileSyncOutcome {
+            written: false,
+            drift: false,
+        })
     } else {
         let write_request = CodegenWriteRequest {
             output_path: request.output_path,
@@ -296,7 +340,10 @@ fn sync_managed_file(
         request
             .output_lines
             .push(format!("  Generated: {}", request.file_path));
-        Ok(true)
+        Ok(FileSyncOutcome {
+            written: true,
+            drift: false,
+        })
     }
 }
 
@@ -306,7 +353,7 @@ fn sync_managed_file(
 fn sync_scaffold_file(
     request: &mut CodegenFileSyncRequest<'_>,
     options: CodegenSyncOptions,
-) -> Result<bool> {
+) -> Result<FileSyncOutcome> {
     if request.output_path.exists() {
         if !options.dry_run.is_dry_run() && !options.should_check() {
             tracing::debug!(
@@ -317,18 +364,27 @@ fn sync_scaffold_file(
         request
             .output_lines
             .push(format!("  Skipped (exists): {}", request.file_path));
-        Ok(false)
+        Ok(FileSyncOutcome {
+            written: false,
+            drift: false,
+        })
     } else if options.should_check() {
         request
             .output_lines
             .push(format!("  Missing scaffold: {}", request.file_path));
         maybe_push_diff(request, None, options);
-        Ok(false)
+        Ok(FileSyncOutcome {
+            written: false,
+            drift: true,
+        })
     } else if options.dry_run.is_dry_run() {
         request
             .output_lines
             .push(format!("  Would scaffold: {}", request.file_path));
-        Ok(false)
+        Ok(FileSyncOutcome {
+            written: false,
+            drift: false,
+        })
     } else {
         let write_request = CodegenWriteRequest {
             output_path: request.output_path,
@@ -340,7 +396,10 @@ fn sync_scaffold_file(
         request
             .output_lines
             .push(format!("  Scaffolded: {}", request.file_path));
-        Ok(true)
+        Ok(FileSyncOutcome {
+            written: true,
+            drift: false,
+        })
     }
 }
 
@@ -387,6 +446,103 @@ fn write_codegen_file(request: &CodegenWriteRequest<'_>) -> Result<()> {
     Ok(())
 }
 
+fn format_codegen_content(
+    content: &str,
+    language: &str,
+    format: &cuenv_core::manifest::FormatConfig,
+) -> Result<String> {
+    if language != "json" {
+        return Ok(content.to_string());
+    }
+
+    let value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+    let indent_bytes = if format.indent == "tab" {
+        b"\t".to_vec()
+    } else {
+        vec![b' '; format.indent_size.unwrap_or(2)]
+    };
+    let mut buf = Vec::new();
+    let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_bytes);
+    let mut serializer = serde_json::Serializer::with_formatter(&mut buf, formatter);
+    serde::Serialize::serialize(&value, &mut serializer)
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+    String::from_utf8(buf).map_err(|e| cuenv_core::Error::configuration(e.to_string()))
+}
+
+fn validate_lint_config(
+    file_path: &str,
+    language: &str,
+    content: &str,
+    lint: Option<&cuenv_core::manifest::LintConfig>,
+) -> Result<()> {
+    let Some(lint) = lint else {
+        return Ok(());
+    };
+    if !lint.enabled {
+        return Ok(());
+    }
+
+    match language {
+        "json" => serde_json::from_str::<serde_json::Value>(content)
+            .map(|_| ())
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!("Lint failed for {file_path}: {e}"))
+            }),
+        _ => Err(cuenv_core::Error::configuration(format!(
+            "Linting is not supported for generated {language} files: {file_path}"
+        ))),
+    }
+}
+
+fn sync_gitignore_entries(
+    output_lines: &mut Vec<String>,
+    project_root: &Path,
+    codegen_config: &cuenv_core::manifest::CodegenConfig,
+    options: CodegenSyncOptions,
+) -> Result<bool> {
+    let patterns: Vec<String> = codegen_config
+        .files
+        .iter()
+        .filter(|(_, file_def)| file_def.gitignore)
+        .map(|(path, _)| path.clone())
+        .collect();
+
+    if patterns.is_empty() {
+        return Ok(false);
+    }
+
+    let result = IgnoreFiles::builder()
+        .directory(project_root)
+        .dry_run(options.dry_run.is_dry_run() || options.should_check())
+        .section(IgnoreSection::new("cuenv codegen").patterns(patterns))
+        .generate()
+        .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
+
+    let mut had_drift = false;
+    for file in result.files {
+        match file.status {
+            FileStatus::Created | FileStatus::Updated => {
+                output_lines.push(format!("  Updated: {}", file.filename));
+            }
+            FileStatus::Unchanged => {
+                output_lines.push(format!("  OK: {}", file.filename));
+            }
+            FileStatus::WouldCreate | FileStatus::WouldUpdate => {
+                had_drift = true;
+                let action = if options.should_check() {
+                    "Out of sync"
+                } else {
+                    "Would update"
+                };
+                output_lines.push(format!("  {action}: {}", file.filename));
+            }
+        }
+    }
+
+    Ok(had_drift && options.should_check())
+}
+
 fn maybe_push_diff(
     request: &mut CodegenFileSyncRequest<'_>,
     existing: Option<&str>,
@@ -411,4 +567,154 @@ fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
     let from = format!("a/{path}");
     let to = format!("b/{path}");
     diff.unified_diff().header(&from, &to).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::manifest::{
+        CodegenConfig, FileMode, FormatConfig, LintConfig, ProjectFile,
+    };
+    use std::collections::HashMap;
+
+    fn options(check: bool) -> CodegenSyncOptions {
+        CodegenSyncOptions {
+            dry_run: DryRun::No,
+            check,
+            diff: false,
+        }
+    }
+
+    fn project_file(content: &str, language: &str) -> ProjectFile {
+        ProjectFile {
+            content: content.to_string(),
+            language: language.to_string(),
+            mode: FileMode::Managed,
+            format: FormatConfig::default(),
+            gitignore: false,
+            lint: None,
+        }
+    }
+
+    fn config(files: impl IntoIterator<Item = (&'static str, ProjectFile)>) -> CodegenConfig {
+        CodegenConfig {
+            files: files
+                .into_iter()
+                .map(|(path, file)| (path.to_string(), file))
+                .collect::<HashMap<_, _>>(),
+            context: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn check_mode_marks_missing_managed_file_as_drift() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let codegen_config = config([("generated.json", project_file(r#"{"ok":true}"#, "json"))]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(true),
+        };
+
+        let result = sync_codegen_files(&request).expect("sync check");
+
+        assert!(result.had_drift);
+        assert!(result.output.contains("Missing: generated.json"));
+    }
+
+    #[test]
+    fn check_mode_marks_stale_managed_file_as_drift() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp_dir.path().join("generated.txt"), "old").expect("write stale file");
+        let codegen_config = config([("generated.txt", project_file("new", "text"))]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(true),
+        };
+
+        let result = sync_codegen_files(&request).expect("sync check");
+
+        assert!(result.had_drift);
+        assert!(result.output.contains("Out of sync: generated.txt"));
+    }
+
+    #[test]
+    fn write_mode_formats_json_content_with_file_format_config() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut file = project_file(r#"{"name":"test"}"#, "json");
+        file.format.indent_size = Some(4);
+        let codegen_config = config([("generated.json", file)]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(false),
+        };
+
+        sync_codegen_files(&request).expect("sync write");
+        let content =
+            std::fs::read_to_string(temp_dir.path().join("generated.json")).expect("read json");
+
+        assert!(content.contains("\n    \"name\""));
+    }
+
+    #[test]
+    fn write_mode_updates_gitignore_for_enabled_files() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut ignored = project_file("ignored", "text");
+        ignored.gitignore = true;
+        let tracked = project_file("tracked", "text");
+        let codegen_config = config([("ignored.txt", ignored), ("tracked.txt", tracked)]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(false),
+        };
+
+        sync_codegen_files(&request).expect("sync write");
+        let gitignore =
+            std::fs::read_to_string(temp_dir.path().join(".gitignore")).expect("read gitignore");
+
+        assert!(gitignore.contains("# BEGIN cuenv codegen"));
+        assert!(gitignore.contains("ignored.txt"));
+        assert!(!gitignore.contains("tracked.txt"));
+    }
+
+    #[test]
+    fn check_mode_marks_missing_gitignore_entry_as_drift() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut ignored = project_file("ignored", "text");
+        ignored.gitignore = true;
+        std::fs::write(temp_dir.path().join("ignored.txt"), "ignored").expect("write file");
+        let codegen_config = config([("ignored.txt", ignored)]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(true),
+        };
+
+        let result = sync_codegen_files(&request).expect("sync check");
+
+        assert!(result.had_drift);
+        assert!(result.output.contains("Out of sync: .gitignore"));
+    }
+
+    #[test]
+    fn enabled_json_lint_rejects_invalid_json_content() {
+        let mut file = project_file("{ invalid json }", "json");
+        file.lint = Some(LintConfig {
+            enabled: true,
+            rules: serde_json::Value::Null,
+        });
+
+        let err = validate_lint_config("bad.json", &file.language, &file.content, file.lint.as_ref())
+            .expect_err("lint should fail");
+
+        assert!(err.to_string().contains("Lint failed for bad.json"));
+    }
 }
