@@ -5,12 +5,6 @@
 //! delegates here when stdout is a TTY; in non-TTY mode the CLI renderer
 //! falls back to its plain stderr writer helpers so CI logs stay grep-able.
 
-#![allow(
-    // indicatif template strings deliberately use `{name}` placeholder
-    // syntax that looks like Rust format args but is consumed by indicatif.
-    clippy::literal_string_with_formatting_args
-)]
-
 use std::collections::HashMap;
 
 use indicatif::{HumanDuration, MultiProgress, ProgressBar, ProgressStyle};
@@ -19,6 +13,9 @@ use crate::event::{CacheSkipReason, SkipReason, Stream, TaskEvent};
 
 /// Tail of the most recent stdout/stderr line shown under a task's spinner.
 const TAIL_PREFIX_BYTES: usize = 80;
+const GROUP_TEMPLATE: &str = "{prefix:.bold.cyan} {bar:25.cyan/blue} {pos}/{len} {msg}";
+const TASK_TEMPLATE: &str = "{spinner:.green} {prefix:.dim} {wide_msg}";
+const FINISH_TEMPLATE: &str = "{prefix} {wide_msg}";
 
 /// Group-aware progress renderer wrapping [`indicatif`].
 #[derive(Debug)]
@@ -159,11 +156,9 @@ impl SpinnerRenderer {
         max_concurrency: Option<u32>,
     ) {
         let total = u64::try_from(task_count).unwrap_or(u64::MAX);
-        let style = ProgressStyle::with_template(
-            "{prefix:.bold.cyan} {bar:25.cyan/blue} {pos}/{len} {msg}",
-        )
-        .unwrap_or_else(|_| ProgressStyle::default_bar())
-        .progress_chars("=> ");
+        let style = ProgressStyle::with_template(GROUP_TEMPLATE)
+            .unwrap_or_else(|_| ProgressStyle::default_bar())
+            .progress_chars("=> ");
         let bar = self.multi.add(ProgressBar::new(total));
         bar.set_style(style);
         bar.set_prefix(format!("[{name}]"));
@@ -219,7 +214,7 @@ impl SpinnerRenderer {
 
     fn spawn_task_bar(&mut self, name: &str, parent_group: Option<&str>) -> &mut ProgressBar {
         self.tasks.entry(name.to_string()).or_insert_with(|| {
-            let style = ProgressStyle::with_template("{spinner:.green} {prefix:.dim} {wide_msg}")
+            let style = ProgressStyle::with_template(TASK_TEMPLATE)
                 .unwrap_or_else(|_| ProgressStyle::default_spinner());
             let bar = self.multi.add(ProgressBar::new_spinner());
             bar.set_style(style);
@@ -297,7 +292,7 @@ impl SpinnerRenderer {
     }
 
     fn fresh_finish_bar(&mut self, name: &str, parent_group: Option<&str>) -> ProgressBar {
-        let style = ProgressStyle::with_template("{prefix} {wide_msg}")
+        let style = ProgressStyle::with_template(FINISH_TEMPLATE)
             .unwrap_or_else(|_| ProgressStyle::default_spinner());
         let bar = self.multi.add(ProgressBar::new_spinner());
         bar.set_style(style);

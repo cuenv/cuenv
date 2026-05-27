@@ -60,6 +60,9 @@ spinner-specific toggles live under `CliSpinnerConfig` so task progress display
 can evolve independently from plain log rendering. Category-specific CLI output
 for task, service, CI, command, interactive, system, and output events lives
 under `crates/events/src/renderers/cli/`.
+Spinner progress templates are named constants in
+`crates/events/src/renderers/spinner.rs`, keeping indicatif's `{...}` syntax out
+of normal Rust formatting call sites.
 
 Macro compile tests are grouped by event category, matching the schema
 categories above so task, CI, command, interactive, system, and service emitters
