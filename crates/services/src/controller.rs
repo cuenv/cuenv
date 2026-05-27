@@ -1,7 +1,7 @@
 //! Top-level service controller for `cuenv up` orchestration.
 //!
-//! Walks a mixed task/service dependency graph, executing tasks to completion
-//! and spawning service supervisors with readiness gating.
+//! Walks a service dependency graph, spawning service supervisors with
+//! readiness gating.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -25,71 +25,42 @@ pub struct ControllerConfig {
     pub project_root: PathBuf,
 }
 
-/// Mixed node data for the combined task/service graph.
+/// Node data for the service graph.
 ///
 /// Implements `TaskNodeData` to participate in the existing graph algorithms.
 #[derive(Debug, Clone)]
-pub struct MixedNode {
+pub struct ServiceNode {
     /// Dependencies by name.
     pub dependencies: Vec<String>,
 }
 
-impl cuenv_task_graph::TaskNodeData for MixedNode {
+impl cuenv_task_graph::TaskNodeData for ServiceNode {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.dependencies.iter().map(String::as_str)
     }
 }
 
-/// Build a mixed task/service graph from project configuration.
+/// Build a service graph from project configuration.
 ///
 /// # Errors
 ///
 /// Returns an error if graph construction or cycle detection fails.
-pub fn build_mixed_graph(
-    tasks: &HashMap<String, cuenv_core::tasks::TaskNode>,
+pub fn build_service_graph(
     services: &HashMap<String, Service>,
-    images: &HashMap<String, cuenv_core::manifest::ContainerImage>,
-) -> crate::Result<TaskGraph<MixedNode>> {
+) -> crate::Result<TaskGraph<ServiceNode>> {
     let mut graph = TaskGraph::new();
-
-    // Add task nodes
-    for (name, node) in tasks {
-        let deps = collect_task_deps(node);
-        let mixed = MixedNode { dependencies: deps };
-        graph.add_task(name, mixed)?;
-    }
 
     // Add service nodes
     for (name, service) in services {
         let deps: Vec<String> = service.depends_on.iter().map(|d| d.name.clone()).collect();
-        let mixed = MixedNode { dependencies: deps };
-        graph.add_service(name, mixed)?;
-    }
-
-    // Add image nodes
-    for (name, image) in images {
-        let deps: Vec<String> = image.depends_on.iter().map(|d| d.name.clone()).collect();
-        let mixed = MixedNode { dependencies: deps };
-        graph.add_image(name, mixed)?;
+        let node = ServiceNode { dependencies: deps };
+        graph.add_service(name, node)?;
     }
 
     // Resolve dependency edges
     graph.add_dependency_edges()?;
 
     Ok(graph)
-}
-
-/// Collect dependency names from a task node.
-fn collect_task_deps(node: &cuenv_core::tasks::TaskNode) -> Vec<String> {
-    match node {
-        cuenv_core::tasks::TaskNode::Task(task) => {
-            task.depends_on.iter().map(|d| d.name.clone()).collect()
-        }
-        cuenv_core::tasks::TaskNode::Group(group) => {
-            group.depends_on.iter().map(|d| d.name.clone()).collect()
-        }
-        cuenv_core::tasks::TaskNode::Sequence(_) => Vec::new(),
-    }
 }
 
 /// The main service controller.
@@ -108,7 +79,6 @@ impl ServiceController {
     /// Bring up all services in the graph.
     ///
     /// Walks parallel groups in topological order:
-    /// - Task nodes are noted as satisfied (actual task execution is deferred to caller)
     /// - Service nodes spawn supervisors and wait for readiness
     ///
     /// After all groups are processed, blocks until the shutdown token fires.
@@ -119,7 +89,7 @@ impl ServiceController {
     /// during startup.
     pub async fn execute_up(
         &self,
-        graph: &TaskGraph<MixedNode>,
+        graph: &TaskGraph<ServiceNode>,
         services: &HashMap<String, Service>,
         session: Arc<SessionManager>,
     ) -> crate::Result<()> {
@@ -138,10 +108,11 @@ impl ServiceController {
             for node in group {
                 match node.kind {
                     NodeKind::Task => {
-                        // For now, tasks in the service graph are considered
-                        // pre-satisfied. Full integration with TaskExecutor
-                        // will be wired in Phase 4 (CLI commands).
-                        debug!(task = %node.name, "Task node (pre-satisfied)");
+                        return Err(cuenv_core::Error::configuration(format!(
+                            "cuenv up cannot execute task dependency '{}' yet",
+                            node.name
+                        ))
+                        .into());
                     }
                     NodeKind::Service => {
                         emit_service_pending!(&node.name);
@@ -167,10 +138,11 @@ impl ServiceController {
                         }
                     }
                     NodeKind::Image => {
-                        // Image nodes participate in the DAG for dependency
-                        // ordering but are not executed by the service
-                        // controller. Execution backends are future work.
-                        debug!(image = %node.name, "Image node (pre-satisfied)");
+                        return Err(cuenv_core::Error::configuration(format!(
+                            "cuenv up cannot execute image dependency '{}' yet",
+                            node.name
+                        ))
+                        .into());
                     }
                 }
             }
@@ -296,6 +268,44 @@ impl ServiceController {
                 help: None,
             });
         }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_core::tasks::TaskDependency;
+
+    fn service_with_deps(deps: &[&str]) -> Service {
+        Service {
+            depends_on: deps
+                .iter()
+                .map(|dep| TaskDependency::from_name(*dep))
+                .collect(),
+            ..Service::default()
+        }
+    }
+
+    #[test]
+    fn service_graph_orders_service_dependencies() -> crate::Result<()> {
+        let mut services = HashMap::new();
+        services.insert("api".to_string(), service_with_deps(&["db"]));
+        services.insert("db".to_string(), Service::default());
+
+        let graph = build_service_graph(&services)?;
+        let groups = graph.get_parallel_groups()?;
+
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0][0].name, "db");
+        assert_eq!(groups[1][0].name, "api");
+        assert!(
+            groups
+                .iter()
+                .flatten()
+                .all(|node| node.kind == NodeKind::Service)
+        );
 
         Ok(())
     }

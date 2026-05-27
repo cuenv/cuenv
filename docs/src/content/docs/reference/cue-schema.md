@@ -479,7 +479,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service)]`     | No       | Dependencies on tasks or other services       |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service dependencies are supported; task and image dependencies are rejected by `cuenv up` until executor integration exists |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |

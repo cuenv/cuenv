@@ -132,9 +132,13 @@ require `MutableTaskNodeData` so dependency mutation is explicit instead of a
 default panic on the base trait. Affected-task analysis accepts the named
 borrowed `ExternalAffectedResolver`, keeping the generic graph API focused on
 task data instead of encoding resolver ownership in its type parameters.
-Service/image orchestration uses read-only mixed graph nodes with declared
-dependency names only. Service readiness log probes borrow their stream selector
-from manifest state instead of cloning it into probe construction, and
+Service orchestration uses read-only graph nodes with declared service
+dependency names only. `cuenv up` rejects task and image dependencies until
+task execution and image build backends are wired into service startup.
+When a specific service is selected, `cuenv up` expands the selection with
+transitive service dependencies before building the graph.
+Service readiness log probes borrow their stream selector from manifest state
+instead of cloning it into probe construction, and
 supervisor state-update parameters are copyable value bundles so lifecycle
 persistence and warning logs share the same update without ownership churn.
 `cuenv down` operates through persisted session state: whole-session shutdown

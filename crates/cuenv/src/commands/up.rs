@@ -11,9 +11,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use cuenv_core::environment::EnvValue;
-use cuenv_core::manifest::{Project, Service};
+use cuenv_core::manifest::{ContainerImage, Project, Service};
+use cuenv_core::tasks::TaskNode;
 use cuenv_events::emit_stdout;
-use cuenv_services::controller::{ControllerConfig, ServiceController, build_mixed_graph};
+use cuenv_services::controller::{ControllerConfig, ServiceController, build_service_graph};
 use cuenv_services::session::SessionManager;
 
 use super::{CommandExecutor, relative_path_from_root};
@@ -92,6 +93,8 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             return Ok(());
         }
 
+        include_service_dependencies(&mut filtered_services, &project.services);
+
         // Propagate the project-level environment (selected by `-e` if set)
         // into each service's env map so secrets, interpolation, and policy
         // filtering all apply in `process::ServiceProcess::spawn`. Per-service
@@ -118,10 +121,15 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
                 .join(", ")
         ));
 
-        let graph = build_mixed_graph(&project.tasks, &filtered_services, &project.images)
-            .map_err(|e| {
-                cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
-            })?;
+        reject_unsupported_service_dependencies(
+            &filtered_services,
+            &project.tasks,
+            &project.images,
+        )?;
+
+        let graph = build_service_graph(&filtered_services).map_err(|e| {
+            cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
+        })?;
 
         let session = SessionManager::create(&target_path, &project.name)
             .map_err(|e| cuenv_core::Error::execution(format!("Failed to create session: {e}")))?;
@@ -193,6 +201,63 @@ fn merge_project_env_into_service(
     }
 }
 
+fn reject_unsupported_service_dependencies(
+    services: &HashMap<String, Service>,
+    tasks: &HashMap<String, TaskNode>,
+    images: &HashMap<String, ContainerImage>,
+) -> cuenv_core::Result<()> {
+    let mut unsupported = Vec::new();
+
+    for (service_name, service) in services {
+        for dependency in &service.depends_on {
+            let dependency_name = dependency.task_name();
+            let dependency_kind = if tasks.contains_key(dependency_name) {
+                Some("task")
+            } else if images.contains_key(dependency_name) {
+                Some("image")
+            } else {
+                None
+            };
+
+            if let Some(kind) = dependency_kind {
+                unsupported.push(format!(
+                    "{service_name} depends on {kind} '{dependency_name}'"
+                ));
+            }
+        }
+    }
+
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(cuenv_core::Error::configuration(format!(
+            "cuenv up does not execute task or image dependencies yet: {}",
+            unsupported.join("; ")
+        )))
+    }
+}
+
+fn include_service_dependencies(
+    selected_services: &mut HashMap<String, Service>,
+    all_services: &HashMap<String, Service>,
+) {
+    let mut pending: Vec<String> = selected_services
+        .values()
+        .flat_map(|service| service.depends_on.iter().map(|dep| dep.name.clone()))
+        .collect();
+
+    while let Some(dependency_name) = pending.pop() {
+        if selected_services.contains_key(&dependency_name) {
+            continue;
+        }
+
+        if let Some(service) = all_services.get(&dependency_name) {
+            pending.extend(service.depends_on.iter().map(|dep| dep.name.clone()));
+            selected_services.insert(dependency_name, service.clone());
+        }
+    }
+}
+
 /// Filter services by name and label.
 fn filter_services(
     all_services: &HashMap<String, Service>,
@@ -214,6 +279,7 @@ fn filter_services(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::tasks::TaskDependency;
 
     #[test]
     fn test_up_options_default() {
@@ -251,6 +317,63 @@ mod tests {
             service_env.get("B"),
             Some(&EnvValue::String("service-b".to_string()))
         );
+    }
+
+    #[test]
+    fn service_dependency_validation_allows_service_deps() {
+        let mut services = HashMap::new();
+        services.insert("db".to_string(), Service::default());
+        services.insert(
+            "api".to_string(),
+            Service {
+                depends_on: vec![TaskDependency::from_name("db")],
+                ..Service::default()
+            },
+        );
+
+        let result =
+            reject_unsupported_service_dependencies(&services, &HashMap::new(), &HashMap::new());
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn service_dependency_validation_rejects_task_deps() {
+        let mut services = HashMap::new();
+        services.insert(
+            "api".to_string(),
+            Service {
+                depends_on: vec![TaskDependency::from_name("build")],
+                ..Service::default()
+            },
+        );
+
+        let mut tasks = HashMap::new();
+        tasks.insert("build".to_string(), TaskNode::Task(Box::default()));
+
+        let error = reject_unsupported_service_dependencies(&services, &tasks, &HashMap::new())
+            .expect_err("task dependencies should be rejected until up executes tasks");
+
+        assert!(error.to_string().contains("api depends on task 'build'"));
+    }
+
+    #[test]
+    fn include_service_dependencies_adds_transitive_deps() {
+        let mut all_services = HashMap::new();
+        all_services.insert("db".to_string(), Service::default());
+        all_services.insert(
+            "api".to_string(),
+            Service {
+                depends_on: vec![TaskDependency::from_name("db")],
+                ..Service::default()
+            },
+        );
+
+        let mut selected = filter_services(&all_services, &["api".to_string()], &[]);
+        include_service_dependencies(&mut selected, &all_services);
+
+        assert!(selected.contains_key("api"));
+        assert!(selected.contains_key("db"));
     }
 
     #[test]
