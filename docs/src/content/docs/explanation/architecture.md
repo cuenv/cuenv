@@ -175,6 +175,9 @@ Dynamic completions currently complete task names via discovery-based CUE
 evaluation; unused task-parameter completion scaffolding is not kept in-tree.
 The sync fast-path version command and `--llms` output use the same helper so
 static stdout output does not need local print suppressions.
+The `cuenv` build script generates `llms-full.txt` from `llms.txt` plus schema
+files using a fallible `Result` path instead of build-script panic/unwrap
+allowances.
 CLI error rendering and early startup failures use direct redacted stderr
 helpers so they do not depend on tracing or the event bus being healthy.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
