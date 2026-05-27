@@ -193,6 +193,9 @@ Startup, runtime selection, and early process routing stay in
 The internal event coordinator keeps the client registry to the active message
 sender only; registration metadata is logged at connect time rather than stored
 as unread per-client state.
+`crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
+guards, and macros directly, so it does not need a module-level dead-code
+allowance.
 The async dispatcher owns direct async commands plus changeset/release output
 envelopes; the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
