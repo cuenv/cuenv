@@ -295,6 +295,10 @@ contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
 Pipeline trigger condition assembly, normalized repo-relative path filters, and
 workspace dependency trigger paths live in
 `crates/ci/src/compiler/triggers.rs`.
+Compiler regression tests are grouped under
+`crates/ci/src/compiler/compiler_tests/` by compile, purity, trigger,
+contributor, path, dependency, and provider-detection boundaries instead of one
+large mixed test module.
 Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
 project maps are generic over the caller's `BuildHasher`, so the public API does
 not force or suppress default hashing.
