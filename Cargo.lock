@@ -1466,6 +1466,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-gcp"
+version = "0.43.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cuenv-secrets",
+ "reqwest 0.13.3",
+ "rustls 0.23.40",
+ "serde",
+ "serde_json",
+ "temp-env",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-github"
 version = "0.43.0"
 dependencies = [
@@ -1482,22 +1498,6 @@ dependencies = [
  "serde_yaml",
  "temp-env",
  "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "cuenv-gcp"
-version = "0.43.0"
-dependencies = [
- "async-trait",
- "base64 0.22.1",
- "cuenv-secrets",
- "reqwest 0.13.3",
- "rustls 0.23.40",
- "serde",
- "serde_json",
- "temp-env",
  "tokio",
  "tracing",
 ]
