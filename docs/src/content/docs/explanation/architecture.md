@@ -102,7 +102,9 @@ synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-tas
 coverage, and scale/edge cases. CLI task-graph stress tests in
 `crates/cuenv/tests/stress_tests.rs` keep ignored large-graph scenarios on
 fallible graph mutation and ordering helpers instead of file-level unwrap/expect
-allowances.
+allowances. CLI cross-project materialization coverage in
+`crates/cuenv/tests/cross_project_deps.rs` keeps temporary repo/module setup and
+command execution on `Result` helpers for the same reason.
 Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
 affected-task and transitive-closure helpers live in
 `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
