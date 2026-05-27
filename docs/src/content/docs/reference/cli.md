@@ -713,7 +713,7 @@ cuenv secrets setup <PROVIDER> [OPTIONS]
 
 **Arguments:**
 
-- `<PROVIDER>`: Provider to set up. Currently supported: `onepassword`
+- `<PROVIDER>`: Provider to set up. Currently supported: `onepassword`, `infisical`
 
 **Options:**
 
@@ -726,7 +726,7 @@ cuenv secrets setup <PROVIDER> [OPTIONS]
 cuenv secrets setup onepassword
 ```
 
-This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI.
+This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI. For Infisical, setup validates that `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`, or `INFISICAL_TOKEN`, are present.
 
 See the [Secrets Guide](/how-to/secrets/) for more details on secret management.
 

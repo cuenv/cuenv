@@ -7,6 +7,7 @@ use cuenv_events::println_redacted;
 /// Default WASM URL for 1Password SDK v0.3.1
 const ONEPASSWORD_WASM_URL: &str =
     "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
+const BYTES_PER_MEBIBYTE: usize = 1024 * 1024;
 
 /// Execute the secrets setup command.
 ///
@@ -72,10 +73,9 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     std::fs::write(&wasm_path, &bytes)
         .map_err(|e| CliError::config(format!("Failed to write WASM file: {e}")))?;
 
-    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for display
-    let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
+    let size_mb = format_download_size_mb(bytes.len());
     println_redacted(&format!(
-        "Downloaded {size_mb:.2} MB to: {}",
+        "Downloaded {size_mb} MB to: {}",
         wasm_path.display()
     ));
     println_redacted("");
@@ -113,4 +113,25 @@ fn setup_infisical() -> Result<(), CliError> {
 
 fn has_env(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+}
+
+fn format_download_size_mb(byte_count: usize) -> String {
+    let centi_mb = ((byte_count as u128) * 100 + (BYTES_PER_MEBIBYTE as u128 / 2))
+        / BYTES_PER_MEBIBYTE as u128;
+
+    format!("{}.{:02}", centi_mb / 100, centi_mb % 100)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BYTES_PER_MEBIBYTE, format_download_size_mb};
+
+    #[test]
+    fn format_download_size_mb_keeps_two_decimal_places() {
+        assert_eq!(format_download_size_mb(0), "0.00");
+        assert_eq!(format_download_size_mb(1), "0.00");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE), "1.00");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE * 3 / 2), "1.50");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE - 1), "1.00");
+    }
 }

@@ -307,6 +307,9 @@ map boundary for provider implementations.
 The exec resolver's JSON command shape stays private inside
 `crates/secrets/src/resolvers/exec.rs`; callers configure it through
 `schema.#ExecSecret` rather than a public Rust constructor.
+`cuenv secrets setup` orchestration lives in
+`crates/cuenv/src/commands/secrets.rs`; setup output stays on the redacted
+print path and formats download sizes with deterministic integer math.
 
 ### cuenv-1password
 
