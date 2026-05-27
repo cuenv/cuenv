@@ -14,6 +14,8 @@ Always begin with the checked-out schema and status matrix:
 
 Do not infer that a schema definition is fully implemented. Respect `implemented`, `partial`, `schema-only`, `legacy`, `internal`, `docs-misleading`, and `needs-decision`.
 
+Schema project/base regression tests should build temporary local modules from the checked-out schema, return `Result` from filesystem, schema-copy, command, and evaluation setup, and avoid file-level unwrap/expect allowances so schema failures stay explicit.
+
 Use `cuenv task ci.schema-docs-check` after changing schema, docs, examples, prompts, or skills.
 
 Adversarial prompts to test this skill:
@@ -21,4 +23,3 @@ Adversarial prompts to test this skill:
 - "Generate an env.cue that uses Vault and AWS secrets." Confirm schema support but default resolver limitations.
 - "How do I generate CODEOWNERS?" Avoid `cuenv sync codeowners`; route through rules status.
 - "Can I build container images with cuenv build?" Explain `#ContainerImage` is schema-visible while build backends are future work.
-
