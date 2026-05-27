@@ -263,6 +263,9 @@ in `crates/ci/src/diff/format.rs`.
 Core tool activation schema and environment mutation rules live in
 `crates/core/src/tools/activation.rs`; provider/cache/profile path discovery
 for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs`.
+The default secret registry keeps a stable fallible `Result` API while
+registering env, exec, and optional 1Password/Infisical resolvers without a
+local `unnecessary_wraps` suppression.
 
 ### cuenv-1password
 

@@ -42,7 +42,6 @@ pub use cuenv_infisical::secrets::{InfisicalConfig, InfisicalResolver};
 /// # Errors
 ///
 /// Returns an error if 1Password resolver initialization fails (when enabled).
-#[allow(clippy::unnecessary_wraps)]
 pub fn create_default_registry() -> Result<SecretRegistry> {
     let mut registry = SecretRegistry::new();
 
