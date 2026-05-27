@@ -278,7 +278,7 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
 
 /// Sync a managed codegen file (always overwritten to match expected content)
 ///
-/// Returns `true` if the file was actually written to disk.
+/// Returns whether the file was written or drift was detected.
 fn sync_managed_file(
     request: &mut CodegenFileSyncRequest<'_>,
     options: CodegenSyncOptions,
@@ -349,7 +349,7 @@ fn sync_managed_file(
 
 /// Sync a scaffold codegen file (only created if it doesn't exist)
 ///
-/// Returns `true` if the file was actually written to disk.
+/// Returns whether the file was written or drift was detected.
 fn sync_scaffold_file(
     request: &mut CodegenFileSyncRequest<'_>,
     options: CodegenSyncOptions,
@@ -508,7 +508,7 @@ fn sync_gitignore_entries(
         .map(|(path, _)| path.clone())
         .collect();
 
-    if patterns.is_empty() {
+    if patterns.is_empty() && !gitignore_has_codegen_section(project_root)? {
         return Ok(false);
     }
 
@@ -541,6 +541,19 @@ fn sync_gitignore_entries(
     }
 
     Ok(had_drift && options.should_check())
+}
+
+fn gitignore_has_codegen_section(project_root: &Path) -> Result<bool> {
+    let path = project_root.join(".gitignore");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(content.lines().any(|line| line == "# BEGIN cuenv codegen")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(cuenv_core::Error::Io {
+            source: e,
+            path: Some(path.into_boxed_path()),
+            operation: "read .gitignore".to_string(),
+        }),
+    }
 }
 
 fn maybe_push_diff(
@@ -705,6 +718,29 @@ mod tests {
     }
 
     #[test]
+    fn check_mode_marks_stale_gitignore_section_as_drift() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp_dir.path().join(".gitignore"),
+            "# BEGIN cuenv codegen\nold.txt\n# END cuenv codegen\n",
+        )
+        .expect("write gitignore");
+        std::fs::write(temp_dir.path().join("tracked.txt"), "tracked").expect("write file");
+        let codegen_config = config([("tracked.txt", project_file("tracked", "text"))]);
+        let request = CodegenSyncFilesRequest {
+            project_root: temp_dir.path(),
+            project_name: "test",
+            codegen_config: &codegen_config,
+            options: options(true),
+        };
+
+        let result = sync_codegen_files(&request).expect("sync check");
+
+        assert!(result.had_drift);
+        assert!(result.output.contains("Out of sync: .gitignore"));
+    }
+
+    #[test]
     fn enabled_json_lint_rejects_invalid_json_content() {
         let mut file = project_file("{ invalid json }", "json");
         file.lint = Some(LintConfig {
@@ -712,8 +748,9 @@ mod tests {
             rules: serde_json::Value::Null,
         });
 
-        let err = validate_lint_config("bad.json", &file.language, &file.content, file.lint.as_ref())
-            .expect_err("lint should fail");
+        let err =
+            validate_lint_config("bad.json", &file.language, &file.content, file.lint.as_ref())
+                .expect_err("lint should fail");
 
         assert!(err.to_string().contains("Lint failed for bad.json"));
     }

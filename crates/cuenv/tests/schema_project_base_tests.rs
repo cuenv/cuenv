@@ -190,52 +190,54 @@ import (
 
 schema.#Project & {
   name: "app"
-  codegen: files: {
-    "src/app.ts": gen.#TypeScriptFile & {
-      content: "export const answer = 42;\n"
-      lint: {
-        enabled: false
+  codegen: {
+    files: {
+      "src/app.ts": gen.#TypeScriptFile & {
+        content: "export const answer = 42;\n"
+        lint: {
+          enabled: false
+        }
       }
-    }
-    "src/app.js": gen.#JavaScriptFile & {
-      content: "export const answer = 42;\n"
-    }
-    "package.json": gen.#JSONFile & {
-      content: "{\"name\":\"app\"}"
-      gitignore: false
-      format: {
-        indentSize: 4
+      "src/app.js": gen.#JavaScriptFile & {
+        content: "export const answer = 42;\n"
       }
-    }
-    "tsconfig.jsonc": gen.#JSONCFile & {
-      content: "{ // comment\n  \"compilerOptions\": {}\n}\n"
-    }
-    "config.yaml": gen.#YAMLFile & {
-      content: "name: app\n"
-    }
-    "Cargo.toml": gen.#TOMLFile & {
-      content: "[package]\nname = \"app\"\n"
-    }
-    "src/main.rs": gen.#RustFile & {
-      content: "fn main() {}\n"
-    }
-    "main.go": gen.#GoFile & {
-      content: "package main\n"
-    }
-    "main.py": gen.#PythonFile & {
-      content: "print(\"app\")\n"
-    }
-    "README.md": gen.#MarkdownFile & {
-      content: "# app\n"
-    }
-    "scripts/run.sh": gen.#ShellScriptFile & {
-      content: "#!/usr/bin/env bash\n"
-    }
-    "Dockerfile": gen.#DockerfileFile & {
-      content: "FROM scratch\n"
-    }
-    "flake.nix": gen.#NixFile & {
-      content: "{ }\n"
+      "package.json": gen.#JSONFile & {
+        content: "{\"name\":\"app\"}"
+        gitignore: false
+        format: {
+          indentSize: 4
+        }
+      }
+      "tsconfig.jsonc": gen.#JSONCFile & {
+        content: "{ // comment\n  \"compilerOptions\": {}\n}\n"
+      }
+      "config.yaml": gen.#YAMLFile & {
+        content: "name: app\n"
+      }
+      "Cargo.toml": gen.#TOMLFile & {
+        content: "[package]\nname = \"app\"\n"
+      }
+      "src/main.rs": gen.#RustFile & {
+        content: "fn main() {}\n"
+      }
+      "main.go": gen.#GoFile & {
+        content: "package main\n"
+      }
+      "main.py": gen.#PythonFile & {
+        content: "print(\"app\")\n"
+      }
+      "README.md": gen.#MarkdownFile & {
+        content: "# app\n"
+      }
+      "scripts/run.sh": gen.#ShellScriptFile & {
+        content: "#!/usr/bin/env bash\n"
+      }
+      "Dockerfile": gen.#DockerfileFile & {
+        content: "FROM scratch\n"
+      }
+      "flake.nix": gen.#NixFile & {
+        content: "{ }\n"
+      }
     }
   }
 }
