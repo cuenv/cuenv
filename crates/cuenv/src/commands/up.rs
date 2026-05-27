@@ -94,7 +94,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
 
         // Propagate the project-level environment (selected by `-e` if set)
         // into each service's env map so secrets, interpolation, and policy
-        // filtering all apply in `supervisor::spawn_process`. Per-service
+        // filtering all apply in `process::ServiceProcess::spawn`. Per-service
         // env entries take precedence over the project env.
         if let Some(env) = &project.env {
             let project_env_vars = match options.environment.as_deref() {

@@ -148,6 +148,9 @@ restart requests, and running supervisors consume those requests before
 stopping and re-spawning the selected services.
 The service control poller lives in `crates/services/src/control.rs`, keeping
 manual lifecycle command plumbing out of the process supervisor loop.
+Process spawning, command rendering, environment resolution, and shutdown
+signalling live in `crates/services/src/process.rs`; `supervisor.rs` owns the
+restart/readiness lifecycle decisions around that process boundary.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in
