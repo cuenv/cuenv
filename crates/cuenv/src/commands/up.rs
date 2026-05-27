@@ -5,18 +5,22 @@
 //! for process supervision.
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use cuenv_core::environment::EnvValue;
+use cuenv_core::environment::{Env, EnvValue, Environment};
 use cuenv_core::manifest::{ContainerImage, Project, Service};
-use cuenv_core::tasks::TaskNode;
+use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskNode, Tasks};
+use cuenv_core::OutputCapture;
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController, build_service_graph};
 use cuenv_services::session::SessionManager;
 
+use super::env_file::find_cue_module_root;
 use super::{CommandExecutor, relative_path_from_root};
 
 /// Options for the `cuenv up` command.
@@ -66,7 +70,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     //
     // The module guard holds a MutexGuard (not Send), so we must extract
     // everything we need and drop it before any .await point.
-    let (filtered_services, graph, session) = {
+    let (filtered_services, graph, session, dependency_plan, tasks, project_env, cue_module_root) = {
         let module = executor.get_module(&target_path)?;
         let relative_path = relative_path_from_root(&module.root, &target_path);
 
@@ -121,11 +125,12 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
                 .join(", ")
         ));
 
-        reject_unsupported_service_dependencies(
+        let dependency_plan = service_dependency_plan(
             &filtered_services,
             &project.tasks,
             &project.images,
-        )?;
+            &project.services,
+        );
 
         let graph = build_service_graph(&filtered_services).map_err(|e| {
             cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
@@ -134,9 +139,27 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
         let session = SessionManager::create(&target_path, &project.name)
             .map_err(|e| cuenv_core::Error::execution(format!("Failed to create session: {e}")))?;
 
-        (filtered_services, graph, session)
+        (
+            filtered_services,
+            graph,
+            session,
+            dependency_plan,
+            project.tasks,
+            project.env,
+            find_cue_module_root(&target_path),
+        )
     };
     // ModuleGuard is now dropped — safe to .await below
+
+    execute_service_dependencies(
+        &dependency_plan,
+        &tasks,
+        project_env.as_ref(),
+        options.environment.as_deref(),
+        &target_path,
+        cue_module_root,
+    )
+    .await?;
 
     // Set up shutdown signal
     let shutdown = CancellationToken::new();
@@ -201,40 +224,207 @@ fn merge_project_env_into_service(
     }
 }
 
-fn reject_unsupported_service_dependencies(
+#[derive(Debug, Default)]
+struct ServiceDependencyPlan {
+    task_roots: Vec<String>,
+    image_roots: Vec<String>,
+}
+
+fn service_dependency_plan(
     services: &HashMap<String, Service>,
     tasks: &HashMap<String, TaskNode>,
     images: &HashMap<String, ContainerImage>,
-) -> cuenv_core::Result<()> {
-    let mut unsupported = Vec::new();
+    all_services: &HashMap<String, Service>,
+) -> ServiceDependencyPlan {
+    let mut plan = ServiceDependencyPlan::default();
+    let mut seen_tasks = HashSet::new();
+    let mut seen_images = HashSet::new();
 
     for (service_name, service) in services {
         for dependency in &service.depends_on {
             let dependency_name = dependency.task_name();
-            let dependency_kind = if tasks.contains_key(dependency_name) {
-                Some("task")
-            } else if images.contains_key(dependency_name) {
-                Some("image")
-            } else {
-                None
-            };
+            if all_services.contains_key(dependency_name) {
+                continue;
+            }
 
-            if let Some(kind) = dependency_kind {
-                unsupported.push(format!(
-                    "{service_name} depends on {kind} '{dependency_name}'"
-                ));
+            if task_dependency_exists(dependency_name, tasks) {
+                if seen_tasks.insert(dependency_name.to_string()) {
+                    plan.task_roots.push(dependency_name.to_string());
+                }
+            } else if images.contains_key(dependency_name) {
+                if seen_images.insert(dependency_name.to_string()) {
+                    plan.image_roots.push(dependency_name.to_string());
+                }
+                collect_image_task_dependencies(
+                    dependency_name,
+                    images,
+                    tasks,
+                    &mut seen_images,
+                    &mut seen_tasks,
+                    &mut plan.task_roots,
+                );
+            } else {
+                tracing::debug!(
+                    service = %service_name,
+                    dependency = %dependency_name,
+                    "Deferring unknown service dependency to service graph validation"
+                );
             }
         }
     }
 
-    if unsupported.is_empty() {
-        Ok(())
-    } else {
-        Err(cuenv_core::Error::configuration(format!(
-            "cuenv up does not execute task or image dependencies yet: {}",
-            unsupported.join("; ")
-        )))
+    plan
+}
+
+fn collect_image_task_dependencies(
+    image_name: &str,
+    images: &HashMap<String, ContainerImage>,
+    tasks: &HashMap<String, TaskNode>,
+    seen_images: &mut HashSet<String>,
+    seen_tasks: &mut HashSet<String>,
+    task_roots: &mut Vec<String>,
+) {
+    let Some(image) = images.get(image_name) else {
+        return;
+    };
+
+    for dependency in &image.depends_on {
+        let dependency_name = dependency.task_name();
+        if task_dependency_exists(dependency_name, tasks) {
+            if seen_tasks.insert(dependency_name.to_string()) {
+                task_roots.push(dependency_name.to_string());
+            }
+        } else if images.contains_key(dependency_name) && seen_images.insert(dependency_name.to_string()) {
+            collect_image_task_dependencies(
+                dependency_name,
+                images,
+                tasks,
+                seen_images,
+                seen_tasks,
+                task_roots,
+            );
+        }
     }
+}
+
+fn task_dependency_exists(name: &str, tasks: &HashMap<String, TaskNode>) -> bool {
+    if tasks.contains_key(name) {
+        return true;
+    }
+
+    let all_tasks = Tasks {
+        tasks: tasks.clone(),
+    };
+    let mut graph = TaskGraph::new();
+    graph
+        .build_for_task(name, &all_tasks)
+        .is_ok_and(|()| graph.task_count() > 0)
+}
+
+async fn execute_service_dependencies(
+    plan: &ServiceDependencyPlan,
+    tasks: &HashMap<String, TaskNode>,
+    project_env: Option<&Env>,
+    environment: Option<&str>,
+    project_root: &Path,
+    cue_module_root: Option<PathBuf>,
+) -> cuenv_core::Result<()> {
+    if !plan.task_roots.is_empty() {
+        execute_service_task_dependencies(
+            &plan.task_roots,
+            tasks,
+            project_env,
+            environment,
+            project_root,
+            cue_module_root,
+        )
+        .await?;
+    }
+
+    if !plan.image_roots.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "cuenv up resolved image dependencies but image execution backends are not implemented yet: {}",
+            plan.image_roots.join(", ")
+        )));
+    }
+
+    Ok(())
+}
+
+async fn execute_service_task_dependencies(
+    task_roots: &[String],
+    tasks: &HashMap<String, TaskNode>,
+    project_env: Option<&Env>,
+    environment: Option<&str>,
+    project_root: &Path,
+    cue_module_root: Option<PathBuf>,
+) -> cuenv_core::Result<()> {
+    let all_tasks = Tasks {
+        tasks: tasks.clone(),
+    };
+    let mut task_graph = TaskGraph::new();
+    for task_name in task_roots {
+        task_graph.build_for_task(task_name, &all_tasks)?;
+    }
+
+    if task_graph.task_count() == 0 {
+        return Ok(());
+    }
+
+    emit_stdout!(format!(
+        "cuenv up: running service task dependencies: {}",
+        task_roots.join(", ")
+    ));
+
+    let executor = build_up_task_executor(ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        max_parallel: 0,
+        continue_on_error: false,
+        environment: task_dependency_environment(project_env, environment).await?,
+        working_dir: None,
+        project_root: project_root.to_path_buf(),
+        cue_module_root,
+        materialize_outputs: None,
+        cache_dir: None,
+        show_cache_path: false,
+        backend_config: None,
+        cli_backend: None,
+        cache: None,
+    });
+
+    executor.execute_graph(&task_graph).await?;
+    Ok(())
+}
+
+async fn task_dependency_environment(
+    project_env: Option<&Env>,
+    environment: Option<&str>,
+) -> cuenv_core::Result<Environment> {
+    let mut runtime_env = Environment::new();
+    let Some(env) = project_env else {
+        return Ok(runtime_env);
+    };
+
+    let env_vars = environment.map_or_else(|| env.base.clone(), |name| env.for_environment(name));
+    let (resolved, secrets) =
+        Environment::resolve_for_task_with_secrets("service dependencies", &env_vars).await?;
+    cuenv_events::register_secrets(secrets);
+
+    for (key, value) in resolved {
+        runtime_env.set(key, value);
+    }
+
+    Ok(runtime_env)
+}
+
+#[cfg(feature = "dagger-backend")]
+fn build_up_task_executor(config: ExecutorConfig) -> TaskExecutor {
+    TaskExecutor::with_dagger_factory(config, Some(cuenv_dagger::create_dagger_backend))
+}
+
+#[cfg(not(feature = "dagger-backend"))]
+fn build_up_task_executor(config: ExecutorConfig) -> TaskExecutor {
+    TaskExecutor::new(config)
 }
 
 fn include_service_dependencies(
@@ -320,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn service_dependency_validation_allows_service_deps() {
+    fn service_dependency_plan_allows_service_deps() {
         let mut services = HashMap::new();
         services.insert("db".to_string(), Service::default());
         services.insert(
@@ -332,13 +522,14 @@ mod tests {
         );
 
         let result =
-            reject_unsupported_service_dependencies(&services, &HashMap::new(), &HashMap::new());
+            service_dependency_plan(&services, &HashMap::new(), &HashMap::new(), &services);
 
-        assert!(result.is_ok());
+        assert!(result.task_roots.is_empty());
+        assert!(result.image_roots.is_empty());
     }
 
     #[test]
-    fn service_dependency_validation_rejects_task_deps() {
+    fn service_dependency_plan_collects_task_deps() {
         let mut services = HashMap::new();
         services.insert(
             "api".to_string(),
@@ -351,10 +542,10 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert("build".to_string(), TaskNode::Task(Box::default()));
 
-        let error = reject_unsupported_service_dependencies(&services, &tasks, &HashMap::new())
-            .expect_err("task dependencies should be rejected until up executes tasks");
+        let result = service_dependency_plan(&services, &tasks, &HashMap::new(), &services);
 
-        assert!(error.to_string().contains("api depends on task 'build'"));
+        assert_eq!(result.task_roots, vec!["build"]);
+        assert!(result.image_roots.is_empty());
     }
 
     #[test]

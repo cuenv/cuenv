@@ -196,10 +196,10 @@ cuenv up [SERVICES...] [OPTIONS]
 Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
 
 Service-to-service dependencies wait for upstream services to become ready;
-starting a selected service also starts its service dependencies. Task and image
-dependencies in `services.*.dependsOn` are schema-visible but currently
-rejected by `cuenv up` until task execution and image build backends are wired
-into service startup.
+starting a selected service also starts its service dependencies. Task
+dependencies in `services.*.dependsOn` run to completion before service
+startup. Image dependencies are recognized in the dependency plan, but selected
+image builds still fail fast until image execution backends exist.
 
 On Linux, `cuenv up` promotes itself to a subreaper (`PR_SET_CHILD_SUBREAPER`) and installs `PR_SET_PDEATHSIG=SIGKILL` on each service so orphaned descendants are either reaped by cuenv or killed when cuenv exits. On macOS, services are spawned through a hidden `cuenv __supervise` wrapper that watches the parent via `kqueue`/`NOTE_EXIT` and forwards signals to the service's process group.
 
