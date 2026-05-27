@@ -53,6 +53,8 @@ cuenv task ci.schema-docs-check
 
 Default to the smallest validation set that proves the current change. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
 
+Before starting a full root flake check, name the trigger that requires it. If no trigger applies, keep validation focused and record the focused gate instead.
+
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`, or an app-local Nix test/clippy check when that is the local boundary.

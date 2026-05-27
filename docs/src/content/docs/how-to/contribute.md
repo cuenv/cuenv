@@ -82,6 +82,8 @@ cuenv fmt --fix
 
 Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
 
+Before starting a full root flake check, identify the trigger that requires it. If no trigger applies, keep validation focused and record the focused gate instead.
+
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test, or an app-local Nix test/clippy check when that is the local boundary.
