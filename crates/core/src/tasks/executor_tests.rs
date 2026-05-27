@@ -554,6 +554,68 @@ async fn execute_graph_continue_on_error_skips_dependents() {
 }
 
 #[tokio::test]
+async fn execute_graph_task_continue_on_error_skips_dependents() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let bus = EventBus::new();
+    let sender = bus.sender().expect("sender available");
+    let _ = cuenv_events::set_global_sender(sender);
+    let mut rx = bus.subscribe();
+
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        max_parallel: 1,
+        project_root: root.to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let mut tasks = Tasks::new();
+    tasks.tasks.insert(
+        "fail".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "sh".into(),
+            args: vec!["-c".into(), "exit 7".into()],
+            continue_on_error: true,
+            ..Default::default()
+        })),
+    );
+    tasks.tasks.insert(
+        "dependent".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo dependent ran".into()],
+            depends_on: vec![TaskDependency::from_name("fail")],
+            ..Default::default()
+        })),
+    );
+
+    let mut graph = TaskGraph::new();
+    graph.build_for_task("dependent", &tasks).unwrap();
+    let outcome = executor.execute_graph(&graph).await;
+    assert!(outcome.is_err(), "fail task should surface as error");
+
+    let mut saw_skip = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+            Ok(Some(event)) => {
+                if let EventCategory::Task(TaskEvent::Skipped { name, .. }) = event.category
+                    && name == "dependent"
+                {
+                    saw_skip = true;
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+
+    cuenv_events::clear_global_sender();
+    assert!(saw_skip, "dependent task should be skipped");
+}
+
+#[tokio::test]
 async fn test_execute_graph_respects_dependency_levels() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
