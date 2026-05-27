@@ -14,13 +14,13 @@ pub use binaries::{ReleaseBinariesOptions, ReleaseBinariesPhase, execute_release
 pub use prepare::{PackageBumpInfo, ReleasePrepareOptions, execute_release_prepare};
 
 use cuenv_release::{
-    BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
-    CratesBackendConfig, CueBackendConfig, PackageChange, PublishPackage, PublishPlan,
-    ReleaseConfig, TagType, VersionCalculator,
+    BumpType, CargoManifest, ChangelogGenerator, Changeset, ChangesetManager, CommitAnalyzer,
+    CommitParser, CratesBackendConfig, CueBackendConfig, PackageChange, PublishPackage,
+    PublishPlan, ReleaseConfig, TagType, Version, VersionCalculator,
 };
 use cuengine::ModuleEvalOptions;
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
@@ -511,17 +511,78 @@ pub fn execute_release_version(
                     ))
                 })?;
 
+            update_release_changelogs(
+                root,
+                &manifest,
+                &changesets,
+                &new_versions,
+                &release_config,
+            )?;
+
             // Clear consumed changesets
             manager.clear().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to clear changesets: {e}"))
             })?;
 
             output.push_str("\nManifest files updated successfully.\n");
+            output.push_str("Changelogs have been updated.\n");
             output.push_str("Changesets have been consumed.\n");
         }
     }
 
     Ok(output)
+}
+
+fn update_release_changelogs(
+    root: &Path,
+    manifest: &CargoManifest,
+    changesets: &[Changeset],
+    new_versions: &HashMap<String, Version>,
+    release_config: &ReleaseConfig,
+) -> cuenv_core::Result<()> {
+    let changelog_config = release_config.changelog.clone();
+    if !changelog_config.workspace && !changelog_config.per_package {
+        return Ok(());
+    }
+
+    let generator = ChangelogGenerator::new(changelog_config);
+
+    if release_config.changelog.workspace
+        && let Some(entry) = generator.generate_workspace_entry(changesets, new_versions)
+    {
+        generator
+            .update_file(&root.join(&release_config.changelog.path), &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update workspace changelog: {e}"
+                ))
+            })?;
+    }
+
+    if !release_config.changelog.per_package {
+        return Ok(());
+    }
+
+    let package_paths = manifest.get_package_paths().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
+    })?;
+
+    for (package, version) in new_versions {
+        let Some(package_root) = package_paths.get(package) else {
+            continue;
+        };
+        let Some(entry) = generator.generate_entries(changesets, package, version) else {
+            continue;
+        };
+        let changelog_path = generator.get_changelog_path(package_root);
+        generator.update_file(&changelog_path, &entry).map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to update changelog for {package}: {e}"
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 /// Output format for release publish command.
@@ -608,8 +669,9 @@ fn build_publish_plan(root: &Path, ordered: bool) -> cuenv_core::Result<PublishP
         });
     }
 
-    PublishPlan::from_packages(publish_packages)
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}")))
+    PublishPlan::from_packages(publish_packages).map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}"))
+    })
 }
 
 fn publish_packages_to_crates_io(

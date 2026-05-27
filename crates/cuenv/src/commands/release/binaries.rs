@@ -315,7 +315,7 @@ fn format_release_binaries_output(summary: &ReleaseBinariesOutput<'_>) -> String
 
     let _ = writeln!(
         output,
-        "Release {} v{}",
+        "Release {} {}",
         summary.binary_name, summary.release_version
     );
     let _ = writeln!(output, "Phase: {:?}", summary.report.phase);

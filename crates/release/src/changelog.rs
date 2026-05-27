@@ -369,6 +369,34 @@ mod tests {
     }
 
     #[test]
+    fn test_changelog_generator_custom_categories() {
+        let version = Version::new(1, 2, 0);
+        let entry = ChangelogEntry::new(
+            version,
+            Utc::now(),
+            vec![ChangelogChange {
+                bump_type: BumpType::Minor,
+                summary: "Add configurable release categories".to_string(),
+                description: None,
+                packages: vec!["cuenv".to_string()],
+            }],
+        );
+        let generator = ChangelogGenerator::new(ChangelogConfig {
+            categories: vec![crate::config::ChangelogCategory {
+                title: "Added".to_string(),
+                types: vec!["minor".to_string()],
+            }],
+            ..Default::default()
+        });
+
+        let md = generator.entry_to_markdown(&entry);
+
+        assert!(md.contains("### Added"));
+        assert!(md.contains("Add configurable release categories"));
+        assert!(!md.contains("### Features"));
+    }
+
+    #[test]
     fn test_format_change_multiple_packages() {
         let change = ChangelogChange {
             bump_type: BumpType::Minor,
