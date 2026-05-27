@@ -198,7 +198,10 @@ CLI error rendering and early startup failures use direct redacted stderr
 helpers so they do not depend on tracing or the event bus being healthy.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
 and workspace-wide module evaluation helpers live in
-`crates/cuenv/src/commands/module_evaluation.rs`; task CLI adapter construction
+`crates/cuenv/src/commands/module_evaluation.rs`; evaluation-count regression
+tests run against the repository root and return `Result` from root discovery
+and command execution instead of carrying file-level unwrap/expect allowances.
+Task CLI adapter construction
 lives in `crates/cuenv/src/commands/handler/task_handler.rs` and hands off to
 the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`;
 named/label task selection resolution lives in
