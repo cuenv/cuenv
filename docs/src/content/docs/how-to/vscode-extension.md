@@ -3,7 +3,7 @@ title: VSCode Extension
 description: Official VSCode integration for cuenv
 ---
 
-The official Cuenv VSCode extension brings powerful IDE integration for managing environments, running tasks, and visualizing dependencies directly from your editor.
+The official cuenv VSCode extension adds IDE integration for managing environments, running tasks, and visualizing dependencies from your editor.
 
 ## Installation
 

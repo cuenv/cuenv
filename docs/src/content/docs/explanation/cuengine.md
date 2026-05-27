@@ -7,7 +7,7 @@ The CUE Engine (`cuengine`) is a standalone Rust crate providing fast and reliab
 
 ## Overview
 
-The CUE Engine bridges the gap between Rust's performance and safety with CUE's powerful constraint-based configuration language. It provides a high-level API for evaluating CUE expressions, validating configurations, and extracting structured data.
+The CUE engine connects Rust to CUE's constraint-based configuration language. It provides a high-level API for evaluating CUE expressions, validating configurations, and extracting structured data for the rest of cuenv.
 
 ## Architecture
 
@@ -270,7 +270,7 @@ fn process_all_projects(module_root: &Path) -> cuengine::Result<Vec<Project>> {
 
 ## Testing
 
-The engine includes comprehensive test coverage:
+The engine is tested across:
 
 ```bash
 # Run all engine tests

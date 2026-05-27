@@ -1,9 +1,9 @@
 ---
 title: Configuration
-description: Comprehensive guide to cuenv configuration
+description: Guide to configuring a cuenv project
 ---
 
-Learn how to configure cuenv for your projects using CUE's powerful constraint-based configuration language.
+Configure cuenv for your projects using CUE's constraint-based configuration language.
 
 ## Configuration Files
 
@@ -423,7 +423,7 @@ Extend validation with custom rules:
 ### Maintainability
 
 - Use schemas to enforce consistency
-- Leverage CUE's composition features
+- Use CUE's composition features
 - Keep environment differences minimal
 - Test configuration changes
 

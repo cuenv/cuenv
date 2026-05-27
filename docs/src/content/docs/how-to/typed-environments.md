@@ -7,7 +7,7 @@ cuenv treats environment variables as a typed configuration schema rather than a
 
 ## Defining Environments
 
-Environments are defined in the `env` block of your `env.cue` file. You can use CUE's powerful type system to enforce constraints.
+Environments are defined in the `env` block of your `env.cue` file. You can use CUE's type system to enforce constraints.
 
 ### Type Constraints
 
