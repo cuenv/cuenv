@@ -322,6 +322,9 @@ print path and formats download sizes with deterministic integer math.
 1Password secret resolution auto-selects between HTTP mode via the WASM SDK and
 CLI mode via the `op` command. Resolver mode selection, WASM client lifecycle,
 and HTTP batch resolution live in `crates/1password/src/secrets/resolver.rs`;
+WASM host-function imports, memory-offset conversion, and Unix-time conversion
+live in `crates/1password/src/secrets/core.rs` with checked/saturating integer
+boundaries.
 CLI authentication preflight, signed-out bootstrap reads, and `op read`
 execution live in `crates/1password/src/secrets/cli.rs`.
 
