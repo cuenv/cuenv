@@ -145,8 +145,7 @@ struct YarnModernPackage {
     checksum: Option<String>,
     /// Language and package manager metadata
     #[serde(default, rename = "languageName")]
-    #[allow(dead_code)] // Yarn Modern lockfile format field for deserialization
-    language_name: Option<String>,
+    _language_name: Option<String>,
     /// Link type
     #[serde(default, rename = "linkType")]
     link_type: Option<String>,

@@ -186,6 +186,10 @@ entry materialization before package-specific locator parsing.
 pnpm parsing keeps package-key parsing separate from source selection, so
 scoped-name handling, peer suffix stripping, and tarball/git/path resolution
 stay in focused helpers instead of one nested parser branch.
+pnpm and Yarn Modern metadata fields that must be accepted for lockfile shape
+compatibility but are not used for dependency entries are stored as
+underscore-prefixed serde fields, making the ignored-data boundary explicit
+without local dead-code suppressions.
 
 Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
 small parser state that handles headers, version/resolved/integrity fields, and
