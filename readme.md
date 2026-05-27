@@ -49,8 +49,8 @@ schema.#Project & {
 }
 
 env: {
-	// Only these three values are accepted; anything else fails validation.
-	NODE_ENV: "development" | "staging" | "production"
+	// Only these three values are accepted; defaults to "development".
+	NODE_ENV: "development" | "staging" | "production" | *"development"
 
 	// Ordinary values, with CUE interpolation.
 	HOST: "127.0.0.1"
@@ -86,11 +86,20 @@ tasks: {
 
 List what the project defines:
 
-```bash
-cuenv task
+```console
+$ cuenv task
+Tasks from env.cue:
+├─ build [1]
+└─ check
+   ├─ check.lint
+   ├─ check.test
+   └─ check.types
+
+(5 tasks, 0 groups, 0 cached)
 ```
 
-Print the resolved environment — secret values are redacted, never printed:
+Print the resolved environment. Secrets are resolved from your provider at print
+time and shown redacted, never in the clear:
 
 ```bash
 cuenv env print
@@ -119,16 +128,17 @@ when a value doesn't fit.
 
 ```cue
 env: {
-	NODE_ENV: "development" | "staging" | "production" // an enum
-	PORT:     >0 & <65536                              // a bounded number
-	LOG_URL:  string & =~"^https://"                   // a pattern
-	TIMEOUT:  string | *"30s"                          // a default
+	NODE_ENV: "development" | "staging" | "production" | *"development" // an enum, default development
+	PORT:     >0 & <65536 | *3000                                       // a bounded number, default 3000
+	TIMEOUT:  string | *"30s"                                           // any string, default 30s
 }
 ```
 
-Set `NODE_ENV: "prod"` and cuenv refuses to run, pointing at the offending
-field. CUE also composes: you can `import` shared definitions and reuse them
-across services in a monorepo, instead of copy-pasting `.env` files.
+Each field declares what counts as valid and what it defaults to. Set
+`NODE_ENV: "prod"` and cuenv refuses to run, pointing at `env.NODE_ENV`. CUE also
+composes: you can `import` shared definitions and reuse them across services in
+a monorepo, instead of copy-pasting `.env` files. Patterns (`=~"^https://"`) and
+many other constraints work the same way.
 
 New to CUE? The [CUE site](https://cuelang.org) is the best starting point; you
 only need the basics to be productive with cuenv.

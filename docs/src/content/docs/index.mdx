@@ -43,8 +43,8 @@ schema.#Project & {
 }
 
 env: {
-	// Only these three values are accepted; anything else fails validation.
-	NODE_ENV: "development" | "staging" | "production"
+	// Only these three values are accepted; defaults to "development".
+	NODE_ENV: "development" | "staging" | "production" | *"development"
 
 	HOST: "127.0.0.1"
 	PORT: "8080"
