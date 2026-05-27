@@ -3,11 +3,9 @@
 //! [`SpinnerRenderer`] owns an [`indicatif::MultiProgress`] plus a registry
 //! of per-task and per-group [`indicatif::ProgressBar`]s. The CLI renderer
 //! delegates here when stdout is a TTY; in non-TTY mode the CLI renderer
-//! falls back to the existing eprintln-based output so CI logs stay
-//! grep-able.
+//! falls back to its plain stderr writer helpers so CI logs stay grep-able.
 
 #![allow(
-    clippy::print_stderr,
     // indicatif template strings deliberately use `{name}` placeholder
     // syntax that looks like Rust format args but is consumed by indicatif.
     clippy::literal_string_with_formatting_args

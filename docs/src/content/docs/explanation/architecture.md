@@ -281,7 +281,9 @@ category-specific output in `crates/events/src/renderers/cli/`, leaving the
 renderer root focused on configuration, event consumption, and dispatch; the
 renderer root owns explicit stdout/stderr writer helpers so category renderers
 do not need raw print macros. The JSON renderer exposes a writer boundary so
-JSON-line output can be tested without direct print macros.
+JSON-line output can be tested without direct print macros. Spinner interleaved
+output stays behind `indicatif::MultiProgress::println`, preserving progress-bar
+frames without direct stderr print macros.
 
 ### cuenv-workspaces
 
