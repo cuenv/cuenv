@@ -40,6 +40,7 @@ superseded_by: []
 - Users obtain predictable execution semantics for both simple and complex tasks.
 - Tests and documentation can assert the dual-path behaviour.
 - Future optimisations (parallelism, caching) must preserve these guarantees or supersede this ADR.
+- Criterion benchmarks for the generic task graph primitives should propagate graph construction and ordering `Result` values through setup and measurement helpers instead of hiding failures behind benchmark-wide unwrap allowances.
 
 ## Alignment with Features
 
