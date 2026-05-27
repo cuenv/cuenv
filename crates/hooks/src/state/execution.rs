@@ -204,13 +204,7 @@ impl HookExecutionState {
         let total_secs = duration.num_seconds();
 
         if total_secs < 60 {
-            let millis = duration.num_milliseconds();
-            #[expect(
-                clippy::cast_precision_loss,
-                reason = "Display formatting, precision loss is acceptable"
-            )]
-            let secs = millis as f64 / 1000.0;
-            format!("{secs:.1}s")
+            format_sub_minute_duration(duration)
         } else if total_secs < 3600 {
             let mins = total_secs / 60;
             let secs = total_secs % 60;
@@ -257,6 +251,19 @@ impl HookExecutionState {
             false
         }
     }
+}
+
+fn format_sub_minute_duration(duration: chrono::Duration) -> String {
+    let millis = duration.num_milliseconds();
+    let tenths = if millis >= 0 {
+        (millis + 50) / 100
+    } else {
+        (millis - 50) / 100
+    };
+    let sign = if tenths < 0 { "-" } else { "" };
+    let abs_tenths = tenths.unsigned_abs();
+
+    format!("{sign}{}.{:01}s", abs_tenths / 10, abs_tenths % 10)
 }
 
 /// Compute a hash for a unique execution instance (directory + config)

@@ -111,10 +111,11 @@ package-manager workspace contributor definitions live in
 `crates/core/src/contributors/workspace.rs` so DAG mutation stays separate from
 the built-in Bun/npm/pnpm/Yarn setup catalog.
 Persistent hook execution state, marker files, cleanup, and execution hashes
-live under `crates/hooks/src/state/`; hook execution orchestration lives in
-`crates/hooks/src/executor.rs`, including saturating elapsed-millisecond
-conversion for persisted hook results; source-hook shell environment capture
-lives in `crates/hooks/src/executor/source_environment.rs`. CLI hook command
+live under `crates/hooks/src/state/`, including integer duration display
+formatting; hook execution orchestration lives in `crates/hooks/src/executor.rs`,
+including saturating elapsed-millisecond conversion for persisted hook results;
+source-hook shell environment capture lives in
+`crates/hooks/src/executor/source_environment.rs`. CLI hook command
 orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
 snippet generation and status rendering live under
 `crates/cuenv/src/commands/hooks/`.

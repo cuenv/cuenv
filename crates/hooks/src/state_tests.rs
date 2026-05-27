@@ -30,6 +30,26 @@ fn test_compute_instance_hash() {
     assert_ne!(hash, different_config_hash);
 }
 
+#[test]
+fn test_hook_duration_formatting() {
+    assert_eq!(
+        HookExecutionState::format_duration(chrono::Duration::milliseconds(2340)),
+        "2.3s"
+    );
+    assert_eq!(
+        HookExecutionState::format_duration(chrono::Duration::milliseconds(59_950)),
+        "60.0s"
+    );
+    assert_eq!(
+        HookExecutionState::format_duration(chrono::Duration::seconds(75)),
+        "1m 15s"
+    );
+    assert_eq!(
+        HookExecutionState::format_duration(chrono::Duration::hours(2)),
+        "2h"
+    );
+}
+
 #[tokio::test]
 async fn test_state_manager_operations() {
     let temp_dir = TempDir::new().unwrap();
