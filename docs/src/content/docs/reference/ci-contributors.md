@@ -26,7 +26,9 @@ ci: {
 }
 ```
 
-**Supported providers:** `"github"`, `"buildkite"`, `"gitlab"`
+**Schema-recognized providers:** `"github"`, `"buildkite"`, `"gitlab"`.
+GitHub and Buildkite have `cuenv sync ci` support today; GitLab remains
+schema-only and is rejected by sync until a GitLab emitter exists.
 
 See [Configuration Schema - CI Configuration](/reference/cue-schema/#ci-configuration) for full schema documentation.
 

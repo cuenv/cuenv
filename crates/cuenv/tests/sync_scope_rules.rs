@@ -13,6 +13,7 @@ use tempfile::TempDir;
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const CUENV_BIN: &str = env!("CARGO_BIN_EXE_cuenv");
+const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Create a Command with a clean environment (no CI vars leaking).
 fn clean_environment_command(bin: impl AsRef<OsStr>) -> Command {
@@ -65,6 +66,21 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     let schema_dst = root.join("schema");
     copy_dir_recursive(&schema_src, &schema_dst)?;
 
+    Ok(())
+}
+
+fn write_current_cuenv_marker(root: &Path) -> TestResult {
+    fs::write(
+        root.join("cue.mod/module.cue"),
+        format!(
+            r#"module: "github.com/cuenv/cuenv"
+language: {{
+  version: "v0.9.0"
+}}
+custom: "github.com/cuenv/cuenv": version: "{EXPECTED_VERSION}"
+"#
+        ),
+    )?;
     Ok(())
 }
 
@@ -121,6 +137,38 @@ schema.#Project & {{
     {task}: {{
       command: "echo"
       args: ["{task}"]
+      inputs: ["env.cue"]
+    }}
+  }}
+}}
+"#
+    )
+}
+
+fn ci_provider_project_env_cue(name: &str, provider: &str) -> String {
+    format!(
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {{
+  let _t = tasks
+
+  name: "{name}"
+
+  ci: {{
+    providers: ["{provider}"]
+    pipelines: {{
+      check: {{
+        tasks: [_t.check]
+      }}
+    }}
+  }}
+
+  tasks: {{
+    check: schema.#Task & {{
+      command: "echo"
+      args: ["check"]
       inputs: ["env.cue"]
     }}
   }}
@@ -386,6 +434,60 @@ fn sync_all_from_nested_generates_all_ci_in_repo_root() -> TestResult {
     assert!(workflows_dir.join("service-test.yml").exists());
     assert!(workflows_dir.join("api-build.yml").exists());
     assert!(!nested.join(".github").exists());
+
+    Ok(())
+}
+
+#[test]
+fn sync_ci_rejects_schema_only_gitlab_provider() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+
+    fs::write(
+        root.join("env.cue"),
+        ci_provider_project_env_cue("root", "gitlab"),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "ci", "--dry-run"])?;
+    assert!(
+        !output.success,
+        "sync ci should reject schema-only GitLab sync\nstdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+
+    let combined = format!("{}{}", output.stdout, output.stderr);
+    assert!(
+        combined.contains("CI sync is not implemented for provider(s): gitlab"),
+        "sync ci should explain unsupported GitLab sync: {combined}"
+    );
+    assert!(!root.join(".gitlab-ci.yml").exists());
+
+    Ok(())
+}
+
+#[test]
+fn sync_ci_check_fails_when_configured_provider_is_out_of_sync() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+    write_current_cuenv_marker(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        ci_provider_project_env_cue("root", "buildkite"),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "ci", "--check"])?;
+    assert!(
+        !output.success,
+        "sync ci --check should fail when configured Buildkite output is missing\nstdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+
+    let combined = format!("{}{}", output.stdout, output.stderr);
+    assert!(
+        combined.contains("Buildkite pipeline.yml missing"),
+        "sync ci --check should report missing Buildkite output: {combined}"
+    );
 
     Ok(())
 }

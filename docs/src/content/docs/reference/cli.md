@@ -460,6 +460,7 @@ cuenv can generate CI workflow files for different providers:
 
 - **GitHub Actions**: Creates `.github/workflows/*.yml` files with monorepo-aware naming
 - **Buildkite**: Creates `.buildkite/pipeline.yml` bootstrap or outputs dynamic YAML
+- **GitLab**: Schema-recognized only; `cuenv sync ci --provider gitlab` exits with a configuration error until a GitLab emitter exists
 
 The `--check` flag validates that generated workflows match existing files, exiting with an error if they differ. This is useful for enforcing workflow consistency in CI.
 

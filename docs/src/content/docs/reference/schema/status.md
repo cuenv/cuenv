@@ -24,6 +24,6 @@ Agents and contributors must use the matrix before generating examples or answer
 - Images: `#ContainerImage` is schema-visible, but `cuenv build` currently lists image definitions and rejects selected build requests until an execution backend exists.
 - Services: `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` use persisted service session state; service docs and runnable fixtures are still partial.
 - Tasks: groups, sequences, params, output refs, and caching are real; `timeout`, `retry`, `continueOnError`, and group `maxConcurrency` need explicit limitation notes.
-- CI and release: GitHub CI sync is the strongest path; GitLab export/sync and config-driven release backends are not complete.
+- CI and release: GitHub CI sync is the strongest path; Buildkite sync/export is partial; GitLab export/sync is schema-only and sync rejects it with a configuration error until an emitter exists; config-driven release backends are not complete.
 
 Run `cuenv task ci.schema-docs-check` after changing schema, docs, prompts, examples, skills, or CLI surfaces.

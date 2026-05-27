@@ -1256,7 +1256,9 @@ cuenv can generate CI workflow manifests for multiple providers. CI configuratio
 
 ### #CIProvider
 
-Supported CI provider names for workflow generation.
+Schema-recognized CI provider names for workflow generation. Provider support
+varies: GitHub and Buildkite have `cuenv sync ci` support today, while GitLab
+is schema-only and sync rejects it until a GitLab emitter exists.
 
 ```cue
 #CIProvider: "github" | "buildkite" | "gitlab"

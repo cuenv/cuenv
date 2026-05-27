@@ -94,31 +94,45 @@ struct BuildkiteSyncRequest<'a> {
 // CI Workflow Sync
 // ============================================================================
 
-/// Known CI providers supported by cuenv sync.
-const KNOWN_PROVIDERS: &[&str] = &["github", "buildkite", "gitlab"];
+/// CI providers with implemented `cuenv sync ci` emitters.
+const SUPPORTED_SYNC_PROVIDERS: &[&str] = &["github", "buildkite"];
+
+/// CI providers recognized by the schema, including schema-only providers.
+const KNOWN_CI_PROVIDERS: &[&str] = &["github", "buildkite", "gitlab"];
 
 /// Validate provider names against known providers.
 ///
 /// Returns a tuple of (valid_providers, warnings).
 /// Unknown providers generate warnings but don't prevent sync from proceeding
 /// with the valid ones.
-fn validate_providers(providers: &[String]) -> (Vec<String>, Vec<String>) {
+fn validate_providers(providers: &[String]) -> Result<(Vec<String>, Vec<String>)> {
     let mut valid = Vec::new();
     let mut warnings = Vec::new();
+    let mut unsupported = Vec::new();
 
     for p in providers {
-        if KNOWN_PROVIDERS.contains(&p.as_str()) {
+        if SUPPORTED_SYNC_PROVIDERS.contains(&p.as_str()) {
             valid.push(p.clone());
+        } else if KNOWN_CI_PROVIDERS.contains(&p.as_str()) {
+            unsupported.push(p.clone());
         } else {
             warnings.push(format!(
                 "Unknown CI provider '{}'. Known providers: {}",
                 p,
-                KNOWN_PROVIDERS.join(", ")
+                KNOWN_CI_PROVIDERS.join(", ")
             ));
         }
     }
 
-    (valid, warnings)
+    if !unsupported.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "CI sync is not implemented for provider(s): {}. Supported sync providers: {}.",
+            unsupported.join(", "),
+            SUPPORTED_SYNC_PROVIDERS.join(", ")
+        )));
+    }
+
+    Ok((valid, warnings))
 }
 
 /// Execute the sync ci command for a single project.
@@ -196,7 +210,7 @@ pub async fn execute_sync_ci(
     };
 
     // Validate providers
-    let (valid_providers, warnings) = validate_providers(&providers);
+    let (valid_providers, warnings) = validate_providers(&providers)?;
     for warning in &warnings {
         tracing::warn!("{}", warning);
     }
@@ -204,7 +218,7 @@ pub async fn execute_sync_ci(
     if valid_providers.is_empty() {
         return Err(cuenv_core::Error::configuration(format!(
             "No valid CI providers specified. Known providers: {}",
-            KNOWN_PROVIDERS.join(", ")
+            SUPPORTED_SYNC_PROVIDERS.join(", ")
         )));
     }
 
@@ -228,13 +242,9 @@ pub async fn execute_sync_ci(
                 };
                 execute_sync_buildkite(&buildkite_request)
             }
-            "gitlab" => {
-                tracing::debug!("GitLab CI sync not yet implemented");
-                continue;
-            }
             _ => Err(cuenv_core::Error::configuration(format!(
-                "Unsupported CI provider: {prov}. Supported: {}",
-                KNOWN_PROVIDERS.join(", ")
+                "Unsupported CI sync provider: {prov}. Supported: {}",
+                SUPPORTED_SYNC_PROVIDERS.join(", ")
             ))),
         };
 
@@ -251,20 +261,20 @@ pub async fn execute_sync_ci(
         }
     }
 
+    if !errors.is_empty() {
+        let error_summary: Vec<String> = errors
+            .iter()
+            .map(|(prov, e)| format!("{prov}: {e}"))
+            .collect();
+        let scope = if outputs.is_empty() { "all" } else { "some" };
+        return Err(cuenv_core::Error::configuration(format!(
+            "CI sync failed for {scope} providers:\n{}",
+            error_summary.join("\n")
+        )));
+    }
+
     if outputs.is_empty() {
-        if errors.is_empty() {
-            Ok("No CI configuration found.".to_string())
-        } else {
-            // CI config exists but all providers had errors
-            let error_summary: Vec<String> = errors
-                .iter()
-                .map(|(prov, e)| format!("{prov}: {e}"))
-                .collect();
-            Ok(format!(
-                "CI sync failed for all providers:\n{}",
-                error_summary.join("\n")
-            ))
-        }
+        Ok("No CI configuration found.".to_string())
     } else {
         Ok(outputs.join("\n"))
     }
@@ -297,6 +307,7 @@ pub async fn execute_sync_ci_workspace(
     }
 
     let mut outputs = Vec::new();
+    let mut errors = Vec::new();
 
     for project in &projects {
         // Use absolute path - relative_path is relative to module root, not CWD
@@ -315,9 +326,13 @@ pub async fn execute_sync_ci_workspace(
             }
             Ok(_) => {}
             Err(e) => {
-                outputs.push(format!("[{}] Error: {}", project.config.name, e));
+                errors.push(format!("[{}] Error: {}", project.config.name, e));
             }
         }
+    }
+
+    if !errors.is_empty() {
+        return Err(cuenv_core::Error::configuration(errors.join("\n\n")));
     }
 
     if outputs.is_empty() {

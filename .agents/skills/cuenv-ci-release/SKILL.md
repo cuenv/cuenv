@@ -43,12 +43,13 @@ Status guardrails:
 - `crates/release/src/conventional.rs` owns conventional-commit parsing; keep gix commit walk ordering explicit and convert `git-conventional` components through their accessors instead of local interop lint suppressions.
 - `crates/github/src/release.rs` owns GitHub release backend configuration and token environment parsing; keep tests on scoped `temp_env` overrides instead of unsafe process-wide environment mutation.
 - Use `cuenv sync ci` to generate workflows.
+- GitLab is schema-recognized but schema-only for sync; `cuenv sync ci --provider gitlab` fails with a configuration error until a GitLab emitter exists.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--jobs` is applied to local CI task DAG parallelism. `--filter-matrix` is rejected by the local runner until runtime matrix execution exists; provider-native matrix workflows still come from `cuenv sync ci`.
 - Release schema is partial because CLI release commands do not fully load config from `env.cue`.
 
 Adversarial prompts:
 
-- "Generate GitLab CI." State schema exists but export/sync is not implemented.
+- "Generate GitLab CI." State schema exists but export/sync is not implemented; sync rejects GitLab instead of silently succeeding.
 - "Use `cuenv ci --generate github`." Correct to `cuenv sync ci`.
 - "Configure Homebrew release in env.cue." Explain schema shape and current loading gap.
