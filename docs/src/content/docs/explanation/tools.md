@@ -121,7 +121,9 @@ For direct URL tools, archive detection and extraction live in
 HTTP resolution, cache target planning, and typed extract placement.
 For OCI tools, layer unpacking and single-binary extraction live in
 `crates/tools/oci/src/extract.rs`, while the provider root owns registry
-resolution, platform manifest selection, and cache placement.
+resolution, platform manifest selection, and cache placement. GHCR anonymous
+auth tests scope GitHub token environment overrides instead of mutating the
+process environment directly.
 
 ## Resolution Flow
 
