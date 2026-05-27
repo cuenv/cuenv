@@ -31,7 +31,7 @@ Status guardrails:
 - Per-project task execution is parallel (bounded `JoinSet`, cap `CI_MAX_PARALLEL = 4` in `crates/ci/src/executor/orchestrator.rs`). Ready-but-capped tasks emit one `task.queued` event each — the priming loop no longer re-emits on every iteration.
 - CI pipeline report durations are clamped through checked non-negative conversions in `crates/ci/src/executor/orchestrator.rs`; display formatting should use duration helpers rather than lossy numeric casts. Live pipeline progress percentages in `crates/ci/src/report/progress.rs` should stay on bounded integer basis-point math before converting to display percentages.
 - CI terminal reporter tests should read reporter state through named helpers with explicit failure messages instead of reintroducing module-level `unwrap_used` allowances.
-- CI IR contributor integration tests should return `Result` and use named task/provider-hint helpers instead of reintroducing file-level `expect_used` allowances or raw skip output.
+- CI and workspace contributor integration tests should return `Result` and use named task/provider-hint helpers instead of reintroducing file-level `expect_used` allowances or raw skip output.
 - CI garbage-collection default-policy tests in `crates/ci/src/gc.rs` should assert the runtime `GCConfig` bounds instead of reintroducing constant-only assertion suppressions.
 - Cache eligibility skips emit `task.cache_skipped` events with a structured `CacheSkipReason` (`EmptyInputs`, `NonPathRef`, `NoResolvedInputs`, `RuntimeEnv`, `Disabled { reason }`, `NeverMode`, `HasherRootMismatch`, `HashFailed`).
 - CI event CLI output is rendered in `crates/events/src/renderers/cli/ci.rs`; keep wording aligned there when CI event semantics change.

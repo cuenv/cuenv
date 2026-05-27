@@ -309,6 +309,8 @@ large mixed test module.
 CI IR contributor integration tests return `Result` and use named task and
 provider-hint helpers so contributor assertions stay explicit without file-level
 `expect_used` allowances or raw skip output.
+Workspace contributor integration tests use the same fallible helper pattern for
+DAG injection and auto-association assertions.
 Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
 project maps are generic over the caller's `BuildHasher`, so the public API does
 not force or suppress default hashing.
