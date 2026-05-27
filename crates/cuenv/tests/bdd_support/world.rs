@@ -83,7 +83,7 @@ impl TestWorld {
         })
     }
 
-    fn repo_root() -> StepResult<PathBuf> {
+    pub(super) fn repo_root() -> StepResult<PathBuf> {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let crates_dir = manifest_dir
             .parent()
@@ -102,6 +102,26 @@ impl TestWorld {
 
     fn state_root(&self) -> &Path {
         self.state_dir.parent().unwrap_or(&self.state_dir)
+    }
+
+    pub(super) fn state_file(&self, name: &str) -> PathBuf {
+        self.state_root().join(name)
+    }
+
+    pub(super) fn current_dir_arg(&self) -> StepResult<String> {
+        Self::path_arg(&self.current_dir)
+    }
+
+    pub(super) fn scenario_path(&self, dir: &str) -> StepResult<PathBuf> {
+        if let Some(base_dir) = &self.test_base_dir {
+            Ok(base_dir.join(dir))
+        } else {
+            let parent = self
+                .current_dir
+                .parent()
+                .ok_or_else(|| anyhow!("current directory has no parent"))?;
+            Ok(parent.join(dir))
+        }
     }
 
     /// Run cuenv command with arguments
@@ -190,7 +210,7 @@ impl TestWorld {
     }
 
     /// Check if hooks are complete by examining state files
-    pub(super) async fn check_hooks_complete(&self, _dir: &str) -> bool {
+    pub(super) async fn check_hooks_complete(&self) -> bool {
         // List all files in the state directory to see what's there
         if let Ok(mut entries) = fs::read_dir(&self.state_dir).await {
             let mut files = Vec::new();

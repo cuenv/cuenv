@@ -133,9 +133,11 @@ and report unexpected exits as errors instead of using file-level unwrap/expect
 allowances. Cucumber BDD coverage keeps the root runner in
 `crates/cuenv/tests/bdd.rs`, with shared world state and env/task/hook step
 definitions split under `crates/cuenv/tests/bdd_support/`. World initialization,
-project fixture writes, CUE module setup, env-step tables, and task command
-execution use fallible step helpers instead of broad unwrap/expect allowances,
-so no single BDD test module carries all scenario concerns. CLI hook command
+project fixture writes, CUE module setup, env-step tables, task command
+execution, hook status polling, approval setup, shell execution, and hook
+failure assertions use fallible step helpers instead of broad
+unwrap/expect/print allowances or warning-based skipped assertions, so no
+single BDD test module carries all scenario concerns. CLI hook command
 orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
 snippet generation and status rendering live under
 `crates/cuenv/src/commands/hooks/`.
