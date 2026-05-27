@@ -4,18 +4,16 @@
 //! task/service dependency graph, and delegates to the `ServiceController`
 //! for process supervision.
 
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::path::Path;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use cuenv_core::OutputCapture;
 use cuenv_core::environment::{Env, EnvValue, Environment};
 use cuenv_core::manifest::{ContainerImage, Project, Service};
 use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskNode, Tasks};
-use cuenv_core::OutputCapture;
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController, build_service_graph};
 use cuenv_services::session::SessionManager;
@@ -130,7 +128,7 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
             &project.tasks,
             &project.images,
             &project.services,
-        );
+        )?;
 
         let graph = build_service_graph(&filtered_services).map_err(|e| {
             cuenv_core::Error::execution(format!("Failed to build service graph: {e}"))
@@ -235,10 +233,11 @@ fn service_dependency_plan(
     tasks: &HashMap<String, TaskNode>,
     images: &HashMap<String, ContainerImage>,
     all_services: &HashMap<String, Service>,
-) -> ServiceDependencyPlan {
+) -> cuenv_core::Result<ServiceDependencyPlan> {
     let mut plan = ServiceDependencyPlan::default();
     let mut seen_tasks = HashSet::new();
     let mut seen_images = HashSet::new();
+    let mut unknown = Vec::new();
 
     for (service_name, service) in services {
         for dependency in &service.depends_on {
@@ -264,16 +263,19 @@ fn service_dependency_plan(
                     &mut plan.task_roots,
                 );
             } else {
-                tracing::debug!(
-                    service = %service_name,
-                    dependency = %dependency_name,
-                    "Deferring unknown service dependency to service graph validation"
-                );
+                unknown.push(format!("{service_name} depends on '{dependency_name}'"));
             }
         }
     }
 
-    plan
+    if unknown.is_empty() {
+        Ok(plan)
+    } else {
+        Err(cuenv_core::Error::configuration(format!(
+            "cuenv up service dependencies were not found: {}",
+            unknown.join("; ")
+        )))
+    }
 }
 
 fn collect_image_task_dependencies(
@@ -294,7 +296,9 @@ fn collect_image_task_dependencies(
             if seen_tasks.insert(dependency_name.to_string()) {
                 task_roots.push(dependency_name.to_string());
             }
-        } else if images.contains_key(dependency_name) && seen_images.insert(dependency_name.to_string()) {
+        } else if images.contains_key(dependency_name)
+            && seen_images.insert(dependency_name.to_string())
+        {
             collect_image_task_dependencies(
                 dependency_name,
                 images,
@@ -469,7 +473,39 @@ fn filter_services(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_core::manifest::ImageOutputRef;
     use cuenv_core::tasks::TaskDependency;
+
+    fn test_image(depends_on: Vec<&str>) -> ContainerImage {
+        ContainerImage {
+            image_type: "image".to_string(),
+            ref_output: ImageOutputRef {
+                cuenv_output_ref: true,
+                cuenv_image: "test".to_string(),
+                cuenv_output: "ref".to_string(),
+            },
+            digest: ImageOutputRef {
+                cuenv_output_ref: true,
+                cuenv_image: "test".to_string(),
+                cuenv_output: "digest".to_string(),
+            },
+            context: ".".to_string(),
+            dockerfile: "Dockerfile".to_string(),
+            build_args: HashMap::new(),
+            target: None,
+            tags: vec![],
+            registry: None,
+            repository: None,
+            platform: vec![],
+            depends_on: depends_on
+                .into_iter()
+                .map(TaskDependency::from_name)
+                .collect(),
+            labels: vec![],
+            inputs: vec![],
+            description: None,
+        }
+    }
 
     #[test]
     fn test_up_options_default() {
@@ -510,7 +546,7 @@ mod tests {
     }
 
     #[test]
-    fn service_dependency_plan_allows_service_deps() {
+    fn service_dependency_plan_allows_service_deps() -> cuenv_core::Result<()> {
         let mut services = HashMap::new();
         services.insert("db".to_string(), Service::default());
         services.insert(
@@ -522,14 +558,15 @@ mod tests {
         );
 
         let result =
-            service_dependency_plan(&services, &HashMap::new(), &HashMap::new(), &services);
+            service_dependency_plan(&services, &HashMap::new(), &HashMap::new(), &services)?;
 
         assert!(result.task_roots.is_empty());
         assert!(result.image_roots.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn service_dependency_plan_collects_task_deps() {
+    fn service_dependency_plan_collects_task_deps() -> cuenv_core::Result<()> {
         let mut services = HashMap::new();
         services.insert(
             "api".to_string(),
@@ -542,10 +579,35 @@ mod tests {
         let mut tasks = HashMap::new();
         tasks.insert("build".to_string(), TaskNode::Task(Box::default()));
 
-        let result = service_dependency_plan(&services, &tasks, &HashMap::new(), &services);
+        let result = service_dependency_plan(&services, &tasks, &HashMap::new(), &services)?;
 
         assert_eq!(result.task_roots, vec!["build"]);
         assert!(result.image_roots.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn service_dependency_plan_collects_image_deps() -> cuenv_core::Result<()> {
+        let mut services = HashMap::new();
+        services.insert(
+            "api".to_string(),
+            Service {
+                depends_on: vec![TaskDependency::from_name("api-image")],
+                ..Service::default()
+            },
+        );
+
+        let mut tasks = HashMap::new();
+        tasks.insert("build".to_string(), TaskNode::Task(Box::default()));
+
+        let mut images = HashMap::new();
+        images.insert("api-image".to_string(), test_image(vec!["build"]));
+
+        let result = service_dependency_plan(&services, &tasks, &images, &services)?;
+
+        assert_eq!(result.task_roots, vec!["build"]);
+        assert_eq!(result.image_roots, vec!["api-image"]);
+        Ok(())
     }
 
     #[test]
