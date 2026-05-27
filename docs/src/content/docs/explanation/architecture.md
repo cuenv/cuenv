@@ -276,6 +276,9 @@ contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
 Pipeline trigger condition assembly, normalized repo-relative path filters, and
 workspace dependency trigger paths live in
 `crates/ci/src/compiler/triggers.rs`.
+Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
+project maps are generic over the caller's `BuildHasher`, so the public API does
+not force or suppress default hashing.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. The CI crate root keeps only the

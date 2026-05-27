@@ -2,17 +2,20 @@ use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
 use cuenv_core::{AffectedBy, matches_pattern};
 use std::collections::{HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
 #[must_use]
-#[allow(clippy::implicit_hasher)]
-pub fn compute_affected_tasks(
+pub fn compute_affected_tasks<S>(
     changed_files: &[PathBuf],
     pipeline_tasks: &[String],
     project_root: &Path,
     config: &Project,
-    all_projects: &HashMap<String, (PathBuf, Project)>,
-) -> Vec<String> {
+    all_projects: &HashMap<String, (PathBuf, Project), S>,
+) -> Vec<String>
+where
+    S: BuildHasher,
+{
     tracing::trace!(
         project_root = %project_root.display(),
         pipeline_tasks = ?pipeline_tasks,
@@ -216,13 +219,15 @@ fn is_task_directly_affected(
 /// value into the cache before checking. If we encounter this dependency again during
 /// recursion, we return false (not affected). Once the check completes, the cache is
 /// updated with the actual result.
-#[allow(clippy::implicit_hasher)]
-fn check_external_dependency(
+fn check_external_dependency<S>(
     dep: &str,
-    all_projects: &HashMap<String, (PathBuf, Project)>,
+    all_projects: &HashMap<String, (PathBuf, Project), S>,
     changed_files: &[PathBuf],
     cache: &mut HashMap<String, bool>,
-) -> bool {
+) -> bool
+where
+    S: BuildHasher,
+{
     // dep format: "#project:task"
     if let Some(result) = cache.get(dep) {
         return *result;
