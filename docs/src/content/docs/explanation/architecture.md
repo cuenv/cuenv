@@ -283,7 +283,10 @@ GitHub Actions release workflow construction is separated into
 `crates/github/src/workflow/release.rs`; bootstrap, simple, matrix, and
 artifact job construction lives in `crates/github/src/workflow/jobs.rs`;
 the general emitter stays focused on workflow naming, triggers, permissions,
-and serialization.
+and serialization. Workflow emitter regression tests are grouped under
+`crates/github/src/workflow/emitter_tests/` by workflow emission, job building,
+matrix/artifact handling, phase steps, working-directory handling, and trigger
+path behavior.
 
 ### cuenv-ci
 
