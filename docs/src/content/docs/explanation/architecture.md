@@ -201,6 +201,9 @@ requiring a crate-wide `expect_used` allowance.
 The internal event coordinator keeps the client registry to the active message
 sender only; registration metadata is logged at connect time rather than stored
 as unread per-client state.
+Coordinator messages use length-prefixed JSON with explicit frame-size checks
+before converting between header and allocation sizes, so oversized frames fail
+without relying on module-wide cast truncation allowances.
 `crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
 guards, and macros directly, so it does not need a module-level dead-code
 allowance.
