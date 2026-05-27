@@ -64,8 +64,9 @@ pub use changelog::{ChangelogEntry, ChangelogGenerator};
 pub use changeset::{BumpType, Changeset, ChangesetManager, PackageChange};
 pub use commit_analyzer::{CommitAnalyzer, PackageAffect};
 pub use config::{
-    ChangelogConfig, ReleaseConfig, ReleaseGitConfig, ReleasePackagesConfig, TagType,
-    VersioningStrategy,
+    ChangelogCategory, ChangelogConfig, CratesBackendConfig, CueBackendConfig,
+    GitHubBackendConfig, HomebrewBackendConfig, ReleaseBackendsConfig, ReleaseConfig,
+    ReleaseGitConfig, ReleasePackagesConfig, TagType, VersioningStrategy,
 };
 pub use conventional::{CommitParser, ConventionalCommit};
 pub use cuenv_core::DryRun;

@@ -687,7 +687,11 @@ cuenv changeset status [OPTIONS]
 
 ### `cuenv release`
 
-Release management operations.
+Release management operations. Release commands look for a `release` block in
+the `env.cue` at the selected project root (package `cuenv`) and use it for tag
+settings, package grouping, changelog settings, binary targets, and configured
+release backends. When no `env.cue` release block is present, the commands keep
+their built-in defaults.
 
 #### `cuenv release version`
 
@@ -714,6 +718,10 @@ cuenv release publish [OPTIONS]
 
 - `-p, --path <PATH>`: Path to project root. Default: `.`
 - `--dry-run`: Show what would be published without publishing.
+
+If `release.backends` is present, `publish` only uses configured package
+publishing backends. The crates.io backend honors `tokenEnv`; the CUE registry
+backend is recognized but non-dry-run publishing is not implemented yet.
 
 ### `cuenv secrets`
 

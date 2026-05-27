@@ -1,8 +1,8 @@
 //! Binary release command orchestration.
 
 use cuenv_release::{
-    CargoManifest, OrchestratorConfig, ReleaseBackend, ReleaseOrchestrator, ReleasePhase,
-    ReleaseReport, Target,
+    CargoManifest, GitHubBackendConfig, HomebrewBackendConfig, OrchestratorConfig, ReleaseBackend,
+    ReleaseConfig, ReleaseOrchestrator, ReleasePhase, ReleaseReport, Target,
 };
 use std::fmt::Write;
 use std::path::Path;
@@ -103,15 +103,16 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
 
     let root = Path::new(&path);
     let manifest = CargoManifest::new(root);
+    let release_config = super::load_release_config(root)?;
     let release_version = release_binary_version(version, &manifest)?;
-    let binary_name = release_binary_name(&manifest)?;
-    let release_targets = release_binary_targets(targets.as_deref())?;
+    let binary_name = release_binary_name(&manifest, release_config.binary.as_deref())?;
+    let release_targets = release_binary_targets(targets.as_deref(), &release_config.targets)?;
     let config = OrchestratorConfig::new(&binary_name, &release_version)
         .with_targets(release_targets)
         .with_output_dir("target/release-artifacts")
         .with_dry_run(dry_run);
     let phase = release_binary_phase(phase);
-    let backends = release_binary_backends(root, &binary_name, backends.as_deref());
+    let backends = release_binary_backends(root, &binary_name, backends.as_deref(), &release_config);
     let report = run_release_binaries(config, backends, phase).await?;
 
     Ok(format_release_binaries_output(&ReleaseBinariesOutput {
@@ -136,7 +137,14 @@ fn release_binary_version(
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read version: {e}")))
 }
 
-fn release_binary_name(manifest: &CargoManifest) -> cuenv_core::Result<String> {
+fn release_binary_name(
+    manifest: &CargoManifest,
+    configured: Option<&str>,
+) -> cuenv_core::Result<String> {
+    if let Some(name) = configured {
+        return Ok(name.to_string());
+    }
+
     manifest
         .get_package_names()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read packages: {e}")))?
@@ -145,8 +153,12 @@ fn release_binary_name(manifest: &CargoManifest) -> cuenv_core::Result<String> {
         .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))
 }
 
-fn release_binary_targets(targets: Option<&[String]>) -> cuenv_core::Result<Vec<Target>> {
-    let Some(targets) = targets else {
+fn release_binary_targets(
+    requested: Option<&[String]>,
+    configured: &[String],
+) -> cuenv_core::Result<Vec<Target>> {
+    let targets = requested.unwrap_or(configured);
+    if targets.is_empty() {
         return Ok(vec![
             Target::LinuxX64,
             Target::LinuxArm64,
@@ -177,16 +189,28 @@ fn release_binary_backends(
     root: &Path,
     binary_name: &str,
     filter: Option<&[String]>,
+    config: &ReleaseConfig,
 ) -> Vec<Box<dyn ReleaseBackend>> {
     let mut backends: Vec<Box<dyn ReleaseBackend>> = Vec::new();
+    let configured_backends = config.backends.is_some();
 
     #[cfg(feature = "github")]
-    add_github_release_backend(&mut backends, root);
+    add_github_release_backend(
+        &mut backends,
+        root,
+        configured_backends,
+        config.backends.as_ref().and_then(|b| b.github.as_ref()),
+    );
     #[cfg(not(feature = "github"))]
     let _ = root;
 
     #[cfg(feature = "homebrew")]
-    add_homebrew_release_backend(&mut backends, binary_name);
+    add_homebrew_release_backend(
+        &mut backends,
+        binary_name,
+        configured_backends,
+        config.backends.as_ref().and_then(|b| b.homebrew.as_ref()),
+    );
     #[cfg(not(feature = "homebrew"))]
     let _ = binary_name;
 
@@ -199,26 +223,60 @@ fn release_binary_backends(
 }
 
 #[cfg(feature = "github")]
-fn add_github_release_backend(backends: &mut Vec<Box<dyn ReleaseBackend>>, root: &Path) {
-    if let Ok(token) = std::env::var("GITHUB_TOKEN")
-        && let Some((owner, repo)) = get_github_repo_from_remote(root)
-    {
-        let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token);
-        backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
+fn add_github_release_backend(
+    backends: &mut Vec<Box<dyn ReleaseBackend>>,
+    root: &Path,
+    configured_backends: bool,
+    config: Option<&GitHubBackendConfig>,
+) {
+    if configured_backends && config.is_none() {
+        return;
+    }
+    if config.is_some_and(|cfg| !cfg.assets) {
+        return;
+    }
+
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        let repo = config
+            .and_then(|cfg| cfg.repo.as_deref())
+            .and_then(parse_repo)
+            .or_else(|| get_github_repo_from_remote(root));
+
+        if let Some((owner, repo)) = repo {
+            let draft = config.is_some_and(|cfg| cfg.draft);
+            let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token)
+                .with_draft(draft);
+            backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
+        }
     }
 }
 
 #[cfg(feature = "homebrew")]
-fn add_homebrew_release_backend(backends: &mut Vec<Box<dyn ReleaseBackend>>, binary_name: &str) {
-    if std::env::var("HOMEBREW_TAP_TOKEN").is_err() {
+fn add_homebrew_release_backend(
+    backends: &mut Vec<Box<dyn ReleaseBackend>>,
+    binary_name: &str,
+    configured_backends: bool,
+    config: Option<&HomebrewBackendConfig>,
+) {
+    if configured_backends && config.is_none() {
+        return;
+    }
+    let token_env = config.map_or("HOMEBREW_TAP_TOKEN", |cfg| cfg.token_env.as_str());
+    if std::env::var(token_env).is_err() {
         return;
     }
 
-    // TODO: Load tap config from CUE release config.
-    let tap = format!("{binary_name}/homebrew-tap");
-    let config = cuenv_homebrew::HomebrewConfig::new(&tap, binary_name)
+    let tap = config
+        .map(|cfg| cfg.tap.as_str())
+        .filter(|tap| !tap.is_empty())
+        .map_or_else(|| format!("{binary_name}/homebrew-tap"), ToString::to_string);
+    let formula = config
+        .and_then(|cfg| cfg.formula.as_deref())
+        .unwrap_or(binary_name);
+    let config = cuenv_homebrew::HomebrewConfig::new(&tap, formula)
         .with_license("AGPL-3.0-or-later")
-        .with_homepage(format!("https://github.com/{binary_name}"));
+        .with_homepage(format!("https://github.com/{binary_name}"))
+        .with_token_env(token_env);
     backends.push(Box::new(cuenv_homebrew::HomebrewBackend::new(config)));
 }
 
@@ -297,6 +355,13 @@ fn get_github_repo_from_remote(root: &Path) -> Option<(String, String)> {
     let remote = repo.find_remote("origin").ok()?;
     let url = remote.url(gix::remote::Direction::Fetch)?;
     parse_github_url(&url.to_bstring().to_string())
+}
+
+/// Parses a GitHub URL into (owner, repo).
+#[cfg(feature = "github")]
+fn parse_repo(repo: &str) -> Option<(String, String)> {
+    let (owner, repo) = repo.split_once('/')?;
+    Some((owner.to_string(), repo.to_string()))
 }
 
 /// Parses a GitHub URL into (owner, repo).

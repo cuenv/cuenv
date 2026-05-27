@@ -1,7 +1,8 @@
 //! Release preparation command orchestration.
 
 use cuenv_release::{
-    BumpType, CargoManifest, CommitAnalyzer, CommitParser, ConventionalCommit, TagType, Version,
+    BumpType, CargoManifest, CommitAnalyzer, CommitParser, ConventionalCommit, ReleaseConfig,
+    Version, VersionCalculator,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -41,6 +42,7 @@ struct ReleasePrepareAnalysis {
     root: PathBuf,
     commits: Vec<ConventionalCommit>,
     manifest: CargoManifest,
+    release_config: ReleaseConfig,
     package_paths: HashMap<String, PathBuf>,
     new_versions: HashMap<String, Version>,
     bump_infos: Vec<PackageBumpInfo>,
@@ -96,9 +98,15 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
     let root = Path::new(&opts.path).canonicalize().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", &opts.path))
     })?;
+    let release_config = super::load_release_config(&root)?;
 
-    let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref(), "", TagType::Semver)
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
+    let commits = CommitParser::parse_since_tag(
+        &root,
+        opts.since.as_deref(),
+        &release_config.git.tag_prefix,
+        release_config.git.tag_type,
+    )
+    .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
         return Ok(ReleasePreparePlan::Nothing(
@@ -125,46 +133,40 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
         ));
     }
 
-    let max_bump = package_bumps
-        .values()
-        .filter(|b| **b != BumpType::None)
-        .max()
-        .copied()
-        .unwrap_or(BumpType::None);
-
-    if max_bump == BumpType::None {
+    if package_bumps.values().all(|b| *b == BumpType::None) {
         return Ok(ReleasePreparePlan::Nothing(
             "No version-bumping changes found. Nothing to release.".to_string(),
         ));
     }
 
-    let max_current = package_versions
-        .values()
-        .max()
-        .cloned()
-        .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))?;
-    let adjusted_bump = max_current.adjusted_bump_type(max_bump);
-    let new_version = max_current.bump(adjusted_bump);
+    let calculator =
+        VersionCalculator::new(package_versions.clone(), release_config.packages.clone());
+    let new_versions = calculator.calculate(&package_bumps);
 
     let mut bump_infos = Vec::new();
-    for (pkg_name, current) in &package_versions {
+    for (pkg_name, new_version) in &new_versions {
+        let current = package_versions.get(pkg_name).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("No version found for package: {pkg_name}"))
+        })?;
+        let bump_type = package_bumps
+            .get(pkg_name)
+            .copied()
+            .unwrap_or(BumpType::None)
+            .to_string();
         bump_infos.push(PackageBumpInfo {
             name: pkg_name.clone(),
             current_version: current.to_string(),
             new_version: new_version.to_string(),
-            bump_type: adjusted_bump.to_string(),
+            bump_type,
         });
     }
-    let new_versions: HashMap<String, Version> = package_versions
-        .keys()
-        .map(|k| (k.clone(), new_version.clone()))
-        .collect();
 
     Ok(ReleasePreparePlan::Ready(Box::new(
         ReleasePrepareAnalysis {
             root,
             commits,
             manifest,
+            release_config,
             package_paths,
             new_versions,
             bump_infos,
@@ -178,6 +180,11 @@ fn render_release_prepare_summary(analysis: &ReleasePrepareAnalysis) -> String {
     let _ = writeln!(output, "=======================\n");
     let _ = writeln!(output, "Commits analyzed: {}", analysis.commits.len());
     let _ = writeln!(output, "Packages affected: {}\n", analysis.bump_infos.len());
+    let _ = writeln!(
+        output,
+        "Changelog path: {}\n",
+        analysis.release_config.changelog.path
+    );
 
     let _ = writeln!(output, "Version Bumps:");
     let _ = writeln!(output, "{:-<60}", "");
