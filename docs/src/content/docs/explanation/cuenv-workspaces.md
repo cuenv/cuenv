@@ -237,6 +237,8 @@ config scanning lives in `detection/filesystem.rs`. Package.json manager hints
 and fallback npm detection live in `detection/package_json.rs`; priority
 ordering remains with the public entrypoints so command hints, Yarn version
 handling, config validation, and confidence scoring stay in focused boundaries.
+Discovery integration tests skip packaged-build paths through tracing rather
+than stdout diagnostics, keeping direct console-output warnings actionable.
 
 ## Integration Patterns
 
