@@ -517,7 +517,9 @@ cd /project/dir
 
 The shell export formatter keeps the loaded-directory and pending-approval
 environment variable names as explicit constants that are interpolated into
-each supported shell snippet.
+each supported shell snippet. Hook-backed export wait progress writes through
+an explicit stderr helper so prompt-time status rendering stays out of raw
+print macros.
 
 ## Data Flow
 

@@ -13,7 +13,7 @@ Start with `docs/design/specs/schema-coverage-matrix.md`, then read the relevant
 - `schema/hooks.cue` and `schema/shell.cue` for hooks and shell command variants.
 - `crates/core/src/environment/values.rs` for env value shapes, policy checks, interpolation, and secret-aware value resolution; `crates/core/src/environment.rs` for runtime environment merging, PATH lookup, and filtered env construction.
 - `crates/hooks/src/state/` for persistent hook execution state, marker files, cleanup, and execution hashes; `crates/hooks/src/executor.rs` for hook execution orchestration; `crates/hooks/src/executor/source_environment.rs` for source-hook environment capture.
-- `crates/cuenv/src/commands/hooks.rs` for CLI hook command orchestration; `crates/cuenv/src/commands/hooks/status.rs` for status/starship rendering; `crates/cuenv/src/commands/hooks/shell.rs` for `cuenv shell init` snippets.
+- `crates/cuenv/src/commands/hooks.rs` for CLI hook command orchestration; `crates/cuenv/src/commands/hooks/status.rs` for status/starship rendering; `crates/cuenv/src/commands/hooks/shell.rs` for `cuenv shell init` snippets. Hook-backed export wait progress lives in `crates/cuenv/src/commands/export/hooks.rs` and should use its stderr writer helper instead of raw print macros.
 - `crates/ci/src/executor/hook_env.rs` for hook-backed environment assembly during CI task execution.
 - `crates/ci/src/executor/task_env.rs` for CI task env precedence and passthrough handling.
 - Interactive prompt and wait-progress CLI output is rendered in `crates/events/src/renderers/cli/interactive.rs`; keep approval-facing wording aligned there when prompt semantics change.

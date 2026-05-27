@@ -373,11 +373,9 @@ fn render_hook_wait_progress(state: &HookExecutionState, start_time: Instant, is
     let hook_name = state
         .current_hook_display()
         .unwrap_or_else(|| "hook".to_string());
-    #[allow(clippy::print_stderr)] // TTY progress indicator, no secrets
-    {
-        eprint!("\r\x1b[KWaiting for hook `{hook_name}` to complete... [{elapsed}s]");
-    }
-    let _ = std::io::stderr().flush();
+    write_hook_progress(&format!(
+        "Waiting for hook `{hook_name}` to complete... [{elapsed}s]"
+    ));
 }
 
 fn clear_hook_progress_line(is_tty: bool) {
@@ -385,11 +383,18 @@ fn clear_hook_progress_line(is_tty: bool) {
         return;
     }
 
-    #[allow(clippy::print_stderr)] // TTY clear line, no secrets
-    {
-        eprint!("\r\x1b[K");
+    write_hook_progress("");
+}
+
+fn write_hook_progress(message: &str) {
+    let mut stderr = std::io::stderr().lock();
+    if let Err(error) = write!(stderr, "\r\x1b[K{message}") {
+        tracing::warn!(%error, "failed to write hook progress line");
+        return;
     }
-    let _ = std::io::stderr().flush();
+    if let Err(error) = stderr.flush() {
+        tracing::warn!(%error, "failed to flush hook progress line");
+    }
 }
 
 fn hook_completion_result(
