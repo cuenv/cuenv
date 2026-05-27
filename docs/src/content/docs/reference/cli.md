@@ -340,6 +340,9 @@ cuenv fmt --fix -p ./packages/my-app
 
 :::note
 The `cuenv fmt` command requires a `formatters` block in your `env.cue`. See the [Formatters Guide](/how-to/formatters/) for configuration details.
+It discovers files once with the repository ignore rules applied, then dispatches
+the matched Rust, Nix, Go, and CUE file groups through the shared formatter
+runners used by sync checks.
 :::
 
 ### `cuenv shell`
