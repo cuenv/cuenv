@@ -63,7 +63,6 @@ pub struct Cli {
 ///
 /// The binary itself handles completion requests via environment variables.
 /// This function outputs instructions for the user to set up completions.
-#[allow(clippy::print_stdout)] // Static completion instructions, no secrets
 pub fn generate_completions(shell: Shell) {
     let shell_name = match shell {
         Shell::Bash => "bash",
@@ -75,31 +74,31 @@ pub fn generate_completions(shell: Shell) {
     };
 
     // Print instructions for the user
-    println!("# cuenv shell completions for {shell_name}");
-    println!("#");
-    println!("# Add the following to your shell config:");
-    println!();
+    cuenv_events::println_redacted(&format!("# cuenv shell completions for {shell_name}"));
+    cuenv_events::println_redacted("#");
+    cuenv_events::println_redacted("# Add the following to your shell config:");
+    cuenv_events::println_redacted("");
 
     match shell {
         Shell::Bash => {
-            println!(r"source <(COMPLETE=bash cuenv)");
+            cuenv_events::println_redacted(r"source <(COMPLETE=bash cuenv)");
         }
         Shell::Zsh => {
-            println!(r"source <(COMPLETE=zsh cuenv)");
+            cuenv_events::println_redacted(r"source <(COMPLETE=zsh cuenv)");
         }
         Shell::Fish => {
-            println!(r"COMPLETE=fish cuenv | source");
+            cuenv_events::println_redacted(r"COMPLETE=fish cuenv | source");
         }
         Shell::Elvish => {
-            println!(r"eval (E:COMPLETE=elvish cuenv | slurp)");
+            cuenv_events::println_redacted(r"eval (E:COMPLETE=elvish cuenv | slurp)");
         }
         Shell::PowerShell => {
-            println!(
-                r#"$env:COMPLETE = "powershell"; cuenv | Out-String | Invoke-Expression; Remove-Item Env:\COMPLETE"#
+            cuenv_events::println_redacted(
+                r#"$env:COMPLETE = "powershell"; cuenv | Out-String | Invoke-Expression; Remove-Item Env:\COMPLETE"#,
             );
         }
         _ => {
-            println!("# Shell not supported for dynamic completions");
+            cuenv_events::println_redacted("# Shell not supported for dynamic completions");
         }
     }
 }

@@ -167,6 +167,8 @@ enums live in `crates/cuenv/src/cli/subcommands.rs`; conversion into the
 internal command model lives in `crates/cuenv/src/cli/command_conversion.rs`;
 output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
 and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
+Static completion setup text is routed through the shared redacted stdout helper
+instead of raw print macros, even though it contains no secrets.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
 and workspace-wide module evaluation helpers live in
 `crates/cuenv/src/commands/module_evaluation.rs`; task CLI adapter construction
