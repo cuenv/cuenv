@@ -6,6 +6,7 @@
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We use Nix for builds and checks, cuenv for orchestration and workflow validation, and choose the smallest check that proves the current change.
 - `nix flake check -L --accept-flake-config` is the final review/merge/release gate and the escalation gate for broad-risk changes listed under Validation Strategy.
+- Isolated draft commits may be committed and pushed after focused validation when no full-flake trigger applies. Do not request review, mark ready, merge, or release until the full root flake check has passed.
 - Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, simple test extractions or moves, behavior-preserving refactors, and one-crate test-only dependency changes when the focused gate proves the touched surface.
 - Always update ./docs for all work.
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
@@ -51,7 +52,7 @@ cuenv task ci.schema-docs-check
 
 ## Validation Strategy
 
-Default to the smallest validation set that proves the current change. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
+Default to the smallest validation set that proves the current change. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit; commit and push the isolated draft change with the focused validation recorded in the PR.
 
 Before starting a full root flake check, name the trigger that requires it. If no trigger applies, keep validation focused and record the focused gate instead.
 

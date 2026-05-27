@@ -80,7 +80,7 @@ cuenv sync ci --check
 cuenv fmt --fix
 ```
 
-Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit; commit and push the isolated draft change with the focused validation recorded in the PR.
 
 Before starting a full root flake check, identify the trigger that requires it. If no trigger applies, keep validation focused and record the focused gate instead.
 
