@@ -103,7 +103,7 @@ The `#Tool` type supports these fields:
 
 ## Tool Sources
 
-cuenv supports four tool sources:
+cuenv supports five tool sources:
 
 ### GitHub Releases
 
@@ -125,6 +125,25 @@ tools: {
             tag: "v{version}"
             asset: "gh_{version}_{os}_{arch}.tar.gz"
             path: "gh_{version}_{os}_{arch}/bin/gh"
+        }
+    }
+}
+```
+
+### Direct URLs
+
+Downloads binaries or archives from arbitrary HTTP/HTTPS URLs. Supports the
+same `{version}`, `{os}`, and `{arch}` template variables as GitHub assets.
+Archive formats auto-detected by file extension: `.zip`, `.tar.gz`/`.tgz`, and
+`.tar.xz`/`.txz`.
+
+```cue
+tools: {
+    mytool: {
+        version: "1.2.3"
+        source: schema.#URL & {
+            url:  "https://example.com/releases/{version}/mytool-{os}-{arch}.tar.gz"
+            path: "mytool-{os}-{arch}/bin/mytool"
         }
     }
 }

@@ -3,9 +3,6 @@
 //! Executes individual IR tasks with proper command handling, environment
 //! injection, and output streaming with secret redaction.
 
-// Task execution with output streaming and error handling
-#![allow(clippy::too_many_lines)]
-
 use crate::ir::Task as IRTask;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -160,122 +157,21 @@ impl IRTaskRunner {
         }
 
         let start = std::time::Instant::now();
+        let mut cmd = self.command_for_task(task);
 
-        // Build command based on shell mode
-        let mut cmd = if task.shell {
-            // Shell mode: wrap command in shell -c
-            let shell_cmd = task.command.join(" ");
-            tracing::debug!(shell_cmd = %shell_cmd, shell = %self.shell_path, "Running in shell mode");
-
-            let mut c = Command::new(&self.shell_path);
-            c.arg("-c");
-            c.arg(&shell_cmd);
-            c
-        } else {
-            // Direct mode: execve
-            tracing::debug!(cmd = ?task.command, "Running in direct mode");
-
-            let mut c = Command::new(&task.command[0]);
-            if task.command.len() > 1 {
-                c.args(&task.command[1..]);
-            }
-            c
-        };
-
-        // Set working directory
         cmd.current_dir(&self.project_root);
+        Self::configure_environment(&mut cmd, &env);
+        self.configure_output(&mut cmd);
 
-        // Clear environment and inject our variables
-        cmd.env_clear();
-        for (k, v) in &env {
-            cmd.env(k, v);
-        }
-
-        // Only inject essential env vars if not already provided in the env map
-        // (CI orchestrator may provide custom PATH with tool directories)
-        if !env.contains_key("PATH")
-            && let Ok(path) = std::env::var("PATH")
-        {
-            cmd.env("PATH", path);
-        }
-        if !env.contains_key("HOME")
-            && let Ok(home) = std::env::var("HOME")
-        {
-            cmd.env("HOME", home);
-        }
-
-        // Force color output even when stdout is piped
-        // These are widely supported: FORCE_COLOR by Node.js/chalk, CLICOLOR_FORCE by BSD/macOS
-        if !env.contains_key("FORCE_COLOR") {
-            cmd.env("FORCE_COLOR", "1");
-        }
-        if !env.contains_key("CLICOLOR_FORCE") {
-            cmd.env("CLICOLOR_FORCE", "1");
-        }
-
-        // Configure output - always pipe for streaming, or inherit if not capturing
-        if self.capture_output.should_capture() {
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-        } else {
-            cmd.stdout(Stdio::inherit());
-            cmd.stderr(Stdio::inherit());
-        }
-
-        // Execute
         tracing::info!(task = %task.id, "Starting task execution");
 
-        // Spawn the process
         let mut child = cmd.spawn().map_err(|e| RunnerError::SpawnFailed {
             task: task.id.clone(),
             source: e,
         })?;
 
-        // Collect output while streaming via events
-        let (stdout_content, stderr_content) = if self.capture_output.should_capture() {
-            let stdout_handle = child.stdout.take();
-            let stderr_handle = child.stderr.take();
+        let (stdout_content, stderr_content) = self.collect_output(&task.id, &mut child).await;
 
-            let task_id_stdout = task.id.clone();
-            let task_id_stderr = task.id.clone();
-
-            // Stream stdout line-by-line
-            let stdout_task = tokio::spawn(async move {
-                let mut lines = Vec::new();
-                if let Some(stdout) = stdout_handle {
-                    let mut reader = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        // Emit via event system - redaction happens in the event layer
-                        cuenv_events::emit_task_output!(&task_id_stdout, "stdout", &line);
-                        lines.push(line);
-                    }
-                }
-                lines.join("\n")
-            });
-
-            // Stream stderr line-by-line
-            let stderr_task = tokio::spawn(async move {
-                let mut lines = Vec::new();
-                if let Some(stderr) = stderr_handle {
-                    let mut reader = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        // Emit via event system - redaction happens in the event layer
-                        cuenv_events::emit_task_output!(&task_id_stderr, "stderr", &line);
-                        lines.push(line);
-                    }
-                }
-                lines.join("\n")
-            });
-
-            // Wait for both streams to complete
-            let stdout = stdout_task.await.unwrap_or_default();
-            let stderr = stderr_task.await.unwrap_or_default();
-            (stdout, stderr)
-        } else {
-            (String::new(), String::new())
-        };
-
-        // Wait for the process to complete
         let status = child
             .wait()
             .await
@@ -307,6 +203,104 @@ impl IRTaskRunner {
             duration_ms,
             captures: HashMap::new(),
         })
+    }
+
+    fn command_for_task(&self, task: &IRTask) -> Command {
+        if task.shell {
+            let shell_cmd = task.command.join(" ");
+            tracing::debug!(shell_cmd = %shell_cmd, shell = %self.shell_path, "Running in shell mode");
+
+            let mut command = Command::new(&self.shell_path);
+            command.arg("-c");
+            command.arg(&shell_cmd);
+            command
+        } else {
+            tracing::debug!(cmd = ?task.command, "Running in direct mode");
+
+            let mut command = Command::new(&task.command[0]);
+            if task.command.len() > 1 {
+                command.args(&task.command[1..]);
+            }
+            command
+        }
+    }
+
+    fn configure_environment(command: &mut Command, env: &BTreeMap<String, String>) {
+        command.env_clear();
+        for (key, value) in env {
+            command.env(key, value);
+        }
+
+        if !env.contains_key("PATH")
+            && let Ok(path) = std::env::var("PATH")
+        {
+            command.env("PATH", path);
+        }
+        if !env.contains_key("HOME")
+            && let Ok(home) = std::env::var("HOME")
+        {
+            command.env("HOME", home);
+        }
+
+        if !env.contains_key("FORCE_COLOR") {
+            command.env("FORCE_COLOR", "1");
+        }
+        if !env.contains_key("CLICOLOR_FORCE") {
+            command.env("CLICOLOR_FORCE", "1");
+        }
+    }
+
+    fn configure_output(&self, command: &mut Command) {
+        if self.capture_output.should_capture() {
+            command.stdout(Stdio::piped());
+            command.stderr(Stdio::piped());
+        } else {
+            command.stdout(Stdio::inherit());
+            command.stderr(Stdio::inherit());
+        }
+    }
+
+    async fn collect_output(
+        &self,
+        task_id: &str,
+        child: &mut tokio::process::Child,
+    ) -> (String, String) {
+        if !self.capture_output.should_capture() {
+            return (String::new(), String::new());
+        }
+
+        let stdout_handle = child.stdout.take();
+        let stderr_handle = child.stderr.take();
+        let task_id_stdout = task_id.to_string();
+        let task_id_stderr = task_id.to_string();
+
+        let stdout_task = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            if let Some(stdout) = stdout_handle {
+                let mut reader = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    cuenv_events::emit_task_output!(&task_id_stdout, "stdout", &line);
+                    lines.push(line);
+                }
+            }
+            lines.join("\n")
+        });
+
+        let stderr_task = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            if let Some(stderr) = stderr_handle {
+                let mut reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    cuenv_events::emit_task_output!(&task_id_stderr, "stderr", &line);
+                    lines.push(line);
+                }
+            }
+            lines.join("\n")
+        });
+
+        let stdout = stdout_task.await.unwrap_or_default();
+        let stderr = stderr_task.await.unwrap_or_default();
+        (stdout, stderr)
     }
 }
 

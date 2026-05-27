@@ -1,41 +1,45 @@
 //! CLI renderer for cuenv events.
 //!
 //! Renders events to stdout/stderr for terminal display.
-//! This module is allowed to use println!/eprintln! as it's the output layer.
-
-#![allow(clippy::print_stdout, clippy::print_stderr, clippy::too_many_lines)]
 
 use crate::bus::EventReceiver;
-use crate::event::{
-    CiEvent, CommandEvent, CuenvEvent, EventCategory, InteractiveEvent, OutputEvent, ServiceEvent,
-    Stream, SystemEvent, TaskEvent,
-};
+use crate::event::{CuenvEvent, EventCategory, SystemEvent};
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
+use std::fmt;
 use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
+mod ci;
+mod command;
+mod interactive;
+mod output;
+mod service;
+mod system;
+mod task;
+
 /// CLI renderer configuration.
-///
-/// `#[allow(clippy::struct_excessive_bools)]` — the fields are toggles
-/// that the CLI surfaces independently (colors, verbose, spinner,
-/// spinner output mirroring); folding them into a state machine would
-/// not improve clarity.
-#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct CliRendererConfig {
     /// Whether to use ANSI colors.
     pub colors: bool,
     /// Whether to show verbose output.
     pub verbose: bool,
+    /// Spinner rendering options.
+    pub spinner: CliSpinnerConfig,
+}
+
+/// Spinner-specific CLI renderer options.
+#[derive(Debug, Clone, Copy)]
+pub struct CliSpinnerConfig {
     /// Whether to render an indicatif spinner UI on a TTY. When `false`
     /// (or when stdout isn't a TTY) the renderer falls back to plain
     /// eprintln output so CI logs stay grep-able.
-    pub spinner: bool,
+    pub enabled: bool,
     /// Mirror the latest output line under each task spinner. Off by
     /// default to keep terminals quiet.
-    pub spinner_output_tail: bool,
+    pub output_tail: bool,
 }
 
 impl Default for CliRendererConfig {
@@ -44,8 +48,10 @@ impl Default for CliRendererConfig {
         Self {
             colors: tty,
             verbose: false,
-            spinner: tty,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: tty,
+                output_tail: false,
+            },
         }
     }
 }
@@ -78,9 +84,9 @@ impl CliRenderer {
     #[must_use]
     pub fn with_config(config: CliRendererConfig) -> Self {
         #[cfg(feature = "spinner")]
-        let spinner = if config.spinner {
+        let spinner = if config.spinner.enabled {
             Some(Mutex::new(
-                SpinnerRenderer::new().with_output_tail(config.spinner_output_tail),
+                SpinnerRenderer::new().with_output_tail(config.spinner.output_tail),
             ))
         } else {
             None
@@ -110,308 +116,14 @@ impl CliRenderer {
     pub fn render(&self, event: &CuenvEvent) {
         match &event.category {
             EventCategory::Task(task_event) => self.render_task(task_event),
-            EventCategory::Service(service_event) => self.render_service(service_event),
-            EventCategory::Ci(ci_event) => self.render_ci(ci_event),
+            EventCategory::Service(service_event) => Self::render_service(service_event),
+            EventCategory::Ci(ci_event) => Self::render_ci(ci_event),
             EventCategory::Command(cmd_event) => self.render_command(cmd_event),
             EventCategory::Interactive(interactive_event) => {
-                self.render_interactive(interactive_event);
+                Self::render_interactive(interactive_event);
             }
             EventCategory::System(system_event) => self.render_system(system_event),
-            EventCategory::Output(output_event) => self.render_output(output_event),
-        }
-    }
-
-    fn render_task(&self, event: &TaskEvent) {
-        #[cfg(feature = "spinner")]
-        if let Some(spinner) = self.spinner.as_ref() {
-            // Best-effort lock — if a renderer panicked while holding it we
-            // still surface the event via the fallback path below rather
-            // than poisoning all future output.
-            if let Ok(mut guard) = spinner.lock() {
-                guard.apply(event);
-                // Route output through MultiProgress::println so it appears
-                // above the active spinners without corrupting their frames.
-                // Bare println! / eprintln! here would race indicatif's
-                // cursor moves on stderr.
-                if let TaskEvent::Output {
-                    name,
-                    stream,
-                    content,
-                    ..
-                } = event
-                {
-                    let prefix = match stream {
-                        Stream::Stdout => "  ",
-                        Stream::Stderr => "! ",
-                    };
-                    guard.print_above(&format!("{prefix}[{name}] {content}"));
-                }
-                return;
-            }
-        }
-        match event {
-            TaskEvent::Started {
-                name,
-                command,
-                hermetic,
-                ..
-            } => {
-                let hermetic_indicator = if *hermetic { " (hermetic)" } else { "" };
-                eprintln!("> [{name}] {command}{hermetic_indicator}");
-            }
-            TaskEvent::CacheHit { name, .. } => {
-                eprintln!("> [{name}] (cached)");
-            }
-            TaskEvent::CacheMiss { name, .. } => {
-                if self.config.verbose {
-                    eprintln!("> [{name}] cache miss, executing...");
-                }
-            }
-            TaskEvent::CacheSkipped { name, reason, .. } => {
-                if self.config.verbose {
-                    eprintln!("> [{name}] cache skipped: {reason}");
-                }
-            }
-            TaskEvent::Queued {
-                name,
-                queue_position,
-                ..
-            } => {
-                if self.config.verbose {
-                    eprintln!("> [{name}] queued (position {queue_position})");
-                }
-            }
-            TaskEvent::Skipped { name, reason, .. } => {
-                eprintln!("> [{name}] skipped ({reason})");
-            }
-            TaskEvent::Retrying {
-                name,
-                attempt,
-                max_attempts,
-                ..
-            } => {
-                eprintln!("> [{name}] retrying (attempt {attempt}/{max_attempts})");
-            }
-            TaskEvent::Output {
-                stream, content, ..
-            } => match stream {
-                Stream::Stdout => {
-                    println!("{content}");
-                }
-                Stream::Stderr => {
-                    eprintln!("{content}");
-                }
-            },
-            TaskEvent::Completed {
-                name,
-                success,
-                duration_ms,
-                ..
-            } => {
-                if self.config.verbose {
-                    let status = if *success { "completed" } else { "failed" };
-                    eprintln!("> [{name}] {status} in {duration_ms}ms");
-                }
-            }
-            TaskEvent::GroupStarted {
-                name,
-                sequential,
-                task_count,
-                ..
-            } => {
-                let mode = if *sequential {
-                    "sequential"
-                } else {
-                    "parallel"
-                };
-                eprintln!("> Running {mode} group: {name} ({task_count} tasks)");
-            }
-            TaskEvent::GroupCompleted {
-                name,
-                success,
-                duration_ms,
-                succeeded,
-                failed,
-                skipped,
-                ..
-            } => {
-                if self.config.verbose {
-                    let status = if *success { "completed" } else { "failed" };
-                    eprintln!(
-                        "> Group {name} {status} in {duration_ms}ms ({succeeded} ok, {failed} failed, {skipped} skipped)"
-                    );
-                }
-            }
-        }
-    }
-
-    fn render_service(&self, event: &ServiceEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for service rendering options later
-        match event {
-            ServiceEvent::Pending { name } => {
-                eprintln!("> [{name}] pending (waiting for dependencies)");
-            }
-            ServiceEvent::Starting { name, command } => {
-                eprintln!("> [{name}] starting: {command}");
-            }
-            ServiceEvent::Output { name, stream, line } => match stream {
-                Stream::Stdout => {
-                    println!("[{name}] {line}");
-                }
-                Stream::Stderr => {
-                    eprintln!("[{name}] {line}");
-                }
-            },
-            ServiceEvent::Ready { name, after_ms } => {
-                eprintln!("> [{name}] ready ({after_ms}ms)");
-            }
-            ServiceEvent::ReadyTimeout { name, after_ms } => {
-                eprintln!("> [{name}] readiness timeout after {after_ms}ms");
-            }
-            ServiceEvent::Restarting {
-                name,
-                reason,
-                attempt,
-            } => {
-                eprintln!("> [{name}] restarting (reason: {reason:?}, attempt: {attempt})");
-            }
-            ServiceEvent::Stopping { name } => {
-                eprintln!("> [{name}] stopping");
-            }
-            ServiceEvent::Stopped { name, exit_code } => {
-                let code = exit_code.map_or_else(|| "signal".to_string(), |c| c.to_string());
-                eprintln!("> [{name}] stopped (exit: {code})");
-            }
-            ServiceEvent::Failed { name, error } => {
-                eprintln!("> [{name}] FAILED: {error}");
-            }
-            ServiceEvent::Watch { name, changed } => {
-                eprintln!("> [{name}] files changed: {}", changed.join(", "));
-            }
-        }
-    }
-
-    fn render_ci(&self, event: &CiEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for CI rendering options later
-        match event {
-            CiEvent::ContextDetected {
-                provider,
-                event_type,
-                ref_name,
-            } => {
-                println!("Context: {provider} (event: {event_type}, ref: {ref_name})");
-            }
-            CiEvent::ChangedFilesFound { count } => {
-                println!("Changed files: {count}");
-            }
-            CiEvent::ProjectsDiscovered { count } => {
-                println!("Found {count} projects");
-            }
-            CiEvent::ProjectSkipped { path, reason } => {
-                println!("Project {path}: {reason}");
-            }
-            CiEvent::TaskExecuting { task, .. } => {
-                println!("  -> Executing {task}");
-            }
-            CiEvent::TaskResult {
-                task,
-                success,
-                error,
-                ..
-            } => {
-                if *success {
-                    println!("  -> {task} passed");
-                } else if let Some(err) = error {
-                    println!("  -> {task} failed: {err}");
-                } else {
-                    println!("  -> {task} failed");
-                }
-            }
-            CiEvent::ReportGenerated { path } => {
-                println!("Report written to: {path}");
-            }
-        }
-    }
-
-    fn render_command(&self, event: &CommandEvent) {
-        match event {
-            CommandEvent::Started { command, .. } => {
-                if self.config.verbose {
-                    eprintln!("Starting command: {command}");
-                }
-            }
-            CommandEvent::Progress {
-                progress, message, ..
-            } => {
-                if self.config.verbose {
-                    let pct = progress * 100.0;
-                    eprintln!("[{pct:.0}%] {message}");
-                }
-            }
-            CommandEvent::Completed {
-                command,
-                success,
-                duration_ms,
-            } => {
-                if self.config.verbose {
-                    let status = if *success { "completed" } else { "failed" };
-                    eprintln!("Command {command} {status} in {duration_ms}ms");
-                }
-            }
-        }
-    }
-
-    fn render_interactive(&self, event: &InteractiveEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for interactive rendering options later
-        match event {
-            InteractiveEvent::PromptRequested {
-                message, options, ..
-            } => {
-                println!("{message}");
-                for (i, option) in options.iter().enumerate() {
-                    println!("  [{i}] {option}");
-                }
-                print!("> ");
-                let _ = io::stdout().flush();
-            }
-            InteractiveEvent::PromptResolved { .. } => {
-                // Response handled elsewhere
-            }
-            InteractiveEvent::WaitProgress {
-                target,
-                elapsed_secs,
-            } => {
-                eprint!("\r\x1b[KWaiting for `{target}`... [{elapsed_secs}s]");
-                let _ = io::stderr().flush();
-            }
-        }
-    }
-
-    fn render_system(&self, event: &SystemEvent) {
-        match event {
-            SystemEvent::SupervisorLog { tag, message } => {
-                eprintln!("[{tag}] {message}");
-            }
-            SystemEvent::Shutdown => {
-                if self.config.verbose {
-                    eprintln!("System shutdown");
-                }
-            }
-            SystemEvent::EventGap { skipped } => {
-                eprintln!("⚠  event bus lagged: {skipped} events dropped");
-            }
-        }
-    }
-
-    fn render_output(&self, event: &OutputEvent) {
-        let _ = &self.config; // Silence unused_self - config may be used for output rendering options later
-        match event {
-            OutputEvent::Stdout { content } => {
-                println!("{content}");
-            }
-            OutputEvent::Stderr { content } => {
-                eprintln!("{content}");
-            }
+            EventCategory::Output(output_event) => Self::render_output(output_event),
         }
     }
 }
@@ -422,10 +134,65 @@ impl Default for CliRenderer {
     }
 }
 
+pub(super) fn stdout_line(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    write_line(stdout.lock(), args);
+}
+
+pub(super) fn stdout(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    write(stdout.lock(), args);
+}
+
+pub(super) fn stderr_line(args: fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    write_line(stderr.lock(), args);
+}
+
+pub(super) fn stderr(args: fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    write(stderr.lock(), args);
+}
+
+pub(super) fn flush_stdout() {
+    let stdout = io::stdout();
+    flush(stdout.lock());
+}
+
+pub(super) fn flush_stderr() {
+    let stderr = io::stderr();
+    flush(stderr.lock());
+}
+
+fn write_line(mut writer: impl Write, args: fmt::Arguments<'_>) {
+    if let Err(error) = writer.write_fmt(format_args!("{args}\n")) {
+        log_cli_write_error(&error);
+    }
+}
+
+fn write(mut writer: impl Write, args: fmt::Arguments<'_>) {
+    if let Err(error) = writer.write_fmt(args) {
+        log_cli_write_error(&error);
+    }
+}
+
+fn flush(mut writer: impl Write) {
+    if let Err(error) = writer.flush() {
+        log_cli_write_error(&error);
+    }
+}
+
+fn log_cli_write_error(error: &io::Error) {
+    tracing::debug!(%error, "failed to write CLI event output");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{EventSource, Stream};
+    use crate::event::{
+        CiEvent, CommandEvent, EventCategory, EventSource, InteractiveEvent, OutputEvent, Stream,
+        SystemEvent, TaskEvent,
+    };
     use uuid::Uuid;
 
     fn make_event(category: EventCategory) -> CuenvEvent {
@@ -446,8 +213,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let debug = format!("{config:?}");
         assert!(debug.contains("CliRendererConfig"));
@@ -459,8 +228,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let cloned = config.clone();
         assert_eq!(config.colors, cloned.colors);
@@ -484,8 +255,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: true,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         assert!(renderer.config.verbose);
@@ -541,8 +314,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheMiss {
@@ -557,8 +332,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::CacheSkipped {
@@ -587,8 +364,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Queued {
@@ -640,8 +419,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -659,8 +440,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::Completed {
@@ -704,8 +487,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Task(TaskEvent::GroupCompleted {
@@ -815,8 +600,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Started {
@@ -831,8 +618,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Progress {
@@ -848,8 +637,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::Command(CommandEvent::Completed {
@@ -910,8 +701,10 @@ mod tests {
         let config = CliRendererConfig {
             colors: false,
             verbose: true,
-            spinner: false,
-            spinner_output_tail: false,
+            spinner: CliSpinnerConfig {
+                enabled: false,
+                output_tail: false,
+            },
         };
         let renderer = CliRenderer::with_config(config);
         let event = make_event(EventCategory::System(SystemEvent::Shutdown));

@@ -21,9 +21,9 @@ Agents and contributors must use the matrix before generating examples or answer
 
 - Secrets: `#ExecSecret`, feature-gated `#OnePasswordRef`, and feature-gated `#InfisicalSecret` are implemented; `#AwsSecret`, `#GcpSecret`, and `#VaultSecret` are schema-only until runtime resolvers are registered.
 - Runtime and tools: Nix, devenv, GitHub, Nix, Rustup, URL, and OCI tool sources are implemented; container runtime is not complete. OCI runtime (`#OCIRuntime`) is partial: `cuenv sync lock` resolves digests and per-image `extract` paths into `cuenv.lock`, and the `#OCIActivate` hook (`cuenv runtime oci activate`) extracts those binaries and prepends them to `PATH`.
-- Images: `#ContainerImage` is schema-visible, but `cuenv build` currently validates/lists rather than building images.
-- Services: `cuenv up`, `ps`, and basic logs exist, but `down`, `restart`, and `logs --follow` are partial.
+- Images: `#ContainerImage` is schema-visible, but `cuenv build` currently lists image definitions and rejects selected build requests until an execution backend exists.
+- Services: `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` use persisted service session state; service-to-service dependencies are honored and selected service starts include their service deps, but task/image dependencies in `services.*.dependsOn` are rejected until executor integration exists; service docs and runnable fixtures are still partial.
 - Tasks: groups, sequences, params, output refs, and caching are real; `timeout`, `retry`, `continueOnError`, and group `maxConcurrency` need explicit limitation notes.
-- CI and release: GitHub CI sync is the strongest path; GitLab export/sync and config-driven release backends are not complete.
+- CI and release: GitHub CI sync is the strongest path; Buildkite sync/export is partial; GitLab export/sync is schema-only and sync rejects it with a configuration error until an emitter exists; config-driven release backends are not complete.
 
 Run `cuenv task ci.schema-docs-check` after changing schema, docs, prompts, examples, skills, or CLI surfaces.

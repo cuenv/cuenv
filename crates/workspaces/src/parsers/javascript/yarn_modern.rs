@@ -145,8 +145,7 @@ struct YarnModernPackage {
     checksum: Option<String>,
     /// Language and package manager metadata
     #[serde(default, rename = "languageName")]
-    #[allow(dead_code)] // Yarn Modern lockfile format field for deserialization
-    language_name: Option<String>,
+    _language_name: Option<String>,
     /// Link type
     #[serde(default, rename = "linkType")]
     link_type: Option<String>,
@@ -197,40 +196,35 @@ fn entry_from_package(
     }))
 }
 
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_descriptor(lockfile_path: &Path, descriptor: &str) -> Result<(String, String)> {
     // Descriptors have format: "package-name@protocol:version"
     // Examples: "left-pad@npm:^1.3.0", "@babel/core@npm:^7.0.0", "my-pkg@workspace:."
 
-    if let Some(rest) = descriptor.strip_prefix('@') {
-        // Scoped package: "@scope/name@protocol:version"
-        if let Some(second_at) = rest.find('@') {
-            let at_idx = second_at + 1;
-            let name = &descriptor[..at_idx];
-            let rest = &descriptor[at_idx + 1..];
-            Ok((name.to_string(), rest.to_string()))
-        } else {
-            Err(Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!("Invalid scoped package descriptor: {descriptor}"),
-            })
-        }
+    split_descriptor(descriptor)
+        .map(|(name, rest)| (name.to_string(), rest.to_string()))
+        .ok_or_else(|| Error::LockfileParseFailed {
+            path: lockfile_path.to_path_buf(),
+            message: invalid_descriptor_message(descriptor),
+        })
+}
+
+fn split_descriptor(descriptor: &str) -> Option<(&str, &str)> {
+    let at_idx = match descriptor.strip_prefix('@') {
+        Some(scoped_name) => scoped_name.find('@')? + 1,
+        None => descriptor.find('@')?,
+    };
+
+    Some((&descriptor[..at_idx], &descriptor[at_idx + 1..]))
+}
+
+fn invalid_descriptor_message(descriptor: &str) -> String {
+    if descriptor.starts_with('@') {
+        format!("Invalid scoped package descriptor: {descriptor}")
     } else {
-        // Regular package: "name@protocol:version"
-        if let Some(at_idx) = descriptor.find('@') {
-            let name = &descriptor[..at_idx];
-            let rest = &descriptor[at_idx + 1..];
-            Ok((name.to_string(), rest.to_string()))
-        } else {
-            Err(Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!("Invalid package descriptor: {descriptor}"),
-            })
-        }
+        format!("Invalid package descriptor: {descriptor}")
     }
 }
 
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_resolution(resolution: &str, package_name: &str) -> (String, DependencySource) {
     // Resolutions look like:
     // - "left-pad@npm:1.3.0"
@@ -239,57 +233,52 @@ fn parse_resolution(resolution: &str, package_name: &str) -> (String, Dependency
     // - "some-lib@git+https://github.com/user/repo.git#commit:abc123"
     // - "local-dep@file:../local-dep"
 
-    // Find the protocol separator
-    if let Some(colon_idx) = resolution.find(':') {
-        let before_colon = &resolution[..colon_idx];
-        let after_colon = &resolution[colon_idx + 1..];
-
-        // Extract protocol
-        let protocol = if let Some(at_idx) = before_colon.rfind('@') {
-            &before_colon[at_idx + 1..]
-        } else {
-            before_colon
-        };
-
-        match protocol {
-            "npm" | "registry" => (
-                after_colon.to_string(),
-                DependencySource::Registry(format!("npm:{package_name}@{after_colon}")),
-            ),
-            "workspace" => (
-                "0.0.0".to_string(),
-                DependencySource::Workspace(PathBuf::from(after_colon)),
-            ),
-            "git" | "git+https" | "git+ssh" => {
-                // Git resolution: extract commit hash if present
-                let (repo, commit) = if let Some(hash_idx) = after_colon.rfind('#') {
-                    (
-                        &after_colon[..hash_idx],
-                        after_colon[hash_idx + 1..].to_string(),
-                    )
-                } else {
-                    (after_colon, "HEAD".to_string())
-                };
-                (
-                    commit.clone(),
-                    DependencySource::Git(format!("{protocol}:{repo}#{commit}")),
-                )
-            }
-            "file" => (
-                "0.0.0".to_string(),
-                DependencySource::Path(PathBuf::from(after_colon)),
-            ),
-            _ => (
-                after_colon.to_string(),
-                DependencySource::Registry(resolution.to_string()),
-            ),
-        }
-    } else {
-        // No protocol separator, treat as version
-        (
+    let Some((before_colon, after_colon)) = resolution.split_once(':') else {
+        return (
             resolution.to_string(),
             DependencySource::Registry(format!("npm:{package_name}@{resolution}")),
-        )
+        );
+    };
+
+    let protocol = resolution_protocol(before_colon);
+
+    match protocol {
+        "npm" | "registry" => (
+            after_colon.to_string(),
+            DependencySource::Registry(format!("npm:{package_name}@{after_colon}")),
+        ),
+        "workspace" => (
+            "0.0.0".to_string(),
+            DependencySource::Workspace(PathBuf::from(after_colon)),
+        ),
+        "git" | "git+https" | "git+ssh" => {
+            let (repo, commit) = git_resolution_parts(after_colon);
+            (
+                commit.clone(),
+                DependencySource::Git(format!("{protocol}:{repo}#{commit}")),
+            )
+        }
+        "file" => (
+            "0.0.0".to_string(),
+            DependencySource::Path(PathBuf::from(after_colon)),
+        ),
+        _ => (
+            after_colon.to_string(),
+            DependencySource::Registry(resolution.to_string()),
+        ),
+    }
+}
+
+fn resolution_protocol(before_colon: &str) -> &str {
+    before_colon
+        .rsplit_once('@')
+        .map_or(before_colon, |(_, protocol)| protocol)
+}
+
+fn git_resolution_parts(after_colon: &str) -> (&str, String) {
+    match after_colon.rsplit_once('#') {
+        Some((repo, commit)) => (repo, commit.to_string()),
+        None => (after_colon, "HEAD".to_string()),
     }
 }
 

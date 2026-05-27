@@ -81,6 +81,12 @@ Requirements and behavior:
 - The lockfile records both the resolved commit and the subtree hash, so re-syncs are deterministic and `cuenv sync vcs --check` detects tampering of the materialized content.
 - Requires git ≥ 2.27 (cone-mode sparse-checkout).
 
+The end-to-end sparse-subdirectory regression test keeps this example
+network-free by seeding a local git source repository from the checkout's
+`.agents/skills`, rewriting the example remote to that local repository, and
+running `cuenv sync vcs`, `cuenv sync vcs --check`, and `cuenv task inspect`
+against the temporary target module.
+
 ## Updating
 
 By default, cuenv reuses the commit already recorded in `cuenv.lock`.

@@ -3,9 +3,6 @@
 //! The coordinator accepts connections from CLI producers and UI consumers,
 //! broadcasting events from producers to all connected consumers.
 
-// Server is a work-in-progress for multi-UI support
-#![allow(dead_code, clippy::too_many_lines)]
-
 use super::protocol::{ClientType, MessageType, RegisterPayload, WireMessage};
 use super::{pid_path, socket_path};
 use cuenv_events::CuenvEvent;
@@ -13,10 +10,13 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+type ClientRegistry = Arc<RwLock<HashMap<Uuid, ConnectedClient>>>;
 
 /// Coordinator configuration.
 #[derive(Debug, Clone)]
@@ -45,17 +45,13 @@ impl Default for CoordinatorConfig {
 /// Connected client information.
 #[derive(Debug)]
 struct ConnectedClient {
-    id: Uuid,
-    client_type: ClientType,
-    pid: u32,
-    connected_at: Instant,
     tx: mpsc::UnboundedSender<WireMessage>,
 }
 
 /// `EventCoordinator` server.
 pub struct EventCoordinator {
     config: CoordinatorConfig,
-    clients: Arc<RwLock<HashMap<Uuid, ConnectedClient>>>,
+    clients: ClientRegistry,
     broadcast_tx: broadcast::Sender<CuenvEvent>,
     shutdown: CancellationToken,
 }
@@ -161,142 +157,31 @@ impl EventCoordinator {
     /// Handle a single client connection.
     async fn handle_client(
         mut stream: UnixStream,
-        clients: Arc<RwLock<HashMap<Uuid, ConnectedClient>>>,
+        clients: ClientRegistry,
         broadcast_tx: broadcast::Sender<CuenvEvent>,
         max_clients: usize,
     ) -> io::Result<()> {
-        // Read registration message
-        let reg_msg = WireMessage::read_from(&mut stream).await?;
+        let Some(registration) = read_registration(&mut stream).await? else {
+            return Ok(());
+        };
 
-        if reg_msg.msg_type != MessageType::Register {
-            let error = WireMessage {
-                msg_type: MessageType::Error,
-                correlation_id: reg_msg.correlation_id,
-                payload: serde_json::json!({"error": "expected registration message"}),
-            };
-            error.write_to(&mut stream).await?;
+        if !client_capacity_available(&clients, max_clients).await {
+            send_capacity_rejection(&mut stream, &registration).await?;
             return Ok(());
         }
 
-        let registration: RegisterPayload = serde_json::from_value(reg_msg.payload)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let (tx, rx) = mpsc::unbounded_channel::<WireMessage>();
+        register_connected_client(&clients, &registration, tx).await;
+        WireMessage::register_ack(registration.client_id, true, None)
+            .write_to(&mut stream)
+            .await?;
 
-        // Check max clients
-        {
-            let current_count = clients.read().await.len();
-            if current_count >= max_clients {
-                let ack = WireMessage::register_ack(
-                    registration.client_id,
-                    false,
-                    Some("max clients reached".to_string()),
-                );
-                ack.write_to(&mut stream).await?;
-                return Ok(());
-            }
-        }
+        let runtime = ClientRuntime::new(clients, broadcast_tx, &registration);
+        let (read_half, write_half) = stream.into_split();
+        let write_task = spawn_client_writer(rx, write_half);
 
-        // Create channel for this client
-        let (tx, mut rx) = mpsc::unbounded_channel::<WireMessage>();
-
-        // Register client
-        let client = ConnectedClient {
-            id: registration.client_id,
-            client_type: registration.client_type.clone(),
-            pid: registration.pid,
-            connected_at: Instant::now(),
-            tx,
-        };
-
-        tracing::debug!(
-            client_id = %registration.client_id,
-            client_type = ?registration.client_type,
-            "Client registered"
-        );
-
-        clients.write().await.insert(registration.client_id, client);
-
-        // Send ack
-        let ack = WireMessage::register_ack(registration.client_id, true, None);
-        ack.write_to(&mut stream).await?;
-
-        let client_id = registration.client_id;
-        let is_consumer = matches!(registration.client_type, ClientType::Consumer { .. });
-
-        // Subscribe to broadcast if consumer
-        let mut broadcast_rx = if is_consumer {
-            Some(broadcast_tx.subscribe())
-        } else {
-            None
-        };
-
-        let (mut read_half, mut write_half) = stream.into_split();
-
-        // Spawn writer task
-        let write_task = tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                if let Err(e) = msg.write_to(&mut write_half).await {
-                    tracing::debug!(error = %e, "Write error");
-                    break;
-                }
-            }
-        });
-
-        // Main read loop
-        loop {
-            tokio::select! {
-                // Read from client
-                result = WireMessage::read_from(&mut read_half) => {
-                    match result {
-                        Ok(msg) => {
-                            match msg.msg_type {
-                                MessageType::Event => {
-                                    // Broadcast event to all consumers
-                                    if let Some(event) = msg.into_event() {
-                                        let _ = broadcast_tx.send(event);
-                                    }
-                                }
-                                MessageType::Ping => {
-                                    // Respond with pong
-                                    let clients = clients.read().await;
-                                    if let Some(client) = clients.get(&client_id) {
-                                        let _ = client.tx.send(WireMessage::pong(msg.correlation_id));
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        Err(e) => {
-                            if e.kind() != io::ErrorKind::UnexpectedEof {
-                                tracing::debug!(error = %e, "Read error");
-                            }
-                            break;
-                        }
-                    }
-                }
-
-                // Forward broadcast events to consumer
-                event = async {
-                    if let Some(ref mut rx) = broadcast_rx {
-                        rx.recv().await.ok()
-                    } else {
-                        std::future::pending().await
-                    }
-                } => {
-                    if let Some(event) = event {
-                        let clients = clients.read().await;
-                        if let Some(client) = clients.get(&client_id) {
-                            let _ = client.tx.send(WireMessage::event(&event));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Cleanup
-        clients.write().await.remove(&client_id);
-        write_task.abort();
-
-        tracing::debug!(client_id = %client_id, "Client disconnected");
+        let runtime = runtime.run(read_half).await;
+        runtime.disconnect(write_task).await;
 
         Ok(())
     }
@@ -319,6 +204,163 @@ impl EventCoordinator {
     /// Get the number of connected clients.
     pub async fn client_count(&self) -> usize {
         self.clients.read().await.len()
+    }
+}
+
+async fn read_registration(stream: &mut UnixStream) -> io::Result<Option<RegisterPayload>> {
+    let reg_msg = WireMessage::read_from(stream).await?;
+
+    if reg_msg.msg_type != MessageType::Register {
+        let error = WireMessage {
+            msg_type: MessageType::Error,
+            correlation_id: reg_msg.correlation_id,
+            payload: serde_json::json!({"error": "expected registration message"}),
+        };
+        error.write_to(stream).await?;
+        return Ok(None);
+    }
+
+    serde_json::from_value(reg_msg.payload)
+        .map(Some)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+async fn client_capacity_available(clients: &ClientRegistry, max_clients: usize) -> bool {
+    clients.read().await.len() < max_clients
+}
+
+async fn send_capacity_rejection(
+    stream: &mut UnixStream,
+    registration: &RegisterPayload,
+) -> io::Result<()> {
+    let ack = WireMessage::register_ack(
+        registration.client_id,
+        false,
+        Some("max clients reached".to_string()),
+    );
+    ack.write_to(stream).await
+}
+
+async fn register_connected_client(
+    clients: &ClientRegistry,
+    registration: &RegisterPayload,
+    tx: mpsc::UnboundedSender<WireMessage>,
+) {
+    let client = ConnectedClient { tx };
+
+    tracing::debug!(
+        client_id = %registration.client_id,
+        client_type = ?registration.client_type,
+        "Client registered"
+    );
+
+    clients.write().await.insert(registration.client_id, client);
+}
+
+fn spawn_client_writer(
+    mut rx: mpsc::UnboundedReceiver<WireMessage>,
+    mut write_half: OwnedWriteHalf,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if let Err(e) = msg.write_to(&mut write_half).await {
+                tracing::debug!(error = %e, "Write error");
+                break;
+            }
+        }
+    })
+}
+
+struct ClientRuntime {
+    client_id: Uuid,
+    clients: ClientRegistry,
+    broadcast_tx: broadcast::Sender<CuenvEvent>,
+    broadcast_rx: Option<broadcast::Receiver<CuenvEvent>>,
+}
+
+impl ClientRuntime {
+    fn new(
+        clients: ClientRegistry,
+        broadcast_tx: broadcast::Sender<CuenvEvent>,
+        registration: &RegisterPayload,
+    ) -> Self {
+        let broadcast_rx = if matches!(registration.client_type, ClientType::Consumer { .. }) {
+            Some(broadcast_tx.subscribe())
+        } else {
+            None
+        };
+
+        Self {
+            client_id: registration.client_id,
+            clients,
+            broadcast_tx,
+            broadcast_rx,
+        }
+    }
+
+    async fn run(mut self, mut read_half: OwnedReadHalf) -> Self {
+        loop {
+            tokio::select! {
+                result = WireMessage::read_from(&mut read_half) => {
+                    match result {
+                        Ok(msg) => self.handle_client_message(msg).await,
+                        Err(e) => {
+                            if e.kind() != io::ErrorKind::UnexpectedEof {
+                                tracing::debug!(error = %e, "Read error");
+                            }
+                            break;
+                        }
+                    }
+                }
+
+                event = self.next_broadcast_event() => {
+                    if let Some(event) = event {
+                        self.forward_broadcast_event(event).await;
+                    }
+                }
+            }
+        }
+
+        self
+    }
+
+    async fn handle_client_message(&self, msg: WireMessage) {
+        match msg.msg_type {
+            MessageType::Event => {
+                if let Some(event) = msg.into_event() {
+                    let _ = self.broadcast_tx.send(event);
+                }
+            }
+            MessageType::Ping => {
+                let clients = self.clients.read().await;
+                if let Some(client) = clients.get(&self.client_id) {
+                    let _ = client.tx.send(WireMessage::pong(msg.correlation_id));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    async fn next_broadcast_event(&mut self) -> Option<CuenvEvent> {
+        if let Some(rx) = self.broadcast_rx.as_mut() {
+            rx.recv().await.ok()
+        } else {
+            std::future::pending().await
+        }
+    }
+
+    async fn forward_broadcast_event(&self, event: CuenvEvent) {
+        let clients = self.clients.read().await;
+        if let Some(client) = clients.get(&self.client_id) {
+            let _ = client.tx.send(WireMessage::event(&event));
+        }
+    }
+
+    async fn disconnect(self, write_task: tokio::task::JoinHandle<()>) {
+        self.clients.write().await.remove(&self.client_id);
+        write_task.abort();
+
+        tracing::debug!(client_id = %self.client_id, "Client disconnected");
     }
 }
 

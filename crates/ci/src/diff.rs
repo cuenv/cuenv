@@ -4,15 +4,16 @@
 //! Shows changed files, environment variables, and upstream outputs
 //! without exposing secret values.
 
-// Diff comparison involves complex field-by-field analysis
-#![allow(clippy::too_many_lines)]
-
 use crate::report::{PipelineReport, TaskReport};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
+
+mod format;
+
+pub use format::format_diff;
 
 /// Errors for diff operations
 #[derive(Debug, Error)]
@@ -296,54 +297,6 @@ fn find_first_report(dir: &Path) -> Result<PathBuf, DiffError> {
         }
     }
     Err(DiffError::ReportNotFound(dir.to_path_buf()))
-}
-
-/// Format a diff for human-readable output
-#[must_use]
-pub fn format_diff(diff: &DigestDiff) -> String {
-    use std::fmt::Write;
-
-    let mut output = String::new();
-    let _ = writeln!(
-        output,
-        "Comparing runs: {} -> {}\n",
-        &diff.run_a[..7.min(diff.run_a.len())],
-        &diff.run_b[..7.min(diff.run_b.len())]
-    );
-    output.push_str("Summary:\n");
-    let _ = writeln!(output, "  Total tasks: {}", diff.summary.total_tasks);
-    let _ = writeln!(output, "  Changed: {}", diff.summary.changed_tasks);
-    let _ = writeln!(output, "  Added: {}", diff.summary.added_tasks);
-    let _ = writeln!(output, "  Removed: {}", diff.summary.removed_tasks);
-    if diff.summary.secret_changes > 0 {
-        let _ = writeln!(output, "  Secret changes: {}", diff.summary.secret_changes);
-    }
-    output.push('\n');
-
-    for task in &diff.task_diffs {
-        if task.change_type == ChangeType::Unchanged {
-            continue;
-        }
-        let symbol = match task.change_type {
-            ChangeType::Modified => "~",
-            ChangeType::CacheInvalidated => "!",
-            ChangeType::Added => "+",
-            ChangeType::Removed => "-",
-            ChangeType::Unchanged => " ",
-        };
-        let _ = writeln!(output, "{} {}", symbol, task.name);
-        if !task.changed_files.is_empty() {
-            output.push_str("  Changed files:\n");
-            for file in &task.changed_files {
-                let _ = writeln!(output, "    - {file}");
-            }
-        }
-        if task.secrets_changed {
-            output.push_str("  Secrets: changed (values hidden)\n");
-        }
-        output.push('\n');
-    }
-    output
 }
 
 #[cfg(test)]

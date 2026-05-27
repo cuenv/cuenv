@@ -12,6 +12,11 @@ Cuenv agents must not rely on training-data memory for feature support. The curr
 3. Inspect the Rust owner or CLI surface named by the matrix when behavior matters.
 4. Use docs and examples only after they agree with the schema and matrix.
 
+Schema project/base regression tests should copy the checked-out schema into a
+temporary CUE module and return `Result` from filesystem, command, and typed
+evaluation setup. Do not hide those failures behind file-level unwrap/expect
+allowances.
+
 ## Do not generate stale examples
 
 - Use `schema.#ExecSecret` for custom command secrets, not `schema.#Secret & { command: ... }`.
@@ -30,4 +35,3 @@ cuenv task ci.schema-docs-check
 ```
 
 This check verifies that every exported schema definition has a matrix row and that repo-local skills point agents back to the matrix.
-

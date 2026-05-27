@@ -4,10 +4,6 @@
 //! It handles all FFI operations, memory management, and error handling for
 //! calling Go functions from Rust.
 
-#![allow(unsafe_code)] // Required for FFI with Go
-#![allow(clippy::missing_safety_doc)] // Safety is documented inline
-#![allow(clippy::missing_panics_doc)] // Panics are documented where relevant
-
 pub mod cache;
 pub mod error;
 pub mod retry;
@@ -26,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
 use std::marker::PhantomData;
 use std::os::raw::c_char;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 // Bridge error codes - keep in sync with Go side constants
 // These match the constants defined in bridge.go
@@ -38,6 +36,8 @@ const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
 const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
 const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
 const ERROR_CODE_DEPENDENCY_RES: &str = "DEPENDENCY_RESOLUTION";
+const BRIDGE_PROTOCOL_VERSION: &str = "bridge/1";
+const MODULE_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error response from the Go bridge
 #[derive(Debug, Deserialize, Serialize)]
@@ -50,7 +50,6 @@ struct BridgeError {
 /// Structured response envelope from the Go bridge
 #[derive(Debug, Deserialize)]
 struct BridgeEnvelope<'a> {
-    #[allow(dead_code)] // Deserialized from Go FFI bridge; used in tests
     version: String,
     #[serde(borrow)]
     ok: Option<&'a serde_json::value::RawValue>,
@@ -86,6 +85,10 @@ impl CStringPtr {
     /// - Returns either null or a valid C string pointer
     /// - Allocates memory that must be freed with `cue_free_string`
     /// - Does not modify the memory after returning the pointer
+    #[expect(
+        unsafe_code,
+        reason = "Required to take ownership of C strings returned by the Go bridge"
+    )]
     pub const unsafe fn new(ptr: *mut c_char) -> Self {
         Self {
             ptr,
@@ -116,6 +119,10 @@ impl CStringPtr {
     /// # Panics
     ///
     /// In debug builds, panics if the pointer is null
+    #[expect(
+        unsafe_code,
+        reason = "Required to expose a borrowed str from the wrapped C string"
+    )]
     pub unsafe fn to_str(&self) -> Result<&str> {
         debug_assert!(
             !self.is_null(),
@@ -124,7 +131,15 @@ impl CStringPtr {
 
         // SAFETY: We've verified the pointer is not null via debug_assert
         // The caller must ensure the pointer points to a valid C string
-        let cstr = unsafe { CStr::from_ptr(self.ptr) };
+        let cstr = {
+            #[expect(
+                unsafe_code,
+                reason = "Required to borrow the validated C string pointer"
+            )]
+            unsafe {
+                CStr::from_ptr(self.ptr)
+            }
+        };
         cstr.to_str().map_err(|e| {
             Error::ffi(
                 "cue_eval_module",
@@ -143,6 +158,10 @@ impl Drop for CStringPtr {
             // - We have exclusive ownership of this pointer (enforced by Rust's ownership)
             // - This pointer has not been freed already (enforced by Drop only running once)
             // - After this call, the pointer becomes invalid and won't be used again
+            #[expect(
+                unsafe_code,
+                reason = "Required to free strings allocated by the Go bridge"
+            )]
             unsafe {
                 cue_free_string(self.ptr);
             }
@@ -160,6 +179,7 @@ impl Drop for CStringPtr {
 // Real FFI for normal builds
 #[cfg(not(docsrs))]
 #[link(name = "cue_bridge")]
+#[expect(unsafe_code, reason = "Required for Go bridge FFI declarations")]
 unsafe extern "C" {
     fn cue_eval_module(
         module_root: *const c_char,
@@ -276,6 +296,14 @@ struct FormattedModuleFile {
     content: String,
 }
 
+struct ModuleEvalWorker {
+    c_module_root: CString,
+    c_package: CString,
+    c_options: CString,
+    module_root: PathBuf,
+    span: tracing::Span,
+}
+
 /// Evaluates CUE instances in a module and returns results with optional source metadata
 ///
 /// This function evaluates CUE files in a module using native CUE loading patterns:
@@ -311,75 +339,90 @@ struct FormattedModuleFile {
     level = "info",
     skip(options)
 )]
-#[allow(clippy::cognitive_complexity)] // FFI orchestration has inherent complexity
 pub fn evaluate_module(
     module_root: &Path,
     package_name: &str,
     options: Option<&ModuleEvalOptions>,
 ) -> Result<ModuleResult> {
     tracing::info!("Starting module-wide CUE evaluation");
-    let start_time = std::time::Instant::now();
+    let start_time = Instant::now();
 
     let c_module_root = path_to_cstring(module_root, "cue_eval_module", "module root")?;
     let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
     let c_options = options_to_cstring(options)?;
+    let worker = ModuleEvalWorker {
+        c_module_root,
+        c_package,
+        c_options,
+        module_root: module_root.to_path_buf(),
+        span: tracing::Span::current(),
+    };
 
-    // Run the blocking FFI call in a worker thread so we can enforce a timeout.
-    // A pathological CUE evaluation (e.g. exponential unification from a deeply
-    // disjunctive schema) can allocate unbounded Go-side memory. If it does not
-    // complete within the timeout we surface an error rather than letting a
-    // hung evaluator consume the host. The worker thread is detached: we cannot
-    // safely abort an in-flight Go call, but returning an error allows the
-    // caller to fail fast and exit the process.
-    let timeout = std::time::Duration::from_secs(10);
-    let module_root_owned = module_root.to_path_buf();
-    let span = tracing::Span::current();
+    let rx = spawn_module_eval_worker(worker);
+    let module_result =
+        receive_module_eval_result(&rx, module_root, package_name, MODULE_EVAL_TIMEOUT)?;
+    log_module_eval_success(&module_result, start_time);
+
+    Ok(module_result)
+}
+
+fn spawn_module_eval_worker(worker: ModuleEvalWorker) -> Receiver<Result<ModuleResult>> {
     let (tx, rx) = std::sync::mpsc::sync_channel::<Result<ModuleResult>>(1);
 
     std::thread::spawn(move || {
-        let _entered = span.enter();
-        let result = (|| {
-            let json_str = call_ffi_eval_module(&c_module_root, &c_package, &c_options)?;
-            let envelope = parse_bridge_envelope(&json_str)?;
-            process_bridge_response(envelope, &module_root_owned)
-        })();
+        let result = worker.run();
         let _ = tx.send(result);
     });
 
-    let module_result = match rx.recv_timeout(timeout) {
-        Ok(inner) => inner?,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+    rx
+}
+
+impl ModuleEvalWorker {
+    fn run(self) -> Result<ModuleResult> {
+        let _entered = self.span.enter();
+        let json_str = call_ffi_eval_module(&self.c_module_root, &self.c_package, &self.c_options)?;
+        let envelope = parse_bridge_envelope(&json_str)?;
+        process_bridge_response(envelope, &self.module_root)
+    }
+}
+
+fn receive_module_eval_result(
+    rx: &Receiver<Result<ModuleResult>>,
+    module_root: &Path,
+    package_name: &str,
+    timeout: Duration,
+) -> Result<ModuleResult> {
+    match rx.recv_timeout(timeout) {
+        Ok(inner) => inner,
+        Err(RecvTimeoutError::Timeout) => {
             tracing::error!(
                 timeout_secs = timeout.as_secs(),
                 module_root = %module_root.display(),
                 package_name,
                 "CUE evaluation timed out"
             );
-            return Err(Error::ffi(
+            Err(Error::ffi(
                 "cue_eval_module",
                 format!(
                     "CUE evaluation timed out after {}s for module {}",
                     timeout.as_secs(),
                     module_root.display()
                 ),
-            ));
+            ))
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            return Err(Error::ffi(
-                "cue_eval_module",
-                "CUE evaluation worker thread disconnected unexpectedly".to_string(),
-            ));
-        }
-    };
+        Err(RecvTimeoutError::Disconnected) => Err(Error::ffi(
+            "cue_eval_module",
+            "CUE evaluation worker thread disconnected unexpectedly".to_string(),
+        )),
+    }
+}
 
-    let total_duration = start_time.elapsed();
+fn log_module_eval_success(module_result: &ModuleResult, start_time: Instant) {
     tracing::info!(
-        total_duration_ms = total_duration.as_millis(),
+        total_duration_ms = start_time.elapsed().as_millis(),
         instance_count = module_result.instances.len(),
         "Module evaluation completed successfully"
     );
-
-    Ok(module_result)
 }
 
 /// Convert a path to a `CString` for FFI.
@@ -411,51 +454,48 @@ fn options_to_cstring(options: Option<&ModuleEvalOptions>) -> Result<CString> {
 }
 
 /// Call the FFI function and return the JSON string result.
-#[allow(clippy::cognitive_complexity)] // FFI error handling requires multiple branches
 fn call_ffi_eval_module(
     c_module_root: &CString,
     c_package: &CString,
     c_options: &CString,
 ) -> Result<String> {
     tracing::debug!("Calling FFI function cue_eval_module");
-    let ffi_start = std::time::Instant::now();
+    let ffi_start = Instant::now();
 
     // Safety: cue_eval_module is an FFI function that:
     // - Takes three valid C string pointers (guaranteed by CString::as_ptr())
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
-    let result_ptr = unsafe {
-        cue_eval_module(
-            c_module_root.as_ptr(),
-            c_package.as_ptr(),
-            c_options.as_ptr(),
-        )
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go CUE module evaluation bridge"
+        )]
+        unsafe {
+            cue_eval_module(
+                c_module_root.as_ptr(),
+                c_package.as_ptr(),
+                c_options.as_ptr(),
+            )
+        }
     };
 
-    let ffi_duration = ffi_start.elapsed();
     tracing::debug!(
-        ffi_duration_ms = ffi_duration.as_millis(),
+        ffi_duration_ms = ffi_start.elapsed().as_millis(),
         "FFI call completed"
     );
 
-    // Safety: CStringPtr::new is safe because result_ptr is from cue_eval_module
-    let result = unsafe { CStringPtr::new(result_ptr) };
-
-    if result.is_null() {
-        tracing::error!("FFI function returned null pointer");
-        return Err(Error::ffi(
-            "cue_eval_module",
-            "Module evaluation returned null".to_string(),
-        ));
-    }
-
-    // Safety: result.to_str() is safe because we checked result is not null
-    unsafe { result.to_str() }.map(String::from)
+    let result = bridge_owned_c_string(result_ptr);
+    extract_ffi_string_with_null_message(
+        &result,
+        "cue_eval_module",
+        "Module evaluation returned null",
+    )
 }
 
 /// Parse the JSON envelope from the Go bridge.
 fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
-    serde_json::from_str(json_str).map_err(|e| {
+    let envelope: BridgeEnvelope = serde_json::from_str(json_str).map_err(|e| {
         tracing::error!(
             json_response = json_str,
             parse_error = %e,
@@ -465,7 +505,24 @@ fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
             "cue_eval_module",
             format!("Invalid JSON envelope from Go bridge: {e}"),
         )
-    })
+    })?;
+
+    validate_bridge_protocol(&envelope)?;
+    Ok(envelope)
+}
+
+fn validate_bridge_protocol(envelope: &BridgeEnvelope<'_>) -> Result<()> {
+    if envelope.version == BRIDGE_PROTOCOL_VERSION {
+        return Ok(());
+    }
+
+    Err(Error::ffi(
+        "cue_eval_module",
+        format!(
+            "Unsupported CUE bridge protocol version {}; expected {}",
+            envelope.version, BRIDGE_PROTOCOL_VERSION
+        ),
+    ))
 }
 
 /// Process the bridge response and return the module result.
@@ -530,15 +587,41 @@ fn parse_module_result(json_data: &str) -> Result<ModuleResult> {
 }
 
 /// Extract a string from an FFI result wrapper.
-#[allow(clippy::needless_pass_by_value)] // CStringPtr Drop impl manages FFI memory - must take ownership
-fn extract_ffi_string(wrapper: CStringPtr, fn_name: &'static str) -> Result<String> {
+fn extract_ffi_string(wrapper: &CStringPtr, fn_name: &'static str) -> Result<String> {
+    extract_ffi_string_with_null_message(wrapper, fn_name, &format!("{fn_name} returned null"))
+}
+
+fn extract_ffi_string_with_null_message(
+    wrapper: &CStringPtr,
+    fn_name: &'static str,
+    null_message: &str,
+) -> Result<String> {
     if wrapper.is_null() {
         tracing::error!("{} returned null pointer", fn_name);
-        return Err(Error::ffi(fn_name, format!("{fn_name} returned null")));
+        return Err(Error::ffi(fn_name, null_message.to_string()));
     }
 
     // Safety: wrapper.to_str() is safe because we checked wrapper is not null
-    unsafe { wrapper.to_str() }.map(String::from)
+    {
+        #[expect(
+            unsafe_code,
+            reason = "Required to read a non-null bridge-owned C string"
+        )]
+        unsafe {
+            wrapper.to_str()
+        }
+    }
+    .map(String::from)
+}
+
+fn bridge_owned_c_string(ptr: *mut c_char) -> CStringPtr {
+    #[expect(
+        unsafe_code,
+        reason = "Required to wrap bridge-owned C string pointers for RAII cleanup"
+    )]
+    unsafe {
+        CStringPtr::new(ptr)
+    }
 }
 
 /// Gets the bridge version information from the Go side
@@ -561,12 +644,19 @@ pub fn get_bridge_version() -> Result<String> {
     // - Takes no parameters
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
-    let version_ptr = unsafe { cue_bridge_version() };
+    let version_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go bridge version function"
+        )]
+        unsafe {
+            cue_bridge_version()
+        }
+    };
 
-    // Safety: CStringPtr::new is safe because version_ptr is from cue_bridge_version
-    let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
+    let version_wrapper = bridge_owned_c_string(version_ptr);
 
-    let bridge_version = extract_ffi_string(version_wrapper, "cue_bridge_version")?;
+    let bridge_version = extract_ffi_string(&version_wrapper, "cue_bridge_version")?;
 
     tracing::info!(bridge_version = bridge_version, "Retrieved bridge version");
     Ok(bridge_version)
@@ -618,10 +708,14 @@ pub fn module_custom_version(module_root: &Path, namespace: &str) -> Result<Modu
 
     // Safety: cue_module_custom_version takes valid C strings and returns a
     // heap-allocated C string owned by the caller.
-    let result_ptr =
-        unsafe { cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr()) };
-    let result = unsafe { CStringPtr::new(result_ptr) };
-    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    let result_ptr = {
+        #[expect(unsafe_code, reason = "Required to call the Go custom-version bridge")]
+        unsafe {
+            cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr())
+        }
+    };
+    let result = bridge_owned_c_string(result_ptr);
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     process_bridge_json(&json_str, module_root, FUNCTION_NAME)
 }
 
@@ -645,15 +739,21 @@ pub fn format_module_with_custom_version(
 
     // Safety: cue_format_module_with_custom_version takes valid C strings and
     // returns a heap-allocated C string owned by the caller.
-    let result_ptr = unsafe {
-        cue_format_module_with_custom_version(
-            c_module_root.as_ptr(),
-            c_namespace.as_ptr(),
-            c_version.as_ptr(),
-        )
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go module-formatting bridge"
+        )]
+        unsafe {
+            cue_format_module_with_custom_version(
+                c_module_root.as_ptr(),
+                c_namespace.as_ptr(),
+                c_version.as_ptr(),
+            )
+        }
     };
-    let result = unsafe { CStringPtr::new(result_ptr) };
-    let json_str = extract_ffi_string(result, FUNCTION_NAME)?;
+    let result = bridge_owned_c_string(result_ptr);
+    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     let formatted: FormattedModuleFile =
         process_bridge_json(&json_str, module_root, FUNCTION_NAME)?;
     Ok(formatted.content)
@@ -753,7 +853,6 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
     ),
     level = "info"
 )]
-#[allow(clippy::cognitive_complexity)] // Generic deserialization with error handling is inherently complex
 pub fn evaluate_cue_package_typed<T>(dir_path: &Path, package_name: &str) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
@@ -779,530 +878,4 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::print_stdout)]
-mod tests {
-    use super::*;
-    use std::ffi::CString;
-    use std::fs;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_cstring_ptr_creation() {
-        // Test with null pointer
-        let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
-        assert!(null_ptr.is_null());
-
-        // Test with non-null pointer (we'll create a mock one)
-        // Note: In real scenarios, this would come from FFI calls
-        let test_string = CString::new("test").unwrap();
-        let ptr = test_string.into_raw();
-        let wrapper = unsafe { CStringPtr::new(ptr) };
-        assert!(!wrapper.is_null());
-
-        // Convert back to string and verify
-        let result_str = unsafe { wrapper.to_str().unwrap() };
-        assert_eq!(result_str, "test");
-        // CStringPtr will automatically free the memory when dropped
-    }
-
-    #[test]
-    fn test_cstring_ptr_utf8_conversion() {
-        let test_content = "Hello, 世界! 🦀";
-        let c_string = CString::new(test_content).unwrap();
-        let ptr = c_string.into_raw();
-        let wrapper = unsafe { CStringPtr::new(ptr) };
-
-        let converted = unsafe { wrapper.to_str().unwrap() };
-        assert_eq!(converted, test_content);
-    }
-
-    #[test]
-    fn test_cstring_ptr_empty_string() {
-        let empty_string = CString::new("").unwrap();
-        let ptr = empty_string.into_raw();
-        let wrapper = unsafe { CStringPtr::new(ptr) };
-
-        assert!(!wrapper.is_null());
-        let result = unsafe { wrapper.to_str().unwrap() };
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_cstring_ptr_null_to_str_panics_debug() {
-        let null_wrapper = unsafe { CStringPtr::new(std::ptr::null_mut()) };
-
-        // Test that we correctly identify null pointers
-        assert!(null_wrapper.is_null());
-
-        // In debug builds, this should panic. In release builds, it's undefined behavior.
-        // Rather than testing undefined behavior, let's test the null check works
-        if cfg!(debug_assertions) {
-            // In debug mode, we expect a panic
-            std::panic::catch_unwind(|| {
-                let _ = unsafe { null_wrapper.to_str() };
-            })
-            .expect_err("Expected panic in debug mode for null pointer");
-        } else {
-            // In release mode, we just verify the null check works
-            // Don't actually call to_str() with null as it's undefined behavior
-            tracing::info!(
-                "Skipping null pointer dereference test in release mode (undefined behavior)"
-            );
-        }
-    }
-
-    #[test]
-    fn test_evaluate_cue_package_invalid_path() {
-        // Test with invalid UTF-8 path (simulated)
-        let invalid_path = Path::new("/nonexistent/\u{0000}/invalid");
-        let result = evaluate_cue_package(invalid_path, "test");
-
-        // Should fail with configuration error for invalid path
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert!(error.to_string().contains("FFI operation failed"));
-    }
-
-    #[test]
-    fn test_evaluate_cue_package_invalid_package_name() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Package name with null bytes should fail
-        let result = evaluate_cue_package(temp_dir.path(), "test\0package");
-
-        assert!(result.is_err());
-        let error = result.unwrap_err();
-        assert!(error.to_string().contains("FFI operation failed"));
-    }
-
-    #[test]
-    fn test_evaluate_cue_package_nonexistent_directory() {
-        let nonexistent = Path::new("/definitely/does/not/exist/12345");
-        let result = evaluate_cue_package(nonexistent, "env");
-
-        // The behavior depends on the Go CUE implementation and FFI availability
-        // In CI environments, the FFI bridge may behave differently
-        // We just verify that the function doesn't panic and returns some result
-        match result {
-            Ok(json) => {
-                // If it succeeds unexpectedly, log it but don't fail
-                tracing::info!("FFI succeeded for nonexistent path (CI behavior): {json}");
-                // In some CI environments, this might succeed with empty/default values
-            }
-            Err(error) => {
-                // This is the expected behavior - log the error
-                tracing::info!("Got expected error for nonexistent path: {error}");
-                assert!(!error.to_string().is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn test_evaluate_cue_package_with_valid_setup() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create a simple valid CUE file
-        let cue_content = r#"package cuenv
-
-env: {
-    TEST_VAR: "test_value"
-    NUMBER: 42
-}
-"#;
-        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
-
-        // This test depends on the Go FFI being available
-        // In a real environment, this should work
-        let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-        // The result depends on whether the FFI bridge is properly built
-        // In CI this might fail if Go dependencies aren't available
-        match result {
-            Err(error) => {
-                // If FFI isn't available, we should get a specific error
-                tracing::info!("FFI not available in test environment: {error}");
-                // This is acceptable in test environments without Go build
-            }
-            Ok(json) => {
-                // If it works, verify the JSON contains our values
-                println!("Got JSON response: {json}");
-                // The JSON wraps everything in an "env" object
-                assert!(
-                    json.contains("env"),
-                    "JSON should contain env field. Got: {json}"
-                );
-                assert!(
-                    json.contains("TEST_VAR") || json.contains("test_value"),
-                    "JSON should contain test values. Got: {json}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_evaluate_cue_error_handling() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create an invalid CUE file
-        let invalid_cue = r"package cuenv
-
-this is not valid CUE syntax {
-    missing quotes and wrong structure
-";
-        fs::write(temp_dir.path().join("env.cue"), invalid_cue).unwrap();
-
-        let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-        // The behavior depends on the Go CUE implementation and FFI availability
-        // In CI environments, the FFI bridge may be more lenient or handle errors differently
-        match result {
-            Ok(json) => {
-                // If it succeeds despite invalid CUE, this might be CI-specific behavior
-                tracing::info!("FFI succeeded with invalid CUE (CI behavior): {json}");
-                // Don't fail the test - just log the unexpected success
-            }
-            Err(error) => {
-                // This is the expected behavior for invalid CUE
-                tracing::info!("Got expected error for invalid CUE: {error}");
-                assert!(!error.to_string().is_empty());
-            }
-        }
-    }
-
-    #[test]
-    fn test_path_conversion_edge_cases() {
-        // Test various path edge cases that might cause issues
-        let temp_dir = TempDir::new().unwrap();
-        let path_with_spaces = temp_dir.path().join("dir with spaces");
-        fs::create_dir(&path_with_spaces).unwrap();
-
-        // This should handle spaces correctly
-        let result = evaluate_cue_package(&path_with_spaces, "env");
-
-        // The result might be an error due to missing CUE files, but the path handling should work
-        if let Err(e) = result {
-            // Should not be a path conversion error
-            assert!(!e.to_string().contains("Invalid directory path: not UTF-8"));
-        }
-    }
-
-    // Integration test to verify memory management doesn't leak
-    #[test]
-    fn test_ffi_memory_management_stress() {
-        let temp_dir = TempDir::new().unwrap();
-
-        // Create a simple CUE file with valid syntax
-        let cue_content = r#"package cuenv
-
-env: {
-    TEST: "value"
-}"#;
-        fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
-
-        // Call FFI function multiple times to test memory management
-        for i in 0..100 {
-            let result = evaluate_cue_package(temp_dir.path(), "cuenv");
-
-            // Each call should be independent and not cause memory issues
-            match result {
-                Ok(json) => {
-                    // If FFI is available, all calls should succeed
-                    // Check for either TEST or env field (JSON structure may vary)
-                    // The JSON wraps everything in an "env" object
-                    assert!(
-                        json.contains("env"),
-                        "JSON should contain env field. Got: {json}"
-                    );
-                }
-                Err(error) => {
-                    // If FFI isn't available, error should be consistent
-                    let error_msg = error.to_string();
-                    tracing::info!("Iteration {i}: {error_msg}");
-
-                    // Break early if it's clearly an FFI availability issue
-                    if i > 5 {
-                        break;
-                    }
-                }
-            }
-        }
-
-        // If we get here without crashes, memory management is working
-    }
-
-    #[test]
-    fn test_get_bridge_version() {
-        let result = get_bridge_version();
-
-        // The behavior depends on whether the Go FFI bridge is available
-        match result {
-            Ok(version) => {
-                // If FFI is available, we should get a version string
-                tracing::info!("Bridge version: {}", version);
-                assert!(!version.is_empty());
-                // Version should start with "bridge/1" according to the envelope format
-                // but we'll be lenient in case the format changes
-                assert!(version.len() > 3); // At least some meaningful content
-            }
-            Err(error) => {
-                // If FFI isn't available, we should get a specific error
-                tracing::info!("FFI not available for bridge version: {}", error);
-                // This is acceptable in test environments without Go build
-                let error_msg = error.to_string();
-                assert!(!error_msg.is_empty());
-                // Should mention the FFI function name
-                assert!(error_msg.contains("cue_bridge_version") || error_msg.contains("FFI"));
-            }
-        }
-    }
-
-    // Test the error message parsing logic
-    #[test]
-    fn test_error_message_parsing() {
-        // This tests the logic that parses "error:" prefixed messages
-        // We can't easily mock the FFI call, but we can test the string logic
-
-        let temp_dir = TempDir::new().unwrap();
-
-        // The actual test depends on implementation details
-        // For now, just verify the function exists and handles basic cases
-        let result = evaluate_cue_package(temp_dir.path(), "nonexistent_package");
-
-        // The behavior depends on whether the Go FFI bridge is available:
-        // - If available: should return error for nonexistent package
-        // - If not available: may return different error types
-        // Either way, we should get some kind of result (error or success)
-
-        match result {
-            Ok(output) => {
-                // If FFI isn't available or returns empty result, that's acceptable
-                tracing::info!("FFI returned success (possibly unavailable): {output}");
-            }
-            Err(error) => {
-                // Expected case - should get an error for nonexistent package
-                let error_str = error.to_string();
-                assert!(!error_str.is_empty());
-                assert!(error_str.len() > 5); // Should be a meaningful message
-                tracing::info!("Got expected error: {error_str}");
-            }
-        }
-
-        // The main thing is the function doesn't crash/panic
-    }
-
-    #[test]
-    fn test_bridge_error_constants_consistency() {
-        // Test that our error constants match expected values
-        assert_eq!(ERROR_CODE_INVALID_INPUT, "INVALID_INPUT");
-        assert_eq!(ERROR_CODE_LOAD_INSTANCE, "LOAD_INSTANCE");
-        assert_eq!(ERROR_CODE_BUILD_VALUE, "BUILD_VALUE");
-        assert_eq!(ERROR_CODE_ORDERED_JSON, "ORDERED_JSON");
-        assert_eq!(ERROR_CODE_PANIC_RECOVER, "PANIC_RECOVER");
-        assert_eq!(ERROR_CODE_JSON_MARSHAL, "JSON_MARSHAL_ERROR");
-        assert_eq!(ERROR_CODE_REGISTRY_INIT, "REGISTRY_INIT");
-        assert_eq!(ERROR_CODE_DEPENDENCY_RES, "DEPENDENCY_RESOLUTION");
-    }
-
-    #[test]
-    fn test_bridge_envelope_parsing() {
-        // Test parsing of valid success envelope
-        let success_json = r#"{"version":"bridge/1","ok":{"test":"value"}}"#;
-        let envelope: BridgeEnvelope = serde_json::from_str(success_json).unwrap();
-
-        assert_eq!(envelope.version, "bridge/1");
-        assert!(envelope.ok.is_some());
-        assert!(envelope.error.is_none());
-
-        // Test parsing of valid error envelope
-        let error_json = r#"{"version":"bridge/1","error":{"code":"INVALID_INPUT","message":"test error","hint":"test hint"}}"#;
-        let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
-
-        assert_eq!(envelope.version, "bridge/1");
-        assert!(envelope.ok.is_none());
-        assert!(envelope.error.is_some());
-
-        let error = envelope.error.unwrap();
-        assert_eq!(error.code, "INVALID_INPUT");
-        assert_eq!(error.message, "test error");
-        assert_eq!(error.hint, Some("test hint".to_string()));
-    }
-
-    #[test]
-    fn test_bridge_envelope_parsing_minimal_error() {
-        // Test parsing of error envelope without hint
-        let error_json =
-            r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
-        let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
-
-        let error = envelope.error.unwrap();
-        assert_eq!(error.code, "LOAD_INSTANCE");
-        assert_eq!(error.message, "test error");
-        assert!(error.hint.is_none());
-    }
-
-    #[test]
-    fn test_cstring_ptr_drop_behavior() {
-        // Test that Drop trait is correctly implemented
-        // This is mostly to ensure the Drop implementation doesn't panic
-
-        // Test dropping a null pointer (should be safe)
-        let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
-        drop(null_ptr); // Should not panic
-
-        // Test dropping a valid pointer
-        let test_string = CString::new("test").unwrap();
-        let ptr = test_string.into_raw();
-        let wrapper = unsafe { CStringPtr::new(ptr) };
-        drop(wrapper); // Should free the memory properly
-    }
-
-    #[test]
-    fn test_get_bridge_version_functionality() {
-        // This test covers the actual bridge version functionality
-        // The behavior will depend on whether the Go bridge is available
-
-        let result = get_bridge_version();
-
-        match result {
-            Ok(version) => {
-                // If the bridge is available, test the version format
-                tracing::info!("Bridge available with version: {}", version);
-
-                // Version should not be empty
-                assert!(!version.is_empty());
-
-                // Version should contain the word "bridge" (case insensitive)
-                assert!(
-                    version.to_lowercase().contains("bridge"),
-                    "Version should contain 'bridge': {version}"
-                );
-
-                // Should contain some Go version information
-                assert!(
-                    version.contains("go") || version.contains("Go"),
-                    "Version should contain Go info: {version}"
-                );
-            }
-            Err(error) => {
-                // If the bridge is not available, verify the error is meaningful
-                let error_str = error.to_string();
-
-                // Error should not be empty
-                assert!(!error_str.is_empty());
-
-                // Should be an FFI error or mention the function name
-                assert!(
-                    error_str.contains("FFI") || error_str.contains("cue_bridge_version"),
-                    "Error should mention FFI or function name: {error_str}"
-                );
-
-                tracing::info!("Bridge not available (expected in test env): {}", error_str);
-            }
-        }
-    }
-
-    #[test]
-    fn test_error_code_mapping() {
-        // Test that we handle different error codes correctly
-        // We can't easily mock the FFI, but we can test the logic
-
-        // Create a mock bridge error for each error type
-        let test_cases = vec![
-            (ERROR_CODE_INVALID_INPUT, "Invalid input test", None),
-            (
-                ERROR_CODE_LOAD_INSTANCE,
-                "Load instance test",
-                Some("Check CUE files".to_string()),
-            ),
-            (
-                ERROR_CODE_BUILD_VALUE,
-                "Build value test",
-                Some("Check constraints".to_string()),
-            ),
-            (ERROR_CODE_ORDERED_JSON, "JSON test", None),
-            (ERROR_CODE_PANIC_RECOVER, "Panic test", None),
-            (ERROR_CODE_JSON_MARSHAL, "Marshal test", None),
-            (
-                ERROR_CODE_REGISTRY_INIT,
-                "Registry init test",
-                Some("Check CUE_REGISTRY".to_string()),
-            ),
-            (
-                ERROR_CODE_DEPENDENCY_RES,
-                "Dependency resolution test",
-                Some("Run 'cue mod tidy'".to_string()),
-            ),
-            ("UNKNOWN_CODE", "Unknown error", None),
-        ];
-
-        for (code, message, hint) in test_cases {
-            let bridge_error = BridgeError {
-                code: code.to_string(),
-                message: message.to_string(),
-                hint,
-            };
-
-            // The error should serialize and deserialize properly
-            let serialized = serde_json::to_string(&bridge_error).unwrap();
-            let deserialized: BridgeError = serde_json::from_str(&serialized).unwrap();
-
-            assert_eq!(deserialized.code, code);
-            assert_eq!(deserialized.message, message);
-        }
-    }
-
-    #[test]
-    fn test_path_edge_cases() {
-        // Test more edge cases for path handling
-
-        // Test with empty package name - should be handled by Go side validation
-        let temp_dir = TempDir::new().unwrap();
-        let result = evaluate_cue_package(temp_dir.path(), "");
-
-        // This should either fail with a validation error or succeed (depending on FFI availability)
-        match result {
-            Ok(_) => {
-                // If it succeeds, the FFI might not be available (CI behavior)
-                tracing::info!("FFI not available or handles empty package name gracefully");
-            }
-            Err(error) => {
-                // Should get some meaningful error
-                let error_str = error.to_string();
-                assert!(!error_str.is_empty());
-                tracing::info!("Got expected error for empty package name: {}", error_str);
-            }
-        }
-    }
-
-    #[test]
-    fn test_json_envelope_version_mismatch() {
-        // Test version compatibility checking logic
-        // We can test this by creating mock JSON responses
-
-        let incompatible_version_json = r#"{"version":"bridge/2","ok":{"test":"value"}}"#;
-        let envelope: BridgeEnvelope = serde_json::from_str(incompatible_version_json).unwrap();
-
-        assert_eq!(envelope.version, "bridge/2");
-        assert!(!envelope.version.starts_with("bridge/1"));
-    }
-
-    #[test]
-    fn test_serialize_import_usage() {
-        // Test that the Serialize import is available even if not used
-        // This ensures the import consistency we added is correct
-
-        use serde::Serialize;
-
-        #[derive(Serialize)]
-        struct TestStruct {
-            field: String,
-        }
-
-        let test = TestStruct {
-            field: "test".to_string(),
-        };
-
-        let _json = serde_json::to_string(&test).unwrap();
-        // If this compiles, the Serialize import is working
-    }
-}
+mod tests;

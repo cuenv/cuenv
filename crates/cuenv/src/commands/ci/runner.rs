@@ -3,12 +3,12 @@
 //! Executes CI pipelines locally or in CI environments with:
 //! - Parallel task execution with bounded concurrency
 //! - Progress reporting (terminal or GitHub Check Runs)
-//! - Matrix filtering for cross-platform support
+//! - Clear rejection for unsupported local runner flags
 
 use super::args::CiArgs;
 use crate::providers::detect_ci_provider;
 use cuenv_ci::discovery::find_cue_module_root;
-use cuenv_ci::executor::run_ci;
+use cuenv_ci::executor::{RunCiRequest, run_ci};
 use cuenv_core::Result;
 
 /// Execute runner mode - run the pipeline.
@@ -20,38 +20,31 @@ use cuenv_core::Result;
 ///
 /// Returns error if pipeline execution fails.
 pub async fn execute_runner(args: &CiArgs) -> Result<()> {
+    reject_unsupported_matrix_filter(args)?;
+
     let provider = detect_ci_provider(args.from.clone());
-
-    // TODO: Apply matrix filter if specified
-    if !args.filter_matrix.is_empty() {
-        tracing::info!(
-            filter = ?args.filter_matrix,
-            "Matrix filter specified (not yet fully implemented)"
-        );
-    }
-
-    // TODO: Apply jobs limit
-    if args.jobs != 0 {
-        tracing::info!(
-            jobs = args.effective_jobs(),
-            "Parallel jobs limit specified"
-        );
-    }
-
-    // Resolve --path relative to cwd and then relative to module root.
-    // This ensures that `--path .` from a subdirectory correctly filters to that project.
     let effective_path = resolve_path_filter(&args.path)?;
 
-    // For now, delegate to existing run_ci with parallel execution
-    // This will be replaced with the new ExecutionEngine in Phase 1 Part 2
-    run_ci(
+    run_ci(RunCiRequest {
         provider,
-        args.dry_run.into(),
-        args.pipeline.clone(),
-        args.environment.clone(),
-        effective_path.as_deref(),
-    )
+        dry_run: args.dry_run.into(),
+        specific_pipeline: args.pipeline.clone(),
+        environment: args.environment.clone(),
+        path_filter: effective_path,
+        max_parallel: args.effective_jobs(),
+    })
     .await
+}
+
+fn reject_unsupported_matrix_filter(args: &CiArgs) -> Result<()> {
+    if args.filter_matrix.is_empty() {
+        return Ok(());
+    }
+
+    Err(cuenv_core::Error::configuration(
+        "`cuenv ci --filter-matrix` is not supported by the local CI runner yet; \
+         use `cuenv sync ci` for provider-native matrix workflows",
+    ))
 }
 
 /// Resolve the path filter to be relative to the module root.
@@ -136,4 +129,42 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
 
     // Return the path relative to module root
     Ok(Some(relative.to_string_lossy().to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ci_args() -> CiArgs {
+        CiArgs {
+            pipeline: None,
+            export: None,
+            output: None,
+            filter_matrix: Vec::new(),
+            jobs: 0,
+            from: None,
+            dry_run: false,
+            environment: None,
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+        }
+    }
+
+    #[test]
+    fn rejects_filter_matrix_for_local_runner() {
+        let mut args = ci_args();
+        args.filter_matrix = vec!["os=linux".to_string()];
+
+        let error = reject_unsupported_matrix_filter(&args)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--filter-matrix"));
+        assert!(error.contains("not supported"));
+    }
+
+    #[test]
+    fn accepts_runner_without_filter_matrix() {
+        let args = ci_args();
+        reject_unsupported_matrix_filter(&args).unwrap();
+    }
 }

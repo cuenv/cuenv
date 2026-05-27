@@ -4,6 +4,8 @@
 //! execution with automatic event emission (start, complete), eliminating
 //! boilerplate in individual command implementations.
 
+mod task_handler;
+
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::cue::discovery::find_cue_module_root;
@@ -12,7 +14,9 @@ use cuenv_events::{emit_stderr, emit_stdout};
 use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
 
-use super::{CommandExecutor, ci, env, exec, export, hooks, module_version, sync, task};
+use super::{CommandExecutor, ci, env, exec, export, hooks, module_version, sync};
+
+pub use task_handler::TaskHandler;
 
 /// Trait for commands with lifecycle events.
 ///
@@ -183,10 +187,6 @@ pub struct EnvStatusHandler {
 impl CommandHandler for EnvStatusHandler {
     fn command_name(&self) -> &'static str {
         "env status"
-    }
-
-    fn should_print_output(&self) -> bool {
-        false
     }
 
     async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
@@ -379,114 +379,6 @@ impl CommandHandler for ExecHandler {
                 "Command failed with exit code {exit_code}"
             )))
         }
-    }
-}
-
-/// Handler for `task` command.
-#[allow(clippy::struct_excessive_bools)]
-pub struct TaskHandler {
-    /// Path to the cuenv project directory.
-    pub path: String,
-    /// Name of the CUE package to evaluate.
-    pub package: String,
-    /// Optional specific task name to execute.
-    pub name: Option<String>,
-    /// Labels to filter tasks by.
-    pub labels: Vec<String>,
-    /// Optional environment name to use for task execution.
-    pub environment: Option<String>,
-    /// Output format (e.g., "json", "yaml", "table").
-    pub format: String,
-    /// Optional path to materialize task outputs to.
-    pub materialize_outputs: Option<String>,
-    /// Whether to display cache paths for tasks.
-    pub show_cache_path: bool,
-    /// Optional execution backend override (e.g., "dagger").
-    pub backend: Option<String>,
-    /// Whether to use the TUI interface.
-    pub tui: bool,
-    /// Whether to run in interactive mode for task selection.
-    pub interactive: bool,
-    /// Whether to show help for the specified task.
-    pub help: bool,
-    /// Whether to skip task dependencies.
-    pub skip_dependencies: bool,
-    /// Whether to keep running siblings after a task fails.
-    pub continue_on_error: bool,
-    /// Dry run mode: export DAG without executing.
-    pub dry_run: cuenv_core::DryRun,
-    /// Additional arguments to pass to the task.
-    pub task_args: Vec<String>,
-}
-
-#[async_trait]
-impl CommandHandler for TaskHandler {
-    fn command_name(&self) -> &'static str {
-        "task"
-    }
-
-    async fn execute(&self, executor: &CommandExecutor) -> Result<String> {
-        // Validate conflicting selection modes before constructing the request
-        if !self.labels.is_empty() && self.name.is_some() {
-            return Err(cuenv_core::Error::configuration(
-                "Cannot specify both a task name and --label",
-            ));
-        }
-        if !self.labels.is_empty() && !self.task_args.is_empty() {
-            return Err(cuenv_core::Error::configuration(
-                "Task arguments are not supported when selecting tasks by label",
-            ));
-        }
-
-        // Build request using the builder pattern
-        let mut request = match (&self.name, &self.labels, self.interactive) {
-            (Some(name), _, _) => {
-                task::TaskExecutionRequest::named(&self.path, &self.package, name, executor)
-                    .with_args(self.task_args.clone())
-            }
-            (None, labels, _) if !labels.is_empty() => task::TaskExecutionRequest::labels(
-                &self.path,
-                &self.package,
-                labels.clone(),
-                executor,
-            ),
-            (None, _, true) => {
-                task::TaskExecutionRequest::interactive(&self.path, &self.package, executor)
-            }
-            (None, _, _) => task::TaskExecutionRequest::list(&self.path, &self.package, executor),
-        };
-
-        // Apply optional settings
-        if let Some(env) = &self.environment {
-            request = request.with_environment(env);
-        }
-        request = request.with_format(&self.format);
-        if let Some(path) = &self.materialize_outputs {
-            request = request.with_materialize_outputs(path);
-        }
-        if self.show_cache_path {
-            request = request.with_show_cache_path();
-        }
-        if let Some(backend) = &self.backend {
-            request = request.with_backend(backend);
-        }
-        if self.tui {
-            request = request.with_tui();
-        }
-        if self.help {
-            request = request.with_help();
-        }
-        if self.skip_dependencies {
-            request = request.with_skip_dependencies();
-        }
-        if self.continue_on_error {
-            request = request.with_continue_on_error();
-        }
-        if self.dry_run.is_dry_run() {
-            request = request.with_dry_run();
-        }
-
-        task::execute(request).await
     }
 }
 
@@ -743,6 +635,29 @@ impl ShellInitHandler {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn env_status_handler_prints_wait_result() {
+        let handler = EnvStatusHandler {
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            wait: true,
+            timeout: 1,
+            format: StatusFormat::Text,
+        };
+
+        assert!(handler.should_print_output());
+    }
+
+    #[test]
+    fn env_load_handler_stays_quiet() {
+        let handler = EnvLoadHandler {
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+        };
+
+        assert!(!handler.should_print_output());
+    }
 
     #[test]
     fn module_root_detection_does_not_require_root_env_file() {

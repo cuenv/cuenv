@@ -145,7 +145,7 @@ cuenv sync [PROVIDER] [OPTIONS]
 
 ### `cuenv build`
 
-Build container images defined in CUE configuration.
+List container images defined in CUE configuration.
 
 ```bash
 cuenv build [NAMES...] [OPTIONS]
@@ -153,7 +153,7 @@ cuenv build [NAMES...] [OPTIONS]
 
 **Arguments:**
 
-- `[NAMES]`: Image names to build. If not provided, lists available images.
+- `[NAMES]`: Image names to build. Build execution is currently unsupported; omit names to list available images.
 
 **Options:**
 
@@ -167,10 +167,10 @@ cuenv build [NAMES...] [OPTIONS]
 # List all images
 cuenv build
 
-# Build a specific image
+# Build requests currently fail until image execution backends are implemented
 cuenv build api
 
-# Build images matching a label
+# Label-selected build requests also fail until backends are implemented
 cuenv build --label ci
 ```
 
@@ -195,6 +195,12 @@ cuenv up [SERVICES...] [OPTIONS]
 
 Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
 
+Service-to-service dependencies wait for upstream services to become ready;
+starting a selected service also starts its service dependencies. Task and image
+dependencies in `services.*.dependsOn` are schema-visible but currently
+rejected by `cuenv up` until task execution and image build backends are wired
+into service startup.
+
 On Linux, `cuenv up` promotes itself to a subreaper (`PR_SET_CHILD_SUBREAPER`) and installs `PR_SET_PDEATHSIG=SIGKILL` on each service so orphaned descendants are either reaped by cuenv or killed when cuenv exits. On macOS, services are spawned through a hidden `cuenv __supervise` wrapper that watches the parent via `kqueue`/`NOTE_EXIT` and forwards signals to the service's process group.
 
 Secrets referenced by a service's `env` (including values inherited from the project-level environment) are resolved in parallel before the service starts and registered with the event system for redaction.
@@ -217,15 +223,19 @@ cuenv up -e test
 
 ### `cuenv down`
 
-Tear down running services.
+Request graceful shutdown of the active service session.
 
 ```bash
 cuenv down [SERVICES...] [OPTIONS]
 ```
 
+`cuenv down` signals the persisted `cuenv up` controller for the selected
+project path. Omit service names to stop the whole active session. Provide
+service names to queue persisted stop requests for those running supervisors.
+
 **Arguments:**
 
-- `[SERVICES]`: Service names to stop. If not provided, stops all services.
+- `[SERVICES]`: Service names to stop. Omit to stop the whole active session.
 
 **Options:**
 
@@ -262,8 +272,8 @@ cuenv logs [SERVICES...] [OPTIONS]
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `-f, --follow`: Follow log output (stream in real-time).
-- `-n, --lines <N>`: Number of lines to show. Default: `50`
+- `-f, --follow`: Stream appended persisted log lines until the active service session exits.
+- `-n, --lines <N>`: Number of lines to show before following. Default: `100`
 
 ### `cuenv restart`
 
@@ -272,6 +282,10 @@ Restart one or more services.
 ```bash
 cuenv restart <SERVICES...> [OPTIONS]
 ```
+
+`cuenv restart` requires an active `cuenv up` session for the selected project.
+It queues a persisted restart request for each named service, and the running
+supervisor consumes that request to stop and re-spawn the service.
 
 **Arguments:**
 
@@ -340,6 +354,9 @@ cuenv fmt --fix -p ./packages/my-app
 
 :::note
 The `cuenv fmt` command requires a `formatters` block in your `env.cue`. See the [Formatters Guide](/how-to/formatters/) for configuration details.
+It discovers files once with the repository ignore rules applied, then dispatches
+the matched Rust, Nix, Go, and CUE file groups through the shared formatter
+runners used by sync checks.
 :::
 
 ### `cuenv shell`
@@ -360,7 +377,8 @@ cuenv shell init <SHELL>
 
 #### `cuenv env status`
 
-Show hook execution status.
+Show hook execution status. With `--wait`, prints the final hook status after
+the hook execution completes or fails.
 
 ```bash
 cuenv env status [OPTIONS]
@@ -415,8 +433,8 @@ cuenv ci [OPTIONS]
 - `--pipeline <NAME>`: Force a specific pipeline to run.
 - `--export <FORMAT>`: Export pipeline YAML instead of running (`buildkite`, `gitlab`, `github-actions`, `circleci`).
 - `--output <PATH>`: Write exported YAML to a file instead of stdout.
-- `--filter-matrix <KEY=VALUE>`: Filter matrix dimensions. Accepted by the CLI; execution support is partial.
-- `--jobs <N>`: Maximum parallel tasks. Accepted by the CLI; execution support is partial.
+- `--filter-matrix <KEY=VALUE>`: Reserved for local runner matrix filtering. Currently rejected; use `cuenv sync ci` for provider-native matrix workflows.
+- `--jobs <N>`: Maximum parallel task DAG jobs. `0` uses host parallelism.
 - `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
 - `--environment, -e <NAME>`: Environment for secrets resolution.
 
@@ -448,6 +466,7 @@ cuenv can generate CI workflow files for different providers:
 
 - **GitHub Actions**: Creates `.github/workflows/*.yml` files with monorepo-aware naming
 - **Buildkite**: Creates `.buildkite/pipeline.yml` bootstrap or outputs dynamic YAML
+- **GitLab**: Schema-recognized only; `cuenv sync ci --provider gitlab` exits with a configuration error until a GitLab emitter exists
 
 The `--check` flag validates that generated workflows match existing files, exiting with an error if they differ. This is useful for enforcing workflow consistency in CI.
 
@@ -618,7 +637,7 @@ yq (4.44.6):
 
 ### `cuenv web`
 
-Start a web server for streaming cuenv events.
+Reserved for a future web server for streaming cuenv events. The command currently exits with a configuration error instead of starting a placeholder server.
 
 ```bash
 cuenv web [OPTIONS]
@@ -626,8 +645,8 @@ cuenv web [OPTIONS]
 
 **Options:**
 
-- `-p, --port <PORT>`: Port to listen on. Default: `3000`
-- `--host <HOST>`: Host to bind to. Default: `127.0.0.1`
+- `-p, --port <PORT>`: Port the future server would listen on. Default: `3000`
+- `--host <HOST>`: Host the future server would bind to. Default: `127.0.0.1`
 
 ### `cuenv changeset`
 
@@ -710,7 +729,7 @@ cuenv secrets setup <PROVIDER> [OPTIONS]
 
 **Arguments:**
 
-- `<PROVIDER>`: Provider to set up. Currently supported: `onepassword`
+- `<PROVIDER>`: Provider to set up. Currently supported: `onepassword`, `infisical`
 
 **Options:**
 
@@ -723,7 +742,7 @@ cuenv secrets setup <PROVIDER> [OPTIONS]
 cuenv secrets setup onepassword
 ```
 
-This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI.
+This downloads the 1Password WASM SDK to enable HTTP-based secret resolution. When `OP_SERVICE_ACCOUNT_TOKEN` is set, cuenv uses this for faster, batched secret resolution instead of the `op` CLI. For Infisical, setup validates that `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`, or `INFISICAL_TOKEN`, are present.
 
 See the [Secrets Guide](/how-to/secrets/) for more details on secret management.
 

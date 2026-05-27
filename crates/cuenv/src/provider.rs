@@ -1,15 +1,13 @@
 //! Provider traits for extensible cuenv functionality.
 //!
-//! This module defines the core provider system that allows cuenv to be extended
-//! with custom capabilities. Providers implement one or more capability traits
-//! and are registered via the [`CuenvBuilder`](crate::CuenvBuilder).
+//! This module defines the provider system used to extend generated-file sync.
+//! Providers implement [`SyncCapability`] and are registered via the
+//! [`CuenvBuilder`](crate::CuenvBuilder).
 //!
 //! # Architecture
 //!
 //! - [`Provider`] - Base trait that all providers must implement
 //! - [`SyncCapability`] - For providers that sync files from CUE configuration
-//! - [`RuntimeCapability`] - For providers that execute tasks (future)
-//! - [`SecretCapability`] - For providers that resolve secrets (future)
 //!
 //! # Example: Single-Capability Provider
 //!
@@ -26,26 +24,10 @@
 //! // Also implement SyncCapability...
 //! ```
 //!
-//! # Example: Multi-Capability Provider
-//!
-//! ```ignore
-//! use cuenv::{Provider, SyncCapability, RuntimeCapability};
-//!
-//! pub struct DaggerProvider;
-//!
-//! impl Provider for DaggerProvider {
-//!     fn name(&self) -> &'static str { "dagger" }
-//!     fn description(&self) -> &'static str { "Dagger sync and execution" }
-//! }
-//!
-//! // Implement both SyncCapability and RuntimeCapability...
-//! ```
-
 use async_trait::async_trait;
 use clap::Command;
 use cuenv_core::Result;
 use cuenv_core::manifest::Base;
-use std::any::Any;
 use std::path::Path;
 
 use crate::commands::CommandExecutor;
@@ -53,9 +35,8 @@ use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncResult};
 
 /// Base trait for all providers.
 ///
-/// Every provider must implement this trait. Providers then implement one or more
-/// capability traits ([`SyncCapability`], [`RuntimeCapability`], [`SecretCapability`])
-/// to define their functionality.
+/// Every sync provider must implement this trait, then implement
+/// [`SyncCapability`] for its file-generation behavior.
 ///
 /// # Thread Safety
 ///
@@ -68,15 +49,6 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Human-readable description for CLI help.
     fn description(&self) -> &'static str;
-
-    /// Returns self as `Any` for capability detection.
-    ///
-    /// This enables the registry to detect which capabilities a provider implements
-    /// at runtime. The default implementation should work for most providers.
-    fn as_any(&self) -> &dyn Any;
-
-    /// Returns self as mutable `Any` for capability detection.
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 /// Capability for syncing files from CUE configuration.
@@ -156,43 +128,6 @@ pub trait SyncCapability: Provider {
     }
 }
 
-/// Capability for executing tasks.
-///
-/// Providers implementing this trait can execute tasks using custom backends
-/// (e.g., Dagger containers, Nix shells, remote execution).
-///
-/// # Future Development
-///
-/// This trait is a placeholder for future task execution backends.
-#[async_trait]
-pub trait RuntimeCapability: Provider {
-    /// Execute a task and return the output.
-    async fn execute_task(&self, task_name: &str, executor: &CommandExecutor) -> Result<String>;
-
-    /// Check if this runtime can handle the given task.
-    fn can_handle(&self, task_name: &str) -> bool;
-}
-
-/// Capability for resolving secrets.
-///
-/// Providers implementing this trait can resolve secrets from various backends
-/// (e.g., 1Password, Vault, AWS Secrets Manager).
-///
-/// # Future Development
-///
-/// This trait is a placeholder for future secret resolution backends.
-#[async_trait]
-pub trait SecretCapability: Provider {
-    /// Resolve a secret reference and return the value.
-    ///
-    /// The reference format is provider-specific (e.g., `op://vault/item/field`
-    /// for 1Password).
-    async fn resolve(&self, reference: &str) -> Result<String>;
-
-    /// Check if this provider can handle the given reference.
-    fn can_resolve(&self, reference: &str) -> bool;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,14 +146,6 @@ mod tests {
         fn description(&self) -> &'static str {
             "Test provider"
         }
-
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn Any {
-            self
-        }
     }
 
     // ==========================================================================
@@ -235,36 +162,6 @@ mod tests {
     fn test_provider_description() {
         let provider = TestProvider;
         assert_eq!(provider.description(), "Test provider");
-    }
-
-    #[test]
-    fn test_provider_as_any() {
-        let provider = TestProvider;
-        let any = provider.as_any();
-        assert!(any.is::<TestProvider>());
-    }
-
-    #[test]
-    fn test_provider_as_any_mut() {
-        let mut provider = TestProvider;
-        let any = provider.as_any_mut();
-        assert!(any.is::<TestProvider>());
-    }
-
-    #[test]
-    fn test_provider_as_any_wrong_type() {
-        let provider = TestProvider;
-        let any = provider.as_any();
-        // Should not be castable to String
-        assert!(!any.is::<String>());
-    }
-
-    #[test]
-    fn test_provider_downcast() {
-        let provider = TestProvider;
-        let any = provider.as_any();
-        let downcasted = any.downcast_ref::<TestProvider>();
-        assert!(downcasted.is_some());
     }
 
     // ==========================================================================

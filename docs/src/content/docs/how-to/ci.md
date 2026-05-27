@@ -137,7 +137,9 @@ ci: {
 ```
 
 Check [schema status](/reference/schema/status/) before relying on provider
-surfaces outside the GitHub sync path.
+surfaces outside the GitHub sync path. GitLab is schema-recognized for future
+support, but `cuenv sync ci --provider gitlab` fails with a configuration error
+until a GitLab workflow emitter exists.
 
 ## Secrets in CI
 

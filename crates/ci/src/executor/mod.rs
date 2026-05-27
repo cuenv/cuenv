@@ -3,12 +3,17 @@
 //! Orchestrates CI pipeline execution with provider integration.
 
 pub mod config;
+mod hook_env;
 mod orchestrator;
+mod reporting;
 pub mod runner;
 pub mod secrets;
+mod task_env;
+mod task_execution;
+mod tools;
 
 pub use config::CIExecutorConfig;
-pub use orchestrator::run_ci;
+pub use orchestrator::{RunCiRequest, run_ci};
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 

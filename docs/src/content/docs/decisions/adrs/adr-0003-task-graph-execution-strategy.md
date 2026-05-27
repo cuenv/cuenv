@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI implementation in [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:92) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
+`cuenv task` supports both simple single-task execution and dependency-aware orchestration. The CLI orchestration in [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs) builds task graphs when dependencies are present, while preserving lightweight execution for independent tasks. This ADR formalises the strategy so future changes remain consistent with user expectations and the architecture documented in [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/).
 
 ## Decision
 
@@ -40,6 +40,7 @@ superseded_by: []
 - Users obtain predictable execution semantics for both simple and complex tasks.
 - Tests and documentation can assert the dual-path behaviour.
 - Future optimisations (parallelism, caching) must preserve these guarantees or supersede this ADR.
+- Criterion benchmarks for the generic task graph primitives should propagate graph construction and ordering `Result` values through setup and measurement helpers instead of hiding failures behind benchmark-wide unwrap allowances.
 
 ## Alignment with Features
 
@@ -51,7 +52,7 @@ superseded_by: []
 ## Related Documents
 
 - [rfc-0004-task-execution-ux-and-dependency-strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/)
-- [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10)
+- [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs)
 - cuenv-core task graph implementation (future documentation)
 
 ## Status

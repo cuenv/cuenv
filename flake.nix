@@ -139,11 +139,12 @@
             export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
 
             mkdir -p $out/debug $out/release
+            go_sources=$(find . -maxdepth 1 -name '*.go' ! -name '*_test.go' -print | sort)
 
-            go build -buildmode=c-archive -o $out/debug/libcue_bridge.a bridge.go
+            go build -buildmode=c-archive -o $out/debug/libcue_bridge.a $go_sources
             cp libcue_bridge.h $out/debug/
 
-            CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a bridge.go
+            CGO_ENABLED=1 go build -ldflags="-s -w" -buildmode=c-archive -o $out/release/libcue_bridge.a $go_sources
             cp libcue_bridge.h $out/release/
 
             runHook postBuild

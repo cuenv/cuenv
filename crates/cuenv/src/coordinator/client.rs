@@ -4,9 +4,6 @@
 //! which manages event routing between producers (CLI commands) and
 //! consumers (UI renderers like TUI or JSON output).
 
-// Client has some unused methods reserved for future multi-UI support
-#![allow(dead_code)]
-
 use super::discovery::ensure_coordinator_running;
 use super::protocol::{ClientType, MessageType, RegisterAckPayload, UiType, WireMessage};
 use cuenv_events::CuenvEvent;

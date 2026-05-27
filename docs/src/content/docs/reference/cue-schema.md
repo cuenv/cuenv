@@ -479,7 +479,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service)]`     | No       | Dependencies on tasks or other services       |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service dependencies are supported; task and image dependencies are rejected by `cuenv up` until executor integration exists |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -642,7 +642,7 @@ Log handling configuration for services.
 
 ### #ContainerImage
 
-Declarative container image builds as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume.
+Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume once build execution exists. `cuenv build` currently lists image definitions; selected build requests fail until an execution backend is implemented.
 
 ```cue
 images: {
@@ -715,8 +715,8 @@ images: {
 
 ```bash
 cuenv build              # List all images
-cuenv build api          # Build specific image
-cuenv build --label ci   # Build images matching label
+cuenv build api          # Fails until image execution backends exist
+cuenv build --label ci   # Fails until image execution backends exist
 ```
 
 ## Hooks
@@ -1256,7 +1256,9 @@ cuenv can generate CI workflow manifests for multiple providers. CI configuratio
 
 ### #CIProvider
 
-Supported CI provider names for workflow generation.
+Schema-recognized CI provider names for workflow generation. Provider support
+varies: GitHub and Buildkite have `cuenv sync ci` support today, while GitLab
+is schema-only and sync rejects it until a GitLab emitter exists.
 
 ```cue
 #CIProvider: "github" | "buildkite" | "gitlab"

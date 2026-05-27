@@ -41,12 +41,12 @@ Left undocumented, future changes risk fragmenting the user experience and break
 ## Proposed Approach
 
 1. **Command Taxonomy**
-   - Retain the current top-level subcommands enumerated in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:239).
+   - Retain the current top-level subcommands enumerated in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
    - Document the rationale for each grouping (`env` for environment inspection and hook lifecycle, `task` for orchestration, `exec` for ad-hoc commands, `shell` for integration, `allow` for approvals).
 
 2. **Default Arguments**
    - Standardise `--path` defaulting to `.` and `--package` defaulting to `cuenv`.
-   - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140).
+   - Promote `--format` as a global flag with allowed values (`simple`, `env`, `json`), matching the `OutputFormat` value enum at [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
 
 3. **Discoverability Enhancements**
    - Ensure `--help` output surfaces subcommands, aliases, and examples consistent with documentation commitments in [readme.md](readme.md:242).
@@ -97,7 +97,7 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 | Artifact                                                                                                  | Purpose                                                                           |
 | --------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211)                                            | Canonical definition of Clap command hierarchy.                                   |
+| [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)                                                        | Canonical definition of Clap command hierarchy.                                   |
 | [readme.md](readme.md:242)                                                                                | Public CLI reference that must mirror the agreed structure.                       |
 | [adr-0003-task-graph-execution-strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/)         | Downstream ADR addressing execution semantics that depend on this command layout. |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Documents error handling expectations for commands defined here.                  |

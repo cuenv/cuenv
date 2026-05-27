@@ -1,6 +1,6 @@
 //! Centralized state management for the rich TUI.
 //!
-//! State is logically split into two concerns:
+//! State is split into two concerns:
 //!
 //! - **Activity model** — the event-driven data: tasks, outputs, running
 //!   set, completion status. Mutated **only** by [`TuiState::apply_event`]
@@ -11,391 +11,30 @@
 //!   expansion, focus, selected task, scroll offset. Mutated only by
 //!   keyboard handlers.
 //!
-//! The two halves currently share [`TuiState`] because widget renderers
-//! still read individual fields directly; promoting them into separate
-//! sub-structs is a follow-up.
+//! [`TuiState`] coordinates those halves and preserves the renderer-facing
+//! read APIs while keeping mutation boundaries explicit.
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use cuenv_events::{CuenvEvent, EventCategory, Stream, TaskEvent};
 
-/// Status of a task in the execution graph
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskStatus {
-    /// Task is waiting for dependencies
-    Pending,
-    /// Task is currently running
-    Running,
-    /// Task completed successfully
-    Completed,
-    /// Task failed
-    Failed,
-    /// Task was skipped due to dependency failure
-    Skipped,
-    /// Task result was retrieved from cache
-    Cached,
+mod activity;
+mod tree;
+mod view;
+
+pub use activity::{ActivityModel, OutputLine, TaskInfo, TaskOutput, TaskStatus};
+pub use view::{OutputMode, TreeNodeType, TreeViewItem, UiState};
+
+#[cfg(test)]
+use activity::MAX_OUTPUT_LINES;
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
-impl TaskStatus {
-    /// Get the display symbol for this status
-    #[must_use]
-    pub const fn symbol(self) -> &'static str {
-        match self {
-            Self::Pending => "⏸",
-            Self::Running => "▶",
-            Self::Completed => "✓",
-            Self::Failed => "✗",
-            Self::Skipped => "⊘",
-            Self::Cached => "⚡",
-        }
-    }
-
-    /// Get the color for this status (as ratatui Color)
-    #[must_use]
-    pub const fn color(self) -> ratatui::style::Color {
-        use ratatui::style::Color;
-        match self {
-            Self::Running => Color::Yellow,
-            Self::Completed => Color::Green,
-            Self::Failed => Color::Red,
-            Self::Pending | Self::Skipped => Color::DarkGray,
-            Self::Cached => Color::Cyan,
-        }
-    }
-}
-
-/// Output display mode for the output panel
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum OutputMode {
-    /// Show all task outputs grouped by task
-    #[default]
-    All,
-    /// Show only the selected task's output
-    Selected,
-}
-
-/// Type of node in the tree view
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TreeNodeType {
-    /// Special "All" node that shows combined output
-    All,
-    /// Intermediate group node (e.g., "test" in "test.bdd")
-    Group(String),
-    /// Actual task node (full task name)
-    Task(String),
-}
-
-/// Represents a single item in the flattened tree view
-#[derive(Debug, Clone)]
-pub struct TreeViewItem {
-    /// Type of this node
-    pub node_type: TreeNodeType,
-    /// Display name (e.g., "bdd" instead of full "task:cuenv:test.bdd")
-    pub display_name: String,
-    /// Depth in the tree (for indentation)
-    pub depth: usize,
-    /// Whether this node is expanded
-    pub is_expanded: bool,
-    /// Whether this node has children
-    pub has_children: bool,
-}
-
-impl TreeViewItem {
-    /// Get the unique key for this node (for expansion tracking)
-    #[must_use]
-    pub fn node_key(&self) -> String {
-        match &self.node_type {
-            TreeNodeType::All => "::all::".to_string(),
-            TreeNodeType::Group(path) => format!("::group::{path}"),
-            TreeNodeType::Task(name) => name.clone(),
-        }
-    }
-}
-
-/// Information about a task in the execution graph
-#[derive(Debug, Clone)]
-pub struct TaskInfo {
-    /// Task name
-    pub name: String,
-    /// Current status
-    pub status: TaskStatus,
-    /// Task dependencies (names of tasks this depends on)
-    pub dependencies: Vec<String>,
-    /// Level in the DAG (for visualization)
-    pub level: usize,
-    /// Start time (if started)
-    pub start_time: Option<Instant>,
-    /// Duration in milliseconds (if completed)
-    pub duration_ms: Option<u64>,
-    /// Exit code (if completed)
-    pub exit_code: Option<i32>,
-}
-
-impl TaskInfo {
-    /// Create a new task info
-    #[must_use]
-    pub const fn new(name: String, dependencies: Vec<String>, level: usize) -> Self {
-        Self {
-            name,
-            status: TaskStatus::Pending,
-            dependencies,
-            level,
-            start_time: None,
-            duration_ms: None,
-            exit_code: None,
-        }
-    }
-
-    /// Get elapsed time in milliseconds for running tasks
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn elapsed_ms(&self) -> Option<u64> {
-        self.start_time
-            .map(|start| start.elapsed().as_millis() as u64)
-    }
-}
-
-/// Maximum number of output lines to keep per stream (stdout/stderr)
-const MAX_OUTPUT_LINES: usize = 1000;
-
-/// Output line in the combined output buffer.
-///
-/// Lines are stored in insertion order (via `VecDeque::push_back`), which
-/// naturally preserves chronological order since events arrive sequentially.
-#[derive(Debug, Clone)]
-pub struct OutputLine {
-    /// The line content
-    pub content: String,
-    /// Whether this is stderr (false = stdout)
-    pub is_stderr: bool,
-}
-
-/// Output buffer for a running task
-#[derive(Debug, Clone)]
-pub struct TaskOutput {
-    /// Task name
-    pub name: String,
-    /// Stdout lines (bounded ring buffer)
-    pub stdout: VecDeque<String>,
-    /// Stderr lines (bounded ring buffer)
-    pub stderr: VecDeque<String>,
-    /// Combined output with ordering preserved (insertion order = chronological)
-    pub combined: VecDeque<OutputLine>,
-    /// Whether stdout has new content since last render
-    pub stdout_dirty: bool,
-    /// Whether stderr has new content since last render
-    pub stderr_dirty: bool,
-}
-
-impl TaskOutput {
-    /// Create a new task output buffer
-    #[must_use]
-    pub const fn new(name: String) -> Self {
-        Self {
-            name,
-            stdout: VecDeque::new(),
-            stderr: VecDeque::new(),
-            combined: VecDeque::new(),
-            stdout_dirty: false,
-            stderr_dirty: false,
-        }
-    }
-
-    /// Add a line to the appropriate buffer (with bounded buffer management)
-    fn add_line(&mut self, line: String, is_stderr: bool) {
-        // Select the appropriate buffer and dirty flag
-        let (buffer, dirty_flag) = if is_stderr {
-            (&mut self.stderr, &mut self.stderr_dirty)
-        } else {
-            (&mut self.stdout, &mut self.stdout_dirty)
-        };
-
-        // Add to stream-specific buffer with size limit
-        if buffer.len() >= MAX_OUTPUT_LINES {
-            buffer.pop_front();
-        }
-        buffer.push_back(line.clone());
-
-        // Add to combined output (insertion order preserves chronological order)
-        if self.combined.len() >= MAX_OUTPUT_LINES {
-            self.combined.pop_front();
-        }
-        self.combined.push_back(OutputLine {
-            content: line,
-            is_stderr,
-        });
-
-        *dirty_flag = true;
-    }
-
-    /// Add a stdout line (with bounded buffer)
-    pub fn add_stdout(&mut self, line: String) {
-        self.add_line(line, false);
-    }
-
-    /// Add a stderr line (with bounded buffer)
-    pub fn add_stderr(&mut self, line: String) {
-        self.add_line(line, true);
-    }
-
-    /// Clear dirty flags after rendering
-    pub const fn clear_dirty(&mut self) {
-        self.stdout_dirty = false;
-        self.stderr_dirty = false;
-    }
-}
-
-/// Event-driven activity state.
-///
-/// Mutated only by [`TuiState::apply_event`] and the small set of helpers
-/// it delegates to. Two replays of the same event trace produce
-/// identical `ActivityModel`s — the integration tests in
-/// `tests/tui_replay.rs` exercise that invariant.
-///
-/// Fields are private; readers go through accessors. Writes go through
-/// [`TuiState`]'s event-driven entry points.
-#[derive(Debug)]
-pub struct ActivityModel {
-    start_time: Instant,
-    tasks: HashMap<String, TaskInfo>,
-    outputs: HashMap<String, TaskOutput>,
-    running_tasks: Vec<String>,
-    is_complete: bool,
-    success: bool,
-    error_message: Option<String>,
-}
-
-impl ActivityModel {
-    fn new() -> Self {
-        Self {
-            start_time: Instant::now(),
-            tasks: HashMap::new(),
-            outputs: HashMap::new(),
-            running_tasks: Vec::new(),
-            is_complete: false,
-            success: false,
-            error_message: None,
-        }
-    }
-
-    /// Map of task name to task info.
-    #[must_use]
-    pub const fn tasks(&self) -> &HashMap<String, TaskInfo> {
-        &self.tasks
-    }
-
-    /// Map of task name to output buffer.
-    #[must_use]
-    pub const fn outputs(&self) -> &HashMap<String, TaskOutput> {
-        &self.outputs
-    }
-
-    /// Names of tasks currently in `Running` state, in start order.
-    #[must_use]
-    pub fn running_tasks(&self) -> &[String] {
-        &self.running_tasks
-    }
-
-    /// Whether the overall execution has reported completion.
-    #[must_use]
-    pub const fn is_complete(&self) -> bool {
-        self.is_complete
-    }
-
-    /// Whether the completed run was successful.
-    #[must_use]
-    pub const fn success(&self) -> bool {
-        self.success
-    }
-
-    /// Optional human-readable error message attached at completion.
-    #[must_use]
-    pub fn error_message(&self) -> Option<&str> {
-        self.error_message.as_deref()
-    }
-
-    /// Milliseconds elapsed since [`ActivityModel`] construction.
-    #[must_use]
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn elapsed_ms(&self) -> u64 {
-        self.start_time.elapsed().as_millis() as u64
-    }
-}
-
-/// Input-driven view state.
-///
-/// Mutated only by [`TuiState`] input-handler methods. Holds the user's
-/// cursor position, expansion, focus, scroll — state that should survive
-/// a flurry of events.
-///
-/// Fields are private; readers use accessors, mutations go through
-/// `TuiState`'s explicit methods.
-#[derive(Debug)]
-pub struct UiState {
-    selected_task: Option<String>,
-    expanded_nodes: HashSet<String>,
-    cursor_position: usize,
-    flattened_tree: Vec<TreeViewItem>,
-    output_mode: OutputMode,
-    output_scroll: usize,
-    focused_task: Option<String>,
-}
-
-impl UiState {
-    fn new() -> Self {
-        Self {
-            selected_task: None,
-            expanded_nodes: HashSet::new(),
-            cursor_position: 0,
-            flattened_tree: Vec::new(),
-            output_mode: OutputMode::All,
-            output_scroll: 0,
-            focused_task: None,
-        }
-    }
-
-    /// Task name currently selected for filtered output, if any.
-    #[must_use]
-    pub fn selected_task(&self) -> Option<&str> {
-        self.selected_task.as_deref()
-    }
-
-    /// Set of expanded tree nodes (keys produced by [`TreeViewItem::node_key`]).
-    #[must_use]
-    pub const fn expanded_nodes(&self) -> &HashSet<String> {
-        &self.expanded_nodes
-    }
-
-    /// Cursor position in the flattened tree.
-    #[must_use]
-    pub const fn cursor_position(&self) -> usize {
-        self.cursor_position
-    }
-
-    /// Cached flattened tree view.
-    #[must_use]
-    pub fn flattened_tree(&self) -> &[TreeViewItem] {
-        &self.flattened_tree
-    }
-
-    /// Output panel display mode.
-    #[must_use]
-    pub const fn output_mode(&self) -> OutputMode {
-        self.output_mode
-    }
-
-    /// Scroll offset for the output panel.
-    #[must_use]
-    pub const fn output_scroll(&self) -> usize {
-        self.output_scroll
-    }
-
-    /// Task name currently in focused-output mode, if any.
-    #[must_use]
-    pub fn focused_task(&self) -> Option<&str> {
-        self.focused_task.as_deref()
-    }
+fn elapsed_millis_since(start: Instant) -> u64 {
+    duration_millis(start.elapsed())
 }
 
 /// Global TUI state for task execution.
@@ -596,9 +235,7 @@ impl TuiState {
             | TaskStatus::Cached
             | TaskStatus::Skipped => {
                 if let Some(start) = task.start_time {
-                    #[allow(clippy::cast_possible_truncation)]
-                    let duration = start.elapsed().as_millis() as u64;
-                    task.duration_ms = Some(duration);
+                    task.duration_ms = Some(elapsed_millis_since(start));
                 }
                 self.model.running_tasks.retain(|t| t != name);
             }
@@ -649,256 +286,6 @@ impl TuiState {
         self.model.is_complete = true;
         self.model.success = success;
         self.model.error_message = error_message;
-    }
-
-    /// Extract the task path from a full task name.
-    /// Task names follow the format: `task:project:path.parts`
-    /// Returns the `path.parts` portion split by dots.
-    #[must_use]
-    fn parse_task_path(task_name: &str) -> Vec<&str> {
-        // Format: task:project:path.parts
-        // We want to extract "path.parts" and split by "."
-        let parts: Vec<&str> = task_name.split(':').collect();
-        if parts.len() >= 3 {
-            // Get everything after the second colon and split by dots
-            parts[2].split('.').collect()
-        } else if parts.len() == 2 {
-            // Fallback: just use the second part split by dots
-            parts[1].split('.').collect()
-        } else {
-            // Fallback: use the whole name as a single path element
-            vec![task_name]
-        }
-    }
-
-    /// Build a hierarchical tree structure from task names.
-    /// Returns a nested structure: `path -> (child_groups, tasks_at_this_level)`
-    fn build_name_hierarchy(&self) -> HashMap<String, (Vec<String>, Vec<String>)> {
-        let mut tree: HashMap<String, (Vec<String>, Vec<String>)> = HashMap::new();
-        tree.insert(String::new(), (Vec::new(), Vec::new())); // Root
-
-        for task_name in self.model.tasks.keys() {
-            let path_parts = Self::parse_task_path(task_name);
-
-            // Build intermediate groups (all parts EXCEPT the last one)
-            // The last part is the task itself, not a group
-            let mut current_path = String::new();
-            let group_parts = if path_parts.len() > 1 {
-                &path_parts[..path_parts.len() - 1]
-            } else {
-                &[] // No groups for single-part paths
-            };
-
-            for part in group_parts {
-                let parent_path = current_path.clone();
-                if current_path.is_empty() {
-                    current_path = (*part).to_string();
-                } else {
-                    current_path = format!("{current_path}.{part}");
-                }
-
-                // Ensure this group path exists in the tree
-                tree.entry(current_path.clone())
-                    .or_insert_with(|| (Vec::new(), Vec::new()));
-
-                // Add this as a child group of parent (if not already)
-                let (groups, _) = tree
-                    .entry(parent_path)
-                    .or_insert_with(|| (Vec::new(), Vec::new()));
-                if !groups.contains(&current_path) {
-                    groups.push(current_path.clone());
-                }
-            }
-
-            // Add the task to its parent group
-            let parent_path = if path_parts.len() > 1 {
-                path_parts[..path_parts.len() - 1].join(".")
-            } else {
-                String::new() // Root level
-            };
-
-            let (_, tasks) = tree
-                .entry(parent_path)
-                .or_insert_with(|| (Vec::new(), Vec::new()));
-            if !tasks.contains(task_name) {
-                tasks.push(task_name.clone());
-            }
-        }
-
-        // Sort all children for consistent ordering
-        for (groups, tasks) in tree.values_mut() {
-            groups.sort();
-            tasks.sort();
-        }
-
-        tree
-    }
-
-    /// Rebuild the flattened tree view based on current expansion state
-    pub fn rebuild_flattened_tree(&mut self) {
-        let tree = self.build_name_hierarchy();
-        let mut flattened = Vec::new();
-
-        // Add "All" node at the top
-        let all_key = "::all::".to_string();
-        let all_expanded = self.ui.expanded_nodes.contains(&all_key);
-        let has_tasks = !self.model.tasks.is_empty();
-
-        flattened.push(TreeViewItem {
-            node_type: TreeNodeType::All,
-            display_name: "All".to_string(),
-            depth: 0,
-            is_expanded: all_expanded,
-            has_children: has_tasks,
-        });
-
-        // If "All" is expanded, show the tree
-        if all_expanded {
-            // Get root level groups and tasks
-            if let Some((root_groups, root_tasks)) = tree.get("") {
-                // Use a stack for depth-first traversal
-                // Stack items: (group_path, display_name, depth, is_group)
-                let mut stack: Vec<(String, String, usize, bool)> = Vec::new();
-
-                // Add root tasks (in reverse for correct order after pop)
-                for task_name in root_tasks.iter().rev() {
-                    let path_parts = Self::parse_task_path(task_name);
-                    let display = path_parts
-                        .last()
-                        .map_or(task_name.clone(), |s| (*s).to_string());
-                    stack.push((task_name.clone(), display, 1, false));
-                }
-
-                // Add root groups (in reverse for correct order after pop)
-                for group_path in root_groups.iter().rev() {
-                    let display = group_path
-                        .split('.')
-                        .next()
-                        .unwrap_or(group_path)
-                        .to_string();
-                    stack.push((group_path.clone(), display, 1, true));
-                }
-
-                while let Some((path, display_name, depth, is_group)) = stack.pop() {
-                    if is_group {
-                        let group_key = format!("::group::{path}");
-                        let is_expanded = self.ui.expanded_nodes.contains(&group_key);
-                        let empty_vec: Vec<String> = Vec::new();
-                        let (child_groups, child_tasks) = tree
-                            .get(&path)
-                            .map_or((&empty_vec, &empty_vec), |(g, t)| (g, t));
-                        let has_children = !child_groups.is_empty() || !child_tasks.is_empty();
-
-                        flattened.push(TreeViewItem {
-                            node_type: TreeNodeType::Group(path.clone()),
-                            display_name,
-                            depth,
-                            is_expanded,
-                            has_children,
-                        });
-
-                        if is_expanded {
-                            // Add children (tasks first, then groups - in reverse)
-                            for task_name in child_tasks.iter().rev() {
-                                let path_parts = Self::parse_task_path(task_name);
-                                let task_display = path_parts
-                                    .last()
-                                    .map_or(task_name.clone(), |s| (*s).to_string());
-                                stack.push((task_name.clone(), task_display, depth + 1, false));
-                            }
-                            for child_path in child_groups.iter().rev() {
-                                // Display name is just the last segment
-                                let child_display = child_path
-                                    .split('.')
-                                    .next_back()
-                                    .unwrap_or(child_path)
-                                    .to_string();
-                                stack.push((child_path.clone(), child_display, depth + 1, true));
-                            }
-                        }
-                    } else {
-                        // Task node
-                        flattened.push(TreeViewItem {
-                            node_type: TreeNodeType::Task(path.clone()),
-                            display_name,
-                            depth,
-                            is_expanded: false,
-                            has_children: false,
-                        });
-                    }
-                }
-            }
-        }
-
-        self.ui.flattened_tree = flattened;
-
-        if self.ui.cursor_position >= self.ui.flattened_tree.len() {
-            self.ui.cursor_position = self.ui.flattened_tree.len().saturating_sub(1);
-        }
-    }
-
-    /// Toggle expansion state of a tree node
-    pub fn toggle_expansion(&mut self, node_key: &str) {
-        if self.ui.expanded_nodes.contains(node_key) {
-            self.ui.expanded_nodes.remove(node_key);
-        } else {
-            self.ui.expanded_nodes.insert(node_key.to_string());
-        }
-        self.rebuild_flattened_tree();
-    }
-
-    /// Move cursor up in tree
-    pub const fn cursor_up(&mut self) {
-        if self.ui.cursor_position > 0 {
-            self.ui.cursor_position -= 1;
-        }
-    }
-
-    /// Move cursor down in tree
-    pub const fn cursor_down(&mut self) {
-        if self.ui.cursor_position < self.ui.flattened_tree.len().saturating_sub(1) {
-            self.ui.cursor_position += 1;
-        }
-    }
-
-    /// Get currently highlighted node
-    #[must_use]
-    pub fn highlighted_node(&self) -> Option<&TreeViewItem> {
-        self.ui.flattened_tree.get(self.ui.cursor_position)
-    }
-
-    /// Select current node for output filtering
-    pub fn select_current_node(&mut self) {
-        if let Some(node) = self.highlighted_node() {
-            match &node.node_type {
-                TreeNodeType::All => {
-                    self.ui.selected_task = None;
-                    self.ui.output_mode = OutputMode::All;
-                }
-                TreeNodeType::Task(name) => {
-                    self.ui.selected_task = Some(name.clone());
-                    self.ui.output_mode = OutputMode::Selected;
-                }
-                TreeNodeType::Group(path) => {
-                    self.ui.selected_task = Some(format!("::group::{path}"));
-                    self.ui.output_mode = OutputMode::Selected;
-                }
-            }
-            self.ui.output_scroll = 0;
-        }
-    }
-
-    /// Return to "All" output mode
-    pub fn show_all_output(&mut self) {
-        self.ui.selected_task = None;
-        self.ui.output_mode = OutputMode::All;
-        self.ui.output_scroll = 0;
-    }
-
-    /// Initialize tree with "All" expanded by default
-    pub fn init_tree(&mut self) {
-        self.ui.expanded_nodes.insert("::all::".to_string());
-        self.rebuild_flattened_tree();
     }
 
     /// Apply a [`CuenvEvent`] to the activity model half of this state.
@@ -985,6 +372,17 @@ impl Default for TuiState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_millis_saturates_at_u64_max() {
+        assert_eq!(duration_millis(Duration::from_millis(42)), 42);
+        assert_eq!(
+            duration_millis(
+                Duration::from_millis(u64::MAX).saturating_add(Duration::from_millis(1))
+            ),
+            u64::MAX
+        );
+    }
 
     #[test]
     fn test_task_status_symbol() {

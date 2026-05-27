@@ -1,17 +1,46 @@
 //! Integration tests for JavaScript lockfile parsers.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(
-    clippy::print_stderr,
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::cognitive_complexity
-)]
-
-use cuenv_workspaces::{DependencySource, LockfileParser};
-use std::path::Path;
+use cuenv_workspaces::{DependencySource, LockfileEntry, LockfileParser};
+use std::path::{Path, PathBuf};
 
 const FIXTURES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+fn fixture_path(name: &str) -> PathBuf {
+    Path::new(FIXTURES_DIR).join(name)
+}
+
+fn parse_fixture<P: LockfileParser>(
+    parser: &P,
+    fixture_name: &str,
+) -> TestResult<Vec<LockfileEntry>> {
+    Ok(parser.parse(&fixture_path(fixture_name))?)
+}
+
+fn entry_named<'a>(entries: &'a [LockfileEntry], name: &str) -> TestResult<&'a LockfileEntry> {
+    entries
+        .iter()
+        .find(|entry| entry.name == name)
+        .ok_or_else(|| format!("dependency entry `{name}` not found").into())
+}
+
+fn workspace_entry_named<'a>(
+    entries: &'a [LockfileEntry],
+    name: &str,
+) -> TestResult<&'a LockfileEntry> {
+    entries
+        .iter()
+        .find(|entry| entry.name == name && entry.is_workspace_member)
+        .ok_or_else(|| format!("workspace entry `{name}` not found").into())
+}
+
+fn first_dependency_name(entry: &LockfileEntry) -> TestResult<&str> {
+    entry
+        .dependencies
+        .first()
+        .map(|dependency| dependency.name.as_str())
+        .ok_or_else(|| format!("entry `{}` has no dependencies", entry.name).into())
+}
 
 #[cfg(feature = "parser-npm")]
 mod npm_tests {
@@ -19,21 +48,9 @@ mod npm_tests {
     use cuenv_workspaces::NpmLockfileParser;
 
     #[test]
-    fn parses_npm_lockfile_fixture() {
-        let fixture_path = Path::new(FIXTURES_DIR).join("package-lock.json");
+    fn parses_npm_lockfile_fixture() -> TestResult {
         let parser = NpmLockfileParser;
-
-        if !fixture_path.exists() {
-            eprintln!(
-                "Skipping npm fixture test; missing {}",
-                fixture_path.display()
-            );
-            return;
-        }
-
-        let entries = parser
-            .parse(&fixture_path)
-            .expect("Failed to parse package-lock.json fixture");
+        let entries = parse_fixture(&parser, "package-lock.json")?;
 
         // Should have workspace root + workspace member + external dependencies
         assert!(
@@ -43,10 +60,7 @@ mod npm_tests {
         );
 
         // Check workspace root
-        let workspace_root = entries
-            .iter()
-            .find(|e| e.name == "test-workspace" && e.is_workspace_member)
-            .expect("Workspace root not found");
+        let workspace_root = workspace_entry_named(&entries, "test-workspace")?;
         assert_eq!(workspace_root.version, "1.0.0");
         assert!(matches!(
             workspace_root.source,
@@ -55,33 +69,25 @@ mod npm_tests {
         assert!(!workspace_root.dependencies.is_empty());
 
         // Check workspace member
-        let app = entries
-            .iter()
-            .find(|e| e.name == "@test/app")
-            .expect("@test/app workspace member not found");
+        let app = entry_named(&entries, "@test/app")?;
         assert!(app.is_workspace_member);
         assert_eq!(app.version, "0.1.0");
         assert!(matches!(app.source, DependencySource::Workspace(_)));
 
         // Check external dependency
-        let lodash = entries
-            .iter()
-            .find(|e| e.name == "lodash")
-            .expect("lodash dependency not found");
+        let lodash = entry_named(&entries, "lodash")?;
         assert!(!lodash.is_workspace_member);
         assert_eq!(lodash.version, "4.17.21");
         assert!(matches!(lodash.source, DependencySource::Registry(_)));
         assert!(lodash.checksum.is_some());
 
         // Check dependency with its own dependencies
-        let react = entries
-            .iter()
-            .find(|e| e.name == "react")
-            .expect("react dependency not found");
+        let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
         assert!(!react.dependencies.is_empty());
-        assert_eq!(react.dependencies[0].name, "loose-envify");
+        assert_eq!(first_dependency_name(react)?, "loose-envify");
+        Ok(())
     }
 
     #[test]
@@ -99,13 +105,9 @@ mod bun_tests {
     use cuenv_workspaces::BunLockfileParser;
 
     #[test]
-    fn parses_bun_lockfile_fixture() {
-        let fixture_path = Path::new(FIXTURES_DIR).join("bun.lock");
+    fn parses_bun_lockfile_fixture() -> TestResult {
         let parser = BunLockfileParser;
-
-        let entries = parser
-            .parse(&fixture_path)
-            .expect("Failed to parse bun.lock fixture");
+        let entries = parse_fixture(&parser, "bun.lock")?;
 
         // Should have 2 workspace members + 3 packages
         assert!(
@@ -115,10 +117,7 @@ mod bun_tests {
         );
 
         // Check workspace root
-        let workspace_root = entries
-            .iter()
-            .find(|e| e.name == "test-workspace" && e.is_workspace_member)
-            .expect("Workspace root not found");
+        let workspace_root = workspace_entry_named(&entries, "test-workspace")?;
         assert_eq!(workspace_root.version, "1.0.0");
         assert!(matches!(
             workspace_root.source,
@@ -126,31 +125,23 @@ mod bun_tests {
         ));
 
         // Check workspace member
-        let app = entries
-            .iter()
-            .find(|e| e.name == "@test/app")
-            .expect("@test/app workspace member not found");
+        let app = entry_named(&entries, "@test/app")?;
         assert!(app.is_workspace_member);
         assert_eq!(app.version, "0.1.0");
 
         // Check external dependency
-        let lodash = entries
-            .iter()
-            .find(|e| e.name == "lodash")
-            .expect("lodash dependency not found");
+        let lodash = entry_named(&entries, "lodash")?;
         assert!(!lodash.is_workspace_member);
         assert_eq!(lodash.version, "4.17.21");
         assert!(matches!(lodash.source, DependencySource::Registry(_)));
         assert!(lodash.checksum.is_some());
 
         // Check dependency with dependencies
-        let react = entries
-            .iter()
-            .find(|e| e.name == "react")
-            .expect("react dependency not found");
+        let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
         assert!(!react.dependencies.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -169,13 +160,9 @@ mod pnpm_tests {
     use cuenv_workspaces::PnpmLockfileParser;
 
     #[test]
-    fn parses_pnpm_lockfile_fixture() {
-        let fixture_path = Path::new(FIXTURES_DIR).join("pnpm-lock.yaml");
+    fn parses_pnpm_lockfile_fixture() -> TestResult {
         let parser = PnpmLockfileParser;
-
-        let entries = parser
-            .parse(&fixture_path)
-            .expect("Failed to parse pnpm-lock.yaml fixture");
+        let entries = parse_fixture(&parser, "pnpm-lock.yaml")?;
 
         // Should have 2 workspace importers + 4 packages
         assert!(
@@ -192,24 +179,19 @@ mod pnpm_tests {
         );
 
         // Check external dependency
-        let lodash = entries
-            .iter()
-            .find(|e| e.name == "lodash")
-            .expect("lodash dependency not found");
+        let lodash = entry_named(&entries, "lodash")?;
         assert!(!lodash.is_workspace_member);
         assert_eq!(lodash.version, "4.17.21");
         assert!(matches!(lodash.source, DependencySource::Registry(_)));
         assert!(lodash.checksum.is_some());
 
         // Check dependency with dependencies
-        let react = entries
-            .iter()
-            .find(|e| e.name == "react")
-            .expect("react dependency not found");
+        let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
         assert!(!react.dependencies.is_empty());
-        assert_eq!(react.dependencies[0].name, "loose-envify");
+        assert_eq!(first_dependency_name(react)?, "loose-envify");
+        Ok(())
     }
 
     #[test]
@@ -227,13 +209,9 @@ mod yarn_classic_tests {
     use cuenv_workspaces::YarnClassicLockfileParser;
 
     #[test]
-    fn parses_yarn_classic_lockfile_fixture() {
-        let fixture_path = Path::new(FIXTURES_DIR).join("yarn-classic.lock");
+    fn parses_yarn_classic_lockfile_fixture() -> TestResult {
         let parser = YarnClassicLockfileParser;
-
-        let entries = parser
-            .parse(&fixture_path)
-            .expect("Failed to parse yarn-classic.lock fixture");
+        let entries = parse_fixture(&parser, "yarn-classic.lock")?;
 
         // Should have 4 packages
         assert!(
@@ -243,24 +221,19 @@ mod yarn_classic_tests {
         );
 
         // Check external dependency
-        let lodash = entries
-            .iter()
-            .find(|e| e.name == "lodash")
-            .expect("lodash dependency not found");
+        let lodash = entry_named(&entries, "lodash")?;
         assert!(!lodash.is_workspace_member);
         assert_eq!(lodash.version, "4.17.21");
         assert!(matches!(lodash.source, DependencySource::Registry(_)));
         assert!(lodash.checksum.is_some());
 
         // Check dependency with dependencies
-        let react = entries
-            .iter()
-            .find(|e| e.name == "react")
-            .expect("react dependency not found");
+        let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
         assert!(!react.dependencies.is_empty());
-        assert_eq!(react.dependencies[0].name, "loose-envify");
+        assert_eq!(first_dependency_name(react)?, "loose-envify");
+        Ok(())
     }
 
     #[test]
@@ -272,17 +245,16 @@ mod yarn_classic_tests {
     }
 
     #[test]
-    fn yarn_classic_parser_detects_v1_lockfile_via_content_sniffing() {
+    fn yarn_classic_parser_detects_v1_lockfile_via_content_sniffing() -> TestResult {
         use std::fs;
         use tempfile::TempDir;
 
         // Create a unique temp directory with a yarn.lock file containing v1 content
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new()?;
         let yarn_lock_path = temp_dir.path().join("yarn.lock");
 
-        let classic_content =
-            fs::read_to_string(Path::new(FIXTURES_DIR).join("yarn-classic.lock")).unwrap();
-        fs::write(&yarn_lock_path, classic_content).unwrap();
+        let classic_content = fs::read_to_string(fixture_path("yarn-classic.lock"))?;
+        fs::write(&yarn_lock_path, classic_content)?;
 
         let parser = YarnClassicLockfileParser;
 
@@ -291,20 +263,20 @@ mod yarn_classic_tests {
             parser.supports_lockfile(&yarn_lock_path),
             "Yarn Classic parser should accept v1 lockfile"
         );
+        Ok(())
     }
 
     #[test]
-    fn yarn_classic_parser_rejects_modern_lockfile_via_content_sniffing() {
+    fn yarn_classic_parser_rejects_modern_lockfile_via_content_sniffing() -> TestResult {
         use std::fs;
         use tempfile::TempDir;
 
         // Create a unique temp directory with a yarn.lock file containing v2 content
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new()?;
         let yarn_lock_path = temp_dir.path().join("yarn.lock");
 
-        let modern_content =
-            fs::read_to_string(Path::new(FIXTURES_DIR).join("yarn-modern.lock")).unwrap();
-        fs::write(&yarn_lock_path, modern_content).unwrap();
+        let modern_content = fs::read_to_string(fixture_path("yarn-modern.lock"))?;
+        fs::write(&yarn_lock_path, modern_content)?;
 
         let parser = YarnClassicLockfileParser;
 
@@ -313,6 +285,7 @@ mod yarn_classic_tests {
             !parser.supports_lockfile(&yarn_lock_path),
             "Yarn Classic parser should reject v2+ lockfile with __metadata"
         );
+        Ok(())
     }
 }
 
@@ -322,13 +295,9 @@ mod yarn_modern_tests {
     use cuenv_workspaces::YarnModernLockfileParser;
 
     #[test]
-    fn parses_yarn_modern_lockfile_fixture() {
-        let fixture_path = Path::new(FIXTURES_DIR).join("yarn-modern.lock");
+    fn parses_yarn_modern_lockfile_fixture() -> TestResult {
         let parser = YarnModernLockfileParser;
-
-        let entries = parser
-            .parse(&fixture_path)
-            .expect("Failed to parse yarn-modern.lock fixture");
+        let entries = parse_fixture(&parser, "yarn-modern.lock")?;
 
         // Should have entries for packages and workspace members
         assert!(
@@ -338,41 +307,30 @@ mod yarn_modern_tests {
         );
 
         // Check workspace root
-        let workspace_root = entries
-            .iter()
-            .find(|e| e.name == "test-workspace" && e.is_workspace_member)
-            .expect("Workspace root not found");
+        let workspace_root = workspace_entry_named(&entries, "test-workspace")?;
         assert!(matches!(
             workspace_root.source,
             DependencySource::Workspace(_)
         ));
 
         // Check workspace member
-        let app = entries
-            .iter()
-            .find(|e| e.name == "@test/app")
-            .expect("@test/app workspace member not found");
+        let app = entry_named(&entries, "@test/app")?;
         assert!(app.is_workspace_member);
         assert!(matches!(app.source, DependencySource::Workspace(_)));
 
         // Check external dependency
-        let lodash = entries
-            .iter()
-            .find(|e| e.name == "lodash")
-            .expect("lodash dependency not found");
+        let lodash = entry_named(&entries, "lodash")?;
         assert!(!lodash.is_workspace_member);
         assert_eq!(lodash.version, "4.17.21");
         assert!(matches!(lodash.source, DependencySource::Registry(_)));
         assert!(lodash.checksum.is_some());
 
         // Check dependency with dependencies
-        let react = entries
-            .iter()
-            .find(|e| e.name == "react")
-            .expect("react dependency not found");
+        let react = entry_named(&entries, "react")?;
         assert!(!react.is_workspace_member);
         assert_eq!(react.version, "18.2.0");
         assert!(!react.dependencies.is_empty());
+        Ok(())
     }
 
     #[test]
@@ -384,17 +342,16 @@ mod yarn_modern_tests {
     }
 
     #[test]
-    fn yarn_modern_parser_detects_v2_lockfile_via_content_sniffing() {
+    fn yarn_modern_parser_detects_v2_lockfile_via_content_sniffing() -> TestResult {
         use std::fs;
         use tempfile::TempDir;
 
         // Create a unique temp directory with a yarn.lock file containing v2 content
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new()?;
         let yarn_lock_path = temp_dir.path().join("yarn.lock");
 
-        let modern_content =
-            fs::read_to_string(Path::new(FIXTURES_DIR).join("yarn-modern.lock")).unwrap();
-        fs::write(&yarn_lock_path, modern_content).unwrap();
+        let modern_content = fs::read_to_string(fixture_path("yarn-modern.lock"))?;
+        fs::write(&yarn_lock_path, modern_content)?;
 
         let parser = YarnModernLockfileParser;
 
@@ -403,20 +360,20 @@ mod yarn_modern_tests {
             parser.supports_lockfile(&yarn_lock_path),
             "Yarn Modern parser should accept v2+ lockfile with __metadata"
         );
+        Ok(())
     }
 
     #[test]
-    fn yarn_modern_parser_rejects_classic_lockfile_via_content_sniffing() {
+    fn yarn_modern_parser_rejects_classic_lockfile_via_content_sniffing() -> TestResult {
         use std::fs;
         use tempfile::TempDir;
 
         // Create a unique temp directory with a yarn.lock file containing v1 content
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = TempDir::new()?;
         let yarn_lock_path = temp_dir.path().join("yarn.lock");
 
-        let classic_content =
-            fs::read_to_string(Path::new(FIXTURES_DIR).join("yarn-classic.lock")).unwrap();
-        fs::write(&yarn_lock_path, classic_content).unwrap();
+        let classic_content = fs::read_to_string(fixture_path("yarn-classic.lock"))?;
+        fs::write(&yarn_lock_path, classic_content)?;
 
         let parser = YarnModernLockfileParser;
 
@@ -425,5 +382,6 @@ mod yarn_modern_tests {
             !parser.supports_lockfile(&yarn_lock_path),
             "Yarn Modern parser should reject v1 lockfile"
         );
+        Ok(())
     }
 }

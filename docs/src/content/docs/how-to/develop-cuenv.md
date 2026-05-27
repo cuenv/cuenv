@@ -62,7 +62,7 @@ cuenv/
 ├── crates/
 │   ├── cuengine/           # CUE evaluation engine (Rust + Go FFI)
 │   │   ├── src/            # Rust source
-│   │   ├── bridge.go       # Go FFI bridge
+│   │   ├── bridge*.go      # Go FFI bridge package
 │   │   └── tests/
 │   ├── cuenv-core/         # Core types and utilities
 │   ├── cuenv/              # CLI application
@@ -128,7 +128,7 @@ The Go bridge is built automatically during `cargo build` via a build script.
 
 ```bash
 cd crates/cuengine
-go build -buildmode=c-archive -o libcue_bridge.a bridge.go
+go build -buildmode=c-archive -o libcue_bridge.a $(find . -maxdepth 1 -name '*.go' ! -name '*_test.go' | sort)
 ```
 
 ### FFI Development Tips
@@ -143,9 +143,10 @@ go build -buildmode=c-archive -o libcue_bridge.a bridge.go
 When changing the FFI interface:
 
 1. Update `crates/cuengine/bridge.go`
-2. Update `crates/cuengine/src/lib.rs`
-3. Ensure error codes match on both sides
-4. Add tests for new functionality
+2. Keep helper code in sibling `crates/cuengine/*.go` files so the build script includes every non-test Go source
+3. Update `crates/cuengine/src/lib.rs`
+4. Ensure error codes match on both sides
+5. Add tests for new functionality
 
 ## Documentation
 

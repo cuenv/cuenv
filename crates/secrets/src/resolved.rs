@@ -4,6 +4,7 @@ use crate::{
     BatchSecrets, SaltConfig, SecretError, SecretResolver, SecretSpec, compute_secret_fingerprint,
 };
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 /// Resolved secrets ready for injection
 #[derive(Debug, Clone, Default)]
@@ -31,11 +32,15 @@ impl ResolvedSecrets {
     /// # Errors
     /// Returns error if a secret cannot be resolved or if salt is missing
     /// when secrets have `cache_key: true`
-    pub async fn resolve<R: SecretResolver>(
+    pub async fn resolve<R, S>(
         resolver: &R,
-        secrets: &HashMap<String, SecretSpec>,
+        secrets: &HashMap<String, SecretSpec, S>,
         salt_config: &SaltConfig,
-    ) -> Result<Self, SecretError> {
+    ) -> Result<Self, SecretError>
+    where
+        R: SecretResolver,
+        S: BuildHasher + Sync,
+    {
         let mut values = HashMap::new();
         let mut fingerprints = HashMap::new();
 
@@ -100,11 +105,15 @@ impl ResolvedSecrets {
     /// # Errors
     /// Returns error if a secret cannot be resolved or if salt is missing
     /// when secrets have `cache_key: true`
-    pub async fn resolve_batch<R: SecretResolver>(
+    pub async fn resolve_batch<R, S>(
         resolver: &R,
-        secrets: &HashMap<String, SecretSpec>,
+        secrets: &HashMap<String, SecretSpec, S>,
         salt_config: &SaltConfig,
-    ) -> Result<Self, SecretError> {
+    ) -> Result<Self, SecretError>
+    where
+        R: SecretResolver,
+        S: BuildHasher + Sync,
+    {
         let batch = crate::batch::resolve_batch(resolver, secrets, salt_config).await?;
         Ok(Self::from_batch(batch))
     }

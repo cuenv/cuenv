@@ -1,8 +1,11 @@
 //! Tests for FFI edge cases and error paths
 
 use cuengine::{CStringPtr, evaluate_cue_package};
+use std::error::Error;
 use std::ffi::CString;
 use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[test]
 fn test_cstring_ptr_invalid_utf8() {
@@ -84,56 +87,44 @@ fn test_evaluate_cue_package_various_error_conditions() {
     let long_name = "a".repeat(1000);
     let result = evaluate_cue_package(temp_dir.path(), &long_name);
     // Should process (may fail for other reasons but not the name itself)
-    match result {
-        Ok(_) => {} // FFI worked
-        Err(e) => {
-            // Should not be about the package name being invalid
-            assert!(!e.to_string().contains("Invalid package name"));
-        }
+    if let Err(e) = result {
+        // Should not be about the package name being invalid
+        assert!(!e.to_string().contains("Invalid package name"));
     }
 
     // Test 3: Package name with special but valid characters
     let special_name = "test_package-123";
     let result = evaluate_cue_package(temp_dir.path(), special_name);
     // Should process (may fail for other reasons but not the name itself)
-    match result {
-        Ok(_) => {} // FFI worked
-        Err(e) => {
-            // Should not be about invalid characters
-            assert!(!e.to_string().contains("Invalid package name"));
-        }
+    if let Err(e) = result {
+        // Should not be about invalid characters
+        assert!(!e.to_string().contains("Invalid package name"));
     }
 }
 
 #[test]
-fn test_cstring_ptr_drop_with_valid_string() {
+fn test_cstring_ptr_drop_with_valid_string() -> TestResult {
     // Test that drop properly frees memory for valid strings
     // This is mainly for coverage of the Drop implementation
 
     for content in &["test", "", "multi\nline\nstring", "unicode: 你好"] {
-        let c_string = CString::new(*content).unwrap();
-        let ptr = c_string.into_raw();
-
-        // Create wrapper which takes ownership
-        #[allow(unsafe_code)]
-        let wrapper = unsafe { CStringPtr::new(ptr) };
+        let wrapper = c_allocated_cstring_ptr(content)?;
 
         // Verify we can read it
         #[allow(unsafe_code)]
-        let result = unsafe { wrapper.to_str() };
-        assert_eq!(result.unwrap(), *content);
-
-        // IMPORTANT: We must prevent the wrapper from calling cue_free_string()
-        // because this string was allocated by Rust, not Go
-        // cue_free_string() is specifically for Go-allocated strings
-        std::mem::forget(wrapper);
-
-        // Manually free the Rust-allocated string
-        #[allow(unsafe_code)]
-        unsafe {
-            let _ = CString::from_raw(ptr);
-        }
+        let result = unsafe { wrapper.to_str()? };
+        assert_eq!(result, *content);
     }
+    Ok(())
+}
+
+fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
+    let c_string = CString::new(value)?;
+    #[allow(unsafe_code)]
+    let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
+    assert!(!ptr.is_null(), "libc::strdup returned null");
+    #[allow(unsafe_code)]
+    Ok(unsafe { CStringPtr::new(ptr) })
 }
 
 #[test]
@@ -146,14 +137,9 @@ fn test_evaluate_cue_mock_null_response() {
 
     // Create a scenario that might cause null response
     // (empty directory, no CUE files)
-    let result = evaluate_cue_package(temp_dir.path(), "nonexistent");
-
-    // Just verify it handles the case without crashing
-    // Either success or expected error is fine - we're testing null handling
-    #[allow(clippy::single_match)]
-    match result {
-        Ok(_) | Err(_) => {} // Both outcomes are valid for this edge case test
-    }
+    // Just verify it handles the case without crashing. Either success or
+    // expected error is fine for this edge-case test.
+    let _ = evaluate_cue_package(temp_dir.path(), "nonexistent");
 }
 
 #[test]

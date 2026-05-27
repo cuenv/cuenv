@@ -46,6 +46,18 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 - `CStringPtr` - RAII wrapper for C strings returned from FFI
 - Response envelope parsing with structured error handling
 
+Cuengine FFI tests keep allocator-backed `CStringPtr` fixtures behind local
+unsafe allowances and explicit safety comments instead of file-level
+`unsafe_code` suppressions, so each raw-pointer boundary stays visible at the
+call site. The production cuengine crate follows the same rule: raw Go bridge
+calls, bridge-owned string wrapping, and string extraction carry local lint
+expectations with reasons instead of crate-wide `unsafe_code`,
+`missing_safety_doc`, or `missing_panics_doc` allowances.
+The Nix `cue-bridge` build must compile every non-test Go source file, not just
+`bridge.go`, because bridge metadata and value conversion helpers live in
+additional Go files beside the exported C archive entrypoints, while
+`bridge_test.go` cannot be part of the c-archive build.
+
 ```rust
 use cuengine::evaluate_module;
 use std::path::Path;
@@ -57,6 +69,8 @@ let raw = evaluate_module(Path::new("./project"), "cuenv", None)?;
 ### cuenv-core
 
 Core library containing shared types, configuration parsing, and domain logic.
+The crate root does not carry broad derive-workaround lint allowances; warnings
+should be fixed or scoped to the module that actually owns the exceptional code.
 
 **Modules:**
 
@@ -69,6 +83,129 @@ Core library containing shared types, configuration parsing, and domain logic.
 - `cache` - Task caching with content-aware invalidation
 - `config` - Configuration file handling
 
+Manifest schema types stay re-exported from `crates/core/src/manifest/mod.rs`,
+while the implementation is split by schema concern: hooks, VCS dependencies,
+formatters, codegen, directory rules, runtimes, services/images, and project
+conversion each live in sibling modules under `crates/core/src/manifest/`.
+Module-wide CUE evaluation assembly lives in `crates/core/src/module.rs`;
+task-reference/source enrichment lives in `crates/core/src/module/task_refs.rs`
+and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
+live in `crates/core/src/module/deserialize.rs`. Deserialization error fixtures
+should name intentionally unread fields with an underscore rather than carrying
+local `dead_code` allowances.
+Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
+keeps the executable task and task-tree model, while params, retry config,
+legacy task-level Dagger config, cache policy, capture metadata, shell
+configuration, input references, and dependency references live in sibling
+modules under `crates/core/src/tasks/`. The task executor keeps
+graph orchestration in `crates/core/src/tasks/executor.rs`; host process
+spawning, process-registry lifecycle, output streaming, and result assembly
+live in `crates/core/src/tasks/process.rs`. Unix process-group setup is kept in
+that host-process boundary so `pre_exec` and signal-tree management do not leak
+into task orchestration. Command redaction helpers,
+failure-summary formatting, and workspace-root detection live in `command.rs`,
+`result.rs`, and `workspace.rs` beside it. Task cache write/hit input bundles
+are copyable collections of borrowed execution state, and workspace path
+normalization borrows its base directory so task execution does not move
+directory state just to validate a relative `dir`.
+Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task graph
+construction lives in `crates/core/src/tasks/graph/build.rs`, task output-ref
+dependency edge materialization lives in
+`crates/core/src/tasks/graph/output_refs.rs`, and task path resolution for
+dotted/bracketed CUE task nodes lives in `crates/core/src/tasks/graph/resolver.rs`.
+Advanced graph regression coverage is grouped under
+`crates/core/src/tasks/graph_advanced_tests/` by cross-project references,
+synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-task
+coverage, and scale/edge cases. CLI task-graph stress tests in
+`crates/cuenv/tests/stress_tests.rs` keep ignored large-graph scenarios on
+fallible graph mutation and ordering helpers instead of file-level unwrap/expect
+allowances. CLI cross-project materialization coverage in
+`crates/cuenv/tests/cross_project_deps.rs` keeps temporary repo/module setup and
+command execution on `Result` helpers for the same reason.
+Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
+affected-task and transitive-closure helpers live in
+`crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
+and sequence ordering live in
+`crates/task-graph/src/graph/resolver_build.rs`. Read-only DAG callers only
+need `TaskNodeData`; resolver-backed expansion and output-reference injection
+require `MutableTaskNodeData` so dependency mutation is explicit instead of a
+default panic on the base trait. Affected-task analysis accepts the named
+borrowed `ExternalAffectedResolver`, keeping the generic graph API focused on
+task data instead of encoding resolver ownership in its type parameters.
+Service orchestration uses read-only graph nodes with declared service
+dependency names only. `cuenv up` rejects task and image dependencies until
+task execution and image build backends are wired into service startup.
+When a specific service is selected, `cuenv up` expands the selection with
+transitive service dependencies before building the graph.
+Service readiness log probes borrow their stream selector from manifest state
+instead of cloning it into probe construction, and
+supervisor state-update parameters are copyable value bundles so lifecycle
+persistence and warning logs share the same update without ownership churn.
+`cuenv down` operates through persisted session state: whole-session shutdown
+signals the active `cuenv up` controller, stale sessions are cleaned, and
+named-service shutdown queues stop requests consumed by running supervisors.
+`cuenv logs --follow` uses the same persisted session boundary, tailing
+appended log file content until the controller exits instead of claiming
+real-time follow support without streaming.
+`cuenv restart` also stays inside that boundary: the CLI queues persisted
+restart requests, and running supervisors consume those requests before
+stopping and re-spawning the selected services.
+The service control poller lives in `crates/services/src/control.rs`, keeping
+manual lifecycle command plumbing out of the process supervisor loop.
+Process spawning, command rendering, environment resolution, and shutdown
+signalling live in `crates/services/src/process.rs`; `supervisor.rs` owns the
+restart/readiness lifecycle decisions around that process boundary.
+Task contributor schema models, activation context, DAG injection, and DAG
+verification helpers live under `crates/core/src/contributors/`; the built-in
+package-manager workspace contributor definitions live in
+`crates/core/src/contributors/workspace.rs` so DAG mutation stays separate from
+the built-in Bun/npm/pnpm/Yarn setup catalog.
+Persistent hook execution state, marker files, cleanup, and execution hashes
+live under `crates/hooks/src/state/`, including integer duration display
+formatting. Hook result recording borrows execution results and clones only for
+the persisted state map. Hook execution orchestration lives in
+`crates/hooks/src/executor.rs`, including saturating elapsed-millisecond
+conversion for persisted hook results;
+source-hook shell environment capture lives in
+`crates/hooks/src/executor/source_environment.rs`. Supervisor integration tests
+scope `CUENV_EXECUTABLE` through `temp_env` instead of mutating the process
+environment globally, and keep skip diagnostics on tracing instead of raw
+stderr. Hook integration tests share
+`crates/cuenv/tests/hook_test_support` for temporary CUE module setup, approval,
+and sandbox error handling; return `Result` from filesystem and command setup;
+and report unexpected exits as errors instead of using file-level unwrap/expect
+allowances. Cucumber BDD coverage keeps the root runner in
+`crates/cuenv/tests/bdd.rs`, with shared world state and env/task/hook step
+definitions split under `crates/cuenv/tests/bdd_support/`. World initialization,
+project fixture writes, CUE module setup, env-step tables, task command
+execution, hook status polling, approval setup, shell execution, and hook
+failure assertions use fallible step helpers instead of broad
+unwrap/expect/print allowances or warning-based skipped assertions, so no
+single BDD test module carries all scenario concerns. CLI hook command
+orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
+snippet generation and status rendering live under
+`crates/cuenv/src/commands/hooks/`.
+Environment schema values, policy checks, interpolation, and secret-aware value
+resolution live in `crates/core/src/environment/values.rs`; runtime
+environment merging, PATH lookup, and filtered task/exec/service environment
+construction stay in `crates/core/src/environment.rs`. CLI task execution
+keeps feature-gated executor construction in
+`crates/cuenv/src/commands/task/mod.rs`, while
+`crates/cuenv/src/commands/task/execution.rs` owns task selection, runtime
+preparation, and execution orchestration. CLI task/exec integration coverage
+keeps the root runner in `crates/cuenv/tests/task_exec_integration.rs`, with
+shared harness and scenario groups split under
+`crates/cuenv/tests/task_exec_support/`. Basic, example-backed, label-selection,
+and hermetic task/exec scenarios keep shared tempdir, CUE module setup, PATH
+lookup, cuenv command execution, fixture writes, UTF-8 path arguments,
+ordered-output checks, and PATH-line lookup on fallible helpers instead of
+parent/module-level unwrap allowances or raw stderr skip messages. Nix runtime
+integration tests keep fixture setup, state/cache/runtime directory creation,
+`CARGO_BIN_EXE_cuenv` command construction, and Nix-hook retries behind
+fallible helpers so they can skip missing-Nix or sandboxed-FFI cases quietly
+without deprecated test harness APIs, file-level unwrap/expect, or raw stderr
+allowances.
+
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:
 
@@ -76,6 +213,10 @@ Uses `miette` for rich diagnostic errors with:
 - Error spans
 - Contextual help messages
 - Suggestions for fixes
+
+CLI error-conversion tests build invalid UTF-8 fixtures at runtime so the
+coverage exercises real `Utf8Error` handling without compile-time invalid UTF-8
+lint suppressions.
 
 ```rust
 use cuenv_core::{Error, Result};
@@ -106,6 +247,255 @@ The command-line interface built with `clap`.
 - `cuenv changeset|release` - Release management
 - `cuenv version` - Version information
 
+CLI parser setup lives in `crates/cuenv/src/cli.rs`; the top-level Clap
+command enum lives in `crates/cuenv/src/cli/commands.rs`; nested subcommand
+enums live in `crates/cuenv/src/cli/subcommands.rs`; conversion into the
+internal command model lives in `crates/cuenv/src/cli/command_conversion.rs`;
+output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
+and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
+Mixed CLI integration tests keep command execution behind a `CliOutput` helper
+and fallible git/CUE fixture builders so version, env, sync, and sync-ci
+coverage stays quiet without file-level unwrap/expect or raw print allowances.
+Static completion setup text is routed through the shared redacted stdout helper
+instead of raw print macros, even though it contains no secrets.
+Dynamic completions currently complete task names via discovery-based CUE
+evaluation; unused task-parameter completion scaffolding is not kept in-tree.
+The sync fast-path version command and `--llms` output use the same helper so
+static stdout output does not need local print suppressions.
+The event-driven version command emits progress from an explicit static step
+table, keeping user-facing progress messages and percentages synchronized
+without cast suppressions or fallback branches.
+The `cuenv` build script generates `llms-full.txt` from `llms.txt` plus schema
+files using a fallible `Result` path instead of build-script panic/unwrap
+allowances. The library test asserts generated llms content includes cuenv
+project context instead of relying on a const emptiness check.
+CLI error rendering and early startup failures use direct redacted stderr
+helpers so they do not depend on tracing or the event bus being healthy.
+Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
+and workspace-wide module evaluation helpers live in
+`crates/cuenv/src/commands/module_evaluation.rs`; evaluation-count regression
+tests run against the repository root and return `Result` from root discovery
+and command execution instead of carrying file-level unwrap/expect allowances.
+Task CLI adapter construction
+lives in `crates/cuenv/src/commands/handler/task_handler.rs` and hands off to
+the structured `TaskExecutionRequest` owned by `crates/cuenv/src/commands/task/`;
+named/label task selection resolution lives in
+`crates/cuenv/src/commands/task/execution/selection.rs`, while task-list
+rendering and format selection lives in
+`crates/cuenv/src/commands/task/execution/listing.rs`; interactive picker
+handoff lives in `crates/cuenv/src/commands/task/execution/picker.rs`, and
+task help/detail rendering lives in
+`crates/cuenv/src/commands/task/execution/help.rs`.
+Startup, runtime selection, and early process routing stay in
+`crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
+`crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
+The CLI startup path installs the rustls ring provider before HTTP clients are
+created and treats an already-installed provider as acceptable instead of
+requiring a crate-wide `expect_used` allowance. Event tracing setup consumes
+`TracingConfig` into owned local fields so startup does not need a
+pass-by-value lint suppression.
+The internal event coordinator keeps the client registry to the active message
+sender only; registration metadata is logged at connect time rather than stored
+as unread per-client state.
+Coordinator messages use length-prefixed JSON with explicit frame-size checks
+before converting between header and allocation sizes, so oversized frames fail
+without relying on module-wide cast truncation allowances.
+Stale coordinator cleanup keeps the Unix `libc::kill` call inside a small
+helper after process-name verification, avoiding a module-wide unsafe-code
+allowance and keeping the required lint expectation tied to that helper.
+`crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
+guards, and macros directly. Its summary average uses a checked/saturating
+operation-count divisor, so it does not need cast-truncation or module-level
+dead-code allowances.
+The CLI library root keeps the public module/re-export wiring only; broad lint
+allowances have been removed so warning exceptions stay local to the module
+that needs them. Task and hook string renderers treat writes into `String` as
+infallible formatting paths without relying on crate-wide `expect()` allowance.
+The public provider registry is intentionally sync-only: `Provider` plus
+`SyncCapability` back generated-file sync command construction, while runtime
+and secret dispatch remain owned by their existing task and resolver paths until
+real registry-backed execution exists. Do not keep placeholder provider
+capabilities or downcast hooks for future extension points.
+The async dispatcher owns direct async commands plus changeset/release output
+envelopes; the hook supervisor process runs through
+`crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
+`crates/cuenv/src/oci_activate.rs`. Release command flows stay under
+`crates/cuenv/src/commands/release.rs`; binary artifact orchestration lives in
+`crates/cuenv/src/commands/release/binaries.rs`, and release-prepare analysis,
+version application, git publication, and PR creation live in
+`crates/cuenv/src/commands/release/prepare.rs`. Cargo manifest entry-point
+handling lives in `crates/release/src/manifest.rs`; workspace package
+discovery, version inheritance, and internal dependency lookup live in
+`crates/release/src/manifest/packages.rs`, while version writes live in
+`crates/release/src/manifest/updates.rs`. Release pipeline dispatch
+stays in `crates/release/src/orchestrator.rs`; package artifact handling lives
+in `crates/release/src/orchestrator/package.rs`, and backend publication lives
+in `crates/release/src/orchestrator/publish.rs`. Archive/checksum primitives
+for release binaries live in `crates/release/src/artifact.rs`. Conventional
+commit parsing uses explicit gix commit-time ordering and `git-conventional`
+component accessors so the release path does not need interop lint
+suppressions. GitHub release backend environment-token tests use scoped
+environment overrides instead of raw unsafe process environment mutation. The
+release crate root relies on its normal warning policy without broad
+derive-workaround allowances; warning suppressions belong with the module that
+actually needs them. Task-list data construction stays in
+`crates/cuenv/src/commands/task_list.rs`;
+text, rich, tables, dashboard, and emoji renderers live in
+`crates/cuenv/src/commands/task_list/formatters.rs`.
+The rich TUI keeps event-driven task/output state in
+`crates/cuenv/src/tui/state/activity.rs`, input-driven view state in
+`crates/cuenv/src/tui/state/view.rs`, tree flattening/navigation in
+`crates/cuenv/src/tui/state/tree.rs`, and uses `crates/cuenv/src/tui/state.rs`
+as the coordinator that preserves the renderer-facing accessors and
+event-application boundary. TUI elapsed-time display uses a shared saturating
+millisecond conversion at that state boundary.
+Sync command provider adapters live under
+`crates/cuenv/src/commands/sync/providers/`; shared sync command
+orchestration remains in `crates/cuenv/src/commands/sync/functions.rs`, and
+codegen file check/write/diff behavior lives in
+`crates/cuenv/src/commands/sync/functions/codegen.rs`. GitHub workflow
+sync and non-matrix workflow-shape emission helpers live in
+`crates/cuenv/src/commands/sync/functions/github.rs`; matrix workflow
+expansion and artifact aggregation live in
+`crates/cuenv/src/commands/sync/functions/github/matrix.rs`. Public sync and
+task command adapter re-exports stay explicit without local unused-import lint
+guards.
+The lock provider keeps path/workspace orchestration in
+`crates/cuenv/src/commands/sync/providers/lock.rs`, while multi-source tool
+resolution, cache reuse, source template expansion, and provider registry
+setup live in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs`;
+template placeholders stay named constants so literal `{version}`, `{os}`, and
+`{arch}` replacement does not need formatting-lint suppressions.
+The VCS sync provider keeps orchestration in
+`crates/cuenv/src/commands/sync/providers/vcs.rs`, checkout/marker verification
+in `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs`, and
+path/temp safety in `crates/cuenv/src/commands/sync/providers/vcs/paths.rs`.
+GitHub Actions release workflow construction is separated into
+`crates/github/src/workflow/release.rs`; bootstrap, simple, matrix, and
+artifact job construction lives in `crates/github/src/workflow/jobs.rs`;
+the general emitter stays focused on workflow naming, triggers, permissions,
+and serialization. Workflow emitter regression tests are grouped under
+`crates/github/src/workflow/emitter_tests/` by workflow emission, job building,
+matrix/artifact handling, phase steps, working-directory handling, and trigger
+path behavior.
+
+### cuenv-ci
+
+CI support compiles project tasks and CUE-defined CI contributors into an
+intermediate representation before provider emitters render workflow files.
+The compiler entrypoint lives in `crates/ci/src/compiler/mod.rs`; contributor
+activation, provider-condition checks, priority-to-stage mapping, and
+contributor task conversion live in `crates/ci/src/compiler/contributors.rs`.
+Pipeline trigger condition assembly, normalized repo-relative path filters, and
+workspace dependency trigger paths live in
+`crates/ci/src/compiler/triggers.rs`.
+Sync-scope integration tests keep temp module setup, git initialization, CUE
+fixture writes, and cuenv command execution on `Result` helpers so root versus
+nested workflow generation and lockfile drift assertions do not need file-level
+unwrap/expect allowances.
+Compiler regression tests are grouped under
+`crates/ci/src/compiler/compiler_tests/` by compile, purity, trigger,
+contributor, path, dependency, and provider-detection boundaries instead of one
+large mixed test module.
+CI IR contributor integration tests return `Result` and use named task and
+provider-hint helpers so contributor assertions stay explicit without file-level
+`expect_used` allowances or raw skip output.
+Workspace contributor integration tests use the same fallible helper pattern for
+DAG injection and auto-association assertions.
+Example DAG integration tests evaluate each `examples/` project through
+checked helper functions and return `Result` from root discovery, manifest
+loading, graph construction, and CI/task lookups instead of relying on
+file-level unwrap/expect allowances.
+Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
+project maps are generic over the caller's `BuildHasher`, so the public API does
+not force or suppress default hashing. The affected-task walk builds a canonical
+`TaskIndex` once for the local project, reuses cached indexes for external
+projects, and splits cross-project references at the first `:` so nested task
+paths remain intact during recursive dependency checks. Core task indexing
+preserves the `#project:` separator and canonicalizes only the referenced task
+path.
+CI execution and garbage collection are decomposed into explicit planning,
+execution, reporting, cache-scan, sweep, and finalization helpers instead of
+depending on broad complexity suppressions. GC default-policy tests assert the
+runtime `GCConfig` bounds rather than constant-only expressions. The CI crate
+root keeps only the temporary missing-docs allowance; parser, derive, and clippy
+warnings should be handled at the module that owns them. CI task DAG execution
+and IR runner setup live in `crates/ci/src/executor/task_execution.rs`. CI task
+tool download and lockfile activation support lives in
+`crates/ci/src/executor/tools.rs`; CI hook-backed environment assembly lives in
+`crates/ci/src/executor/hook_env.rs`, keeping the orchestrator focused on
+pipeline scheduling. CI report writing, provider notification, annotation
+resolution, and CI redaction setup live in `crates/ci/src/executor/reporting.rs`;
+per-task environment precedence and passthrough handling live in
+`crates/ci/src/executor/task_env.rs`. CI report durations are computed with
+checked non-negative conversions and display formatting uses duration helpers
+rather than lossy numeric casts. Live pipeline progress percentages are
+calculated with bounded integer basis points in
+`crates/ci/src/report/progress.rs` before formatting as `f32` percentages.
+CI report generation tests should assert reporter state through named helpers
+rather than lint-suppressed lock unwraps. CI digest diff comparison remains in
+`crates/ci/src/diff.rs`; human diff formatting lives in
+`crates/ci/src/diff/format.rs`.
+Core tool activation schema and environment mutation rules live in
+`crates/core/src/tools/activation.rs`; provider/cache/profile path discovery
+for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs`.
+The default secret registry keeps a stable fallible `Result` API while
+registering env, exec, and optional 1Password/Infisical resolvers without a
+local `unnecessary_wraps` suppression.
+Secret batch convenience APIs accept caller-owned maps generically over their
+`BuildHasher`, while the object-safe resolver trait keeps its internal concrete
+map boundary for provider implementations.
+Batch env resolver tests scope environment fixtures through the test
+environment helper instead of unsafe process-wide mutation.
+The exec resolver's JSON command shape stays private inside
+`crates/secrets/src/resolvers/exec.rs`; callers configure it through
+`schema.#ExecSecret` rather than a public Rust constructor.
+`cuenv secrets setup` orchestration lives in
+`crates/cuenv/src/commands/secrets.rs`; setup output stays on the redacted
+print path and formats download sizes with deterministic integer math.
+
+### cuenv-1password
+
+1Password secret resolution auto-selects between HTTP mode via the WASM SDK and
+CLI mode via the `op` command. Resolver mode selection, WASM client lifecycle,
+and HTTP batch resolution live in `crates/1password/src/secrets/resolver.rs`;
+WASM host-function imports, memory-offset conversion, and Unix-time conversion
+live in `crates/1password/src/secrets/core.rs` with checked/saturating integer
+boundaries. WASM initialization integration tests scope cache and SDK path
+environment fixtures through `temp_env` and return `Result` from fallible setup
+steps instead of using broad panic/expect lint allowances.
+CLI authentication preflight, signed-out bootstrap reads, and `op read`
+execution live in `crates/1password/src/secrets/cli.rs`.
+
+### cuenv-events
+
+The canonical event path constructs typed `CuenvEvent` values and publishes
+them through the process-wide sender. The compatibility tracing layer in
+`crates/events/src/layer.rs` owns target filtering and dispatch; its visitor in
+`crates/events/src/layer/visitor.rs` translates tracing fields into typed
+events. Event bus tests cover subscriber fan-out, event ordering, cloned
+senders, subscriber counts, lag gaps, and shutdown without module-level lint
+suppressions, so clippy warnings stay actionable. Field extraction and
+category-specific event construction stay separated so output, task, service,
+CI, command, interactive, and system events do not share one monolithic
+conversion path. Exported `emit_*!` macro
+definitions live in
+`crates/events/src/macros.rs`, while crate-root hidden helpers remain available
+for `$crate` expansion and redacted print helpers. Redacted print helpers write
+through explicit stdout/stderr handles so command output stays in the
+redaction boundary without raw print macros. The CLI renderer keeps all
+category-specific output in `crates/events/src/renderers/cli/`, leaving the
+renderer root focused on configuration, event consumption, and dispatch; the
+renderer root owns explicit stdout/stderr writer helpers so category renderers
+do not need raw print macros. The JSON renderer exposes a writer boundary so
+JSON-line output can be tested without direct print macros. Spinner interleaved
+output stays behind `indicatif::MultiProgress::println`, preserving progress-bar
+frames without direct stderr print macros. Trace acceptance tests return
+`Result` from binary/root discovery, dry-run execution, DAG JSON parsing, and
+task lookup helpers so CLI DAG checks stay quiet without file-level
+unwrap/expect, print suppressions, unused tracing helper modules, or unused
+dry-run fields.
+
 ### cuenv-workspaces
 
 Workspace management for monorepos.
@@ -115,6 +505,24 @@ Workspace management for monorepos.
 - Detect and configure workspaces
 - Package manager integration (bun, pnpm, yarn, cargo)
 - Workspace-aware task execution
+
+Core workspace data models live under `crates/workspaces/src/core/types/`:
+workspace/member traversal in `workspace.rs`, package-manager metadata in
+`package_manager.rs`, and dependency/lockfile shapes in `dependency.rs`.
+`types.rs` re-exports the public API used by downstream crates.
+Workspace detection stays in `crates/workspaces/src/detection.rs`, with command
+parsing, filesystem lock/config scanning, and package-manager hints split into
+`detection/command.rs`, `detection/filesystem.rs`, and
+`detection/package_json.rs`.
+Node module materializer tests scope cache-directory home overrides through the
+test environment helper instead of process-wide unsafe mutation.
+
+Cargo lockfile parsing keeps workspace member discovery in
+`crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from
+`Cargo.lock` package entry and `SourceId` conversion in
+`crates/workspaces/src/parsers/rust/cargo.rs`.
+Workspace error tests keep the crate `Result` alias coverage on a genuinely
+fallible conversion, so they do not need module-level lint suppression.
 
 ## FFI Bridge
 
@@ -320,6 +728,14 @@ cd /project/dir
 1. **Approval Gate**: Configurations must be explicitly approved before hooks run
 2. **Content Hashing**: Approval is invalidated when configuration changes
 3. **Policy Enforcement**: Secrets are only accessible to authorized tasks
+
+The shell export formatter keeps the loaded-directory and pending-approval
+environment variable names as explicit constants that are interpolated into
+each supported shell snippet. Hook-backed export wait progress writes through
+an explicit stderr helper so prompt-time status rendering stays out of raw
+print macros. Export performance regression tests keep command execution behind
+small `Result`-returning helpers so the shell-prompt latency budget stays
+covered without file-level unwrap/expect allowances.
 
 ## Data Flow
 

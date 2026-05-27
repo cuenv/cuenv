@@ -37,70 +37,79 @@ pub struct FormulaGenerator;
 impl FormulaGenerator {
     /// Generates a Ruby formula from the data.
     #[must_use]
-    #[allow(clippy::format_push_string, clippy::too_many_lines)]
     pub fn generate(data: &FormulaData) -> String {
-        let mut formula = format!(
-            r#"class {} < Formula
+        let binary_name = data.class_name.to_lowercase();
+
+        [
+            formula_header(data),
+            macos_section(data),
+            linux_section(data),
+            install_section(&binary_name),
+            test_section(&binary_name),
+            "end\n".to_string(),
+        ]
+        .join("")
+    }
+}
+
+fn formula_header(data: &FormulaData) -> String {
+    format!(
+        r#"class {} < Formula
   desc "{}"
   homepage "{}"
   version "{}"
   license "{}"
 "#,
-            data.class_name, data.desc, data.homepage, data.version, data.license
-        );
+        data.class_name, data.desc, data.homepage, data.version, data.license
+    )
+}
 
-        // macOS section (Apple Silicon only)
-        formula.push_str("\n  on_macos do\n");
-        if let Some(info) = data.binaries.get(&Target::DarwinArm64) {
-            formula.push_str(&format!(
-                r#"    on_arm do
+fn macos_section(data: &FormulaData) -> String {
+    format!(
+        "\n  on_macos do\n{}  end\n",
+        target_block("on_arm", data.binaries.get(&Target::DarwinArm64))
+    )
+}
+
+fn linux_section(data: &FormulaData) -> String {
+    format!(
+        "\n  on_linux do\n{}{}  end\n",
+        target_block("on_arm", data.binaries.get(&Target::LinuxArm64)),
+        target_block("on_intel", data.binaries.get(&Target::LinuxX64))
+    )
+}
+
+fn target_block(block_name: &str, info: Option<&BinaryInfo>) -> String {
+    let Some(info) = info else {
+        return String::new();
+    };
+
+    format!(
+        r#"    {block_name} do
       url "{}"
       sha256 "{}"
     end
 "#,
-                info.url, info.sha256
-            ));
-        }
-        formula.push_str("  end\n");
+        info.url, info.sha256
+    )
+}
 
-        // Linux section
-        formula.push_str("\n  on_linux do\n");
-        if let Some(info) = data.binaries.get(&Target::LinuxArm64) {
-            formula.push_str(&format!(
-                r#"    on_arm do
-      url "{}"
-      sha256 "{}"
-    end
-"#,
-                info.url, info.sha256
-            ));
-        }
-        if let Some(info) = data.binaries.get(&Target::LinuxX64) {
-            formula.push_str(&format!(
-                r#"    on_intel do
-      url "{}"
-      sha256 "{}"
-    end
-"#,
-                info.url, info.sha256
-            ));
-        }
-        formula.push_str("  end\n");
+fn install_section(binary_name: &str) -> String {
+    format!(
+        r#"
+  def install
+    bin.install "{binary_name}"
+  end
 
-        // Install and test sections
-        let binary_name = data.class_name.to_lowercase();
-        formula.push_str("\n  def install\n");
-        formula.push_str(&format!("    bin.install \"{binary_name}\"\n"));
-        formula.push_str("  end\n\n");
-        formula.push_str("  test do\n");
-        // Ruby string interpolation: #{bin} - we need literal #{ in the output
-        formula.push_str(&format!(
-            "    assert_match version.to_s, shell_output(\"#{{bin}}/{binary_name} --version\")\n"
-        ));
-        formula.push_str("  end\nend\n");
+"#
+    )
+}
 
-        formula
-    }
+fn test_section(binary_name: &str) -> String {
+    // Ruby string interpolation: #{bin} - we need literal #{ in the output.
+    format!(
+        "  test do\n    assert_match version.to_s, shell_output(\"#{{bin}}/{binary_name} --version\")\n  end\n"
+    )
 }
 
 #[cfg(test)]

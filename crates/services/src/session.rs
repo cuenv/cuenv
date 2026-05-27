@@ -4,6 +4,7 @@
 //! `cuenv ps`, `cuenv logs`, `cuenv down`, and `cuenv restart`.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -53,6 +54,36 @@ pub struct SessionManager {
     root: PathBuf,
 }
 
+/// Result of asking a persisted service session to shut down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownRequestOutcome {
+    /// The controller was still running and received the shutdown signal.
+    Signaled {
+        /// PID of the `cuenv up` controller process.
+        controller_pid: u32,
+    },
+    /// The persisted controller PID no longer exists.
+    Stale {
+        /// PID recorded in the persisted session.
+        controller_pid: u32,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ServiceControlRequest {
+    Restart,
+    Stop,
+}
+
+impl ServiceControlRequest {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 impl SessionManager {
     /// Create a new session for a project, writing `session.json`.
     ///
@@ -83,6 +114,8 @@ impl SessionManager {
 
         fs::create_dir_all(root.join("state"))?;
         fs::create_dir_all(root.join("logs"))?;
+        fs::create_dir_all(root.join("control").join("restart"))?;
+        fs::create_dir_all(root.join("control").join("stop"))?;
 
         let info = SessionInfo {
             version: 1,
@@ -130,6 +163,62 @@ impl SessionManager {
         self.info()
             .map(|info| is_pid_alive(info.controller_pid))
             .unwrap_or(false)
+    }
+
+    /// Request graceful shutdown of the session controller.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if session metadata cannot be read or the controller
+    /// process cannot be signalled.
+    pub fn request_shutdown(&self) -> crate::Result<ShutdownRequestOutcome> {
+        let info = self.info()?;
+        if !is_pid_alive(info.controller_pid) {
+            return Ok(ShutdownRequestOutcome::Stale {
+                controller_pid: info.controller_pid,
+            });
+        }
+
+        signal_controller_shutdown(info.controller_pid)?;
+        Ok(ShutdownRequestOutcome::Signaled {
+            controller_pid: info.controller_pid,
+        })
+    }
+
+    /// Queue a restart request for a running service supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control directory or request marker cannot be written.
+    pub fn request_service_restart(&self, name: &str) -> crate::Result<()> {
+        self.request_service_control(ServiceControlRequest::Restart, name)
+    }
+
+    /// Consume a queued restart request for a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request marker exists but cannot be removed.
+    pub fn take_service_restart_request(&self, name: &str) -> crate::Result<bool> {
+        self.take_service_control_request(ServiceControlRequest::Restart, name)
+    }
+
+    /// Queue a stop request for a running service supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control directory or request marker cannot be written.
+    pub fn request_service_stop(&self, name: &str) -> crate::Result<()> {
+        self.request_service_control(ServiceControlRequest::Stop, name)
+    }
+
+    /// Consume a queued stop request for a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request marker exists but cannot be removed.
+    pub fn take_service_stop_request(&self, name: &str) -> crate::Result<bool> {
+        self.take_service_control_request(ServiceControlRequest::Stop, name)
     }
 
     /// Update a service's state.
@@ -227,6 +316,40 @@ impl SessionManager {
         serde_json::from_str(&data)
             .map_err(|e| crate::Error::session(format!("corrupt session.json: {e}")))
     }
+
+    fn request_service_control(
+        &self,
+        request: ServiceControlRequest,
+        name: &str,
+    ) -> crate::Result<()> {
+        fs::create_dir_all(self.control_request_dir(request))?;
+        fs::write(
+            self.control_request_path(request, name),
+            Utc::now().to_rfc3339(),
+        )?;
+        Ok(())
+    }
+
+    fn take_service_control_request(
+        &self,
+        request: ServiceControlRequest,
+        name: &str,
+    ) -> crate::Result<bool> {
+        match fs::remove_file(self.control_request_path(request, name)) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn control_request_dir(&self, request: ServiceControlRequest) -> PathBuf {
+        self.root.join("control").join(request.directory())
+    }
+
+    fn control_request_path(&self, request: ServiceControlRequest, name: &str) -> PathBuf {
+        self.control_request_dir(request)
+            .join(format!("{name}.request"))
+    }
 }
 
 /// Compute the session directory for a project path.
@@ -247,13 +370,58 @@ fn session_dir(project_path: &Path) -> PathBuf {
 fn is_pid_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        let Ok(raw_pid) = i32::try_from(pid) else {
+            return false;
+        };
         // Signal 0 checks process existence without sending a signal
-        unsafe { libc::kill(pid as i32, 0) == 0 }
+        #[expect(
+            unsafe_code,
+            reason = "kill(pid, 0) checks process liveness without sending a signal"
+        )]
+        unsafe {
+            libc::kill(raw_pid, 0) == 0
+        }
     }
     #[cfg(not(unix))]
     {
         let _ = pid;
         false // Conservative: assume dead on non-unix
+    }
+}
+
+fn signal_controller_shutdown(pid: u32) -> crate::Result<()> {
+    #[cfg(unix)]
+    {
+        let raw_pid = i32::try_from(pid).map_err(|_| crate::Error::Session {
+            message: format!("controller PID {pid} does not fit platform pid_t"),
+            help: None,
+        })?;
+
+        #[expect(
+            unsafe_code,
+            reason = "Sending SIGINT to the recorded controller PID requests graceful shutdown"
+        )]
+        let result = unsafe { libc::kill(raw_pid, libc::SIGINT) };
+
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(crate::Error::Session {
+                message: format!(
+                    "failed to signal controller PID {pid}: {}",
+                    std::io::Error::last_os_error()
+                ),
+                help: Some("Check `cuenv ps` or remove the stale .cuenv/run session".into()),
+            })
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        Err(crate::Error::Session {
+            message: "service shutdown signalling is not supported on this platform".to_string(),
+            help: None,
+        })
     }
 }
 
@@ -334,5 +502,47 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = SessionManager::load(dir.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_request_shutdown_reports_stale_controller() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+        let mut info = session.info().unwrap();
+        info.controller_pid = 999_999;
+        let json = serde_json::to_string_pretty(&info).unwrap();
+        fs::write(session.root().join("session.json"), json).unwrap();
+
+        let outcome = session.request_shutdown().unwrap();
+        assert_eq!(
+            outcome,
+            ShutdownRequestOutcome::Stale {
+                controller_pid: 999_999
+            }
+        );
+    }
+
+    #[test]
+    fn test_service_restart_request_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+
+        assert!(!session.take_service_restart_request("db").unwrap());
+
+        session.request_service_restart("db").unwrap();
+        assert!(session.take_service_restart_request("db").unwrap());
+        assert!(!session.take_service_restart_request("db").unwrap());
+    }
+
+    #[test]
+    fn test_service_stop_request_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+
+        assert!(!session.take_service_stop_request("db").unwrap());
+
+        session.request_service_stop("db").unwrap();
+        assert!(session.take_service_stop_request("db").unwrap());
+        assert!(!session.take_service_stop_request("db").unwrap());
     }
 }

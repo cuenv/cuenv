@@ -2,10 +2,12 @@
 
 use crate::cli::{CliError, SecretsProvider};
 use cuenv_core::http::ensure_rustls_crypto_provider;
+use cuenv_events::println_redacted;
 
 /// Default WASM URL for 1Password SDK v0.3.1
 const ONEPASSWORD_WASM_URL: &str =
     "https://github.com/1Password/onepassword-sdk-go/raw/refs/tags/v0.3.1/internal/wasm/core.wasm";
+const BYTES_PER_MEBIBYTE: usize = 1024 * 1024;
 
 /// Execute the secrets setup command.
 ///
@@ -23,7 +25,6 @@ pub fn execute_secrets_setup(
 }
 
 /// Set up 1Password by downloading the WASM SDK
-#[allow(clippy::print_stdout)] // Download progress messages, no secrets
 fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     let url = wasm_url.unwrap_or(ONEPASSWORD_WASM_URL);
 
@@ -41,16 +42,16 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
 
     // Check if already downloaded
     if wasm_path.exists() {
-        println!(
+        println_redacted(&format!(
             "1Password WASM SDK already downloaded at: {}",
             wasm_path.display()
-        );
-        println!("To re-download, delete the file and run this command again.");
+        ));
+        println_redacted("To re-download, delete the file and run this command again.");
         return Ok(());
     }
 
-    println!("Downloading 1Password WASM SDK...");
-    println!("Source: {url}");
+    println_redacted("Downloading 1Password WASM SDK...");
+    println_redacted(&format!("Source: {url}"));
 
     // Download the WASM file
     ensure_rustls_crypto_provider();
@@ -72,18 +73,19 @@ fn setup_onepassword(wasm_url: Option<&str>) -> Result<(), CliError> {
     std::fs::write(&wasm_path, &bytes)
         .map_err(|e| CliError::config(format!("Failed to write WASM file: {e}")))?;
 
-    #[allow(clippy::cast_precision_loss)] // Precision loss acceptable for display
-    let size_mb = bytes.len() as f64 / (1024.0 * 1024.0);
-    println!("Downloaded {size_mb:.2} MB to: {}", wasm_path.display());
-    println!();
-    println!("1Password HTTP mode is now enabled!");
-    println!("Set OP_SERVICE_ACCOUNT_TOKEN to use HTTP mode instead of CLI.");
+    let size_mb = format_download_size_mb(bytes.len());
+    println_redacted(&format!(
+        "Downloaded {size_mb} MB to: {}",
+        wasm_path.display()
+    ));
+    println_redacted("");
+    println_redacted("1Password HTTP mode is now enabled!");
+    println_redacted("Set OP_SERVICE_ACCOUNT_TOKEN to use HTTP mode instead of CLI.");
 
     Ok(())
 }
 
 /// Set up Infisical by validating required authentication environment variables.
-#[allow(clippy::print_stdout)] // Preflight status messages, no secrets
 fn setup_infisical() -> Result<(), CliError> {
     let has_client_id = has_env("INFISICAL_CLIENT_ID");
     let has_client_secret = has_env("INFISICAL_CLIENT_SECRET");
@@ -91,13 +93,13 @@ fn setup_infisical() -> Result<(), CliError> {
 
     match (has_client_id, has_client_secret, has_token) {
         (true, true, _) => {
-            println!("Infisical Universal Auth environment detected.");
-            println!("cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.");
+            println_redacted("Infisical Universal Auth environment detected.");
+            println_redacted("cuenv will use INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET.");
             Ok(())
         }
         (false, false, true) => {
-            println!("Infisical token environment detected.");
-            println!("cuenv will use INFISICAL_TOKEN.");
+            println_redacted("Infisical token environment detected.");
+            println_redacted("cuenv will use INFISICAL_TOKEN.");
             Ok(())
         }
         (true, false, _) | (false, true, _) => Err(CliError::config(
@@ -111,4 +113,25 @@ fn setup_infisical() -> Result<(), CliError> {
 
 fn has_env(name: &str) -> bool {
     std::env::var(name).is_ok_and(|value| !value.trim().is_empty())
+}
+
+fn format_download_size_mb(byte_count: usize) -> String {
+    let centi_mb = ((byte_count as u128) * 100 + (BYTES_PER_MEBIBYTE as u128 / 2))
+        / BYTES_PER_MEBIBYTE as u128;
+
+    format!("{}.{:02}", centi_mb / 100, centi_mb % 100)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BYTES_PER_MEBIBYTE, format_download_size_mb};
+
+    #[test]
+    fn format_download_size_mb_keeps_two_decimal_places() {
+        assert_eq!(format_download_size_mb(0), "0.00");
+        assert_eq!(format_download_size_mb(1), "0.00");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE), "1.00");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE * 3 / 2), "1.50");
+        assert_eq!(format_download_size_mb(BYTES_PER_MEBIBYTE - 1), "1.00");
+    }
 }

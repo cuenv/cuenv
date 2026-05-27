@@ -214,7 +214,6 @@ impl From<toml::de::Error> for Error {
 }
 
 #[cfg(test)]
-#[allow(clippy::unnecessary_wraps)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
@@ -513,7 +512,7 @@ mod tests {
     #[test]
     fn test_result_type_with_question_mark() {
         fn returns_result() -> Result<String> {
-            Ok("success".to_string())
+            Ok(serde_json::from_str::<String>("\"success\"")?)
         }
 
         fn uses_result() -> Result<String> {

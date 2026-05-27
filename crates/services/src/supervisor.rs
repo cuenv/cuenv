@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::Child;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -19,36 +19,13 @@ use cuenv_events::{
     emit_service_restarting, emit_service_starting, emit_service_stopped, emit_service_stopping,
 };
 
+use crate::control::{ManualControlRequest, wait_for_control_request};
 use crate::duration::parse_duration;
 use crate::lifecycle::ServiceLifecycle;
 use crate::probes::{self, ProbeLoopResult, log::LogProbe};
+use crate::process::ServiceProcess;
 use crate::session::{ServiceState, SessionManager};
 use crate::watcher::{ServiceWatcher, WatchEvent};
-
-/// Wrap the invocation with `cuenv __supervise` on platforms that need
-/// it for orphan prevention.
-///
-/// On Linux the child is already covered by `PR_SET_PDEATHSIG`, so we
-/// return the original (program, args) unchanged.
-///
-/// On macOS the `__supervise` wrapper watches the parent cuenv process
-/// via `kqueue` and kills the child's process group on parent death.
-fn wrap_with_supervisor(program: String, args: Vec<String>) -> (String, Vec<String>) {
-    #[cfg(target_os = "macos")]
-    {
-        if let Ok(exe) = std::env::current_exe() {
-            let mut new_args = Vec::with_capacity(args.len() + 2);
-            new_args.push("__supervise".to_string());
-            new_args.push(program);
-            new_args.extend(args);
-            return (exe.to_string_lossy().into_owned(), new_args);
-        }
-        // If we cannot locate our own executable, fall through to a
-        // direct spawn — degrading gracefully is preferable to failing.
-    }
-    let _ = (cfg!(target_os = "macos"),); // touch cfg to silence unused-warning lint variants
-    (program, args)
-}
 
 /// Result of supervisor execution.
 #[derive(Debug)]
@@ -125,6 +102,7 @@ pub struct ServiceSupervisor {
 }
 
 /// Parameters for a state update.
+#[derive(Clone, Copy)]
 pub struct StateUpdate<'a> {
     /// New lifecycle state.
     pub lifecycle: ServiceLifecycle,
@@ -134,6 +112,50 @@ pub struct StateUpdate<'a> {
     pub exit_code: Option<i32>,
     /// Error message (if failed).
     pub error: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+enum RestartTrigger {
+    Manual,
+    Watch,
+}
+
+impl RestartTrigger {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Watch => "watch",
+        }
+    }
+
+    fn counts_toward_budget(self) -> bool {
+        matches!(self, Self::Watch)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RestartStep {
+    trigger: RestartTrigger,
+    current_attempt: u32,
+}
+
+enum ServiceWait {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    Shutdown,
+    Restart(RestartTrigger),
+    Stop,
+}
+
+fn abort_output_handles(
+    stdout_handle: Option<tokio::task::JoinHandle<()>>,
+    stderr_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(handle) = stdout_handle {
+        handle.abort();
+    }
+    if let Some(handle) = stderr_handle {
+        handle.abort();
+    }
 }
 
 impl ServiceSupervisor {
@@ -227,7 +249,7 @@ impl ServiceSupervisor {
             }
 
             // Spawn the service process
-            emit_service_starting!(&self.name, self.command_display());
+            emit_service_starting!(&self.name, self.process().command_display());
             self.log_state_update(StateUpdate {
                 lifecycle: ServiceLifecycle::Starting,
                 pid: None,
@@ -235,7 +257,7 @@ impl ServiceSupervisor {
                 error: None,
             });
 
-            let spawn_result = self.spawn_process().await;
+            let spawn_result = self.process().spawn().await;
             let mut child = match spawn_result {
                 Ok(c) => c,
                 Err(e) => {
@@ -269,7 +291,7 @@ impl ServiceSupervisor {
             // Create log probe if needed
             let log_probe = self.service.readiness.as_ref().and_then(|r| match r {
                 cuenv_core::manifest::Readiness::Log(l) => {
-                    let source = l.source.clone().unwrap_or("either".to_string());
+                    let source = l.source.as_deref().unwrap_or("either");
                     LogProbe::new(&l.pattern, source).ok()
                 }
                 _ => None,
@@ -359,7 +381,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.process().stop(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                     Ok(ProbeLoopResult::Fatal(msg)) => {
@@ -373,7 +395,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.process().stop(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                     Err(e) => {
@@ -388,7 +410,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.process().stop(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                 }
@@ -412,34 +434,62 @@ impl ServiceSupervisor {
                 }
             }
 
-            // Wait for process exit, shutdown, or watch event
-            let exit_status = tokio::select! {
-                status = child.wait() => status,
-                () = shutdown.cancelled() => {
-                    emit_service_stopping!(&self.name);
-                    self.stop_process(&mut child).await;
-                    return SupervisorResult::Stopped;
-                }
+            // Wait for process exit, shutdown, file watcher, or a manual
+            // control request queued by `cuenv down` / `cuenv restart`.
+            let wait = tokio::select! {
+                status = child.wait() => ServiceWait::Exited(status),
+                () = shutdown.cancelled() => ServiceWait::Shutdown,
                 Some(watch_event) = watch_rx.recv() => {
                     let changed: Vec<String> = watch_event.paths.iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
                     cuenv_events::emit_service_watch!(&self.name, &changed);
-                    emit_service_restarting!(&self.name, "watch", attempt);
-                    self.stop_process(&mut child).await;
-                    restart_history.push_back(Instant::now());
-                    attempt += 1;
+                    ServiceWait::Restart(RestartTrigger::Watch)
+                }
+                () = wait_for_control_request(
+                    self.session.as_ref(),
+                    &self.name,
+                    ManualControlRequest::Restart,
+                ) => {
+                    ServiceWait::Restart(RestartTrigger::Manual)
+                }
+                () = wait_for_control_request(
+                    self.session.as_ref(),
+                    &self.name,
+                    ManualControlRequest::Stop,
+                ) => ServiceWait::Stop,
+            };
+
+            let exit_status = match wait {
+                ServiceWait::Exited(status) => {
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    status
+                }
+                ServiceWait::Shutdown => {
+                    self.stop_running_process(&mut child).await;
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    return SupervisorResult::Stopped;
+                }
+                ServiceWait::Stop => {
+                    self.stop_running_process(&mut child).await;
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    return SupervisorResult::Stopped;
+                }
+                ServiceWait::Restart(trigger) => {
+                    attempt = self
+                        .restart_running_process(
+                            &mut child,
+                            RestartStep {
+                                trigger,
+                                current_attempt: attempt,
+                            },
+                            &mut restart_history,
+                        )
+                        .await;
+                    abort_output_handles(stdout_handle, stderr_handle);
                     continue;
                 }
             };
-
-            // Clean up output handles
-            if let Some(h) = stdout_handle {
-                h.abort();
-            }
-            if let Some(h) = stderr_handle {
-                h.abort();
-            }
 
             let exit_code = exit_status.ok().and_then(|s| s.code());
             emit_service_stopped!(&self.name, exit_code);
@@ -503,208 +553,47 @@ impl ServiceSupervisor {
         }
     }
 
-    async fn spawn_process(&self) -> crate::Result<tokio::process::Child> {
-        let (program, args) = self.resolve_command()?;
-
-        let working_dir = self
-            .service
-            .dir
-            .as_ref()
-            .map(|d| self.project_root.join(d))
-            .unwrap_or_else(|| self.project_root.clone());
-
-        // On macOS, route the child through `cuenv __supervise` so it
-        // gets killed if cuenv itself dies ungracefully. Linux uses
-        // PR_SET_PDEATHSIG in pre_exec below and skips the wrapper.
-        let (program, args) = wrap_with_supervisor(program, args);
-
-        let mut cmd = Command::new(&program);
-        cmd.args(&args)
-            .current_dir(&working_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        // Set up process group on Unix so `cuenv stop <service>` can
-        // target a single service's pgid. On Linux, also ask the kernel
-        // to deliver SIGKILL to the child if cuenv itself dies for any
-        // reason (including SIGKILL), so services cannot be orphaned.
-        // macOS has no PR_SET_PDEATHSIG equivalent — we rely on a
-        // dedicated `cuenv __supervise` wrapper there (see commands::supervise).
-        #[cfg(unix)]
-        {
-            #[expect(
-                unsafe_code,
-                reason = "pre_exec runs in the forked child; setpgid/prctl are async-signal-safe and affect only the child"
-            )]
-            // SAFETY: The pre_exec hook runs in the forked child before
-            // exec. Both setpgid(0, 0) and prctl(PR_SET_PDEATHSIG, ...)
-            // are async-signal-safe and affect only the calling
-            // process. Return values are checked and converted to
-            // io::Error on failure so the spawn fails cleanly rather
-            // than starting a mis-configured child.
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::setpgid(0, 0) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    #[cfg(target_os = "linux")]
-                    {
-                        if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                            return Err(std::io::Error::last_os_error());
-                        }
-                    }
-                    Ok(())
-                });
-            }
-        }
-
-        // Resolve environment variables (including secrets) and apply to
-        // the child process. Resolved secret values are registered with the
-        // event system so they get redacted from service log output.
-        let (resolved_env, secrets) =
-            cuenv_core::environment::Environment::resolve_for_service_with_secrets(
-                &self.name,
-                &self.service.env,
-            )
-            .await?;
-        if !secrets.is_empty() {
-            cuenv_events::register_secrets(secrets.into_iter());
-        }
-        for (key, value) in resolved_env {
-            cmd.env(key, value);
-        }
-
-        let child = cmd.spawn()?;
-        Ok(child)
+    async fn stop_running_process(&self, child: &mut Child) {
+        emit_service_stopping!(&self.name);
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Stopping,
+            pid: child.id(),
+            exit_code: None,
+            error: None,
+        });
+        let exit_code = self.process().stop(child).await;
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Stopped,
+            pid: None,
+            exit_code,
+            error: None,
+        });
     }
 
-    async fn stop_process(&self, child: &mut tokio::process::Child) {
-        let shutdown_config = self.service.shutdown.as_ref();
-        let signal = shutdown_config
-            .and_then(|s| s.signal.as_deref())
-            .unwrap_or("SIGTERM");
-        let timeout = shutdown_config
-            .and_then(|s| s.timeout.as_deref())
-            .and_then(|t| parse_duration(t).ok())
-            .unwrap_or(Duration::from_secs(10));
-
-        if let Some(pid) = child.id() {
-            #[cfg(unix)]
-            {
-                let sig = match signal {
-                    "SIGINT" => libc::SIGINT,
-                    "SIGHUP" => libc::SIGHUP,
-                    "SIGQUIT" => libc::SIGQUIT,
-                    _ => libc::SIGTERM,
-                };
-                unsafe {
-                    libc::kill(-(pid as i32), sig);
-                }
-            }
-
-            // Wait for graceful shutdown
-            let wait_result = tokio::time::timeout(timeout, child.wait()).await;
-            if wait_result.is_err() {
-                // Force kill
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(pid as i32), libc::SIGKILL);
-                }
-                let _ = child.wait().await;
-            }
-        } else {
-            let _ = child.kill().await;
+    async fn restart_running_process(
+        &self,
+        child: &mut Child,
+        step: RestartStep,
+        restart_history: &mut VecDeque<Instant>,
+    ) -> u32 {
+        let next_attempt = step.current_attempt + 1;
+        emit_service_restarting!(&self.name, step.trigger.reason(), next_attempt);
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Restarting,
+            pid: None,
+            exit_code: None,
+            error: None,
+        });
+        let _ = self.process().stop(child).await;
+        if step.trigger.counts_toward_budget() {
+            restart_history.push_back(Instant::now());
+            return next_attempt;
         }
-
-        emit_service_stopped!(
-            &self.name,
-            child.try_wait().ok().flatten().and_then(|s| s.code())
-        );
+        step.current_attempt
     }
 
-    fn resolve_command(&self) -> crate::Result<(String, Vec<String>)> {
-        use cuenv_core::manifest::Entrypoint;
-        match &self.service.entrypoint {
-            Entrypoint::Task(task) => {
-                if let Some(ref script) = task.script {
-                    let (cmd, flag) = task
-                        .script_shell
-                        .as_ref()
-                        .map_or(("bash", "-c"), |s| s.command_and_flag());
-                    Ok((cmd.to_string(), vec![flag.to_string(), script.clone()]))
-                } else {
-                    Ok((task.command.clone(), task.args.to_vec()))
-                }
-            }
-            Entrypoint::Script(s) => {
-                let (cmd, flag) = s
-                    .script_shell
-                    .as_ref()
-                    .map_or(("bash", "-c"), |sh| sh.command_and_flag());
-                Ok((cmd.to_string(), vec![flag.to_string(), s.script.clone()]))
-            }
-            Entrypoint::Command(c) => {
-                // Command.args may contain #TaskOutputRef values per the
-                // schema, but those must be resolved upstream before a
-                // service can spawn. If any non-string value remains,
-                // refuse to start rather than silently dropping it.
-                let mut args = Vec::with_capacity(c.args.len());
-                for (idx, a) in c.args.iter().enumerate() {
-                    match a.as_str() {
-                        Some(s) => args.push(s.to_string()),
-                        None => {
-                            return Err(crate::Error::service_failed(
-                                &self.name,
-                                format!(
-                                    "entrypoint.args[{idx}] is not a string ({}); \
-                                     task-output references must be resolved before launch",
-                                    a
-                                ),
-                            ));
-                        }
-                    }
-                }
-                Ok((c.command.clone(), args))
-            }
-        }
-    }
-
-    fn command_display(&self) -> String {
-        use cuenv_core::manifest::Entrypoint;
-        match &self.service.entrypoint {
-            Entrypoint::Task(task) => {
-                if let Some(ref script) = task.script {
-                    format!("script: {}", &script[..script.len().min(60)])
-                } else if task.args.is_empty() {
-                    task.command.clone()
-                } else {
-                    format!("{} {}", task.command, task.args.join(" "))
-                }
-            }
-            Entrypoint::Script(s) => {
-                format!("script: {}", &s.script[..s.script.len().min(60)])
-            }
-            Entrypoint::Command(c) => {
-                // For display, render non-string args (e.g., unresolved
-                // TaskOutputRefs) via their JSON form rather than
-                // silently dropping them, so operators see the full
-                // command line.
-                let args: Vec<String> = c
-                    .args
-                    .iter()
-                    .map(|a| {
-                        a.as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| a.to_string())
-                    })
-                    .collect();
-                if args.is_empty() {
-                    c.command.clone()
-                } else {
-                    format!("{} {}", c.command, args.join(" "))
-                }
-            }
-        }
+    fn process(&self) -> ServiceProcess<'_> {
+        ServiceProcess::new(&self.name, &self.service, &self.project_root)
     }
 
     /// Update state with a warning log on failure (instead of silently swallowing).
