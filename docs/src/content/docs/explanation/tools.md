@@ -118,7 +118,10 @@ precedence tests use scoped environment overrides instead of raw process-wide
 environment mutation.
 For direct URL tools, archive detection and extraction live in
 `crates/tools/url/src/extract.rs`, while `crates/tools/url/src/lib.rs` owns
-HTTP resolution, cache target planning, and typed extract placement.
+HTTP resolution, cache target planning, and typed extract placement. The
+Node.js contrib-tool integration tests stay network-free by locking official
+archive URLs, seeding fake cache prefixes, and returning `Result` from fixture
+setup instead of relying on file-level unwrap/expect allowances.
 For OCI tools, layer unpacking and single-binary extraction live in
 `crates/tools/oci/src/extract.rs`, while the provider root owns registry
 resolution, platform manifest selection, and cache placement. GHCR anonymous
