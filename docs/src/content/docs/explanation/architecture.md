@@ -139,7 +139,7 @@ supervisor state-update parameters are copyable value bundles so lifecycle
 persistence and warning logs share the same update without ownership churn.
 `cuenv down` operates through persisted session state: whole-session shutdown
 signals the active `cuenv up` controller, stale sessions are cleaned, and
-named-service shutdown fails clearly until supervisor IPC exists.
+named-service shutdown queues stop requests consumed by running supervisors.
 `cuenv logs --follow` uses the same persisted session boundary, tailing
 appended log file content until the controller exits instead of claiming
 real-time follow support without streaming.

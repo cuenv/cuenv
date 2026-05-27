@@ -224,13 +224,12 @@ cuenv down [SERVICES...] [OPTIONS]
 ```
 
 `cuenv down` signals the persisted `cuenv up` controller for the selected
-project path. Omit service names to stop the whole active session. Named-service
-shutdown is not wired to the supervisor IPC yet and returns an error instead of
-pretending to stop services that may be restarted by the active controller.
+project path. Omit service names to stop the whole active session. Provide
+service names to queue persisted stop requests for those running supervisors.
 
 **Arguments:**
 
-- `[SERVICES]`: Reserved for named-service shutdown. Currently unsupported; omit to stop all services.
+- `[SERVICES]`: Service names to stop. Omit to stop the whole active session.
 
 **Options:**
 

@@ -69,6 +69,21 @@ pub enum ShutdownRequestOutcome {
     },
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ServiceControlRequest {
+    Restart,
+    Stop,
+}
+
+impl ServiceControlRequest {
+    fn directory(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+        }
+    }
+}
+
 impl SessionManager {
     /// Create a new session for a project, writing `session.json`.
     ///
@@ -100,6 +115,7 @@ impl SessionManager {
         fs::create_dir_all(root.join("state"))?;
         fs::create_dir_all(root.join("logs"))?;
         fs::create_dir_all(root.join("control").join("restart"))?;
+        fs::create_dir_all(root.join("control").join("stop"))?;
 
         let info = SessionInfo {
             version: 1,
@@ -175,9 +191,7 @@ impl SessionManager {
     ///
     /// Returns an error if the control directory or request marker cannot be written.
     pub fn request_service_restart(&self, name: &str) -> crate::Result<()> {
-        fs::create_dir_all(self.restart_request_dir())?;
-        fs::write(self.restart_request_path(name), Utc::now().to_rfc3339())?;
-        Ok(())
+        self.request_service_control(ServiceControlRequest::Restart, name)
     }
 
     /// Consume a queued restart request for a service.
@@ -186,11 +200,25 @@ impl SessionManager {
     ///
     /// Returns an error if the request marker exists but cannot be removed.
     pub fn take_service_restart_request(&self, name: &str) -> crate::Result<bool> {
-        match fs::remove_file(self.restart_request_path(name)) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
+        self.take_service_control_request(ServiceControlRequest::Restart, name)
+    }
+
+    /// Queue a stop request for a running service supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control directory or request marker cannot be written.
+    pub fn request_service_stop(&self, name: &str) -> crate::Result<()> {
+        self.request_service_control(ServiceControlRequest::Stop, name)
+    }
+
+    /// Consume a queued stop request for a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request marker exists but cannot be removed.
+    pub fn take_service_stop_request(&self, name: &str) -> crate::Result<bool> {
+        self.take_service_control_request(ServiceControlRequest::Stop, name)
     }
 
     /// Update a service's state.
@@ -289,12 +317,38 @@ impl SessionManager {
             .map_err(|e| crate::Error::session(format!("corrupt session.json: {e}")))
     }
 
-    fn restart_request_dir(&self) -> PathBuf {
-        self.root.join("control").join("restart")
+    fn request_service_control(
+        &self,
+        request: ServiceControlRequest,
+        name: &str,
+    ) -> crate::Result<()> {
+        fs::create_dir_all(self.control_request_dir(request))?;
+        fs::write(
+            self.control_request_path(request, name),
+            Utc::now().to_rfc3339(),
+        )?;
+        Ok(())
     }
 
-    fn restart_request_path(&self, name: &str) -> PathBuf {
-        self.restart_request_dir().join(format!("{name}.request"))
+    fn take_service_control_request(
+        &self,
+        request: ServiceControlRequest,
+        name: &str,
+    ) -> crate::Result<bool> {
+        match fs::remove_file(self.control_request_path(request, name)) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn control_request_dir(&self, request: ServiceControlRequest) -> PathBuf {
+        self.root.join("control").join(request.directory())
+    }
+
+    fn control_request_path(&self, request: ServiceControlRequest, name: &str) -> PathBuf {
+        self.control_request_dir(request)
+            .join(format!("{name}.request"))
     }
 }
 
@@ -478,5 +532,17 @@ mod tests {
         session.request_service_restart("db").unwrap();
         assert!(session.take_service_restart_request("db").unwrap());
         assert!(!session.take_service_restart_request("db").unwrap());
+    }
+
+    #[test]
+    fn test_service_stop_request_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+
+        assert!(!session.take_service_stop_request("db").unwrap());
+
+        session.request_service_stop("db").unwrap();
+        assert!(session.take_service_stop_request("db").unwrap());
+        assert!(!session.take_service_stop_request("db").unwrap());
     }
 }

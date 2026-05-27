@@ -401,7 +401,7 @@ pub enum Command {
         path: String,
         /// CUE package name to evaluate.
         package: String,
-        /// Reserved for named-service shutdown; empty stops all services.
+        /// Service names to stop; empty stops the whole active session.
         services: Vec<String>,
     },
     /// View service logs.

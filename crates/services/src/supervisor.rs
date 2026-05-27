@@ -165,6 +165,29 @@ enum ServiceWait {
     Exited(std::io::Result<std::process::ExitStatus>),
     Shutdown,
     Restart(RestartTrigger),
+    Stop,
+}
+
+#[derive(Clone, Copy)]
+enum ManualControlRequest {
+    Restart,
+    Stop,
+}
+
+impl ManualControlRequest {
+    fn take(self, session: &SessionManager, name: &str) -> crate::Result<bool> {
+        match self {
+            Self::Restart => session.take_service_restart_request(name),
+            Self::Stop => session.take_service_stop_request(name),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Restart => "restart",
+            Self::Stop => "stop",
+        }
+    }
 }
 
 fn abort_output_handles(
@@ -402,7 +425,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.stop_process(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                     Ok(ProbeLoopResult::Fatal(msg)) => {
@@ -416,7 +439,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.stop_process(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                     Err(e) => {
@@ -431,7 +454,7 @@ impl ServiceSupervisor {
                         if !has_signaled_readiness {
                             let _ = readiness_tx.send(ReadinessOutcome::Failed(msg.clone()));
                         }
-                        self.stop_process(&mut child).await;
+                        let _ = self.stop_process(&mut child).await;
                         return SupervisorResult::Failed(msg);
                     }
                 }
@@ -456,7 +479,7 @@ impl ServiceSupervisor {
             }
 
             // Wait for process exit, shutdown, file watcher, or a manual
-            // restart queued by `cuenv restart`.
+            // control request queued by `cuenv down` / `cuenv restart`.
             let wait = tokio::select! {
                 status = child.wait() => ServiceWait::Exited(status),
                 () = shutdown.cancelled() => ServiceWait::Shutdown,
@@ -467,7 +490,10 @@ impl ServiceSupervisor {
                     cuenv_events::emit_service_watch!(&self.name, &changed);
                     ServiceWait::Restart(RestartTrigger::Watch)
                 }
-                () = self.wait_for_restart_request() => ServiceWait::Restart(RestartTrigger::Manual),
+                () = self.wait_for_control_request(ManualControlRequest::Restart) => {
+                    ServiceWait::Restart(RestartTrigger::Manual)
+                }
+                () = self.wait_for_control_request(ManualControlRequest::Stop) => ServiceWait::Stop,
             };
 
             let exit_status = match wait {
@@ -476,8 +502,12 @@ impl ServiceSupervisor {
                     status
                 }
                 ServiceWait::Shutdown => {
-                    emit_service_stopping!(&self.name);
-                    self.stop_process(&mut child).await;
+                    self.stop_running_process(&mut child).await;
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    return SupervisorResult::Stopped;
+                }
+                ServiceWait::Stop => {
+                    self.stop_running_process(&mut child).await;
                     abort_output_handles(stdout_handle, stderr_handle);
                     return SupervisorResult::Stopped;
                 }
@@ -634,20 +664,38 @@ impl ServiceSupervisor {
         Ok(child)
     }
 
-    async fn wait_for_restart_request(&self) {
+    async fn wait_for_control_request(&self, request: ManualControlRequest) {
         let mut interval = tokio::time::interval(Duration::from_millis(500));
         loop {
             interval.tick().await;
-            match self.session.take_service_restart_request(&self.name) {
+            match request.take(&self.session, &self.name) {
                 Ok(true) => return,
                 Ok(false) => {}
                 Err(error) => warn!(
                     service = %self.name,
                     error = %error,
-                    "Failed to consume service restart request"
+                    request = request.name(),
+                    "Failed to consume service control request"
                 ),
             }
         }
+    }
+
+    async fn stop_running_process(&self, child: &mut Child) {
+        emit_service_stopping!(&self.name);
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Stopping,
+            pid: child.id(),
+            exit_code: None,
+            error: None,
+        });
+        let exit_code = self.stop_process(child).await;
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Stopped,
+            pid: None,
+            exit_code,
+            error: None,
+        });
     }
 
     async fn restart_running_process(
@@ -664,7 +712,7 @@ impl ServiceSupervisor {
             exit_code: None,
             error: None,
         });
-        self.stop_process(child).await;
+        let _ = self.stop_process(child).await;
         if step.trigger.counts_toward_budget() {
             restart_history.push_back(Instant::now());
             return next_attempt;
@@ -672,7 +720,7 @@ impl ServiceSupervisor {
         step.current_attempt
     }
 
-    async fn stop_process(&self, child: &mut tokio::process::Child) {
+    async fn stop_process(&self, child: &mut tokio::process::Child) -> Option<i32> {
         let shutdown_config = self.service.shutdown.as_ref();
         let signal = shutdown_config
             .and_then(|s| s.signal.as_deref())
@@ -710,10 +758,9 @@ impl ServiceSupervisor {
             let _ = child.kill().await;
         }
 
-        emit_service_stopped!(
-            &self.name,
-            child.try_wait().ok().flatten().and_then(|s| s.code())
-        );
+        let exit_code = child.try_wait().ok().flatten().and_then(|s| s.code());
+        emit_service_stopped!(&self.name, exit_code);
+        exit_code
     }
 
     fn resolve_command(&self) -> crate::Result<(String, Vec<String>)> {
@@ -850,6 +897,35 @@ mod tests {
 
     #[tokio::test]
     async fn wait_for_restart_request_consumes_marker() {
+        let (_dir, session, supervisor) = build_supervisor();
+
+        session.request_service_restart("db").unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            supervisor.wait_for_control_request(ManualControlRequest::Restart),
+        )
+        .await
+        .unwrap();
+
+        assert!(!session.take_service_restart_request("db").unwrap());
+    }
+
+    #[tokio::test]
+    async fn wait_for_stop_request_consumes_marker() {
+        let (_dir, session, supervisor) = build_supervisor();
+
+        session.request_service_stop("db").unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            supervisor.wait_for_control_request(ManualControlRequest::Stop),
+        )
+        .await
+        .unwrap();
+
+        assert!(!session.take_service_stop_request("db").unwrap());
+    }
+
+    fn build_supervisor() -> (tempfile::TempDir, Arc<SessionManager>, ServiceSupervisor) {
         let dir = tempfile::tempdir().unwrap();
         let session = Arc::new(SessionManager::create(dir.path(), "test-project").unwrap());
         let supervisor = ServiceSupervisor::new(SupervisorConfig {
@@ -859,14 +935,6 @@ mod tests {
             session: Arc::clone(&session),
         });
 
-        session.request_service_restart("db").unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            supervisor.wait_for_restart_request(),
-        )
-        .await
-        .unwrap();
-
-        assert!(!session.take_service_restart_request("db").unwrap());
+        (dir, session, supervisor)
     }
 }

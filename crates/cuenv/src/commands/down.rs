@@ -1,7 +1,8 @@
 //! Implementation of the `cuenv down` command.
 //!
-//! The command operates on the persisted service session created by
-//! `cuenv up` and requests graceful shutdown of that session's controller.
+//! The command operates on the persisted service session created by `cuenv up`.
+//! It requests whole-session shutdown from the controller or named-service stop
+//! requests from individual supervisors.
 
 use std::path::Path;
 
@@ -21,16 +22,14 @@ pub struct DownOptions {
 /// Execute the `cuenv down` command.
 ///
 /// Whole-session shutdown is supported by signalling the active `cuenv up`
-/// controller. Per-service shutdown requires supervisor IPC and is rejected
-/// rather than pretending to stop services that the controller may restart.
+/// controller. Named-service shutdown queues stop requests for running
+/// supervisors in the persisted session state.
 ///
 /// # Errors
 ///
 /// Returns an error if no session exists, session state cannot be read, a
-/// controller cannot be signalled, or per-service shutdown is requested.
+/// controller cannot be signalled, or a named service cannot be found.
 pub fn execute_down(options: &DownOptions) -> cuenv_core::Result<String> {
-    reject_partial_shutdown(&options.services)?;
-
     let session = SessionManager::load(Path::new(&options.path))
         .map_err(|e| cuenv_core::Error::execution(format!("Failed to load session: {e}")))?;
 
@@ -38,6 +37,10 @@ pub fn execute_down(options: &DownOptions) -> cuenv_core::Result<String> {
         "cuenv down: requesting shutdown for services in {} (package: {})",
         options.path, options.package
     ));
+
+    if !options.services.is_empty() {
+        return request_named_service_shutdown(&session, &options.services);
+    }
 
     match session.request_shutdown().map_err(|e| {
         cuenv_core::Error::execution(format!("Failed to request service shutdown: {e}"))
@@ -60,15 +63,30 @@ pub fn execute_down(options: &DownOptions) -> cuenv_core::Result<String> {
     }
 }
 
-fn reject_partial_shutdown(services: &[String]) -> cuenv_core::Result<()> {
-    if services.is_empty() {
-        return Ok(());
+fn request_named_service_shutdown(
+    session: &SessionManager,
+    services: &[String],
+) -> cuenv_core::Result<String> {
+    if !session.is_alive() {
+        return Err(cuenv_core::Error::execution(
+            "No active cuenv up session is running. Start services with `cuenv up` first.",
+        ));
     }
 
-    Err(cuenv_core::Error::execution(
-        "cuenv down currently stops the whole active service session only; \
-         omit service names to stop all services",
-    ))
+    for name in services {
+        session.read_service(name).map_err(|e| {
+            cuenv_core::Error::execution(format!("Service '{name}' not found: {e}"))
+        })?;
+    }
+
+    for name in services {
+        session.request_service_stop(name).map_err(|e| {
+            cuenv_core::Error::execution(format!("Failed to queue stop for service '{name}': {e}"))
+        })?;
+        emit_stdout!(format!("Stop requested for service '{name}'."));
+    }
+
+    Ok("cuenv down: service stop requested".to_string())
 }
 
 #[cfg(test)]
@@ -91,14 +109,35 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_down_rejects_named_services() {
+    fn test_execute_down_queues_named_service_stop() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(temp_dir.path(), "test-project").unwrap();
+        seed_service(&session, "db");
+
         let options = DownOptions {
-            path: ".".to_string(),
+            path: temp_dir.path().to_string_lossy().into_owned(),
             package: "cuenv".to_string(),
             services: vec!["db".to_string()],
         };
+        let result = execute_down(&options).unwrap();
+        assert_eq!(result, "cuenv down: service stop requested");
+        assert!(session.take_service_stop_request("db").unwrap());
+    }
+
+    #[test]
+    fn test_execute_down_validates_named_services_before_queueing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(temp_dir.path(), "test-project").unwrap();
+        seed_service(&session, "db");
+
+        let options = DownOptions {
+            path: temp_dir.path().to_string_lossy().into_owned(),
+            package: "cuenv".to_string(),
+            services: vec!["db".to_string(), "missing".to_string()],
+        };
         let error = execute_down(&options).unwrap_err().to_string();
-        assert!(error.contains("whole active service session only"));
+        assert!(error.contains("Service 'missing' not found"));
+        assert!(!session.take_service_stop_request("db").unwrap());
     }
 
     #[test]
@@ -127,9 +166,13 @@ mod tests {
         };
         let json = serde_json::to_string_pretty(&info).unwrap();
         fs::write(session.root().join("session.json"), json).unwrap();
+        seed_service(&session, "db");
+    }
+
+    fn seed_service(session: &SessionManager, name: &str) {
         session
             .update_service(&ServiceState {
-                name: "db".to_string(),
+                name: name.to_string(),
                 lifecycle: ServiceLifecycle::Ready,
                 pid: Some(999_998),
                 started_at: Some(chrono::Utc::now()),

@@ -437,8 +437,8 @@ pub enum Commands {
     /// Request shutdown of the active service session.
     #[command(about = "Request shutdown of the active service session")]
     Down {
-        /// Reserved for named-service shutdown; omit to stop all services.
-        #[arg(help = "Reserved for named-service shutdown; omit to stop all services")]
+        /// Service names to stop; omit to stop the whole active session.
+        #[arg(help = "Service names to stop; omit to stop the whole active session")]
         services: Vec<String>,
         /// Path to directory containing CUE files.
         #[arg(
