@@ -45,6 +45,10 @@ Parses lockfiles into structured entries.
 **DependencyResolver**
 Builds dependency graphs from workspace and lockfile data.
 
+Cargo lockfile parser integration tests return `Result` and use named entry
+lookup/error helpers so parser assertions stay explicit without file-level
+`unwrap_used` or `expect_used` allowances.
+
 ## Feature Flags
 
 The crate uses feature flags for minimal dependency footprint:
