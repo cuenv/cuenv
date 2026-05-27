@@ -49,16 +49,16 @@ fn main() {
         .install_default()
         .expect("Failed to install default rustls crypto provider");
 
-    // Set up error handling first
-    // NOTE: Using eprintln! in panic hook is intentional - tracing infrastructure
-    // may be corrupted during a panic, so we use the most reliable output method.
+    // Set up error handling first. Use direct redacted stderr output because
+    // tracing infrastructure may be corrupted during a panic.
     // Restore terminal state before printing so the panic output isn't garbled
     // by leftover raw-mode / alt-screen state from a TUI that didn't drop cleanly.
-    #[allow(clippy::print_stderr)]
     std::panic::set_hook(Box::new(|panic_info| {
         cleanup_terminal();
-        eprintln!("Application panicked: {panic_info}");
-        eprintln!("Internal error occurred. Run with RUST_LOG=debug for more information.");
+        cuenv_events::eprintln_redacted(&format!("Application panicked: {panic_info}"));
+        cuenv_events::eprintln_redacted(
+            "Internal error occurred. Run with RUST_LOG=debug for more information.",
+        );
     }));
 
     // Register known credential environment variables for redaction.
@@ -136,12 +136,11 @@ fn run_with_tokio() -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            // NOTE: Using eprintln! here is intentional - tracing/event system
-            // is not yet initialized at this point in startup.
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("Fatal error: Failed to create tokio runtime: {e}");
-            }
+            // Use direct redacted stderr output; tracing/event system is not
+            // initialized at this point in startup.
+            cuenv_events::eprintln_redacted(&format!(
+                "Fatal error: Failed to create tokio runtime: {e}"
+            ));
             return 1;
         }
     };

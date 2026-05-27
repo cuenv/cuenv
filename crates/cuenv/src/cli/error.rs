@@ -223,18 +223,12 @@ pub fn render_error(err: &CliError, format: OutputFormat) {
         match serde_json::to_string(&error_envelope) {
             Ok(json) => cuenv_events::println_redacted(&json),
             Err(_) => {
-                #[allow(clippy::print_stderr)] // Fixed error message, no secrets
-                {
-                    eprintln!("Error serializing error response");
-                }
+                cuenv_events::eprintln_redacted("Error serializing error response");
             }
         }
     } else {
         let report = Report::new(err.clone());
-        #[allow(clippy::print_stderr)] // Error display via miette
-        {
-            eprintln!("{report:?}");
-        }
+        cuenv_events::eprintln_redacted(&format!("{report:?}"));
         let _ = io::stderr().flush();
     }
 }
