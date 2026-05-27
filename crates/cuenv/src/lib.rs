@@ -218,10 +218,11 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::const_is_empty)]
-    fn test_llms_content_not_empty() {
-        // LLM content should contain some text
-        assert!(!LLMS_CONTENT.is_empty());
+    fn test_llms_content_contains_project_context() {
+        assert!(
+            LLMS_CONTENT.contains("cuenv"),
+            "generated LLM content should include project context"
+        );
     }
 
     #[test]

@@ -184,7 +184,8 @@ table, keeping user-facing progress messages and percentages synchronized
 without cast suppressions or fallback branches.
 The `cuenv` build script generates `llms-full.txt` from `llms.txt` plus schema
 files using a fallible `Result` path instead of build-script panic/unwrap
-allowances.
+allowances. The library test asserts generated llms content includes cuenv
+project context instead of relying on a const emptiness check.
 CLI error rendering and early startup failures use direct redacted stderr
 helpers so they do not depend on tracing or the event bus being healthy.
 Executor dispatch lives in `crates/cuenv/src/commands/dispatch.rs`; path-local
