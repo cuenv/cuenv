@@ -278,6 +278,11 @@ Ensure the Go bridge library is properly built and accessible.
 
 **Memory Leaks**
 The FFI bridge uses RAII wrappers (`CStringPtr`) to automatically free Go-allocated memory when results go out of scope. Ensure evaluation results are not held longer than necessary.
+Tests that construct mock `CStringPtr` values must allocate strings through the
+C allocator, such as `libc::strdup`, so `cue_free_string` releases memory with
+the matching allocator. Do not wrap Rust-owned `CString::into_raw()` pointers in
+`CStringPtr` unless the wrapper is explicitly forgotten and the pointer is
+returned to `CString::from_raw()`.
 
 **Evaluation Timeouts**
 Increase timeout settings for complex CUE expressions.

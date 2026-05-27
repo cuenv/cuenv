@@ -1,8 +1,11 @@
 //! Tests for FFI edge cases and error paths
 
 use cuengine::{CStringPtr, evaluate_cue_package};
+use std::error::Error;
 use std::ffi::CString;
 use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 #[test]
 fn test_cstring_ptr_invalid_utf8() {
@@ -100,34 +103,28 @@ fn test_evaluate_cue_package_various_error_conditions() {
 }
 
 #[test]
-fn test_cstring_ptr_drop_with_valid_string() {
+fn test_cstring_ptr_drop_with_valid_string() -> TestResult {
     // Test that drop properly frees memory for valid strings
     // This is mainly for coverage of the Drop implementation
 
     for content in &["test", "", "multi\nline\nstring", "unicode: 你好"] {
-        let c_string = CString::new(*content).unwrap();
-        let ptr = c_string.into_raw();
-
-        // Create wrapper which takes ownership
-        #[allow(unsafe_code)]
-        let wrapper = unsafe { CStringPtr::new(ptr) };
+        let wrapper = c_allocated_cstring_ptr(content)?;
 
         // Verify we can read it
         #[allow(unsafe_code)]
-        let result = unsafe { wrapper.to_str() };
-        assert_eq!(result.unwrap(), *content);
-
-        // IMPORTANT: We must prevent the wrapper from calling cue_free_string()
-        // because this string was allocated by Rust, not Go
-        // cue_free_string() is specifically for Go-allocated strings
-        std::mem::forget(wrapper);
-
-        // Manually free the Rust-allocated string
-        #[allow(unsafe_code)]
-        unsafe {
-            let _ = CString::from_raw(ptr);
-        }
+        let result = unsafe { wrapper.to_str()? };
+        assert_eq!(result, *content);
     }
+    Ok(())
+}
+
+fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
+    let c_string = CString::new(value)?;
+    #[allow(unsafe_code)]
+    let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
+    assert!(!ptr.is_null(), "libc::strdup returned null");
+    #[allow(unsafe_code)]
+    Ok(unsafe { CStringPtr::new(ptr) })
 }
 
 #[test]

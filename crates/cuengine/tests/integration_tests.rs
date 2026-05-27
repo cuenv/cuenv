@@ -7,6 +7,7 @@
 #![allow(clippy::print_stdout)]
 
 use cuengine::{CStringPtr, evaluate_cue_package};
+use std::error::Error;
 use std::ffi::CString;
 use std::fs;
 use std::sync::{Arc, Barrier};
@@ -14,26 +15,22 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
 /// Test that `CStringPtr` properly handles memory across FFI boundary
 #[test]
-fn test_cstring_ptr_raii_memory_management() {
+fn test_cstring_ptr_raii_memory_management() -> TestResult {
     // Create multiple CStringPtr instances to test RAII
     let test_strings = vec!["test1", "test2", "test3", "longer test string", ""];
 
     for test_str in test_strings {
-        let c_string = CString::new(test_str).unwrap();
-        let ptr = c_string.into_raw();
-
-        // Create RAII wrapper
-        // SAFETY: ptr is valid as it was just created from CString::into_raw()
-        // The CStringPtr will take ownership and properly free the memory
-        let wrapper = unsafe { CStringPtr::new(ptr) };
+        let wrapper = c_allocated_cstring_ptr(test_str)?;
 
         // Use the string
         if !wrapper.is_null() {
             // SAFETY: wrapper is guaranteed to be valid and non-null, and contains
             // a valid C string that was created from test_str
-            let converted = unsafe { wrapper.to_str().unwrap() };
+            let converted = unsafe { wrapper.to_str()? };
             assert_eq!(converted, test_str);
         }
 
@@ -41,6 +38,14 @@ fn test_cstring_ptr_raii_memory_management() {
     }
 
     // If we get here without crashes, RAII is working correctly
+    Ok(())
+}
+
+fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
+    let c_string = CString::new(value)?;
+    let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
+    assert!(!ptr.is_null(), "libc::strdup returned null");
+    Ok(unsafe { CStringPtr::new(ptr) })
 }
 
 /// Test concurrent access to FFI functions to ensure thread safety

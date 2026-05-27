@@ -3,45 +3,43 @@ use std::ffi::CString;
 use std::fs;
 use tempfile::TempDir;
 
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 #[test]
-fn test_cstring_ptr_creation() {
+fn test_cstring_ptr_creation() -> TestResult {
     // Test with null pointer
     let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
     assert!(null_ptr.is_null());
 
-    // Test with non-null pointer (we'll create a mock one)
-    // Note: In real scenarios, this would come from FFI calls
-    let test_string = CString::new("test").unwrap();
-    let ptr = test_string.into_raw();
-    let wrapper = unsafe { CStringPtr::new(ptr) };
+    // Test with non-null pointer allocated like the Go bridge does.
+    let wrapper = c_allocated_cstring_ptr("test")?;
     assert!(!wrapper.is_null());
 
     // Convert back to string and verify
-    let result_str = unsafe { wrapper.to_str().unwrap() };
+    let result_str = unsafe { wrapper.to_str()? };
     assert_eq!(result_str, "test");
     // CStringPtr will automatically free the memory when dropped
+    Ok(())
 }
 
 #[test]
-fn test_cstring_ptr_utf8_conversion() {
+fn test_cstring_ptr_utf8_conversion() -> TestResult {
     let test_content = "Hello, 世界! 🦀";
-    let c_string = CString::new(test_content).unwrap();
-    let ptr = c_string.into_raw();
-    let wrapper = unsafe { CStringPtr::new(ptr) };
+    let wrapper = c_allocated_cstring_ptr(test_content)?;
 
-    let converted = unsafe { wrapper.to_str().unwrap() };
+    let converted = unsafe { wrapper.to_str()? };
     assert_eq!(converted, test_content);
+    Ok(())
 }
 
 #[test]
-fn test_cstring_ptr_empty_string() {
-    let empty_string = CString::new("").unwrap();
-    let ptr = empty_string.into_raw();
-    let wrapper = unsafe { CStringPtr::new(ptr) };
+fn test_cstring_ptr_empty_string() -> TestResult {
+    let wrapper = c_allocated_cstring_ptr("")?;
 
     assert!(!wrapper.is_null());
-    let result = unsafe { wrapper.to_str().unwrap() };
+    let result = unsafe { wrapper.to_str()? };
     assert_eq!(result, "");
+    Ok(())
 }
 
 #[test]
@@ -357,7 +355,7 @@ fn test_bridge_envelope_parsing_minimal_error() {
 }
 
 #[test]
-fn test_cstring_ptr_drop_behavior() {
+fn test_cstring_ptr_drop_behavior() -> TestResult {
     // Test that Drop trait is correctly implemented
     // This is mostly to ensure the Drop implementation doesn't panic
 
@@ -366,10 +364,16 @@ fn test_cstring_ptr_drop_behavior() {
     drop(null_ptr); // Should not panic
 
     // Test dropping a valid pointer
-    let test_string = CString::new("test").unwrap();
-    let ptr = test_string.into_raw();
-    let wrapper = unsafe { CStringPtr::new(ptr) };
+    let wrapper = c_allocated_cstring_ptr("test")?;
     drop(wrapper); // Should free the memory properly
+    Ok(())
+}
+
+fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
+    let c_string = CString::new(value)?;
+    let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
+    assert!(!ptr.is_null(), "libc::strdup returned null");
+    Ok(unsafe { CStringPtr::new(ptr) })
 }
 
 #[test]
