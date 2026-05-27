@@ -96,6 +96,10 @@ construction lives in `crates/core/src/tasks/graph/build.rs`, task output-ref
 dependency edge materialization lives in
 `crates/core/src/tasks/graph/output_refs.rs`, and task path resolution for
 dotted/bracketed CUE task nodes lives in `crates/core/src/tasks/graph/resolver.rs`.
+Advanced graph regression coverage is grouped under
+`crates/core/src/tasks/graph_advanced_tests/` by cross-project references,
+synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-task
+coverage, and scale/edge cases.
 Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
 affected-task and transitive-closure helpers live in
 `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
