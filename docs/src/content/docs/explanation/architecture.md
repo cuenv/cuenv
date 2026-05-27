@@ -408,7 +408,10 @@ output stays behind `indicatif::MultiProgress::println`, preserving progress-bar
 frames without direct stderr print macros. Trace acceptance span assertion
 helpers use ordinary `assert!` flows and early returns for impossible
 post-assert branches, so helper diagnostics stay readable without a local
-panic lint allowance.
+panic lint allowance. Trace acceptance tests return `Result` from binary/root
+discovery, dry-run execution, DAG JSON parsing, and task lookup helpers so
+CLI DAG checks stay quiet without file-level unwrap/expect or print
+suppressions.
 
 ### cuenv-workspaces
 

@@ -3,19 +3,16 @@
 //! These tests run the cuenv CLI and verify both the task DAG structure
 //! (via --dry-run) and the tracing spans emitted during execution.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-// Tests can use print statements for diagnostics
-#![allow(clippy::print_stderr)]
-// Test infrastructure fields may be reserved for future use
-#![allow(dead_code)]
-
 mod trace_testing;
 
 use serde::Deserialize;
+use std::error::Error;
 use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// Create a Command with a clean environment (no CI vars leaking).
 /// This prevents tests from hanging when run in CI environments where
@@ -44,76 +41,71 @@ struct DagTask {
     #[serde(default)]
     command: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     description: Option<String>,
 }
 
 /// Get path to the cuenv binary
-fn get_cuenv_bin() -> PathBuf {
+fn get_cuenv_bin() -> TestResult<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
+    Ok(Path::new(manifest_dir)
         .parent() // crates
         .and_then(|p| p.parent()) // project root
-        .expect("Failed to find project root")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "failed to find project root"))?
         .join("target")
         .join("debug")
-        .join("cuenv")
+        .join("cuenv"))
 }
 
 /// Get path to examples directory
-fn get_examples_dir() -> PathBuf {
+fn get_examples_dir() -> TestResult<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
+    Ok(Path::new(manifest_dir)
         .parent() // crates
         .and_then(|p| p.parent()) // project root
-        .expect("Failed to find project root")
-        .join("examples")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "failed to find project root"))?
+        .join("examples"))
 }
 
 /// Check if the cuenv binary exists
 fn binary_available() -> bool {
-    get_cuenv_bin().exists()
+    get_cuenv_bin().is_ok_and(|bin| bin.exists())
 }
 
 /// Skip test if binary is not available
 macro_rules! skip_if_binary_unavailable {
     () => {
         if !binary_available() {
-            eprintln!(
-                "Skipping test: cuenv binary not found at {:?}. Run `cargo build` first.",
-                get_cuenv_bin()
-            );
-            return;
+            return Ok(());
         }
     };
 }
 
 /// Run cuenv with --dry-run and parse the DAG export
-fn run_dry_run(example: &str, task: &str) -> Result<DagExport, String> {
-    let bin = get_cuenv_bin();
-    let examples_dir = get_examples_dir();
+fn run_dry_run(example: &str, task: &str) -> TestResult<DagExport> {
+    let bin = get_cuenv_bin()?;
+    let examples_dir = get_examples_dir()?;
     let example_path = examples_dir.join(example);
 
     let output = clean_environment_command(&bin)
-        .args([
-            "task",
-            task,
-            "--dry-run",
-            "--path",
-            example_path.to_str().unwrap(),
-            "--package",
-            "examples",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to run cuenv: {e}"))?;
+        .args(["task", task, "--dry-run", "--path"])
+        .arg(&example_path)
+        .args(["--package", "examples"])
+        .output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("cuenv --dry-run failed: {stderr}"));
+        return Err(Box::new(io::Error::other(format!(
+            "cuenv --dry-run failed: {stderr}"
+        ))));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse DAG JSON: {e}\nOutput: {stdout}"))
+    serde_json::from_str(&stdout).map_err(|e| {
+        Box::new(io::Error::other(format!(
+            "Failed to parse DAG JSON: {e}\nOutput: {stdout}"
+        ))) as Box<dyn Error>
+    })
 }
 
 // =============================================================================
@@ -121,16 +113,10 @@ fn run_dry_run(example: &str, task: &str) -> Result<DagExport, String> {
 // =============================================================================
 
 #[test]
-fn test_task_basic_greetall_dag_structure() {
+fn test_task_basic_greetall_dag_structure() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("task-basic", "greetAll") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("task-basic", "greetAll")?;
 
     // Verify we got some tasks in the DAG
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
@@ -149,19 +135,15 @@ fn test_task_basic_greetall_dag_structure() {
             task.name
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_task_basic_parallel_groups() {
+fn test_task_basic_parallel_groups() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("task-basic", "greetAll") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("task-basic", "greetAll")?;
 
     // Verify parallel groups exist
     assert!(
@@ -176,25 +158,26 @@ fn test_task_basic_parallel_groups() {
             .tasks
             .iter()
             .find(|t| &t.name == task_name)
-            .expect("Task in parallel group should exist");
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("task {task_name} in parallel group should exist"),
+                )
+            })?;
         assert!(
             task.dependencies.is_empty(),
             "Tasks in first parallel group should have no dependencies"
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_interpolate_task_dag() {
+fn test_interpolate_task_dag() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("task-basic", "interpolate") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("task-basic", "interpolate")?;
 
     // Verify DAG structure
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
@@ -211,19 +194,15 @@ fn test_interpolate_task_dag() {
             task.name
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_dag_export_includes_command_info() {
+fn test_dag_export_includes_command_info() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("task-basic", "interpolate") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("task-basic", "interpolate")?;
 
     // All tasks should have command info
     for task in &dag.tasks {
@@ -233,6 +212,8 @@ fn test_dag_export_includes_command_info() {
             task.name
         );
     }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -240,16 +221,10 @@ fn test_dag_export_includes_command_info() {
 // =============================================================================
 
 #[test]
-fn test_hook_example_verify_env_dag() {
+fn test_hook_example_verify_env_dag() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("hook", "verify_env") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("hook", "verify_env")?;
 
     // DAG should have tasks
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
@@ -259,6 +234,8 @@ fn test_hook_example_verify_env_dag() {
         !dag.execution_order.is_empty(),
         "Execution order should be populated"
     );
+
+    Ok(())
 }
 
 // =============================================================================
@@ -266,16 +243,10 @@ fn test_hook_example_verify_env_dag() {
 // =============================================================================
 
 #[test]
-fn test_dagger_task_hello_dag() {
+fn test_dagger_task_hello_dag() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("dagger-task", "hello") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("dagger-task", "hello")?;
 
     // DAG should have tasks
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
@@ -288,6 +259,8 @@ fn test_dagger_task_hello_dag() {
             task.name
         );
     }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -295,16 +268,10 @@ fn test_dagger_task_hello_dag() {
 // =============================================================================
 
 #[test]
-fn test_ci_pipeline_test_task_dag() {
+fn test_ci_pipeline_test_task_dag() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let dag = match run_dry_run("ci-pipeline", "test") {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("Skipping test - cuenv execution failed: {e}");
-            return;
-        }
-    };
+    let dag = run_dry_run("ci-pipeline", "test")?;
 
     // DAG should have tasks
     assert!(!dag.tasks.is_empty(), "DAG should have tasks");
@@ -317,6 +284,8 @@ fn test_ci_pipeline_test_task_dag() {
             task.name
         );
     }
+
+    Ok(())
 }
 
 // =============================================================================
@@ -324,37 +293,34 @@ fn test_ci_pipeline_test_task_dag() {
 // =============================================================================
 
 #[test]
-fn test_dry_run_with_nonexistent_task_fails() {
+fn test_dry_run_with_nonexistent_task_fails() -> TestResult {
     skip_if_binary_unavailable!();
 
     let result = run_dry_run("task-basic", "nonexistent_task_12345");
 
     assert!(result.is_err(), "dry-run with nonexistent task should fail");
+
+    Ok(())
 }
 
 #[test]
-fn test_dry_run_with_nonexistent_example_fails() {
+fn test_dry_run_with_nonexistent_example_fails() -> TestResult {
     skip_if_binary_unavailable!();
 
-    let bin = get_cuenv_bin();
-    let examples_dir = get_examples_dir();
+    let bin = get_cuenv_bin()?;
+    let examples_dir = get_examples_dir()?;
     let example_path = examples_dir.join("nonexistent-example-12345");
 
     let output = clean_environment_command(&bin)
-        .args([
-            "task",
-            "test",
-            "--dry-run",
-            "--path",
-            example_path.to_str().unwrap(),
-            "--package",
-            "examples",
-        ])
-        .output()
-        .expect("Failed to run cuenv");
+        .args(["task", "test", "--dry-run", "--path"])
+        .arg(&example_path)
+        .args(["--package", "examples"])
+        .output()?;
 
     assert!(
         !output.status.success(),
         "dry-run with nonexistent example should fail"
     );
+
+    Ok(())
 }
