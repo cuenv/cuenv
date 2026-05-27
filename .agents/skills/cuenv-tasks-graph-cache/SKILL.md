@@ -31,6 +31,7 @@ Generation rules:
 - CLI task result and tree/detail rendering should not rely on crate-wide `expect_used` allowances. Keep infallible `String` formatting local to the renderer and handle real conversions explicitly.
 - Host process spawning, captured/inherited output, process registry updates, and Unix process-group setup live in `crates/core/src/tasks/process.rs`; keep that OS-specific `pre_exec` boundary out of task orchestration.
 - Non-hermetic tasks default to the directory containing the `env.cue` file that defines the executable task body. Imported tasks keep their definition directory by default. Use `dir: "path"` for the legacy CUE-module-root-relative override, or `dir: {from: "definition" | "caller" | "module", path: "..."}` when imported/re-exported tasks need an explicit base.
+- `TaskIndex` preserves the `#project:` separator for cross-project deps and canonicalizes only the task path. CI affected-task checks resolve cross-project task refs through canonical task indexes. Split refs at the first `:` only: `#project:deploy:preview` means project `project`, task path `deploy:preview`.
 - Call out limitations for `timeout`, `retry`, `continueOnError`, group `maxConcurrency`, and hermetic filesystem behavior unless matrix status changes.
 - Treat task-level `dagger` as legacy; prefer runtime Dagger only when the matrix says it is appropriate.
 

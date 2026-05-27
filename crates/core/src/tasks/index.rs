@@ -304,6 +304,13 @@ fn canonicalize_dep(dep: &str) -> Result<String> {
     // The Go bridge now provides canonical task paths via ReferencePath(),
     // so we simply parse and normalize the dependency name.
     // No lookups needed - trust the _name injected by CUE evaluation.
+    if let Some(external_ref) = dep.strip_prefix('#')
+        && let Some((project_name, task_name)) = external_ref.split_once(':')
+    {
+        let task_path = TaskPath::parse(task_name)?.canonical();
+        return Ok(format!("#{project_name}:{task_path}"));
+    }
+
     Ok(TaskPath::parse(dep)?.canonical())
 }
 

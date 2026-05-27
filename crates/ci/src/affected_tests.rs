@@ -347,6 +347,35 @@ fn test_compute_affected_tasks_external_dep_affected() {
 }
 
 #[test]
+fn test_compute_affected_tasks_external_nested_dep_affected() {
+    let external_preview = make_task(vec!["src/**"], vec![]);
+    let external_project = make_project(vec![("deploy.preview", external_preview)]);
+
+    let deploy_task = make_task(vec!["deploy/**"], vec!["#external:deploy:preview"]);
+    let project = make_project(vec![("deploy", deploy_task)]);
+
+    let changed_files = vec![PathBuf::from("src/lib.rs")];
+    let root = Path::new(".");
+    let pipeline_tasks = vec!["deploy".to_string()];
+
+    let mut all_projects = HashMap::new();
+    all_projects.insert(
+        "external".to_string(),
+        (PathBuf::from("/repo/external"), external_project),
+    );
+
+    let affected = compute_affected_tasks(
+        &changed_files,
+        &pipeline_tasks,
+        root,
+        &project,
+        &all_projects,
+    );
+
+    assert_eq!(affected, vec!["deploy".to_string()]);
+}
+
+#[test]
 fn test_compute_affected_tasks_malformed_external_dep() {
     // Malformed external dependency (missing colon) should be skipped
     // Task has inputs so it won't be auto-affected
@@ -604,6 +633,19 @@ fn test_compute_affected_tasks_with_group() {
 // check_external_dependency tests
 // ==========================================================================
 
+fn check_external_dependency_for_test<S>(
+    dep: &str,
+    all_projects: &HashMap<String, (PathBuf, Project), S>,
+    changed_files: &[PathBuf],
+    cache: &mut HashMap<String, bool>,
+) -> bool
+where
+    S: std::hash::BuildHasher,
+{
+    let mut index_cache = HashMap::new();
+    check_external_dependency(dep, all_projects, changed_files, cache, &mut index_cache)
+}
+
 #[test]
 fn test_check_external_dependency_cache_hit() {
     let mut cache = HashMap::new();
@@ -611,8 +653,12 @@ fn test_check_external_dependency_cache_hit() {
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
     let changed_files: Vec<PathBuf> = vec![];
 
-    let result =
-        check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#project:task",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(result);
 }
@@ -624,8 +670,12 @@ fn test_check_external_dependency_cache_miss_false() {
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
     let changed_files: Vec<PathBuf> = vec![];
 
-    let result =
-        check_external_dependency("#project:task", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#project:task",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(!result);
 }
@@ -636,8 +686,12 @@ fn test_check_external_dependency_project_not_found() {
     let all_projects: HashMap<String, (PathBuf, Project)> = HashMap::new();
     let changed_files = vec![PathBuf::from("src/lib.rs")];
 
-    let result =
-        check_external_dependency("#missing:task", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#missing:task",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(!result);
 }
@@ -660,8 +714,12 @@ fn test_check_external_dependency_directly_affected() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let mut cache = HashMap::new();
 
-    let result =
-        check_external_dependency("#external:build", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#external:build",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(result);
     assert_eq!(cache.get("#external:build"), Some(&true));
@@ -691,8 +749,12 @@ fn test_check_external_dependency_transitive_internal() {
     let changed_files = vec![PathBuf::from("src/lib.rs")];
     let mut cache = HashMap::new();
 
-    let result =
-        check_external_dependency("#external:test", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#external:test",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(result);
 }
@@ -715,8 +777,12 @@ fn test_check_external_dependency_circular_prevention() {
 
     // Should return false without infinite loop
     // (inputs don't match and circular dep doesn't cause issues)
-    let result =
-        check_external_dependency("#proj:taskA", &all_projects, &changed_files, &mut cache);
+    let result = check_external_dependency_for_test(
+        "#proj:taskA",
+        &all_projects,
+        &changed_files,
+        &mut cache,
+    );
 
     assert!(!result);
 }

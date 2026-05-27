@@ -492,6 +492,31 @@ fn test_group_child_depends_on_sibling_qualified() {
 }
 
 #[test]
+fn test_task_index_preserves_cross_project_separator() {
+    let mut tasks = HashMap::new();
+
+    tasks.insert(
+        "deploy".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "deploy".to_string(),
+            depends_on: vec![TaskDependency::from_name("#external:build:preview")],
+            ..Default::default()
+        })),
+    );
+
+    let index = TaskIndex::build(&tasks).unwrap();
+    let deploy_task = index.resolve("deploy").unwrap();
+
+    match &deploy_task.node {
+        TaskNode::Task(task) => {
+            assert_eq!(task.depends_on.len(), 1);
+            assert_eq!(task.depends_on[0].task_name(), "#external:build.preview");
+        }
+        _ => panic!("Expected Task"),
+    }
+}
+
+#[test]
 fn test_dotted_dependency_treated_as_absolute() {
     // deploy.preview depends on "other.task" -> treated as absolute path
 

@@ -25,6 +25,7 @@ where
 
     let mut affected = HashSet::new();
     let mut visited_external_cache: HashMap<String, bool> = HashMap::new();
+    let mut external_index_cache: HashMap<String, Option<TaskIndex>> = HashMap::new();
 
     // Build task index for resolving nested task names
     let Ok(index) = TaskIndex::build(&config.tasks) else {
@@ -55,7 +56,7 @@ where
     // 1. Identify directly affected tasks across the entire DAG
     for task_name in &all_dag_tasks {
         let directly_affected =
-            is_task_directly_affected(task_name, config, changed_files, project_root);
+            is_indexed_task_directly_affected(&index, task_name, changed_files, project_root);
         tracing::trace!(
             task = task_name,
             directly_affected,
@@ -88,6 +89,7 @@ where
                             all_projects,
                             changed_files,
                             &mut visited_external_cache,
+                            &mut external_index_cache,
                         )
                     } else {
                         affected.contains(dep_name)
@@ -202,10 +204,7 @@ fn is_task_directly_affected(
         return false;
     };
 
-    index
-        .resolve(task_name)
-        .ok()
-        .is_some_and(|entry| entry.node.is_affected_by(changed_files, project_root))
+    is_indexed_task_directly_affected(&index, task_name, changed_files, project_root)
 }
 
 /// Check if an external dependency (cross-project task) is affected by file changes.
@@ -224,11 +223,12 @@ fn check_external_dependency<S>(
     all_projects: &HashMap<String, (PathBuf, Project), S>,
     changed_files: &[PathBuf],
     cache: &mut HashMap<String, bool>,
+    index_cache: &mut HashMap<String, Option<TaskIndex>>,
 ) -> bool
 where
     S: BuildHasher,
 {
-    // dep format: "#project:task"
+    // dep format: "#project:task"; task may itself contain ':' for nested paths.
     if let Some(result) = cache.get(dep) {
         return *result;
     }
@@ -237,53 +237,85 @@ where
     // This will be updated with the actual result once the check completes.
     cache.insert(dep.to_string(), false);
 
-    let parts: Vec<&str> = dep[1..].split(':').collect();
-    if parts.len() < 2 {
+    let Some((project_name, task_name)) = dep[1..].split_once(':') else {
         return false;
-    }
-    let project_name = parts[0];
-    let task_name = parts[1];
+    };
 
     let Some((project_path, project_config)) = all_projects.get(project_name) else {
         return false;
     };
 
-    // Check if directly affected
-    if is_task_directly_affected(task_name, project_config, changed_files, project_path) {
-        cache.insert(dep.to_string(), true);
-        return true;
-    }
+    let dependency_names = {
+        let Some(index) = cached_task_index(index_cache, project_name, project_config) else {
+            return false;
+        };
 
-    // Check transitive dependencies of the external task
-    // Use TaskIndex to resolve nested task names
-    let Ok(index) = TaskIndex::build(&project_config.tasks) else {
-        return false;
+        if is_indexed_task_directly_affected(index, task_name, changed_files, project_path) {
+            cache.insert(dep.to_string(), true);
+            return true;
+        }
+
+        task_dependency_names(index, task_name)
     };
-    if let Ok(entry) = index.resolve(task_name)
-        && let Some(task) = entry.node.as_task()
-    {
-        for sub_dep in &task.depends_on {
-            let sub_dep_name = sub_dep.task_name();
-            if sub_dep_name.starts_with('#') {
-                // External ref - no longer supported but keeping check for safety
-                if check_external_dependency(sub_dep_name, all_projects, changed_files, cache) {
-                    cache.insert(dep.to_string(), true);
-                    return true;
-                }
-            } else {
-                // Internal ref within that project
-                // We need to resolve internal deps of the external project recursively.
-                // Construct implicit external ref: #project:sub_dep
-                let implicit_ref = format!("#{project_name}:{sub_dep_name}");
-                if check_external_dependency(&implicit_ref, all_projects, changed_files, cache) {
-                    cache.insert(dep.to_string(), true);
-                    return true;
-                }
-            }
+
+    for sub_dep_name in dependency_names {
+        let dependency_ref = if sub_dep_name.starts_with('#') {
+            sub_dep_name
+        } else {
+            format!("#{project_name}:{sub_dep_name}")
+        };
+
+        if check_external_dependency(
+            &dependency_ref,
+            all_projects,
+            changed_files,
+            cache,
+            index_cache,
+        ) {
+            cache.insert(dep.to_string(), true);
+            return true;
         }
     }
 
     false
+}
+
+fn cached_task_index<'a>(
+    cache: &'a mut HashMap<String, Option<TaskIndex>>,
+    project_name: &str,
+    project_config: &Project,
+) -> Option<&'a TaskIndex> {
+    cache
+        .entry(project_name.to_string())
+        .or_insert_with(|| TaskIndex::build(&project_config.tasks).ok())
+        .as_ref()
+}
+
+fn task_dependency_names(index: &TaskIndex, task_name: &str) -> Vec<String> {
+    index
+        .resolve(task_name)
+        .ok()
+        .and_then(|entry| {
+            entry.node.as_task().map(|task| {
+                task.depends_on
+                    .iter()
+                    .map(|dep| dep.task_name().to_string())
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn is_indexed_task_directly_affected(
+    index: &TaskIndex,
+    task_name: &str,
+    changed_files: &[PathBuf],
+    project_root: &Path,
+) -> bool {
+    index
+        .resolve(task_name)
+        .ok()
+        .is_some_and(|entry| entry.node.is_affected_by(changed_files, project_root))
 }
 
 #[cfg(test)]

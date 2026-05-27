@@ -376,7 +376,12 @@ loading, graph construction, and CI/task lookups instead of relying on
 file-level unwrap/expect allowances.
 Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
 project maps are generic over the caller's `BuildHasher`, so the public API does
-not force or suppress default hashing.
+not force or suppress default hashing. The affected-task walk builds a canonical
+`TaskIndex` once for the local project, reuses cached indexes for external
+projects, and splits cross-project references at the first `:` so nested task
+paths remain intact during recursive dependency checks. Core task indexing
+preserves the `#project:` separator and canonicalizes only the referenced task
+path.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. GC default-policy tests assert the
