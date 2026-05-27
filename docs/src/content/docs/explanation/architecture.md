@@ -202,7 +202,9 @@ Startup, runtime selection, and early process routing stay in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
 The CLI startup path installs the rustls ring provider before HTTP clients are
 created and treats an already-installed provider as acceptable instead of
-requiring a crate-wide `expect_used` allowance.
+requiring a crate-wide `expect_used` allowance. Event tracing setup consumes
+`TracingConfig` into owned local fields so startup does not need a
+pass-by-value lint suppression.
 The internal event coordinator keeps the client registry to the active message
 sender only; registration metadata is logged at connect time rather than stored
 as unread per-client state.
