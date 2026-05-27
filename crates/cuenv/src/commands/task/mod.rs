@@ -9,7 +9,6 @@ mod rendering;
 mod types;
 
 // Re-export types for the public API. Some types may not be used externally yet.
-#[allow(unused_imports)]
 pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 
 use cuenv_core::Result;

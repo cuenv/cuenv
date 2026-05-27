@@ -39,13 +39,10 @@ pub use formatters::{
 };
 
 // Re-export for external use (e.g., tests)
-#[allow(unused_imports)]
 pub use functions::{execute_sync_ci, execute_sync_ci_workspace, execute_sync_codegen};
 pub use provider::{SyncMode, SyncOptions};
 pub use providers::default_registry;
 
 // Re-export for extensibility
-#[allow(unused_imports)]
 pub use provider::{SyncProvider, SyncResult};
-#[allow(unused_imports)]
 pub use registry::SyncRegistry;

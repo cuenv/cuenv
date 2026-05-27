@@ -221,7 +221,9 @@ codegen file check/write/diff behavior lives in
 sync and non-matrix workflow-shape emission helpers live in
 `crates/cuenv/src/commands/sync/functions/github.rs`; matrix workflow
 expansion and artifact aggregation live in
-`crates/cuenv/src/commands/sync/functions/github/matrix.rs`.
+`crates/cuenv/src/commands/sync/functions/github/matrix.rs`. Public sync and
+task command adapter re-exports stay explicit without local unused-import lint
+guards.
 The lock provider keeps path/workspace orchestration in
 `crates/cuenv/src/commands/sync/providers/lock.rs`, while multi-source tool
 resolution, cache reuse, source template expansion, and provider registry
