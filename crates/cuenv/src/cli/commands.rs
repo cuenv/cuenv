@@ -289,14 +289,23 @@ pub enum Commands {
     /// Run CI pipelines.
     #[command(about = "Run CI pipelines")]
     Ci(crate::commands::ci::CiArgs),
-    /// Start web server for streaming cuenv events.
-    #[command(about = "Start web server for streaming cuenv events")]
+    /// Reserved for the future web event server.
+    #[command(about = "Reserved for the future web event server")]
     Web {
-        /// Port to listen on.
-        #[arg(long, short = 'p', help = "Port to listen on", default_value = "3000")]
+        /// Port the future server would listen on.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Port the future server would listen on",
+            default_value = "3000"
+        )]
         port: u16,
-        /// Host to bind to.
-        #[arg(long, help = "Host to bind to", default_value = "127.0.0.1")]
+        /// Host the future server would bind to.
+        #[arg(
+            long,
+            help = "Host the future server would bind to",
+            default_value = "127.0.0.1"
+        )]
         host: String,
     },
     /// Manage changesets for release.

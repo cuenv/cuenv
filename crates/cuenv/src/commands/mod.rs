@@ -251,11 +251,11 @@ pub enum Command {
         /// CI command arguments.
         args: ci::CiArgs,
     },
-    /// Launch the web-based user interface.
+    /// Reserved for the future web-based user interface.
     Web {
-        /// Port number for the web server.
+        /// Port number for the future web server.
         port: u16,
-        /// Host address to bind to.
+        /// Host address for the future web server.
         host: String,
     },
     /// Add a new changeset entry.

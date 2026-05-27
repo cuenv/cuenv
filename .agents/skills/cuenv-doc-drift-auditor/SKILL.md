@@ -47,6 +47,7 @@ Reject stale claims unless there is an explicit compatibility note:
 - `cuenv ci --generate`
 - `cuenv sync ignore`
 - `cuenv sync codeowners`
+- `cuenv web` starts a server
 - cubes terminology for codegen
 
 Adversarial prompts:

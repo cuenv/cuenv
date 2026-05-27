@@ -17,6 +17,10 @@ Provider dispatch note: the public `crates/cuenv` provider registry is sync-only
 Runtime execution and secret resolution remain on their existing task and
 resolver paths until a real registry-backed dispatch path exists.
 
+CLI-only note: `cuenv web` has no schema definition. It is reserved for a
+future event server and currently fails fast instead of starting a placeholder
+server.
+
 | Schema file | Definition | Feature | Audience | Implementation owner | CLI surface | Docs page | Example | Test/eval | Skill | Status | Drift/UX note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `schema/ignores.cue` | `#IgnoreEntry` | top-level ignore schema | legacy project-facing | `crates/core/src/rules` | `cuenv sync` rules provider | `docs/src/content/docs/reference/schema/status.md` | none: prefer `.rules.cue` | `cuenv task ci.schema-docs-check` | `cuenv-generation-rules-formatting` | `legacy` | Top-level ignore is not exposed on `#Project`; agents should prefer `schema/rules/ignores.cue`. |

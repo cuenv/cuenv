@@ -53,11 +53,7 @@ pub async fn execute_command_safe(
 
 async fn execute_direct_command(command: &Command) -> Option<Result<(), CliError>> {
     match command {
-        Command::Web { port, host } => Some(
-            execute_web_command(*port, host.clone())
-                .await
-                .map_err(|e| CliError::other(e.to_string())),
-        ),
+        Command::Web { port, host } => Some(execute_web_command(*port, host)),
         Command::Completions { shell } => {
             cli::generate_completions(*shell);
             Some(Ok(()))
@@ -73,19 +69,17 @@ async fn execute_direct_command(command: &Command) -> Option<Result<(), CliError
     }
 }
 
-/// Execute Web command - starts web server for event streaming
+/// Execute Web command.
 #[instrument(name = "cuenv_execute_web")]
-async fn execute_web_command(port: u16, host: String) -> Result<(), CliError> {
-    cuenv_events::emit_command_started!("web");
+fn execute_web_command(port: u16, host: &str) -> Result<(), CliError> {
+    Err(unsupported_web_command_error(port, host))
+}
 
-    // Full web server implementation would require adding a web framework dependency.
-    cuenv_events::emit_stdout!(format!(
-        "Web server would start on http://{}:{}\nThis feature is not yet implemented.",
-        host, port
-    ));
-
-    cuenv_events::emit_command_completed!("web", true, 0_u64);
-    Ok(())
+fn unsupported_web_command_error(port: u16, host: &str) -> CliError {
+    CliError::config_with_help(
+        format!("cuenv web is not implemented yet; requested http://{host}:{port}"),
+        "Use CLI, TUI, or JSON output until the web event server is implemented.",
+    )
 }
 
 async fn execute_service_command(
@@ -463,4 +457,23 @@ fn print_enveloped_output(
         cuenv_events::println_redacted(output);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn web_command_reports_unsupported_config_error() {
+        let error = unsupported_web_command_error(3000, "127.0.0.1");
+
+        match error {
+            CliError::Config { message, help } => {
+                assert!(message.contains("cuenv web is not implemented yet"));
+                assert!(message.contains("127.0.0.1:3000"));
+                assert!(help.is_some_and(|text| text.contains("web event server")));
+            }
+            other => panic!("expected config error, got {other:?}"),
+        }
+    }
 }

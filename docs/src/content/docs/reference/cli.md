@@ -630,7 +630,7 @@ yq (4.44.6):
 
 ### `cuenv web`
 
-Start a web server for streaming cuenv events.
+Reserved for a future web server for streaming cuenv events. The command currently exits with a configuration error instead of starting a placeholder server.
 
 ```bash
 cuenv web [OPTIONS]
@@ -638,8 +638,8 @@ cuenv web [OPTIONS]
 
 **Options:**
 
-- `-p, --port <PORT>`: Port to listen on. Default: `3000`
-- `--host <HOST>`: Host to bind to. Default: `127.0.0.1`
+- `-p, --port <PORT>`: Port the future server would listen on. Default: `3000`
+- `--host <HOST>`: Host the future server would bind to. Default: `127.0.0.1`
 
 ### `cuenv changeset`
 
