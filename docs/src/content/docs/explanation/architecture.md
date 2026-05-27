@@ -188,6 +188,9 @@ enums live in `crates/cuenv/src/cli/subcommands.rs`; conversion into the
 internal command model lives in `crates/cuenv/src/cli/command_conversion.rs`;
 output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
 and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
+Mixed CLI integration tests keep command execution behind a `CliOutput` helper
+and fallible git/CUE fixture builders so version, env, sync, and sync-ci
+coverage stays quiet without file-level unwrap/expect or raw print allowances.
 Static completion setup text is routed through the shared redacted stdout helper
 instead of raw print macros, even though it contains no secrets.
 Dynamic completions currently complete task names via discovery-based CUE
