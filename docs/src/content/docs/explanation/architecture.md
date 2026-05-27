@@ -346,7 +346,8 @@ and HTTP batch resolution live in `crates/1password/src/secrets/resolver.rs`;
 WASM host-function imports, memory-offset conversion, and Unix-time conversion
 live in `crates/1password/src/secrets/core.rs` with checked/saturating integer
 boundaries. WASM initialization integration tests scope cache and SDK path
-environment fixtures through `temp_env` instead of unsafe process-wide mutation.
+environment fixtures through `temp_env` and return `Result` from fallible setup
+steps instead of using broad panic/expect lint allowances.
 CLI authentication preflight, signed-out bootstrap reads, and `op read`
 execution live in `crates/1password/src/secrets/cli.rs`.
 
