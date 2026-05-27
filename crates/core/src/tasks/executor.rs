@@ -349,7 +349,7 @@ impl TaskExecutor {
             }
         };
 
-        self.resolve_directory_path(module_root, base, path)
+        self.resolve_directory_path(module_root, &base, path)
     }
 
     fn source_base(
@@ -377,7 +377,7 @@ impl TaskExecutor {
     fn resolve_directory_path(
         &self,
         module_root: &Path,
-        base: PathBuf,
+        base: &Path,
         path: &str,
     ) -> Result<PathBuf> {
         let resolved = normalize_join(base, path);
@@ -741,6 +741,7 @@ impl TaskExecutor {
     }
 }
 
+#[derive(Clone, Copy)]
 struct CacheHitInput<'a> {
     name: &'a str,
     task: &'a Task,

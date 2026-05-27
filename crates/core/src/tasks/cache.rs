@@ -515,7 +515,7 @@ struct InputDirectoryBuilder {
 }
 
 impl InputDirectoryBuilder {
-    fn insert(&mut self, relative_path: &Path, digest: Digest, is_executable: bool) -> Result<()> {
+    fn insert(&mut self, relative_path: &Path, digest: &Digest, is_executable: bool) -> Result<()> {
         let mut components = relative_path.components().peekable();
         let mut current = self;
 
@@ -569,14 +569,11 @@ impl InputDirectoryBuilder {
 fn build_input_root_digest(hashed: &[HashedInput]) -> Result<Digest> {
     let mut builder = InputDirectoryBuilder::default();
     for input in hashed {
-        builder.insert(
-            &input.relative_path,
-            Digest {
-                hash: input.sha256.clone(),
-                size_bytes: input.size,
-            },
-            input.is_executable,
-        )?;
+        let digest = Digest {
+            hash: input.sha256.clone(),
+            size_bytes: input.size,
+        };
+        builder.insert(&input.relative_path, &digest, input.is_executable)?;
     }
     let (_, digest) = builder.into_directory()?;
     Ok(digest)
@@ -763,6 +760,7 @@ fn set_executable_if_needed(_path: &Path, _is_executable: bool) -> Result<()> {
 }
 
 /// Inputs to [`record`] grouped to keep call sites self-documenting.
+#[derive(Clone, Copy)]
 pub struct RecordInput<'a> {
     /// Cache configuration.
     pub cache: &'a TaskCacheConfig,

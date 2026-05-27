@@ -101,7 +101,10 @@ live in `crates/core/src/tasks/process.rs`. Unix process-group setup is kept in
 that host-process boundary so `pre_exec` and signal-tree management do not leak
 into task orchestration. Command redaction helpers,
 failure-summary formatting, and workspace-root detection live in `command.rs`,
-`result.rs`, and `workspace.rs` beside it.
+`result.rs`, and `workspace.rs` beside it. Task cache write/hit input bundles
+are copyable collections of borrowed execution state, and workspace path
+normalization borrows its base directory so task execution does not move
+directory state just to validate a relative `dir`.
 Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task graph
 construction lives in `crates/core/src/tasks/graph/build.rs`, task output-ref
 dependency edge materialization lives in

@@ -27,7 +27,7 @@ pub(super) fn find_workspace_root(manager: PackageManager, start: &Path) -> Path
     }
 }
 
-pub(super) fn normalize_join(base: PathBuf, path: &str) -> PathBuf {
+pub(super) fn normalize_join(base: &Path, path: &str) -> PathBuf {
     let candidate = base.join(path);
     let mut normalized = PathBuf::new();
 
