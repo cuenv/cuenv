@@ -46,7 +46,6 @@ fn wrap_with_supervisor(program: String, args: Vec<String>) -> (String, Vec<Stri
         // If we cannot locate our own executable, fall through to a
         // direct spawn — degrading gracefully is preferable to failing.
     }
-    let _ = (cfg!(target_os = "macos"),); // touch cfg to silence unused-warning lint variants
     (program, args)
 }
 

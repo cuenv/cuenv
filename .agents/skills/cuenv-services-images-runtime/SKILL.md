@@ -21,6 +21,7 @@ Status guardrails:
 - `#ContainerImage` is schema-visible, but `cuenv build` does not yet build images.
 - Services are partial: `down` is stubbed, `logs --follow` is TODO, and `restart` does not fully signal supervisors.
 - Service/image orchestration builds a read-only mixed graph in `crates/services/src/controller.rs`; it should implement `TaskNodeData` for declared dependency names only, not `MutableTaskNodeData`, unless the controller starts injecting dependencies itself.
+- Per-service process wrapping lives in `crates/services/src/supervisor.rs`: Linux relies on `PR_SET_PDEATHSIG`, while macOS wraps service commands with `cuenv __supervise` when the current executable can be resolved.
 - Service lifecycle CLI output is rendered in `crates/events/src/renderers/cli/service.rs`; keep service-event wording aligned there when lifecycle semantics change.
 - Keep standalone `#Devenv` separate from `#DevenvRuntime`.
 
