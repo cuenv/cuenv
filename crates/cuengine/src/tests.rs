@@ -8,7 +8,7 @@ type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 #[test]
 fn test_cstring_ptr_creation() -> TestResult {
     // Test with null pointer
-    let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
+    let null_ptr = null_cstring_ptr();
     assert!(null_ptr.is_null());
 
     // Test with non-null pointer allocated like the Go bridge does.
@@ -16,7 +16,7 @@ fn test_cstring_ptr_creation() -> TestResult {
     assert!(!wrapper.is_null());
 
     // Convert back to string and verify
-    let result_str = unsafe { wrapper.to_str()? };
+    let result_str = cstring_ptr_to_str(&wrapper)?;
     assert_eq!(result_str, "test");
     // CStringPtr will automatically free the memory when dropped
     Ok(())
@@ -27,7 +27,7 @@ fn test_cstring_ptr_utf8_conversion() -> TestResult {
     let test_content = "Hello, 世界! 🦀";
     let wrapper = c_allocated_cstring_ptr(test_content)?;
 
-    let converted = unsafe { wrapper.to_str()? };
+    let converted = cstring_ptr_to_str(&wrapper)?;
     assert_eq!(converted, test_content);
     Ok(())
 }
@@ -37,14 +37,14 @@ fn test_cstring_ptr_empty_string() -> TestResult {
     let wrapper = c_allocated_cstring_ptr("")?;
 
     assert!(!wrapper.is_null());
-    let result = unsafe { wrapper.to_str()? };
+    let result = cstring_ptr_to_str(&wrapper)?;
     assert_eq!(result, "");
     Ok(())
 }
 
 #[test]
 fn test_cstring_ptr_null_to_str_panics_debug() {
-    let null_wrapper = unsafe { CStringPtr::new(std::ptr::null_mut()) };
+    let null_wrapper = null_cstring_ptr();
 
     // Test that we correctly identify null pointers
     assert!(null_wrapper.is_null());
@@ -54,7 +54,7 @@ fn test_cstring_ptr_null_to_str_panics_debug() {
     if cfg!(debug_assertions) {
         // In debug mode, we expect a panic
         std::panic::catch_unwind(|| {
-            let _ = unsafe { null_wrapper.to_str() };
+            let _ = cstring_ptr_to_str(&null_wrapper);
         })
         .expect_err("Expected panic in debug mode for null pointer");
     } else {
@@ -360,7 +360,7 @@ fn test_cstring_ptr_drop_behavior() -> TestResult {
     // This is mostly to ensure the Drop implementation doesn't panic
 
     // Test dropping a null pointer (should be safe)
-    let null_ptr = unsafe { CStringPtr::new(std::ptr::null_mut()) };
+    let null_ptr = null_cstring_ptr();
     drop(null_ptr); // Should not panic
 
     // Test dropping a valid pointer
@@ -371,9 +371,41 @@ fn test_cstring_ptr_drop_behavior() -> TestResult {
 
 fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
     let c_string = CString::new(value)?;
-    let ptr = unsafe { libc::strdup(c_string.as_ptr()) };
+    let ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to allocate a C string fixture freed through CStringPtr"
+        )]
+        unsafe {
+            libc::strdup(c_string.as_ptr())
+        }
+    };
     assert!(!ptr.is_null(), "libc::strdup returned null");
-    Ok(unsafe { CStringPtr::new(ptr) })
+    Ok(c_allocated_ptr(ptr))
+}
+
+fn null_cstring_ptr() -> CStringPtr {
+    c_allocated_ptr(std::ptr::null_mut())
+}
+
+fn c_allocated_ptr(ptr: *mut c_char) -> CStringPtr {
+    #[expect(
+        unsafe_code,
+        reason = "Required to wrap C string test fixtures in CStringPtr"
+    )]
+    unsafe {
+        CStringPtr::new(ptr)
+    }
+}
+
+fn cstring_ptr_to_str(wrapper: &CStringPtr) -> Result<&str> {
+    #[expect(
+        unsafe_code,
+        reason = "Required to exercise CStringPtr string conversion in unit tests"
+    )]
+    unsafe {
+        wrapper.to_str()
+    }
 }
 
 #[test]

@@ -49,6 +49,11 @@ before accepting payloads, so incompatible bridge responses fail at the FFI
 boundary instead of flowing into module deserialization. Keeping those phases
 separate makes the Go boundary, timeout behavior, and response decoding
 auditable without changing the public API.
+Unsafe Rust in the production crate is scoped to the FFI boundary itself:
+extern declarations, raw Go bridge calls, bridge-owned C string wrapping, and
+checked string extraction each carry local lint expectations with concrete
+reasons. The crate no longer relies on broad `unsafe_code`,
+`missing_safety_doc`, or `missing_panics_doc` allowances.
 
 Unit tests assert returned bridge data directly instead of printing successful
 FFI diagnostics. Integration tests keep FFI-unavailable paths quiet and return

@@ -49,7 +49,10 @@ The CUE evaluation engine providing a safe Rust interface to the Go-based CUE ev
 Cuengine FFI tests keep allocator-backed `CStringPtr` fixtures behind local
 unsafe allowances and explicit safety comments instead of file-level
 `unsafe_code` suppressions, so each raw-pointer boundary stays visible at the
-call site.
+call site. The production cuengine crate follows the same rule: raw Go bridge
+calls, bridge-owned string wrapping, and string extraction carry local lint
+expectations with reasons instead of crate-wide `unsafe_code`,
+`missing_safety_doc`, or `missing_panics_doc` allowances.
 The Nix `cue-bridge` build must compile every non-test Go source file, not just
 `bridge.go`, because bridge metadata and value conversion helpers live in
 additional Go files beside the exported C archive entrypoints, while

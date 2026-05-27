@@ -4,10 +4,6 @@
 //! It handles all FFI operations, memory management, and error handling for
 //! calling Go functions from Rust.
 
-#![allow(unsafe_code)] // Required for FFI with Go
-#![allow(clippy::missing_safety_doc)] // Safety is documented inline
-#![allow(clippy::missing_panics_doc)] // Panics are documented where relevant
-
 pub mod cache;
 pub mod error;
 pub mod retry;
@@ -89,6 +85,10 @@ impl CStringPtr {
     /// - Returns either null or a valid C string pointer
     /// - Allocates memory that must be freed with `cue_free_string`
     /// - Does not modify the memory after returning the pointer
+    #[expect(
+        unsafe_code,
+        reason = "Required to take ownership of C strings returned by the Go bridge"
+    )]
     pub const unsafe fn new(ptr: *mut c_char) -> Self {
         Self {
             ptr,
@@ -119,6 +119,10 @@ impl CStringPtr {
     /// # Panics
     ///
     /// In debug builds, panics if the pointer is null
+    #[expect(
+        unsafe_code,
+        reason = "Required to expose a borrowed str from the wrapped C string"
+    )]
     pub unsafe fn to_str(&self) -> Result<&str> {
         debug_assert!(
             !self.is_null(),
@@ -127,7 +131,15 @@ impl CStringPtr {
 
         // SAFETY: We've verified the pointer is not null via debug_assert
         // The caller must ensure the pointer points to a valid C string
-        let cstr = unsafe { CStr::from_ptr(self.ptr) };
+        let cstr = {
+            #[expect(
+                unsafe_code,
+                reason = "Required to borrow the validated C string pointer"
+            )]
+            unsafe {
+                CStr::from_ptr(self.ptr)
+            }
+        };
         cstr.to_str().map_err(|e| {
             Error::ffi(
                 "cue_eval_module",
@@ -146,6 +158,10 @@ impl Drop for CStringPtr {
             // - We have exclusive ownership of this pointer (enforced by Rust's ownership)
             // - This pointer has not been freed already (enforced by Drop only running once)
             // - After this call, the pointer becomes invalid and won't be used again
+            #[expect(
+                unsafe_code,
+                reason = "Required to free strings allocated by the Go bridge"
+            )]
             unsafe {
                 cue_free_string(self.ptr);
             }
@@ -163,6 +179,7 @@ impl Drop for CStringPtr {
 // Real FFI for normal builds
 #[cfg(not(docsrs))]
 #[link(name = "cue_bridge")]
+#[expect(unsafe_code, reason = "Required for Go bridge FFI declarations")]
 unsafe extern "C" {
     fn cue_eval_module(
         module_root: *const c_char,
@@ -449,12 +466,18 @@ fn call_ffi_eval_module(
     // - Takes three valid C string pointers (guaranteed by CString::as_ptr())
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
-    let result_ptr = unsafe {
-        cue_eval_module(
-            c_module_root.as_ptr(),
-            c_package.as_ptr(),
-            c_options.as_ptr(),
-        )
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go CUE module evaluation bridge"
+        )]
+        unsafe {
+            cue_eval_module(
+                c_module_root.as_ptr(),
+                c_package.as_ptr(),
+                c_options.as_ptr(),
+            )
+        }
     };
 
     tracing::debug!(
@@ -462,8 +485,7 @@ fn call_ffi_eval_module(
         "FFI call completed"
     );
 
-    // Safety: CStringPtr::new is safe because result_ptr is from cue_eval_module
-    let result = unsafe { CStringPtr::new(result_ptr) };
+    let result = bridge_owned_c_string(result_ptr);
     extract_ffi_string_with_null_message(
         &result,
         "cue_eval_module",
@@ -580,7 +602,26 @@ fn extract_ffi_string_with_null_message(
     }
 
     // Safety: wrapper.to_str() is safe because we checked wrapper is not null
-    unsafe { wrapper.to_str() }.map(String::from)
+    {
+        #[expect(
+            unsafe_code,
+            reason = "Required to read a non-null bridge-owned C string"
+        )]
+        unsafe {
+            wrapper.to_str()
+        }
+    }
+    .map(String::from)
+}
+
+fn bridge_owned_c_string(ptr: *mut c_char) -> CStringPtr {
+    #[expect(
+        unsafe_code,
+        reason = "Required to wrap bridge-owned C string pointers for RAII cleanup"
+    )]
+    unsafe {
+        CStringPtr::new(ptr)
+    }
 }
 
 /// Gets the bridge version information from the Go side
@@ -603,10 +644,17 @@ pub fn get_bridge_version() -> Result<String> {
     // - Takes no parameters
     // - Returns either null or a valid pointer to a C string
     // - The returned pointer must be freed with cue_free_string
-    let version_ptr = unsafe { cue_bridge_version() };
+    let version_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go bridge version function"
+        )]
+        unsafe {
+            cue_bridge_version()
+        }
+    };
 
-    // Safety: CStringPtr::new is safe because version_ptr is from cue_bridge_version
-    let version_wrapper = unsafe { CStringPtr::new(version_ptr) };
+    let version_wrapper = bridge_owned_c_string(version_ptr);
 
     let bridge_version = extract_ffi_string(&version_wrapper, "cue_bridge_version")?;
 
@@ -660,9 +708,13 @@ pub fn module_custom_version(module_root: &Path, namespace: &str) -> Result<Modu
 
     // Safety: cue_module_custom_version takes valid C strings and returns a
     // heap-allocated C string owned by the caller.
-    let result_ptr =
-        unsafe { cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr()) };
-    let result = unsafe { CStringPtr::new(result_ptr) };
+    let result_ptr = {
+        #[expect(unsafe_code, reason = "Required to call the Go custom-version bridge")]
+        unsafe {
+            cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr())
+        }
+    };
+    let result = bridge_owned_c_string(result_ptr);
     let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     process_bridge_json(&json_str, module_root, FUNCTION_NAME)
 }
@@ -687,14 +739,20 @@ pub fn format_module_with_custom_version(
 
     // Safety: cue_format_module_with_custom_version takes valid C strings and
     // returns a heap-allocated C string owned by the caller.
-    let result_ptr = unsafe {
-        cue_format_module_with_custom_version(
-            c_module_root.as_ptr(),
-            c_namespace.as_ptr(),
-            c_version.as_ptr(),
-        )
+    let result_ptr = {
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go module-formatting bridge"
+        )]
+        unsafe {
+            cue_format_module_with_custom_version(
+                c_module_root.as_ptr(),
+                c_namespace.as_ptr(),
+                c_version.as_ptr(),
+            )
+        }
     };
-    let result = unsafe { CStringPtr::new(result_ptr) };
+    let result = bridge_owned_c_string(result_ptr);
     let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     let formatted: FormattedModuleFile =
         process_bridge_json(&json_str, module_root, FUNCTION_NAME)?;
