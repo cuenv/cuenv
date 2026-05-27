@@ -2,9 +2,6 @@
 //!
 //! Provides test assertions for verifying tracing span behavior.
 
-// Test assertions use panic! intentionally
-#![allow(clippy::panic)]
-
 use super::collector::CapturedSpan;
 
 /// Assert that a span with the given name was captured
@@ -27,13 +24,16 @@ pub fn assert_span_exists(spans: &[CapturedSpan], name: &str) {
 ///
 /// Panics if the span doesn't exist or doesn't have the field
 pub fn assert_span_has_field(spans: &[CapturedSpan], name: &str, field: &str) {
-    let span = spans.iter().find(|s| s.name == name).unwrap_or_else(|| {
-        panic!(
-            "Span '{}' not found. Found spans: {:?}",
-            name,
-            spans.iter().map(|s| &s.name).collect::<Vec<_>>()
-        )
-    });
+    let span = spans.iter().find(|s| s.name == name);
+    assert!(
+        span.is_some(),
+        "Span '{}' not found. Found spans: {:?}",
+        name,
+        spans.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+    let Some(span) = span else {
+        return;
+    };
 
     assert!(
         span.fields.iter().any(|(k, _)| k == field),

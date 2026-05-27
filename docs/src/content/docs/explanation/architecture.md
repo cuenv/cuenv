@@ -405,7 +405,10 @@ renderer root owns explicit stdout/stderr writer helpers so category renderers
 do not need raw print macros. The JSON renderer exposes a writer boundary so
 JSON-line output can be tested without direct print macros. Spinner interleaved
 output stays behind `indicatif::MultiProgress::println`, preserving progress-bar
-frames without direct stderr print macros.
+frames without direct stderr print macros. Trace acceptance span assertion
+helpers use ordinary `assert!` flows and early returns for impossible
+post-assert branches, so helper diagnostics stay readable without a local
+panic lint allowance.
 
 ### cuenv-workspaces
 
