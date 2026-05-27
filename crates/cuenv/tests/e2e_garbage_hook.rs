@@ -1,27 +1,16 @@
 //! Integration test for hooks with syntax errors
 
+mod hook_test_support;
+
 use assert_cmd::Command;
-use std::error::Error;
+use hook_test_support::{
+    ApprovalOutcome, TestResult, approve_config, assert_sandbox_error, create_test_dir,
+};
 use std::fs;
-use tempfile::TempDir;
-
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
-
-/// Create a test directory with non-hidden name and CUE module setup
-fn create_test_dir() -> TestResult<TempDir> {
-    let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
-    let path = temp_dir.path();
-    fs::create_dir_all(path.join("cue.mod"))?;
-    fs::write(
-        path.join("cue.mod/module.cue"),
-        "module: \"test.example/garbage\"\nlanguage: version: \"v0.9.0\"\n",
-    )?;
-    Ok(temp_dir)
-}
 
 #[test]
 fn test_hook_with_syntax_error_output() -> TestResult {
-    let temp_dir = create_test_dir()?;
+    let temp_dir = create_test_dir("test.example/garbage")?;
     let path = temp_dir.path();
 
     // Create env.cue with a hook that outputs a SYNTAX ERROR (unclosed quote)
@@ -45,26 +34,10 @@ hooks: {
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
-    let allow_output = Command::new(cuenv_bin)
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .args(["allow", "--yes"])
-        .output()?;
-
-    // Handle FFI error in sandbox during allow
-    if allow_output.status.code() == Some(3) {
-        let stderr = String::from_utf8_lossy(&allow_output.stderr);
-        assert!(
-            stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-            "Expected FFI or Unexpected error in sandbox during allow, got: {stderr}"
-        );
-        return Ok(());
+    match approve_config(path, cuenv_bin)? {
+        ApprovalOutcome::Approved => {}
+        ApprovalOutcome::SandboxError => return Ok(()),
     }
-    assert!(
-        allow_output.status.success(),
-        "cuenv allow failed: {}",
-        String::from_utf8_lossy(&allow_output.stderr)
-    );
 
     let output = Command::new(cuenv_bin)
         .current_dir(path)
@@ -88,11 +61,7 @@ hooks: {
 
     match exit_code {
         Some(3) => {
-            // CI / Sandbox behavior: Abort with error (could be FFI or I/O)
-            assert!(
-                stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
-                "Expected FFI or I/O error in stderr, got: {stderr}"
-            );
+            assert_sandbox_error(&output, "in sandbox");
         }
         Some(2) => {
             // CLI/configuration error - hook evaluation or environment setup failed
