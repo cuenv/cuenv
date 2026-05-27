@@ -622,6 +622,7 @@ fn test_is_cached_library_path_uses_lib_directory() {
 fn test_release_deserialization() {
     let json = r#"{
             "tag_name": "v1.0.0",
+            "name": "release title",
             "assets": [
                 {"name": "tool-linux.tar.gz", "browser_download_url": "https://example.com/linux.tar.gz"},
                 {"name": "tool-darwin.tar.gz", "browser_download_url": "https://example.com/darwin.tar.gz"}
@@ -629,7 +630,6 @@ fn test_release_deserialization() {
         }"#;
 
     let release: Release = serde_json::from_str(json).unwrap();
-    assert_eq!(release.tag_name, "v1.0.0");
     assert_eq!(release.assets.len(), 2);
     assert_eq!(release.assets[0].name, "tool-linux.tar.gz");
     assert_eq!(

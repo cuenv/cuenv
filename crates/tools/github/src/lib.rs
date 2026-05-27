@@ -97,8 +97,6 @@ impl RateLimitInfo {
 /// GitHub release metadata from the API.
 #[derive(Debug, Deserialize)]
 struct Release {
-    #[allow(dead_code)] // Deserialized from GitHub API response
-    tag_name: String,
     assets: Vec<Asset>,
 }
 

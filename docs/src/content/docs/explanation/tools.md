@@ -111,6 +111,9 @@ let provider = registry.find_for_source(&source);
 ```
 
 Provider resolution and fetch orchestration stay in each provider root module.
+For GitHub release tools, API resolution, asset selection, download handling,
+and cache target planning live in `crates/tools/github/src/lib.rs`; archive
+unpacking lives in `crates/tools/github/src/extract.rs`.
 For direct URL tools, archive detection and extraction live in
 `crates/tools/url/src/extract.rs`, while `crates/tools/url/src/lib.rs` owns
 HTTP resolution, cache target planning, and typed extract placement.

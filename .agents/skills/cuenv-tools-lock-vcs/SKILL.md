@@ -13,6 +13,7 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 - `crates/cuenv/src/commands/tools.rs` and sync providers when behavior matters.
 - `crates/cuenv/src/commands/sync/providers/vcs.rs` for VCS sync orchestration, `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs` for checkout and marker verification, `crates/cuenv/src/commands/sync/providers/vcs/paths.rs` for path/temp safety, and `crates/cuenv/src/commands/sync/providers/vcs/git.rs` for git subprocess execution.
 - `crates/ci/src/executor/tools.rs` for CI task tool downloads and lockfile activation.
+- `crates/tools/github/src/lib.rs` for GitHub release API resolution, asset selection, downloads, and cache target planning; `crates/tools/github/src/extract.rs` for archive extraction behavior.
 - `crates/tools/url/src/lib.rs` for URL resolution/cache placement and `crates/tools/url/src/extract.rs` for URL archive extraction behavior.
 - `crates/tools/oci/src/provider.rs` for registry/manifest/cache orchestration and `crates/tools/oci/src/extract.rs` for single-binary extraction from image layers.
 
