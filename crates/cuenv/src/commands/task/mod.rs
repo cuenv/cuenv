@@ -392,7 +392,7 @@ fn format_task_results(
     let mut output = String::new();
     for result in results {
         if capture_output.should_capture() {
-            write!(output, "Task '{}' ", result.name).expect("write to string");
+            write!(output, "Task '{}' ", result.name).ok();
             if result.success {
                 output.push_str("succeeded\n");
                 if !result.stdout.is_empty() {
@@ -401,8 +401,7 @@ fn format_task_results(
                     output.push('\n');
                 }
             } else {
-                writeln!(output, "failed with exit code {:?}", result.exit_code)
-                    .expect("write to string");
+                writeln!(output, "failed with exit code {:?}", result.exit_code).ok();
                 if !result.stderr.is_empty() {
                     output.push_str("Error:\n");
                     output.push_str(&result.stderr);

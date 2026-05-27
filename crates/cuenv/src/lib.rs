@@ -48,9 +48,6 @@
 //! // Implement both SyncCapability and RuntimeCapability...
 //! ```
 
-// expect_used is allowed for infallible operations like writing to strings
-#![allow(clippy::expect_used)]
-
 mod builder;
 /// CLI argument parsing and exit codes.
 pub mod cli;
