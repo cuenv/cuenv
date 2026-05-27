@@ -156,9 +156,9 @@ select them with `-e production`.
 **Runtime secrets.** Secrets are resolved when a command runs, kept out of
 `env.cue` and generated files, and redacted from output. Resolvers that work
 today: environment variables, any CLI via `#ExecSecret`, 1Password
-(`#OnePasswordRef`), and Infisical (`#InfisicalSecret`). `#AwsSecret`,
-`#GcpSecret`, and `#VaultSecret` exist in the schema but their runtime resolvers
-aren't registered yet — treat them as future work.
+(`#OnePasswordRef`), Infisical (`#InfisicalSecret`), and AWS Secrets Manager
+(`#AwsSecret`). `#GcpSecret` and `#VaultSecret` exist in the schema but their
+runtime resolvers aren't registered yet — treat them as future work.
 
 **Tasks.** Object keys in a `#TaskGroup` run in parallel; arrays in a
 `#TaskSequence` run in order; `dependsOn` uses CUE references so a typo is a
