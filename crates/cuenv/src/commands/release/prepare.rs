@@ -1,8 +1,8 @@
 //! Release preparation command orchestration.
 
 use cuenv_release::{
-    BumpType, CargoManifest, CommitAnalyzer, CommitParser, ConventionalCommit, ReleaseConfig,
-    Version, VersionCalculator,
+    BumpType, CargoManifest, ChangelogGenerator, Changeset, CommitAnalyzer, CommitParser,
+    ConventionalCommit, PackageChange, ReleaseConfig, Version, VersionCalculator,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -46,6 +46,7 @@ struct ReleasePrepareAnalysis {
     package_paths: HashMap<String, PathBuf>,
     new_versions: HashMap<String, Version>,
     bump_infos: Vec<PackageBumpInfo>,
+    changelog_changesets: Vec<Changeset>,
 }
 
 enum ReleasePreparePlan {
@@ -160,6 +161,14 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
             bump_type,
         });
     }
+    let changelog_changesets = vec![Changeset::new(
+        format!("Release from {} commits", commits.len()),
+        package_bumps
+            .iter()
+            .map(|(name, bump)| PackageChange::new(name, *bump))
+            .collect(),
+        Some(CommitParser::summarize(&commits)),
+    )];
 
     Ok(ReleasePreparePlan::Ready(Box::new(
         ReleasePrepareAnalysis {
@@ -170,6 +179,7 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
             package_paths,
             new_versions,
             bump_infos,
+            changelog_changesets,
         },
     )))
 }
@@ -235,6 +245,63 @@ fn apply_release_prepare_versions(
                     "Failed to update workspace dependency versions: {e}"
                 ))
             })?;
+    }
+
+    update_release_prepare_changelogs(analysis, output)?;
+
+    Ok(())
+}
+
+fn update_release_prepare_changelogs(
+    analysis: &ReleasePrepareAnalysis,
+    output: &mut String,
+) -> cuenv_core::Result<()> {
+    let changelog_config = analysis.release_config.changelog.clone();
+    if !changelog_config.workspace && !changelog_config.per_package {
+        return Ok(());
+    }
+
+    let generator = ChangelogGenerator::new(changelog_config);
+    let _ = writeln!(output, "Updating changelogs...");
+
+    if analysis.release_config.changelog.workspace
+        && let Some(entry) =
+            generator.generate_workspace_entry(
+                &analysis.changelog_changesets,
+                &analysis.new_versions,
+            )
+    {
+        generator
+            .update_file(
+                &analysis.root.join(&analysis.release_config.changelog.path),
+                &entry,
+            )
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update workspace changelog: {e}"
+                ))
+            })?;
+    }
+
+    if !analysis.release_config.changelog.per_package {
+        return Ok(());
+    }
+
+    for (package, version) in &analysis.new_versions {
+        let Some(package_root) = analysis.package_paths.get(package) else {
+            continue;
+        };
+        let Some(entry) =
+            generator.generate_entries(&analysis.changelog_changesets, package, version)
+        else {
+            continue;
+        };
+        let changelog_path = generator.get_changelog_path(package_root);
+        generator.update_file(&changelog_path, &entry).map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to update changelog for {package}: {e}"
+            ))
+        })?;
     }
 
     Ok(())
