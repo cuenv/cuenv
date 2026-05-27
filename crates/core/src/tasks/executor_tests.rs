@@ -1,6 +1,6 @@
 use super::*;
 use crate::tasks::cache::TaskCacheConfig;
-use crate::tasks::{SourceLocation, TaskDependency, TaskDirectoryOptions};
+use crate::tasks::{RetryConfig, SourceLocation, TaskDependency, TaskDirectoryOptions};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
 use cuenv_vcs::WalkHasher;
@@ -171,6 +171,57 @@ async fn test_execute_failing_task() {
     let result = executor.execute_task("test", &task).await.unwrap();
     assert!(!result.success);
     assert_eq!(result.exit_code, Some(1));
+}
+
+#[tokio::test]
+async fn test_execute_task_timeout() {
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "sleep 1".to_string()],
+        timeout: Some("50ms".to_string()),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("timeout", &task).await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+    assert!(result.stderr.contains("timed out"));
+}
+
+#[tokio::test]
+async fn test_execute_task_retries_until_success() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("attempts");
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "count=$(cat attempts 2>/dev/null || echo 0); count=$((count + 1)); echo $count > attempts; test $count -ge 2"
+                .to_string(),
+        ],
+        retry: Some(RetryConfig {
+            attempts: 2,
+            delay: Some("1ms".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("retry", &task).await.unwrap();
+
+    assert!(result.success);
+    assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "2");
 }
 
 #[tokio::test]
@@ -398,6 +449,50 @@ async fn test_execute_graph_parallel_groups() {
     assert_eq!(results.len(), 2);
     let joined = results.iter().map(|r| r.stdout.clone()).collect::<String>();
     assert!(joined.contains("A") && joined.contains("B"));
+}
+
+#[tokio::test]
+async fn test_execute_group_respects_max_concurrency() {
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let script = "if [ -f running ]; then echo overlap > violation; fi; touch running; sleep 0.1; rm running";
+    let group = TaskGroup {
+        type_: "group".to_string(),
+        depends_on: Vec::new(),
+        max_concurrency: Some(1),
+        description: None,
+        children: HashMap::from([
+            (
+                "a".to_string(),
+                TaskNode::Task(Box::new(Task {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), script.to_string()],
+                    ..Default::default()
+                })),
+            ),
+            (
+                "b".to_string(),
+                TaskNode::Task(Box::new(Task {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), script.to_string()],
+                    ..Default::default()
+                })),
+            ),
+        ]),
+    };
+
+    let results = executor
+        .execute_node("limited", &TaskNode::Group(group), &Tasks::new())
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert!(!tmp.path().join("violation").exists());
 }
 
 #[tokio::test]

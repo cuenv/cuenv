@@ -59,6 +59,11 @@ impl Default for WalkPolicy {
 pub trait WalkOutcome {
     /// Whether the per-task work reported success.
     fn is_success(&self) -> bool;
+
+    /// Whether this outcome should keep the walk going after failure.
+    fn continue_on_error(&self) -> bool {
+        false
+    }
 }
 
 /// Result of a `walk_parallel_graph` call.
@@ -188,7 +193,7 @@ where
                     }
                     outcomes_by_name.insert(name.clone(), outcome.clone());
                     outcomes.push((name, outcome));
-                    if !success && !policy.continue_on_error {
+                    if !success && !(policy.continue_on_error || outcome.continue_on_error()) {
                         join_set.abort_all();
                         break 'outer;
                     }

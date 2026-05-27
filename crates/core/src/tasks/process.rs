@@ -4,6 +4,7 @@ use super::TaskResult;
 use super::process_registry::global_registry;
 use crate::{Error, OutputCapture, Result};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
 
 /// Run a host task process in captured or inherited-output mode.
@@ -11,15 +12,20 @@ pub async fn run_task_process(
     name: &str,
     command: Command,
     capture_output: OutputCapture,
+    timeout: Option<Duration>,
 ) -> Result<TaskResult> {
     if capture_output.should_capture() {
-        run_captured_process(name, command).await
+        run_captured_process(name, command, timeout).await
     } else {
-        run_inherited_process(name, command).await
+        run_inherited_process(name, command, timeout).await
     }
 }
 
-async fn run_captured_process(name: &str, mut command: Command) -> Result<TaskResult> {
+async fn run_captured_process(
+    name: &str,
+    mut command: Command,
+    timeout: Option<Duration>,
+) -> Result<TaskResult> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let start_time = std::time::Instant::now();
@@ -71,11 +77,36 @@ async fn run_captured_process(name: &str, mut command: Command) -> Result<TaskRe
         lines
     });
 
-    let status = child.wait().await.map_err(|e| Error::Io {
-        source: e,
-        path: None,
-        operation: format!("wait for task {}", name),
-    })?;
+    let status = if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(status) => status.map_err(|e| Error::Io {
+                source: e,
+                path: None,
+                operation: format!("wait for task {}", name),
+            })?,
+            Err(_) => {
+                terminate_child(&mut child, child_pid).await?;
+                if let Some(pid) = child_pid {
+                    global_registry().unregister(pid).await;
+                }
+                let stdout_lines = stdout_task.await.unwrap_or_default();
+                let stderr_lines = stderr_task.await.unwrap_or_default();
+                return Ok(timeout_result(
+                    name,
+                    timeout,
+                    start_time,
+                    stdout_lines.join("\n"),
+                    stderr_lines.join("\n"),
+                ));
+            }
+        }
+    } else {
+        child.wait().await.map_err(|e| Error::Io {
+            source: e,
+            path: None,
+            operation: format!("wait for task {}", name),
+        })?
+    };
 
     if let Some(pid) = child_pid {
         global_registry().unregister(pid).await;
@@ -106,7 +137,11 @@ async fn run_captured_process(name: &str, mut command: Command) -> Result<TaskRe
     })
 }
 
-async fn run_inherited_process(name: &str, mut command: Command) -> Result<TaskResult> {
+async fn run_inherited_process(
+    name: &str,
+    mut command: Command,
+    timeout: Option<Duration>,
+) -> Result<TaskResult> {
     #[cfg(unix)]
     setup_process_group(&mut command);
 
@@ -126,11 +161,35 @@ async fn run_inherited_process(name: &str, mut command: Command) -> Result<TaskR
         global_registry().register(pid, name.to_string()).await;
     }
 
-    let status = child.wait().await.map_err(|e| Error::Io {
-        source: e,
-        path: None,
-        operation: format!("wait for task {}", name),
-    })?;
+    let start_time = std::time::Instant::now();
+    let status = if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, child.wait()).await {
+            Ok(status) => status.map_err(|e| Error::Io {
+                source: e,
+                path: None,
+                operation: format!("wait for task {}", name),
+            })?,
+            Err(_) => {
+                terminate_child(&mut child, child_pid).await?;
+                if let Some(pid) = child_pid {
+                    global_registry().unregister(pid).await;
+                }
+                return Ok(timeout_result(
+                    name,
+                    timeout,
+                    start_time,
+                    String::new(),
+                    String::new(),
+                ));
+            }
+        }
+    } else {
+        child.wait().await.map_err(|e| Error::Io {
+            source: e,
+            path: None,
+            operation: format!("wait for task {}", name),
+        })?
+    };
 
     if let Some(pid) = child_pid {
         global_registry().unregister(pid).await;
@@ -149,6 +208,77 @@ async fn run_inherited_process(name: &str, mut command: Command) -> Result<TaskR
         stdout: String::new(),
         stderr: String::new(),
         success,
+    })
+}
+
+fn timeout_result(
+    name: &str,
+    timeout: Duration,
+    start_time: std::time::Instant,
+    stdout: String,
+    stderr: String,
+) -> TaskResult {
+    let duration_ms = u64::try_from(start_time.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let message = format!("Task timed out after {}", format_duration(timeout));
+    cuenv_events::emit_task_output!(name, "stderr", &message);
+    cuenv_events::emit_task_completed!(name, false, None, duration_ms);
+    tracing::warn!(task = %name, timeout_ms = timeout.as_millis(), "Task timed out");
+
+    TaskResult {
+        name: name.to_string(),
+        exit_code: None,
+        stdout,
+        stderr: if stderr.is_empty() {
+            message
+        } else {
+            format!("{stderr}\n{message}")
+        },
+        success: false,
+    }
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_millis() < 1_000 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{}s", duration.as_secs())
+    }
+}
+
+async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u32>) -> Result<()> {
+    #[cfg(unix)]
+    if let Some(pid) = child_pid {
+        let pgid = i32::try_from(pid)
+            .map_err(|e| Error::execution(format!("invalid child pid {pid}: {e}")))?;
+        // SAFETY: The child was started in its own process group by `setup_process_group`.
+        // Sending SIGTERM to `-pgid` targets that process group so descendants exit too.
+        #[expect(unsafe_code, reason = "Required for POSIX process group termination")]
+        unsafe {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        if tokio::time::timeout(Duration::from_millis(500), child.wait())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        // SAFETY: Same process group as above; SIGKILL is the final fallback after SIGTERM.
+        #[expect(unsafe_code, reason = "Required for POSIX process group termination")]
+        unsafe {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
+        if tokio::time::timeout(Duration::from_millis(500), child.wait())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+
+    child.kill().await.map_err(|e| Error::Io {
+        source: e,
+        path: None,
+        operation: "kill timed-out task".to_string(),
     })
 }
 

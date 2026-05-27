@@ -25,6 +25,7 @@ use async_recursion::async_recursion;
 use cuenv_workspaces::PackageManager;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
@@ -210,18 +211,7 @@ impl TaskExecutor {
 
         // Real execution. Both backends produce the same `TaskResult`.
         let start = std::time::Instant::now();
-        let result = if self.backend.name() == "dagger" {
-            let ctx = super::backend::TaskExecutionContext {
-                name,
-                task,
-                environment: &self.config.environment,
-                project_root: &self.config.project_root,
-                capture_output: self.config.capture_output,
-            };
-            self.backend.execute(&ctx).await?
-        } else {
-            self.execute_task_non_hermetic(name, task).await?
-        };
+        let result = self.execute_task_with_retries(name, task).await?;
         let duration_ms = start.elapsed().as_millis();
 
         // Persist on successful miss. Cache writes are best-effort: a write
@@ -244,6 +234,64 @@ impl TaskExecutor {
         }
 
         Ok(result)
+    }
+
+    async fn execute_task_with_retries(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
+        let max_attempts = retry_attempts.saturating_add(1);
+        let retry_delay = task
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.delay.as_deref())
+            .map(|delay| parse_task_duration("retry.delay", delay))
+            .transpose()?;
+
+        let mut attempt = 1_u32;
+        loop {
+            let result = self.execute_task_once(name, task).await?;
+            if result.success || attempt >= max_attempts {
+                return Ok(result);
+            }
+
+            attempt = attempt.saturating_add(1);
+            cuenv_events::emit_task_retrying!(name, attempt, max_attempts);
+            if let Some(delay) = retry_delay {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    async fn execute_task_once(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        if self.backend.name() == "dagger" {
+            let ctx = super::backend::TaskExecutionContext {
+                name,
+                task,
+                environment: &self.config.environment,
+                project_root: &self.config.project_root,
+                capture_output: self.config.capture_output,
+            };
+            let timeout = task
+                .timeout
+                .as_deref()
+                .map(|timeout| parse_task_duration("timeout", timeout))
+                .transpose()?;
+            if let Some(timeout) = timeout {
+                match tokio::time::timeout(timeout, self.backend.execute(&ctx)).await {
+                    Ok(result) => result,
+                    Err(_) => Ok(TaskResult {
+                        name: name.to_string(),
+                        exit_code: None,
+                        stdout: String::new(),
+                        stderr: format!("Task timed out after {}", format_duration(timeout)),
+                        success: false,
+                    }),
+                }
+            } else {
+                self.backend.execute(&ctx).await
+            }
+        } else {
+            self.execute_task_non_hermetic(name, task).await
+        }
     }
 
     /// Reproduce a [`TaskResult`] from a cache hit and emit the same
@@ -471,7 +519,12 @@ impl TaskExecutor {
             cmd.env("CLICOLOR_FORCE", "1");
         }
 
-        super::process::run_task_process(name, cmd, self.config.capture_output).await
+        let timeout = task
+            .timeout
+            .as_deref()
+            .map(|timeout| parse_task_duration("timeout", timeout))
+            .transpose()?;
+        super::process::run_task_process(name, cmd, self.config.capture_output, timeout).await
     }
 
     /// Execute a task node (single task, group, or list)
@@ -618,16 +671,19 @@ impl TaskExecutor {
         let mut all_results = Vec::new();
         let mut merge_results = |results: Vec<TaskResult>| -> Result<()> {
             if let Some(failed) = results.iter().find(|r| !r.success) {
-                return Err(Error::task_failed(
-                    &failed.name,
-                    failed.exit_code.unwrap_or(-1),
-                    &failed.stdout,
-                    &failed.stderr,
-                ));
+                if !self.config.continue_on_error {
+                    return Err(Error::task_failed(
+                        &failed.name,
+                        failed.exit_code.unwrap_or(-1),
+                        &failed.stdout,
+                        &failed.stderr,
+                    ));
+                }
             }
             all_results.extend(results);
             Ok(())
         };
+        let max_parallel = group_concurrency_limit(self.config.max_parallel, group.max_concurrency);
         for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
             let child_node = child_node.clone();
@@ -638,8 +694,8 @@ impl TaskExecutor {
                     .execute_node(&task_name, &child_node, &all_tasks)
                     .await
             });
-            if self.config.max_parallel > 0
-                && join_set.len() >= self.config.max_parallel
+            if max_parallel > 0
+                && join_set.len() >= max_parallel
                 && let Some(result) = join_set.join_next().await
             {
                 match result {
@@ -690,15 +746,27 @@ impl TaskExecutor {
                 let executor = Arc::new(self.clone_with_config());
                 move |node| {
                     let executor = Arc::clone(&executor);
-                    async move { executor.execute_task(&node.name, &node.task).await }
+                    async move {
+                        let continue_on_error = node.task.continue_on_error;
+                        executor
+                            .execute_task(&node.name, &node.task)
+                            .await
+                            .map(|result| TaskWalkOutcome {
+                                result,
+                                continue_on_error,
+                            })
+                    }
                 }
             },
             |join_err| Error::execution(format!("Task execution panicked: {join_err}")),
         )
         .await?;
 
-        let mut all_results: Vec<TaskResult> =
-            summary.outcomes.into_iter().map(|(_name, r)| r).collect();
+        let mut all_results: Vec<TaskResult> = summary
+            .outcomes
+            .into_iter()
+            .map(|(_name, outcome)| outcome.result)
+            .collect();
 
         // Under fail-fast, the walker short-circuits on the first failure
         // and we surface it via Err so callers see the failing task's
@@ -741,6 +809,22 @@ impl TaskExecutor {
     }
 }
 
+#[derive(Clone)]
+struct TaskWalkOutcome {
+    result: TaskResult,
+    continue_on_error: bool,
+}
+
+impl super::graph_walk::WalkOutcome for TaskWalkOutcome {
+    fn is_success(&self) -> bool {
+        self.result.success
+    }
+
+    fn continue_on_error(&self) -> bool {
+        self.continue_on_error
+    }
+}
+
 #[derive(Clone, Copy)]
 struct CacheHitInput<'a> {
     name: &'a str,
@@ -753,6 +837,69 @@ struct CacheHitInput<'a> {
 fn emit_cached_output_events(name: &str, stream: &'static str, content: &str) {
     for line in content.lines() {
         cuenv_events::emit_task_output!(name, stream, line);
+    }
+}
+
+fn group_concurrency_limit(global: usize, group: Option<u32>) -> usize {
+    let group = group.and_then(|value| usize::try_from(value).ok());
+    match (global, group) {
+        (0, Some(group)) => group,
+        (global, Some(group)) if group > 0 => global.min(group),
+        (global, _) => global,
+    }
+}
+
+fn parse_task_duration(field: &str, spec: &str) -> Result<Duration> {
+    let raw = spec.trim();
+    if raw.is_empty() {
+        return Err(Error::configuration(format!("{field} must not be empty")));
+    }
+
+    let digits_len = raw.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    if digits_len == 0 || digits_len == raw.len() {
+        return Err(Error::configuration(format!(
+            "invalid task {field} '{raw}': expected <int><unit> (e.g. 30m, 1h)"
+        )));
+    }
+
+    let quantity: u64 = raw[..digits_len]
+        .parse()
+        .map_err(|e| Error::configuration(format!("invalid task {field} '{raw}': {e}")))?;
+    let unit = raw[digits_len..].trim().to_ascii_lowercase();
+
+    match unit.as_str() {
+        "ms" => Ok(Duration::from_millis(quantity)),
+        "s" => Ok(Duration::from_secs(quantity)),
+        "m" => Ok(Duration::from_secs(multiply_duration(quantity, 60, field, raw)?)),
+        "h" => Ok(Duration::from_secs(multiply_duration(
+            quantity,
+            60 * 60,
+            field,
+            raw,
+        )?)),
+        "d" => Ok(Duration::from_secs(multiply_duration(
+            quantity,
+            24 * 60 * 60,
+            field,
+            raw,
+        )?)),
+        _ => Err(Error::configuration(format!(
+            "invalid task {field} unit in '{raw}': use ms|s|m|h|d"
+        ))),
+    }
+}
+
+fn multiply_duration(quantity: u64, factor: u64, field: &str, raw: &str) -> Result<u64> {
+    quantity
+        .checked_mul(factor)
+        .ok_or_else(|| Error::configuration(format!("task {field} '{raw}' is too large")))
+}
+
+fn format_duration(duration: Duration) -> String {
+    if duration.as_millis() < 1_000 {
+        format!("{}ms", duration.as_millis())
+    } else {
+        format!("{}s", duration.as_secs())
     }
 }
 
