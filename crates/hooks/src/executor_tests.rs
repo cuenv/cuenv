@@ -11,12 +11,11 @@ fn duration_millis_saturates_at_u64_max() {
     );
 }
 
-/// Helper to set up CUENV_EXECUTABLE for tests that spawn the supervisor.
+/// Helper to find CUENV_EXECUTABLE for tests that spawn the supervisor.
 /// The cuenv binary must already be built (via `cargo build --bin cuenv`).
-fn setup_cuenv_executable() -> Option<PathBuf> {
-    // Check if already set
-    if std::env::var("CUENV_EXECUTABLE").is_ok() {
-        return Some(PathBuf::from(std::env::var("CUENV_EXECUTABLE").unwrap()));
+fn cuenv_executable() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("CUENV_EXECUTABLE") {
+        return Some(PathBuf::from(path));
     }
 
     // Try to find the cuenv binary in target/debug
@@ -24,20 +23,7 @@ fn setup_cuenv_executable() -> Option<PathBuf> {
     let workspace_root = manifest_dir.parent()?.parent()?;
     let cuenv_binary = workspace_root.join("target/debug/cuenv");
 
-    if cuenv_binary.exists() {
-        // SAFETY: This is only called in tests where we control the environment.
-        // No other threads should be accessing this environment variable.
-        #[expect(
-            unsafe_code,
-            reason = "Test helper setting env var in controlled test environment"
-        )]
-        unsafe {
-            std::env::set_var("CUENV_EXECUTABLE", &cuenv_binary);
-        }
-        Some(cuenv_binary)
-    } else {
-        None
-    }
+    cuenv_binary.exists().then_some(cuenv_binary)
 }
 
 #[tokio::test]
@@ -202,76 +188,82 @@ async fn test_command_validation() {
 #[tokio::test]
 async fn test_cancellation() {
     // Skip if cuenv binary is not available
-    if setup_cuenv_executable().is_none() {
+    let Some(cuenv_binary) = cuenv_executable() else {
         eprintln!("Skipping test_cancellation: cuenv binary not found");
         return;
-    }
-
-    let temp_dir = TempDir::new().unwrap();
-    let config = HookExecutionConfig {
-        default_timeout_seconds: 30,
-        fail_fast: false,
-        state_dir: Some(temp_dir.path().to_path_buf()),
     };
 
-    let executor = HookExecutor::new(config).unwrap();
-    let directory_path = PathBuf::from("/test/cancel");
-    let config_hash = "cancel_test".to_string();
+    temp_env::async_with_vars(
+        [("CUENV_EXECUTABLE", Some(cuenv_binary.as_os_str()))],
+        async {
+            let temp_dir = TempDir::new().unwrap();
+            let config = HookExecutionConfig {
+                default_timeout_seconds: 30,
+                fail_fast: false,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            };
 
-    // Create a long-running hook
-    let hooks = vec![Hook {
-        order: 100,
-        propagate: false,
-        command: "sleep".to_string(),
-        args: vec!["10".to_string()],
-        dir: None,
-        inputs: Vec::new(),
-        source: Some(false),
-    }];
+            let executor = HookExecutor::new(config).unwrap();
+            let directory_path = PathBuf::from("/test/cancel");
+            let config_hash = "cancel_test".to_string();
 
-    executor
-        .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
-        .await
-        .unwrap();
+            // Create a long-running hook
+            let hooks = vec![Hook {
+                order: 100,
+                propagate: false,
+                command: "sleep".to_string(),
+                args: vec!["10".to_string()],
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
+            }];
 
-    // Wait for supervisor to actually start and create state
-    // Poll until we see Running status or timeout
-    let mut started = false;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if let Ok(Some(state)) = executor
-            .get_execution_status_for_instance(&directory_path, &config_hash)
-            .await
-            && state.status == ExecutionStatus::Running
-        {
-            started = true;
-            break;
-        }
-    }
+            executor
+                .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
+                .await
+                .unwrap();
 
-    if !started {
-        eprintln!("Warning: Supervisor didn't start in time, skipping cancellation test");
-        return;
-    }
+            // Wait for supervisor to actually start and create state
+            // Poll until we see Running status or timeout
+            let mut started = false;
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Ok(Some(state)) = executor
+                    .get_execution_status_for_instance(&directory_path, &config_hash)
+                    .await
+                    && state.status == ExecutionStatus::Running
+                {
+                    started = true;
+                    break;
+                }
+            }
 
-    // Cancel the execution
-    let cancelled = executor
-        .cancel_execution(
-            &directory_path,
-            &config_hash,
-            Some("User cancelled".to_string()),
-        )
-        .await
-        .unwrap();
-    assert!(cancelled);
+            if !started {
+                eprintln!("Warning: Supervisor didn't start in time, skipping cancellation test");
+                return;
+            }
 
-    // Check that state reflects cancellation
-    let state = executor
-        .get_execution_status_for_instance(&directory_path, &config_hash)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(state.status, ExecutionStatus::Cancelled);
+            // Cancel the execution
+            let cancelled = executor
+                .cancel_execution(
+                    &directory_path,
+                    &config_hash,
+                    Some("User cancelled".to_string()),
+                )
+                .await
+                .unwrap();
+            assert!(cancelled);
+
+            // Check that state reflects cancellation
+            let state = executor
+                .get_execution_status_for_instance(&directory_path, &config_hash)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.status, ExecutionStatus::Cancelled);
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -307,83 +299,89 @@ async fn test_large_output_handling() {
 #[tokio::test]
 async fn test_state_cleanup() {
     // Skip if cuenv binary is not available
-    if setup_cuenv_executable().is_none() {
+    let Some(cuenv_binary) = cuenv_executable() else {
         eprintln!("Skipping test_state_cleanup: cuenv binary not found");
         return;
-    }
-
-    let temp_dir = TempDir::new().unwrap();
-    let config = HookExecutionConfig {
-        default_timeout_seconds: 30,
-        fail_fast: false,
-        state_dir: Some(temp_dir.path().to_path_buf()),
     };
 
-    let executor = HookExecutor::new(config).unwrap();
-    let directory_path = PathBuf::from("/test/cleanup");
-    let config_hash = "cleanup_test".to_string();
+    temp_env::async_with_vars(
+        [("CUENV_EXECUTABLE", Some(cuenv_binary.as_os_str()))],
+        async {
+            let temp_dir = TempDir::new().unwrap();
+            let config = HookExecutionConfig {
+                default_timeout_seconds: 30,
+                fail_fast: false,
+                state_dir: Some(temp_dir.path().to_path_buf()),
+            };
 
-    // Execute some hooks
-    let hooks = vec![Hook {
-        order: 100,
-        propagate: false,
-        command: "echo".to_string(),
-        args: vec!["test".to_string()],
-        dir: None,
-        inputs: Vec::new(),
-        source: Some(false),
-    }];
+            let executor = HookExecutor::new(config).unwrap();
+            let directory_path = PathBuf::from("/test/cleanup");
+            let config_hash = "cleanup_test".to_string();
 
-    executor
-        .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
-        .await
-        .unwrap();
+            // Execute some hooks
+            let hooks = vec![Hook {
+                order: 100,
+                propagate: false,
+                command: "echo".to_string(),
+                args: vec!["test".to_string()],
+                dir: None,
+                inputs: Vec::new(),
+                source: Some(false),
+            }];
 
-    // Poll until state exists before waiting for completion
-    let mut state_exists = false;
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        if executor
-            .get_execution_status_for_instance(&directory_path, &config_hash)
-            .await
-            .unwrap()
-            .is_some()
-        {
-            state_exists = true;
-            break;
-        }
-    }
+            executor
+                .execute_hooks_background(directory_path.clone(), config_hash.clone(), hooks)
+                .await
+                .unwrap();
 
-    if !state_exists {
-        eprintln!("Warning: State never created, skipping cleanup test");
-        return;
-    }
+            // Poll until state exists before waiting for completion
+            let mut state_exists = false;
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                if executor
+                    .get_execution_status_for_instance(&directory_path, &config_hash)
+                    .await
+                    .unwrap()
+                    .is_some()
+                {
+                    state_exists = true;
+                    break;
+                }
+            }
 
-    // Wait for completion
-    if let Err(e) = executor
-        .wait_for_completion(&directory_path, &config_hash, Some(15))
-        .await
-    {
-        eprintln!(
-            "Warning: wait_for_completion timed out: {}, skipping test",
-            e
-        );
-        return;
-    }
+            if !state_exists {
+                eprintln!("Warning: State never created, skipping cleanup test");
+                return;
+            }
 
-    // Clean up old states (should clean up the completed state)
-    let cleaned = executor
-        .cleanup_old_states(chrono::Duration::seconds(0))
-        .await
-        .unwrap();
-    assert_eq!(cleaned, 1);
+            // Wait for completion
+            if let Err(e) = executor
+                .wait_for_completion(&directory_path, &config_hash, Some(15))
+                .await
+            {
+                eprintln!(
+                    "Warning: wait_for_completion timed out: {}, skipping test",
+                    e
+                );
+                return;
+            }
 
-    // State should be gone
-    let state = executor
-        .get_execution_status_for_instance(&directory_path, &config_hash)
-        .await
-        .unwrap();
-    assert!(state.is_none());
+            // Clean up old states (should clean up the completed state)
+            let cleaned = executor
+                .cleanup_old_states(chrono::Duration::seconds(0))
+                .await
+                .unwrap();
+            assert_eq!(cleaned, 1);
+
+            // State should be gone
+            let state = executor
+                .get_execution_status_for_instance(&directory_path, &config_hash)
+                .await
+                .unwrap();
+            assert!(state.is_none());
+        },
+    )
+    .await;
 }
 
 #[tokio::test]
