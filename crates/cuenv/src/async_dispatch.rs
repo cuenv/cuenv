@@ -105,10 +105,7 @@ async fn execute_service_command(
                 names: names.clone(),
                 labels: labels.clone(),
             };
-            Some(
-                commands::build::execute_build(&options, executor)
-                    .map_err(|e| CliError::eval(format!("Build command failed: {e}"))),
-            )
+            Some(commands::build::execute_build(&options, executor).map_err(CliError::from))
         }
         Command::Up {
             path,

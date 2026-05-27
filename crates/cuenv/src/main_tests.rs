@@ -55,6 +55,24 @@ fn test_trace_format_selection() {
 }
 
 #[test]
+fn test_build_command_uses_async_dispatch() {
+    let cli = cli::Cli {
+        command: Some(cli::Commands::Build {
+            path: ".".to_string(),
+            package: "cuenv".to_string(),
+            names: Vec::new(),
+            labels: Vec::new(),
+        }),
+        level: cuenv::tracing::LogLevel::Warn,
+        json: false,
+        environment: None,
+        llms: false,
+    };
+
+    assert!(requires_async_runtime(&cli));
+}
+
+#[test]
 fn test_log_level_parsing() {
     let test_cases = vec![
         (Some("trace"), Level::TRACE),
