@@ -263,7 +263,7 @@ The command must be available in your PATH. Options:
 
 Large CUE configurations can be slow to evaluate. Tips:
 
-1. **Leverage the built-in task cache** by declaring accurate `inputs` and `outputs` for every task. Caching is automatic once those fields exist, and you can inspect the cache key for a task with:
+1. **Use the built-in task cache** by declaring accurate `inputs` and `outputs` and opting in with `cache.mode`. Once a task caches, you can inspect its cache key with:
 
    ```bash
    cuenv task build --show-cache-path

@@ -606,7 +606,7 @@ fn test_onepassword_contributor_active_with_op_refs() {
 
 To test your custom CUE contributors, create an example project and verify the generated IR or workflow files contain the expected tasks.
 
-See `crates/ci/tests/ir_contributor_tests.rs` for comprehensive test examples.
+See `crates/ci/tests/ir_contributor_tests.rs` for worked test examples.
 
 ## See Also
 

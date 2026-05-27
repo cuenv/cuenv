@@ -211,7 +211,7 @@ schema.#Project & {
 // Environment variables (typed by CUE)
 env: {
     // App configuration
-    NODE_ENV: "development" | "production"
+    NODE_ENV: "development" | "production" | *"development"
     PORT:     3000
 
     // Database (Nix provides the postgres binary)

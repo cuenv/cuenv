@@ -70,7 +70,7 @@ tasks: {
 
 ## Container Chaining
 
-Use the `from` field to continue from a previous task's container state. This is powerful for multi-stage builds where you install dependencies in one task and use them in subsequent tasks.
+Use the `from` field to continue from a previous task's container state. This suits multi-stage builds where you install dependencies in one task and use them in subsequent tasks.
 
 ```cue
 tasks: {

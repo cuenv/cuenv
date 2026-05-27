@@ -9,11 +9,11 @@ The `cuenv-events` crate provides a unified event system that enables multiple U
 
 When building tools with multiple output modes (CLI, JSON, TUI), you need a consistent way to emit and render events. This crate provides:
 
-- Typed event schema for task execution, CI, commands, and more
+- Typed event schema for task execution, CI, and command events
 - Direct `emit_*!` macros backed by a process-wide event sender
 - Broadcast-based event bus for multiple subscribers
 - Optional tracing layer integration for older event producers
-- CLI and JSON renderers out of the box
+- Built-in CLI and JSON renderers
 
 ## Architecture
 

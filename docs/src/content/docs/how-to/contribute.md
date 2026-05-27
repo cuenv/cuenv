@@ -167,7 +167,7 @@ pub enum MyError {
 
 #### Testing
 
-Write comprehensive tests using Rust's built-in test framework:
+Write tests using Rust's built-in test framework:
 
 ```rust
 #[cfg(test)]
