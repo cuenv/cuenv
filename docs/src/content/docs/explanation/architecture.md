@@ -211,9 +211,11 @@ discovery, version inheritance, and internal dependency lookup live in
 stays in `crates/release/src/orchestrator.rs`; package artifact handling lives
 in `crates/release/src/orchestrator/package.rs`, and backend publication lives
 in `crates/release/src/orchestrator/publish.rs`. Archive/checksum primitives
-for release binaries live in `crates/release/src/artifact.rs`. Task-list data
-construction stays in `crates/cuenv/src/commands/task_list.rs`; text, rich, tables,
-dashboard, and emoji renderers live in
+for release binaries live in `crates/release/src/artifact.rs`. The release
+crate root relies on its normal warning policy without broad derive-workaround
+allowances; warning suppressions belong with the module that actually needs
+them. Task-list data construction stays in `crates/cuenv/src/commands/task_list.rs`;
+text, rich, tables, dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
 The rich TUI keeps event-driven task/output state in
 `crates/cuenv/src/tui/state/activity.rs`, input-driven view state in

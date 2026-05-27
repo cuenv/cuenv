@@ -31,6 +31,7 @@ Status guardrails:
 - Cache eligibility skips emit `task.cache_skipped` events with a structured `CacheSkipReason` (`EmptyInputs`, `NonPathRef`, `NoResolvedInputs`, `RuntimeEnv`, `Disabled { reason }`, `NeverMode`, `HasherRootMismatch`, `HashFailed`).
 - CI event CLI output is rendered in `crates/events/src/renderers/cli/ci.rs`; keep wording aligned there when CI event semantics change.
 - The `cuenv-ci` crate root keeps only the temporary missing-docs allowance. Keep warning allowances scoped to the module that needs them instead of reintroducing crate-wide derive or parser suppressions.
+- The `cuenv-release` crate root uses the crate's normal warning policy without broad derive-workaround allowances. Keep release warning suppressions scoped to the module that needs them.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--filter-matrix` and `--jobs` are accepted but not fully applied.
