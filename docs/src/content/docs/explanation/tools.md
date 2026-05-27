@@ -114,6 +114,9 @@ Provider resolution and fetch orchestration stay in each provider root module.
 For direct URL tools, archive detection and extraction live in
 `crates/tools/url/src/extract.rs`, while `crates/tools/url/src/lib.rs` owns
 HTTP resolution, cache target planning, and typed extract placement.
+For OCI tools, layer unpacking and single-binary extraction live in
+`crates/tools/oci/src/extract.rs`, while the provider root owns registry
+resolution, platform manifest selection, and cache placement.
 
 ## Resolution Flow
 
