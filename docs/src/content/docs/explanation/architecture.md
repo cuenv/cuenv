@@ -204,6 +204,9 @@ as unread per-client state.
 Coordinator messages use length-prefixed JSON with explicit frame-size checks
 before converting between header and allocation sizes, so oversized frames fail
 without relying on module-wide cast truncation allowances.
+Stale coordinator cleanup keeps the Unix `libc::kill` call inside a small
+helper after process-name verification, avoiding a module-wide unsafe-code
+allowance.
 `crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
 guards, and macros directly, so it does not need a module-level dead-code
 allowance.
