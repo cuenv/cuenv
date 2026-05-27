@@ -28,4 +28,5 @@ xz2 = "0.1"
 zip = "2"
 
 [dev-dependencies]
+temp-env = { workspace = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

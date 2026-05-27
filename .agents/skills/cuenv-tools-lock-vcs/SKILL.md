@@ -23,6 +23,7 @@ Status guardrails:
 - The OCI provider (`crates/tools/oci`) extracts a single binary at `path` from the platform-specific manifest layers; `image` and `path` both honor `{version}`, `{os}`, and `{arch}` templates. Multi-arch image indexes are walked and the matching `os`/`architecture` entry is selected.
 - Tool lock source-template replacement in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs` owns the literal `{version}`, `{os}`, and `{arch}` placeholders as constants; keep it warning-free without formatting-lint suppressions.
 - GitHub and URL providers auto-extract `.zip`, `.tar.gz`/`.tgz`, and `.tar.xz`/`.txz`. GitHub additionally extracts `.pkg` on macOS. Unknown extensions are treated as raw binaries — point users at a supported archive form rather than letting compressed bytes get written to disk.
+- GitHub tool-provider token precedence tests in `crates/tools/github/src/tests.rs` should use scoped `temp_env` overrides for `GITHUB_TOKEN` / `GH_TOKEN`, not unsafe process-wide environment mutation.
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
 - `#VcsDependency.subdir` performs sparse-checkout of a single subtree. The lockfile records the subtree hash and re-syncs are deterministic; `vendor: false` ignores the materialized subtree instead of leaving a nested `.git` checkout.

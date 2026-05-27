@@ -1,5 +1,5 @@
 use super::*;
-use std::sync::{Mutex, OnceLock};
+use temp_env::with_vars;
 use tempfile::TempDir;
 
 fn with_token_env<R>(
@@ -7,37 +7,10 @@ fn with_token_env<R>(
     gh_token: Option<&str>,
     test: impl FnOnce() -> R,
 ) -> R {
-    static TOKEN_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = TOKEN_ENV_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap();
-
-    let original_github_token = std::env::var("GITHUB_TOKEN").ok();
-    let original_gh_token = std::env::var("GH_TOKEN").ok();
-
-    set_token_env("GITHUB_TOKEN", github_token);
-    set_token_env("GH_TOKEN", gh_token);
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
-
-    set_token_env("GITHUB_TOKEN", original_github_token.as_deref());
-    set_token_env("GH_TOKEN", original_gh_token.as_deref());
-
-    match result {
-        Ok(value) => value,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
-fn set_token_env(name: &str, value: Option<&str>) {
-    // SAFETY: Tests serialize access to process-global env via TOKEN_ENV_LOCK.
-    unsafe {
-        match value {
-            Some(value) => std::env::set_var(name, value),
-            None => std::env::remove_var(name),
-        }
-    }
+    with_vars(
+        [("GITHUB_TOKEN", github_token), ("GH_TOKEN", gh_token)],
+        test,
+    )
 }
 
 // ==========================================================================

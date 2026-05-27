@@ -743,5 +743,4 @@ async fn compute_file_sha256(path: &std::path::Path) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests;
