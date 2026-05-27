@@ -57,6 +57,8 @@ let raw = evaluate_module(Path::new("./project"), "cuenv", None)?;
 ### cuenv-core
 
 Core library containing shared types, configuration parsing, and domain logic.
+The crate root does not carry broad derive-workaround lint allowances; warnings
+should be fixed or scoped to the module that actually owns the exceptional code.
 
 **Modules:**
 
