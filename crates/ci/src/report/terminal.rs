@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use std::sync::RwLock;
+use std::time::Duration;
 
 use super::{
     PipelineReport,
@@ -144,7 +145,6 @@ impl ProgressReporter for TerminalReporter {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64 ms to f64 secs is fine for display
     async fn pipeline_completed(&self, report: &PipelineReport) {
         let total = report.tasks.len();
         let failed = report
@@ -153,7 +153,9 @@ impl ProgressReporter for TerminalReporter {
             .filter(|t| t.status == super::TaskStatus::Failed)
             .count();
         let cached = report.cache_hits();
-        let duration_secs = report.duration_ms.map_or(0.0, |ms| ms as f64 / 1000.0);
+        let duration_secs = report
+            .duration_ms
+            .map_or(0.0, |ms| Duration::from_millis(ms).as_secs_f64());
 
         if report.status == super::PipelineStatus::Success {
             tracing::info!(

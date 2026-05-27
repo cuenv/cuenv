@@ -10,7 +10,7 @@ use crate::affected::compute_affected_tasks;
 use crate::discovery::evaluate_module_from_cwd;
 use crate::provider::CIProvider;
 use crate::report::{ContextReport, PipelineReport, PipelineStatus};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::TaskIndex;
 use cuenv_core::{DryRun, Result};
@@ -385,8 +385,7 @@ async fn execute_project_pipeline(
     .await;
 
     let completed_at = Utc::now();
-    #[allow(clippy::cast_sign_loss)]
-    let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
+    let duration_ms = pipeline_duration_ms(start_time, completed_at);
 
     // Resolve pipeline annotations from capture refs
     let Some(ci) = &config.ci else {
@@ -435,4 +434,30 @@ fn pipeline_continue_on_error(config: &Project, pipeline_name: &str) -> bool {
         .as_ref()
         .and_then(|ci| ci.pipelines.get(pipeline_name))
         .is_some_and(|pipeline| pipeline.continue_on_error)
+}
+
+fn pipeline_duration_ms(started_at: DateTime<Utc>, completed_at: DateTime<Utc>) -> u64 {
+    u64::try_from((completed_at - started_at).num_milliseconds()).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn pipeline_duration_ms_returns_elapsed_milliseconds() {
+        let started_at = Utc::now();
+        let completed_at = started_at + Duration::milliseconds(1_250);
+
+        assert_eq!(pipeline_duration_ms(started_at, completed_at), 1_250);
+    }
+
+    #[test]
+    fn pipeline_duration_ms_clamps_negative_durations() {
+        let completed_at = Utc::now();
+        let started_at = completed_at + Duration::milliseconds(10);
+
+        assert_eq!(pipeline_duration_ms(started_at, completed_at), 0);
+    }
 }

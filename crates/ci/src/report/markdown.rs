@@ -1,5 +1,6 @@
 use super::{PipelineReport, PipelineStatus, TaskStatus};
 use std::fmt::Write;
+use std::time::Duration;
 
 /// Generate a markdown summary of the pipeline report.
 ///
@@ -153,12 +154,11 @@ fn escape_table_cell(s: &str) -> String {
 }
 
 /// Format duration in milliseconds to a human-readable string.
-#[allow(clippy::cast_precision_loss)]
 fn format_duration(ms: u64) -> String {
     if ms < 1000 {
         format!("{ms}ms")
     } else if ms < 60_000 {
-        format!("{:.1}s", ms as f64 / 1000.0)
+        format!("{:.1}s", Duration::from_millis(ms).as_secs_f64())
     } else {
         let minutes = ms / 60_000;
         let seconds = (ms % 60_000) / 1000;
