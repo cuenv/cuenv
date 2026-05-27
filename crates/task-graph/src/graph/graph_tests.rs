@@ -544,7 +544,7 @@ fn test_compute_affected_direct() {
             // Simulate: build has no deps (directly affected), others don't
             task.depends_on.is_empty()
         },
-        None::<fn(&str) -> bool>,
+        None,
     );
 
     // build is directly affected, test and deploy are transitively affected
@@ -559,8 +559,7 @@ fn test_compute_affected_none() {
     graph.add_dependency_edges().unwrap();
 
     // Nothing is directly affected
-    let affected =
-        graph.compute_affected(&["build", "test"], |_task| false, None::<fn(&str) -> bool>);
+    let affected = graph.compute_affected(&["build", "test"], |_task| false, None);
 
     assert!(affected.is_empty());
 }
@@ -574,11 +573,7 @@ fn test_compute_affected_preserves_pipeline_order() {
     graph.add_dependency_edges().unwrap();
 
     // All directly affected
-    let affected = graph.compute_affected(
-        &["build", "test", "deploy"],
-        |_| true,
-        None::<fn(&str) -> bool>,
-    );
+    let affected = graph.compute_affected(&["build", "test", "deploy"], |_| true, None);
 
     // Should preserve pipeline order, not graph order
     assert_eq!(affected, vec!["build", "test", "deploy"]);
@@ -599,7 +594,7 @@ fn test_compute_affected_transitive_only() {
             // Only "test" has exactly one dependency
             task.depends_on.len() == 1 && task.depends_on[0] == "build"
         },
-        None::<fn(&str) -> bool>,
+        None,
     );
 
     // test is directly affected, deploy is transitively affected
@@ -625,7 +620,7 @@ fn test_compute_affected_with_external_resolver() {
     let affected = graph.compute_affected(
         &["build", "test"],
         |_task| false, // Nothing directly affected
-        Some(|dep: &str| dep == "#external:lib"),
+        Some(&|dep: &str| dep == "#external:lib"),
     );
 
     // build is affected via external dep, test is transitively affected
@@ -646,7 +641,7 @@ fn test_compute_affected_external_not_affected() {
 
     // External resolver: nothing is affected
     let affected =
-        graph.compute_affected(&["build", "test"], |_task| false, Some(|_dep: &str| false));
+        graph.compute_affected(&["build", "test"], |_task| false, Some(&|_dep: &str| false));
 
     assert!(affected.is_empty());
 }

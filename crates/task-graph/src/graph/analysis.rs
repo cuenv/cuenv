@@ -2,6 +2,9 @@ use super::TaskGraph;
 use crate::TaskNodeData;
 use std::collections::HashSet;
 
+/// Borrowed predicate used to resolve whether an external dependency is affected.
+pub type ExternalAffectedResolver<'a> = &'a dyn Fn(&str) -> bool;
+
 impl<T: TaskNodeData> TaskGraph<T> {
     /// Compute which tasks from a pipeline are affected, using transitive dependency propagation.
     ///
@@ -27,31 +30,29 @@ impl<T: TaskNodeData> TaskGraph<T> {
     /// let affected = graph.compute_affected(
     ///     &["build", "test", "deploy"],
     ///     |task| task.is_affected_by(&changed_files, &project_root),
-    ///     None::<fn(&str) -> bool>,
+    ///     None,
     /// );
     ///
     /// // With external dependency checking (for CI cross-project deps)
     /// let affected = graph.compute_affected(
     ///     &["build", "test", "deploy"],
     ///     |task| task.is_affected_by(&changed_files, &project_root),
-    ///     Some(|dep: &str| check_external_dependency(dep, &all_projects, &changed_files)),
+    ///     Some(&|dep: &str| check_external_dependency(dep, &all_projects, &changed_files)),
     /// );
     /// ```
-    #[allow(clippy::needless_pass_by_value)] // Option<E> is intentionally by-value for ergonomic API
-    pub fn compute_affected<F, E>(
+    pub fn compute_affected<F>(
         &self,
         pipeline_tasks: &[impl AsRef<str>],
         is_directly_affected: F,
-        is_external_affected: Option<E>,
+        is_external_affected: Option<ExternalAffectedResolver<'_>>,
     ) -> Vec<String>
     where
         F: Fn(&T) -> bool,
-        E: Fn(&str) -> bool,
     {
         let mut affected = HashSet::new();
 
         self.mark_directly_affected(pipeline_tasks, &is_directly_affected, &mut affected);
-        self.propagate_affected(pipeline_tasks, is_external_affected.as_ref(), &mut affected);
+        self.propagate_affected(pipeline_tasks, is_external_affected, &mut affected);
         affected_in_pipeline_order(pipeline_tasks, &affected)
     }
 
@@ -73,14 +74,12 @@ impl<T: TaskNodeData> TaskGraph<T> {
         }
     }
 
-    fn propagate_affected<E>(
+    fn propagate_affected(
         &self,
         pipeline_tasks: &[impl AsRef<str>],
-        is_external_affected: Option<&E>,
+        is_external_affected: Option<ExternalAffectedResolver<'_>>,
         affected: &mut HashSet<String>,
-    ) where
-        E: Fn(&str) -> bool,
-    {
+    ) {
         let mut changed = true;
         while changed {
             changed = false;
@@ -94,15 +93,12 @@ impl<T: TaskNodeData> TaskGraph<T> {
         }
     }
 
-    fn propagate_task_affected<E>(
+    fn propagate_task_affected(
         &self,
         task_name: &str,
-        is_external_affected: Option<&E>,
+        is_external_affected: Option<ExternalAffectedResolver<'_>>,
         affected: &mut HashSet<String>,
-    ) -> bool
-    where
-        E: Fn(&str) -> bool,
-    {
+    ) -> bool {
         if affected.contains(task_name) {
             return false;
         }
@@ -121,15 +117,12 @@ impl<T: TaskNodeData> TaskGraph<T> {
         false
     }
 
-    fn dependency_is_affected<E>(
+    fn dependency_is_affected(
         &self,
         dep: &str,
-        is_external_affected: Option<&E>,
+        is_external_affected: Option<ExternalAffectedResolver<'_>>,
         affected: &HashSet<String>,
-    ) -> bool
-    where
-        E: Fn(&str) -> bool,
-    {
+    ) -> bool {
         if dep.starts_with('#') {
             return is_external_affected.is_some_and(|resolver| resolver(dep));
         }
