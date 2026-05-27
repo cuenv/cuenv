@@ -227,8 +227,15 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
 ///
 /// Returns an error if the tracing filter is invalid or the event bus is
 /// already initialized.
-#[allow(clippy::needless_pass_by_value)] // Config is small and taking by value is more ergonomic
 pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventReceiver> {
+    let TracingConfig {
+        format,
+        level,
+        enable_file_location,
+        filter,
+        ..
+    } = config;
+
     // Sync correlation ID with cuenv_events
     let corr_id = correlation_id();
     cuenv_events::set_correlation_id(corr_id);
@@ -255,11 +262,11 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
     }
 
     // Create base filter - always capture cuenv events at info level
-    let env_filter = if let Some(ref filter) = config.filter {
+    let env_filter = if let Some(filter) = filter {
         EnvFilter::try_new(filter)
     } else {
         EnvFilter::try_from_default_env().or_else(|_| {
-            let level_str = match config.level {
+            let level_str = match level {
                 Level::TRACE => "trace",
                 Level::DEBUG => "debug",
                 Level::INFO => "info",
@@ -281,9 +288,9 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
 
     // Add format layer based on config
     // Only add verbose output in JSON mode or when explicitly debugging
-    let is_verbose = config.level == Level::DEBUG || config.level == Level::TRACE;
+    let is_verbose = level == Level::DEBUG || level == Level::TRACE;
 
-    match config.format {
+    match format {
         TracingFormat::Json => {
             // JSON mode: format layer always on for structured logs
             let layer = tracing_subscriber::fmt::layer()
@@ -313,8 +320,8 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
         TracingFormat::Dev if is_verbose => {
             let layer = tracing_subscriber::fmt::layer()
                 .with_writer(io::stderr)
-                .with_file(config.enable_file_location)
-                .with_line_number(config.enable_file_location)
+                .with_file(enable_file_location)
+                .with_line_number(enable_file_location)
                 .with_target(true)
                 .with_thread_ids(true)
                 .with_thread_names(true)

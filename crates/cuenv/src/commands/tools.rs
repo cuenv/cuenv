@@ -6,12 +6,17 @@
 use crate::cli::CliError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::tools::{
-    Platform, ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
+    FetchedTool, Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions,
     ToolExtract, ToolOptions, ToolRegistry, ToolSource, apply_resolved_tool_activation,
     resolve_tool_activation, validate_tool_activation,
 };
-use std::collections::{BTreeMap, HashSet};
+use cuenv_events::{eprintln_redacted, println_redacted};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
+
+mod list;
+use list::render_tools_list;
 
 /// Create a tool registry with available providers.
 fn create_registry() -> ToolRegistry {
@@ -42,9 +47,7 @@ fn create_registry() -> ToolRegistry {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found or if any tool download fails.
-#[allow(clippy::print_stdout, clippy::print_stderr)] // Download progress messages, no secrets
 pub async fn execute_tools_download() -> Result<(), CliError> {
-    // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {
         CliError::config_with_help(
             "No cuenv.lock found",
@@ -52,7 +55,6 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
         )
     })?;
 
-    // Load the lockfile
     let lockfile = Lockfile::load(&lockfile_path)
         .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
         .ok_or_else(|| {
@@ -62,109 +64,15 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
             )
         })?;
 
-    // Get current platform
-    let platform = Platform::current();
-    let platform_str = platform.to_string();
+    let session = ToolDownloadSession::new(&lockfile);
+    session
+        .check_prerequisites(PrerequisitePolicy::StrictCli)
+        .await?;
 
-    // Create tool options
-    let options = ToolOptions::default();
-
-    // Create the registry
-    let registry = create_registry();
-
-    // Check prerequisites for all providers we'll use
-    let mut providers_used = HashSet::new();
-    for tool in lockfile.tools.values() {
-        if let Some(locked) = tool.platforms.get(&platform_str) {
-            providers_used.insert(locked.provider.clone());
-        }
-    }
-
-    for provider_name in &providers_used {
-        if let Some(provider) = registry.get(provider_name) {
-            provider.check_prerequisites().await.map_err(|e| {
-                CliError::config_with_help(
-                    format!("Provider '{}' not available: {}", provider_name, e),
-                    "Check that the required tools are installed",
-                )
-            })?;
-        }
-    }
-
-    // Download tools
-    let mut downloaded = 0;
-    let mut skipped = 0;
-    let mut errors: Vec<String> = Vec::new();
-
-    for (name, tool) in &lockfile.tools {
-        let Some(locked) = tool.platforms.get(&platform_str) else {
-            // Tool not available for this platform
-            continue;
-        };
-
-        let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
-            eprintln!(
-                "Warning: Unknown provider '{}' for tool '{}'",
-                locked.provider, name
-            );
-            continue;
-        };
-
-        // Get the provider
-        let Some(provider) = registry.find_for_source(&source) else {
-            eprintln!(
-                "Warning: No provider found for source type of tool '{}'",
-                name
-            );
-            continue;
-        };
-
-        // Create resolved tool
-        let resolved = cuenv_core::tools::ResolvedTool {
-            name: name.clone(),
-            version: tool.version.clone(),
-            platform: platform.clone(),
-            source,
-        };
-
-        // Check if already cached
-        if provider.is_cached(&resolved, &options) {
-            skipped += 1;
-            continue;
-        }
-
-        // Fetch the tool
-        println!("Downloading {} v{}...", name, tool.version);
-        match provider.fetch(&resolved, &options).await {
-            Ok(fetched) => {
-                println!(
-                    "  -> {} ({})",
-                    fetched.binary_path.display(),
-                    fetched.sha256
-                );
-                downloaded += 1;
-            }
-            Err(e) => {
-                eprintln!("  Error downloading '{}': {}", name, e);
-                errors.push(format!("{}: {}", name, e));
-            }
-        }
-    }
-
-    println!();
-    println!(
-        "Downloaded {} tools, {} already cached",
-        downloaded, skipped
-    );
-
-    if !errors.is_empty() {
-        return Err(CliError::other(format!(
-            "Failed to download tools: {}",
-            errors.join(", ")
-        )));
-    }
-
-    Ok(())
+    let mut reporter = CliDownloadReporter;
+    let summary = session.download_missing(&mut reporter).await;
+    reporter.finished(&summary);
+    summary.ensure_success()
 }
 
 /// Ensure all tools from the lockfile are downloaded for the current platform.
@@ -179,13 +87,11 @@ pub async fn execute_tools_download() -> Result<(), CliError> {
 ///
 /// Returns an error if tools cannot be downloaded due to provider issues.
 pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), CliError> {
-    // Find the lockfile - not finding one is not an error
     let Some(lockfile_path) = find_runtime_lockfile(project_path) else {
         tracing::debug!("No lockfile found - skipping tool download");
         return Ok(());
     };
 
-    // Load the lockfile
     let Some(lockfile) = Lockfile::load(&lockfile_path)
         .map_err(|e| CliError::other(format!("Failed to load lockfile: {e}")))?
     else {
@@ -198,7 +104,6 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
         return Ok(());
     }
 
-    // Validate lockfile activation hints before any download activity.
     let activation_options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path);
     validate_tool_activation(&activation_options).map_err(|e| {
         CliError::config_with_help(
@@ -207,106 +112,239 @@ pub async fn ensure_tools_downloaded(project_path: Option<&Path>) -> Result<(), 
         )
     })?;
 
-    // Get current platform
-    let platform = Platform::current();
-    let platform_str = platform.to_string();
+    let session = ToolDownloadSession::new(&lockfile);
+    session
+        .check_prerequisites(PrerequisitePolicy::BestEffortRuntime)
+        .await?;
 
-    // Create tool options
-    let options = ToolOptions::default();
+    let mut reporter = RuntimeDownloadReporter;
+    let summary = session.download_missing(&mut reporter).await;
+    reporter.finished(&summary);
+    summary.ensure_success()
+}
 
-    // Create the registry
-    let registry = create_registry();
+enum PrerequisitePolicy {
+    StrictCli,
+    BestEffortRuntime,
+}
 
-    // Check prerequisites for all providers we'll use
-    let mut providers_used = HashSet::new();
-    for tool in lockfile.tools.values() {
-        if let Some(locked) = tool.platforms.get(&platform_str) {
-            providers_used.insert(locked.provider.clone());
+struct ToolDownloadSession<'a> {
+    lockfile: &'a Lockfile,
+    platform: Platform,
+    platform_key: String,
+    options: ToolOptions,
+    registry: ToolRegistry,
+}
+
+impl<'a> ToolDownloadSession<'a> {
+    fn new(lockfile: &'a Lockfile) -> Self {
+        let platform = Platform::current();
+        let platform_key = platform.to_string();
+
+        Self {
+            lockfile,
+            platform,
+            platform_key,
+            options: ToolOptions::default(),
+            registry: create_registry(),
         }
     }
 
-    for provider_name in &providers_used {
-        if let Some(provider) = registry.get(provider_name)
-            && let Err(e) = provider.check_prerequisites().await
-        {
-            tracing::warn!(
-                "Provider '{}' prerequisites check failed: {} - skipping tools from this provider",
-                provider_name,
-                e
-            );
-        }
-    }
+    async fn check_prerequisites(&self, policy: PrerequisitePolicy) -> Result<(), CliError> {
+        for provider_name in self.providers_used() {
+            let Some(provider) = self.registry.get(&provider_name) else {
+                continue;
+            };
 
-    // Download tools that aren't cached
-    let mut downloaded = 0;
-    let mut errors: Vec<String> = Vec::new();
-
-    for (name, tool) in &lockfile.tools {
-        let Some(locked) = tool.platforms.get(&platform_str) else {
-            // Tool not available for this platform
-            continue;
-        };
-
-        // Convert lockfile data to ToolSource
-        let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
-            tracing::debug!(
-                "Unknown provider '{}' for tool '{}' - skipping",
-                locked.provider,
-                name
-            );
-            continue;
-        };
-
-        // Get the provider
-        let Some(provider) = registry.find_for_source(&source) else {
-            tracing::debug!("No provider found for tool '{}' - skipping", name);
-            continue;
-        };
-
-        // Create resolved tool
-        let resolved = cuenv_core::tools::ResolvedTool {
-            name: name.clone(),
-            version: tool.version.clone(),
-            platform: platform.clone(),
-            source,
-        };
-
-        // Check if already cached
-        if provider.is_cached(&resolved, &options) {
-            continue;
-        }
-
-        // Fetch the tool
-        tracing::info!("Downloading {} v{}...", name, tool.version);
-        match provider.fetch(&resolved, &options).await {
-            Ok(fetched) => {
-                tracing::info!(
-                    "Downloaded {} -> {} ({})",
-                    name,
-                    fetched.binary_path.display(),
-                    fetched.sha256
-                );
-                downloaded += 1;
-            }
-            Err(e) => {
-                tracing::warn!("Failed to download '{}': {}", name, e);
-                errors.push(format!("{}: {}", name, e));
+            if let Err(error) = provider.check_prerequisites().await {
+                match policy {
+                    PrerequisitePolicy::StrictCli => {
+                        return Err(CliError::config_with_help(
+                            format!("Provider '{provider_name}' not available: {error}"),
+                            "Check that the required tools are installed",
+                        ));
+                    }
+                    PrerequisitePolicy::BestEffortRuntime => {
+                        tracing::warn!(
+                            "Provider '{}' prerequisites check failed: {} - continuing with best-effort tool download",
+                            provider_name,
+                            error
+                        );
+                    }
+                }
             }
         }
+
+        Ok(())
     }
 
-    if downloaded > 0 {
-        tracing::info!("Downloaded {} tools", downloaded);
+    async fn download_missing(
+        &self,
+        reporter: &mut impl ToolDownloadReporter,
+    ) -> ToolDownloadSummary {
+        let mut summary = ToolDownloadSummary::default();
+
+        for (name, tool) in &self.lockfile.tools {
+            let Some(locked) = tool.platforms.get(&self.platform_key) else {
+                continue;
+            };
+
+            let Some(source) = lockfile_entry_to_source(name, &tool.version, locked) else {
+                reporter.unknown_provider(&locked.provider, name);
+                continue;
+            };
+
+            let Some(provider) = self.registry.find_for_source(&source) else {
+                reporter.missing_provider(name);
+                continue;
+            };
+
+            let resolved = ResolvedTool {
+                name: name.clone(),
+                version: tool.version.clone(),
+                platform: self.platform.clone(),
+                source,
+            };
+
+            if provider.is_cached(&resolved, &self.options) {
+                summary.skipped += 1;
+                reporter.cached(name);
+                continue;
+            }
+
+            reporter.download_started(name, &tool.version);
+            match provider.fetch(&resolved, &self.options).await {
+                Ok(fetched) => {
+                    summary.downloaded += 1;
+                    reporter.download_finished(name, &fetched);
+                }
+                Err(error) => {
+                    reporter.download_failed(name, &error);
+                    summary.errors.push(format!("{name}: {error}"));
+                }
+            }
+        }
+
+        summary
     }
 
-    if !errors.is_empty() {
-        return Err(CliError::other(format!(
-            "Failed to download tools: {}",
-            errors.join(", ")
-        )));
+    fn providers_used(&self) -> BTreeSet<String> {
+        self.lockfile
+            .tools
+            .values()
+            .filter_map(|tool| tool.platforms.get(&self.platform_key))
+            .map(|locked| locked.provider.clone())
+            .collect()
+    }
+}
+
+#[derive(Default)]
+struct ToolDownloadSummary {
+    downloaded: usize,
+    skipped: usize,
+    errors: Vec<String>,
+}
+
+impl ToolDownloadSummary {
+    fn ensure_success(&self) -> Result<(), CliError> {
+        if self.errors.is_empty() {
+            Ok(())
+        } else {
+            Err(CliError::other(format!(
+                "Failed to download tools: {}",
+                self.errors.join(", ")
+            )))
+        }
+    }
+}
+
+trait ToolDownloadReporter {
+    fn unknown_provider(&mut self, provider_name: &str, tool_name: &str);
+    fn missing_provider(&mut self, tool_name: &str);
+    fn cached(&mut self, _tool_name: &str) {}
+    fn download_started(&mut self, tool_name: &str, version: &str);
+    fn download_finished(&mut self, tool_name: &str, fetched: &FetchedTool);
+    fn download_failed(&mut self, tool_name: &str, error: &dyn Display);
+    fn finished(&mut self, _summary: &ToolDownloadSummary) {}
+}
+
+struct CliDownloadReporter;
+
+impl ToolDownloadReporter for CliDownloadReporter {
+    fn unknown_provider(&mut self, provider_name: &str, tool_name: &str) {
+        eprintln_redacted(&format!(
+            "Warning: Unknown provider '{provider_name}' for tool '{tool_name}'"
+        ));
     }
 
-    Ok(())
+    fn missing_provider(&mut self, tool_name: &str) {
+        eprintln_redacted(&format!(
+            "Warning: No provider found for source type of tool '{tool_name}'"
+        ));
+    }
+
+    fn download_started(&mut self, tool_name: &str, version: &str) {
+        println_redacted(&format!("Downloading {tool_name} v{version}..."));
+    }
+
+    fn download_finished(&mut self, _tool_name: &str, fetched: &FetchedTool) {
+        println_redacted(&format!(
+            "  -> {} ({})",
+            fetched.binary_path.display(),
+            fetched.sha256
+        ));
+    }
+
+    fn download_failed(&mut self, tool_name: &str, error: &dyn Display) {
+        eprintln_redacted(&format!("  Error downloading '{tool_name}': {error}"));
+    }
+
+    fn finished(&mut self, summary: &ToolDownloadSummary) {
+        println_redacted("");
+        println_redacted(&format!(
+            "Downloaded {} tools, {} already cached",
+            summary.downloaded, summary.skipped
+        ));
+    }
+}
+
+struct RuntimeDownloadReporter;
+
+impl ToolDownloadReporter for RuntimeDownloadReporter {
+    fn unknown_provider(&mut self, provider_name: &str, tool_name: &str) {
+        tracing::debug!(
+            "Unknown provider '{}' for tool '{}' - skipping",
+            provider_name,
+            tool_name
+        );
+    }
+
+    fn missing_provider(&mut self, tool_name: &str) {
+        tracing::debug!("No provider found for tool '{}' - skipping", tool_name);
+    }
+
+    fn download_started(&mut self, tool_name: &str, version: &str) {
+        tracing::info!("Downloading {tool_name} v{version}...");
+    }
+
+    fn download_finished(&mut self, tool_name: &str, fetched: &FetchedTool) {
+        tracing::info!(
+            "Downloaded {} -> {} ({})",
+            tool_name,
+            fetched.binary_path.display(),
+            fetched.sha256
+        );
+    }
+
+    fn download_failed(&mut self, tool_name: &str, error: &dyn Display) {
+        tracing::warn!("Failed to download '{}': {}", tool_name, error);
+    }
+
+    fn finished(&mut self, summary: &ToolDownloadSummary) {
+        if summary.downloaded > 0 {
+            tracing::info!("Downloaded {} tools", summary.downloaded);
+        }
+    }
 }
 
 /// Convert a lockfile entry to a ToolSource.
@@ -510,7 +548,6 @@ pub fn resolve_tool_activation_steps(
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
-#[allow(clippy::print_stdout)] // Shell export statements, no secrets
 pub fn execute_tools_activate() -> Result<(), CliError> {
     let activation_steps = resolve_tool_activation_steps(None)?.ok_or_else(|| {
         CliError::config_with_help(
@@ -535,7 +572,7 @@ pub fn execute_tools_activate() -> Result<(), CliError> {
 
     for var in touched_vars {
         if let Some(value) = env.get(&var) {
-            println!("export {var}={}", shell_quote(value));
+            println_redacted(&format!("export {var}={}", shell_quote(value)));
         }
     }
 
@@ -553,7 +590,6 @@ fn shell_quote(value: &str) -> String {
 /// # Errors
 ///
 /// Returns an error if the lockfile is not found.
-#[allow(clippy::print_stdout)] // Tool listing info, no secrets
 pub fn execute_tools_list() -> Result<(), CliError> {
     // Find the lockfile
     let lockfile_path = find_lockfile(None).ok_or_else(|| {
@@ -573,141 +609,15 @@ pub fn execute_tools_list() -> Result<(), CliError> {
             )
         })?;
 
-    // Get current platform for highlighting
-    let current_platform = cuenv_core::lockfile::current_platform();
-
-    if lockfile.tools.is_empty() {
-        println!("No tools configured.");
-        println!();
-        println!("To add tools, create a runtime in your env.cue:");
-        println!();
-        println!("  runtime: #ToolsRuntime & {{");
-        println!("      platforms: [\"darwin-arm64\", \"linux-x86_64\"]");
-        println!("      tools: {{");
-        println!("          jq: \"1.7.1\"");
-        println!("          yq: \"4.44.6\"");
-        println!("          foundationdb: {{");
-        println!("              version: \"7.3.63\"");
-        println!(
-            "              source: #GitHub & {{repo: \"apple/foundationdb\", asset: \"FoundationDB-{{version}}_arm64.pkg\", extract: [{{kind: \"lib\", path: \"libfdb_c.dylib\", env: \"FDB_CLIENT_LIB\"}}]}}"
-        );
-        println!("          }}");
-        println!("      }}");
-        println!("  }}");
-        return Ok(());
+    for line in render_tools_list(
+        &lockfile,
+        &lockfile_path,
+        &cuenv_core::lockfile::current_platform(),
+    ) {
+        println_redacted(&line);
     }
-
-    println!("Configured tools:");
-    println!();
-
-    // Sort tools by name
-    let mut tools: Vec<_> = lockfile.tools.iter().collect();
-    tools.sort_by_key(|(name, _)| *name);
-
-    for (name, tool) in tools {
-        println!("  {} v{}", name, tool.version);
-
-        // Show platforms
-        for (platform, locked) in &tool.platforms {
-            let marker = if platform == &current_platform {
-                " (current)"
-            } else {
-                ""
-            };
-            println!(
-                "    - {}: {} ({}){}",
-                platform,
-                locked.provider,
-                &locked.digest[..20],
-                marker
-            );
-        }
-    }
-
-    println!();
-    for line in activation_section_lines(&lockfile, &lockfile_path) {
-        println!("{line}");
-    }
-    println!();
-    println!(
-        "Total: {} tools, {} platforms",
-        lockfile.tools.len(),
-        lockfile
-            .tools
-            .values()
-            .map(|t| t.platforms.len())
-            .sum::<usize>()
-    );
 
     Ok(())
-}
-
-fn activation_section_lines(lockfile: &Lockfile, lockfile_path: &Path) -> Vec<String> {
-    activation_section_lines_with_cache_dir(lockfile, lockfile_path, None)
-}
-
-fn activation_section_lines_with_cache_dir(
-    lockfile: &Lockfile,
-    lockfile_path: &Path,
-    cache_dir: Option<PathBuf>,
-) -> Vec<String> {
-    let platform = Platform::current();
-    let mode = if lockfile.tools_activation.is_empty() {
-        "inferred"
-    } else {
-        "explicit"
-    };
-    let mut lines = vec![format!("Activation ({platform}, {mode}):")];
-    let mut options =
-        ToolActivationResolveOptions::new(lockfile, lockfile_path).with_platform(platform);
-    if let Some(cache_dir) = cache_dir {
-        options = options.with_cache_dir(cache_dir);
-    }
-
-    match resolve_tool_activation(&options) {
-        Ok(steps) => {
-            let rendered = render_activation_steps(&steps);
-            if rendered.is_empty() {
-                lines.push(
-                    "  - No activation paths are currently materialized for this platform."
-                        .to_string(),
-                );
-            } else {
-                lines.extend(rendered);
-            }
-        }
-        Err(err) => lines.push(format!("  - error: {err}")),
-    }
-
-    lines
-}
-
-fn render_activation_steps(steps: &[ResolvedToolActivationStep]) -> Vec<String> {
-    steps
-        .iter()
-        .filter(|step| !step.value.is_empty() || matches!(step.op, ToolActivationOperation::Set))
-        .map(|step| {
-            let value = if step.value.is_empty() {
-                "<empty>"
-            } else {
-                step.value.as_str()
-            };
-            format!(
-                "  - {} ({}): {}",
-                step.var,
-                activation_operation_label(&step.op),
-                value
-            )
-        })
-        .collect()
-}
-
-fn activation_operation_label(operation: &ToolActivationOperation) -> &'static str {
-    match operation {
-        ToolActivationOperation::Set => "set",
-        ToolActivationOperation::Prepend => "prepend",
-        ToolActivationOperation::Append => "append",
-    }
 }
 
 /// Find the lockfile by walking up from the given directory (or current directory).
@@ -758,35 +668,8 @@ fn find_runtime_lockfile(project_path: Option<&Path>) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::lockfile::{LockedTool, LockedToolPlatform};
-    use cuenv_core::tools::{ToolActivationSource, ToolActivationStep};
-    use std::collections::BTreeMap;
+    use cuenv_core::lockfile::LockedToolPlatform;
     use std::fs;
-
-    fn current_platform_key() -> String {
-        Platform::current().to_string()
-    }
-
-    fn github_tool(version: &str) -> LockedTool {
-        LockedTool {
-            version: version.to_string(),
-            platforms: BTreeMap::from([(
-                current_platform_key(),
-                LockedToolPlatform {
-                    provider: "github".to_string(),
-                    digest: "sha256:abc".to_string(),
-                    source: serde_json::json!({
-                        "type": "github",
-                        "repo": "jqlang/jq",
-                        "tag": "jq-1.7.1",
-                        "asset": "jq",
-                    }),
-                    size: None,
-                    dependencies: vec![],
-                },
-            )]),
-        }
-    }
 
     #[test]
     fn test_find_lockfile_not_found() {
@@ -828,122 +711,6 @@ mod tests {
         let result = find_lockfile_in_project(&project_dir);
 
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_activation_section_lines_show_inferred_activation() {
-        let temp = tempfile::tempdir().unwrap();
-        let lockfile_path = temp.path().join("cuenv.lock");
-        let cache_dir = temp.path().join("cache");
-        let bin_dir = cache_dir
-            .join("github")
-            .join("jq")
-            .join("1.7.1")
-            .join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let mut lockfile = Lockfile::new();
-        lockfile
-            .tools
-            .insert("jq".to_string(), github_tool("1.7.1"));
-
-        let lines =
-            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
-
-        assert!(
-            lines
-                .first()
-                .is_some_and(|line| line.contains("Activation (") && line.contains("inferred"))
-        );
-        assert!(
-            lines
-                .iter()
-                .any(|line| line == &format!("  - PATH (prepend): {}", bin_dir.display()))
-        );
-    }
-
-    #[test]
-    fn test_activation_section_lines_show_explicit_activation() {
-        let temp = tempfile::tempdir().unwrap();
-        let lockfile_path = temp.path().join("cuenv.lock");
-        let cache_dir = temp.path().join("cache");
-        let bin_dir = cache_dir
-            .join("github")
-            .join("jq")
-            .join("1.7.1")
-            .join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        let mut lockfile = Lockfile::new();
-        lockfile
-            .tools
-            .insert("jq".to_string(), github_tool("1.7.1"));
-        lockfile.tools_activation = vec![ToolActivationStep {
-            var: "PATH".to_string(),
-            op: ToolActivationOperation::Prepend,
-            separator: ":".to_string(),
-            from: ToolActivationSource::ToolBinDir {
-                tool: "jq".to_string(),
-            },
-        }];
-
-        let lines =
-            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
-
-        assert!(
-            lines
-                .first()
-                .is_some_and(|line| line.contains("Activation (") && line.contains("explicit"))
-        );
-        assert_eq!(
-            lines[1],
-            format!("  - PATH (prepend): {}", bin_dir.display())
-        );
-        assert_eq!(lines.len(), 2);
-    }
-
-    #[test]
-    fn test_activation_section_lines_show_invalid_activation_error() {
-        let temp = tempfile::tempdir().unwrap();
-        let lockfile_path = temp.path().join("cuenv.lock");
-        let mut lockfile = Lockfile::new();
-        lockfile
-            .tools
-            .insert("jq".to_string(), github_tool("1.7.1"));
-        lockfile.tools_activation = vec![ToolActivationStep {
-            var: "PATH".to_string(),
-            op: ToolActivationOperation::Prepend,
-            separator: ":".to_string(),
-            from: ToolActivationSource::ToolBinDir {
-                tool: "missing".to_string(),
-            },
-        }];
-
-        let lines = activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, None);
-
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("error:") && line.contains("unknown tool 'missing'"))
-        );
-    }
-
-    #[test]
-    fn test_activation_section_lines_note_when_no_paths_are_materialized() {
-        let temp = tempfile::tempdir().unwrap();
-        let lockfile_path = temp.path().join("cuenv.lock");
-        let cache_dir = temp.path().join("cache");
-        let mut lockfile = Lockfile::new();
-        lockfile
-            .tools
-            .insert("jq".to_string(), github_tool("1.7.1"));
-
-        let lines =
-            activation_section_lines_with_cache_dir(&lockfile, &lockfile_path, Some(cache_dir));
-
-        assert!(lines.iter().any(|line| {
-            line == "  - No activation paths are currently materialized for this platform."
-        }));
     }
 
     #[test]

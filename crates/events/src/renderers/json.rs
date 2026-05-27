@@ -1,12 +1,10 @@
 //! JSON renderer for cuenv events.
 //!
 //! Renders events as JSON lines for machine consumption.
-//! This module is allowed to use println! as it's the output layer.
-
-#![allow(clippy::print_stdout)]
 
 use crate::bus::EventReceiver;
 use crate::event::{CuenvEvent, EventCategory, SystemEvent};
+use std::io::{self, Write};
 
 /// JSON renderer that outputs events as JSON lines.
 #[derive(Debug, Default)]
@@ -44,15 +42,23 @@ impl JsonRenderer {
 
     /// Render a single event as JSON.
     pub fn render(&self, event: &CuenvEvent) {
-        let json = if self.pretty {
-            serde_json::to_string_pretty(event)
-        } else {
-            serde_json::to_string(event)
+        let stdout = io::stdout();
+        if let Err(error) = self.render_to_writer(event, stdout.lock()) {
+            tracing::debug!(%error, "failed to write JSON event");
+        }
+    }
+
+    /// Render a single event as JSON to a writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if writing to the target fails.
+    pub fn render_to_writer(&self, event: &CuenvEvent, mut writer: impl Write) -> io::Result<()> {
+        let Some(json) = self.render_to_string(event) else {
+            return Ok(());
         };
 
-        if let Ok(json) = json {
-            println!("{json}");
-        }
+        writeln!(writer, "{json}")
     }
 
     /// Render a single event to a string (for testing).
@@ -124,6 +130,19 @@ mod tests {
         assert!(json_str.contains("\"correlation_id\""));
         assert!(json_str.contains("test::target"));
         assert!(json_str.contains("Test message"));
+    }
+
+    #[test]
+    fn test_render_to_writer_appends_newline() {
+        let renderer = JsonRenderer::new();
+        let event = create_test_event();
+        let mut output = Vec::new();
+
+        renderer.render_to_writer(&event, &mut output).unwrap();
+
+        assert!(output.ends_with(b"\n"));
+        let json = std::str::from_utf8(&output).unwrap();
+        assert!(json.contains("Test message"));
     }
 
     #[test]

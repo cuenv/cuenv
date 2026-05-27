@@ -1,8 +1,5 @@
 //! Coordinator discovery and lifecycle management.
 
-// This module uses unsafe for libc::kill and env var manipulation in tests
-#![allow(unsafe_code)]
-
 use super::client::CoordinatorHandle;
 use super::protocol::{MessageType, WireMessage};
 use super::{lock_path, pid_path, socket_path};
@@ -131,6 +128,19 @@ fn is_cuenv_process(pid: i32) -> bool {
     }
 }
 
+#[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "Required to send SIGTERM after coordinator process verification"
+)]
+fn terminate_coordinator_process(pid: i32) {
+    // SAFETY: `libc::kill` is called with SIGTERM only after the caller has
+    // verified that the PID still belongs to a cuenv coordinator process.
+    unsafe {
+        let _ = libc::kill(pid, libc::SIGTERM);
+    }
+}
+
 /// Clean up a stale coordinator.
 async fn cleanup_stale_coordinator(socket: &Path) -> io::Result<()> {
     let pid_file = socket.with_extension("pid");
@@ -142,10 +152,7 @@ async fn cleanup_stale_coordinator(socket: &Path) -> io::Result<()> {
         // Verify process is actually a cuenv coordinator before killing
         #[cfg(unix)]
         if is_cuenv_process(pid) {
-            // SAFETY: libc::kill with SIGTERM is safe after verifying PID ownership
-            unsafe {
-                let _ = libc::kill(pid, libc::SIGTERM);
-            }
+            terminate_coordinator_process(pid);
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
@@ -355,8 +362,7 @@ mod tests {
     #[test]
     fn test_is_cuenv_process_for_current_process() {
         // Current process is not a cuenv coordinator (it's the test runner)
-        #[allow(clippy::cast_possible_wrap)]
-        let pid = std::process::id() as i32;
+        let pid = i32::try_from(std::process::id()).expect("current process ID fits in i32");
         let result = is_cuenv_process(pid);
         // Should return false since test runner is not cuenv __coordinator
         assert!(!result);

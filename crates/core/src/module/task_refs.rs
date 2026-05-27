@@ -266,7 +266,7 @@ mod tests {
             }
         }
 
-        fn node_with_dependency(self, target: Value) -> Value {
+        fn node_with_dependency(self, target: &Value) -> Value {
             match self {
                 Self::Task => json!({
                     "command": "echo",
@@ -314,7 +314,7 @@ mod tests {
         for owner in owners {
             for shape in shapes {
                 let target = shape.as_value();
-                let consumer = owner.node_with_dependency(target.clone());
+                let consumer = owner.node_with_dependency(&target);
 
                 let instance = json!({
                     "name": "shape-contract",

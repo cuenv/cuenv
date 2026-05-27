@@ -1,8 +1,7 @@
 //! Implementation of the `cuenv build` command.
 //!
-//! Evaluates the CUE configuration, discovers container image definitions,
-//! and either lists available images or validates what would be built.
-//! Actual execution backends (Dagger, Docker CLI) are future work.
+//! Evaluates the CUE configuration and discovers container image definitions.
+//! Listing image definitions is implemented; executing image builds is not.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -60,34 +59,68 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
         return Ok(());
     }
 
-    // No image name specified → list all images
-    if options.names.is_empty() && options.labels.is_empty() {
-        emit_stdout!("Available images:\n");
-        for (name, image) in &project.images {
-            let desc = image
-                .description
-                .as_deref()
-                .map_or(String::new(), |d| format!("  {d}"));
-            let tags = if image.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", image.tags.join(", "))
-            };
-            emit_stdout!(format!("  {name}{tags}{desc}"));
-        }
+    let filters = ImageFilters {
+        names: &options.names,
+        labels: &options.labels,
+    };
+
+    if filters.is_empty() {
+        emit_available_images(&project.images);
         return Ok(());
     }
 
-    let filtered = filter_images(&project.images, &options.names, &options.labels);
+    let selected = matching_images(&project.images, &filters);
 
-    if filtered.is_empty() {
-        emit_stdout!("cuenv build: no images match the specified filters");
-        return Ok(());
+    if selected.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "cuenv build: no images match the specified filters",
+        ));
     }
 
-    // Phase 1: validate and print what would be built.
-    // Execution backends will be added in follow-up work.
-    for (name, image) in &filtered {
+    emit_build_plan(&selected);
+
+    Err(cuenv_core::Error::configuration(
+        "cuenv build: image execution backends are not implemented yet; \
+         omit image names and labels to list configured images",
+    ))
+}
+
+struct ImageFilters<'a> {
+    names: &'a [String],
+    labels: &'a [String],
+}
+
+impl ImageFilters<'_> {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty() && self.labels.is_empty()
+    }
+
+    fn matches(&self, name: &str, image: &ContainerImage) -> bool {
+        let name_match = self.names.is_empty() || self.names.iter().any(|item| item == name);
+        let label_match =
+            self.labels.is_empty() || self.labels.iter().any(|label| image.labels.contains(label));
+        name_match && label_match
+    }
+}
+
+fn emit_available_images(images: &HashMap<String, ContainerImage>) {
+    emit_stdout!("Available images:\n");
+    for (name, image) in sorted_images(images) {
+        let desc = image
+            .description
+            .as_deref()
+            .map_or(String::new(), |d| format!("  {d}"));
+        let tags = if image.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", image.tags.join(", "))
+        };
+        emit_stdout!(format!("  {name}{tags}{desc}"));
+    }
+}
+
+fn emit_build_plan(images: &[(&str, &ContainerImage)]) {
+    for (name, image) in images {
         let registry = image
             .registry
             .as_deref()
@@ -102,28 +135,25 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
             image.context, image.dockerfile
         ));
     }
-
-    emit_stdout!(
-        "\ncuenv build: execution backends not yet implemented — schema validated successfully"
-    );
-    Ok(())
 }
 
-/// Filter images by name and label.
-fn filter_images(
-    all_images: &HashMap<String, ContainerImage>,
-    names: &[String],
-    labels: &[String],
-) -> HashMap<String, ContainerImage> {
-    all_images
-        .iter()
-        .filter(|(name, image)| {
-            let name_match = names.is_empty() || names.contains(name);
-            let label_match = labels.is_empty() || labels.iter().any(|l| image.labels.contains(l));
-            name_match && label_match
-        })
-        .map(|(name, image)| (name.clone(), image.clone()))
+fn matching_images<'a>(
+    all_images: &'a HashMap<String, ContainerImage>,
+    filters: &ImageFilters<'_>,
+) -> Vec<(&'a str, &'a ContainerImage)> {
+    sorted_images(all_images)
+        .into_iter()
+        .filter(|(name, image)| filters.matches(name, image))
         .collect()
+}
+
+fn sorted_images(images: &HashMap<String, ContainerImage>) -> Vec<(&str, &ContainerImage)> {
+    let mut sorted: Vec<_> = images
+        .iter()
+        .map(|(name, image)| (name.as_str(), image))
+        .collect();
+    sorted.sort_by_key(|(name, _)| *name);
+    sorted
 }
 
 #[cfg(test)]
@@ -160,34 +190,66 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_images_no_filters() {
+    fn test_matching_images_no_filters() {
         let mut images = HashMap::new();
         images.insert("api".to_string(), test_image(vec!["latest"], vec![]));
         images.insert("worker".to_string(), test_image(vec!["latest"], vec![]));
 
-        let result = filter_images(&images, &[], &[]);
-        assert_eq!(result.len(), 2);
+        let filters = ImageFilters {
+            names: &[],
+            labels: &[],
+        };
+        let result = matching_images(&images, &filters);
+        let names: Vec<_> = result.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, vec!["api", "worker"]);
     }
 
     #[test]
-    fn test_filter_images_by_name() {
+    fn test_matching_images_by_name() {
         let mut images = HashMap::new();
         images.insert("api".to_string(), test_image(vec!["latest"], vec![]));
         images.insert("worker".to_string(), test_image(vec!["latest"], vec![]));
 
-        let result = filter_images(&images, &["api".to_string()], &[]);
+        let names = vec!["api".to_string()];
+        let filters = ImageFilters {
+            names: &names,
+            labels: &[],
+        };
+        let result = matching_images(&images, &filters);
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("api"));
+        assert_eq!(result[0].0, "api");
     }
 
     #[test]
-    fn test_filter_images_by_label() {
+    fn test_matching_images_by_label() {
         let mut images = HashMap::new();
         images.insert("api".to_string(), test_image(vec!["latest"], vec!["ci"]));
         images.insert("worker".to_string(), test_image(vec!["latest"], vec![]));
 
-        let result = filter_images(&images, &[], &["ci".to_string()]);
+        let labels = vec!["ci".to_string()];
+        let filters = ImageFilters {
+            names: &[],
+            labels: &labels,
+        };
+        let result = matching_images(&images, &filters);
         assert_eq!(result.len(), 1);
-        assert!(result.contains_key("api"));
+        assert_eq!(result[0].0, "api");
+    }
+
+    #[test]
+    fn test_matching_images_requires_name_and_label_when_both_are_set() {
+        let mut images = HashMap::new();
+        images.insert("api".to_string(), test_image(vec!["latest"], vec!["ci"]));
+        images.insert("worker".to_string(), test_image(vec!["latest"], vec!["ci"]));
+
+        let names = vec!["api".to_string()];
+        let labels = vec!["ci".to_string()];
+        let filters = ImageFilters {
+            names: &names,
+            labels: &labels,
+        };
+        let result = matching_images(&images, &filters);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "api");
     }
 }

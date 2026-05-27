@@ -285,7 +285,6 @@ impl std::fmt::Display for SendError {
 impl std::error::Error for SendError {}
 
 #[cfg(test)]
-#[allow(clippy::similar_names)]
 mod tests {
     use super::*;
     use crate::event::{EventCategory, EventSource, OutputEvent};
@@ -337,11 +336,11 @@ mod tests {
         }))
         .expect("emit should succeed with a global sender installed");
 
-        let received = receiver
+        let delivered_event = receiver
             .recv()
             .await
             .expect("subscriber should receive the emitted event");
-        match received.category {
+        match delivered_event.category {
             EventCategory::Output(OutputEvent::Stdout { content }) => {
                 assert_eq!(content, "via direct emit");
             }
@@ -360,16 +359,16 @@ mod tests {
 
         sender.send(event).unwrap();
 
-        let received = receiver.recv().await.unwrap();
-        assert_eq!(received.id, event_id);
+        let delivered_event = receiver.recv().await.unwrap();
+        assert_eq!(delivered_event.id, event_id);
     }
 
     #[tokio::test]
     async fn test_event_bus_multiple_subscribers() {
         let bus = EventBus::new();
         let sender = bus.sender().expect("sender should be available");
-        let mut receiver1 = bus.subscribe();
-        let mut receiver2 = bus.subscribe();
+        let mut first_receiver = bus.subscribe();
+        let mut second_receiver = bus.subscribe();
 
         assert_eq!(bus.subscriber_count(), 2);
 
@@ -378,11 +377,11 @@ mod tests {
 
         sender.send(event).unwrap();
 
-        let received1 = receiver1.recv().await.unwrap();
-        let received2 = receiver2.recv().await.unwrap();
+        let first_delivery = first_receiver.recv().await.unwrap();
+        let second_delivery = second_receiver.recv().await.unwrap();
 
-        assert_eq!(received1.id, event_id);
-        assert_eq!(received2.id, event_id);
+        assert_eq!(first_delivery.id, event_id);
+        assert_eq!(second_delivery.id, event_id);
     }
 
     #[tokio::test]
@@ -509,49 +508,49 @@ mod tests {
         let sender = bus.sender().expect("sender should be available");
         let mut receiver = bus.subscribe();
 
-        let event1 = make_test_event();
-        let event2 = make_test_event();
-        let event3 = make_test_event();
+        let first_event = make_test_event();
+        let second_event = make_test_event();
+        let third_event = make_test_event();
 
-        let id1 = event1.id;
-        let id2 = event2.id;
-        let id3 = event3.id;
+        let first_event_id = first_event.id;
+        let second_event_id = second_event.id;
+        let third_event_id = third_event.id;
 
-        sender.send(event1).unwrap();
-        sender.send(event2).unwrap();
-        sender.send(event3).unwrap();
+        sender.send(first_event).unwrap();
+        sender.send(second_event).unwrap();
+        sender.send(third_event).unwrap();
 
-        let r1 = receiver.recv().await.unwrap();
-        let r2 = receiver.recv().await.unwrap();
-        let r3 = receiver.recv().await.unwrap();
+        let first_received = receiver.recv().await.unwrap();
+        let second_received = receiver.recv().await.unwrap();
+        let third_received = receiver.recv().await.unwrap();
 
-        assert_eq!(r1.id, id1);
-        assert_eq!(r2.id, id2);
-        assert_eq!(r3.id, id3);
+        assert_eq!(first_received.id, first_event_id);
+        assert_eq!(second_received.id, second_event_id);
+        assert_eq!(third_received.id, third_event_id);
     }
 
     #[tokio::test]
     async fn test_sender_clone() {
         let bus = EventBus::new();
-        let sender1 = bus.sender().expect("sender should be available");
-        let sender2 = sender1.clone();
+        let original_sender = bus.sender().expect("sender should be available");
+        let cloned_sender = original_sender.clone();
 
         let mut receiver = bus.subscribe();
 
-        let event1 = make_test_event();
-        let event2 = make_test_event();
+        let original_event = make_test_event();
+        let cloned_event = make_test_event();
 
-        let id1 = event1.id;
-        let id2 = event2.id;
+        let original_event_id = original_event.id;
+        let cloned_event_id = cloned_event.id;
 
-        sender1.send(event1).unwrap();
-        sender2.send(event2).unwrap();
+        original_sender.send(original_event).unwrap();
+        cloned_sender.send(cloned_event).unwrap();
 
-        let r1 = receiver.recv().await.unwrap();
-        let r2 = receiver.recv().await.unwrap();
+        let original_received = receiver.recv().await.unwrap();
+        let cloned_received = receiver.recv().await.unwrap();
 
-        assert_eq!(r1.id, id1);
-        assert_eq!(r2.id, id2);
+        assert_eq!(original_received.id, original_event_id);
+        assert_eq!(cloned_received.id, cloned_event_id);
     }
 
     #[tokio::test]
@@ -559,16 +558,16 @@ mod tests {
         let bus = EventBus::new();
         assert_eq!(bus.subscriber_count(), 0);
 
-        let recv1 = bus.subscribe();
+        let first_receiver = bus.subscribe();
         assert_eq!(bus.subscriber_count(), 1);
 
-        let recv2 = bus.subscribe();
+        let second_receiver = bus.subscribe();
         assert_eq!(bus.subscriber_count(), 2);
 
-        drop(recv1);
+        drop(first_receiver);
         assert_eq!(bus.subscriber_count(), 1);
 
-        drop(recv2);
+        drop(second_receiver);
         assert_eq!(bus.subscriber_count(), 0);
     }
 }

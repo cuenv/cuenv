@@ -45,6 +45,10 @@ Parses lockfiles into structured entries.
 **DependencyResolver**
 Builds dependency graphs from workspace and lockfile data.
 
+Cargo lockfile parser integration tests return `Result` and use named entry
+lookup/error helpers so parser assertions stay explicit without file-level
+`unwrap_used` or `expect_used` allowances.
+
 ## Feature Flags
 
 The crate uses feature flags for minimal dependency footprint:
@@ -175,6 +179,48 @@ Available implementations:
 - `YarnModernLockfileParser` - yarn.lock (v2+)
 - `CargoLockfileParser` - Cargo.lock
 
+npm parser coverage keeps nested `node_modules` fixture setup separate from
+workspace and registry assertions so npm workspace membership rules stay easy
+to audit.
+JavaScript parser integration tests return `Result` from parser, fixture, and
+temporary lockfile setup and use shared entry-lookup helpers, so checked-in
+fixture drift fails explicitly without file-level unwrap/expect or stderr-print
+allowances.
+
+Node module materializer cache-directory coverage scopes `HOME` through the
+test environment helper, so package-manager cache path assertions do not need
+process-wide unsafe environment mutation.
+
+Bun lockfile parsing keeps the public parser entrypoint small by separating
+binary-lockfile rejection, JSONC loading, lockfile-version validation, and
+entry materialization before package-specific locator parsing.
+
+pnpm parsing keeps package-key parsing separate from source selection, so
+scoped-name handling, peer suffix stripping, and tarball/git/path resolution
+stay in focused helpers instead of one nested parser branch.
+pnpm and Yarn Modern metadata fields that must be accepted for lockfile shape
+compatibility but are not used for dependency entries are stored as
+underscore-prefixed serde fields, making the ignored-data boundary explicit
+without local dead-code suppressions.
+The crate root keeps only the dependency-version lint allowance required by the
+workspace dependency graph; parser and derive warnings are handled at their
+actual source rather than by a crate-wide `unused_assignments` suppression.
+
+Yarn Classic parsing uses `yarn_lock_parser` when possible and falls back to a
+small parser state that handles headers, version/resolved/integrity fields, and
+dependency lines without keeping the fallback path as one monolithic parser
+function.
+
+Yarn Modern parsing keeps descriptor splitting, protocol detection, and
+git-resolution parsing in separate helpers so scoped package handling stays out
+of the lockfile entry assembly path.
+
+Cargo lockfile parsing separates workspace-member discovery into
+`crates/workspaces/src/parsers/rust/cargo/workspace.rs`, while Cargo
+`SourceId` conversion stays with lockfile entry assembly. That keeps
+Cargo.toml glob/default/exclude handling separate from registry, git, path, and
+unknown source fallback handling.
+
 ### Detection Functions
 
 ```rust
@@ -192,6 +238,15 @@ if let Some(manager) = detect_from_command("cargo build") {
     println!("Command uses: {}", manager);
 }
 ```
+
+Detection orchestration stays in `crates/workspaces/src/detection.rs`, while
+shell command parsing lives in `detection/command.rs` and lockfile/workspace
+config scanning lives in `detection/filesystem.rs`. Package.json manager hints
+and fallback npm detection live in `detection/package_json.rs`; confidence and
+priority ordering live in `detection/scoring.rs` so command hints, Yarn version
+handling, config validation, and manager scoring stay in focused boundaries.
+Discovery integration tests skip packaged-build paths through tracing rather
+than stdout diagnostics, keeping direct console-output warnings actionable.
 
 ## Integration Patterns
 

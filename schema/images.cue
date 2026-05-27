@@ -24,8 +24,9 @@ package schema
 // Container Image Build Definition
 // =============================================================================
 //
-// Declarative container image builds as first-class project artifacts.
-// Images participate in the task DAG and can be built via `cuenv build`.
+// Declarative container image definitions as first-class project artifacts.
+// Images participate in the task DAG, but build execution backends are not
+// implemented yet; `cuenv build` currently lists configured images.
 //
 // Example:
 //   images: {

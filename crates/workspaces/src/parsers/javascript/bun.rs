@@ -12,75 +12,11 @@ use std::path::{Path, PathBuf};
 pub struct BunLockfileParser;
 
 impl LockfileParser for BunLockfileParser {
-    #[allow(clippy::too_many_lines)] // Lockfile parsing requires linear handling of format variants
     fn parse(&self, lockfile_path: &Path) -> Result<Vec<LockfileEntry>> {
-        // Check if this is the binary bun.lockb format
-        if lockfile_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n == "bun.lockb")
-        {
-            return Err(Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: "Binary Bun lockfile format (bun.lockb) is currently unsupported. Only the text-based JSONC format (bun.lock) is supported.".to_string(),
-            });
-        }
-
-        let contents = fs::read_to_string(lockfile_path).map_err(|source| Error::Io {
-            source,
-            path: Some(lockfile_path.to_path_buf()),
-            operation: "reading bun.lock".to_string(),
-        })?;
-
-        // Parse JSONC using jsonc-parser and convert to serde_json::Value
-        let json_value =
-            jsonc_parser::parse_to_value(&contents, &jsonc_parser::ParseOptions::default())
-                .map_err(|err| Error::LockfileParseFailed {
-                    path: lockfile_path.to_path_buf(),
-                    message: format!("Failed to parse bun.lock as JSONC: {err:?}"),
-                })?
-                .ok_or_else(|| Error::LockfileParseFailed {
-                    path: lockfile_path.to_path_buf(),
-                    message: "Empty or invalid JSONC content".to_string(),
-                })?;
-
-        // Convert jsonc_parser::JsonValue to serde_json::Value
-        let value: Value = convert_jsonc_to_serde_value(json_value);
-
-        let lockfile: BunLockfile =
-            serde_json::from_value(value).map_err(|err| Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!("Failed to deserialize bun.lock: {err}"),
-            })?;
-
-        let version = lockfile.lockfile_version.unwrap_or(0);
-        if version > 1 {
-            return Err(Error::LockfileParseFailed {
-                path: lockfile_path.to_path_buf(),
-                message: format!(
-                    "Unsupported bun lockfileVersion {version} – supported versions are 0 and 1"
-                ),
-            });
-        }
-
-        let mut entries = Vec::new();
-
-        for (workspace_path, workspace) in &lockfile.workspaces {
-            entries.push(entry_from_workspace(workspace_path, workspace));
-        }
-
-        for (package_name, raw_value) in lockfile.packages {
-            let entry =
-                entry_from_package(lockfile_path, &package_name, raw_value).map_err(|message| {
-                    Error::LockfileParseFailed {
-                        path: lockfile_path.to_path_buf(),
-                        message: format!("{package_name}: {message}"),
-                    }
-                })?;
-            entries.push(entry);
-        }
-
-        Ok(entries)
+        reject_binary_lockfile(lockfile_path)?;
+        let lockfile = read_bun_lockfile(lockfile_path)?;
+        validate_lockfile_version(lockfile_path, lockfile.lockfile_version)?;
+        entries_from_lockfile(lockfile_path, lockfile)
     }
 
     fn supports_lockfile(&self, path: &Path) -> bool {
@@ -91,6 +27,84 @@ impl LockfileParser for BunLockfileParser {
     fn lockfile_name(&self) -> &'static str {
         "bun.lock"
     }
+}
+
+fn reject_binary_lockfile(lockfile_path: &Path) -> Result<()> {
+    if lockfile_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "bun.lockb")
+    {
+        return Err(Error::LockfileParseFailed {
+            path: lockfile_path.to_path_buf(),
+            message: "Binary Bun lockfile format (bun.lockb) is currently unsupported. Only the text-based JSONC format (bun.lock) is supported.".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+fn read_bun_lockfile(lockfile_path: &Path) -> Result<BunLockfile> {
+    let contents = fs::read_to_string(lockfile_path).map_err(|source| Error::Io {
+        source,
+        path: Some(lockfile_path.to_path_buf()),
+        operation: "reading bun.lock".to_string(),
+    })?;
+
+    let json_value =
+        jsonc_parser::parse_to_value(&contents, &jsonc_parser::ParseOptions::default())
+            .map_err(|err| Error::LockfileParseFailed {
+                path: lockfile_path.to_path_buf(),
+                message: format!("Failed to parse bun.lock as JSONC: {err:?}"),
+            })?
+            .ok_or_else(|| Error::LockfileParseFailed {
+                path: lockfile_path.to_path_buf(),
+                message: "Empty or invalid JSONC content".to_string(),
+            })?;
+
+    let value = convert_jsonc_to_serde_value(json_value);
+    serde_json::from_value(value).map_err(|err| Error::LockfileParseFailed {
+        path: lockfile_path.to_path_buf(),
+        message: format!("Failed to deserialize bun.lock: {err}"),
+    })
+}
+
+fn validate_lockfile_version(lockfile_path: &Path, lockfile_version: Option<u32>) -> Result<()> {
+    let version = lockfile_version.unwrap_or(0);
+    if version > 1 {
+        return Err(Error::LockfileParseFailed {
+            path: lockfile_path.to_path_buf(),
+            message: format!(
+                "Unsupported bun lockfileVersion {version} – supported versions are 0 and 1"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+fn entries_from_lockfile(
+    lockfile_path: &Path,
+    lockfile: BunLockfile,
+) -> Result<Vec<LockfileEntry>> {
+    let mut entries = Vec::new();
+
+    for (workspace_path, workspace) in &lockfile.workspaces {
+        entries.push(entry_from_workspace(workspace_path, workspace));
+    }
+
+    for (package_name, raw_value) in lockfile.packages {
+        let entry =
+            entry_from_package(lockfile_path, &package_name, raw_value).map_err(|message| {
+                Error::LockfileParseFailed {
+                    path: lockfile_path.to_path_buf(),
+                    message: format!("{package_name}: {message}"),
+                }
+            })?;
+        entries.push(entry);
+    }
+
+    Ok(entries)
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -395,8 +409,6 @@ fn workspace_path(path: &str) -> PathBuf {
     }
 }
 
-// Convert jsonc_parser::JsonValue to serde_json::Value
-#[allow(clippy::option_if_let_else)] // Result-based parsing with fallbacks - imperative is clearer
 fn convert_jsonc_to_serde_value(jsonc_value: jsonc_parser::JsonValue) -> Value {
     match jsonc_value {
         jsonc_parser::JsonValue::Null => Value::Null,

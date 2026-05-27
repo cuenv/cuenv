@@ -3,28 +3,27 @@
 //! Verifies that tools provided by the Nix flake dev shell appear on PATH when
 //! using `cuenv exec` and `cuenv task` via `runtime: schema.#NixRuntime`.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
-
-use assert_cmd::Command;
+use std::error::Error;
 use std::fs;
+use std::path::Path;
+use std::process::{Command, Output};
 use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// Create a test directory with a CUE module and a minimal Nix flake
 /// that puts `git` on PATH via the dev shell.
-fn create_nix_runtime_test_dir() -> TempDir {
+fn create_nix_runtime_test_dir() -> TestResult<TempDir> {
     let temp_dir = tempfile::Builder::new()
         .prefix("cuenv_nix_runtime_")
-        .tempdir()
-        .expect("Failed to create temp directory");
+        .tempdir()?;
     let path = temp_dir.path();
 
-    fs::create_dir_all(path.join("cue.mod")).unwrap();
+    fs::create_dir_all(path.join("cue.mod"))?;
     fs::write(
         path.join("cue.mod/module.cue"),
         "module: \"test.example/nix-runtime\"\nlanguage: version: \"v0.9.0\"\n",
-    )
-    .unwrap();
+    )?;
 
     let flake = r#"
 {
@@ -40,7 +39,7 @@ fn create_nix_runtime_test_dir() -> TempDir {
   };
 }
 "#;
-    fs::write(path.join("flake.nix"), flake).unwrap();
+    fs::write(path.join("flake.nix"), flake)?;
 
     let cue_content = r#"
 package cuenv
@@ -65,25 +64,29 @@ schema.#Project & {
     }
 }
 "#;
-    fs::write(path.join("env.cue"), cue_content).unwrap();
+    fs::write(path.join("env.cue"), cue_content)?;
 
-    temp_dir
+    Ok(temp_dir)
 }
 
 fn nix_available() -> bool {
     Command::new("nix").arg("--version").output().is_ok()
 }
 
-fn common_env(path: &std::path::Path) -> Vec<(&str, std::ffi::OsString)> {
+fn should_skip_nix_runtime_test() -> bool {
+    !nix_available() || std::env::var_os("NEXTEST").is_some()
+}
+
+fn common_env(path: &Path) -> TestResult<Vec<(&'static str, std::ffi::OsString)>> {
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
     let state_dir = path.join(".cuenv-state");
     let cache_dir = path.join(".cuenv-cache");
     let runtime_dir = path.join(".cuenv-runtime");
-    fs::create_dir_all(&state_dir).unwrap();
-    fs::create_dir_all(&cache_dir).unwrap();
-    fs::create_dir_all(&runtime_dir).unwrap();
+    fs::create_dir_all(&state_dir)?;
+    fs::create_dir_all(&cache_dir)?;
+    fs::create_dir_all(&runtime_dir)?;
 
-    vec![
+    Ok(vec![
         ("CUENV_EXECUTABLE", cuenv_bin.into()),
         ("CUENV_FOREGROUND_HOOKS", "1".into()),
         ("CUENV_STATE_DIR", state_dir.into_os_string()),
@@ -93,40 +96,33 @@ fn common_env(path: &std::path::Path) -> Vec<(&str, std::ffi::OsString)> {
             "NIX_CONFIG",
             "experimental-features = nix-command flakes".into(),
         ),
-    ]
+    ])
 }
 
-fn run_cuenv(path: &std::path::Path, args: &[&str]) -> std::process::Output {
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv").unwrap();
+fn run_cuenv(path: &Path, args: &[&str]) -> TestResult<Output> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_cuenv"));
     cmd.current_dir(path);
-    for (key, value) in common_env(path) {
+    for (key, value) in common_env(path)? {
         cmd.env(key, value);
     }
     for arg in args {
         cmd.arg(arg);
     }
-    cmd.output().unwrap()
+    Ok(cmd.output()?)
 }
 
 #[test]
-fn test_exec_has_nix_tools_from_runtime() {
-    if !nix_available() {
-        eprintln!("Skipping: nix not available");
-        return;
-    }
-    if std::env::var_os("NEXTEST").is_some() {
-        eprintln!("Skipping under nextest");
-        return;
+fn test_exec_has_nix_tools_from_runtime() -> TestResult {
+    if should_skip_nix_runtime_test() {
+        return Ok(());
     }
 
-    let temp_dir = create_nix_runtime_test_dir();
+    let temp_dir = create_nix_runtime_test_dir()?;
     let path = temp_dir.path();
 
-    let output = run_cuenv(path, &["exec", "--", "git", "--version"]);
+    let output = run_cuenv(path, &["exec", "--", "git", "--version"])?;
     if output.status.code() == Some(3) {
-        eprintln!("FFI not available in sandbox, skipping");
-        return;
+        return Ok(());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -135,26 +131,21 @@ fn test_exec_has_nix_tools_from_runtime() {
         "Expected 'git version' in exec output.\nstdout: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_has_nix_tools_from_runtime() {
-    if !nix_available() {
-        eprintln!("Skipping: nix not available");
-        return;
-    }
-    if std::env::var_os("NEXTEST").is_some() {
-        eprintln!("Skipping under nextest");
-        return;
+fn test_task_has_nix_tools_from_runtime() -> TestResult {
+    if should_skip_nix_runtime_test() {
+        return Ok(());
     }
 
-    let temp_dir = create_nix_runtime_test_dir();
+    let temp_dir = create_nix_runtime_test_dir()?;
     let path = temp_dir.path();
 
-    let output = run_cuenv(path, &["task", "check-git"]);
+    let output = run_cuenv(path, &["task", "check-git"])?;
     if output.status.code() == Some(3) {
-        eprintln!("FFI not available in sandbox, skipping");
-        return;
+        return Ok(());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -163,26 +154,21 @@ fn test_task_has_nix_tools_from_runtime() {
         "Expected 'git version' in task output.\nstdout: {stdout}\nstderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    Ok(())
 }
 
 #[test]
-fn test_nix_runtime_does_not_require_hook_approval() {
-    if !nix_available() {
-        eprintln!("Skipping: nix not available");
-        return;
-    }
-    if std::env::var_os("NEXTEST").is_some() {
-        eprintln!("Skipping under nextest");
-        return;
+fn test_nix_runtime_does_not_require_hook_approval() -> TestResult {
+    if should_skip_nix_runtime_test() {
+        return Ok(());
     }
 
-    let temp_dir = create_nix_runtime_test_dir();
+    let temp_dir = create_nix_runtime_test_dir()?;
     let path = temp_dir.path();
 
-    let output = run_cuenv(path, &["exec", "--", "sh", "-c", "which git && which cp"]);
+    let output = run_cuenv(path, &["exec", "--", "sh", "-c", "which git && which cp"])?;
     if output.status.code() == Some(3) {
-        eprintln!("FFI not available in sandbox, skipping");
-        return;
+        return Ok(());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -195,4 +181,5 @@ fn test_nix_runtime_does_not_require_hook_approval() {
         !stderr.contains("Hooks not run"),
         "Runtime-backed tool acquisition should not depend on hook approval: {stderr}"
     );
+    Ok(())
 }

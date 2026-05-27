@@ -200,7 +200,10 @@ pub fn shell_path_from_env(shell: Option<OsString>) -> Option<PathBuf> {
     })
 }
 
-#[allow(unsafe_code)]
+#[expect(
+    unsafe_code,
+    reason = "Required to read the login shell from the passwd database"
+)]
 fn user_login_shell() -> Option<PathBuf> {
     // SAFETY: getpwuid returns a pointer into a libc-owned passwd struct that
     // remains valid until the next getpw* call on this thread; we read pw_shell

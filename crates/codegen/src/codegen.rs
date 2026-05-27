@@ -96,6 +96,13 @@ pub struct Codegen {
     pub source_path: PathBuf,
 }
 
+struct CodegenTarget {
+    source_dir: PathBuf,
+    target_path: PathBuf,
+    module_root: PathBuf,
+    package_name: String,
+}
+
 impl Codegen {
     /// Load a codegen configuration from a CUE file
     ///
@@ -105,8 +112,6 @@ impl Codegen {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
 
-        // For now, we'll use cuengine to evaluate the CUE file
-        // This is a placeholder - the actual implementation will use cuengine
         let data = Self::evaluate_cue(path)?;
 
         Ok(Self {
@@ -134,68 +139,15 @@ impl Codegen {
     }
 
     /// Evaluate a CUE file and extract the codegen data
-    #[allow(clippy::too_many_lines)]
     fn evaluate_cue(path: &Path) -> Result<CodegenData> {
-        // Verify the file exists
-        if !path.exists() {
-            return Err(CodegenError::Codegen(format!(
-                "Codegen file not found: {}",
-                path.display()
-            )));
-        }
-
-        // Determine the directory and package name from the path
-        let dir_path = path.parent().ok_or_else(|| {
-            CodegenError::Codegen("Invalid codegen path: no parent directory".to_string())
-        })?;
-
-        // Determine package name - try to infer from file content or use default
-        let package_name = Self::determine_package_name(path)?;
-
-        let target_path = dir_path
-            .canonicalize()
-            .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
-
-        // Find the module root
-        let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
-            CodegenError::Codegen(format!(
-                "No CUE module found (looking for cue.mod/) starting from: {}",
-                target_path.display()
-            ))
-        })?;
-
-        // Use targeted evaluation (non-recursive) for the specific directory
-        let options = ModuleEvalOptions {
-            recursive: false,
-            target_dir: Some(target_path.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-        let raw_result = cuengine::evaluate_module(&module_root, &package_name, Some(&options))
-            .map_err(|e| CodegenError::Codegen(format!("CUE evaluation failed: {e}")))?;
-
-        let module = ModuleEvaluation::from_raw(
-            module_root.clone(),
-            raw_result.instances,
-            raw_result.projects,
-            None, // codegen doesn't need dependsOn resolution
-        );
-
-        // Calculate relative path and get the instance
-        let relative_path = target_path.strip_prefix(&module_root).map_or_else(
-            |_| PathBuf::from("."),
-            |p| {
-                if p.as_os_str().is_empty() {
-                    PathBuf::from(".")
-                } else {
-                    p.to_path_buf()
-                }
-            },
-        );
+        let target = Self::resolve_target(path)?;
+        let module = Self::evaluate_module(&target)?;
+        let relative_path = Self::relative_instance_path(&target);
 
         let instance = module.get(&relative_path).ok_or_else(|| {
             CodegenError::Codegen(format!(
                 "No CUE instance found at path: {} (relative: {})",
-                dir_path.display(),
+                target.source_dir.display(),
                 relative_path.display()
             ))
         })?;
@@ -203,6 +155,71 @@ impl Codegen {
         instance
             .deserialize()
             .map_err(|e| CodegenError::Codegen(format!("Failed to deserialize codegen data: {e}")))
+    }
+
+    fn resolve_target(path: &Path) -> Result<CodegenTarget> {
+        if !path.exists() {
+            return Err(CodegenError::Codegen(format!(
+                "Codegen file not found: {}",
+                path.display()
+            )));
+        }
+
+        let source_dir = path.parent().ok_or_else(|| {
+            CodegenError::Codegen("Invalid codegen path: no parent directory".to_string())
+        })?;
+        let package_name = Self::determine_package_name(path)?;
+        let target_path = source_dir
+            .canonicalize()
+            .map_err(|e| CodegenError::Codegen(format!("Failed to canonicalize path: {e}")))?;
+
+        let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
+            CodegenError::Codegen(format!(
+                "No CUE module found (looking for cue.mod/) starting from: {}",
+                target_path.display()
+            ))
+        })?;
+
+        Ok(CodegenTarget {
+            source_dir: source_dir.to_path_buf(),
+            target_path,
+            module_root,
+            package_name,
+        })
+    }
+
+    fn evaluate_module(target: &CodegenTarget) -> Result<ModuleEvaluation> {
+        let options = ModuleEvalOptions {
+            recursive: false,
+            target_dir: Some(target.target_path.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        let raw_result =
+            cuengine::evaluate_module(&target.module_root, &target.package_name, Some(&options))
+                .map_err(|e| CodegenError::Codegen(format!("CUE evaluation failed: {e}")))?;
+
+        Ok(ModuleEvaluation::from_raw(
+            target.module_root.clone(),
+            raw_result.instances,
+            raw_result.projects,
+            None,
+        ))
+    }
+
+    fn relative_instance_path(target: &CodegenTarget) -> PathBuf {
+        target
+            .target_path
+            .strip_prefix(&target.module_root)
+            .map_or_else(
+                |_| PathBuf::from("."),
+                |p| {
+                    if p.as_os_str().is_empty() {
+                        PathBuf::from(".")
+                    } else {
+                        p.to_path_buf()
+                    }
+                },
+            )
     }
 
     /// Determine the CUE package name from a file

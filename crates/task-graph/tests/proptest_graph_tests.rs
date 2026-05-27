@@ -5,7 +5,7 @@
 //! - Parallel groups contain only independent tasks
 //! - Cycle detection is accurate
 
-use cuenv_task_graph::{TaskGraph, TaskNodeData};
+use cuenv_task_graph::{MutableTaskNodeData, TaskGraph, TaskNodeData};
 use proptest::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -23,7 +23,9 @@ impl TaskNodeData for PropTask {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.deps.iter().map(String::as_str)
     }
+}
 
+impl MutableTaskNodeData for PropTask {
     fn add_dependency(&mut self, dep: String) {
         if !self.deps.contains(&dep) {
             self.deps.push(dep);

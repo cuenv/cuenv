@@ -43,7 +43,7 @@ These pairs are functionally duplicates (same title and same code references), w
 
 - **Affected-task detection groundwork exists** in core and task graph:
   - `AffectedBy` trait and matching logic are implemented.
-  - Task graph includes `compute_affected` plus tests.
+  - Task graph analysis includes `compute_affected` plus tests.
   - Related issue likely needing refresh: #148 (task filtering/affected detection).
 
 ## Recommended Issue Updates
@@ -63,4 +63,3 @@ Use the following updates in GitHub:
 2. Keep canonical issues open: #293, #294, #295, #296, #297.
 3. Re-scope #148 to explicitly define remaining gaps vs implemented core behavior.
 4. Add a project board field `audit:last-reviewed` and set it for all open issues touched in this pass.
-

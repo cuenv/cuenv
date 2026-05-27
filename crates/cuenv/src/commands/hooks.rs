@@ -1,15 +1,20 @@
 //! Hook-related command implementations
 
+mod shell;
+mod status;
+
 use super::env_file::{self, EnvFileStatus, find_cue_module_root};
 use super::{CommandExecutor, convert_engine_error, relative_path_from_root};
 use crate::cli::StatusFormat;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::manifest::Project;
 use cuenv_core::{ModuleEvaluation, Result};
+use cuenv_events::{print_redacted, println_redacted};
 use cuenv_hooks::{
-    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutionState,
-    HookExecutor, StateManager, check_approval_status, compute_instance_hash,
+    ApprovalManager, ApprovalStatus, ConfigSummary, ExecutionStatus, Hook, HookExecutor,
+    StateManager, check_approval_status, compute_instance_hash,
 };
+use status::format_status;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -144,78 +149,6 @@ fn get_config_hash(
         // If not approved, compute it from current config
         let config = evaluate_config(directory, package, executor)?;
         Ok(cuenv_hooks::compute_approval_hash(config.hooks.as_ref()))
-    }
-}
-
-/// Format status based on requested format
-fn format_status(state: &HookExecutionState, format: StatusFormat) -> String {
-    match format {
-        StatusFormat::Text => state.progress_display(),
-        StatusFormat::Short => match state.status {
-            ExecutionStatus::Running => {
-                format!("[{}/{}]", state.completed_hooks, state.total_hooks)
-            }
-            ExecutionStatus::Completed => "[OK]".to_string(),
-            ExecutionStatus::Failed => "[ERR]".to_string(),
-            ExecutionStatus::Cancelled => "[X]".to_string(),
-        },
-        StatusFormat::Starship => format_starship_status(state),
-    }
-}
-
-/// Format status for starship integration with rich information
-fn format_starship_status(state: &HookExecutionState) -> String {
-    use cuenv_hooks::HookExecutionState;
-
-    match state.status {
-        ExecutionStatus::Running => {
-            // Show current hook name + duration
-            if let Some(hook_display) = state.current_hook_display() {
-                if let Some(duration) = state.current_hook_duration() {
-                    let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {hook_display} ({duration_str})")
-                } else {
-                    // Just started, no duration yet - use overall execution time
-                    let duration = state.duration();
-                    let duration_str = HookExecutionState::format_duration(duration);
-                    format!("cuenv hook {hook_display} ({duration_str})")
-                }
-            } else {
-                // Fallback if no current hook (shouldn't happen in Running state)
-                format!("🔄 {}/{}", state.completed_hooks, state.total_hooks)
-            }
-        }
-        ExecutionStatus::Completed => {
-            // Only show if within display timeout (ensures at least one display)
-            if state.should_display_completed() {
-                let duration = state.duration();
-                let duration_str = HookExecutionState::format_duration(duration);
-                format!("✅ {duration_str}")
-            } else {
-                // State has expired, return empty string to hide from prompt
-                String::new()
-            }
-        }
-        ExecutionStatus::Failed => {
-            // Show failed state with error if within display timeout
-            if state.should_display_completed() {
-                if let Some(error_msg) = &state.error_message {
-                    // Extract just the command name from error if possible
-                    format!("❌ {}", error_msg.lines().next().unwrap_or("failed"))
-                } else {
-                    "❌ failed".to_string()
-                }
-            } else {
-                String::new()
-            }
-        }
-        ExecutionStatus::Cancelled => {
-            if state.should_display_completed() {
-                "🚫 cancelled".to_string()
-            } else {
-                String::new()
-            }
-        }
     }
 }
 
@@ -562,18 +495,15 @@ pub async fn execute_allow(
     if !yes {
         let hooks = extract_hooks_from_config(&config);
         if !hooks.is_empty() {
-            #[allow(clippy::print_stdout)] // User-facing approval prompt, intentional display
-            {
-                println!("The following hooks will be allowed:");
-                for hook in &hooks {
-                    println!("  - Command: {}", hook.command);
-                    if !hook.args.is_empty() {
-                        println!("    Args: {:?}", hook.args);
-                    }
+            println_redacted("The following hooks will be allowed:");
+            for hook in &hooks {
+                println_redacted(&format!("  - Command: {}", hook.command));
+                if !hook.args.is_empty() {
+                    println_redacted(&format!("    Args: {:?}", hook.args));
                 }
-                println!();
-                print!("Do you want to allow this configuration? [y/N] ");
             }
+            println_redacted("");
+            print_redacted("Do you want to allow this configuration? [y/N] ");
             io::stdout()
                 .flush()
                 .map_err(|e| cuenv_core::Error::configuration(format!("IO error: {e}")))?;
@@ -704,11 +634,11 @@ pub async fn execute_env_check(
             match shell {
                 crate::cli::ShellType::Fish => {
                     use std::fmt::Write;
-                    writeln!(&mut output, "set -x {key} \"{value}\"").expect("write to string");
+                    writeln!(&mut output, "set -x {key} \"{value}\"").ok();
                 }
                 crate::cli::ShellType::Bash | crate::cli::ShellType::Zsh => {
                     use std::fmt::Write;
-                    writeln!(&mut output, "export {key}=\"{value}\"").expect("write to string");
+                    writeln!(&mut output, "export {key}=\"{value}\"").ok();
                 }
             }
         }
@@ -723,11 +653,7 @@ pub async fn execute_env_check(
 /// Generate shell integration script
 #[must_use]
 pub fn execute_shell_init(shell: crate::cli::ShellType) -> String {
-    match shell {
-        crate::cli::ShellType::Fish => generate_fish_integration(),
-        crate::cli::ShellType::Bash => generate_bash_integration(),
-        crate::cli::ShellType::Zsh => generate_zsh_integration(),
-    }
+    shell::generate_integration(shell)
 }
 
 /// Extract hooks from the configuration JSON
@@ -735,301 +661,6 @@ fn extract_hooks_from_config(config: &Project) -> Vec<Hook> {
     config.on_enter_hooks()
 }
 
-/// Generate Fish shell integration script
-fn generate_fish_integration() -> String {
-    r"# cuenv Fish shell integration
-# Add this to your ~/.config/fish/config.fish
-
-# Mark that shell integration is active
-set -x CUENV_SHELL_INTEGRATION 1
-
-# Hook function that loads environment on each prompt
-function __cuenv_hook --on-variable PWD
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    source (cuenv export --shell fish 2>/dev/null | psub)
-end
-
-# Also run on shell startup
-source (cuenv export --shell fish 2>/dev/null | psub)"
-        .to_string()
-}
-
-/// Generate Bash shell integration script
-fn generate_bash_integration() -> String {
-    r#"# cuenv Bash shell integration
-# Add this to your ~/.bashrc
-
-# Mark that shell integration is active
-export CUENV_SHELL_INTEGRATION=1
-
-# Hook function that loads environment on each prompt
-__cuenv_hook() {
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    eval "$(cuenv export --shell bash 2>/dev/null)"
-}
-
-# Set up the hook via PROMPT_COMMAND
-if [[ -n "$PROMPT_COMMAND" ]]; then
-    PROMPT_COMMAND="__cuenv_hook; $PROMPT_COMMAND"
-else
-    PROMPT_COMMAND="__cuenv_hook"
-fi
-
-# Also run on shell startup
-__cuenv_hook"#
-        .to_string()
-}
-
-/// Generate Zsh shell integration script
-fn generate_zsh_integration() -> String {
-    r#"# cuenv Zsh shell integration
-# Add this to your ~/.zshrc
-
-# Mark that shell integration is active
-export CUENV_SHELL_INTEGRATION=1
-
-# Hook function that loads environment on each prompt
-__cuenv_hook() {
-    # The export command handles everything:
-    # - Checks if env.cue exists
-    # - Loads cached state if available (fast path)
-    # - Evaluates CUE only when needed
-    # - Starts hooks in background if needed
-    # - Returns safe no-op if nothing to do
-    eval "$(cuenv export --shell zsh 2>/dev/null)"
-}
-
-# Set up the hook via precmd
-autoload -U add-zsh-hook
-add-zsh-hook precmd __cuenv_hook
-
-# Also run on shell startup
-__cuenv_hook"#
-        .to_string()
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_extract_hooks_from_config() {
-        use cuenv_core::manifest::Project;
-        use cuenv_hooks::{Hook, Hooks};
-        use std::collections::HashMap;
-
-        let mut on_enter = HashMap::new();
-        on_enter.insert(
-            "npm".to_string(),
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "npm".to_string(),
-                args: vec!["install".to_string()],
-                dir: None,
-                inputs: vec![],
-                source: None,
-            },
-        );
-        on_enter.insert(
-            "docker".to_string(),
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "docker-compose".to_string(),
-                args: vec!["up".to_string(), "-d".to_string()],
-                dir: None,
-                inputs: vec![],
-                source: None,
-            },
-        );
-
-        let config = Project {
-            config: None,
-            env: None,
-            hooks: Some(Hooks {
-                on_enter: Some(on_enter),
-                on_exit: None,
-                pre_push: None,
-            }),
-            ci: None,
-            tasks: std::collections::HashMap::new(),
-            name: "test".to_string(),
-            codegen: None,
-            formatters: None,
-            runtime: None,
-            services: std::collections::HashMap::new(),
-            images: std::collections::HashMap::new(),
-            vcs: std::collections::HashMap::new(),
-        };
-
-        let hooks = extract_hooks_from_config(&config);
-        assert_eq!(hooks.len(), 2);
-        // Sorted alphabetically by name when order is equal
-        assert_eq!(hooks[0].command, "docker-compose");
-        assert_eq!(hooks[1].command, "npm");
-    }
-
-    #[test]
-    fn test_extract_hooks_single_hook() {
-        use cuenv_core::manifest::Project;
-        use cuenv_hooks::{Hook, Hooks};
-        use std::collections::HashMap;
-
-        let mut on_enter = HashMap::new();
-        on_enter.insert(
-            "echo".to_string(),
-            Hook {
-                order: 100,
-                propagate: false,
-                command: "echo".to_string(),
-                args: vec!["hello".to_string()],
-                dir: None,
-                inputs: vec![],
-                source: None,
-            },
-        );
-
-        let config = Project {
-            config: None,
-            env: None,
-            hooks: Some(Hooks {
-                on_enter: Some(on_enter),
-                on_exit: None,
-                pre_push: None,
-            }),
-            ci: None,
-            tasks: std::collections::HashMap::new(),
-            name: "test".to_string(),
-            codegen: None,
-            formatters: None,
-            runtime: None,
-            services: std::collections::HashMap::new(),
-            images: std::collections::HashMap::new(),
-            vcs: std::collections::HashMap::new(),
-        };
-
-        let hooks = extract_hooks_from_config(&config);
-        assert_eq!(hooks.len(), 1);
-        assert_eq!(hooks[0].command, "echo");
-        assert_eq!(hooks[0].args, vec!["hello"]);
-    }
-
-    #[test]
-    fn test_extract_hooks_empty_config() {
-        use cuenv_core::manifest::Project;
-
-        let config = Project {
-            config: None,
-            env: None,
-            hooks: None,
-            ci: None,
-            tasks: std::collections::HashMap::new(),
-            name: "test".to_string(),
-            codegen: None,
-            formatters: None,
-            runtime: None,
-            services: std::collections::HashMap::new(),
-            images: std::collections::HashMap::new(),
-            vcs: std::collections::HashMap::new(),
-        };
-
-        let hooks = extract_hooks_from_config(&config);
-        assert_eq!(hooks.len(), 0);
-    }
-
-    #[test]
-    fn test_shell_integration_generation() {
-        let fish_script = generate_fish_integration();
-        assert!(fish_script.contains("function __cuenv_hook"));
-        assert!(fish_script.contains("on-variable PWD"));
-
-        let bash_script = generate_bash_integration();
-        assert!(bash_script.contains("__cuenv_hook()"));
-        assert!(bash_script.contains("PROMPT_COMMAND"));
-
-        let zsh_script = generate_zsh_integration();
-        assert!(zsh_script.contains("add-zsh-hook"));
-        assert!(zsh_script.contains("precmd"));
-    }
-
-    #[tokio::test]
-    async fn test_execute_allow_no_directory() {
-        let result = execute_allow("/nonexistent/directory", "cuenv", None, false, None).await;
-        assert!(result.is_err());
-        // The error type is Configuration error, which doesn't include the detailed message in Display
-        // Just verify it's an error for a non-existent directory
-        assert!(matches!(
-            result.unwrap_err(),
-            cuenv_core::Error::Configuration { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_execute_allow_no_env_cue() {
-        let temp_dir = TempDir::new().unwrap();
-        let result = execute_allow(
-            temp_dir.path().to_str().unwrap(),
-            "cuenv",
-            None,
-            false,
-            None,
-        )
-        .await;
-        assert!(result.is_err());
-        // The error type is Configuration error for missing env.cue file
-        assert!(matches!(
-            result.unwrap_err(),
-            cuenv_core::Error::Configuration { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn test_execute_env_load_no_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let result = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv", None).await;
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("No env.cue file found"));
-    }
-
-    #[tokio::test]
-    async fn test_execute_env_status_no_file() {
-        let temp_dir = TempDir::new().unwrap();
-        let result = execute_env_status(
-            temp_dir.path().to_str().unwrap(),
-            "cuenv",
-            false,
-            30,
-            StatusFormat::Text,
-            None,
-        )
-        .await;
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("No env.cue file found"));
-    }
-
-    #[tokio::test]
-    async fn test_execute_env_load_package_mismatch_message() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("env.cue"), "package other\n\nenv: {}").unwrap();
-
-        let output = execute_env_load(temp_dir.path().to_str().unwrap(), "cuenv", None)
-            .await
-            .unwrap();
-        assert!(output.contains("uses package 'other'"));
-    }
-}
+#[path = "hooks_tests.rs"]
+mod tests;

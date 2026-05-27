@@ -124,7 +124,6 @@ impl LockfileParser for YarnClassicLockfileParser {
 }
 
 /// Build a `LockfileEntry` from parsed components
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn build_lockfile_entry(
     name: String,
     version: String,
@@ -132,16 +131,17 @@ fn build_lockfile_entry(
     integrity: Option<String>,
     dependencies: Vec<DependencyRef>,
 ) -> LockfileEntry {
-    let source = if let Some(resolved_url) = resolved {
-        if resolved_url.starts_with("git+") || resolved_url.contains("://github.com/") {
+    let source = match resolved {
+        Some(resolved_url)
+            if resolved_url.starts_with("git+") || resolved_url.contains("://github.com/") =>
+        {
             DependencySource::Git(resolved_url)
-        } else if resolved_url.starts_with("file:") {
-            DependencySource::Path(PathBuf::from(resolved_url.trim_start_matches("file:")))
-        } else {
-            DependencySource::Registry(resolved_url)
         }
-    } else {
-        DependencySource::Registry(format!("npm:{name}"))
+        Some(resolved_url) if resolved_url.starts_with("file:") => {
+            DependencySource::Path(PathBuf::from(resolved_url.trim_start_matches("file:")))
+        }
+        Some(resolved_url) => DependencySource::Registry(resolved_url),
+        None => DependencySource::Registry(format!("npm:{name}")),
     };
 
     LockfileEntry {
@@ -222,104 +222,136 @@ fn parse_lockfile_details(contents: &str) -> Vec<LockfileDetail> {
 
 /// Fully manual parser for Yarn Classic lockfiles (used as fallback when `yarn_lock_parser` fails).
 /// This parses everything including name, version, resolved, integrity, and dependencies.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn parse_yarn_lockfile_fully(contents: &str, _lockfile_path: &Path) -> Vec<LockfileEntry> {
-    let mut entries = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_version: Option<String> = None;
-    let mut current_resolved: Option<String> = None;
-    let mut current_integrity: Option<String> = None;
-    let mut current_dependencies = Vec::new();
-    let mut in_entry = false;
-
+    let mut parser = YarnClassicFallbackParser::default();
     for line in contents.lines() {
+        parser.parse_line(line);
+    }
+    parser.finish()
+}
+
+#[derive(Default)]
+struct YarnClassicFallbackParser {
+    entries: Vec<LockfileEntry>,
+    current_name: Option<String>,
+    current_version: Option<String>,
+    current_resolved: Option<String>,
+    current_integrity: Option<String>,
+    current_dependencies: Vec<DependencyRef>,
+    in_entry: bool,
+}
+
+impl YarnClassicFallbackParser {
+    fn parse_line(&mut self, line: &str) {
         let trimmed = line.trim();
 
-        // Skip comments and empty lines
         if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
+            return;
         }
 
-        // Check if this is a package header (no leading whitespace)
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            // Save the previous entry if exists
-            if in_entry
-                && let (Some(name), Some(version)) = (current_name.take(), current_version.take())
-            {
-                entries.push(build_lockfile_entry(
-                    name,
-                    version,
-                    current_resolved.take(),
-                    current_integrity.take(),
-                    std::mem::take(&mut current_dependencies),
-                ));
-            }
-
-            // Parse the package name from the descriptor
-            // Format: "package-name@^1.0.0" or package-name@^1.0.0:
-            let descriptor = trimmed.trim_end_matches(':').trim_matches('"');
-            let first_descriptor = descriptor.split(',').next().unwrap_or(descriptor).trim();
-
-            let name = if let Some(rest) = first_descriptor.strip_prefix('@') {
-                // Scoped package: @scope/name@version
-                if let Some(second_at) = rest.find('@') {
-                    format!("@{}", &rest[..second_at])
-                } else {
-                    first_descriptor.to_string()
-                }
-            } else {
-                // Regular package: name@version
-                first_descriptor
-                    .split('@')
-                    .next()
-                    .unwrap_or(first_descriptor)
-                    .to_string()
-            };
-
-            current_name = Some(name);
-            in_entry = true;
-        } else if in_entry {
-            // Parse entry properties
-            if let Some(version) = trimmed.strip_prefix("version ") {
-                current_version = Some(version.trim_matches('"').to_string());
-            } else if let Some(resolved) = trimmed.strip_prefix("resolved ") {
-                current_resolved = Some(resolved.trim_matches('"').to_string());
-            } else if let Some(integrity) = trimmed.strip_prefix("integrity ") {
-                current_integrity = Some(integrity.trim_matches('"').to_string());
-            } else if trimmed.starts_with("dependencies:")
-                || trimmed.starts_with("optionalDependencies:")
-            {
-                // Dependencies section marker
-            } else if trimmed.contains(' ') && !trimmed.starts_with('"') {
-                // Dependency line: name "version"
-                let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let dep_name = parts[0].trim();
-                    let dep_version = parts[1].trim_matches('"');
-                    if !dep_name.is_empty() && !dep_version.is_empty() {
-                        current_dependencies.push(DependencyRef {
-                            name: dep_name.to_string(),
-                            version_req: dep_version.to_string(),
-                        });
-                    }
-                }
-            }
+        if is_entry_header(line) {
+            self.start_entry(trimmed);
+        } else if self.in_entry {
+            self.parse_entry_property(trimmed);
         }
     }
 
-    // Save the last entry
-    if in_entry && let (Some(name), Some(version)) = (current_name, current_version) {
-        entries.push(build_lockfile_entry(
+    fn start_entry(&mut self, header: &str) {
+        self.finish_current_entry();
+        self.current_name = Some(package_name_from_descriptor(header));
+        self.in_entry = true;
+    }
+
+    fn parse_entry_property(&mut self, trimmed: &str) {
+        if let Some(version) = trimmed.strip_prefix("version ") {
+            self.current_version = Some(version.trim_matches('"').to_string());
+        } else if let Some(resolved) = trimmed.strip_prefix("resolved ") {
+            self.current_resolved = Some(resolved.trim_matches('"').to_string());
+        } else if let Some(integrity) = trimmed.strip_prefix("integrity ") {
+            self.current_integrity = Some(integrity.trim_matches('"').to_string());
+        } else if is_dependency_line(trimmed) {
+            self.push_dependency(trimmed);
+        }
+    }
+
+    fn push_dependency(&mut self, trimmed: &str) {
+        let Some((dep_name, dep_version)) = trimmed.split_once(' ') else {
+            return;
+        };
+
+        let dep_name = dep_name.trim();
+        let dep_version = dep_version.trim_matches('"');
+        if dep_name.is_empty() || dep_version.is_empty() {
+            return;
+        }
+
+        self.current_dependencies.push(DependencyRef {
+            name: dep_name.to_string(),
+            version_req: dep_version.to_string(),
+        });
+    }
+
+    fn finish_current_entry(&mut self) {
+        if !self.in_entry {
+            return;
+        }
+
+        let (Some(name), Some(version)) = (self.current_name.take(), self.current_version.take())
+        else {
+            self.reset_current_entry();
+            return;
+        };
+
+        self.entries.push(build_lockfile_entry(
             name,
             version,
-            current_resolved,
-            current_integrity,
-            current_dependencies,
+            self.current_resolved.take(),
+            self.current_integrity.take(),
+            std::mem::take(&mut self.current_dependencies),
         ));
     }
 
-    entries
+    fn reset_current_entry(&mut self) {
+        self.current_name = None;
+        self.current_version = None;
+        self.current_resolved = None;
+        self.current_integrity = None;
+        self.current_dependencies.clear();
+    }
+
+    fn finish(mut self) -> Vec<LockfileEntry> {
+        self.finish_current_entry();
+        self.entries
+    }
+}
+
+fn is_entry_header(line: &str) -> bool {
+    !line.starts_with(' ') && !line.starts_with('\t')
+}
+
+fn is_dependency_line(trimmed: &str) -> bool {
+    trimmed.contains(' ')
+        && !trimmed.starts_with('"')
+        && !trimmed.starts_with("dependencies:")
+        && !trimmed.starts_with("optionalDependencies:")
+}
+
+fn package_name_from_descriptor(header: &str) -> String {
+    let descriptor = header.trim_end_matches(':').trim_matches('"');
+    let first_descriptor = descriptor.split(',').next().unwrap_or(descriptor).trim();
+
+    if let Some(rest) = first_descriptor.strip_prefix('@') {
+        return rest.find('@').map_or_else(
+            || first_descriptor.to_string(),
+            |second_at| format!("@{}", &rest[..second_at]),
+        );
+    }
+
+    first_descriptor
+        .split('@')
+        .next()
+        .unwrap_or(first_descriptor)
+        .to_string()
 }
 
 #[cfg(test)]

@@ -259,8 +259,8 @@ let options = GenerateOptions {
 
 let result = generator.generate(&options)?;
 
-for file in &result.files {
-    println!("{}: {}", file.status, file.path.display());
+for file in &result {
+    println!("{:?}: {}", file.mode, file.path.display());
 }
 ```
 
@@ -384,10 +384,10 @@ cuenv-codegen = "..."
 
 ```bash
 # Run all codegen tests
-cargo test -p cuenv-codegen
+cuenv exec -- cargo test -p cuenv-codegen
 
 # Run with features
-cargo test -p cuenv-codegen --features serde
+cuenv exec -- cargo test -p cuenv-codegen --features serde
 ```
 
 ## See Also

@@ -9,16 +9,26 @@ Read `docs/design/specs/schema-coverage-matrix.md`, then inspect:
 
 - `schema/tools.cue` for `#ToolsRuntime`, `#Tool`, overrides, source unions, extracts, and activation.
 - `schema/vcs.cue` for VCS dependency definitions.
+- `crates/core/src/tools/activation.rs` for activation schema/mutation rules and `crates/core/src/tools/activation/path_index.rs` for lockfile provider path discovery.
 - `crates/cuenv/src/commands/tools.rs` and sync providers when behavior matters.
+- `crates/cuenv/src/commands/sync/providers/vcs.rs` for VCS sync orchestration, `crates/cuenv/src/commands/sync/providers/vcs/materialization.rs` for checkout and marker verification, `crates/cuenv/src/commands/sync/providers/vcs/paths.rs` for path/temp safety, and `crates/cuenv/src/commands/sync/providers/vcs/git.rs` for git subprocess execution.
+- `crates/ci/src/executor/tools.rs` for CI task tool downloads and lockfile activation.
+- `crates/tools/github/src/lib.rs` for GitHub release API resolution, asset selection, downloads, and cache target planning; `crates/tools/github/src/extract.rs` for archive extraction behavior.
+- `crates/tools/url/src/lib.rs` for URL resolution/cache placement and `crates/tools/url/src/extract.rs` for URL archive extraction behavior.
+- `crates/tools/oci/src/provider.rs` for registry/manifest/cache orchestration and `crates/tools/oci/src/extract.rs` for single-binary extraction from image layers.
 
 Status guardrails:
 
 - Nix, GitHub, Rustup, URL, and OCI tool providers are all registered.
 - The OCI provider (`crates/tools/oci`) extracts a single binary at `path` from the platform-specific manifest layers; `image` and `path` both honor `{version}`, `{os}`, and `{arch}` templates. Multi-arch image indexes are walked and the matching `os`/`architecture` entry is selected.
+- Tool lock source-template replacement in `crates/cuenv/src/commands/sync/providers/lock/tool_resolution.rs` owns the literal `{version}`, `{os}`, and `{arch}` placeholders as constants; keep it warning-free without formatting-lint suppressions.
 - GitHub and URL providers auto-extract `.zip`, `.tar.gz`/`.tgz`, and `.tar.xz`/`.txz`. GitHub additionally extracts `.pkg` on macOS. Unknown extensions are treated as raw binaries — point users at a supported archive form rather than letting compressed bytes get written to disk.
+- GitHub tool-provider token precedence tests in `crates/tools/github/src/tests.rs` and OCI GHCR auth tests in `crates/tools/oci/src/registry.rs` should use scoped `temp_env` overrides for `GITHUB_TOKEN` / `GH_TOKEN`, not unsafe process-wide environment mutation.
+- Node contrib-tool integration tests in `crates/cuenv/tests/node_tool_integration.rs` should stay network-free by locking official archive URLs, seeding fake URL-tool cache prefixes, and returning `Result` from fixture setup instead of reintroducing file-level unwrap/expect allowances.
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
 - `#VcsDependency.subdir` performs sparse-checkout of a single subtree. The lockfile records the subtree hash and re-syncs are deterministic; `vendor: false` ignores the materialized subtree instead of leaving a nested `.git` checkout.
+- Keep `crates/cuenv/tests/vcs_subdir_e2e.rs` network-free by seeding a local git source repo from the checkout's `.agents/skills`, rewriting `examples/vcs-subdir/env.cue` to that local remote, and returning `Result` from temp repo setup, recursive copy, git, and cuenv command execution instead of file-level unwrap/expect allowances.
 
 Adversarial prompts:
 

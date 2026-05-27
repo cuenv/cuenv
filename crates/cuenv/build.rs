@@ -4,19 +4,17 @@
 //! When building from crates.io (where these files aren't included), it creates
 //! a minimal placeholder file instead.
 
-// Build scripts run at compile time and should fail fast on errors
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
-
+use std::error::Error;
 use std::fmt::Write;
 use std::fs;
 use std::path::PathBuf;
 
-fn main() {
+fn main() -> Result<(), Box<dyn Error>> {
     // Use CARGO_MANIFEST_DIR to get workspace root reliably
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
     let workspace_root = manifest_dir.parent().and_then(|p| p.parent());
 
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let out_dir = std::env::var("OUT_DIR")?;
     let output_path = format!("{out_dir}/llms-full.txt");
 
     // Try to find llms.txt and schema/ in workspace root
@@ -34,13 +32,12 @@ fn main() {
 
     // If files exist, generate full llms-full.txt
     if let (Some(llms_path), Some(schema_dir)) = (llms_path, schema_dir) {
-        let mut output = fs::read_to_string(&llms_path).expect("Failed to read llms.txt");
+        let mut output = fs::read_to_string(&llms_path)?;
 
         output.push_str("\n## CUE Schema Reference\n");
 
         // Read all .cue files from schema/
-        let mut schemas: Vec<_> = fs::read_dir(&schema_dir)
-            .expect("schema directory not found")
+        let mut schemas: Vec<_> = fs::read_dir(&schema_dir)?
             .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "cue"))
             .collect();
@@ -50,23 +47,23 @@ fn main() {
 
         for entry in schemas {
             let name = entry.file_name();
-            let content = fs::read_to_string(entry.path())
-                .unwrap_or_else(|_| panic!("Failed to read {}", entry.path().display()));
-            let _ = write!(
+            let content = fs::read_to_string(entry.path())?;
+            write!(
                 output,
                 "\n### {}\n```cue\n{}\n```\n",
                 name.to_string_lossy(),
                 content.trim()
-            );
+            )?;
         }
 
-        fs::write(&output_path, output).expect("Failed to write llms-full.txt");
+        fs::write(&output_path, output)?;
     } else {
         // Create minimal placeholder for crates.io builds
         fs::write(
             &output_path,
             "# cuenv\n\nFor full documentation, visit https://github.com/cuenv/cuenv\n",
-        )
-        .expect("Failed to write llms-full.txt placeholder");
+        )?;
     }
+
+    Ok(())
 }

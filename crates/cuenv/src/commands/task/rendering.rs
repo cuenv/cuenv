@@ -33,30 +33,30 @@ pub fn get_task_cli_help() -> String {
 /// Format detailed information about a single task
 pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
     let mut output = String::new();
-    writeln!(output, "Task: {}", task.name).expect("write to string");
+    writeln!(output, "Task: {}", task.name).ok();
 
     match &task.node {
         TaskNode::Task(t) => {
             if let Some(desc) = &t.description {
-                writeln!(output, "Description: {desc}").expect("write to string");
+                writeln!(output, "Description: {desc}").ok();
             }
-            writeln!(output, "Command: {}", t.command).expect("write to string");
+            writeln!(output, "Command: {}", t.command).ok();
             if !t.args.is_empty() {
-                writeln!(output, "Args: {:?}", t.args).expect("write to string");
+                writeln!(output, "Args: {:?}", t.args).ok();
             }
             if !t.depends_on.is_empty() {
-                writeln!(output, "Depends on: {:?}", t.depends_on).expect("write to string");
+                writeln!(output, "Depends on: {:?}", t.depends_on).ok();
             }
             if !t.inputs.is_empty() {
-                writeln!(output, "Inputs: {:?}", t.inputs).expect("write to string");
+                writeln!(output, "Inputs: {:?}", t.inputs).ok();
             }
             if !t.outputs.is_empty() {
-                writeln!(output, "Outputs: {:?}", t.outputs).expect("write to string");
+                writeln!(output, "Outputs: {:?}", t.outputs).ok();
             }
             // Show params if defined
             if let Some(params) = &t.params {
                 if !params.positional.is_empty() {
-                    writeln!(output, "\nPositional Arguments:").expect("write to string");
+                    writeln!(output, "\nPositional Arguments:").ok();
                     for (i, param) in params.positional.iter().enumerate() {
                         let required = if param.required { " (required)" } else { "" };
                         let default = param
@@ -69,12 +69,11 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}")
-                            .expect("write to string");
+                        writeln!(output, "  {{{{{i}}}}}{required}{default}{desc}").ok();
                     }
                 }
                 if !params.named.is_empty() {
-                    writeln!(output, "\nNamed Arguments:").expect("write to string");
+                    writeln!(output, "\nNamed Arguments:").ok();
                     let mut names: Vec<_> = params.named.keys().collect();
                     names.sort();
                     for name in names {
@@ -95,17 +94,16 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
                             .as_ref()
                             .map(|d| format!(" - {d}"))
                             .unwrap_or_default();
-                        writeln!(output, "  {short}--{name}{required}{default}{desc}")
-                            .expect("write to string");
+                        writeln!(output, "  {short}--{name}{required}{default}{desc}").ok();
                     }
                 }
             }
         }
         TaskNode::Group(_) => {
-            writeln!(output, "Type: Task Group (Parallel)").expect("write to string");
+            writeln!(output, "Type: Task Group (Parallel)").ok();
         }
         TaskNode::Sequence(_) => {
-            writeln!(output, "Type: Task Sequence (Sequential)").expect("write to string");
+            writeln!(output, "Type: Task Sequence (Sequential)").ok();
         }
     }
     output
@@ -157,7 +155,7 @@ pub fn render_task_tree(
         } else {
             format!("Tasks from {source}:")
         };
-        writeln!(output, "{header}").expect("write to string");
+        writeln!(output, "{header}").ok();
 
         // Build and render tree for this source's tasks
         let source_tasks = &by_source[source];
@@ -294,16 +292,16 @@ fn print_tree_nodes(
         let current_line_len =
             prefix.chars().count() + marker.chars().count() + name.chars().count();
 
-        write!(output, "{prefix}{marker}{name}").expect("write to string");
+        write!(output, "{prefix}{marker}{name}").ok();
 
         if let Some(desc) = &node.description {
             // Pad with dots
             let padding = max_width.saturating_sub(current_line_len);
             // Add a minimum spacing
             let dots = ".".repeat(padding + 4);
-            write!(output, " {dots} {desc}").expect("write to string");
+            write!(output, " {dots} {desc}").ok();
         }
-        writeln!(output).expect("write to string");
+        writeln!(output).ok();
 
         let child_prefix = if is_last_item { "   " } else { "│  " };
         let new_prefix = format!("{prefix}{child_prefix}");

@@ -3,67 +3,62 @@
 //! Main entry point for CI pipeline execution, integrating with the provider
 //! system for context detection, file change tracking, and reporting.
 //!
-//! This module orchestrates complex async workflows with caching, concurrency control,
-//! and multi-project coordination. The complexity is inherent to the domain.
+//! This module owns project-level scheduling and reporting. Per-task DAG
+//! execution lives in `task_execution`.
 
-// CI orchestration has inherent complexity - coordinates async tasks, caching, reporting
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-
-use crate::affected::{compute_affected_tasks, matched_inputs_for_task};
-use crate::compiler::Compiler;
+use crate::affected::compute_affected_tasks;
 use crate::discovery::evaluate_module_from_cwd;
-use crate::ir::CachePolicy;
 use crate::provider::CIProvider;
-use crate::report::json::write_report;
-use crate::report::{ContextReport, PipelineReport, PipelineStatus, TaskReport, TaskStatus};
-use chrono::Utc;
-use cuenv_core::ci::AnnotationValue;
-use cuenv_core::cue::discovery::find_ancestor_env_files;
-use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
+use crate::report::{ContextReport, PipelineReport, PipelineStatus};
+use chrono::{DateTime, Utc};
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::captures::resolve_captures;
-use cuenv_core::tasks::{TaskGraph, TaskIndex};
-use cuenv_core::tools::{
-    Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolExtract,
-    ToolOptions, ToolRegistry, ToolSource, apply_resolved_tool_activation, resolve_tool_activation,
-    validate_tool_activation,
-};
+use cuenv_core::tasks::TaskIndex;
 use cuenv_core::{DryRun, Result};
-use cuenv_hooks::{
-    ExecutionStatus, HookExecutionConfig, HookExecutionState, StateManager, compute_instance_hash,
-    execute_hooks,
-};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::ExecutorError;
-use super::config::CIExecutorConfig;
-use super::runner::{IRTaskRunner, TaskOutput};
+use super::hook_env::build_hook_environment;
+use super::reporting::{
+    cache_policy_override_for, notify_provider, register_ci_secrets, resolve_annotations,
+    write_pipeline_report,
+};
+use super::task_env::resolve_environment;
+use super::task_execution::{PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks};
+
+/// Request for running CI pipelines from the executor.
+pub struct RunCiRequest {
+    /// CI provider used for context, changed files, and reporting.
+    pub provider: Arc<dyn CIProvider>,
+    /// Whether to skip actual task execution.
+    pub dry_run: DryRun,
+    /// Optional pipeline name to run.
+    pub specific_pipeline: Option<String>,
+    /// Optional environment override for secrets resolution.
+    pub environment: Option<String>,
+    /// Optional module-root-relative project path filter.
+    pub path_filter: Option<String>,
+    /// Maximum parallel jobs inside each task DAG walk.
+    pub max_parallel: usize,
+}
 
 /// Run the CI pipeline logic
 ///
 /// This is the main entry point for CI execution, integrating with the provider
 /// system for context detection, file change tracking, and reporting.
 ///
-/// # Arguments
-///
-/// * `provider` - The CI provider to use for changed files detection and reporting
-/// * `dry_run` - Whether to skip actual task execution
-/// * `specific_pipeline` - If set, only run tasks from this pipeline
-/// * `environment` - Optional environment override for secrets resolution
-/// * `path_filter` - If set, only process projects under this path (relative to module root)
-///
 /// # Errors
 /// Returns error if IO errors occur or tasks fail
-#[allow(clippy::too_many_lines)]
-pub async fn run_ci(
-    provider: Arc<dyn CIProvider>,
-    dry_run: DryRun,
-    specific_pipeline: Option<String>,
-    environment: Option<String>,
-    path_filter: Option<&str>,
-) -> Result<()> {
+pub async fn run_ci(request: RunCiRequest) -> Result<()> {
+    let RunCiRequest {
+        provider,
+        dry_run,
+        specific_pipeline,
+        environment,
+        path_filter,
+        max_parallel,
+    } = request;
+
     let context = provider.context();
     cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
 
@@ -71,12 +66,48 @@ pub async fn run_ci(
     let changed_files = provider.changed_files().await?;
     cuenv_events::emit_ci_changed_files!(changed_files.len());
 
+    let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
+        return Ok(());
+    };
+
+    let failures = run_ci_projects(CiProjectRunRequest {
+        provider: provider.as_ref(),
+        dry_run,
+        specific_pipeline: specific_pipeline.as_deref(),
+        environment: environment.as_deref(),
+        context,
+        changed_files: &changed_files,
+        discovered: &discovered,
+        max_parallel: max_parallel.max(1),
+    })
+    .await?;
+
+    if !failures.is_empty() {
+        return Err(cuenv_core::Error::execution(format!(
+            "CI pipeline failed:\n\n{}",
+            format_pipeline_failures(&failures)
+        )));
+    }
+
+    Ok(())
+}
+
+struct DiscoveredCiProjects {
+    projects: Vec<(PathBuf, Project)>,
+    project_map: ProjectDependencyMap,
+    project_configs: ProjectConfigMap,
+}
+
+type ProjectDependencyMap = HashMap<String, (PathBuf, Project)>;
+type ProjectConfigMap = HashMap<PathBuf, Project>;
+
+fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProjects>> {
     // Evaluate module and discover projects
     let module = evaluate_module_from_cwd()?;
     let project_count = module.project_count();
     if project_count == 0 {
         tracing::info!("No cuenv projects discovered; skipping CI run.");
-        return Ok(());
+        return Ok(None);
     }
     cuenv_events::emit_ci_projects_discovered!(project_count);
 
@@ -105,13 +136,24 @@ pub async fn run_ci(
             filter = path_filter.unwrap_or("."),
             "No projects under path filter; skipping"
         );
-        return Ok(());
+        return Ok(None);
     }
 
-    // Build project maps for cross-project dependency resolution and hook lookup.
+    let (project_map, project_configs) = build_project_lookup(&projects);
+
+    Ok(Some(DiscoveredCiProjects {
+        projects,
+        project_map,
+        project_configs,
+    }))
+}
+
+fn build_project_lookup(
+    projects: &[(PathBuf, Project)],
+) -> (ProjectDependencyMap, ProjectConfigMap) {
     let mut project_map = HashMap::new();
     let mut project_configs = HashMap::new();
-    for (path, config) in &projects {
+    for (path, config) in projects {
         let name = config.name.trim();
         if !name.is_empty() {
             project_map.insert(name.to_string(), (path.clone(), config.clone()));
@@ -123,65 +165,55 @@ pub async fn run_ci(
         }
     }
 
+    (project_map, project_configs)
+}
+
+struct CiProjectRunRequest<'a> {
+    provider: &'a dyn CIProvider,
+    dry_run: DryRun,
+    specific_pipeline: Option<&'a str>,
+    environment: Option<&'a str>,
+    context: &'a crate::context::CIContext,
+    changed_files: &'a [PathBuf],
+    discovered: &'a DiscoveredCiProjects,
+    max_parallel: usize,
+}
+
+async fn run_ci_projects(
+    request: CiProjectRunRequest<'_>,
+) -> Result<Vec<(String, cuenv_core::Error)>> {
+    let CiProjectRunRequest {
+        provider,
+        dry_run,
+        specific_pipeline,
+        environment,
+        context,
+        changed_files,
+        discovered,
+        max_parallel,
+    } = request;
+
     // Track failures with structured errors
     let mut failures: Vec<(String, cuenv_core::Error)> = Vec::new();
 
     // Process each project
-    for (project_path, config) in &projects {
-        // Determine pipeline to run
-        let pipeline_name = specific_pipeline
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-
-        // Find pipeline in config
-        let Some(ci) = &config.ci else {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Project {} has no CI configuration",
-                project_path.display()
-            )));
-        };
-
-        let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
-        let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
-            return Err(cuenv_core::Error::configuration(format!(
-                "Pipeline '{}' not found in project {}. Available pipelines: {}",
-                pipeline_name,
-                project_path.display(),
-                available_pipelines.join(", ")
-            )));
-        };
-
-        let resolved_environment =
-            resolve_environment(environment.as_deref(), pipeline.environment.as_deref());
-
-        // Extract task names from pipeline tasks (which can be simple strings or matrix tasks)
-        let pipeline_task_names: Vec<String> = pipeline
-            .tasks
-            .iter()
-            .map(|t| t.task_name().to_string())
-            .collect();
-
-        // For release events, run all tasks unconditionally (no affected-file filtering)
-        let tasks_to_run = if context.event == "release" {
-            pipeline_task_names
-        } else {
-            compute_affected_tasks(
-                &changed_files,
-                &pipeline_task_names,
-                project_path,
-                config,
-                &project_map,
-            )
-        };
-
-        if tasks_to_run.is_empty() {
-            cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
+    for (project_path, config) in &discovered.projects {
+        let Some(plan) = plan_project_pipeline(ProjectPipelinePlanRequest {
+            project_path,
+            config,
+            requested_pipeline: specific_pipeline,
+            requested_environment: environment,
+            context,
+            changed_files,
+            project_map: &discovered.project_map,
+        })?
+        else {
             continue;
-        }
+        };
 
         tracing::info!(
             project = %project_path.display(),
-            tasks = ?tasks_to_run,
+            tasks = ?plan.tasks_to_run,
             "Running tasks for project"
         );
 
@@ -189,13 +221,14 @@ pub async fn run_ci(
             let result = execute_project_pipeline(&PipelineExecutionRequest {
                 project_path,
                 config,
-                pipeline_name: &pipeline_name,
-                tasks_to_run: &tasks_to_run,
-                environment: resolved_environment.as_deref(),
+                pipeline_name: &plan.pipeline_name,
+                tasks_to_run: &plan.tasks_to_run,
+                environment: plan.environment.as_deref(),
                 context,
-                changed_files: &changed_files,
-                provider: provider.as_ref(),
-                project_configs: &project_configs,
+                changed_files,
+                provider,
+                project_configs: &discovered.project_configs,
+                max_parallel,
             })
             .await;
 
@@ -214,18 +247,94 @@ pub async fn run_ci(
         }
     }
 
-    if !failures.is_empty() {
-        let details = failures
-            .iter()
-            .map(|(project, err)| format!("  [{project}]\n    {err}"))
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        return Err(cuenv_core::Error::execution(format!(
-            "CI pipeline failed:\n\n{details}"
+    Ok(failures)
+}
+
+#[derive(Clone, Copy)]
+struct ProjectPipelinePlanRequest<'a> {
+    project_path: &'a Path,
+    config: &'a Project,
+    requested_pipeline: Option<&'a str>,
+    requested_environment: Option<&'a str>,
+    context: &'a crate::context::CIContext,
+    changed_files: &'a [PathBuf],
+    project_map: &'a ProjectDependencyMap,
+}
+
+struct ProjectPipelinePlan {
+    pipeline_name: String,
+    tasks_to_run: Vec<String>,
+    environment: Option<String>,
+}
+
+fn plan_project_pipeline(
+    request: ProjectPipelinePlanRequest<'_>,
+) -> Result<Option<ProjectPipelinePlan>> {
+    let ProjectPipelinePlanRequest {
+        project_path,
+        config,
+        requested_pipeline,
+        requested_environment,
+        context,
+        changed_files,
+        project_map,
+    } = request;
+
+    let pipeline_name = requested_pipeline.unwrap_or("default").to_string();
+    let Some(ci) = &config.ci else {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Project {} has no CI configuration",
+            project_path.display()
         )));
+    };
+
+    let available_pipelines: Vec<&str> = ci.pipelines.keys().map(String::as_str).collect();
+    let Some(pipeline) = ci.pipelines.get(&pipeline_name) else {
+        return Err(cuenv_core::Error::configuration(format!(
+            "Pipeline '{}' not found in project {}. Available pipelines: {}",
+            pipeline_name,
+            project_path.display(),
+            available_pipelines.join(", ")
+        )));
+    };
+
+    let environment = resolve_environment(requested_environment, pipeline.environment.as_deref());
+    let pipeline_task_names: Vec<String> = pipeline
+        .tasks
+        .iter()
+        .map(|task| task.task_name().to_string())
+        .collect();
+
+    let tasks_to_run = if context.event == "release" {
+        pipeline_task_names
+    } else {
+        compute_affected_tasks(
+            changed_files,
+            &pipeline_task_names,
+            project_path,
+            config,
+            project_map,
+        )
+    };
+
+    if tasks_to_run.is_empty() {
+        cuenv_events::emit_ci_project_skipped!(project_path.display(), "No affected tasks");
+        return Ok(None);
     }
 
-    Ok(())
+    Ok(Some(ProjectPipelinePlan {
+        pipeline_name,
+        tasks_to_run,
+        environment,
+    }))
+}
+
+fn format_pipeline_failures(failures: &[(String, cuenv_core::Error)]) -> String {
+    failures
+        .iter()
+        .map(|(project, err)| format!("  [{project}]\n    {err}"))
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// All parameters needed to execute a project pipeline.
@@ -239,12 +348,12 @@ pub struct PipelineExecutionRequest<'a> {
     pub changed_files: &'a [PathBuf],
     pub provider: &'a dyn CIProvider,
     pub project_configs: &'a HashMap<PathBuf, Project>,
+    pub max_parallel: usize,
 }
 
 /// Execute a project's pipeline and handle reporting
 ///
 /// Returns the pipeline status and a list of task failures (project path, error).
-#[allow(clippy::too_many_lines)] // Complex orchestration logic
 async fn execute_project_pipeline(
     request: &PipelineExecutionRequest<'_>,
 ) -> Result<(PipelineStatus, Vec<(String, cuenv_core::Error)>)> {
@@ -257,40 +366,11 @@ async fn execute_project_pipeline(
     let changed_files = request.changed_files;
     let provider = request.provider;
     let project_configs = request.project_configs;
+    let max_parallel = request.max_parallel;
 
     let start_time = Utc::now();
-    let mut tasks_reports = Vec::new();
-    let mut pipeline_status = PipelineStatus::Success;
-    let mut task_errors: Vec<(String, cuenv_core::Error)> = Vec::new();
     let project_display = project_path.display().to_string();
-    // Collect resolved captures per task for annotation resolution
-    let mut all_captures: HashMap<String, HashMap<String, String>> = HashMap::new();
-
-    // Determine cache policy override based on context
-    let cache_policy_override = if is_fork_pr(context) {
-        Some(CachePolicy::Readonly)
-    } else {
-        None
-    };
-
-    // Create executor configuration with salt rotation support
-    let mut executor_config = CIExecutorConfig::new(project_path.to_path_buf())
-        .with_capture_output(cuenv_core::OutputCapture::Capture)
-        .with_dry_run(DryRun::No)
-        .with_secret_salt(std::env::var("CUENV_SECRET_SALT").unwrap_or_default());
-
-    // Add previous salt for rotation support
-    if let Ok(prev_salt) = std::env::var("CUENV_SECRET_SALT_PREV")
-        && !prev_salt.is_empty()
-    {
-        executor_config = executor_config.with_secret_salt_prev(prev_salt);
-    }
-
-    let _executor_config = if let Some(policy) = cache_policy_override {
-        executor_config.with_cache_policy_override(policy)
-    } else {
-        executor_config
-    };
+    let cache_policy_override = cache_policy_override_for(context);
 
     // Register common CI secret patterns for redaction.
     // These are typically passed via GitHub Actions secrets or similar.
@@ -302,114 +382,28 @@ async fn execute_project_pipeline(
     // Build task index for resolving nested task names (e.g., "deploy.preview")
     let task_index = TaskIndex::build(&config.tasks)?;
 
-    // Execute tasks
-    for task_name in tasks_to_run {
-        let inputs_matched =
-            matched_inputs_for_task(task_name, config, changed_files, project_path);
-        let outputs = task_index
-            .resolve(task_name)
-            .ok()
-            .and_then(|indexed| indexed.node.as_task())
-            .map(|task| task.outputs.clone())
-            .unwrap_or_default();
-
-        cuenv_events::emit_ci_task_executing!(&project_display, task_name);
-        let task_start = std::time::Instant::now();
-
-        // Execute the task with all dependencies (uses TaskGraph for proper ordering).
-        // `continueOnError` is read off the pipeline config — when true, a
-        // failing task does not abort the rest of the dependency chain.
-        let pipeline_continue_on_error = config
-            .ci
-            .as_ref()
-            .and_then(|ci| ci.pipelines.get(pipeline_name))
-            .is_some_and(|p| p.continue_on_error);
-        let result = execute_task_with_deps(TaskDagOptions {
-            config,
-            task_name,
-            project_root: project_path,
-            cache_policy_override,
-            environment,
-            hook_env: &hook_env,
-            continue_on_error: pipeline_continue_on_error,
-        })
-        .await;
-
-        let duration = u64::try_from(task_start.elapsed().as_millis()).unwrap_or(0);
-
-        let (status, exit_code, cache_key, task_captures) = match result {
-            Ok(output) => {
-                // Resolve captures from task output
-                let task_captures = task_index
-                    .resolve(task_name)
-                    .ok()
-                    .and_then(|indexed| indexed.node.as_task())
-                    .filter(|task| !task.captures.is_empty())
-                    .map(|task| resolve_captures(&task.captures, &output.stdout, &output.stderr))
-                    .unwrap_or_default();
-
-                if !task_captures.is_empty() {
-                    all_captures.insert(task_name.clone(), task_captures.clone());
-                }
-
-                if output.success {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, true);
-                    (
-                        TaskStatus::Success,
-                        Some(output.exit_code),
-                        if output.from_cache {
-                            Some(format!("cached:{}", output.task_id))
-                        } else {
-                            Some(output.task_id)
-                        },
-                        task_captures,
-                    )
-                } else {
-                    cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
-                    pipeline_status = PipelineStatus::Failed;
-                    // Capture task failure with structured error
-                    task_errors.push((
-                        project_display.clone(),
-                        cuenv_core::Error::task_failed(
-                            task_name,
-                            output.exit_code,
-                            &output.stdout,
-                            &output.stderr,
-                        ),
-                    ));
-                    (
-                        TaskStatus::Failed,
-                        Some(output.exit_code),
-                        None,
-                        task_captures,
-                    )
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, task = task_name, "Task execution error");
-                cuenv_events::emit_ci_task_result!(&project_display, task_name, false);
-                pipeline_status = PipelineStatus::Failed;
-                // Capture execution error with structured error
-                task_errors.push((project_display.clone(), e.into()));
-                (TaskStatus::Failed, None, None, HashMap::new())
-            }
-        };
-
-        tasks_reports.push(TaskReport {
-            name: task_name.clone(),
-            status,
-            duration_ms: duration,
-            exit_code,
-            cache_key,
-            inputs_matched,
-            outputs,
-            captures: task_captures,
-        });
-    }
+    let PipelineTaskResults {
+        reports: tasks_reports,
+        status: pipeline_status,
+        errors: task_errors,
+        captures: all_captures,
+    } = execute_pipeline_tasks(PipelineTasksRequest {
+        project_path,
+        project_display: &project_display,
+        config,
+        task_names: tasks_to_run,
+        environment,
+        changed_files,
+        task_index: &task_index,
+        cache_policy_override,
+        hook_env: &hook_env,
+        continue_on_error: pipeline_continue_on_error(config, pipeline_name),
+        max_parallel,
+    })
+    .await;
 
     let completed_at = Utc::now();
-    #[allow(clippy::cast_sign_loss)]
-    let duration_ms = (completed_at - start_time).num_milliseconds() as u64;
+    let duration_ms = pipeline_duration_ms(start_time, completed_at);
 
     // Resolve pipeline annotations from capture refs
     let Some(ci) = &config.ci else {
@@ -452,981 +446,36 @@ async fn execute_project_pipeline(
     Ok((pipeline_status, task_errors))
 }
 
-/// Apply task-level environment variables to the merged task environment.
-///
-/// Task env has the highest precedence. Passthrough placeholders intentionally
-/// read from the host process at execution time so CI-provided values such as
-/// GitHub Actions context variables remain available inside hermetic tasks.
-fn apply_task_env(env: &mut BTreeMap<String, String>, task_env: &BTreeMap<String, String>) {
-    for (key, value) in task_env {
-        if let Some(host_var) = cuenv_core::tasks::output_refs::parse_passthrough(value) {
-            match std::env::var(host_var) {
-                Ok(host_value) => {
-                    env.insert(key.clone(), host_value);
-                }
-                Err(_) => {
-                    env.remove(key);
-                }
-            }
-        } else if !value.starts_with("cuenv:ref:") {
-            env.insert(key.clone(), value.clone());
-        }
-    }
-}
-
-/// Write pipeline report to disk
-fn write_pipeline_report(
-    report: &PipelineReport,
-    context: &crate::context::CIContext,
-    project_path: &Path,
-) {
-    // Ensure report directory exists
-    let report_dir = Path::new(".cuenv/reports");
-    if let Err(e) = std::fs::create_dir_all(report_dir) {
-        tracing::warn!(error = %e, "Failed to create report directory");
-        return;
-    }
-
-    let sha_dir = report_dir.join(&context.sha);
-    let _ = std::fs::create_dir_all(&sha_dir);
-
-    let project_filename = project_path.display().to_string().replace(['/', '\\'], "-") + ".json";
-    let report_path = sha_dir.join(project_filename);
-
-    if let Err(e) = write_report(report, &report_path) {
-        tracing::warn!(error = %e, "Failed to write report");
-    } else {
-        cuenv_events::emit_ci_report!(report_path.display());
-    }
-
-    // Write GitHub Job Summary
-    if let Err(e) = crate::report::markdown::write_job_summary(report) {
-        tracing::warn!(error = %e, "Failed to write job summary");
-    }
-}
-
-/// Notify CI provider about pipeline results
-async fn notify_provider(provider: &dyn CIProvider, report: &PipelineReport, pipeline_name: &str) {
-    // Post results to CI provider
-    let check_name = format!("cuenv: {pipeline_name}");
-    match provider.create_check(&check_name).await {
-        Ok(handle) => {
-            if let Err(e) = provider.complete_check(&handle, report).await {
-                tracing::warn!(error = %e, "Failed to complete check run");
-            }
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to create check run");
-        }
-    }
-
-    // Post PR comment with report summary
-    if let Err(e) = provider.upload_report(report).await {
-        tracing::warn!(error = %e, "Failed to post PR comment");
-    }
-}
-
-/// Resolve pipeline annotation values from capture refs and literals.
-fn resolve_annotations(
-    annotations: &HashMap<String, AnnotationValue>,
-    all_captures: &HashMap<String, HashMap<String, String>>,
-) -> HashMap<String, String> {
-    annotations
-        .iter()
-        .filter_map(|(label, value)| {
-            let resolved = match value {
-                AnnotationValue::Literal(s) => Some(s.clone()),
-                AnnotationValue::CaptureRef {
-                    cuenv_capture_ref,
-                    cuenv_task,
-                    cuenv_capture,
-                } => {
-                    if !cuenv_capture_ref {
-                        tracing::warn!(label, "Annotation has cuenvCaptureRef=false, skipping");
-                        return None;
-                    }
-                    all_captures
-                        .get(cuenv_task.as_str())
-                        .and_then(|caps| caps.get(cuenv_capture.as_str()))
-                        .cloned()
-                }
-            };
-            resolved.map(|v| (label.clone(), v))
-        })
-        .collect()
-}
-
-/// Check if this is a fork PR (should use readonly cache)
-fn is_fork_pr(context: &crate::context::CIContext) -> bool {
-    // Fork PRs typically have a different head repo than base repo
-    // This is a simplified check - providers may need more sophisticated detection
-    context.event == "pull_request" && context.ref_name.starts_with("refs/pull/")
-}
-
-/// Register common CI secret environment variables for redaction.
-///
-/// This ensures that secrets passed via CI provider (GitHub Actions, etc.)
-/// are automatically redacted from task output.
-fn register_ci_secrets() {
-    // Common secret environment variable patterns
-    const SECRET_PATTERNS: &[&str] = &[
-        "GITHUB_TOKEN",
-        "GH_TOKEN",
-        "ACTIONS_RUNTIME_TOKEN",
-        "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_SESSION_TOKEN",
-        "AZURE_CLIENT_SECRET",
-        "GCP_SERVICE_ACCOUNT_KEY",
-        "CACHIX_AUTH_TOKEN",
-        "CODECOV_TOKEN",
-        "CUE_REGISTRY_TOKEN",
-        "VSCE_PAT",
-        "NPM_TOKEN",
-        "CARGO_REGISTRY_TOKEN",
-        "PYPI_TOKEN",
-        "DOCKER_PASSWORD",
-        "CLOUDFLARE_API_TOKEN",
-        "OP_SERVICE_ACCOUNT_TOKEN",
-        "CUENV_SECRET_SALT",
-        "CUENV_SECRET_SALT_PREV",
-    ];
-
-    for pattern in SECRET_PATTERNS {
-        if let Ok(value) = std::env::var(pattern) {
-            cuenv_events::register_secret(value);
-        }
-    }
-}
-
-fn resolve_environment(
-    cli_environment: Option<&str>,
-    pipeline_environment: Option<&str>,
-) -> Option<String> {
-    if let Some(env) = cli_environment.filter(|name| !name.is_empty()) {
-        return Some(env.to_string());
-    }
-
-    if let Ok(env) = std::env::var("CUENV_ENVIRONMENT")
-        && !env.is_empty()
-    {
-        return Some(env);
-    }
-
-    pipeline_environment
-        .filter(|name| !name.is_empty())
-        .map(|name| name.to_string())
-}
-
-/// Build the project environment by merging static env with hook-generated values.
-async fn build_hook_environment(
-    project_root: &Path,
-    config: &Project,
-    project_configs: &HashMap<PathBuf, Project>,
-) -> Result<BTreeMap<String, String>> {
-    let static_env = extract_static_env_vars(config);
-    let hooks = collect_hooks_from_ancestors(project_root, config, project_configs)?;
-
-    if hooks.is_empty() {
-        return Ok(static_env);
-    }
-
-    let config_hash = cuenv_hooks::compute_execution_hash(&hooks, project_root);
-    let instance_hash = compute_instance_hash(project_root, &config_hash);
-
-    let state_dir = if let Ok(dir) = std::env::var("CUENV_STATE_DIR") {
-        PathBuf::from(dir)
-    } else {
-        StateManager::default_state_dir()?
-    };
-    let state_manager = StateManager::new(state_dir);
-
-    let hook_config = HookExecutionConfig {
-        default_timeout_seconds: 600,
-        fail_fast: true,
-        state_dir: None,
-    };
-
-    let mut state = HookExecutionState::new(
-        project_root.to_path_buf(),
-        instance_hash,
-        config_hash,
-        hooks.clone(),
-    );
-
-    execute_hooks(
-        hooks,
-        project_root,
-        &hook_config,
-        &state_manager,
-        &mut state,
-    )
-    .await?;
-
-    match state.status {
-        ExecutionStatus::Completed | ExecutionStatus::Failed => {
-            Ok(collect_all_env_vars(config, &state.environment_vars))
-        }
-        ExecutionStatus::Running | ExecutionStatus::Cancelled => Ok(static_env),
-    }
-}
-
-/// Collect `onEnter` hooks from ancestor env.cue files (root-to-leaf order).
-fn collect_hooks_from_ancestors(
-    project_root: &Path,
-    config: &Project,
-    project_configs: &HashMap<PathBuf, Project>,
-) -> Result<Vec<cuenv_hooks::Hook>> {
-    let ancestors = find_ancestor_env_files(project_root, "cuenv")?;
-    let ancestors_len = ancestors.len();
-    let mut all_hooks = Vec::new();
-
-    for (idx, ancestor_dir) in ancestors.into_iter().enumerate() {
-        let is_current_dir = idx + 1 == ancestors_len;
-        let source_config = if is_current_dir {
-            Some(config)
-        } else {
-            project_configs.get(&ancestor_dir).or_else(|| {
-                ancestor_dir
-                    .canonicalize()
-                    .ok()
-                    .and_then(|canonical| project_configs.get(&canonical))
-            })
-        };
-
-        let Some(source_config) = source_config else {
-            continue;
-        };
-
-        let mut hooks = source_config.on_enter_hooks();
-        for hook in &mut hooks {
-            resolve_hook_dir(hook, &ancestor_dir);
-        }
-
-        // Ancestor hooks only run when propagate=true.
-        if !is_current_dir {
-            hooks.retain(|hook| hook.propagate);
-        }
-
-        all_hooks.extend(hooks);
-    }
-
-    Ok(all_hooks)
-}
-
-/// Resolve hook.dir relative to the env.cue directory where the hook is defined.
-fn resolve_hook_dir(hook: &mut cuenv_hooks::Hook, env_cue_dir: &Path) {
-    let relative_dir = hook.dir.as_deref().unwrap_or(".");
-    let absolute_dir = env_cue_dir.join(relative_dir);
-    let resolved = absolute_dir.canonicalize().unwrap_or(absolute_dir);
-    hook.dir = Some(resolved.to_string_lossy().to_string());
-}
-
-/// Extract static (non-secret) environment variables from config.
-fn extract_static_env_vars(config: &Project) -> BTreeMap<String, String> {
-    let mut env_vars = BTreeMap::new();
-    if let Some(env) = &config.env {
-        for (key, value) in &env.base {
-            if value.is_secret() {
-                continue;
-            }
-            env_vars.insert(key.clone(), value.to_string_value());
-        }
-    }
-    env_vars
-}
-
-/// Merge static config env vars with hook-generated values (hooks win).
-fn collect_all_env_vars(
-    config: &Project,
-    hook_env: &std::collections::HashMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut merged = extract_static_env_vars(config);
-    for (key, value) in hook_env {
-        merged.insert(key.clone(), value.clone());
-    }
-    merged
-}
-
-/// Default in-project parallelism cap for the CI orchestrator.
-///
-/// Each project's task DAG is executed level-by-level (dependency-respecting);
-/// within a level we run up to this many tasks concurrently. Matches the
-/// `max_parallel` default used by the core executor.
-const CI_MAX_PARALLEL: usize = 4;
-
-/// Execute a task with all its dependencies in correct order.
-///
-/// Per-call options for [`execute_task_with_deps`].
-struct TaskDagOptions<'a> {
-    config: &'a Project,
-    task_name: &'a str,
-    project_root: &'a Path,
-    cache_policy_override: Option<CachePolicy>,
-    environment: Option<&'a str>,
-    hook_env: &'a BTreeMap<String, String>,
-    continue_on_error: bool,
-}
-
-/// Uses TaskIndex to flatten nested tasks and TaskGraph to resolve dependencies,
-/// then walks the graph by topological "parallel groups" so independent tasks
-/// at the same dependency depth run concurrently (bounded by [`CI_MAX_PARALLEL`]).
-///
-/// Behaviour:
-/// - When `continue_on_error` is `false` (default), the first failure aborts
-///   the rest of the run and returns the failing task's `TaskOutput`.
-/// - When `continue_on_error` is `true`, dependents of a failing task are
-///   marked as `Skipped { DependencyFailed }` (and `TaskEvent::Skipped` is
-///   emitted), but unrelated sibling chains continue executing. A `JoinError`
-///   (task panic / spawn failure) is always fatal regardless of the flag —
-///   we can't reason about state after a panic.
-///
-/// The returned `TaskOutput` is the originally-requested task's output —
-/// resolved by matching the canonical name once execution finishes.
-async fn execute_task_with_deps(
-    opts: TaskDagOptions<'_>,
-) -> std::result::Result<TaskOutput, ExecutorError> {
-    use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
-
-    let TaskDagOptions {
-        config,
-        task_name,
-        project_root,
-        cache_policy_override,
-        environment,
-        hook_env,
-        continue_on_error,
-    } = opts;
-
-    let index =
-        TaskIndex::build(&config.tasks).map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    let entry = index
-        .resolve(task_name)
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    let canonical_name = entry.name.clone();
-    let flattened_tasks = index.to_tasks();
-
-    let mut graph = TaskGraph::new();
-    graph
-        .build_for_task(&canonical_name, &flattened_tasks)
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    let parallel_groups = graph
-        .get_parallel_groups()
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    tracing::info!(
-        task = task_name,
-        canonical = %canonical_name,
-        continue_on_error,
-        execution_order = ?parallel_groups
-            .iter()
-            .map(|g| g.iter().map(|n| n.name.clone()).collect::<Vec<_>>())
-            .collect::<Vec<_>>(),
-        "Resolved task dependencies"
-    );
-    drop(parallel_groups);
-
-    let config = Arc::new(config.clone());
-    let project_root = Arc::new(project_root.to_path_buf());
-    let environment = environment.map(str::to_string);
-    let hook_env = Arc::new(hook_env.clone());
-
-    let policy = WalkPolicy {
-        max_parallel: CI_MAX_PARALLEL,
-        continue_on_error,
-    };
-    let summary = walk_parallel_graph(
-        graph.inner(),
-        policy,
-        // CI doesn't have cross-task output refs that need resolving
-        // before spawn — the IR compiler handles its own substitutions
-        // inside the per-task path. Pass through unchanged.
-        cuenv_core::tasks::graph_walk::passthrough_prepare::<_, _, ExecutorError>,
-        {
-            let config = Arc::clone(&config);
-            let project_root = Arc::clone(&project_root);
-            let hook_env = Arc::clone(&hook_env);
-            move |node: cuenv_task_graph::GraphNode<cuenv_core::tasks::Task>| {
-                let config = Arc::clone(&config);
-                let project_root = Arc::clone(&project_root);
-                let environment = environment.clone();
-                let hook_env = Arc::clone(&hook_env);
-                async move {
-                    compile_and_execute_ir(
-                        config.as_ref(),
-                        &node.name,
-                        project_root.as_ref(),
-                        cache_policy_override,
-                        environment.as_deref(),
-                        hook_env.as_ref(),
-                    )
-                    .await
-                }
-            }
-        },
-        |err: tokio::task::JoinError| {
-            ExecutorError::Compilation(format!("CI orchestrator panic: {err}"))
-        },
-    )
-    .await?;
-
-    let mut outputs: HashMap<String, TaskOutput> = summary.outcomes.into_iter().collect();
-
-    // If any task failed, surface its TaskOutput so the caller can record
-    // a non-success status for the originally-requested task. Under
-    // continue_on_error we still want to return non-Ok behaviour up
-    // through the pipeline-level success bookkeeping.
-    if summary.failed > 0
-        && let Some(failed) = outputs.values().find(|o| !o.success).cloned()
-    {
-        return Ok(failed);
-    }
-
-    outputs
-        .remove(&canonical_name)
-        .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
-}
-
-/// Compile a single task to IR and execute it.
-///
-/// This is the inner execution loop - it does NOT handle dependencies.
-/// Dependencies are resolved by the outer loop using TaskGraph.
-/// Uses the Compiler to convert task definitions to IR.
-async fn compile_and_execute_ir(
-    config: &Project,
-    task_name: &str,
-    project_root: &Path,
-    cache_policy_override: Option<CachePolicy>,
-    environment: Option<&str>,
-    hook_env: &BTreeMap<String, String>,
-) -> std::result::Result<TaskOutput, ExecutorError> {
-    let start = std::time::Instant::now();
-
-    // Use the Compiler to compile the task (handles both single tasks and groups)
-    let options = crate::compiler::CompilerOptions {
-        project_root: Some(project_root.to_path_buf()),
-        ..Default::default()
-    };
-    let compiler = Compiler::with_options(config.clone(), options);
-    let ir = compiler
-        .compile_task(task_name)
-        .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-
-    if ir.tasks.is_empty() {
-        return Err(ExecutorError::Compilation(format!(
-            "Task '{task_name}' produced no executable tasks"
-        )));
-    }
-
-    // Resolve secrets from project environment (same as CLI).
-    // Prefer an explicit environment name, then fall back to CUENV_ENVIRONMENT.
-    let env_name = environment
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            std::env::var("CUENV_ENVIRONMENT")
-                .ok()
-                .filter(|name| !name.is_empty())
-        });
-    let project_env_vars = config
-        .env
+fn pipeline_continue_on_error(config: &Project, pipeline_name: &str) -> bool {
+    config
+        .ci
         .as_ref()
-        .map(|env| match env_name.as_deref() {
-            Some(name) => env.for_environment(name),
-            None => env.base.clone(),
-        })
-        .unwrap_or_default();
-    let (resolved_env, secrets) =
-        cuenv_core::environment::Environment::resolve_for_task_with_secrets(
-            task_name,
-            &project_env_vars,
-        )
-        .await
-        .map_err(|e| ExecutorError::Compilation(format!("Secret resolution failed: {e}")))?;
-
-    // Register resolved secrets for redaction
-    cuenv_events::register_secrets(secrets);
-
-    // Execute all compiled IR tasks sequentially
-    let runner = IRTaskRunner::new(
-        project_root.to_path_buf(),
-        cuenv_core::OutputCapture::Capture,
-    );
-    let mut combined_stdout = String::new();
-    let mut combined_stderr = String::new();
-    let mut all_success = true;
-    let mut last_exit_code = 0;
-
-    // Resolve runtime environment (devenv/nix) if configured on the project.
-    // This runs `devenv print-dev-env` or `nix print-dev-env` and captures the
-    // resulting environment variables (PATH, etc.) so tasks execute within the
-    // correct runtime.
-    let runtime_env =
-        cuenv_core::runtime::resolve_runtime_environment(project_root, config.runtime.as_ref())
-            .await
-            .map_err(|e| ExecutorError::Compilation(e.to_string()))?;
-    if !runtime_env.is_empty() {
-        tracing::info!(
-            vars = runtime_env.len(),
-            "Resolved runtime environment for CI task execution"
-        );
-    }
-
-    // Ensure tools are downloaded before getting activation paths.
-    // Tool activation failures are fatal.
-    ensure_tools_downloaded(project_root).await?;
-    let activation_steps = resolve_tool_activation_steps(project_root)?;
-    if !activation_steps.is_empty() {
-        tracing::debug!(
-            steps = activation_steps.len(),
-            "Applying configured tool activation operations for CI task execution"
-        );
-    }
-
-    for ir_task in &ir.tasks {
-        // Build environment with explicit precedence:
-        // task env > resolved project env > runtime env > hook/static env.
-        let mut env: BTreeMap<String, String> = hook_env.clone();
-        for (key, value) in &runtime_env {
-            env.insert(key.clone(), value.clone());
-        }
-        for (key, value) in &resolved_env {
-            env.insert(key.clone(), value.clone());
-        }
-        apply_task_env(&mut env, &ir_task.env);
-
-        for step in &activation_steps {
-            let current = env.get(&step.var).map(String::as_str);
-            if let Some(new_value) = apply_resolved_tool_activation(current, step) {
-                env.insert(step.var.clone(), new_value);
-            }
-        }
-
-        // Ensure the running cuenv binary is on PATH so tasks that invoke
-        // `cuenv` (e.g., ci.sync-check) can find it even when hooks replace
-        // PATH entirely (e.g., NixFlake).
-        if let Ok(exe) = std::env::current_exe()
-            && let Some(exe_dir) = exe.parent()
-        {
-            let exe_dir_str = exe_dir.to_string_lossy();
-            if let Some(existing_path) = env.get("PATH") {
-                if !existing_path.contains(exe_dir_str.as_ref()) {
-                    env.insert("PATH".to_string(), format!("{exe_dir_str}:{existing_path}"));
-                }
-            } else {
-                env.insert("PATH".to_string(), exe_dir_str.to_string());
-            }
-        }
-
-        if !env.contains_key("HOME")
-            && let Ok(home) = std::env::var("HOME")
-        {
-            env.insert("HOME".to_string(), home);
-        }
-
-        // Apply cache policy override if specified
-        let mut task_to_run = ir_task.clone();
-        if let Some(policy) = cache_policy_override {
-            task_to_run.cache_policy = policy;
-        }
-
-        let output = runner.execute(&task_to_run, env).await?;
-
-        combined_stdout.push_str(&output.stdout);
-        combined_stderr.push_str(&output.stderr);
-        last_exit_code = output.exit_code;
-
-        if !output.success {
-            all_success = false;
-            break; // Stop on first failure
-        }
-    }
-
-    let duration = start.elapsed();
-    let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-
-    Ok(TaskOutput {
-        task_id: task_name.to_string(),
-        exit_code: last_exit_code,
-        stdout: combined_stdout,
-        stderr: combined_stderr,
-        success: all_success,
-        from_cache: false,
-        duration_ms,
-        captures: HashMap::new(),
-    })
+        .and_then(|ci| ci.pipelines.get(pipeline_name))
+        .is_some_and(|pipeline| pipeline.continue_on_error)
 }
 
-// ============================================================================
-// Tool Activation Helpers
-// ============================================================================
-
-/// Find the lockfile starting from a directory.
-fn find_lockfile(start_dir: &Path) -> Option<PathBuf> {
-    let lockfile_path = start_dir.join(LOCKFILE_NAME);
-    if lockfile_path.exists() {
-        return Some(lockfile_path);
-    }
-
-    // Check parent directories
-    let mut current = start_dir.parent();
-    while let Some(dir) = current {
-        let lockfile_path = dir.join(LOCKFILE_NAME);
-        if lockfile_path.exists() {
-            return Some(lockfile_path);
-        }
-        current = dir.parent();
-    }
-
-    None
-}
-
-/// Create a tool registry with all available providers.
-fn create_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::new();
-
-    registry.register(cuenv_tools_nix::NixToolProvider::new());
-    registry.register(cuenv_tools_github::GitHubToolProvider::new());
-    registry.register(cuenv_tools_rustup::RustupToolProvider::new());
-    registry.register(cuenv_tools_url::UrlToolProvider::new());
-
-    registry
-}
-
-/// Convert a lockfile entry to a `ToolSource`.
-fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
-    match locked.provider.as_str() {
-        "oci" => {
-            let image = locked
-                .source
-                .get("image")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let path = locked
-                .source
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            Some(ToolSource::Oci {
-                image: image.to_string(),
-                path: path.to_string(),
-            })
-        }
-        "github" => {
-            let repo = locked
-                .source
-                .get("repo")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let tag = locked
-                .source
-                .get("tag")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let asset = locked
-                .source
-                .get("asset")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let extract = parse_github_extract_list(&locked.source);
-            Some(ToolSource::GitHub {
-                repo: repo.to_string(),
-                tag: tag.to_string(),
-                asset: asset.to_string(),
-                extract,
-            })
-        }
-        "nix" => {
-            let flake = locked
-                .source
-                .get("flake")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let package = locked
-                .source
-                .get("package")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let output = locked
-                .source
-                .get("output")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            Some(ToolSource::Nix {
-                flake: flake.to_string(),
-                package: package.to_string(),
-                output,
-            })
-        }
-        "rustup" => {
-            let toolchain = locked
-                .source
-                .get("toolchain")
-                .and_then(|v| v.as_str())
-                .unwrap_or("stable");
-            let profile = locked
-                .source
-                .get("profile")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let components: Vec<String> = locked
-                .source
-                .get("components")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let targets: Vec<String> = locked
-                .source
-                .get("targets")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(ToolSource::Rustup {
-                toolchain: toolchain.to_string(),
-                profile,
-                components,
-                targets,
-            })
-        }
-        "url" => {
-            let url = locked
-                .source
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let extract = parse_github_extract_list(&locked.source);
-            Some(ToolSource::Url {
-                url: url.to_string(),
-                extract,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn parse_github_extract_list(source: &serde_json::Value) -> Vec<ToolExtract> {
-    let mut extract = source
-        .get("extract")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<Vec<ToolExtract>>(value).ok())
-        .unwrap_or_default();
-
-    if extract.is_empty()
-        && let Some(path) = source.get("path").and_then(|v| v.as_str())
-    {
-        if path_looks_like_library(path) {
-            extract.push(ToolExtract::Lib {
-                path: path.to_string(),
-                env: None,
-            });
-        } else {
-            extract.push(ToolExtract::Bin {
-                path: path.to_string(),
-                as_name: None,
-            });
-        }
-    }
-
-    extract
-}
-
-fn path_looks_like_library(path: &str) -> bool {
-    let ext_is = |target: &str| {
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case(target))
-    };
-    ext_is("dylib") || ext_is("so") || path.to_ascii_lowercase().contains(".so.") || ext_is("dll")
-}
-
-/// Resolve activation steps from lockfile for CI execution.
-fn resolve_tool_activation_steps(
-    project_root: &Path,
-) -> std::result::Result<Vec<ResolvedToolActivationStep>, ExecutorError> {
-    let Some(lockfile_path) = find_lockfile(project_root) else {
-        return Ok(Vec::new());
-    };
-
-    let lockfile = match Lockfile::load(&lockfile_path) {
-        Ok(Some(lf)) => lf,
-        Ok(None) => return Ok(Vec::new()),
-        Err(e) => {
-            return Err(ExecutorError::Compilation(format!(
-                "Failed to load lockfile: {e}"
-            )));
-        }
-    };
-
-    let options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path);
-    resolve_tool_activation(&options).map_err(|e| {
-        ExecutorError::Compilation(format!("Invalid tool activation configuration: {e}"))
-    })
-}
-
-/// Ensure all tools from the lockfile are downloaded for the current platform.
-async fn ensure_tools_downloaded(project_root: &Path) -> std::result::Result<(), ExecutorError> {
-    let Some(lockfile_path) = find_lockfile(project_root) else {
-        tracing::debug!("No lockfile found - skipping tool download");
-        return Ok(());
-    };
-
-    let lockfile = match Lockfile::load(&lockfile_path) {
-        Ok(Some(lf)) => lf,
-        Ok(None) => {
-            tracing::debug!("Empty lockfile - skipping tool download");
-            return Ok(());
-        }
-        Err(e) => {
-            return Err(ExecutorError::Compilation(format!(
-                "Failed to load lockfile: {e}"
-            )));
-        }
-    };
-
-    if lockfile.tools.is_empty() {
-        tracing::debug!("No tools in lockfile - skipping download");
-        return Ok(());
-    }
-
-    let activation_options = ToolActivationResolveOptions::new(&lockfile, &lockfile_path);
-    validate_tool_activation(&activation_options).map_err(|e| {
-        ExecutorError::Compilation(format!("Invalid tool activation configuration: {e}"))
-    })?;
-
-    let platform = Platform::current();
-    let platform_str = platform.to_string();
-    let options = ToolOptions::default();
-    let registry = create_tool_registry();
-
-    // Check prerequisites for all providers we'll use
-    let mut providers_used = HashSet::new();
-    for tool in lockfile.tools.values() {
-        if let Some(locked) = tool.platforms.get(&platform_str) {
-            providers_used.insert(locked.provider.clone());
-        }
-    }
-
-    for provider_name in &providers_used {
-        if let Some(provider) = registry.get(provider_name)
-            && let Err(e) = provider.check_prerequisites().await
-        {
-            tracing::warn!(
-                "Provider '{}' prerequisites check failed: {} - skipping tools from this provider",
-                provider_name,
-                e
-            );
-        }
-    }
-
-    // Download tools that aren't cached
-    let mut errors: Vec<String> = Vec::new();
-
-    for (name, tool) in &lockfile.tools {
-        let Some(locked) = tool.platforms.get(&platform_str) else {
-            continue;
-        };
-
-        let Some(source) = lockfile_entry_to_source(locked) else {
-            tracing::debug!(
-                "Unknown provider '{}' for tool '{}' - skipping",
-                locked.provider,
-                name
-            );
-            continue;
-        };
-
-        let Some(provider) = registry.find_for_source(&source) else {
-            tracing::debug!("No provider found for tool '{}' - skipping", name);
-            continue;
-        };
-
-        let resolved = ResolvedTool {
-            name: name.clone(),
-            version: tool.version.clone(),
-            platform: platform.clone(),
-            source,
-        };
-
-        // Check if already cached
-        if provider.is_cached(&resolved, &options) {
-            continue;
-        }
-
-        // Fetch the tool
-        tracing::info!("Downloading {} v{}...", name, tool.version);
-        match provider.fetch(&resolved, &options).await {
-            Ok(fetched) => {
-                tracing::info!("Downloaded {} -> {}", name, fetched.binary_path.display());
-            }
-            Err(e) => {
-                tracing::warn!("Failed to download tool '{}': {}", name, e);
-                errors.push(format!("{}: {}", name, e));
-            }
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(ExecutorError::Compilation(format!(
-            "Failed to download tools: {}",
-            errors.join(", ")
-        )));
-    }
-
-    Ok(())
+fn pipeline_duration_ms(started_at: DateTime<Utc>, completed_at: DateTime<Utc>) -> u64 {
+    u64::try_from((completed_at - started_at).num_milliseconds()).unwrap_or(0)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::apply_task_env;
-    use std::collections::BTreeMap;
+    use super::*;
+    use chrono::Duration;
 
     #[test]
-    fn task_env_passthrough_reads_host_environment() {
-        temp_env::with_var("CUENV_TEST_GITHUB_ACTOR", Some("octocat"), || {
-            let mut env = BTreeMap::from([("GITHUB_ACTOR".to_string(), "lower".to_string())]);
-            let task_env = BTreeMap::from([(
-                "GITHUB_ACTOR".to_string(),
-                "cuenv:passthrough:CUENV_TEST_GITHUB_ACTOR".to_string(),
-            )]);
+    fn pipeline_duration_ms_returns_elapsed_milliseconds() {
+        let started_at = Utc::now();
+        let completed_at = started_at + Duration::milliseconds(1_250);
 
-            apply_task_env(&mut env, &task_env);
-
-            assert_eq!(env.get("GITHUB_ACTOR"), Some(&"octocat".to_string()));
-        });
+        assert_eq!(pipeline_duration_ms(started_at, completed_at), 1_250);
     }
 
     #[test]
-    fn missing_task_env_passthrough_unsets_lower_precedence_value() {
-        temp_env::with_var_unset("CUENV_TEST_MISSING_ACTOR", || {
-            let mut env = BTreeMap::from([("GITHUB_ACTOR".to_string(), "lower".to_string())]);
-            let task_env = BTreeMap::from([(
-                "GITHUB_ACTOR".to_string(),
-                "cuenv:passthrough:CUENV_TEST_MISSING_ACTOR".to_string(),
-            )]);
+    fn pipeline_duration_ms_clamps_negative_durations() {
+        let completed_at = Utc::now();
+        let started_at = completed_at + Duration::milliseconds(10);
 
-            apply_task_env(&mut env, &task_env);
-
-            assert!(!env.contains_key("GITHUB_ACTOR"));
-        });
-    }
-
-    #[test]
-    fn literal_task_env_overrides_lower_precedence_value() {
-        let mut env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "main".to_string())]);
-        let task_env = BTreeMap::from([("GITHUB_REF_NAME".to_string(), "release".to_string())]);
-
-        apply_task_env(&mut env, &task_env);
-
-        assert_eq!(env.get("GITHUB_REF_NAME"), Some(&"release".to_string()));
+        assert_eq!(pipeline_duration_ms(started_at, completed_at), 0);
     }
 }

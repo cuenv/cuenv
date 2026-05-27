@@ -12,6 +12,7 @@ use crate::{
 };
 use futures::future::try_join_all;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 /// Configuration for batch resolution.
 #[derive(Debug, Clone, Default)]
@@ -99,10 +100,13 @@ impl<'a> BatchResolver<'a> {
     /// - A required provider is not registered
     /// - Salt is missing when secrets have `cache_key: true`
     /// - Any secret resolution fails
-    pub async fn resolve_all(
+    pub async fn resolve_all<S>(
         &self,
-        secrets: &HashMap<String, (SecretSpec, &'static str)>,
-    ) -> Result<BatchSecrets, SecretError> {
+        secrets: &HashMap<String, (SecretSpec, &'static str), S>,
+    ) -> Result<BatchSecrets, SecretError>
+    where
+        S: BuildHasher + Sync,
+    {
         // Check salt requirements upfront
         let needs_salt = secrets.values().any(|(spec, _)| spec.cache_key);
         if needs_salt && !self.config.salt_config.has_salt() {
@@ -193,20 +197,27 @@ impl<'a> BatchResolver<'a> {
 ///
 /// let secrets = resolve_batch(&resolver, &specs, &salt).await?;
 /// ```
-#[allow(clippy::implicit_hasher)]
-pub async fn resolve_batch<R: SecretResolver>(
+pub async fn resolve_batch<R, S>(
     resolver: &R,
-    secrets: &HashMap<String, SecretSpec>,
+    secrets: &HashMap<String, SecretSpec, S>,
     salt_config: &SaltConfig,
-) -> Result<BatchSecrets, SecretError> {
+) -> Result<BatchSecrets, SecretError>
+where
+    R: SecretResolver,
+    S: BuildHasher + Sync,
+{
     // Check salt requirements
     let needs_salt = secrets.values().any(|s| s.cache_key);
     if needs_salt && !salt_config.has_salt() {
         return Err(SecretError::MissingSalt);
     }
 
-    // Resolve all secrets using the resolver's batch method
-    let batch_results = resolver.resolve_batch(secrets).await?;
+    // Resolve all secrets using the resolver's object-safe batch method.
+    let resolver_input = secrets
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.clone()))
+        .collect::<HashMap<_, _>>();
+    let batch_results = resolver.resolve_batch(&resolver_input).await?;
 
     // Build BatchSecrets with fingerprints
     let mut batch = BatchSecrets::with_capacity(secrets.len());
@@ -406,82 +417,57 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_batch_with_salt_and_cache_key() {
-        // Set an env var for testing
-        // SAFETY: Test runs in isolation
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("BATCH_TEST_SECRET", "test_value");
-        }
+        temp_env::async_with_vars([("BATCH_TEST_SECRET", Some("test_value"))], async {
+            let resolver = EnvSecretResolver::new();
+            let mut secrets = HashMap::new();
+            secrets.insert(
+                "my_secret".to_string(),
+                SecretSpec::with_cache_key("BATCH_TEST_SECRET"),
+            );
+            let salt = SaltConfig::new(Some("test-salt".to_string()));
 
-        let resolver = EnvSecretResolver::new();
-        let mut secrets = HashMap::new();
-        secrets.insert(
-            "my_secret".to_string(),
-            SecretSpec::with_cache_key("BATCH_TEST_SECRET"),
-        );
-        let salt = SaltConfig::new(Some("test-salt".to_string()));
-
-        let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
-        assert!(!result.is_empty());
-
-        // Cleanup
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var("BATCH_TEST_SECRET");
-        }
+            let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
+            assert!(!result.is_empty());
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn test_resolve_batch_without_cache_key() {
-        // Set an env var for testing
-        // SAFETY: Test runs in isolation
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("BATCH_TEST_NO_CACHE", "another_value");
-        }
+        temp_env::async_with_vars([("BATCH_TEST_NO_CACHE", Some("another_value"))], async {
+            let resolver = EnvSecretResolver::new();
+            let mut secrets = HashMap::new();
+            // Without cache_key, no fingerprint is computed
+            secrets.insert(
+                "my_secret".to_string(),
+                SecretSpec::new("BATCH_TEST_NO_CACHE"),
+            );
+            let salt = SaltConfig::default();
 
-        let resolver = EnvSecretResolver::new();
-        let mut secrets = HashMap::new();
-        // Without cache_key, no fingerprint is computed
-        secrets.insert(
-            "my_secret".to_string(),
-            SecretSpec::new("BATCH_TEST_NO_CACHE"),
-        );
-        let salt = SaltConfig::default();
-
-        let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
-        assert!(!result.is_empty());
-
-        // Cleanup
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var("BATCH_TEST_NO_CACHE");
-        }
+            let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
+            assert!(!result.is_empty());
+        })
+        .await;
     }
 
     #[tokio::test]
     async fn test_resolve_batch_multiple_secrets() {
-        // SAFETY: Test runs in isolation
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::set_var("BATCH_MULTI_1", "value1");
-            std::env::set_var("BATCH_MULTI_2", "value2");
-        }
+        temp_env::async_with_vars(
+            [
+                ("BATCH_MULTI_1", Some("value1")),
+                ("BATCH_MULTI_2", Some("value2")),
+            ],
+            async {
+                let resolver = EnvSecretResolver::new();
+                let mut secrets = HashMap::new();
+                secrets.insert("secret1".to_string(), SecretSpec::new("BATCH_MULTI_1"));
+                secrets.insert("secret2".to_string(), SecretSpec::new("BATCH_MULTI_2"));
+                let salt = SaltConfig::default();
 
-        let resolver = EnvSecretResolver::new();
-        let mut secrets = HashMap::new();
-        secrets.insert("secret1".to_string(), SecretSpec::new("BATCH_MULTI_1"));
-        secrets.insert("secret2".to_string(), SecretSpec::new("BATCH_MULTI_2"));
-        let salt = SaltConfig::default();
-
-        let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
-        assert_eq!(result.len(), 2);
-
-        // Cleanup
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var("BATCH_MULTI_1");
-            std::env::remove_var("BATCH_MULTI_2");
-        }
+                let result = resolve_batch(&resolver, &secrets, &salt).await.unwrap();
+                assert_eq!(result.len(), 2);
+            },
+        )
+        .await;
     }
 }

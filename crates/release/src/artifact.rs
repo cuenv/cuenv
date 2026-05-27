@@ -203,14 +203,11 @@ impl ArtifactBuilder {
         let archive_path = self.output_dir.join(&archive_name);
         let checksum_path = self.output_dir.join(format!("{archive_name}.sha256"));
 
-        // Create the tarball
-        self.create_tarball(artifact, &archive_path)?;
+        Self::create_tarball(artifact, &archive_path)?;
 
-        // Compute SHA256
         let sha256 = Self::compute_sha256(&archive_path)?;
 
-        // Write checksum file
-        self.write_checksum_file(&checksum_path, &sha256, &archive_name)?;
+        Self::write_checksum_file(&checksum_path, &sha256, &archive_name)?;
 
         Ok(PackagedArtifact {
             target: artifact.target,
@@ -264,8 +261,7 @@ impl ArtifactBuilder {
     }
 
     /// Creates a tarball containing the binary.
-    #[allow(clippy::unused_self)]
-    fn create_tarball(&self, artifact: &Artifact, output: &Path) -> Result<()> {
+    fn create_tarball(artifact: &Artifact, output: &Path) -> Result<()> {
         let file = File::create(output).map_err(|e| {
             Error::artifact(
                 format!("Failed to create archive: {e}"),
@@ -275,7 +271,6 @@ impl ArtifactBuilder {
         let encoder = GzEncoder::new(file, Compression::default());
         let mut archive = tar::Builder::new(encoder);
 
-        // Read the binary
         let binary_file = File::open(&artifact.binary_path).map_err(|e| {
             Error::artifact(
                 format!("Failed to open binary: {e}"),
@@ -289,14 +284,12 @@ impl ArtifactBuilder {
             )
         })?;
 
-        // Create tar header
         let mut header = tar::Header::new_gnu();
         header.set_path(&artifact.name)?;
         header.set_size(metadata.len());
         header.set_mode(0o755); // Executable
         header.set_cksum();
 
-        // Add to archive
         archive.append(&header, &binary_file)?;
         archive.finish()?;
 
@@ -304,8 +297,7 @@ impl ArtifactBuilder {
     }
 
     /// Writes a checksum file in the standard format.
-    #[allow(clippy::unused_self)]
-    fn write_checksum_file(&self, path: &Path, sha256: &str, filename: &str) -> Result<()> {
+    fn write_checksum_file(path: &Path, sha256: &str, filename: &str) -> Result<()> {
         let content = format!("{sha256}  {filename}\n");
         std::fs::write(path, content)?;
         Ok(())

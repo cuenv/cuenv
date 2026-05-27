@@ -13,7 +13,7 @@
 //!
 //! # Process-group layout
 //!
-//! The outer supervisor (`cuenv_services::supervisor::spawn_process`)
+//! The outer supervisor (`cuenv_services::process::ServiceProcess::spawn`)
 //! calls `setpgid(0, 0)` on the wrapper, so the wrapper is a process
 //! group leader with `pgid == wrapper_pid`. The wrapper does NOT set
 //! a new pgid on the service child — the service inherits the
@@ -167,8 +167,16 @@ fn spawn_parent_watcher(parent_pid: libc::pid_t, _child_pid: libc::pid_t) {
                 return;
             }
 
+            let Ok(parent_ident) = usize::try_from(parent_pid) else {
+                tracing::warn!(
+                    "cuenv __supervise: parent pid {parent_pid} cannot be represented as usize; killing group"
+                );
+                kill_group();
+                return;
+            };
+
             let mut change: libc::kevent = std::mem::zeroed();
-            change.ident = usize::try_from(parent_pid).expect("pid fits in usize");
+            change.ident = parent_ident;
             change.filter = libc::EVFILT_PROC;
             change.flags = libc::EV_ADD | libc::EV_ENABLE | libc::EV_ONESHOT;
             change.fflags = libc::NOTE_EXIT;

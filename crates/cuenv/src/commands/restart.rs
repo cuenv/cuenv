@@ -1,10 +1,10 @@
 //! Implementation of the `cuenv restart` command.
 //!
-//! Stops and re-starts named services via the session state.
+//! Queues restart requests for named services via the persisted session state.
 
 use std::path::Path;
 
-use cuenv_events::{emit_service_restarting, emit_stdout};
+use cuenv_events::emit_stdout;
 use cuenv_services::session::SessionManager;
 
 /// Options for the `cuenv restart` command.
@@ -19,8 +19,8 @@ pub struct RestartOptions {
 
 /// Execute the `cuenv restart` command.
 ///
-/// Sends a restart signal to the named services. The running `cuenv up`
-/// session handles the actual stop/re-spawn cycle.
+/// Queues restart requests for named services. The running `cuenv up`
+/// supervisors consume those requests and perform the stop/re-spawn cycle.
 ///
 /// # Errors
 ///
@@ -36,27 +36,37 @@ pub fn execute_restart(options: &RestartOptions) -> cuenv_core::Result<String> {
         ));
     }
 
+    emit_stdout!(format!(
+        "cuenv restart: queuing restart requests in {} (package: {})",
+        options.path, options.package
+    ));
+
     for name in &options.services {
-        let state = session.read_service(name).map_err(|e| {
+        session.read_service(name).map_err(|e| {
             cuenv_core::Error::execution(format!("Service '{name}' not found: {e}"))
         })?;
-
-        emit_service_restarting!(name, "manual", state.restarts + 1);
-        emit_stdout!(format!("Restart signal sent to service '{name}'."));
-
-        // In the current architecture, the actual restart is handled by the
-        // supervisor in the `cuenv up` process. A full implementation would
-        // send a signal to the supervisor (e.g., via a Unix signal or a
-        // control socket). For now, we emit the event for the session to pick up.
     }
 
-    emit_stdout!("Restart signals sent. The running `cuenv up` session will restart the services.");
-    Ok(String::new())
+    for name in &options.services {
+        session.request_service_restart(name).map_err(|e| {
+            cuenv_core::Error::execution(format!(
+                "Failed to queue restart for service '{name}': {e}"
+            ))
+        })?;
+        emit_stdout!(format!("Restart requested for service '{name}'."));
+    }
+
+    emit_stdout!(
+        "Restart requests queued. The active `cuenv up` session will restart the services."
+    );
+    Ok("cuenv restart: restart requested".to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cuenv_services::lifecycle::ServiceLifecycle;
+    use cuenv_services::session::ServiceState;
 
     #[test]
     fn test_restart_options() {
@@ -66,5 +76,69 @@ mod tests {
             services: vec!["db".to_string()],
         };
         assert_eq!(options.services.len(), 1);
+    }
+
+    #[test]
+    fn test_execute_restart_queues_request() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(temp_dir.path(), "test-project").unwrap();
+        seed_service(&session, "db");
+
+        let options = RestartOptions {
+            path: temp_dir.path().to_string_lossy().into_owned(),
+            package: "cuenv".to_string(),
+            services: vec!["db".to_string()],
+        };
+
+        let result = execute_restart(&options).unwrap();
+        assert_eq!(result, "cuenv restart: restart requested");
+        assert!(session.take_service_restart_request("db").unwrap());
+    }
+
+    #[test]
+    fn test_execute_restart_rejects_missing_service() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _session = SessionManager::create(temp_dir.path(), "test-project").unwrap();
+
+        let options = RestartOptions {
+            path: temp_dir.path().to_string_lossy().into_owned(),
+            package: "cuenv".to_string(),
+            services: vec!["missing".to_string()],
+        };
+
+        let error = execute_restart(&options).unwrap_err().to_string();
+        assert!(error.contains("Service 'missing' not found"));
+    }
+
+    #[test]
+    fn test_execute_restart_validates_all_services_before_queueing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(temp_dir.path(), "test-project").unwrap();
+        seed_service(&session, "db");
+
+        let options = RestartOptions {
+            path: temp_dir.path().to_string_lossy().into_owned(),
+            package: "cuenv".to_string(),
+            services: vec!["db".to_string(), "missing".to_string()],
+        };
+
+        let error = execute_restart(&options).unwrap_err().to_string();
+        assert!(error.contains("Service 'missing' not found"));
+        assert!(!session.take_service_restart_request("db").unwrap());
+    }
+
+    fn seed_service(session: &SessionManager, name: &str) {
+        session
+            .update_service(&ServiceState {
+                name: name.to_string(),
+                lifecycle: ServiceLifecycle::Ready,
+                pid: Some(999_998),
+                started_at: Some(chrono::Utc::now()),
+                ready_at: Some(chrono::Utc::now()),
+                restarts: 0,
+                exit_code: None,
+                error: None,
+            })
+            .unwrap();
     }
 }

@@ -23,24 +23,13 @@ impl Formatter {
     /// Returns an error if formatting fails
     pub fn format(&self, content: &str, language: &str, config: &FormatConfig) -> Result<String> {
         match language {
-            "json" => self.format_json(content, config),
-            "typescript" | "javascript" => {
-                // For now, return content as-is
-                // In a full implementation, we'd integrate with prettier or biome
-                Ok(content.to_string())
-            }
-            "rust" => {
-                // For now, return content as-is
-                // In a full implementation, we'd integrate with rustfmt
-                Ok(content.to_string())
-            }
+            "json" => Self::format_json(content, config),
             _ => Ok(content.to_string()),
         }
     }
 
     /// Format JSON content
-    #[allow(clippy::unused_self)] // Will use self for formatting state in future
-    fn format_json(&self, content: &str, config: &FormatConfig) -> Result<String> {
+    fn format_json(content: &str, config: &FormatConfig) -> Result<String> {
         let value: serde_json::Value = serde_json::from_str(content)?;
 
         let indent_size = config.indent_size.unwrap_or(2);

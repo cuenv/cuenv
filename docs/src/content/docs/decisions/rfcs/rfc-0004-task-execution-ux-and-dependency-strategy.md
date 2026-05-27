@@ -96,7 +96,7 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 | Artifact                                                                                          | Purpose                                                |
 | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10)                 | Primary CLI logic for task execution.                  |
+| [crates/cuenv/src/commands/task/execution.rs](crates/cuenv/src/commands/task/execution.rs)         | Task selection, graph building, and execution flow.    |
 | [adr-0003-task-graph-execution-strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/) | Ratified decision capturing final execution semantics. |
 | [readme.md](readme.md:248)                                                                        | Public documentation for task commands.                |
 | cuenv-core task executor docs (future)                                                            | Provide deeper technical details once published.       |

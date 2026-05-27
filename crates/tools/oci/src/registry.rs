@@ -334,9 +334,9 @@ async fn compute_file_digest(path: &Path) -> Result<String> {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use temp_env::with_vars;
     use tempfile::TempDir;
 
     // ==========================================================================
@@ -498,17 +498,15 @@ mod tests {
 
     #[test]
     fn test_oci_client_get_auth_ghcr_no_token() {
-        // Ensure no token env vars are set
-        // SAFETY: Test runs in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::remove_var("GH_TOKEN");
-        }
-
-        let client = OciClient::new();
-        let reference = parse_reference("ghcr.io/owner/image:latest").unwrap();
-        let auth = client.get_auth(&reference);
-        assert!(matches!(auth, RegistryAuth::Anonymous));
+        with_vars(
+            [("GITHUB_TOKEN", None::<&str>), ("GH_TOKEN", None::<&str>)],
+            || {
+                let client = OciClient::new();
+                let reference = parse_reference("ghcr.io/owner/image:latest").unwrap();
+                let auth = client.get_auth(&reference);
+                assert!(matches!(auth, RegistryAuth::Anonymous));
+            },
+        );
     }
 
     // ==========================================================================

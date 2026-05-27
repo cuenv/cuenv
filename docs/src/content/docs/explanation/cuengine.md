@@ -32,6 +32,46 @@ Provides structured error types via `CueEngineError` with proper error codes.
 **JSON Bridge**
 Handles serialization/deserialization between Rust and Go data structures.
 
+**Go Bridge Package**
+Keeps `bridge.go` focused on exported cgo functions and evaluation
+orchestration. Source metadata/reference extraction lives in `metadata.go`, and
+clean CUE-to-JSON value rendering lives in `values.go`. Metadata is returned as
+a separate map rather than injected inline into JSON values; the build script
+compiles every non-test Go file in `crates/cuengine`. Build-script failures are
+reported through ordinary `Result` errors so missing Cargo environment, stale
+prebuilt artifact copies, unsupported cross-compilation targets, and Go build
+failures stay explicit without broad panic/expect lint allowances.
+
+Module evaluation is split into four Rust-side phases: C string preparation,
+a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
+parsing. Bridge-envelope parsing validates the Go bridge protocol version
+before accepting payloads, so incompatible bridge responses fail at the FFI
+boundary instead of flowing into module deserialization. Keeping those phases
+separate makes the Go boundary, timeout behavior, and response decoding
+auditable without changing the public API.
+Unsafe Rust in the production crate is scoped to the FFI boundary itself:
+extern declarations, raw Go bridge calls, bridge-owned C string wrapping, and
+checked string extraction each carry local lint expectations with concrete
+reasons. The crate no longer relies on broad `unsafe_code`,
+`missing_safety_doc`, or `missing_panics_doc` allowances.
+
+Unit tests assert returned bridge data directly instead of printing successful
+FFI diagnostics. Integration tests keep FFI-unavailable paths quiet and return
+`Result` from filesystem, thread-join, and performance-sample setup instead of
+depending on stdout diagnostics.
+Environment parsing tests keep FFI-unavailable paths quiet through tracing and
+return `Result` from filesystem/JSON setup rather than dumping JSON to stdout.
+FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
+of empty match arms or local lint suppressions.
+Module-evaluation fixture tests return `Result` from setup/evaluation helpers
+instead of carrying file-level expect allowances.
+Retry integration tests use atomics for attempt counters and fallible helpers
+for captured backoff timings, keeping exponential-backoff coverage explicit
+without file-level unwrap/expect allowances.
+CUE evaluation benchmarks keep fixture setup explicit as `Result` values and
+pass those results through Criterion helpers instead of using benchmark-wide
+unwrap/expect allowances.
+
 ## API Reference
 
 ### Module Evaluation (Recommended)
@@ -254,6 +294,11 @@ Ensure the Go bridge library is properly built and accessible.
 
 **Memory Leaks**
 The FFI bridge uses RAII wrappers (`CStringPtr`) to automatically free Go-allocated memory when results go out of scope. Ensure evaluation results are not held longer than necessary.
+Tests that construct mock `CStringPtr` values must allocate strings through the
+C allocator, such as `libc::strdup`, so `cue_free_string` releases memory with
+the matching allocator. Do not wrap Rust-owned `CString::into_raw()` pointers in
+`CStringPtr` unless the wrapper is explicitly forgotten and the pointer is
+returned to `CString::from_raw()`.
 
 **Evaluation Timeouts**
 Increase timeout settings for complex CUE expressions.

@@ -3,13 +3,28 @@
 //! These tests exercise the complete CLI functionality, including
 //! argument parsing, command execution, and output formatting.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::print_stdout, clippy::unwrap_used, clippy::expect_used)]
-
+use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
+use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+struct CliOutput {
+    stdout: String,
+    stderr: String,
+    success: bool,
+}
+
+impl CliOutput {
+    fn combined(&self) -> String {
+        format!("{}{}", self.stdout, self.stderr)
+    }
+}
 
 /// Create a Command with a clean environment (no CI vars leaking).
 /// This prevents tests from hanging when run in CI environments where
@@ -29,7 +44,7 @@ const EXPECTED_VERSION: &str = env!("CARGO_PKG_VERSION");
 const CUENV_BIN: &str = env!("CARGO_BIN_EXE_cuenv");
 
 /// Test helper to run cuenv CLI commands
-fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
+fn run_cuenv_command(args: &[&str]) -> TestResult<CliOutput> {
     let mut cmd = clean_environment_command(CUENV_BIN);
 
     for arg in args {
@@ -41,23 +56,39 @@ fn run_cuenv_command(args: &[&str]) -> Result<(String, String, bool), Box<dyn st
     let stderr = str::from_utf8(&output.stderr)?.to_string();
     let success = output.status.success();
 
-    Ok((stdout, stderr, success))
+    Ok(CliOutput {
+        stdout,
+        stderr,
+        success,
+    })
 }
 
 /// Get the path to the test examples directory
-fn get_testexamples_path() -> String {
+fn get_testexamples_path() -> TestResult<String> {
     // Use the CARGO_MANIFEST_DIR environment variable to get the project root
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     // Go up two levels from crates/cuenv-cli to the project root
     let project_root = std::path::Path::new(manifest_dir)
         .parent() // crates
         .and_then(|p| p.parent()) // project root
-        .expect("Failed to find project root");
+        .ok_or_else(|| io::Error::other("failed to find project root"))?;
 
-    project_root
+    Ok(project_root
         .join("examples/env-basic")
         .to_string_lossy()
-        .to_string()
+        .to_string())
+}
+
+fn run_git_command(path: &Path, args: &[&str]) -> TestResult {
+    let output = Command::new("git").args(args).current_dir(path).output()?;
+    assert!(
+        output.status.success(),
+        "git {} failed\nstdout: {}\nstderr: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
 }
 
 /// Create a temporary directory with git initialized and CUE files for sync testing.
@@ -66,46 +97,24 @@ fn get_testexamples_path() -> String {
 ///
 /// IMPORTANT: Uses a non-hidden prefix (`cuenv_test_`) because CUE's loader
 /// ignores directories starting with '.' (like the default .tmpXXXXXX).
-fn create_git_test_env() -> (tempfile::TempDir, String) {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("cuenv_test_")
-        .tempdir()
-        .expect("Failed to create temp directory");
+fn create_git_test_env() -> TestResult<(TempDir, String)> {
+    let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
     let temp_path = temp_dir.path();
 
-    // Initialize git repository
-    Command::new("git")
-        .args(["init"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to init git repo");
+    run_git_command(temp_path, &["init"])?;
+    run_git_command(temp_path, &["config", "user.email", "test@example.com"])?;
+    run_git_command(temp_path, &["config", "user.name", "Test User"])?;
 
-    // Configure git user for the repo (required for some git operations)
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to configure git email");
-
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to configure git name");
-
-    // Create cue.mod directory and module.cue
     let cue_mod_dir = temp_path.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).expect("Failed to create cue.mod directory");
+    fs::create_dir_all(&cue_mod_dir)?;
 
     fs::write(
         cue_mod_dir.join("module.cue"),
         r#"module: "test.example/sync"
 language: version: "v0.9.0"
 "#,
-    )
-    .expect("Failed to write module.cue");
+    )?;
 
-    // Create minimal env.cue (ignore patterns are now in .rules.cue files)
     fs::write(
         temp_path.join("env.cue"),
         r#"package cuenv
@@ -116,17 +125,14 @@ env: {
     TEST_VAR: "test_value"
 }
 "#,
-    )
-    .expect("Failed to write env.cue");
+    )?;
 
     let path_str = temp_path.to_string_lossy().to_string();
-    (temp_dir, path_str)
+    Ok((temp_dir, path_str))
 }
 
-fn create_git_test_env_with_cuenv_version(
-    version: &str,
-) -> (tempfile::TempDir, String, std::path::PathBuf) {
-    let (temp_dir, path_str) = create_git_test_env();
+fn create_git_test_env_with_cuenv_version(version: &str) -> TestResult<(TempDir, String, PathBuf)> {
+    let (temp_dir, path_str) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
     fs::write(
         &module_file,
@@ -136,277 +142,231 @@ language: version: "v0.14.1"
 custom: "github.com/cuenv/cuenv": version: "{version}"
 "#
         ),
-    )
-    .expect("Failed to write module.cue with cuenv version");
+    )?;
 
-    (temp_dir, path_str, module_file)
+    Ok((temp_dir, path_str, module_file))
+}
+
+fn assert_success(output: &CliOutput, context: &str) {
+    assert!(
+        output.success,
+        "{context}\nstdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+}
+
+fn correlation_id(stdout: &str) -> TestResult<&str> {
+    stdout
+        .lines()
+        .find(|line| line.contains("Correlation ID:"))
+        .and_then(|line| line.split("Correlation ID:").nth(1))
+        .map(str::trim)
+        .ok_or_else(|| io::Error::other("could not extract correlation ID").into())
 }
 
 #[test]
-fn test_version_command_basic() {
-    let result = run_cuenv_command(&["version"]);
+fn test_version_command_basic() -> TestResult {
+    let output = run_cuenv_command(&["version"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed");
-            assert!(stdout.contains("cuenv"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-            assert!(stdout.contains("Authors:"));
-            assert!(stdout.contains("Target:"));
-            assert!(stdout.contains("Correlation ID:"));
-            assert!(stdout.contains("cuenv is an event-driven CLI"));
-        }
-        Err(e) => panic!("Failed to run cuenv version: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(output.stdout.contains("cuenv"));
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    assert!(output.stdout.contains("Authors:"));
+    assert!(output.stdout.contains("Target:"));
+    assert!(output.stdout.contains("Correlation ID:"));
+    assert!(output.stdout.contains("cuenv is an event-driven CLI"));
+    Ok(())
 }
 
 #[test]
-fn test_version_command_with_level_debug() {
-    let result = run_cuenv_command(&["--level", "debug", "version"]);
+fn test_version_command_with_level_debug() -> TestResult {
+    let output = run_cuenv_command(&["--level", "debug", "version"])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(success, "Command should succeed");
-
-            // stdout should still contain version info
-            assert!(stdout.contains("cuenv"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-
-            // stderr should contain debug logs when level is debug
-            assert!(stderr.contains("DEBUG") || stderr.contains("debug"));
-        }
-        Err(e) => panic!("Failed to run cuenv version with debug level: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(output.stdout.contains("cuenv"));
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    assert!(output.stderr.contains("DEBUG") || output.stderr.contains("debug"));
+    Ok(())
 }
 
 #[test]
-fn test_version_command_with_level_error() {
-    let result = run_cuenv_command(&["--level", "error", "version"]);
+fn test_version_command_with_level_error() -> TestResult {
+    let output = run_cuenv_command(&["--level", "error", "version"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed");
-
-            // stdout should contain version info
-            assert!(stdout.contains("cuenv"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-
-            // With error level, there should be minimal to no debug output in stderr
-        }
-        Err(e) => panic!("Failed to run cuenv version with error level: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(output.stdout.contains("cuenv"));
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    Ok(())
 }
 
 #[test]
-fn test_version_command_with_json_flag() {
-    let result = run_cuenv_command(&["--json", "--level", "info", "version"]);
+fn test_version_command_with_json_flag() -> TestResult {
+    let output = run_cuenv_command(&["--json", "--level", "info", "version"])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(success, "Command should succeed");
-
-            // stdout should still contain version info in normal format
-            assert!(stdout.contains("cuenv"));
-
-            // Note: Sync commands (like version) skip tracing initialization for performance,
-            // so there won't be JSON logs in stderr. This is intentional behavior.
-            // The --json flag still affects output format for commands that produce JSON.
-            // stderr may contain cargo compilation output when run via `cargo run`.
-            // We just verify the command succeeds, not that it produces JSON logs.
-            let _ = stderr; // silence unused warning
-        }
-        Err(e) => panic!("Failed to run cuenv version with JSON flag: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(output.stdout.contains("cuenv"));
+    Ok(())
 }
 
 #[test]
-fn test_version_command_short_level_flag() {
+fn test_version_command_short_level_flag() -> TestResult {
     // Note: -l was changed to -L to accommodate the new --label/-l flag for tasks
-    let result = run_cuenv_command(&["-L", "warn", "version"]);
+    let output = run_cuenv_command(&["-L", "warn", "version"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed");
-            assert!(stdout.contains("cuenv"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-        }
-        Err(e) => panic!("Failed to run cuenv version with short level flag: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(output.stdout.contains("cuenv"));
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    Ok(())
 }
 
 #[test]
-fn test_help_flag() {
-    let result = run_cuenv_command(&["--help"]);
+fn test_help_flag() -> TestResult {
+    let output = run_cuenv_command(&["--help"])?;
 
-    match result {
-        Ok((stdout, _stderr, _success)) => {
-            // Help output should contain key information
-            assert!(stdout.contains("cuenv") || stdout.contains("Usage"));
-            // Note: Short flag changed from -l to -L for log level
-            assert!(stdout.contains("--level") || stdout.contains("-L"));
-            assert!(stdout.contains("--json"));
-            assert!(stdout.contains("version"));
-        }
-        Err(e) => panic!("Failed to run cuenv --help: {e}"),
-    }
+    assert!(output.stdout.contains("cuenv") || output.stdout.contains("Usage"));
+    assert!(output.stdout.contains("--level") || output.stdout.contains("-L"));
+    assert!(output.stdout.contains("--json"));
+    assert!(output.stdout.contains("version"));
+    Ok(())
 }
 
 #[test]
-fn test_version_help() {
-    let result = run_cuenv_command(&["version", "--help"]);
+fn test_version_help() -> TestResult {
+    let output = run_cuenv_command(&["version", "--help"])?;
 
-    match result {
-        Ok((stdout, _stderr, _success)) => {
-            // Version help should contain information about the version command
-            assert!(stdout.contains("version") || stdout.contains("Show version information"));
-        }
-        Err(e) => panic!("Failed to run cuenv version --help: {e}"),
-    }
+    assert!(
+        output.stdout.contains("version") || output.stdout.contains("Show version information")
+    );
+    Ok(())
 }
 
 #[test]
-fn test_invalid_log_level() {
-    let result = run_cuenv_command(&["--level", "invalid", "version"]);
+fn test_invalid_log_level() -> TestResult {
+    let output = run_cuenv_command(&["--level", "invalid", "version"])?;
 
-    match result {
-        Ok((_stdout, stderr, success)) => {
-            // Should fail with invalid log level
-            assert!(!success, "Command should fail with invalid log level");
-            assert!(stderr.contains("error") || stderr.contains("invalid"));
-        }
-        Err(e) => panic!("Failed to run cuenv with invalid level: {e}"),
-    }
+    assert!(
+        !output.success,
+        "Command should fail with invalid log level"
+    );
+    assert!(output.stderr.contains("error") || output.stderr.contains("invalid"));
+    Ok(())
 }
 
 #[test]
-fn test_missing_subcommand() {
-    let result = run_cuenv_command(&[]);
+fn test_missing_subcommand() -> TestResult {
+    let output = run_cuenv_command(&[])?;
 
-    match result {
-        Ok((_stdout, stderr, success)) => {
-            // Should fail without subcommand
-            assert!(!success, "Command should fail without subcommand");
-            assert!(stderr.contains("error") || stderr.contains("required"));
-        }
-        Err(e) => panic!("Failed to run cuenv with no args: {e}"),
-    }
+    assert!(!output.success, "Command should fail without subcommand");
+    assert!(output.stderr.contains("error") || output.stderr.contains("required"));
+    Ok(())
 }
 
 #[test]
-fn test_combined_flags() {
-    let result = run_cuenv_command(&["--level", "info", "--json", "version", "--output", "json"]);
+fn test_combined_flags() -> TestResult {
+    let output = run_cuenv_command(&["--level", "info", "--json", "version", "--output", "json"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed with combined flags");
-            assert!(stdout.contains("cuenv"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-        }
-        Err(e) => panic!("Failed to run cuenv with combined flags: {e}"),
-    }
+    assert_success(&output, "Command should succeed with combined flags");
+    assert!(output.stdout.contains("cuenv"));
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    Ok(())
 }
 
 #[test]
-fn test_output_consistency() {
-    // Run the same command multiple times and ensure consistent output format
-    let result1 = run_cuenv_command(&["--level", "error", "version"]);
-    let result2 = run_cuenv_command(&["--level", "error", "version"]);
+fn test_output_consistency() -> TestResult {
+    let first = run_cuenv_command(&["--level", "error", "version"])?;
+    let second = run_cuenv_command(&["--level", "error", "version"])?;
 
-    match (result1, result2) {
-        (Ok((stdout1, _stderr1, success1)), Ok((stdout2, _stderr2, success2))) => {
-            assert!(success1 && success2, "Both commands should succeed");
+    assert!(
+        first.success && second.success,
+        "Both commands should succeed\nfirst stdout: {}\nfirst stderr: {}\nsecond stdout: {}\nsecond stderr: {}",
+        first.stdout,
+        first.stderr,
+        second.stdout,
+        second.stderr
+    );
 
-            // The format should be consistent (correlation ID will differ)
-            let lines1: Vec<&str> = stdout1.lines().collect();
-            let lines2: Vec<&str> = stdout2.lines().collect();
+    let first_lines: Vec<&str> = first.stdout.lines().collect();
+    let second_lines: Vec<&str> = second.stdout.lines().collect();
 
-            assert_eq!(
-                lines1.len(),
-                lines2.len(),
-                "Output should have same number of lines"
-            );
+    assert_eq!(
+        first_lines.len(),
+        second_lines.len(),
+        "Output should have same number of lines"
+    );
 
-            // Check that non-correlation-ID lines are identical
-            for (line1, line2) in lines1.iter().zip(lines2.iter()) {
-                if !line1.contains("Correlation ID:") {
-                    assert_eq!(line1, line2, "Non-correlation-ID lines should be identical");
-                }
-            }
+    for (line1, line2) in first_lines.iter().zip(second_lines.iter()) {
+        if !line1.contains("Correlation ID:") {
+            assert_eq!(line1, line2, "Non-correlation-ID lines should be identical");
         }
-        (Err(e1), _) => panic!("First command failed: {e1}"),
-        (_, Err(e2)) => panic!("Second command failed: {e2}"),
     }
+    Ok(())
 }
 
 #[test]
-fn test_correlation_id_uniqueness() {
-    // Run command multiple times and ensure correlation IDs are different
-    let result1 = run_cuenv_command(&["--level", "error", "version"]);
-    let result2 = run_cuenv_command(&["--level", "error", "version"]);
+fn test_correlation_id_uniqueness() -> TestResult {
+    let first = run_cuenv_command(&["--level", "error", "version"])?;
+    let second = run_cuenv_command(&["--level", "error", "version"])?;
 
-    match (result1, result2) {
-        (Ok((stdout1, _, _)), Ok((stdout2, _, _))) => {
-            let correlation1 = stdout1
-                .lines()
-                .find(|line| line.contains("Correlation ID:"))
-                .and_then(|line| line.split("Correlation ID:").nth(1))
-                .map(str::trim);
+    let correlation1 = correlation_id(&first.stdout)?;
+    let correlation2 = correlation_id(&second.stdout)?;
 
-            let correlation2 = stdout2
-                .lines()
-                .find(|line| line.contains("Correlation ID:"))
-                .and_then(|line| line.split("Correlation ID:").nth(1))
-                .map(str::trim);
-
-            match (correlation1, correlation2) {
-                (Some(id1), Some(id2)) => {
-                    assert_ne!(id1, id2, "Correlation IDs should be different between runs");
-                    // Both should be valid UUID format (36 characters with hyphens)
-                    assert_eq!(id1.len(), 36, "Correlation ID should be UUID length");
-                    assert_eq!(id2.len(), 36, "Correlation ID should be UUID length");
-                    assert!(id1.contains('-'), "Correlation ID should contain hyphens");
-                    assert!(id2.contains('-'), "Correlation ID should contain hyphens");
-                }
-                _ => panic!("Could not extract correlation IDs from output"),
-            }
-        }
-        (Err(e1), _) => panic!("First command failed: {e1}"),
-        (_, Err(e2)) => panic!("Second command failed: {e2}"),
-    }
+    assert_ne!(
+        correlation1, correlation2,
+        "Correlation IDs should be different between runs"
+    );
+    assert_eq!(
+        correlation1.len(),
+        36,
+        "Correlation ID should be UUID length"
+    );
+    assert_eq!(
+        correlation2.len(),
+        36,
+        "Correlation ID should be UUID length"
+    );
+    assert!(
+        correlation1.contains('-'),
+        "Correlation ID should contain hyphens"
+    );
+    assert!(
+        correlation2.contains('-'),
+        "Correlation ID should contain hyphens"
+    );
+    Ok(())
 }
 #[test]
-fn test_env_print_command_basic() {
-    let test_path = get_testexamples_path();
-    let result = run_cuenv_command(&[
+fn test_env_print_command_basic() -> TestResult {
+    let test_path = get_testexamples_path()?;
+    let output = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         &test_path,
         "--package",
         "examples",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            assert!(success, "Command should succeed");
-            assert!(stdout.contains("DATABASE_URL=postgres://localhost/mydb"));
-            assert!(stdout.contains("DEBUG=true"));
-            assert!(stdout.contains("PORT=3000"));
-            assert!(stdout.contains("BASE_URL=https://api.example.com"));
-            assert!(stdout.contains("API_ENDPOINT=https://api.example.com/v1"));
-        }
-        Err(e) => panic!("Failed to run cuenv env print: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(
+        output
+            .stdout
+            .contains("DATABASE_URL=postgres://localhost/mydb")
+    );
+    assert!(output.stdout.contains("DEBUG=true"));
+    assert!(output.stdout.contains("PORT=3000"));
+    assert!(output.stdout.contains("BASE_URL=https://api.example.com"));
+    assert!(
+        output
+            .stdout
+            .contains("API_ENDPOINT=https://api.example.com/v1")
+    );
+    Ok(())
 }
 
 #[test]
-fn test_env_print_command_json_format() {
-    let test_path = get_testexamples_path();
-    let result = run_cuenv_command(&[
+fn test_env_print_command_json_format() -> TestResult {
+    let test_path = get_testexamples_path()?;
+    let output = run_cuenv_command(&[
         "env",
         "print",
         "--path",
@@ -415,83 +375,66 @@ fn test_env_print_command_json_format() {
         "examples",
         "--output",
         "json",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed");
+    assert_success(&output, "Command should succeed");
 
-            // Parse as JSON to verify it's valid JSON
-            let parsed: serde_json::Value =
-                serde_json::from_str(&stdout).expect("Output should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&output.stdout)?;
 
-            // All values are now strings after resolution
-            assert_eq!(parsed["DATABASE_URL"], "postgres://localhost/mydb");
-            assert_eq!(parsed["DEBUG"], "true");
-            assert_eq!(parsed["PORT"], "3000");
-            assert_eq!(parsed["BASE_URL"], "https://api.example.com");
-            assert_eq!(parsed["API_ENDPOINT"], "https://api.example.com/v1");
-        }
-        Err(e) => panic!("Failed to run cuenv env print with JSON format: {e}"),
-    }
+    assert_eq!(parsed["DATABASE_URL"], "postgres://localhost/mydb");
+    assert_eq!(parsed["DEBUG"], "true");
+    assert_eq!(parsed["PORT"], "3000");
+    assert_eq!(parsed["BASE_URL"], "https://api.example.com");
+    assert_eq!(parsed["API_ENDPOINT"], "https://api.example.com/v1");
+    Ok(())
 }
 
 #[test]
-fn test_env_print_command_with_short_path_flag() {
-    let test_path = get_testexamples_path();
-    let result = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"]);
+fn test_env_print_command_with_short_path_flag() -> TestResult {
+    let test_path = get_testexamples_path()?;
+    let output = run_cuenv_command(&["env", "print", "-p", &test_path, "--package", "examples"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed with short path flag");
-            assert!(stdout.contains("DATABASE_URL="));
-            assert!(stdout.contains("DEBUG="));
-            assert!(stdout.contains("PORT="));
-        }
-        Err(e) => panic!("Failed to run cuenv env print with short path flag: {e}"),
-    }
+    assert_success(&output, "Command should succeed with short path flag");
+    assert!(output.stdout.contains("DATABASE_URL="));
+    assert!(output.stdout.contains("DEBUG="));
+    assert!(output.stdout.contains("PORT="));
+    Ok(())
 }
 
 #[test]
-fn test_env_print_command_invalid_path() {
-    let result = run_cuenv_command(&[
+fn test_env_print_command_invalid_path() -> TestResult {
+    let output = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         "nonexistent/path",
         "--package",
         "examples",
-    ]);
+    ])?;
 
-    if let Ok((_stdout, _stderr, success)) = result {
-        assert!(!success, "Command should fail with invalid path");
-    } else {
-        // Command failed to execute, which is also acceptable for invalid paths
-    }
+    assert!(!output.success, "Command should fail with invalid path");
+    Ok(())
 }
 
 #[test]
-fn test_env_print_command_invalid_package() {
-    let result = run_cuenv_command(&[
+fn test_env_print_command_invalid_package() -> TestResult {
+    let output = run_cuenv_command(&[
         "env",
         "print",
         "--path",
         "examples/env-basic",
         "--package",
         "nonexistent",
-    ]);
+    ])?;
 
-    if let Ok((_stdout, _stderr, success)) = result {
-        assert!(!success, "Command should fail with invalid package");
-    } else {
-        // Command failed to execute, which is also acceptable for invalid packages
-    }
+    assert!(!output.success, "Command should fail with invalid package");
+    Ok(())
 }
 
 #[test]
-fn test_env_print_command_unsupported_format() {
-    let test_path = get_testexamples_path();
-    let result = run_cuenv_command(&[
+fn test_env_print_command_unsupported_format() -> TestResult {
+    let test_path = get_testexamples_path()?;
+    let output = run_cuenv_command(&[
         "env",
         "print",
         "--path",
@@ -500,219 +443,189 @@ fn test_env_print_command_unsupported_format() {
         "examples",
         "--output",
         "yaml",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(!success, "Command should fail with unsupported format");
-            // Check that the error message mentions the unsupported format
-            let combined_output = format!("{stdout}{stderr}");
-            assert!(
-                combined_output.contains("Unsupported format") || combined_output.contains("yaml"),
-                "Error message should mention unsupported format 'yaml'"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv env print: {e}"),
-    }
+    assert!(
+        !output.success,
+        "Command should fail with unsupported format"
+    );
+    let combined_output = output.combined();
+    assert!(
+        combined_output.contains("Unsupported format") || combined_output.contains("yaml"),
+        "Error message should mention unsupported format 'yaml'"
+    );
+    Ok(())
 }
 
 // ===== Sync Command Integration Tests =====
 
 #[test]
-fn test_sync_command_dry_run() {
-    let (_temp_dir, test_path) = create_git_test_env();
-    let result = run_cuenv_command(&[
+fn test_sync_command_dry_run() -> TestResult {
+    let (_temp_dir, test_path) = create_git_test_env()?;
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
         "cuenv",
         "--dry-run",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            assert!(success, "Command should succeed");
-            // Sync command should report status for each provider
-            // With no configuration, providers report "No ... found" messages
-            assert!(
-                stdout.contains("[codegen]")
-                    || stdout.contains("[ci]")
-                    || stdout.contains("[rules]"),
-                "Dry run should show provider status sections"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(
+        output.stdout.contains("[codegen]")
+            || output.stdout.contains("[ci]")
+            || output.stdout.contains("[rules]"),
+        "Dry run should show provider status sections"
+    );
+    Ok(())
 }
 
 #[test]
-fn test_sync_command_dry_run_reports_provider_status() {
-    let (_temp_dir, test_path) = create_git_test_env();
-    let result = run_cuenv_command(&[
+fn test_sync_command_dry_run_reports_provider_status() -> TestResult {
+    let (_temp_dir, test_path) = create_git_test_env()?;
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
         "cuenv",
         "--dry-run",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Command should succeed");
-            // Each provider reports its status (even when nothing to sync)
-            // CI provider reports when no providers are configured
-            assert!(
-                stdout.contains("No CI providers configured")
-                    || stdout.contains("No codegen configuration")
-                    || stdout.contains("No .rules.cue"),
-                "Dry run should report provider status"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
-    }
+    assert_success(&output, "Command should succeed");
+    assert!(
+        output.stdout.contains("No CI providers configured")
+            || output.stdout.contains("No codegen configuration")
+            || output.stdout.contains("No .rules.cue"),
+        "Dry run should report provider status"
+    );
+    Ok(())
 }
 
 #[test]
-fn test_cue_command_fails_when_module_requires_newer_cuenv() {
-    let (_temp_dir, test_path, _module_file) = create_git_test_env_with_cuenv_version("999.0.0");
-    let result = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "cuenv"]);
+fn test_cue_command_fails_when_module_requires_newer_cuenv() -> TestResult {
+    let (_temp_dir, test_path, _module_file) = create_git_test_env_with_cuenv_version("999.0.0")?;
+    let output = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "cuenv"])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(
-                !success,
-                "Command should fail when module requires newer cuenv"
-            );
-            let combined = format!("{stdout}{stderr}");
-            assert!(combined.contains("Project requires cuenv 999.0.0"));
-            assert!(combined.contains("Upgrade cuenv"));
-        }
-        Err(e) => panic!("Failed to run cuenv env print: {e}"),
-    }
+    assert!(
+        !output.success,
+        "Command should fail when module requires newer cuenv"
+    );
+    let combined = output.combined();
+    assert!(combined.contains("Project requires cuenv 999.0.0"));
+    assert!(combined.contains("Upgrade cuenv"));
+    Ok(())
 }
 
 #[test]
-fn test_sync_dry_run_reports_missing_marker_without_writing() {
-    let (temp_dir, test_path) = create_git_test_env();
+fn test_sync_dry_run_reports_missing_marker_without_writing() -> TestResult {
+    let (temp_dir, test_path) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
-    let before = fs::read_to_string(&module_file).expect("module.cue");
-    let result = run_cuenv_command(&[
+    let before = fs::read_to_string(&module_file)?;
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
         "cuenv",
         "--dry-run",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(success, "sync --dry-run should succeed: {stderr}");
-            assert!(stdout.contains("module.cue cuenv version marker missing"));
-            assert!(stdout.contains(EXPECTED_VERSION));
-            let after = fs::read_to_string(&module_file).expect("module.cue after dry-run");
-            assert_eq!(before, after, "dry-run must not update module.cue");
-        }
-        Err(e) => panic!("Failed to run cuenv sync --dry-run: {e}"),
-    }
+    assert_success(&output, "sync --dry-run should succeed");
+    assert!(
+        output
+            .stdout
+            .contains("module.cue cuenv version marker missing")
+    );
+    assert!(output.stdout.contains(EXPECTED_VERSION));
+    let after = fs::read_to_string(&module_file)?;
+    assert_eq!(before, after, "dry-run must not update module.cue");
+    Ok(())
 }
 
 #[test]
-fn test_sync_check_fails_when_marker_missing() {
-    let (_temp_dir, test_path) = create_git_test_env();
-    let result = run_cuenv_command(&[
+fn test_sync_check_fails_when_marker_missing() -> TestResult {
+    let (_temp_dir, test_path) = create_git_test_env()?;
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
         "cuenv",
         "--check",
-    ]);
+    ])?;
 
-    match result {
-        Ok((stdout, stderr, success)) => {
-            assert!(!success, "sync --check should fail for missing marker");
-            let combined = format!("{stdout}{stderr}");
-            assert!(combined.contains("module.cue cuenv version marker missing"));
-        }
-        Err(e) => panic!("Failed to run cuenv sync --check: {e}"),
-    }
+    assert!(
+        !output.success,
+        "sync --check should fail for missing marker"
+    );
+    assert!(
+        output
+            .combined()
+            .contains("module.cue cuenv version marker missing")
+    );
+    Ok(())
 }
 
 #[test]
-fn test_sync_writes_current_marker() {
-    let (temp_dir, test_path) = create_git_test_env();
+fn test_sync_writes_current_marker() -> TestResult {
+    let (temp_dir, test_path) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
-    let result = run_cuenv_command(&["sync", "--path", &test_path, "--package", "cuenv"]);
+    let output = run_cuenv_command(&["sync", "--path", &test_path, "--package", "cuenv"])?;
 
-    match result {
-        Ok((_stdout, stderr, success)) => {
-            assert!(success, "sync should succeed: {stderr}");
-            let module = fs::read_to_string(&module_file).expect("module.cue after sync");
-            assert!(module.contains("custom: {"));
-            assert!(module.contains("\"github.com/cuenv/cuenv\": {"));
-            assert!(module.contains(&format!("version: \"{EXPECTED_VERSION}\"")));
-        }
-        Err(e) => panic!("Failed to run cuenv sync: {e}"),
-    }
+    assert_success(&output, "sync should succeed");
+    let module = fs::read_to_string(&module_file)?;
+    assert!(module.contains("custom: {"));
+    assert!(module.contains("\"github.com/cuenv/cuenv\": {"));
+    assert!(module.contains(&format!("version: \"{EXPECTED_VERSION}\"")));
+    Ok(())
 }
 
 #[test]
-fn test_sync_command_invalid_path() {
-    let result = run_cuenv_command(&[
+fn test_sync_command_invalid_path() -> TestResult {
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         "nonexistent/path",
         "--package",
         "examples",
         "--dry-run",
-    ]);
+    ])?;
 
-    if let Ok((_stdout, _stderr, success)) = result {
-        assert!(!success, "Command should fail with invalid path");
-    }
+    assert!(!output.success, "Command should fail with invalid path");
+    Ok(())
 }
 
 #[test]
-fn test_sync_command_invalid_package() {
-    let (_temp_dir, test_path) = create_git_test_env();
-    let result = run_cuenv_command(&[
+fn test_sync_command_invalid_package() -> TestResult {
+    let (_temp_dir, test_path) = create_git_test_env()?;
+    let output = run_cuenv_command(&[
         "sync",
         "--path",
         &test_path,
         "--package",
         "nonexistent",
         "--dry-run",
-    ]);
+    ])?;
 
-    if let Ok((_stdout, _stderr, success)) = result {
-        assert!(!success, "Command should fail with invalid package");
-    }
+    assert!(!output.success, "Command should fail with invalid package");
+    Ok(())
 }
 
 #[test]
-fn test_sync_command_help() {
-    let result = run_cuenv_command(&["sync", "--help"]);
+fn test_sync_command_help() -> TestResult {
+    let output = run_cuenv_command(&["sync", "--help"])?;
 
-    match result {
-        Ok((stdout, _stderr, _success)) => {
-            assert!(
-                stdout.contains("sync") || stdout.contains("Sync"),
-                "Help should mention the sync command"
-            );
-            assert!(
-                stdout.contains("--dry-run") || stdout.contains("dry"),
-                "Help should mention --dry-run option"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync --help: {e}"),
-    }
+    assert!(
+        output.stdout.contains("sync") || output.stdout.contains("Sync"),
+        "Help should mention the sync command"
+    );
+    assert!(
+        output.stdout.contains("--dry-run") || output.stdout.contains("dry"),
+        "Help should mention --dry-run option"
+    );
+    Ok(())
 }
 
 // =========================================================================
@@ -721,45 +634,26 @@ fn test_sync_command_help() {
 
 /// Create a monorepo test environment with multiple projects at different paths.
 /// Returns a `TempDir` that will be cleaned up when dropped, and the path as a String.
-fn create_monorepo_test_env() -> (tempfile::TempDir, String) {
+fn create_monorepo_test_env() -> TestResult<(TempDir, String)> {
     let temp_dir = tempfile::Builder::new()
         .prefix("cuenv_monorepo_test_")
-        .tempdir()
-        .expect("Failed to create temp directory");
+        .tempdir()?;
     let temp_path = temp_dir.path();
 
-    // Initialize git repository
-    Command::new("git")
-        .args(["init"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to init git repo");
+    run_git_command(temp_path, &["init"])?;
+    run_git_command(temp_path, &["config", "user.email", "test@example.com"])?;
+    run_git_command(temp_path, &["config", "user.name", "Test User"])?;
 
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to configure git email");
-
-    Command::new("git")
-        .args(["config", "user.name", "Test User"])
-        .current_dir(temp_path)
-        .output()
-        .expect("Failed to configure git name");
-
-    // Create cue.mod directory and module.cue
     let cue_mod_dir = temp_path.join("cue.mod");
-    fs::create_dir_all(&cue_mod_dir).expect("Failed to create cue.mod directory");
+    fs::create_dir_all(&cue_mod_dir)?;
 
     fs::write(
         cue_mod_dir.join("module.cue"),
         r#"module: "test.example/monorepo"
 language: version: "v0.9.0"
 "#,
-    )
-    .expect("Failed to write module.cue");
+    )?;
 
-    // Create root project env.cue (at module root)
     fs::write(
         temp_path.join("env.cue"),
         r#"package cuenv
@@ -789,12 +683,10 @@ tasks: {
     }
 }
 "#,
-    )
-    .expect("Failed to write root env.cue");
+    )?;
 
-    // Create nested project at services/api/
     let api_dir = temp_path.join("services").join("api");
-    fs::create_dir_all(&api_dir).expect("Failed to create services/api directory");
+    fs::create_dir_all(&api_dir)?;
 
     fs::write(
         api_dir.join("env.cue"),
@@ -832,12 +724,10 @@ tasks: {
     }
 }
 "#,
-    )
-    .expect("Failed to write services/api/env.cue");
+    )?;
 
-    // Create another nested project at apps/web/
     let web_dir = temp_path.join("apps").join("web");
-    fs::create_dir_all(&web_dir).expect("Failed to create apps/web directory");
+    fs::create_dir_all(&web_dir)?;
 
     fs::write(
         web_dir.join("env.cue"),
@@ -867,18 +757,14 @@ tasks: {
     }
 }
 "#,
-    )
-    .expect("Failed to write apps/web/env.cue");
+    )?;
 
     let path_str = temp_path.to_string_lossy().to_string();
-    (temp_dir, path_str)
+    Ok((temp_dir, path_str))
 }
 
 /// Helper to run cuenv command in a specific directory
-fn run_cuenv_command_in_dir(
-    args: &[&str],
-    dir: &str,
-) -> Result<(String, String, bool), Box<dyn std::error::Error>> {
+fn run_cuenv_command_in_dir(args: &[&str], dir: &str) -> TestResult<CliOutput> {
     let mut cmd = clean_environment_command(CUENV_BIN);
 
     for arg in args {
@@ -892,50 +778,40 @@ fn run_cuenv_command_in_dir(
     let stderr = str::from_utf8(&output.stderr)?.to_string();
     let success = output.status.success();
 
-    Ok((stdout, stderr, success))
+    Ok(CliOutput {
+        stdout,
+        stderr,
+        success,
+    })
 }
 
 #[test]
-fn test_sync_ci_dry_run_shows_workflows() {
-    let (_temp_dir, temp_path) = create_monorepo_test_env();
+fn test_sync_ci_dry_run_shows_workflows() -> TestResult {
+    let (_temp_dir, temp_path) = create_monorepo_test_env()?;
 
-    let result = run_cuenv_command_in_dir(&["sync", "ci", "--dry-run"], &temp_path);
-
-    match result {
-        Ok((stdout, stderr, success)) => {
-            let combined = format!("{stdout}{stderr}");
-            if !success {
-                println!("stdout: {stdout}");
-                println!("stderr: {stderr}");
-            }
-            // The command should succeed or fail gracefully
-            // Note: CUE evaluation may fail due to missing schema imports in temp env
-            // This test mainly verifies the command runs without panic
-            assert!(
-                success || combined.contains("error") || combined.contains("failed"),
-                "Command should either succeed or report meaningful error"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync ci --dry-run: {e}"),
-    }
+    let output = run_cuenv_command_in_dir(&["sync", "ci", "--dry-run"], &temp_path)?;
+    let combined = output.combined();
+    assert!(
+        output.success || combined.contains("error") || combined.contains("failed"),
+        "Command should either succeed or report meaningful error\nstdout: {}\nstderr: {}",
+        output.stdout,
+        output.stderr
+    );
+    Ok(())
 }
 
 #[test]
-fn test_sync_ci_help() {
-    let result = run_cuenv_command(&["sync", "ci", "--help"]);
+fn test_sync_ci_help() -> TestResult {
+    let output = run_cuenv_command(&["sync", "ci", "--help"])?;
 
-    match result {
-        Ok((stdout, _stderr, success)) => {
-            assert!(success, "Help command should succeed");
-            assert!(
-                stdout.contains("Sync CI workflow files"),
-                "Help should describe CI sync functionality"
-            );
-            assert!(
-                stdout.contains("--dry-run"),
-                "Help should mention --dry-run option"
-            );
-        }
-        Err(e) => panic!("Failed to run cuenv sync ci --help: {e}"),
-    }
+    assert_success(&output, "Help command should succeed");
+    assert!(
+        output.stdout.contains("Sync CI workflow files"),
+        "Help should describe CI sync functionality"
+    );
+    assert!(
+        output.stdout.contains("--dry-run"),
+        "Help should mention --dry-run option"
+    );
+    Ok(())
 }

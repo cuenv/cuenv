@@ -29,11 +29,14 @@
 
 #![warn(missing_docs)]
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
+
+mod sections;
+
+pub use sections::IgnoreSection;
 
 /// A single ignore file configuration.
 ///
@@ -56,90 +59,6 @@ pub struct IgnoreFile {
     patterns: Vec<String>,
     filename: Option<String>,
     header: Option<String>,
-}
-
-/// A managed section inside an ignore file.
-///
-/// Sections are rendered with `# BEGIN {name}` and `# END {name}` markers.
-/// They allow one provider to update its own block while preserving the rest
-/// of the ignore file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct IgnoreSection {
-    name: String,
-    filename: String,
-    patterns: Vec<String>,
-}
-
-impl IgnoreSection {
-    /// Create a managed section for `.gitignore`.
-    #[must_use]
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            filename: ".gitignore".to_string(),
-            patterns: Vec::new(),
-        }
-    }
-
-    /// Set the ignore file that owns this section.
-    #[must_use]
-    pub fn filename(mut self, filename: impl Into<String>) -> Self {
-        self.filename = filename.into();
-        self
-    }
-
-    /// Add a single pattern to the section.
-    #[must_use]
-    pub fn pattern(mut self, pattern: impl Into<String>) -> Self {
-        self.patterns.push(pattern.into());
-        self
-    }
-
-    /// Add multiple patterns to the section.
-    #[must_use]
-    pub fn patterns(mut self, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.patterns.extend(patterns.into_iter().map(Into::into));
-        self
-    }
-
-    /// Get the section name.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Get the output filename for this section.
-    #[must_use]
-    pub fn output_filename(&self) -> &str {
-        &self.filename
-    }
-
-    /// Get the patterns.
-    #[must_use]
-    pub fn patterns_list(&self) -> &[String] {
-        &self.patterns
-    }
-
-    fn begin_marker(&self) -> String {
-        format!("# BEGIN {}", self.name)
-    }
-
-    fn end_marker(&self) -> String {
-        format!("# END {}", self.name)
-    }
-
-    fn generate(&self) -> String {
-        let mut patterns = self.patterns.clone();
-        patterns.sort();
-        patterns.dedup();
-
-        let lines = std::iter::once(self.begin_marker())
-            .chain(patterns)
-            .chain(std::iter::once(self.end_marker()))
-            .collect::<Vec<_>>();
-        format!("{}\n", lines.join("\n"))
-    }
 }
 
 impl IgnoreFile {
@@ -395,9 +314,9 @@ impl IgnoreFilesBuilder {
         sorted_files.sort_by(|a, b| a.tool.cmp(&b.tool));
 
         let mode = if self.dry_run {
-            WriteMode::DryRun
+            sections::WriteMode::DryRun
         } else {
-            WriteMode::Write
+            sections::WriteMode::Write
         };
         let dry_run = self.dry_run;
         let mut results = sorted_files
@@ -414,7 +333,7 @@ impl IgnoreFilesBuilder {
         });
         let section_results = sorted_sections
             .iter()
-            .map(|section| process_ignore_section(&dir, section, mode))
+            .map(|section| sections::process_ignore_section(&dir, section, mode))
             .collect::<Result<Vec<_>>>()?;
         results.extend(section_results);
 
@@ -430,7 +349,7 @@ fn process_ignore_file(dir: &Path, file: &IgnoreFile, dry_run: bool) -> Result<F
     validate_filename(&filename)?;
 
     let filepath = dir.join(&filename);
-    let content = preserve_existing_sections(&filepath, &file.generate())?;
+    let content = sections::preserve_existing_sections(&filepath, &file.generate())?;
     let pattern_count = file.patterns.len();
 
     let status = determine_file_status(&filepath, &content, dry_run)?;
@@ -449,71 +368,10 @@ fn process_ignore_file(dir: &Path, file: &IgnoreFile, dry_run: bool) -> Result<F
     })
 }
 
-#[derive(Clone, Copy)]
-enum WriteMode {
-    DryRun,
-    Write,
-}
-
-/// Process a single managed section and return its result.
-fn process_ignore_section(
-    dir: &Path,
-    section: &IgnoreSection,
-    mode: WriteMode,
-) -> Result<FileResult> {
-    validate_section_name(&section.name)?;
-    validate_filename(&section.filename)?;
-
-    let filepath = dir.join(&section.filename);
-    let (existing, file_missing) = read_optional_ignore_file(&filepath)?;
-    let content = apply_managed_section(&existing, section)?;
-    if content.is_empty() && file_missing {
-        return Ok(FileResult {
-            filename: section.filename.clone(),
-            status: FileStatus::Unchanged,
-            pattern_count: section.patterns.len(),
-        });
-    }
-    let status = determine_file_status_for_mode(&filepath, &content, mode)?;
-
-    tracing::info!(
-        filename = %section.filename,
-        status = %status,
-        patterns = section.patterns.len(),
-        section = %section.name,
-        "Processed ignore section"
-    );
-
-    Ok(FileResult {
-        filename: section.filename.clone(),
-        status,
-        pattern_count: section.patterns.len(),
-    })
-}
-
-fn read_optional_ignore_file(filepath: &Path) -> Result<(String, bool)> {
-    match std::fs::symlink_metadata(filepath) {
-        Ok(_) => Ok((std::fs::read_to_string(filepath)?, false)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok((String::new(), true)),
-        Err(err) => Err(err.into()),
-    }
-}
-
-fn determine_file_status_for_mode(
-    filepath: &Path,
-    content: &str,
-    mode: WriteMode,
-) -> Result<FileStatus> {
-    match mode {
-        WriteMode::DryRun => determine_dry_run_status(filepath, content),
-        WriteMode::Write => write_ignore_file(filepath, content),
-    }
-}
-
 /// Determine the status of an ignore file based on `dry_run` mode and existing content.
 fn determine_file_status(filepath: &Path, content: &str, dry_run: bool) -> Result<FileStatus> {
     if dry_run {
-        Ok(determine_dry_run_status(filepath, content)?)
+        determine_dry_run_status(filepath, content)
     } else {
         write_ignore_file(filepath, content)
     }
@@ -530,171 +388,6 @@ fn determine_dry_run_status(filepath: &Path, content: &str) -> Result<FileStatus
     } else {
         FileStatus::WouldUpdate
     })
-}
-
-const SECTION_BEGIN_PREFIX: &str = "# BEGIN ";
-const SECTION_END_PREFIX: &str = "# END ";
-
-#[derive(Debug)]
-struct ManagedSectionBlock {
-    name: String,
-    content: String,
-}
-
-fn preserve_existing_sections(filepath: &Path, generated: &str) -> Result<String> {
-    let Ok(existing) = std::fs::read_to_string(filepath) else {
-        return Ok(generated.to_string());
-    };
-    let sections = extract_managed_sections(&existing)?;
-    if sections.is_empty() {
-        return Ok(generated.to_string());
-    }
-
-    let mut next = generated.trim_end().to_string();
-    for section in sections {
-        let begin_marker = format!("{SECTION_BEGIN_PREFIX}{}", section.name);
-        if generated.lines().any(|line| line == begin_marker) {
-            continue;
-        }
-        if !next.is_empty() {
-            next.push_str("\n\n");
-        }
-        next.push_str(section.content.trim_end());
-    }
-    next.push('\n');
-    Ok(next)
-}
-
-fn apply_managed_section(existing: &str, section: &IgnoreSection) -> Result<String> {
-    let without_section = remove_managed_section(existing, &section.name)?;
-    if section.patterns.is_empty() {
-        return Ok(without_section);
-    }
-
-    let mut next = without_section.trim_end().to_string();
-    if !next.is_empty() {
-        next.push_str("\n\n");
-    }
-    next.push_str(section.generate().trim_end());
-    next.push('\n');
-    Ok(next)
-}
-
-fn extract_managed_sections(content: &str) -> Result<Vec<ManagedSectionBlock>> {
-    let mut sections = Vec::new();
-    let mut current: Option<(String, Vec<String>)> = None;
-
-    for line in content.lines() {
-        if let Some(name) = line.strip_prefix(SECTION_BEGIN_PREFIX) {
-            if current.is_some() {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: "nested begin marker".to_string(),
-                });
-            }
-            validate_section_name(name)?;
-            current = Some((name.to_string(), vec![line.to_string()]));
-            continue;
-        }
-
-        if let Some(name) = line.strip_prefix(SECTION_END_PREFIX) {
-            let Some((current_name, mut lines)) = current.take() else {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: "end marker without begin marker".to_string(),
-                });
-            };
-            if name != current_name {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: format!(
-                        "end marker '{}' does not match begin marker '{}'",
-                        name, current_name
-                    ),
-                });
-            }
-            lines.push(line.to_string());
-            sections.push(ManagedSectionBlock {
-                name: current_name,
-                content: format!("{}\n", lines.join("\n")),
-            });
-            continue;
-        }
-
-        if let Some((_, lines)) = current.as_mut() {
-            lines.push(line.to_string());
-        }
-    }
-
-    if current.is_some() {
-        return Err(Error::MalformedManagedSection {
-            filename: None,
-            reason: "missing end marker".to_string(),
-        });
-    }
-
-    Ok(sections)
-}
-
-fn remove_managed_section(content: &str, section_name: &str) -> Result<String> {
-    let mut output = Vec::new();
-    let mut current: Option<(String, Vec<String>)> = None;
-
-    for line in content.lines() {
-        if let Some(name) = line.strip_prefix(SECTION_BEGIN_PREFIX) {
-            if current.is_some() {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: "nested begin marker".to_string(),
-                });
-            }
-            validate_section_name(name)?;
-            current = Some((name.to_string(), vec![line.to_string()]));
-            continue;
-        }
-
-        if let Some(name) = line.strip_prefix(SECTION_END_PREFIX) {
-            let Some((current_name, mut lines)) = current.take() else {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: "end marker without begin marker".to_string(),
-                });
-            };
-            if name != current_name {
-                return Err(Error::MalformedManagedSection {
-                    filename: None,
-                    reason: format!(
-                        "end marker '{}' does not match begin marker '{}'",
-                        name, current_name
-                    ),
-                });
-            }
-            lines.push(line.to_string());
-            if current_name != section_name {
-                output.extend(lines);
-            }
-            continue;
-        }
-
-        if let Some((_, lines)) = current.as_mut() {
-            lines.push(line.to_string());
-        } else {
-            output.push(line.to_string());
-        }
-    }
-
-    if current.is_some() {
-        return Err(Error::MalformedManagedSection {
-            filename: None,
-            reason: "missing end marker".to_string(),
-        });
-    }
-
-    let mut joined = output.join("\n");
-    if content.ends_with('\n') && !joined.is_empty() {
-        joined.push('\n');
-    }
-    Ok(joined)
 }
 
 // ============================================================================
@@ -866,25 +559,6 @@ fn validate_filename(filename: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate that a managed section name can be safely rendered in marker lines.
-fn validate_section_name(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
-        return Err(Error::MalformedManagedSection {
-            filename: None,
-            reason: "section name cannot be empty".to_string(),
-        });
-    }
-
-    if name.chars().any(char::is_control) {
-        return Err(Error::MalformedManagedSection {
-            filename: None,
-            reason: "section name cannot contain control characters".to_string(),
-        });
-    }
-
-    Ok(())
-}
-
 /// Write an ignore file and return the status.
 fn write_ignore_file(filepath: &Path, content: &str) -> Result<FileStatus> {
     let status = if filepath.exists() {
@@ -902,360 +576,4 @@ fn write_ignore_file(filepath: &Path, content: &str) -> Result<FileStatus> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_ignore_file_new() {
-        let file = IgnoreFile::new("git");
-        assert_eq!(file.tool(), "git");
-        assert!(file.patterns_list().is_empty());
-        assert_eq!(file.output_filename(), ".gitignore");
-    }
-
-    #[test]
-    fn test_ignore_file_builder() {
-        let file = IgnoreFile::new("docker")
-            .pattern("node_modules/")
-            .pattern(".env")
-            .filename(".mydockerignore")
-            .header("My header");
-
-        assert_eq!(file.tool(), "docker");
-        assert_eq!(file.patterns_list(), &["node_modules/", ".env"]);
-        assert_eq!(file.output_filename(), ".mydockerignore");
-    }
-
-    #[test]
-    fn test_ignore_file_patterns() {
-        let file = IgnoreFile::new("git").patterns(["a", "b", "c"]);
-        assert_eq!(file.patterns_list(), &["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_ignore_file_generate_no_header() {
-        let file = IgnoreFile::new("git")
-            .pattern("node_modules/")
-            .pattern(".env");
-
-        let content = file.generate();
-        assert_eq!(content, "node_modules/\n.env\n");
-    }
-
-    #[test]
-    fn test_ignore_file_generate_with_header() {
-        let file = IgnoreFile::new("git")
-            .pattern("node_modules/")
-            .header("Generated by my-tool\nDo not edit");
-
-        let content = file.generate();
-        assert!(content.starts_with("# Generated by my-tool\n# Do not edit\n\n"));
-        assert!(content.contains("node_modules/"));
-    }
-
-    #[test]
-    fn test_output_filename_default() {
-        assert_eq!(IgnoreFile::new("git").output_filename(), ".gitignore");
-        assert_eq!(IgnoreFile::new("docker").output_filename(), ".dockerignore");
-        assert_eq!(IgnoreFile::new("npm").output_filename(), ".npmignore");
-    }
-
-    #[test]
-    fn test_output_filename_custom() {
-        let file = IgnoreFile::new("git").filename(".my-gitignore");
-        assert_eq!(file.output_filename(), ".my-gitignore");
-    }
-
-    #[test]
-    fn test_validate_tool_name_valid() {
-        assert!(validate_tool_name("git").is_ok());
-        assert!(validate_tool_name("docker").is_ok());
-        assert!(validate_tool_name("my-custom-tool").is_ok());
-        assert!(validate_tool_name("tool_with_underscore").is_ok());
-    }
-
-    #[test]
-    fn test_validate_tool_name_invalid() {
-        assert!(validate_tool_name("").is_err());
-        assert!(validate_tool_name("../etc").is_err());
-        assert!(validate_tool_name("foo/bar").is_err());
-        assert!(validate_tool_name("foo\\bar").is_err());
-        assert!(validate_tool_name("..").is_err());
-        assert!(validate_tool_name("foo..bar").is_err());
-    }
-
-    #[test]
-    fn test_file_status_display() {
-        assert_eq!(FileStatus::Created.to_string(), "Created");
-        assert_eq!(FileStatus::Updated.to_string(), "Updated");
-        assert_eq!(FileStatus::Unchanged.to_string(), "Unchanged");
-        assert_eq!(FileStatus::WouldCreate.to_string(), "Would create");
-        assert_eq!(FileStatus::WouldUpdate.to_string(), "Would update");
-    }
-
-    #[test]
-    fn test_ignore_file_clone() {
-        let file = IgnoreFile::new("git")
-            .pattern("node_modules/")
-            .header("Test");
-        let cloned = file.clone();
-        assert_eq!(file, cloned);
-    }
-
-    #[test]
-    fn test_ignore_file_debug() {
-        let file = IgnoreFile::new("git");
-        let debug_str = format!("{file:?}");
-        assert!(debug_str.contains("IgnoreFile"));
-        assert!(debug_str.contains("git"));
-    }
-
-    #[test]
-    fn test_ignore_file_equality() {
-        let file1 = IgnoreFile::new("git").pattern("*.log");
-        let file2 = IgnoreFile::new("git").pattern("*.log");
-        let file3 = IgnoreFile::new("docker").pattern("*.log");
-
-        assert_eq!(file1, file2);
-        assert_ne!(file1, file3);
-    }
-
-    #[test]
-    fn test_ignore_file_filename_opt_some() {
-        let file = IgnoreFile::new("git").filename_opt(Some(".custom-ignore"));
-        assert_eq!(file.output_filename(), ".custom-ignore");
-    }
-
-    #[test]
-    fn test_ignore_file_filename_opt_none() {
-        let file: IgnoreFile = IgnoreFile::new("git").filename_opt(None::<String>);
-        assert_eq!(file.output_filename(), ".gitignore");
-    }
-
-    #[test]
-    fn test_ignore_files_builder_default() {
-        let builder = IgnoreFiles::builder();
-        let debug_str = format!("{builder:?}");
-        assert!(debug_str.contains("IgnoreFilesBuilder"));
-    }
-
-    #[test]
-    fn test_validate_filename_valid() {
-        assert!(validate_filename(".gitignore").is_ok());
-        assert!(validate_filename(".my-custom-ignore").is_ok());
-    }
-
-    #[test]
-    fn test_validate_filename_invalid() {
-        assert!(validate_filename("path/to/file").is_err());
-        assert!(validate_filename("..\\file").is_err());
-        assert!(validate_filename("file..test").is_err());
-    }
-
-    #[test]
-    fn test_sync_result_debug() {
-        let result = SyncResult {
-            files: vec![FileResult {
-                filename: ".gitignore".to_string(),
-                status: FileStatus::Created,
-                pattern_count: 5,
-            }],
-        };
-        let debug_str = format!("{result:?}");
-        assert!(debug_str.contains("SyncResult"));
-        assert!(debug_str.contains("gitignore"));
-    }
-
-    #[test]
-    fn test_file_result_debug() {
-        let result = FileResult {
-            filename: ".gitignore".to_string(),
-            status: FileStatus::Updated,
-            pattern_count: 3,
-        };
-        let debug_str = format!("{result:?}");
-        assert!(debug_str.contains("FileResult"));
-        assert!(debug_str.contains("Updated"));
-    }
-
-    #[test]
-    fn test_file_status_eq() {
-        assert_eq!(FileStatus::Created, FileStatus::Created);
-        assert_eq!(FileStatus::WouldCreate, FileStatus::WouldCreate);
-        assert_ne!(FileStatus::Created, FileStatus::Updated);
-    }
-
-    #[test]
-    fn test_file_status_clone() {
-        let status = FileStatus::WouldUpdate;
-        let cloned = status;
-        assert_eq!(status, cloned);
-    }
-
-    #[test]
-    fn test_error_display() {
-        let err = Error::InvalidToolName {
-            name: "foo/bar".to_string(),
-            reason: "cannot contain path separators".to_string(),
-        };
-        let display = format!("{err}");
-        assert!(display.contains("foo/bar"));
-        assert!(display.contains("path separators"));
-    }
-
-    #[test]
-    fn test_error_not_in_git_repo_display() {
-        let err = Error::NotInGitRepo;
-        let display = format!("{err}");
-        assert!(display.contains("Git repository"));
-    }
-
-    #[test]
-    fn test_error_bare_repository_display() {
-        let err = Error::BareRepository;
-        let display = format!("{err}");
-        assert!(display.contains("bare Git repository"));
-    }
-
-    #[test]
-    fn test_error_outside_git_repo_display() {
-        let err = Error::OutsideGitRepo;
-        let display = format!("{err}");
-        assert!(display.contains("within the Git repository"));
-    }
-
-    #[test]
-    fn test_ignore_file_generate_empty() {
-        let file = IgnoreFile::new("git");
-        let content = file.generate();
-        assert_eq!(content, "\n");
-    }
-
-    #[test]
-    fn test_ignore_files_builder_files() {
-        let files = vec![
-            IgnoreFile::new("git").pattern("*.log"),
-            IgnoreFile::new("docker").pattern("target/"),
-        ];
-        let _builder = IgnoreFiles::builder().files(files);
-    }
-
-    #[test]
-    fn test_managed_section_create_update_and_remove() {
-        let temp = tempdir().expect("tempdir");
-
-        let result = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(
-                IgnoreSection::new("cuenv vcs")
-                    .pattern(".cuenv/vcs/cache/")
-                    .pattern(".cuenv/vcs/lib/"),
-            )
-            .generate()
-            .expect("create section");
-        assert_eq!(result.files[0].status, FileStatus::Created);
-        let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
-        assert_eq!(
-            content,
-            "# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n.cuenv/vcs/lib/\n# END cuenv vcs\n"
-        );
-
-        let result = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(IgnoreSection::new("cuenv vcs").pattern(".cuenv/vcs/cache/"))
-            .generate()
-            .expect("update section");
-        assert_eq!(result.files[0].status, FileStatus::Updated);
-        let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
-        assert!(content.contains(".cuenv/vcs/cache/"));
-        assert!(!content.contains(".cuenv/vcs/lib/"));
-
-        let result = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(IgnoreSection::new("cuenv vcs"))
-            .generate()
-            .expect("remove section");
-        assert_eq!(result.files[0].status, FileStatus::Updated);
-        let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
-        assert!(!content.contains("# BEGIN cuenv vcs"));
-    }
-
-    #[test]
-    fn test_managed_section_dry_run_and_empty_absent_file() {
-        let temp = tempdir().expect("tempdir");
-
-        let result = IgnoreFiles::builder()
-            .directory(temp.path())
-            .dry_run(true)
-            .section(IgnoreSection::new("cuenv vcs").pattern(".cuenv/vcs/cache/"))
-            .generate()
-            .expect("dry run");
-        assert_eq!(result.files[0].status, FileStatus::WouldCreate);
-        assert!(!temp.path().join(".gitignore").exists());
-
-        let result = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(IgnoreSection::new("cuenv vcs"))
-            .generate()
-            .expect("empty section");
-        assert_eq!(result.files[0].status, FileStatus::Unchanged);
-        assert!(!temp.path().join(".gitignore").exists());
-    }
-
-    #[test]
-    fn test_managed_section_dangling_ignore_file_errors() {
-        let temp = tempdir().expect("tempdir");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink("missing-target", temp.path().join(".gitignore"))
-            .expect("dangling symlink");
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_file("missing-target", temp.path().join(".gitignore"))
-            .expect("dangling symlink");
-
-        let err = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(IgnoreSection::new("cuenv vcs"))
-            .generate()
-            .expect_err("dangling ignore file should fail");
-        assert!(matches!(err, Error::Io(_)));
-    }
-
-    #[test]
-    fn test_full_file_generation_preserves_managed_sections() {
-        let temp = tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join(".gitignore"),
-            "target/\n\n# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n# END cuenv vcs\n",
-        )
-        .expect("seed gitignore");
-
-        IgnoreFiles::builder()
-            .directory(temp.path())
-            .file(IgnoreFile::new("git").pattern("dist/"))
-            .generate()
-            .expect("generate file");
-
-        let content = std::fs::read_to_string(temp.path().join(".gitignore")).expect("gitignore");
-        assert!(content.contains("dist/"));
-        assert!(!content.contains("target/"));
-        assert!(content.contains("# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n# END cuenv vcs"));
-    }
-
-    #[test]
-    fn test_managed_sections_reject_malformed_blocks() {
-        let temp = tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join(".gitignore"),
-            "# BEGIN cuenv vcs\n.cuenv/vcs/cache/\n",
-        )
-        .expect("seed gitignore");
-
-        let err = IgnoreFiles::builder()
-            .directory(temp.path())
-            .section(IgnoreSection::new("cuenv vcs").pattern(".cuenv/vcs/lib/"))
-            .generate()
-            .expect_err("malformed section should fail");
-        assert!(err.to_string().contains("missing end marker"));
-    }
-}
+mod tests;

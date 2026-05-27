@@ -88,9 +88,9 @@ impl Generator {
             match file_def.mode {
                 FileMode::Managed => {
                     if options.check {
-                        self.check_file(&output_path, &formatted_content)?;
+                        Self::check_file(&output_path, &formatted_content)?;
                     } else {
-                        self.write_file(&output_path, &formatted_content)?;
+                        Self::write_file(&output_path, &formatted_content)?;
                     }
                 }
                 FileMode::Scaffold => {
@@ -101,7 +101,7 @@ impl Generator {
                             "Missing scaffold file: {file_path}"
                         )));
                     } else {
-                        self.write_file(&output_path, &formatted_content)?;
+                        Self::write_file(&output_path, &formatted_content)?;
                     }
                 }
             }
@@ -113,9 +113,7 @@ impl Generator {
     }
 
     /// Write a file to disk
-    #[allow(clippy::unused_self)] // Will use self for write options in future
-    fn write_file(&self, path: &Path, content: &str) -> Result<()> {
-        // Create parent directories if they don't exist
+    fn write_file(path: &Path, content: &str) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -127,8 +125,7 @@ impl Generator {
     }
 
     /// Check if a file would be modified
-    #[allow(clippy::unused_self)] // Will use self for check options in future
-    fn check_file(&self, path: &Path, expected_content: &str) -> Result<()> {
+    fn check_file(path: &Path, expected_content: &str) -> Result<()> {
         if !path.exists() {
             return Err(CodegenError::Generation(format!(
                 "Missing managed file: {}",

@@ -22,14 +22,13 @@ pub struct CiArgs {
     #[arg(long, short = 'o', value_name = "PATH")]
     pub output: Option<PathBuf>,
 
-    /// Filter matrix dimensions (e.g., os=linux,arch=amd64).
+    /// Reserved for local matrix filtering (currently unsupported).
     ///
-    /// Run only tasks matching the specified matrix values.
-    /// Useful for cross-platform CI where each runner handles one platform.
+    /// Provider-native matrix workflows are generated with `cuenv sync ci`.
     #[arg(long, value_name = "KEY=VALUE", value_delimiter = ',')]
     pub filter_matrix: Vec<String>,
 
-    /// Maximum parallel tasks (0 = num_cpus).
+    /// Maximum parallel task DAG jobs (0 = host parallelism).
     #[arg(long, short = 'j', default_value = "0", value_name = "N")]
     pub jobs: usize,
 

@@ -15,7 +15,7 @@ use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Output format for JSON mode
 #[derive(Debug, Serialize)]
@@ -54,6 +54,56 @@ pub struct InfoOptions<'a> {
     pub with_meta: bool,
 }
 
+struct InfoContext {
+    scan_all: bool,
+    start_path: PathBuf,
+    module_root: PathBuf,
+}
+
+#[derive(Default)]
+struct DiscoveredModuleResults {
+    instances: HashMap<String, serde_json::Value>,
+    projects: Vec<String>,
+    meta: HashMap<String, cuengine::FieldMeta>,
+}
+
+impl DiscoveredModuleResults {
+    fn merge(&mut self, raw: cuengine::ModuleResult, dir_rel_path: &str) {
+        for (path_str, value) in raw.instances {
+            let rel_path = if path_str == "." {
+                dir_rel_path.to_string()
+            } else {
+                path_str
+            };
+            self.instances.insert(rel_path, value);
+        }
+
+        for project_path in raw.projects {
+            let rel_project_path = if project_path == "." {
+                dir_rel_path.to_string()
+            } else {
+                project_path
+            };
+            if !self.projects.contains(&rel_project_path) {
+                self.projects.push(rel_project_path);
+            }
+        }
+
+        for (meta_key, meta_value) in raw.meta {
+            let adjusted_key = adjust_meta_key_path(&meta_key, dir_rel_path);
+            self.meta.insert(adjusted_key, meta_value);
+        }
+    }
+
+    fn into_module_result(self) -> cuengine::ModuleResult {
+        cuengine::ModuleResult {
+            instances: self.instances,
+            projects: self.projects,
+            meta: self.meta,
+        }
+    }
+}
+
 /// Execute the info command.
 ///
 /// Evaluates CUE instances and displays information about
@@ -68,9 +118,18 @@ pub struct InfoOptions<'a> {
 /// # Errors
 ///
 /// Returns an error if CUE evaluation fails or path canonicalization fails.
-#[allow(clippy::too_many_lines)]
 pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
-    // Determine if we should scan all directories based on whether a path was explicitly provided
+    let context = resolve_info_context(options)?;
+    let raw_result = evaluate_info_module(&context, options)?;
+
+    if options.with_meta {
+        return render_meta_output(&context.module_root, raw_result);
+    }
+
+    render_module_summary(&context.module_root, raw_result, options.json_output)
+}
+
+fn resolve_info_context(options: InfoOptions<'_>) -> Result<InfoContext> {
     let scan_all = options.path.is_none();
     let effective_path = options.path.unwrap_or(".");
 
@@ -91,113 +150,105 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
         ))
     })?;
 
-    // Evaluate using discovery-based approach
-    let raw_result = if scan_all {
-        // Discover all directories with env.cue files matching our package
-        let env_cue_dirs = discover_env_cue_directories(&module_root, options.package);
+    Ok(InfoContext {
+        scan_all,
+        start_path,
+        module_root,
+    })
+}
 
-        if env_cue_dirs.is_empty() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "No env.cue files with package '{}' found in module: {}",
-                options.package,
-                module_root.display()
-            )));
-        }
-
-        // Evaluate each directory individually (non-recursive)
-        let mut all_instances = HashMap::new();
-        let mut all_projects = Vec::new();
-        let mut all_meta = HashMap::new();
-
-        for dir in env_cue_dirs {
-            let dir_rel_path = compute_relative_path(&dir, &module_root);
-            let eval_options = ModuleEvalOptions {
-                recursive: false,
-                with_meta: options.with_meta,
-                target_dir: Some(dir.to_string_lossy().to_string()),
-                ..Default::default()
-            };
-
-            let Ok(raw) =
-                cuengine::evaluate_module(&module_root, options.package, Some(&eval_options))
-                    .map_err(convert_engine_error)
-            else {
-                continue;
-            };
-
-            // Merge instances (key by relative path from module_root)
-            for (path_str, value) in raw.instances {
-                let rel_path = if path_str == "." {
-                    dir_rel_path.clone()
-                } else {
-                    path_str
-                };
-                all_instances.insert(rel_path.clone(), value);
-            }
-
-            for project_path in raw.projects {
-                let rel_project_path = if project_path == "." {
-                    dir_rel_path.clone()
-                } else {
-                    project_path
-                };
-                if !all_projects.contains(&rel_project_path) {
-                    all_projects.push(rel_project_path);
-                }
-            }
-
-            // Merge meta with adjusted paths
-            for (meta_key, meta_value) in raw.meta {
-                let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                all_meta.insert(adjusted_key, meta_value);
-            }
-        }
-
-        if all_instances.is_empty() {
-            return Err(cuenv_core::Error::configuration(
-                "No instances could be evaluated. All directories failed.",
-            ));
-        }
-
-        cuengine::ModuleResult {
-            instances: all_instances,
-            projects: all_projects,
-            meta: all_meta,
-        }
+fn evaluate_info_module(
+    context: &InfoContext,
+    options: InfoOptions<'_>,
+) -> Result<cuengine::ModuleResult> {
+    if context.scan_all {
+        evaluate_discovered_env_cue_directories(context, options)
     } else {
-        // Evaluate specific path only (non-recursive)
+        evaluate_specific_info_path(context, options)
+    }
+}
+
+fn evaluate_discovered_env_cue_directories(
+    context: &InfoContext,
+    options: InfoOptions<'_>,
+) -> Result<cuengine::ModuleResult> {
+    let env_cue_dirs = discover_env_cue_directories(&context.module_root, options.package);
+
+    if env_cue_dirs.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "No env.cue files with package '{}' found in module: {}",
+            options.package,
+            context.module_root.display()
+        )));
+    }
+
+    let mut discovered = DiscoveredModuleResults::default();
+
+    for dir in env_cue_dirs {
+        let dir_rel_path = compute_relative_path(&dir, &context.module_root);
         let eval_options = ModuleEvalOptions {
-            with_meta: options.with_meta,
             recursive: false,
-            target_dir: Some(start_path.to_string_lossy().to_string()),
+            with_meta: options.with_meta,
+            target_dir: Some(dir.to_string_lossy().to_string()),
             ..Default::default()
         };
 
-        cuengine::evaluate_module(&module_root, options.package, Some(&eval_options))
-            .map_err(convert_engine_error)?
-    };
-
-    // If --meta is requested, dump the full JSON with separate meta map
-    if options.with_meta {
-        let output = MetaOutput {
-            module_root: module_root.display().to_string(),
-            instances: raw_result.instances,
-            meta: raw_result.meta,
+        let Ok(raw) =
+            cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
+                .map_err(convert_engine_error)
+        else {
+            continue;
         };
-        return serde_json::to_string_pretty(&output).map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}"))
-        });
+
+        discovered.merge(raw, &dir_rel_path);
     }
 
-    // Convert to ModuleEvaluation (using schema-verified project list)
+    if discovered.instances.is_empty() {
+        return Err(cuenv_core::Error::configuration(
+            "No instances could be evaluated. All directories failed.",
+        ));
+    }
+
+    Ok(discovered.into_module_result())
+}
+
+fn evaluate_specific_info_path(
+    context: &InfoContext,
+    options: InfoOptions<'_>,
+) -> Result<cuengine::ModuleResult> {
+    let eval_options = ModuleEvalOptions {
+        with_meta: options.with_meta,
+        recursive: false,
+        target_dir: Some(context.start_path.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+
+    cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
+        .map_err(convert_engine_error)
+}
+
+fn render_meta_output(module_root: &Path, raw_result: cuengine::ModuleResult) -> Result<String> {
+    let output = MetaOutput {
+        module_root: module_root.display().to_string(),
+        instances: raw_result.instances,
+        meta: raw_result.meta,
+    };
+    serde_json::to_string_pretty(&output)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to serialize JSON: {e}")))
+}
+
+fn render_module_summary(
+    module_root: &Path,
+    raw_result: cuengine::ModuleResult,
+    json_output: bool,
+) -> Result<String> {
     let module = ModuleEvaluation::from_raw(
-        module_root.clone(),
+        module_root.to_path_buf(),
         raw_result.instances,
         raw_result.projects,
         None,
     );
 
-    // Collect project information
     let mut projects: Vec<ProjectInfo> = module
         .projects()
         .filter_map(|instance| {
@@ -207,11 +258,9 @@ pub fn execute_info(options: InfoOptions<'_>) -> Result<String> {
             })
         })
         .collect();
-
-    // Sort by name for consistent output
     projects.sort_by(|a, b| a.name.cmp(&b.name));
 
-    if options.json_output {
+    if json_output {
         let output = InfoOutput {
             module_root: module_root.display().to_string(),
             base_count: module.base_count(),

@@ -56,7 +56,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
 
 ## Implementation outline
 
-`crates/cuenv/src/commands/sync/providers/vcs.rs`:
+VCS sync provider modules:
 
 1. **Spec & lock types**
 
@@ -67,7 +67,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
      - Both use `#[serde(default, skip_serializing_if = "Option::is_none")]` so existing lockfiles continue to deserialise. Lockfile version stays at the current value (additive change).
    - `locked_matches` extends to compare `subdir` alongside the existing fields.
 
-2. **`resolve_dependency`** — when `subdir` is set:
+2. **`materialization::resolve_dependency`** — when `subdir` is set:
 
    - After existing `clone`/`fetch`, verify the subdir resolves to a tree object and capture its hash:
      ```
@@ -78,7 +78,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
      A non-zero exit on `cat-file` (subdir missing at ref) or a value other than `"tree"` (subdir points at a file) surfaces a clear configuration error before any installation begins.
    - Root `tree` field continues to record `FETCH_HEAD^{tree}` for backward compatibility, but is not consulted when `subdir` is set.
 
-3. **`prepare_dependency`** — when `subdir` is set:
+3. **`materialization::prepare_dependency`** — when `subdir` is set:
 
    - Validate inputs as today.
    - Sparse clone the dependency into a temp path:
@@ -96,7 +96,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
    - Move `<tmp>/<subdir>` to the install target's temporary location (the existing `temp_target` flow). Discard the rest of `<tmp>`, including `.git`, before installation.
    - Continue with `ensure_dependency_does_not_reserve_marker` and `write_ownership_marker` against the subtree directory.
 
-4. **`verify_checked_out_tree` / `check_materialized`** — when locked has `subdir`:
+4. **`materialization::verify_checked_out_tree` / `materialization::check_materialized`** — when locked has `subdir`:
 
    - Path-on-disk verification uses `vendored_tree_hash(target)` against `locked.subtree` instead of `locked.tree`.
    - `vendored_tree_hash_with_git_dir` is unchanged; it just hashes whatever directory it is pointed at.
@@ -129,7 +129,7 @@ At evaluation time (`sync_vcs_dependencies`), a `subdir` failing any rule produc
 
 ## Testing
 
-Unit tests in `vcs.rs`, using a local source repo with a known multi-directory tree (extend `create_source_repo` to add a few directories with content):
+Unit tests in `vcs_tests.rs`, using a local source repo with a known multi-directory tree (extend `create_source_repo` to add a few directories with content):
 
 1. `subdir` extracts only the requested subdirectory; sibling content is absent at `path`.
 2. `subdir` with `vendor: false` materializes the subtree, writes no nested `.git`, and ignores the target path.

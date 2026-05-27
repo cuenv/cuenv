@@ -1,4 +1,4 @@
-#![allow(missing_docs, clippy::print_stdout)]
+#![allow(missing_docs)]
 use cuenv_workspaces::WorkspaceDiscovery;
 use std::path::{Path, PathBuf};
 
@@ -441,7 +441,7 @@ fn test_integration_real_cargo_toml() {
 
     // Check if we are actually in the repo (might differ in some CI envs or packaged builds)
     if !root.join("Cargo.toml").exists() {
-        println!(
+        tracing::info!(
             "Skipping integration test: Cargo.toml not found at {}",
             root.display()
         );

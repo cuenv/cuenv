@@ -9,30 +9,17 @@ use tokio::process::Command;
 
 /// Configuration for exec-based secret resolution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExecSecretConfig {
+struct ExecSecretConfig {
     /// Command to execute
-    pub command: String,
+    command: String,
 
     /// Arguments to pass to the command
     #[serde(default)]
-    pub args: Vec<String>,
+    args: Vec<String>,
 
     /// Additional fields for extensibility
     #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
-}
-
-impl ExecSecretConfig {
-    /// Create a new exec secret config
-    #[must_use]
-    #[allow(dead_code)] // Used in tests; #[expect] incompatible with --all-targets
-    pub fn new(command: impl Into<String>, args: Vec<String>) -> Self {
-        Self {
-            command: command.into(),
-            args,
-            extra: HashMap::new(),
-        }
-    }
+    extra: HashMap<String, Value>,
 }
 
 /// Resolves secrets by executing commands
@@ -113,7 +100,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_json_config() {
-        let config = ExecSecretConfig::new("echo", vec!["json_value".to_string()]);
+        let config = ExecSecretConfig {
+            command: "echo".to_string(),
+            args: vec!["json_value".to_string()],
+            extra: HashMap::new(),
+        };
         let json_source = serde_json::to_string(&config).unwrap();
 
         let resolver = ExecSecretResolver::new();

@@ -55,6 +55,23 @@ pub struct HookResult {
     pub error: Option<String>,
 }
 
+/// Context captured when a hook execution fails.
+#[derive(Debug)]
+pub struct HookFailure {
+    /// The hook that was executed
+    pub hook: Hook,
+    /// Exit status of the command
+    pub exit_status: Option<ExitStatus>,
+    /// Standard output captured from the command
+    pub stdout: String,
+    /// Standard error captured from the command
+    pub stderr: String,
+    /// Duration of execution in milliseconds
+    pub duration_ms: u64,
+    /// Error message describing the failure
+    pub error: String,
+}
+
 impl HookResult {
     /// Create a successful hook result
     #[must_use]
@@ -77,24 +94,16 @@ impl HookResult {
     }
 
     /// Create a failed hook result
-    #[allow(clippy::too_many_arguments)] // Hook result requires full execution context
     #[must_use]
-    pub fn failure(
-        hook: Hook,
-        exit_status: Option<ExitStatus>,
-        stdout: String,
-        stderr: String,
-        duration_ms: u64,
-        error: String,
-    ) -> Self {
+    pub fn failure(failure: HookFailure) -> Self {
         Self {
-            hook,
+            hook: failure.hook,
             success: false,
-            exit_status: exit_status.and_then(|s| s.code()),
-            stdout,
-            stderr,
-            duration_ms,
-            error: Some(error),
+            exit_status: failure.exit_status.and_then(|s| s.code()),
+            stdout: failure.stdout,
+            stderr: failure.stderr,
+            duration_ms: failure.duration_ms,
+            error: Some(failure.error),
         }
     }
 
@@ -280,14 +289,14 @@ mod tests {
                 .status,
         );
 
-        let result = HookResult::failure(
-            hook.clone(),
+        let result = HookResult::failure(HookFailure {
+            hook: hook.clone(),
             exit_status,
-            String::new(),
-            "command failed".to_string(),
-            50,
-            "Process exited with non-zero status".to_string(),
-        );
+            stdout: String::new(),
+            stderr: "command failed".to_string(),
+            duration_ms: 50,
+            error: "Process exited with non-zero status".to_string(),
+        });
 
         assert!(!result.success);
         assert_eq!(result.hook, hook);

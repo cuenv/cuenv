@@ -78,22 +78,6 @@ pub fn extract_from_layers(layers: &[PathBuf], file_path: &str, dest: &Path) -> 
     Err(Error::BinaryNotFound(file_path.to_string()))
 }
 
-/// List all files in an archive (for debugging).
-#[allow(dead_code)] // Debug utility for archive inspection
-pub fn list_archive_contents(archive_path: &Path) -> Result<Vec<String>> {
-    let file = File::open(archive_path)?;
-    let decoder = GzDecoder::new(file);
-    let mut archive = Archive::new(decoder);
-
-    let mut paths = Vec::new();
-    for entry in archive.entries()? {
-        let entry = entry?;
-        paths.push(entry.path()?.to_string_lossy().to_string());
-    }
-
-    Ok(paths)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

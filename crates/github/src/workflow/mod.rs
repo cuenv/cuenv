@@ -26,9 +26,12 @@
 //! ```
 
 pub mod emitter;
+pub mod jobs;
+pub mod release;
 pub mod schema;
 pub mod stage_renderer;
 
-pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder, SimpleJobOptions, TaskExecution};
+pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
+pub use jobs::{SimpleJobOptions, TaskExecution};
 pub use schema::*;
 pub use stage_renderer::{GitHubStageRenderer, transform_secret_ref};

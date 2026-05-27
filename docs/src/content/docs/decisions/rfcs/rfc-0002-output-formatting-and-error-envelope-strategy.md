@@ -12,7 +12,7 @@ related_features:
 
 ## Summary
 
-This RFC documents the multi-format output strategy and error taxonomy for the cuenv CLI. It captures the semantics codified in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140), ensuring that human-friendly output, JSON automation hooks, and exit-code signalling remain predictable as the CLI evolves.
+This RFC documents the multi-format output strategy and error taxonomy for the cuenv CLI. It captures the semantics codified in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs), ensuring that human-friendly output, JSON automation hooks, and exit-code signalling remain predictable as the CLI evolves.
 
 ## Problem Statement
 
@@ -50,7 +50,7 @@ Documenting the strategy provides a single source of truth that feature files an
    - Provide optional `help` messages surfaced via miette when not in JSON mode.
 
 3. **Exit Code Mapping**
-   - Maintain the explicit mapping in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:109).
+   - Maintain the explicit mapping in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs).
    - Document future additions to the error taxonomy through ADR updates.
 
 4. **Testing Strategy**
@@ -97,6 +97,6 @@ Documenting the strategy provides a single source of truth that feature files an
 
 | Artifact                                                                                                  | Purpose                                                    |
 | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:140)                                            | Source of `OutputFormat`, envelopes, and error mappings.   |
+| [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs)                                                        | Source of `OutputFormat`, envelopes, and error mappings.   |
 | [adr-0005-cli-error-taxonomy-and-exit-codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/) | Ratified decision capturing the taxonomy defined here.     |
 | [readme.md](readme.md:368)                                                                                | Public documentation that will mirror the output contract. |

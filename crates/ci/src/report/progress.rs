@@ -9,6 +9,9 @@ use std::time::Duration;
 
 use super::{PipelineReport, TaskStatus};
 
+const FULL_PERCENT_BASIS_POINTS: u16 = 10_000;
+const BASIS_POINTS_PER_PERCENT: f32 = 100.0;
+
 /// Status of a task during live execution (extends TaskStatus with Running state).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -159,16 +162,23 @@ impl LivePipelineProgress {
     /// Calculate completion percentage.
     #[must_use]
     pub fn percentage(&self) -> f32 {
-        if self.total_tasks == 0 {
-            100.0
-        } else {
-            #[allow(clippy::cast_precision_loss)]
-            let completed = self.completed_tasks as f32;
-            #[allow(clippy::cast_precision_loss)]
-            let total = self.total_tasks as f32;
-            (completed / total) * 100.0
-        }
+        f32::from(completion_basis_points(
+            self.completed_tasks,
+            self.total_tasks,
+        )) / BASIS_POINTS_PER_PERCENT
     }
+}
+
+fn completion_basis_points(completed_tasks: usize, total_tasks: usize) -> u16 {
+    if total_tasks == 0 {
+        return FULL_PERCENT_BASIS_POINTS;
+    }
+
+    let completed_tasks = completed_tasks.min(total_tasks);
+    let basis_points =
+        completed_tasks.saturating_mul(usize::from(FULL_PERCENT_BASIS_POINTS)) / total_tasks;
+
+    u16::try_from(basis_points).unwrap_or(FULL_PERCENT_BASIS_POINTS)
 }
 
 /// Trait for reporting pipeline execution progress in real-time.
@@ -321,6 +331,22 @@ mod tests {
         assert!((progress.percentage() - 50.0).abs() < f32::EPSILON);
 
         progress.completed_tasks = 10;
+        assert!((progress.percentage() - 100.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_live_pipeline_progress_percentage_fractional() {
+        let mut progress = LivePipelineProgress::new("default", 3);
+        progress.completed_tasks = 1;
+
+        assert!((progress.percentage() - 33.33).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_live_pipeline_progress_percentage_clamps_overcomplete() {
+        let mut progress = LivePipelineProgress::new("default", 3);
+        progress.completed_tasks = usize::MAX;
+
         assert!((progress.percentage() - 100.0).abs() < f32::EPSILON);
     }
 

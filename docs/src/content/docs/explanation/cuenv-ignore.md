@@ -21,7 +21,12 @@ Managing multiple ignore files across different tools can be tedious. This crate
 │  IgnoreFilesBuilder│────►│   IgnoreFile    │────►│  .*ignore files  │
 │  (configuration)   │     │   (per-tool)    │     │  (.gitignore,    │
 └────────────────────┘     └─────────────────┘     │   .dockerignore) │
-         │                                          └──────────────────┘
+         │                       │                  └──────────────────┘
+         │                       ▼
+         │              ┌─────────────────┐
+         ├─────────────►│  IgnoreSection  │
+         │              │ (managed block) │
+         │              └─────────────────┘
          ▼
 ┌────────────────────┐
 │    SyncResult      │
@@ -33,6 +38,9 @@ Managing multiple ignore files across different tools can be tedious. This crate
 
 **IgnoreFile**
 Configuration for a single ignore file, including tool name, patterns, and optional header.
+
+**IgnoreSection**
+Configuration for a managed block inside an ignore file. Section parsing and marker replacement live in `crates/ignore/src/sections.rs` so full-file rendering stays separate from managed-block preservation.
 
 **IgnoreFiles**
 Entry point for building and generating multiple ignore files.
@@ -105,6 +113,8 @@ for file in &result.files {
 | `directory(path)`        | Set output directory (default: current dir) |
 | `file(IgnoreFile)`       | Add a single ignore file config             |
 | `files(iter)`            | Add multiple ignore file configs            |
+| `section(IgnoreSection)` | Add a managed section config                |
+| `sections(iter)`         | Add multiple managed section configs        |
 | `require_git_repo(bool)` | Require directory to be in a Git repo       |
 | `dry_run(bool)`          | Preview changes without writing             |
 | `generate()`             | Generate all ignore files                   |

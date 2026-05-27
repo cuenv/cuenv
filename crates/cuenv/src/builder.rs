@@ -8,17 +8,16 @@
 //! ```no_run
 //! use cuenv::Cuenv;
 //!
-//! fn main() -> cuenv::Result<()> {
-//!     Cuenv::builder()
-//!         .with_defaults()
-//!         // .with_sync_provider(my_provider::CustomProvider::new())
-//!         .build()
-//!         .run()
-//! }
+//! let cuenv = Cuenv::builder()
+//!     .with_defaults()
+//!     // .with_sync_provider(my_provider::CustomProvider::new())
+//!     .build();
+//!
+//! let _sync_command = cuenv.build_sync_command();
 //! ```
 
 use crate::Cuenv;
-use crate::provider::{RuntimeCapability, SecretCapability, SyncCapability};
+use crate::provider::SyncCapability;
 use crate::providers::{CiProvider, CodegenProvider, RulesProvider};
 use crate::registry::ProviderRegistry;
 
@@ -47,30 +46,6 @@ impl CuenvBuilder {
         P: SyncCapability + 'static,
     {
         self.registry.register_sync(provider);
-        self
-    }
-
-    /// Register a provider that implements [`RuntimeCapability`].
-    ///
-    /// This is type-safe and ensures the provider can be used for task execution.
-    #[must_use]
-    pub fn with_runtime_provider<P>(mut self, provider: P) -> Self
-    where
-        P: RuntimeCapability + 'static,
-    {
-        self.registry.register_runtime(provider);
-        self
-    }
-
-    /// Register a provider that implements [`SecretCapability`].
-    ///
-    /// This is type-safe and ensures the provider can be used for secret resolution.
-    #[must_use]
-    pub fn with_secret_provider<P>(mut self, provider: P) -> Self
-    where
-        P: SecretCapability + 'static,
-    {
-        self.registry.register_secret(provider);
         self
     }
 

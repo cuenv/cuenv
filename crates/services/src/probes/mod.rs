@@ -149,7 +149,7 @@ pub fn create_probe(
                 l.common.timeout.as_deref(),
                 l.common.initial_delay.as_deref(),
             )?;
-            let source = l.source.clone().unwrap_or_else(|| "either".to_string());
+            let source = l.source.as_deref().unwrap_or("either");
             let runner = log::LogProbe::new(&l.pattern, source)?;
             Ok((Box::new(runner), config))
         }

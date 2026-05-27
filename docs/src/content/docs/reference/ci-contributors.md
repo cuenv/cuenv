@@ -26,7 +26,9 @@ ci: {
 }
 ```
 
-**Supported providers:** `"github"`, `"buildkite"`, `"gitlab"`
+**Schema-recognized providers:** `"github"`, `"buildkite"`, `"gitlab"`.
+GitHub and Buildkite have `cuenv sync ci` support today; GitLab remains
+schema-only and is rejected by sync until a GitLab emitter exists.
 
 See [Configuration Schema - CI Configuration](/reference/cue-schema/#ci-configuration) for full schema documentation.
 
@@ -57,7 +59,8 @@ When `cuenv ci` runs a pipeline, it determines which tasks are **affected** by t
 2. Each task in the DAG is checked for direct affect — its `inputs` patterns are matched against changed files.
 3. Changed file paths are normalized before matching so repo-relative paths from CI providers still match project-relative task inputs, even when the project root is an absolute subdirectory path.
 4. Affected status propagates upward through `dependsOn`: if any dependency is affected, the dependent task is also affected.
-5. Tasks with **no inputs** are always considered affected (safe default).
+5. Cross-project references such as `#project:deploy:preview` keep the full nested task path after the first `:` and are resolved through the same canonical task index as local tasks.
+6. Tasks with **no inputs** are always considered affected (safe default).
 
 Only affected pipeline tasks are executed. The executor handles running each task's full dependency chain.
 

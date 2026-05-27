@@ -330,9 +330,51 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // Test requires comprehensive setup and assertions
     fn distinguishes_workspace_from_nested_node_modules() {
-        let json = r#"{
+        let entries = parse_lockfile(nested_node_modules_fixture());
+
+        assert_eq!(entries.len(), 4);
+        assert_workspace_entry(&entries, "workspace-root");
+        assert_workspace_entry(&entries, "app");
+        assert_registry_entry(&entries, "react", "nested node_modules");
+        assert_registry_entry(&entries, "left-pad", "root node_modules");
+    }
+
+    fn parse_lockfile(json: &str) -> Vec<LockfileEntry> {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+
+        let parser = NpmLockfileParser;
+        parser.parse(file.path()).unwrap()
+    }
+
+    fn assert_workspace_entry(entries: &[LockfileEntry], name: &str) {
+        let entry = entry_named(entries, name);
+        assert!(entry.is_workspace_member);
+        assert!(matches!(entry.source, DependencySource::Workspace(_)));
+    }
+
+    fn assert_registry_entry(entries: &[LockfileEntry], name: &str, context: &str) {
+        let entry = entry_named(entries, name);
+        assert!(
+            !entry.is_workspace_member,
+            "{name} in {context} should not be a workspace member"
+        );
+        assert!(
+            matches!(entry.source, DependencySource::Registry(_)),
+            "{name} should be a registry dependency"
+        );
+    }
+
+    fn entry_named<'a>(entries: &'a [LockfileEntry], name: &str) -> &'a LockfileEntry {
+        entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("missing {name} entry"))
+    }
+
+    fn nested_node_modules_fixture() -> &'static str {
+        r#"{
   "name": "workspace-root",
   "version": "1.0.0",
   "lockfileVersion": 3,
@@ -359,43 +401,6 @@ mod tests {
 	  "integrity": "sha512-test"
 	}
   }
-}"#;
-
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(json.as_bytes()).unwrap();
-
-        let parser = NpmLockfileParser;
-        let entries = parser.parse(file.path()).unwrap();
-
-        // Should have 4 entries: workspace root, packages/app (workspace), and 2 registry deps
-        assert_eq!(entries.len(), 4);
-
-        // Check workspace root
-        let root = entries.iter().find(|e| e.name == "workspace-root").unwrap();
-        assert!(root.is_workspace_member);
-        assert!(matches!(root.source, DependencySource::Workspace(_)));
-
-        // Check workspace member packages/app
-        let app = entries.iter().find(|e| e.name == "app").unwrap();
-        assert!(app.is_workspace_member);
-        assert!(matches!(app.source, DependencySource::Workspace(_)));
-
-        // Check react from packages/app/node_modules - should be registry dep
-        let react_entries: Vec<_> = entries.iter().filter(|e| e.name == "react").collect();
-        assert_eq!(react_entries.len(), 1);
-        let react = react_entries[0];
-        assert!(
-            !react.is_workspace_member,
-            "React in nested node_modules should not be a workspace member"
-        );
-        assert!(
-            matches!(react.source, DependencySource::Registry(_)),
-            "React should be a registry dependency"
-        );
-
-        // Check left-pad from node_modules - should be registry dep
-        let left_pad = entries.iter().find(|e| e.name == "left-pad").unwrap();
-        assert!(!left_pad.is_workspace_member);
-        assert!(matches!(left_pad.source, DependencySource::Registry(_)));
+}"#
     }
 }

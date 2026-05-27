@@ -89,27 +89,17 @@ async fn test_execute_version_progress_events() {
     let result = handle.await.unwrap();
     assert!(result.is_ok());
 
-    // Verify progress sequence
-    assert!(!progress_events.is_empty());
-    assert!(
-        progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Initializing"))
+    assert_eq!(
+        progress_events,
+        vec![
+            (0.0, "Initializing...".to_string()),
+            (0.2, "Loading version info...".to_string()),
+            (0.4, "Checking build metadata...".to_string()),
+            (0.6, "Gathering system info...".to_string()),
+            (0.8, "Formatting output...".to_string()),
+            (1.0, "Complete".to_string()),
+        ]
     );
-    assert!(
-        progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Loading version info"))
-    );
-    assert!(
-        progress_events
-            .iter()
-            .any(|(_, msg)| msg.contains("Complete"))
-    );
-
-    // Verify progress values
-    let progress_values: Vec<f32> = progress_events.iter().map(|(p, _)| *p).collect();
-    assert!(progress_values.first().unwrap() <= progress_values.last().unwrap());
 }
 
 #[tokio::test]

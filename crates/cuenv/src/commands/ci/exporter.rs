@@ -11,6 +11,7 @@ use cuenv_ci::ir::{IntermediateRepresentation, PipelineMetadata};
 use cuenv_core::Result;
 use cuenv_core::ci::PipelineMode;
 use cuenv_core::manifest::Project;
+use cuenv_events::println_redacted;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -27,7 +28,6 @@ use std::path::PathBuf;
 /// - Pipeline compilation fails
 /// - Emitter is not available (feature not enabled)
 /// - File write fails (when --output specified)
-#[allow(clippy::print_stdout)]
 pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
     let provider = detect_ci_provider(args.from.clone());
     let context = provider.context();
@@ -245,7 +245,6 @@ fn emit_circleci(_ir: &IntermediateRepresentation) -> Result<String> {
 }
 
 /// Output YAML to stdout or file based on args.
-#[allow(clippy::print_stdout)]
 fn output_yaml(args: &CiArgs, yaml: &str) -> Result<()> {
     if let Some(path) = &args.output {
         let mut file = std::fs::File::create(path).map_err(|e| cuenv_core::Error::Io {
@@ -262,7 +261,7 @@ fn output_yaml(args: &CiArgs, yaml: &str) -> Result<()> {
         tracing::info!(path = %path.display(), "Wrote pipeline YAML");
         Ok(())
     } else {
-        println!("{yaml}");
+        println_redacted(yaml);
         Ok(())
     }
 }

@@ -3,14 +3,15 @@
 //! This module tests that all examples in the `examples/` directory can be
 //! loaded and produce valid task DAGs.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{TaskGraph, Tasks};
+use std::error::Error;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 /// Expected properties for each example directory
 struct ExampleExpectations {
@@ -28,13 +29,13 @@ struct ExampleExpectations {
 }
 
 /// Get the path to the examples directory
-fn getexamples_dir() -> PathBuf {
+fn get_examples_dir() -> TestResult<PathBuf> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
+    Ok(Path::new(manifest_dir)
         .parent() // crates
         .and_then(|p| p.parent()) // project root
-        .expect("Failed to find project root")
-        .join("examples")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "failed to find project root"))?
+        .join("examples"))
 }
 
 /// Load a Project manifest from an example directory.
@@ -43,17 +44,26 @@ fn getexamples_dir() -> PathBuf {
 /// requires a module root with `cue.mod/module.cue`. The examples are subdirectories within
 /// the main project module. This function may fail in test environments where the module
 /// structure isn't fully available.
-fn load_example_manifest(example_path: &Path) -> Result<Project, String> {
-    evaluate_cue_package_typed::<Project>(example_path, "examples")
-        .map_err(|e| format!("Failed to load manifest: {e}"))
+fn load_example_manifest(example_path: &Path) -> TestResult<Project> {
+    evaluate_cue_package_typed::<Project>(example_path, "examples").map_err(|e| {
+        Box::new(io::Error::other(format!("Failed to load manifest: {e}"))) as Box<dyn Error>
+    })
+}
+
+fn load_named_example(examples_dir: &Path, name: &str) -> TestResult<Project> {
+    load_example_manifest(&examples_dir.join(name)).map_err(|err| {
+        Box::new(io::Error::other(format!(
+            "Failed to load example '{name}': {err}"
+        ))) as Box<dyn Error>
+    })
 }
 
 /// Check if the FFI/module evaluation is available for these tests.
 /// Returns false if examples can't be evaluated due to module root requirements.
 fn ffi_available() -> bool {
-    let examples_dir = getexamples_dir();
-    let test_path = examples_dir.join("env-basic");
-    load_example_manifest(&test_path).is_ok()
+    get_examples_dir()
+        .map(|examples_dir| load_example_manifest(&examples_dir.join("env-basic")).is_ok())
+        .unwrap_or(false)
 }
 
 /// Skip test with message if FFI is unavailable
@@ -63,13 +73,13 @@ macro_rules! skip_if_ffi_unavailable {
             eprintln!(
                 "Skipping test: FFI/module evaluation unavailable (examples need cue.mod root)"
             );
-            return;
+            return Ok(());
         }
     };
 }
 
 /// Build a `TaskGraph` from a `Project` manifest and validate it
-fn build_and_validate_graph(manifest: &Project) -> Result<TaskGraph, String> {
+fn build_and_validate_graph(manifest: &Project) -> TestResult<TaskGraph> {
     // Convert the manifest tasks to a Tasks struct
     let tasks = Tasks {
         tasks: manifest.tasks.clone(),
@@ -80,7 +90,7 @@ fn build_and_validate_graph(manifest: &Project) -> Result<TaskGraph, String> {
     // Build the complete graph from all tasks
     graph
         .build_complete_graph(&tasks)
-        .map_err(|e| format!("Failed to build graph: {e}"))?;
+        .map_err(|e| io::Error::other(format!("Failed to build graph: {e}")))?;
 
     Ok(graph)
 }
@@ -253,10 +263,10 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
 }
 
 #[test]
-fn test_allexamples_load_successfully() {
+fn test_allexamples_load_successfully() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
+    let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -276,16 +286,20 @@ fn test_allexamples_load_successfully() {
                 "Example '{name}' was expected to fail evaluation but succeeded",
             );
         } else if let Err(err) = result {
-            panic!("Failed to load example '{name}': {err}");
+            return Err(Box::new(io::Error::other(format!(
+                "Failed to load example '{name}': {err}"
+            ))));
         }
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_allexamples_build_valid_dag() {
+fn test_allexamples_build_valid_dag() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
+    let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -295,9 +309,7 @@ fn test_allexamples_build_valid_dag() {
             continue;
         }
 
-        let example_path = examples_dir.join(name);
-        let manifest = load_example_manifest(&example_path)
-            .unwrap_or_else(|e| panic!("Failed to load '{name}': {e}"));
+        let manifest = load_named_example(&examples_dir, name)?;
 
         // Validate task count
         let task_count = manifest.tasks.len();
@@ -308,8 +320,11 @@ fn test_allexamples_build_valid_dag() {
         );
 
         // Build and validate the graph
-        let graph = build_and_validate_graph(&manifest)
-            .unwrap_or_else(|e| panic!("Failed to build graph for '{name}': {e}"));
+        let graph = build_and_validate_graph(&manifest).map_err(|err| {
+            Box::new(io::Error::other(format!(
+                "Failed to build graph for '{name}': {err}"
+            ))) as Box<dyn Error>
+        })?;
 
         // Validate no cycles
         assert!(
@@ -333,13 +348,15 @@ fn test_allexamples_build_valid_dag() {
             "Failed to compute parallel groups for '{name}': {parallel_err:?}",
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_allexamples_have_expected_hooks() {
+fn test_allexamples_have_expected_hooks() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
+    let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -349,13 +366,12 @@ fn test_allexamples_have_expected_hooks() {
             continue;
         }
 
-        let example_path = examples_dir.join(name);
-        let manifest = load_example_manifest(&example_path)
-            .unwrap_or_else(|e| panic!("Failed to load '{name}': {e}"));
+        let manifest = load_named_example(&examples_dir, name)?;
 
-        let has_hooks = manifest.hooks.is_some()
-            && (manifest.hooks.as_ref().unwrap().on_enter.is_some()
-                || manifest.hooks.as_ref().unwrap().on_exit.is_some());
+        let has_hooks = manifest
+            .hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.on_enter.is_some() || hooks.on_exit.is_some());
 
         let expected_has_hooks = expectation.has_hooks;
         assert_eq!(
@@ -363,13 +379,15 @@ fn test_allexamples_have_expected_hooks() {
             "Example '{name}' hooks expectation mismatch: expected has_hooks={expected_has_hooks}, got={has_hooks}",
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_allexamples_have_expected_env() {
+fn test_allexamples_have_expected_env() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
+    let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
 
     for expectation in &expectations {
@@ -379,9 +397,7 @@ fn test_allexamples_have_expected_env() {
             continue;
         }
 
-        let example_path = examples_dir.join(name);
-        let manifest = load_example_manifest(&example_path)
-            .unwrap_or_else(|e| panic!("Failed to load '{name}': {e}"));
+        let manifest = load_named_example(&examples_dir, name)?;
 
         let has_env = manifest.env.is_some();
 
@@ -391,25 +407,32 @@ fn test_allexamples_have_expected_env() {
             "Example '{name}' env expectation mismatch: expected has_env={expected_has_env}, got={has_env}",
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_no_unexpected_example_directories() {
-    let examples_dir = getexamples_dir();
+fn test_no_unexpected_example_directories() -> TestResult {
+    let examples_dir = get_examples_dir()?;
     let expectations = get_example_expectations();
     let expected_names: Vec<&str> = expectations.iter().map(|e| e.name).collect();
 
     // Container directories that hold test fixtures, not standalone examples
     let test_fixture_containers = ["contributor-tests"];
 
-    let entries = fs::read_dir(&examples_dir).expect("Failed to read examples directory");
+    let entries = fs::read_dir(&examples_dir)?;
 
     for entry in entries {
-        let entry = entry.expect("Failed to read directory entry");
+        let entry = entry?;
         let path = entry.path();
 
         if path.is_dir() {
-            let dir_name = path.file_name().unwrap().to_str().unwrap();
+            let dir_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid example directory name")
+                })?;
 
             // Skip hidden directories
             if dir_name.starts_with('.') {
@@ -427,15 +450,16 @@ fn test_no_unexpected_example_directories() {
             );
         }
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_task_basic_specific_tasks() {
+fn test_task_basic_specific_tasks() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("task-basic");
-    let manifest = load_example_manifest(&example_path).expect("Failed to load task-basic");
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "task-basic")?;
 
     // Check for specific expected tasks
     let expected_tasks = [
@@ -452,21 +476,21 @@ fn test_task_basic_specific_tasks() {
             "task-basic example missing expected task '{task_name}'",
         );
     }
+
+    Ok(())
 }
 
 #[test]
-fn test_reusable_task_refs_example_preserves_dependencies() {
+fn test_reusable_task_refs_example_preserves_dependencies() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("reusable-task-refs");
-    let manifest = load_example_manifest(&example_path)
-        .unwrap_or_else(|e| panic!("Failed to load 'reusable-task-refs': {e}"));
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "reusable-task-refs")?;
 
     let deploy = manifest
         .tasks
         .get("deploy")
-        .expect("deploy task should exist");
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "deploy task should exist"))?;
     let dep_names: Vec<&str> = deploy
         .depends_on()
         .iter()
@@ -477,26 +501,32 @@ fn test_reusable_task_refs_example_preserves_dependencies() {
     let pipeline_task = manifest
         .ci
         .as_ref()
-        .expect("ci should exist")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ci should exist"))?
         .pipelines
         .get("default")
-        .expect("default pipeline should exist")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "default pipeline should exist"))?
         .tasks
         .first()
-        .expect("default pipeline should have one task");
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "default pipeline should have one task",
+            )
+        })?;
 
     assert_eq!(pipeline_task.task_name(), "deploy");
+
+    Ok(())
 }
 
 #[test]
-fn test_dagger_task_loads_successfully() {
+fn test_dagger_task_loads_successfully() -> TestResult {
     skip_if_ffi_unavailable!();
 
     // The dagger-task example uses shorthand task references in the `inputs` field
     // (e.g., `{task: "build.deps"}`) using the #TaskOutput type.
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("dagger-task");
-    let manifest = load_example_manifest(&example_path).expect("Failed to load dagger-task");
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "dagger-task")?;
 
     // Verify the dagger-task example has expected tasks
     assert!(
@@ -507,15 +537,16 @@ fn test_dagger_task_loads_successfully() {
         manifest.tasks.contains_key("build.deps"),
         "dagger-task example should have 'build.deps' task"
     );
+
+    Ok(())
 }
 
 #[test]
-fn test_ci_pipeline_has_pipeline_config() {
+fn test_ci_pipeline_has_pipeline_config() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-pipeline");
-    let manifest = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "ci-pipeline")?;
 
     // CI pipeline should have ci configuration
     assert!(
@@ -523,20 +554,24 @@ fn test_ci_pipeline_has_pipeline_config() {
         "ci-pipeline example should have ci configuration"
     );
 
-    let ci = manifest.ci.as_ref().unwrap();
+    let ci = manifest
+        .ci
+        .as_ref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "ci should exist"))?;
     assert!(
         !ci.pipelines.is_empty(),
         "ci-pipeline should have at least one pipeline defined"
     );
+
+    Ok(())
 }
 
 #[test]
-fn test_hook_delayed_has_ordered_hooks() {
+fn test_hook_delayed_has_ordered_hooks() -> TestResult {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("hook-delayed");
-    let manifest = load_example_manifest(&example_path).expect("Failed to load hook-delayed");
+    let examples_dir = get_examples_dir()?;
+    let manifest = load_named_example(&examples_dir, "hook-delayed")?;
 
     let hooks = manifest.on_enter_hooks();
 
@@ -556,4 +591,6 @@ fn test_hook_delayed_has_ordered_hooks() {
         orders, sorted_orders,
         "Hooks should be returned in sorted order"
     );
+
+    Ok(())
 }

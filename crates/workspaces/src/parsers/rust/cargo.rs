@@ -1,10 +1,14 @@
 use crate::core::traits::LockfileParser;
 use crate::core::types::{DependencyRef, DependencySource, LockfileEntry};
 use crate::error::{Error, Result};
-use cargo_lock::{Lockfile, dependency::Dependency as CargoDependency, package::Package};
-use cargo_toml::{Error as CargoManifestError, Manifest};
-use std::collections::HashMap;
+use cargo_lock::{
+    Lockfile, dependency::Dependency as CargoDependency, package::Package, package::SourceId,
+};
 use std::path::{Path, PathBuf};
+
+mod workspace;
+
+use workspace::{WorkspaceMembers, load_workspace_members};
 
 /// Parser for Cargo `Cargo.lock` files.
 ///
@@ -91,236 +95,6 @@ impl LockfileParser for CargoLockfileParser {
     }
 }
 
-type WorkspaceMembers = HashMap<String, PathBuf>;
-
-fn map_manifest_error(path: &Path, err: CargoManifestError) -> Error {
-    match err {
-        CargoManifestError::Parse(source) => Error::Toml {
-            source: *source,
-            path: Some(path.to_path_buf()),
-        },
-        CargoManifestError::Io(source) => Error::Io {
-            source,
-            path: Some(path.to_path_buf()),
-            operation: "reading Cargo manifest".to_string(),
-        },
-        CargoManifestError::Workspace(inner) => {
-            let (err, _) = *inner;
-            Error::LockfileParseFailed {
-                path: path.to_path_buf(),
-                message: format!("workspace manifest error: {err}"),
-            }
-        }
-        CargoManifestError::WorkspaceIntegrity(message) => Error::LockfileParseFailed {
-            path: path.to_path_buf(),
-            message,
-        },
-        CargoManifestError::InheritedUnknownValue => Error::LockfileParseFailed {
-            path: path.to_path_buf(),
-            message: "workspace manifest uses inherited values that have not been resolved"
-                .to_string(),
-        },
-        CargoManifestError::Other(message) => Error::LockfileParseFailed {
-            path: path.to_path_buf(),
-            message: message.to_string(),
-        },
-        _ => Error::LockfileParseFailed {
-            path: path.to_path_buf(),
-            message: "unknown manifest error".to_string(),
-        },
-    }
-}
-
-/// Loads workspace members for the lockfile parser.
-///
-/// This is a minimal implementation that uses glob expansion to discover workspace members
-/// as needed by the lockfile parser. Note that this overlaps with responsibilities that will
-/// eventually belong to a dedicated `WorkspaceDiscovery` implementation for Cargo.
-///
-/// **Future refactoring:**
-/// Once a full `CargoWorkspaceDiscovery` is implemented, this logic should either:
-/// - Delegate to that discovery implementation, or
-/// - Be simplified to avoid duplication of glob/exclude handling
-///
-/// For now, this provides the necessary member discovery to support lockfile parsing while
-/// keeping the parser functional.
-fn load_workspace_members(cargo_toml_path: &Path) -> Result<WorkspaceMembers> {
-    let mut manifest = Manifest::from_path(cargo_toml_path)
-        .map_err(|err| map_manifest_error(cargo_toml_path, err))?;
-
-    let workspace_root = cargo_toml_path
-        .parent()
-        .ok_or_else(|| Error::LockfileParseFailed {
-            path: cargo_toml_path.to_path_buf(),
-            message: "Workspace root could not be determined".to_string(),
-        })?;
-
-    let mut members = HashMap::new();
-
-    if let Some(workspace) = manifest.workspace.as_ref() {
-        let excludes = &workspace.exclude;
-
-        if !workspace.members.is_empty() {
-            collect_members(workspace_root, &workspace.members, excludes, &mut members)?;
-        }
-
-        if !workspace.default_members.is_empty() {
-            collect_members(
-                workspace_root,
-                &workspace.default_members,
-                excludes,
-                &mut members,
-            )?;
-        }
-    } else if let Some(package) = manifest.package.take() {
-        members.insert(package.name, PathBuf::from("."));
-    }
-
-    if members.is_empty() {
-        // Accept single-package repositories as valid workspaces (already handled above).
-        // This error only occurs if no members were found at all, which implies an invalid
-        // or empty workspace definition that doesn't match any members.
-        return Err(Error::LockfileParseFailed {
-            path: cargo_toml_path.to_path_buf(),
-            message: "No workspace members or package declared in Cargo.toml".to_string(),
-        });
-    }
-
-    Ok(members)
-}
-
-/// Collects workspace members by expanding glob patterns.
-///
-/// This is an internal helper for `load_workspace_members`. It handles both explicit paths
-/// and glob patterns (e.g., `crates/*`), respecting exclude patterns.
-///
-/// **Note:** This logic will eventually be replaced or shared with `WorkspaceDiscovery`.
-fn collect_members(
-    workspace_root: &Path,
-    member_patterns: &[String],
-    exclude_patterns: &[String],
-    members: &mut WorkspaceMembers,
-) -> Result<()> {
-    use glob::glob;
-
-    for pattern in member_patterns {
-        // Check if the pattern contains glob syntax
-        let has_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
-
-        if has_glob {
-            // Expand glob pattern
-            let glob_pattern = workspace_root.join(pattern);
-            let glob_str = glob_pattern
-                .to_str()
-                .ok_or_else(|| Error::LockfileParseFailed {
-                    path: workspace_root.to_path_buf(),
-                    message: format!("Invalid UTF-8 in glob pattern: {pattern}"),
-                })?;
-
-            let entries = glob(glob_str).map_err(|err| Error::LockfileParseFailed {
-                path: workspace_root.to_path_buf(),
-                message: format!("Invalid glob pattern '{pattern}': {err}"),
-            })?;
-
-            for entry in entries {
-                let member_dir = entry.map_err(|err| Error::LockfileParseFailed {
-                    path: workspace_root.to_path_buf(),
-                    message: format!("Glob error for pattern '{pattern}': {err}"),
-                })?;
-
-                if !member_dir.is_dir() {
-                    continue;
-                }
-
-                // Check if this member should be excluded
-                if should_exclude(workspace_root, &member_dir, exclude_patterns) {
-                    continue;
-                }
-
-                process_member_dir(workspace_root, &member_dir, members)?;
-            }
-        } else {
-            // Handle explicit path
-            let member_dir = workspace_root.join(pattern);
-
-            // Check if this member should be excluded
-            if should_exclude(workspace_root, &member_dir, exclude_patterns) {
-                continue;
-            }
-
-            process_member_dir(workspace_root, &member_dir, members)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// Checks if a member directory should be excluded based on exclude patterns.
-///
-/// Internal helper that supports both exact matches and glob patterns.
-fn should_exclude(workspace_root: &Path, member_dir: &Path, exclude_patterns: &[String]) -> bool {
-    use glob::Pattern;
-
-    let Ok(relative_path) = member_dir.strip_prefix(workspace_root) else {
-        return false;
-    };
-
-    let Some(path_str) = relative_path.to_str() else {
-        return false;
-    };
-
-    for exclude_pattern in exclude_patterns {
-        // Check if the exclude pattern contains glob syntax
-        let has_glob = exclude_pattern.contains('*')
-            || exclude_pattern.contains('?')
-            || exclude_pattern.contains('[');
-
-        if has_glob {
-            // Use glob pattern matching
-            if let Ok(pattern) = Pattern::new(exclude_pattern)
-                && pattern.matches(path_str)
-            {
-                return true;
-            }
-        } else {
-            // Exact match
-            if path_str == exclude_pattern {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-/// Processes a member directory by reading its manifest and adding to the members map.
-///
-/// Internal helper that reads the member's `Cargo.toml` to extract the package name.
-fn process_member_dir(
-    workspace_root: &Path,
-    member_dir: &Path,
-    members: &mut WorkspaceMembers,
-) -> Result<()> {
-    let manifest_path = member_dir.join("Cargo.toml");
-
-    if !manifest_path.is_file() {
-        return Ok(());
-    }
-
-    let mut manifest = Manifest::from_path(&manifest_path)
-        .map_err(|err| map_manifest_error(&manifest_path, err))?;
-
-    if let Some(package) = manifest.package.take() {
-        let name = package.name;
-        let relative_path = member_dir
-            .strip_prefix(workspace_root)
-            .map_or_else(|_| member_dir.to_path_buf(), PathBuf::from);
-        members.entry(name).or_insert(relative_path);
-    }
-
-    Ok(())
-}
-
 fn is_workspace_member(package_name: &str, workspace_members: &WorkspaceMembers) -> bool {
     workspace_members.contains_key(package_name)
 }
@@ -333,7 +107,6 @@ fn is_workspace_member(package_name: &str, workspace_members: &WorkspaceMembers)
 /// - Git dependencies (via `SourceId::is_git()`)
 /// - Path dependencies (via `SourceId::is_path()`)
 /// - Registry dependencies (via `SourceId::is_registry()`)
-#[allow(clippy::option_if_let_else)] // Complex parsing with nested conditionals - imperative is clearer
 fn determine_source(
     package: &Package,
     workspace_root: &Path,
@@ -344,24 +117,36 @@ fn determine_source(
         return DependencySource::Workspace(relative.clone());
     }
 
-    if let Some(source) = package.source.as_ref() {
-        if source.is_git() {
-            DependencySource::Git(source.url().to_string())
-        } else if source.is_path() {
-            let url_str = source.url().to_string();
-            DependencySource::Path(extract_path_from_url(&url_str, workspace_root))
-        } else if source.is_registry() {
-            DependencySource::Registry(source.url().to_string())
-        } else {
-            // Fallback for other source kinds (e.g., directory sources)
-            // Treat them as path dependencies
-            let url_str = source.url().to_string();
-            DependencySource::Path(extract_path_from_url(&url_str, workspace_root))
-        }
-    } else {
-        // No source means it's from the default registry (crates.io)
-        DependencySource::Registry("https://github.com/rust-lang/crates.io-index".to_string())
+    let Some(source) = package.source.as_ref() else {
+        return default_cargo_registry_source();
+    };
+
+    dependency_source_from_cargo_source(source, workspace_root)
+}
+
+fn dependency_source_from_cargo_source(
+    source: &SourceId,
+    workspace_root: &Path,
+) -> DependencySource {
+    let url = source.url().to_string();
+
+    if source.is_git() {
+        return DependencySource::Git(url);
     }
+
+    if source.is_path() {
+        return DependencySource::Path(extract_path_from_url(&url, workspace_root));
+    }
+
+    if source.is_registry() {
+        return DependencySource::Registry(url);
+    }
+
+    DependencySource::Path(extract_path_from_url(&url, workspace_root))
+}
+
+fn default_cargo_registry_source() -> DependencySource {
+    DependencySource::Registry("https://github.com/rust-lang/crates.io-index".to_string())
 }
 
 fn map_cargo_dependencies(deps: &[CargoDependency]) -> Vec<DependencyRef> {
@@ -397,10 +182,10 @@ fn extract_path_from_url(url_str: &str, workspace_root: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-#[allow(clippy::uninlined_format_args, clippy::format_push_string)]
 mod tests {
     use super::*;
     use crate::error::Error;
+    use std::fmt::Write as _;
     use std::fs;
     use tempfile::TempDir;
 
@@ -539,14 +324,14 @@ version = "0.2.0"
         let mut content = String::from("[workspace]\n");
         content.push_str("members = [\n");
         for member in members {
-            content.push_str(&format!("    \"{}\",\n", member));
+            writeln!(&mut content, "    \"{member}\",").unwrap();
         }
         content.push_str("]\n");
 
         if !default_members.is_empty() {
             content.push_str("default-members = [\n");
             for member in default_members {
-                content.push_str(&format!("    \"{}\",\n", member));
+                writeln!(&mut content, "    \"{member}\",").unwrap();
             }
             content.push_str("]\n");
         }
@@ -554,7 +339,7 @@ version = "0.2.0"
         if !excludes.is_empty() {
             content.push_str("exclude = [\n");
             for exclude in excludes {
-                content.push_str(&format!("    \"{}\",\n", exclude));
+                writeln!(&mut content, "    \"{exclude}\",").unwrap();
             }
             content.push_str("]\n");
         }
@@ -859,6 +644,7 @@ source = "git+https://github.com/example/git-dep?branch=main#abcdef123456"
         let external_path = temp.path().join("external/path-dep");
         write_member_manifest(&external_path, "path-dep", "0.1.0");
 
+        let external_path_display = external_path.display();
         let lock_contents = format!(
             r#"version = 4
 
@@ -872,9 +658,8 @@ dependencies = [
 [[package]]
 name = "path-dep"
 version = "0.1.0"
-source = "path+file://{}"
-"#,
-            external_path.display()
+source = "path+file://{external_path_display}"
+"#
         );
         write_lockfile(workspace_root, &lock_contents);
 

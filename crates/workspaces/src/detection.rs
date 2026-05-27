@@ -33,11 +33,23 @@
 //! ```
 
 use crate::core::types::PackageManager;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use std::collections::HashSet;
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+mod command;
+mod filesystem;
+mod package_json;
+mod scoring;
+
+pub use command::{command_name, detect_from_command};
+#[cfg(test)]
+use filesystem::read_first_lines;
+use filesystem::{detect_yarn_version, find_lockfiles, validate_workspace_config};
+use package_json::detect_manager_from_package_json;
+use scoring::{Detection, prioritize_managers};
+#[cfg(test)]
+use scoring::{calculate_confidence, manager_priority};
 
 /// Detects all package managers present in the given directory.
 ///
@@ -85,7 +97,7 @@ pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
 /// Detect package managers from lockfiles.
 fn detect_from_lockfiles(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     let lockfiles = find_lockfiles(root);
@@ -94,18 +106,17 @@ fn detect_from_lockfiles(
     for (manager, lockfile_path) in lockfiles {
         let detected = process_lockfile(root, manager, &lockfile_path)?;
         detections.push(detected);
-        detected_managers.insert(detected.0);
+        detected_managers.insert(detected.manager);
     }
     Ok(())
 }
 
 /// Process a single lockfile and return the detected manager with confidence.
-#[allow(clippy::cognitive_complexity)]
 fn process_lockfile(
     root: &Path,
     manager: PackageManager,
     lockfile_path: &Path,
-) -> Result<(PackageManager, u8)> {
+) -> Result<Detection> {
     tracing::debug!(
         "Processing lockfile: {} ({})",
         lockfile_path.display(),
@@ -119,26 +130,30 @@ fn process_lockfile(
     };
 
     let has_valid_config = validate_workspace_config(root, detected_manager)?;
-    let confidence = calculate_confidence(true, has_valid_config);
-    tracing::debug!("Manager {} has confidence {}", detected_manager, confidence);
+    let detection = Detection::from_signals(detected_manager, true, has_valid_config);
+    tracing::debug!(
+        "Manager {} has confidence {}",
+        detected_manager,
+        detection.confidence
+    );
 
-    Ok((detected_manager, confidence))
+    Ok(detection)
 }
 
 /// Detect package manager from package.json if not already detected.
 fn detect_from_package_json(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     if let Some(manager) = detect_manager_from_package_json(root, detected_managers)? {
-        let confidence = calculate_confidence(false, true);
+        let detection = Detection::from_signals(manager, false, true);
         tracing::debug!(
             "Manager {} detected via package.json (confidence {})",
             manager,
-            confidence
+            detection.confidence
         );
-        detections.push((manager, confidence));
+        detections.push(detection);
         detected_managers.insert(manager);
     }
     Ok(())
@@ -147,7 +162,7 @@ fn detect_from_package_json(
 /// Detect package managers from workspace configs without lockfiles.
 fn detect_from_workspace_configs(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     for manager in [PackageManager::Pnpm, PackageManager::Cargo] {
@@ -156,106 +171,17 @@ fn detect_from_workspace_configs(
         }
 
         if validate_workspace_config(root, manager)? {
-            let confidence = calculate_confidence(false, true);
+            let detection = Detection::from_signals(manager, false, true);
             tracing::debug!(
                 "Manager {} detected via config only (confidence {})",
                 manager,
-                confidence
+                detection.confidence
             );
-            detections.push((manager, confidence));
+            detections.push(detection);
             detected_managers.insert(manager);
         }
     }
     Ok(())
-}
-
-/// Returns the effective command name from a shell-like command string.
-///
-/// This skips common environment variable prefixes such as `FOO=bar cargo test`
-/// and `env -i FOO=bar bun run build`, while respecting shell quoting rules.
-#[must_use]
-pub fn command_name(command: &str) -> Option<String> {
-    let tokens = shlex::split(command)?;
-    let mut parsing_env_options = false;
-
-    for token in tokens {
-        if token == "env" {
-            parsing_env_options = true;
-            continue;
-        }
-
-        if parsing_env_options {
-            if token == "--" {
-                parsing_env_options = false;
-                continue;
-            }
-
-            if token.starts_with('-') {
-                continue;
-            }
-        }
-
-        if is_env_assignment(&token) {
-            continue;
-        }
-
-        return Some(token);
-    }
-
-    None
-}
-
-fn is_env_assignment(token: &str) -> bool {
-    let Some((name, _)) = token.split_once('=') else {
-        return false;
-    };
-
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-
-    if !(first == '_' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-
-    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
-}
-
-/// Infers the package manager from a command string.
-///
-/// Maps common command names to their corresponding package managers.
-///
-/// # Examples
-///
-/// ```
-/// use cuenv_workspaces::detection::detect_from_command;
-/// use cuenv_workspaces::PackageManager;
-///
-/// assert_eq!(detect_from_command("cargo"), Some(PackageManager::Cargo));
-/// assert_eq!(detect_from_command("npm"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("bun"), Some(PackageManager::Bun));
-/// assert_eq!(detect_from_command("pnpm"), Some(PackageManager::Pnpm));
-/// assert_eq!(detect_from_command("node"), Some(PackageManager::Npm));
-/// assert_eq!(detect_from_command("unknown"), None);
-/// ```
-pub fn detect_from_command(command: &str) -> Option<PackageManager> {
-    let cmd = command_name(command)?;
-
-    match cmd.as_str() {
-        "cargo" => Some(PackageManager::Cargo),
-        "npm" | "npx" | "node" => Some(PackageManager::Npm),
-        "bun" | "bunx" => Some(PackageManager::Bun),
-        "pnpm" => Some(PackageManager::Pnpm),
-        "deno" => Some(PackageManager::Deno),
-        "yarn" => {
-            tracing::warn!(
-                "'yarn' command detected; defaulting to YarnClassic. For accurate version detection, use lockfile analysis via detect_yarn_version()."
-            );
-            Some(PackageManager::YarnClassic)
-        }
-        _ => None,
-    }
 }
 
 /// Combines filesystem and command-based detection with command hint prioritization.
@@ -303,121 +229,6 @@ pub fn detect_with_command_hint(root: &Path, command: Option<&str>) -> Result<Ve
     Ok(managers)
 }
 
-/// Scans the root directory for package manager lockfiles.
-///
-/// Returns a list of tuples containing the detected package manager and the
-/// path to its lockfile.
-fn find_lockfiles(root: &Path) -> Vec<(PackageManager, PathBuf)> {
-    let mut lockfiles = Vec::new();
-
-    let candidates = [
-        PackageManager::Npm,
-        PackageManager::Bun,
-        PackageManager::Pnpm,
-        PackageManager::YarnClassic,
-        PackageManager::Cargo,
-        PackageManager::Deno,
-    ];
-
-    for manager in candidates {
-        let lockfile_path = root.join(manager.lockfile_name());
-        if lockfile_path.exists() {
-            lockfiles.push((manager, lockfile_path));
-        }
-    }
-
-    lockfiles
-}
-
-fn detect_manager_from_package_json(
-    root: &Path,
-    detected_managers: &HashSet<PackageManager>,
-) -> Result<Option<PackageManager>> {
-    let Some(package_json) = read_package_json(root)? else {
-        return Ok(None);
-    };
-
-    let hinted_manager = package_json
-        .get("packageManager")
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_package_manager_hint);
-
-    let manager = if let Some(manager) = hinted_manager {
-        manager
-    } else {
-        if has_js_manager(detected_managers) {
-            return Ok(None);
-        }
-        PackageManager::Npm
-    };
-
-    if is_manager_detected(detected_managers, manager) {
-        return Ok(None);
-    }
-
-    Ok(Some(manager))
-}
-
-fn read_package_json(root: &Path) -> Result<Option<serde_json::Value>> {
-    let path = root.join("package.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let content = fs::read_to_string(&path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(path.clone()),
-        operation: "reading workspace config".to_string(),
-    })?;
-
-    let parsed = serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-        Error::InvalidWorkspaceConfig {
-            path: path.clone(),
-            message: format!("Invalid JSON: {e}"),
-        }
-    })?;
-
-    Ok(Some(parsed))
-}
-
-fn parse_package_manager_hint(hint: &str) -> Option<PackageManager> {
-    let trimmed = hint.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let (manager_name, version_part) = match trimmed.split_once('@') {
-        Some((name, version)) if !name.is_empty() => (name, version),
-        _ => (trimmed, ""),
-    };
-
-    let normalized_name = manager_name.trim().to_ascii_lowercase();
-
-    match normalized_name.as_str() {
-        "npm" => Some(PackageManager::Npm),
-        "bun" => Some(PackageManager::Bun),
-        "yarn" => {
-            let major = parse_major_version(version_part);
-            match major {
-                Some(value) if value < 2 => Some(PackageManager::YarnClassic),
-                _ => Some(PackageManager::YarnModern),
-            }
-        }
-        _ => None,
-    }
-}
-
-fn parse_major_version(input: &str) -> Option<u64> {
-    let trimmed = input.trim().trim_start_matches(['v', 'V']);
-    let digits: String = trimmed.chars().take_while(char::is_ascii_digit).collect();
-
-    if digits.is_empty() {
-        return None;
-    }
-
-    digits.parse::<u64>().ok()
-}
-
 fn is_manager_detected(
     detected_managers: &HashSet<PackageManager>,
     manager: PackageManager,
@@ -431,180 +242,13 @@ fn is_manager_detected(
     }
 }
 
-fn has_js_manager(detected_managers: &HashSet<PackageManager>) -> bool {
-    detected_managers.contains(&PackageManager::Npm)
-        || detected_managers.contains(&PackageManager::Bun)
-        || detected_managers.contains(&PackageManager::Pnpm)
-        || detected_managers.contains(&PackageManager::YarnClassic)
-        || detected_managers.contains(&PackageManager::YarnModern)
-        || detected_managers.contains(&PackageManager::Deno)
-}
-
-/// Validates that a workspace configuration file exists and is parseable.
-///
-/// Returns `Ok(true)` if the config is valid, `Ok(false)` if it doesn't exist,
-/// or `Err` if it exists but is invalid.
-fn validate_workspace_config(root: &Path, manager: PackageManager) -> Result<bool> {
-    let config_path = root.join(manager.workspace_config_name());
-
-    // Check if file exists
-    if !config_path.exists() {
-        return Ok(false);
-    }
-
-    // Read the file content
-    let content = fs::read_to_string(&config_path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(config_path.clone()),
-        operation: "reading workspace config".to_string(),
-    })?;
-
-    // Try to parse based on file type
-    match manager {
-        PackageManager::Npm
-        | PackageManager::Bun
-        | PackageManager::YarnClassic
-        | PackageManager::YarnModern
-        | PackageManager::Deno => {
-            // Parse as JSON (package.json or deno.json)
-            serde_json::from_str::<serde_json::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid JSON: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-        PackageManager::Cargo => {
-            // Parse as TOML (Cargo.toml)
-            toml::from_str::<toml::Value>(&content).map_err(|e| Error::InvalidWorkspaceConfig {
-                path: config_path,
-                message: format!("Invalid TOML: {e}"),
-            })?;
-            Ok(true)
-        }
-        PackageManager::Pnpm => {
-            // Parse as YAML (pnpm-workspace.yaml)
-            serde_yaml::from_str::<serde_yaml::Value>(&content).map_err(|e| {
-                Error::InvalidWorkspaceConfig {
-                    path: config_path,
-                    message: format!("Invalid YAML: {e}"),
-                }
-            })?;
-            Ok(true)
-        }
-    }
-}
-
-/// Distinguishes between Yarn Classic (v1) and Yarn Modern (v2+).
-///
-/// Reads the lockfile format to determine the version:
-/// - Yarn Classic uses a custom format starting with `# THIS IS AN AUTOGENERATED FILE`
-/// - Yarn Modern (v2+) uses YAML format starting with `__metadata:`
-fn detect_yarn_version(lockfile_path: &Path) -> Result<PackageManager> {
-    let file = fs::File::open(lockfile_path).map_err(|e| Error::Io {
-        source: e,
-        path: Some(lockfile_path.to_path_buf()),
-        operation: "reading yarn.lock".to_string(),
-    })?;
-    let first_lines = read_first_lines(BufReader::new(file), 5, lockfile_path)?;
-
-    if has_yarn_modern_metadata(&first_lines) {
-        Ok(PackageManager::YarnModern)
-    } else if has_yarn_classic_header(&first_lines) {
-        Ok(PackageManager::YarnClassic)
-    } else {
-        // Default to Classic if we can't determine
-        tracing::warn!(
-            "Could not determine Yarn version from lockfile format, defaulting to Classic"
-        );
-        Ok(PackageManager::YarnClassic)
-    }
-}
-
-fn read_first_lines<R: BufRead>(
-    reader: R,
-    limit: usize,
-    lockfile_path: &Path,
-) -> Result<Vec<String>> {
-    reader
-        .lines()
-        .take(limit)
-        .collect::<std::io::Result<Vec<_>>>()
-        .map_err(|source| Error::Io {
-            source,
-            path: Some(lockfile_path.to_path_buf()),
-            operation: "reading yarn.lock".to_string(),
-        })
-}
-
-fn has_yarn_modern_metadata(lines: &[String]) -> bool {
-    lines.iter().any(|line| line.contains("__metadata:"))
-}
-
-fn has_yarn_classic_header(lines: &[String]) -> bool {
-    lines.iter().any(|line| {
-        line.contains("# yarn lockfile v1") || line.contains("# THIS IS AN AUTOGENERATED FILE")
-    })
-}
-
-/// Calculates a confidence score (0-100) based on detection signals.
-///
-/// Scoring:
-/// - Lockfile + valid config: 100
-/// - Lockfile only: 75
-/// - Valid config only: 50
-/// - Neither: 0
-const fn calculate_confidence(has_lockfile: bool, has_valid_config: bool) -> u8 {
-    match (has_lockfile, has_valid_config) {
-        (true, true) => 100,
-        (true, false) => 75,
-        (false, true) => 50,
-        (false, false) => 0,
-    }
-}
-
-/// Sorts detected package managers by confidence score and secondary ordering.
-///
-/// Primary sort: confidence score (descending)
-/// Secondary sort: Cargo > Bun > pnpm > Yarn > npm
-fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageManager> {
-    let mut sorted = detections;
-
-    // Sort by confidence (descending), then by manager priority
-    sorted.sort_by(|(m1, c1), (m2, c2)| {
-        // First compare by confidence
-        match c2.cmp(c1) {
-            std::cmp::Ordering::Equal => {
-                // If confidence is equal, use manager priority
-                manager_priority(*m1).cmp(&manager_priority(*m2))
-            }
-            other => other,
-        }
-    });
-
-    sorted.into_iter().map(|(m, _)| m).collect()
-}
-
-/// Returns a priority value for deterministic ordering when confidence is equal.
-///
-/// Lower values = higher priority
-const fn manager_priority(manager: PackageManager) -> u8 {
-    match manager {
-        PackageManager::Cargo => 0,
-        PackageManager::Deno => 1,
-        PackageManager::Bun => 2,
-        PackageManager::Pnpm => 3,
-        PackageManager::YarnModern => 4,
-        PackageManager::YarnClassic => 5,
-        PackageManager::Npm => 6,
-    }
-}
-
 #[cfg(test)]
-#[allow(clippy::match_same_arms)]
 mod tests {
     use super::*;
+    use crate::error::Error;
+    use std::fs;
+    use std::io::BufReader;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     // Helper function to create a test workspace directory
@@ -632,12 +276,10 @@ mod tests {
     fn create_workspace_config(dir: &Path, manager: PackageManager) -> PathBuf {
         let config_path = dir.join(manager.workspace_config_name());
         let content = match manager {
-            PackageManager::Npm | PackageManager::Bun => {
-                r#"{"name": "test", "workspaces": ["packages/*"]}"#
-            }
-            PackageManager::YarnClassic | PackageManager::YarnModern => {
-                r#"{"name": "test", "workspaces": ["packages/*"]}"#
-            }
+            PackageManager::Npm
+            | PackageManager::Bun
+            | PackageManager::YarnClassic
+            | PackageManager::YarnModern => r#"{"name": "test", "workspaces": ["packages/*"]}"#,
             PackageManager::Pnpm => "packages:\n  - 'packages/*'\n",
             PackageManager::Cargo => "[workspace]\nmembers = [\"crates/*\"]\n",
             PackageManager::Deno => r#"{"name": "test", "workspace": ["packages/*"]}"#,
@@ -657,9 +299,9 @@ mod tests {
     #[test]
     fn test_prioritize_managers() {
         let detections = vec![
-            (PackageManager::Npm, 75),
-            (PackageManager::Cargo, 100),
-            (PackageManager::Bun, 75),
+            Detection::with_confidence(PackageManager::Npm, 75),
+            Detection::with_confidence(PackageManager::Cargo, 100),
+            Detection::with_confidence(PackageManager::Bun, 75),
         ];
 
         let result = prioritize_managers(detections);
@@ -672,9 +314,9 @@ mod tests {
     #[test]
     fn test_prioritize_managers_equal_confidence() {
         let detections = vec![
-            (PackageManager::Npm, 75),
-            (PackageManager::Bun, 75),
-            (PackageManager::Cargo, 75),
+            Detection::with_confidence(PackageManager::Npm, 75),
+            Detection::with_confidence(PackageManager::Bun, 75),
+            Detection::with_confidence(PackageManager::Cargo, 75),
         ];
 
         let result = prioritize_managers(detections);

@@ -17,24 +17,20 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
 /// Files discovered for each formatter type.
-#[allow(clippy::struct_field_names)]
 struct DiscoveredFiles {
-    rust_files: Vec<PathBuf>,
-    nix_files: Vec<PathBuf>,
-    go_files: Vec<PathBuf>,
-    cue_files: Vec<PathBuf>,
+    rust: Vec<PathBuf>,
+    nix: Vec<PathBuf>,
+    go: Vec<PathBuf>,
+    cue: Vec<PathBuf>,
 }
 
 impl DiscoveredFiles {
     fn is_empty(&self) -> bool {
-        self.rust_files.is_empty()
-            && self.nix_files.is_empty()
-            && self.go_files.is_empty()
-            && self.cue_files.is_empty()
+        self.rust.is_empty() && self.nix.is_empty() && self.go.is_empty() && self.cue.is_empty()
     }
 
     fn total_count(&self) -> usize {
-        self.rust_files.len() + self.nix_files.len() + self.go_files.len() + self.cue_files.len()
+        self.rust.len() + self.nix.len() + self.go.len() + self.cue.len()
     }
 }
 
@@ -120,10 +116,10 @@ fn discover_files(
     );
 
     DiscoveredFiles {
-        rust_files,
-        nix_files,
-        go_files,
-        cue_files,
+        rust: rust_files,
+        nix: nix_files,
+        go: go_files,
+        cue: cue_files,
     }
 }
 
@@ -236,8 +232,8 @@ pub fn execute_fmt(
     let mut errors = Vec::new();
 
     // Run Rust formatter
-    if !files.rust_files.is_empty() {
-        let file_refs: Vec<&Path> = files.rust_files.iter().map(AsRef::as_ref).collect();
+    if !files.rust.is_empty() {
+        let file_refs: Vec<&Path> = files.rust.iter().map(AsRef::as_ref).collect();
         match run_rust_formatter(
             &file_refs,
             formatters.rust.as_ref(),
@@ -251,8 +247,8 @@ pub fn execute_fmt(
     }
 
     // Run Nix formatter
-    if !files.nix_files.is_empty() {
-        let file_refs: Vec<&Path> = files.nix_files.iter().map(AsRef::as_ref).collect();
+    if !files.nix.is_empty() {
+        let file_refs: Vec<&Path> = files.nix.iter().map(AsRef::as_ref).collect();
         match run_nix_formatter(
             &file_refs,
             formatters.nix.as_ref(),
@@ -266,8 +262,8 @@ pub fn execute_fmt(
     }
 
     // Run Go formatter
-    if !files.go_files.is_empty() {
-        let file_refs: Vec<&Path> = files.go_files.iter().map(AsRef::as_ref).collect();
+    if !files.go.is_empty() {
+        let file_refs: Vec<&Path> = files.go.iter().map(AsRef::as_ref).collect();
         match run_go_formatter(&file_refs, &project_root, dry_run, check) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
@@ -275,8 +271,8 @@ pub fn execute_fmt(
     }
 
     // Run CUE formatter
-    if !files.cue_files.is_empty() {
-        let file_refs: Vec<&Path> = files.cue_files.iter().map(AsRef::as_ref).collect();
+    if !files.cue.is_empty() {
+        let file_refs: Vec<&Path> = files.cue.iter().map(AsRef::as_ref).collect();
         match run_cue_formatter(&file_refs, &project_root, dry_run, check) {
             Ok(result) => results.push(result),
             Err(e) => errors.push(e),
@@ -335,19 +331,19 @@ mod tests {
     #[test]
     fn test_discovered_files_is_empty() {
         let empty = DiscoveredFiles {
-            rust_files: vec![],
-            nix_files: vec![],
-            go_files: vec![],
-            cue_files: vec![],
+            rust: vec![],
+            nix: vec![],
+            go: vec![],
+            cue: vec![],
         };
         assert!(empty.is_empty());
         assert_eq!(empty.total_count(), 0);
 
         let non_empty = DiscoveredFiles {
-            rust_files: vec![PathBuf::from("test.rs")],
-            nix_files: vec![],
-            go_files: vec![],
-            cue_files: vec![],
+            rust: vec![PathBuf::from("test.rs")],
+            nix: vec![],
+            go: vec![],
+            cue: vec![],
         };
         assert!(!non_empty.is_empty());
         assert_eq!(non_empty.total_count(), 1);
@@ -356,10 +352,10 @@ mod tests {
     #[test]
     fn test_discovered_files_total_count_all_types() {
         let files = DiscoveredFiles {
-            rust_files: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
-            nix_files: vec![PathBuf::from("flake.nix")],
-            go_files: vec![PathBuf::from("main.go"), PathBuf::from("util.go")],
-            cue_files: vec![PathBuf::from("env.cue")],
+            rust: vec![PathBuf::from("a.rs"), PathBuf::from("b.rs")],
+            nix: vec![PathBuf::from("flake.nix")],
+            go: vec![PathBuf::from("main.go"), PathBuf::from("util.go")],
+            cue: vec![PathBuf::from("env.cue")],
         };
         assert_eq!(files.total_count(), 6);
         assert!(!files.is_empty());
@@ -369,34 +365,34 @@ mod tests {
     fn test_discovered_files_single_type_not_empty() {
         // Test each type individually
         let rust_only = DiscoveredFiles {
-            rust_files: vec![PathBuf::from("lib.rs")],
-            nix_files: vec![],
-            go_files: vec![],
-            cue_files: vec![],
+            rust: vec![PathBuf::from("lib.rs")],
+            nix: vec![],
+            go: vec![],
+            cue: vec![],
         };
         assert!(!rust_only.is_empty());
 
         let nix_only = DiscoveredFiles {
-            rust_files: vec![],
-            nix_files: vec![PathBuf::from("shell.nix")],
-            go_files: vec![],
-            cue_files: vec![],
+            rust: vec![],
+            nix: vec![PathBuf::from("shell.nix")],
+            go: vec![],
+            cue: vec![],
         };
         assert!(!nix_only.is_empty());
 
         let go_only = DiscoveredFiles {
-            rust_files: vec![],
-            nix_files: vec![],
-            go_files: vec![PathBuf::from("main.go")],
-            cue_files: vec![],
+            rust: vec![],
+            nix: vec![],
+            go: vec![PathBuf::from("main.go")],
+            cue: vec![],
         };
         assert!(!go_only.is_empty());
 
         let cue_only = DiscoveredFiles {
-            rust_files: vec![],
-            nix_files: vec![],
-            go_files: vec![],
-            cue_files: vec![PathBuf::from("env.cue")],
+            rust: vec![],
+            nix: vec![],
+            go: vec![],
+            cue: vec![PathBuf::from("env.cue")],
         };
         assert!(!cue_only.is_empty());
     }

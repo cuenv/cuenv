@@ -4,9 +4,6 @@
 //! - 4 bytes: big-endian message length
 //! - N bytes: JSON payload
 
-// Protocol has some unused fields/methods reserved for future multi-UI support
-#![allow(dead_code, clippy::cast_possible_truncation)]
-
 use cuenv_events::CuenvEvent;
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -14,7 +11,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
 /// Maximum message size (1MB).
-const MAX_MESSAGE_SIZE: u32 = 1024 * 1024;
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 
 /// Wire message envelope.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,13 +153,11 @@ impl WireMessage {
         let json =
             serde_json::to_vec(self).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        let len = json.len() as u32;
-        if len > MAX_MESSAGE_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "message too large",
-            ));
+        if json.len() > MAX_MESSAGE_SIZE {
+            return Err(message_too_large());
         }
+        let len =
+            u32::try_from(json.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         writer.write_all(&len.to_be_bytes()).await?;
         writer.write_all(&json).await?;
@@ -179,16 +174,14 @@ impl WireMessage {
     pub async fn read_from<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Self> {
         let mut len_buf = [0u8; 4];
         reader.read_exact(&mut len_buf).await?;
-        let len = u32::from_be_bytes(len_buf);
+        let len = usize::try_from(u32::from_be_bytes(len_buf))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         if len > MAX_MESSAGE_SIZE {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "message too large",
-            ));
+            return Err(message_too_large());
         }
 
-        let mut buf = vec![0u8; len as usize];
+        let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf).await?;
 
         serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
@@ -203,6 +196,10 @@ impl WireMessage {
             None
         }
     }
+}
+
+fn message_too_large() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "message too large")
 }
 
 #[cfg(test)]
@@ -378,7 +375,7 @@ mod tests {
     async fn test_read_message_too_large() {
         // Create a buffer with a length header indicating a message larger than MAX_MESSAGE_SIZE
         let mut buf = Vec::new();
-        let large_size: u32 = MAX_MESSAGE_SIZE + 1;
+        let large_size = u32::try_from(MAX_MESSAGE_SIZE + 1).expect("test size fits u32");
         buf.extend_from_slice(&large_size.to_be_bytes());
         buf.extend_from_slice(&[0u8; 100]); // some dummy data
 
@@ -392,10 +389,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_write_message_too_large() {
+        let msg = WireMessage {
+            msg_type: MessageType::Error,
+            correlation_id: Uuid::new_v4(),
+            payload: serde_json::Value::String("x".repeat(MAX_MESSAGE_SIZE)),
+        };
+
+        let mut buf = Vec::new();
+        let result = msg.write_to(&mut buf).await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("message too large"));
+        assert!(buf.is_empty());
+    }
+
+    #[tokio::test]
     async fn test_read_invalid_json() {
         // Create a buffer with valid length but invalid JSON
         let invalid_json = b"not valid json";
-        let len = invalid_json.len() as u32;
+        let len = u32::try_from(invalid_json.len()).expect("test fixture fits u32");
 
         let mut buf = Vec::new();
         buf.extend_from_slice(&len.to_be_bytes());
