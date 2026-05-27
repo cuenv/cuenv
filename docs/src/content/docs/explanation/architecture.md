@@ -50,6 +50,10 @@ Cuengine FFI tests keep allocator-backed `CStringPtr` fixtures behind local
 unsafe allowances and explicit safety comments instead of file-level
 `unsafe_code` suppressions, so each raw-pointer boundary stays visible at the
 call site.
+The Nix `cue-bridge` build must compile every non-test Go source file, not just
+`bridge.go`, because bridge metadata and value conversion helpers live in
+additional Go files beside the exported C archive entrypoints, while
+`bridge_test.go` cannot be part of the c-archive build.
 
 ```rust
 use cuengine::evaluate_module;
