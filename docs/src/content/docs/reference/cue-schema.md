@@ -642,7 +642,7 @@ Log handling configuration for services.
 
 ### #ContainerImage
 
-Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume once build execution exists. `cuenv build` currently lists image definitions; selected build requests fail until an execution backend is implemented.
+Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) whose downstream resolution is still partial. `cuenv build` lists image definitions and builds selected images with the local Docker CLI.
 
 ```cue
 images: {
@@ -715,8 +715,8 @@ images: {
 
 ```bash
 cuenv build              # List all images
-cuenv build api          # Fails until image execution backends exist
-cuenv build --label ci   # Fails until image execution backends exist
+cuenv build api          # Build the api image with Docker
+cuenv build --label ci   # Build images matching the ci label
 ```
 
 ## Hooks

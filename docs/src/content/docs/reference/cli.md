@@ -145,7 +145,7 @@ cuenv sync [PROVIDER] [OPTIONS]
 
 ### `cuenv build`
 
-List container images defined in CUE configuration.
+List or build container images defined in CUE configuration.
 
 ```bash
 cuenv build [NAMES...] [OPTIONS]
@@ -153,7 +153,7 @@ cuenv build [NAMES...] [OPTIONS]
 
 **Arguments:**
 
-- `[NAMES]`: Image names to build. Build execution is currently unsupported; omit names to list available images.
+- `[NAMES]`: Image names to build. Omit names to list available images.
 
 **Options:**
 
@@ -167,10 +167,10 @@ cuenv build [NAMES...] [OPTIONS]
 # List all images
 cuenv build
 
-# Build requests currently fail until image execution backends are implemented
+# Build the api image with the local Docker CLI
 cuenv build api
 
-# Label-selected build requests also fail until backends are implemented
+# Build all images with the ci label
 cuenv build --label ci
 ```
 

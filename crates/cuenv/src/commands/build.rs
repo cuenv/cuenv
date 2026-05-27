@@ -27,7 +27,7 @@ pub struct BuildOptions {
 /// Execute the `cuenv build` command.
 ///
 /// Evaluates CUE configuration, discovers image definitions, and either
-/// lists available images or validates the build configuration.
+/// lists available images or builds selected images with Docker.
 ///
 /// # Errors
 ///

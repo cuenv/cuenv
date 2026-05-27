@@ -25,8 +25,8 @@ package schema
 // =============================================================================
 //
 // Declarative container image definitions as first-class project artifacts.
-// Images participate in the task DAG, but build execution backends are not
-// implemented yet; `cuenv build` currently lists configured images.
+// Images participate in the task DAG. `cuenv build` can list configured images
+// and build selected images with the local Docker CLI.
 //
 // Example:
 //   images: {
