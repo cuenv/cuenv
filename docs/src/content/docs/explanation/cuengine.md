@@ -55,6 +55,9 @@ FFI edge-case tests keep no-crash scenarios as explicit ignored results instead
 of empty match arms or local lint suppressions.
 Module-evaluation fixture tests return `Result` from setup/evaluation helpers
 instead of carrying file-level expect allowances.
+CUE evaluation benchmarks keep fixture setup explicit as `Result` values and
+pass those results through Criterion helpers instead of using benchmark-wide
+unwrap/expect allowances.
 
 ## API Reference
 
