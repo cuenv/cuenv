@@ -54,6 +54,14 @@ testData:
           name: "GITHUB_REF_NAME"
         }
       }
+  - requirements: "Production app with API_TOKEN from Google Cloud Secret Manager project my-gcp-project secret api-token"
+    expected: |
+      env: schema.#Env & {
+        API_TOKEN: schema.#GcpSecret & {
+          project: "my-gcp-project"
+          secret: "api-token"
+        }
+      }
   - requirements: "Simple app with LOG_LEVEL that must be debug, info, warn, or error"
     expected: |
       env: schema.#Env & {
