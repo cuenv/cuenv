@@ -48,7 +48,9 @@ parsing. Keeping those phases separate makes the Go boundary, timeout behavior,
 and response decoding auditable without changing the public API.
 
 Unit tests assert returned bridge data directly instead of printing successful
-FFI diagnostics; environment-dependent diagnostics stay in integration tests.
+FFI diagnostics. Integration tests keep FFI-unavailable paths quiet and return
+`Result` from filesystem, thread-join, and performance-sample setup instead of
+depending on stdout diagnostics.
 Environment parsing tests keep FFI-unavailable paths quiet through tracing and
 return `Result` from filesystem/JSON setup rather than dumping JSON to stdout.
 FFI edge-case tests keep no-crash scenarios as explicit ignored results instead

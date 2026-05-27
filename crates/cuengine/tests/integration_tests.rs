@@ -4,12 +4,12 @@
 //! and proper resource cleanup across the FFI boundary.
 
 #![allow(unsafe_code)] // Testing FFI requires unsafe code
-#![allow(clippy::print_stdout)]
 
 use cuengine::{CStringPtr, evaluate_cue_package};
 use std::error::Error;
 use std::ffi::CString;
 use std::fs;
+use std::io;
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,11 +50,11 @@ fn c_allocated_cstring_ptr(value: &str) -> TestResult<CStringPtr> {
 
 /// Test concurrent access to FFI functions to ensure thread safety
 #[test]
-fn test_concurrent_ffi_access() {
+fn test_concurrent_ffi_access() -> TestResult {
     const NUM_THREADS: usize = 8;
     const CALLS_PER_THREAD: usize = 10;
 
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = TempDir::new()?;
 
     // Create a test CUE file
     let cue_content = r#"package cuenv
@@ -64,7 +64,7 @@ env: {
     THREAD_ID: 1
 }
 "#;
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content)?;
 
     let barrier = Arc::new(Barrier::new(NUM_THREADS));
     let temp_path = Arc::new(temp_dir.path().to_path_buf());
@@ -105,7 +105,9 @@ env: {
     let mut total_errors = 0;
 
     for handle in handles {
-        let (thread_id, results, errors) = handle.join().unwrap();
+        let (_thread_id, results, errors) = handle
+            .join()
+            .map_err(|_| io::Error::other("concurrent FFI worker thread panicked"))?;
 
         total_successes += results.len();
         total_errors += errors.len();
@@ -116,14 +118,7 @@ env: {
                 assert!(json.contains("concurrent_value"));
             }
         }
-
-        // Log errors for analysis
-        for (_tid, _call_id, error) in errors {
-            println!("Thread {thread_id} error: {error}");
-        }
     }
-
-    println!("Concurrent FFI test: {total_successes} successes, {total_errors} errors");
 
     // Either all calls should succeed (if FFI is available) or all should fail consistently
     if total_successes > 0 {
@@ -132,16 +127,15 @@ env: {
             total_successes > total_errors,
             "If FFI works, most calls should succeed"
         );
-    } else {
-        // If none succeeded, that's acceptable if FFI isn't available
-        println!("FFI appears unavailable in test environment");
     }
+
+    Ok(())
 }
 
 /// Test memory usage doesn't grow over time (leak detection)
 #[test]
-fn test_ffi_memory_leak_detection() {
-    let temp_dir = TempDir::new().unwrap();
+fn test_ffi_memory_leak_detection() -> TestResult {
+    let temp_dir = TempDir::new()?;
 
     // Create test CUE files with varying sizes
     for i in 0..3 {
@@ -156,7 +150,7 @@ env: {{
             "x".repeat(100 * (i + 1)) // Increasing data size
         );
 
-        fs::write(temp_dir.path().join(format!("test_{i}.cue")), cue_content).unwrap();
+        fs::write(temp_dir.path().join(format!("test_{i}.cue")), cue_content)?;
     }
 
     // Make many calls with different data sizes
@@ -168,8 +162,7 @@ env: {{
         fs::copy(
             temp_dir.path().join(format!("test_{file_index}.cue")),
             temp_dir.path().join("env.cue"),
-        )
-        .unwrap();
+        )?;
 
         match evaluate_cue_package(temp_dir.path(), "cuenv") {
             Ok(json) => {
@@ -190,12 +183,13 @@ env: {{
     }
 
     // If we complete without crashes or OOM, memory management is working
+    Ok(())
 }
 
 /// Test FFI error handling with various invalid inputs
 #[test]
-fn test_ffi_error_handling_edge_cases() {
-    let temp_dir = TempDir::new().unwrap();
+fn test_ffi_error_handling_edge_cases() -> TestResult {
+    let temp_dir = TempDir::new()?;
 
     // Test cases that should trigger different error paths
     let long_package_name = "x".repeat(1000);
@@ -218,8 +212,11 @@ fn test_ffi_error_handling_edge_cases() {
 
         match result {
             Ok(json) => {
-                // If it succeeds, log it (might be FFI-specific behavior)
-                println!("{description}: succeeded with {}", json.len());
+                // Some edge cases may succeed depending on CUE/FFI behavior.
+                assert!(
+                    !json.is_empty(),
+                    "{description}: successful response should not be empty"
+                );
             }
             Err(error) => {
                 // Expected case - should get meaningful error
@@ -232,20 +229,21 @@ fn test_ffi_error_handling_edge_cases() {
                     error_str.len() > 10,
                     "{description}: Error should be meaningful"
                 );
-                println!("{description}: got expected error: {error_str}");
             }
         }
     }
+
+    Ok(())
 }
 
 /// Test FFI with unusual directory structures
 #[test]
-fn test_ffi_with_complex_directory_structure() {
-    let temp_dir = TempDir::new().unwrap();
+fn test_ffi_with_complex_directory_structure() -> TestResult {
+    let temp_dir = TempDir::new()?;
 
     // Create nested directory structure
     let nested_dir = temp_dir.path().join("very").join("deeply").join("nested");
-    fs::create_dir_all(&nested_dir).unwrap();
+    fs::create_dir_all(&nested_dir)?;
 
     // Create CUE file in nested location
     let cue_content = r#"package cuenv
@@ -255,26 +253,20 @@ env: {
     DEPTH: 3
 }
 "#;
-    fs::write(nested_dir.join("env.cue"), cue_content).unwrap();
+    fs::write(nested_dir.join("env.cue"), cue_content)?;
 
     // Test evaluating from nested directory
     let result = evaluate_cue_package(&nested_dir, "cuenv");
 
-    match result {
-        Ok(json) => {
-            // JSON wraps in "env" object
-            assert!(json.contains("NESTED_TEST") || json.contains("env"));
-            assert!(json.contains("deep_value") || json.contains("env"));
-            println!("Nested directory test succeeded");
-        }
-        Err(e) => {
-            println!("Nested directory test failed (FFI may be unavailable): {e}");
-        }
+    if let Ok(json) = result {
+        // JSON wraps in "env" object
+        assert!(json.contains("NESTED_TEST") || json.contains("env"));
+        assert!(json.contains("deep_value") || json.contains("env"));
     }
 
     // Test with directory containing spaces and unicode
     let unicode_dir = temp_dir.path().join("测试 directory with spaces");
-    fs::create_dir_all(&unicode_dir).unwrap();
+    fs::create_dir_all(&unicode_dir)?;
 
     let unicode_cue = r#"package cuenv
 
@@ -283,27 +275,22 @@ env: {
     PATH_TYPE: "unicode_with_spaces"
 }
 "#;
-    fs::write(unicode_dir.join("env.cue"), unicode_cue).unwrap();
+    fs::write(unicode_dir.join("env.cue"), unicode_cue)?;
 
     let unicode_result = evaluate_cue_package(&unicode_dir, "cuenv");
 
-    match unicode_result {
-        Ok(json) => {
-            // JSON wraps in "env" object
-            assert!(json.contains("UNICODE_TEST") || json.contains("env"));
-            println!("Unicode directory test succeeded");
-        }
-        Err(e) => {
-            println!("Unicode directory test failed: {e}");
-            // This might fail if the FFI doesn't handle unicode paths well
-        }
+    if let Ok(json) = unicode_result {
+        // JSON wraps in "env" object
+        assert!(json.contains("UNICODE_TEST") || json.contains("env"));
     }
+
+    Ok(())
 }
 
 /// Test that FFI cleanup works correctly even when errors occur
 #[test]
-fn test_ffi_cleanup_on_errors() {
-    let temp_dir = TempDir::new().unwrap();
+fn test_ffi_cleanup_on_errors() -> TestResult {
+    let temp_dir = TempDir::new()?;
 
     // Create various files that might cause different types of errors
     let invalid_cue_files = vec![
@@ -319,18 +306,17 @@ fn test_ffi_cleanup_on_errors() {
     for (filename, content) in invalid_cue_files {
         // Remove any existing env.cue and create the test file
         let _ = fs::remove_file(temp_dir.path().join("env.cue"));
-        fs::write(temp_dir.path().join(filename), content).unwrap();
+        fs::write(temp_dir.path().join(filename), content)?;
 
         // Try to evaluate - should handle errors gracefully
         let result = evaluate_cue_package(temp_dir.path(), "cuenv");
 
         match result {
             Ok(json) => {
-                println!("File {filename} unexpectedly succeeded: {json}");
                 // Some cases might succeed due to FFI behavior
+                assert!(!json.is_empty(), "File {filename} returned empty JSON");
             }
             Err(error) => {
-                println!("File {filename} failed as expected: {error}");
                 // Verify error message is meaningful
                 assert!(!error.to_string().is_empty());
             }
@@ -342,24 +328,20 @@ fn test_ffi_cleanup_on_errors() {
 
     // After all error cases, verify normal operation still works
     let valid_cue = "package cuenv\nenv: {RECOVERY_TEST: \"recovered\"}";
-    fs::write(temp_dir.path().join("env.cue"), valid_cue).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), valid_cue)?;
 
     let recovery_result = evaluate_cue_package(temp_dir.path(), "cuenv");
-    match recovery_result {
-        Ok(json) => {
-            assert!(json.contains("RECOVERY_TEST"));
-            println!("FFI recovered successfully after errors");
-        }
-        Err(e) => {
-            println!("FFI recovery failed (may be unavailable): {e}");
-        }
+    if let Ok(json) = recovery_result {
+        assert!(json.contains("RECOVERY_TEST"));
     }
+
+    Ok(())
 }
 
 /// Test FFI performance characteristics
 #[test]
-fn test_ffi_performance_characteristics() {
-    let temp_dir = TempDir::new().unwrap();
+fn test_ffi_performance_characteristics() -> TestResult {
+    let temp_dir = TempDir::new()?;
 
     // Create a reasonably sized CUE file
     let cue_content = r#"package cuenv
@@ -377,7 +359,7 @@ env: {
     }
 }
 "#;
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    fs::write(temp_dir.path().join("env.cue"), cue_content)?;
 
     let mut times = Vec::new();
 
@@ -393,11 +375,8 @@ env: {
                 // Verify correctness - JSON wraps in "env" object
                 assert!(json.contains("PERF_TEST") || json.contains("env"));
                 assert!(json.contains("Lorem ipsum") || json.contains("env"));
-
-                println!("Call {i}: {:?} (JSON size: {} bytes)", duration, json.len());
             }
-            Err(e) => {
-                println!("Performance test call {i} failed: {e}");
+            Err(_) => {
                 if i > 2 {
                     break; // Stop if FFI consistently fails
                 }
@@ -405,14 +384,13 @@ env: {
         }
     }
 
-    if times.is_empty() {
-        println!("FFI performance test skipped (FFI unavailable)");
-    } else {
-        let avg_time = times.iter().sum::<Duration>() / u32::try_from(times.len()).unwrap();
-        let max_time = times.iter().max().unwrap();
-        let min_time = times.iter().min().unwrap();
-
-        println!("FFI Performance: avg={avg_time:?}, min={min_time:?}, max={max_time:?}");
+    if !times.is_empty() {
+        let sample_count = u32::try_from(times.len())?;
+        let avg_time = times.iter().sum::<Duration>() / sample_count;
+        let max_time = times
+            .iter()
+            .max()
+            .ok_or_else(|| io::Error::other("performance samples should include a maximum"))?;
 
         // Basic performance expectations (these are lenient for CI)
         assert!(
@@ -424,4 +402,6 @@ env: {
             "Average call time should be under 1 second"
         );
     }
+
+    Ok(())
 }
