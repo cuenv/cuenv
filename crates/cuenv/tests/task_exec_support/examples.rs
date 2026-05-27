@@ -1,30 +1,56 @@
-#![allow(clippy::print_stderr, clippy::unwrap_used)]
-
 use super::{create_test_dir, init_cue_module, run_cuenv};
+use std::error::Error;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
+use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn project_root() -> TestResult<PathBuf> {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let crates_dir = manifest_dir
+        .parent()
+        .ok_or_else(|| io::Error::other("cuenv crate directory has no parent"))?;
+    let repo_root = crates_dir
+        .parent()
+        .ok_or_else(|| io::Error::other("crates directory has no parent"))?;
+    Ok(repo_root.to_path_buf())
+}
+
+fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
+    fs::write(temp_dir.path().join("env.cue"), cue_content)?;
+    Ok(())
+}
+
+fn path_arg(path: &Path) -> TestResult<&str> {
+    path.to_str()
+        .ok_or_else(|| io::Error::other(format!("path is not valid UTF-8: {}", path.display())))
+        .map_err(Into::into)
+}
+
+fn output_position(output: &str, needle: &'static str) -> TestResult<usize> {
+    output
+        .find(needle)
+        .ok_or_else(|| io::Error::other(format!("missing `{needle}` in output")))
+        .map_err(Into::into)
+}
 
 #[test]
-fn test_task_basic_example() {
-    // Get the project root
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let project_root = Path::new(manifest_dir).parent().unwrap().parent().unwrap();
-    let example_path = project_root.join("examples/task-basic");
+fn test_task_basic_example() -> TestResult {
+    let example_path = project_root()?.join("examples/task-basic");
 
-    // Skip if example doesn't exist
     if !example_path.exists() {
-        eprintln!("Skipping test - example path doesn't exist: {example_path:?}");
-        return;
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("example path does not exist: {}", example_path.display()),
+        )
+        .into());
     }
+    let example_path_arg = path_arg(&example_path)?;
 
     // Test listing tasks
-    let (stdout, _, success) = run_cuenv(&[
-        "t",
-        "-p",
-        example_path.to_str().unwrap(),
-        "--package",
-        "examples",
-    ]);
+    let (stdout, _, success) = run_cuenv(&["t", "-p", example_path_arg, "--package", "examples"]);
 
     assert!(success, "Should list tasks successfully");
     assert!(
@@ -38,7 +64,7 @@ fn test_task_basic_example() {
     let (stdout, _, success) = run_cuenv(&[
         "t",
         "-p",
-        example_path.to_str().unwrap(),
+        example_path_arg,
         "--package",
         "examples",
         "interpolate",
@@ -54,7 +80,7 @@ fn test_task_basic_example() {
     let (stdout, _, success) = run_cuenv(&[
         "t",
         "-p",
-        example_path.to_str().unwrap(),
+        example_path_arg,
         "--package",
         "examples",
         "propagate",
@@ -70,7 +96,7 @@ fn test_task_basic_example() {
     let (stdout, _, success) = run_cuenv(&[
         "x",
         "-p",
-        example_path.to_str().unwrap(),
+        example_path_arg,
         "--package",
         "examples",
         "printenv",
@@ -82,10 +108,11 @@ fn test_task_basic_example() {
         stdout.contains("Jack O'Neill"),
         "Should have environment variable available"
     );
+    Ok(())
 }
 
 #[test]
-fn test_complex_task_dependency_chain() {
+fn test_complex_task_dependency_chain() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
     let cue_content = r#"package test
@@ -123,17 +150,12 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
+    let project_path = path_arg(temp_dir.path())?;
 
     // Test running the final task should execute all dependencies
-    let (stdout, stderr, success) = run_cuenv(&[
-        "task",
-        "-p",
-        temp_dir.path().to_str().unwrap(),
-        "--package",
-        "test",
-        "deploy",
-    ]);
+    let (stdout, stderr, success) =
+        run_cuenv(&["task", "-p", project_path, "--package", "test", "deploy"]);
 
     assert!(
         success,
@@ -148,18 +170,19 @@ tasks: {
     assert!(stdout.contains("Deploying"), "Deploy task should run");
 
     // Verify execution order
-    let init_pos = stdout.find("Initializing").unwrap();
-    let build_pos = stdout.find("Building").unwrap();
-    let test_pos = stdout.find("Testing").unwrap();
-    let deploy_pos = stdout.find("Deploying").unwrap();
+    let init_pos = output_position(&stdout, "Initializing")?;
+    let build_pos = output_position(&stdout, "Building")?;
+    let test_pos = output_position(&stdout, "Testing")?;
+    let deploy_pos = output_position(&stdout, "Deploying")?;
 
     assert!(init_pos < build_pos, "Init should run before build");
     assert!(build_pos < test_pos, "Build should run before test");
     assert!(test_pos < deploy_pos, "Test should run before deploy");
+    Ok(())
 }
 
 #[test]
-fn test_task_failure_handling() {
+fn test_task_failure_handling() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
     let cue_content = r#"package test
@@ -175,13 +198,13 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
 
     // Test that task failure is properly handled
     let (_, stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "failing_task",
@@ -192,10 +215,11 @@ tasks: {
         stderr.contains("failed") || stderr.contains("error"),
         "Should report failure"
     );
+    Ok(())
 }
 
 #[test]
-fn test_mixed_task_types() {
+fn test_mixed_task_types() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
     let cue_content = r#"package test
@@ -236,13 +260,14 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
+    let project_path = path_arg(temp_dir.path())?;
 
     // Test single task
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "single_task",
@@ -254,7 +279,7 @@ tasks: {
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "sequential_tasks",
@@ -267,7 +292,7 @@ tasks: {
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "parallel_tasks",
@@ -275,10 +300,11 @@ tasks: {
     assert!(success);
     // Both parallel tasks should execute
     assert!(stdout.contains("MIX par1") || stdout.contains("MIX par2"));
+    Ok(())
 }
 
 #[test]
-fn test_special_characters_in_environment() {
+fn test_special_characters_in_environment() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
     let cue_content = r#"package test
@@ -308,13 +334,14 @@ tasks: {
     }
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
+    let project_path = path_arg(temp_dir.path())?;
 
     // Test special characters are passed literally
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "test_special",
@@ -326,7 +353,7 @@ tasks: {
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "test_quotes",
@@ -338,17 +365,18 @@ tasks: {
     let (stdout, _, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        project_path,
         "--package",
         "test",
         "test_spaces",
     ]);
     assert!(success);
     assert!(stdout.contains("Value with spaces"));
+    Ok(())
 }
 
 #[test]
-fn test_exec_with_complex_args() {
+fn test_exec_with_complex_args() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
     let cue_content = r#"package test
@@ -359,13 +387,13 @@ env: {
     TEST_VAR: "test_value"
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
 
     // Test exec with arguments containing special characters
     let (stdout, _, success) = run_cuenv(&[
         "exec",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "echo",
@@ -383,4 +411,5 @@ env: {
     assert!(stdout.contains("arg'with'single'quotes"));
     assert!(stdout.contains("$TEST_VAR"));
     assert!(stdout.contains("$(echo 'command substitution')"));
+    Ok(())
 }
