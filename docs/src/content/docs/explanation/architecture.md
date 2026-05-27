@@ -318,6 +318,10 @@ provider-hint helpers so contributor assertions stay explicit without file-level
 `expect_used` allowances or raw skip output.
 Workspace contributor integration tests use the same fallible helper pattern for
 DAG injection and auto-association assertions.
+Example DAG integration tests evaluate each `examples/` project through
+checked helper functions and return `Result` from root discovery, manifest
+loading, graph construction, and CI/task lookups instead of relying on
+file-level unwrap/expect allowances.
 Runtime affected-task selection lives in `crates/ci/src/affected.rs`; external
 project maps are generic over the caller's `BuildHasher`, so the public API does
 not force or suppress default hashing.
