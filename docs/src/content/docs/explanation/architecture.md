@@ -440,7 +440,8 @@ output stays behind `indicatif::MultiProgress::println`, preserving progress-bar
 frames without direct stderr print macros. Trace acceptance tests return
 `Result` from binary/root discovery, dry-run execution, DAG JSON parsing, and
 task lookup helpers so CLI DAG checks stay quiet without file-level
-unwrap/expect, print suppressions, or unused tracing helper modules.
+unwrap/expect, print suppressions, unused tracing helper modules, or unused
+dry-run fields.
 
 ### cuenv-workspaces
 

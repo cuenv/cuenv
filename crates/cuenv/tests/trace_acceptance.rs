@@ -38,9 +38,6 @@ struct DagTask {
     dependencies: Vec<String>,
     #[serde(default)]
     command: Option<String>,
-    #[serde(default)]
-    #[allow(dead_code)]
-    description: Option<String>,
 }
 
 /// Get path to the cuenv binary
