@@ -40,12 +40,16 @@ use std::path::Path;
 mod command;
 mod filesystem;
 mod package_json;
+mod scoring;
 
 pub use command::{command_name, detect_from_command};
 #[cfg(test)]
 use filesystem::read_first_lines;
 use filesystem::{detect_yarn_version, find_lockfiles, validate_workspace_config};
 use package_json::detect_manager_from_package_json;
+use scoring::{Detection, prioritize_managers};
+#[cfg(test)]
+use scoring::{calculate_confidence, manager_priority};
 
 /// Detects all package managers present in the given directory.
 ///
@@ -93,7 +97,7 @@ pub fn detect_package_managers(root: &Path) -> Result<Vec<PackageManager>> {
 /// Detect package managers from lockfiles.
 fn detect_from_lockfiles(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     let lockfiles = find_lockfiles(root);
@@ -102,7 +106,7 @@ fn detect_from_lockfiles(
     for (manager, lockfile_path) in lockfiles {
         let detected = process_lockfile(root, manager, &lockfile_path)?;
         detections.push(detected);
-        detected_managers.insert(detected.0);
+        detected_managers.insert(detected.manager);
     }
     Ok(())
 }
@@ -112,7 +116,7 @@ fn process_lockfile(
     root: &Path,
     manager: PackageManager,
     lockfile_path: &Path,
-) -> Result<(PackageManager, u8)> {
+) -> Result<Detection> {
     tracing::debug!(
         "Processing lockfile: {} ({})",
         lockfile_path.display(),
@@ -126,26 +130,30 @@ fn process_lockfile(
     };
 
     let has_valid_config = validate_workspace_config(root, detected_manager)?;
-    let confidence = calculate_confidence(true, has_valid_config);
-    tracing::debug!("Manager {} has confidence {}", detected_manager, confidence);
+    let detection = Detection::from_signals(detected_manager, true, has_valid_config);
+    tracing::debug!(
+        "Manager {} has confidence {}",
+        detected_manager,
+        detection.confidence
+    );
 
-    Ok((detected_manager, confidence))
+    Ok(detection)
 }
 
 /// Detect package manager from package.json if not already detected.
 fn detect_from_package_json(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     if let Some(manager) = detect_manager_from_package_json(root, detected_managers)? {
-        let confidence = calculate_confidence(false, true);
+        let detection = Detection::from_signals(manager, false, true);
         tracing::debug!(
             "Manager {} detected via package.json (confidence {})",
             manager,
-            confidence
+            detection.confidence
         );
-        detections.push((manager, confidence));
+        detections.push(detection);
         detected_managers.insert(manager);
     }
     Ok(())
@@ -154,7 +162,7 @@ fn detect_from_package_json(
 /// Detect package managers from workspace configs without lockfiles.
 fn detect_from_workspace_configs(
     root: &Path,
-    detections: &mut Vec<(PackageManager, u8)>,
+    detections: &mut Vec<Detection>,
     detected_managers: &mut HashSet<PackageManager>,
 ) -> Result<()> {
     for manager in [PackageManager::Pnpm, PackageManager::Cargo] {
@@ -163,13 +171,13 @@ fn detect_from_workspace_configs(
         }
 
         if validate_workspace_config(root, manager)? {
-            let confidence = calculate_confidence(false, true);
+            let detection = Detection::from_signals(manager, false, true);
             tracing::debug!(
                 "Manager {} detected via config only (confidence {})",
                 manager,
-                confidence
+                detection.confidence
             );
-            detections.push((manager, confidence));
+            detections.push(detection);
             detected_managers.insert(manager);
         }
     }
@@ -234,59 +242,6 @@ fn is_manager_detected(
     }
 }
 
-/// Calculates a confidence score (0-100) based on detection signals.
-///
-/// Scoring:
-/// - Lockfile + valid config: 100
-/// - Lockfile only: 75
-/// - Valid config only: 50
-/// - Neither: 0
-const fn calculate_confidence(has_lockfile: bool, has_valid_config: bool) -> u8 {
-    match (has_lockfile, has_valid_config) {
-        (true, true) => 100,
-        (true, false) => 75,
-        (false, true) => 50,
-        (false, false) => 0,
-    }
-}
-
-/// Sorts detected package managers by confidence score and secondary ordering.
-///
-/// Primary sort: confidence score (descending)
-/// Secondary sort: Cargo > Bun > pnpm > Yarn > npm
-fn prioritize_managers(detections: Vec<(PackageManager, u8)>) -> Vec<PackageManager> {
-    let mut sorted = detections;
-
-    // Sort by confidence (descending), then by manager priority
-    sorted.sort_by(|(m1, c1), (m2, c2)| {
-        // First compare by confidence
-        match c2.cmp(c1) {
-            std::cmp::Ordering::Equal => {
-                // If confidence is equal, use manager priority
-                manager_priority(*m1).cmp(&manager_priority(*m2))
-            }
-            other => other,
-        }
-    });
-
-    sorted.into_iter().map(|(m, _)| m).collect()
-}
-
-/// Returns a priority value for deterministic ordering when confidence is equal.
-///
-/// Lower values = higher priority
-const fn manager_priority(manager: PackageManager) -> u8 {
-    match manager {
-        PackageManager::Cargo => 0,
-        PackageManager::Deno => 1,
-        PackageManager::Bun => 2,
-        PackageManager::Pnpm => 3,
-        PackageManager::YarnModern => 4,
-        PackageManager::YarnClassic => 5,
-        PackageManager::Npm => 6,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,9 +299,9 @@ mod tests {
     #[test]
     fn test_prioritize_managers() {
         let detections = vec![
-            (PackageManager::Npm, 75),
-            (PackageManager::Cargo, 100),
-            (PackageManager::Bun, 75),
+            Detection::with_confidence(PackageManager::Npm, 75),
+            Detection::with_confidence(PackageManager::Cargo, 100),
+            Detection::with_confidence(PackageManager::Bun, 75),
         ];
 
         let result = prioritize_managers(detections);
@@ -359,9 +314,9 @@ mod tests {
     #[test]
     fn test_prioritize_managers_equal_confidence() {
         let detections = vec![
-            (PackageManager::Npm, 75),
-            (PackageManager::Bun, 75),
-            (PackageManager::Cargo, 75),
+            Detection::with_confidence(PackageManager::Npm, 75),
+            Detection::with_confidence(PackageManager::Bun, 75),
+            Detection::with_confidence(PackageManager::Cargo, 75),
         ];
 
         let result = prioritize_managers(detections);
