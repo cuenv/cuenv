@@ -354,9 +354,12 @@ The canonical event path constructs typed `CuenvEvent` values and publishes
 them through the process-wide sender. The compatibility tracing layer in
 `crates/events/src/layer.rs` owns target filtering and dispatch; its visitor in
 `crates/events/src/layer/visitor.rs` translates tracing fields into typed
-events. Field extraction and category-specific event construction stay
-separated so output, task, service, CI, command, interactive, and system events
-do not share one monolithic conversion path. Exported `emit_*!` macro
+events. Event bus tests cover subscriber fan-out, event ordering, cloned
+senders, subscriber counts, lag gaps, and shutdown without module-level lint
+suppressions, so clippy warnings stay actionable. Field extraction and
+category-specific event construction stay separated so output, task, service,
+CI, command, interactive, and system events do not share one monolithic
+conversion path. Exported `emit_*!` macro
 definitions live in
 `crates/events/src/macros.rs`, while crate-root hidden helpers remain available
 for `$crate` expansion and redacted print helpers. Redacted print helpers write

@@ -40,6 +40,8 @@ Typed event definitions for tasks, CI, commands, interactive prompts, and system
 
 **EventBus**
 Broadcast channel for distributing events to multiple subscribers.
+Event bus tests cover fan-out, send ordering, cloned senders, subscriber counts,
+lag gaps, and shutdown without module-level lint suppressions.
 
 **CuenvEventLayer**
 Optional tracing layer that captures legacy structured tracing events. The
