@@ -1,11 +1,8 @@
-use super::{create_test_dir, init_cue_module, run_cuenv};
-use std::error::Error;
+use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
 use std::fs;
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
-
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
     fs::write(temp_dir.path().join("env.cue"), cue_content)?;
@@ -26,8 +23,8 @@ fn path_arg(path: &Path) -> TestResult<&str> {
 
 #[test]
 fn test_task_label_execution_is_path_scoped() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
 
     // All projects must use `package cuenv` - this is enforced by cuenv
     let project_a = temp_dir.path().join("project-a");
@@ -76,7 +73,7 @@ tasks: {
         "cuenv",
         "-l",
         "projen",
-    ]);
+    ])?;
 
     assert!(
         success,
@@ -92,8 +89,8 @@ tasks: {
 
 #[test]
 fn test_task_label_multiple_labels_and_semantics() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
 
     // Create a project with multiple tasks having different label combinations
     write_env(
@@ -135,7 +132,7 @@ tasks: {
         "test",
         "-l",
         "unit",
-    ]);
+    ])?;
 
     assert!(
         success,
@@ -160,8 +157,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_conflicting_task_name_and_label() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -187,7 +184,7 @@ tasks: {
         "mytask",
         "-l",
         "test",
-    ]);
+    ])?;
 
     assert!(
         !success,
@@ -203,8 +200,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_trailing_args_become_task_name() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -232,7 +229,7 @@ tasks: {
         "--",
         "arg1",
         "arg2",
-    ]);
+    ])?;
 
     assert!(
         !success,
@@ -249,8 +246,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_no_matching_tasks() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -275,7 +272,7 @@ tasks: {
         "test",
         "-l",
         "nonexistent",
-    ]);
+    ])?;
 
     assert!(!success, "Expected failure when no tasks match label");
     assert!(
@@ -287,8 +284,8 @@ tasks: {
 
 #[test]
 fn test_task_label_error_empty_labels() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     write_env(
         &temp_dir,
         r#"package test
@@ -312,7 +309,7 @@ tasks: {
         "test",
         "-l",
         "   ",
-    ]);
+    ])?;
 
     assert!(!success, "Expected failure with empty/whitespace labels");
     assert!(

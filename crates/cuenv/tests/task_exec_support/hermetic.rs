@@ -1,11 +1,8 @@
-use super::{create_test_dir, find_in_path, init_cue_module, run_cuenv};
-use std::error::Error;
+use super::{TestResult, create_test_dir, find_in_path, init_cue_module, run_cuenv};
 use std::fs;
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
-
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
     fs::write(temp_dir.path().join("env.cue"), cue_content)?;
@@ -28,8 +25,8 @@ fn find_path_line<'a>(stdout: &'a str, expected_prefix: &str) -> TestResult<&'a 
 
 #[test]
 fn test_exec_hermetic_path_no_host_pollution() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
 
     // Create a minimal project with a custom PATH in env
     let cue_content = r#"package test
@@ -43,7 +40,7 @@ env: {
     write_env(&temp_dir, cue_content)?;
 
     // Run printenv PATH via exec - use absolute path since PATH is hermetic
-    let printenv = find_in_path("printenv");
+    let printenv = find_in_path("printenv")?;
     let (stdout, _stderr, success) = run_cuenv(&[
         "exec",
         "-p",
@@ -52,7 +49,7 @@ env: {
         "test",
         &printenv,
         "PATH",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
 
@@ -81,12 +78,12 @@ env: {
 
 #[test]
 fn test_task_hermetic_path_no_host_pollution() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
 
     // Create a project with a task that prints PATH
     // Use absolute path since PATH is hermetic
-    let printenv = find_in_path("printenv");
+    let printenv = find_in_path("printenv")?;
     let cue_content = format!(
         r#"package test
 
@@ -114,7 +111,7 @@ tasks: {{
         "--package",
         "test",
         "show_path",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
 

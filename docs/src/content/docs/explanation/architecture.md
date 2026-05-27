@@ -148,9 +148,10 @@ preparation, and execution orchestration. CLI task/exec integration coverage
 keeps the root runner in `crates/cuenv/tests/task_exec_integration.rs`, with
 shared harness and scenario groups split under
 `crates/cuenv/tests/task_exec_support/`. Basic, example-backed, label-selection,
-and hermetic task/exec scenarios keep fixture writes, UTF-8 path arguments,
+and hermetic task/exec scenarios keep shared tempdir, CUE module setup, PATH
+lookup, cuenv command execution, fixture writes, UTF-8 path arguments,
 ordered-output checks, and PATH-line lookup on fallible helpers instead of
-file-level unwrap allowances or raw stderr skip messages. Nix runtime
+parent/module-level unwrap allowances or raw stderr skip messages. Nix runtime
 integration tests keep fixture setup, state/cache/runtime directory creation,
 command execution, and Nix-hook retries behind fallible helpers so they can
 skip missing-Nix or sandboxed-FFI cases quietly without file-level unwrap/expect

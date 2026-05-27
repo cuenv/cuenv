@@ -1,11 +1,8 @@
-use super::{create_test_dir, init_cue_module, run_cuenv};
-use std::error::Error;
+use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
 use std::fs;
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
-
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
     fs::write(temp_dir.path().join("env.cue"), cue_content)?;
@@ -28,8 +25,8 @@ fn output_position(output: &str, needle: &'static str) -> TestResult<usize> {
 #[test]
 fn test_task_list_with_shorthand() -> TestResult {
     // Create a temporary directory with test CUE files
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -53,7 +50,7 @@ tasks: {
 
     // Test listing tasks with 't' shorthand
     let (stdout, _stderr, success) =
-        run_cuenv(&["t", "-p", path_arg(temp_dir.path())?, "--package", "test"]);
+        run_cuenv(&["t", "-p", path_arg(temp_dir.path())?, "--package", "test"])?;
 
     assert!(success, "Command should succeed");
     assert!(stdout.contains("Tasks:"), "Should show tasks header");
@@ -64,8 +61,8 @@ tasks: {
 
 #[test]
 fn test_task_execution() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -92,7 +89,7 @@ tasks: {
         "--package",
         "test",
         "greet",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     assert!(
@@ -108,8 +105,8 @@ tasks: {
 
 #[test]
 fn test_imported_task_working_directory_modes() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
 
     let shared_dir = temp_dir.path().join("shared");
     let definition_fixture_dir = shared_dir.join("fixtures");
@@ -180,7 +177,7 @@ tasks: {
         ("moduleRelative", "caller-root"),
     ] {
         let (stdout, stderr, success) =
-            run_cuenv(&["task", "-p", project_path, "--package", "test", task]);
+            run_cuenv(&["task", "-p", project_path, "--package", "test", task])?;
 
         assert!(
             success,
@@ -197,8 +194,8 @@ tasks: {
 
 #[test]
 fn test_task_with_environment_propagation() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -224,7 +221,7 @@ tasks: {
         "--package",
         "test",
         "check_env",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     assert!(
@@ -236,8 +233,8 @@ tasks: {
 
 #[test]
 fn test_exec_command_with_shorthand() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -257,7 +254,7 @@ env: {
         "test",
         "printenv",
         "EXEC_TEST",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     assert!(
@@ -269,8 +266,8 @@ env: {
 
 #[test]
 fn test_exec_with_arguments() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -292,7 +289,7 @@ env: {
         "arg1",
         "arg2",
         "arg3",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     assert!(
@@ -304,8 +301,8 @@ env: {
 
 #[test]
 fn test_task_sequential_list() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -341,7 +338,7 @@ tasks: {
         "--package",
         "test",
         "sequence",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     // Check that all tasks ran in sequence
@@ -360,8 +357,8 @@ tasks: {
 
 #[test]
 fn test_task_nested_groups() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -392,7 +389,7 @@ tasks: {
         "--package",
         "test",
         "nested",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     assert!(
@@ -404,8 +401,8 @@ tasks: {
 
 #[test]
 fn test_nested_task_paths_and_aliases() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -439,7 +436,7 @@ tasks: {
         path_arg(temp_dir.path())?,
         "--package",
         "test",
-    ]);
+    ])?;
     assert!(success, "Listing nested tasks should succeed");
     assert!(stdout.contains("bun"), "Should list parent group");
     assert!(
@@ -455,7 +452,7 @@ tasks: {
         "--package",
         "test",
         "bun.install",
-    ]);
+    ])?;
     assert!(success, "Should run nested task via dotted syntax");
     assert!(stdout.contains("bun install"));
 
@@ -467,7 +464,7 @@ tasks: {
         "--package",
         "test",
         "bun:install",
-    ]);
+    ])?;
     assert!(success, "Should run nested task via colon syntax");
     assert!(stdout.contains("bun install"));
 
@@ -479,7 +476,7 @@ tasks: {
         "--package",
         "test",
         "bun.test",
-    ]);
+    ])?;
     assert!(success, "Dependent nested task should run");
     assert!(
         stdout.contains("bun install"),
@@ -491,8 +488,8 @@ tasks: {
 
 #[test]
 fn test_nonexistent_task_error() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -516,7 +513,7 @@ tasks: {
         "--package",
         "test",
         "nonexistent",
-    ]);
+    ])?;
 
     assert!(!success, "Command should fail");
     assert!(
@@ -528,8 +525,8 @@ tasks: {
 
 #[test]
 fn test_exec_command_exit_code() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r"package test
 
 env: {}";
@@ -544,7 +541,7 @@ env: {}";
         "--package",
         "test",
         "false", // Command that always fails
-    ]);
+    ])?;
 
     assert!(!success, "Command should fail when executed command fails");
     Ok(())

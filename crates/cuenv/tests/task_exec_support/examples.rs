@@ -1,11 +1,8 @@
-use super::{create_test_dir, init_cue_module, run_cuenv};
-use std::error::Error;
+use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn project_root() -> TestResult<PathBuf> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -50,7 +47,7 @@ fn test_task_basic_example() -> TestResult {
     let example_path_arg = path_arg(&example_path)?;
 
     // Test listing tasks
-    let (stdout, _, success) = run_cuenv(&["t", "-p", example_path_arg, "--package", "examples"]);
+    let (stdout, _, success) = run_cuenv(&["t", "-p", example_path_arg, "--package", "examples"])?;
 
     assert!(success, "Should list tasks successfully");
     assert!(
@@ -68,7 +65,7 @@ fn test_task_basic_example() -> TestResult {
         "--package",
         "examples",
         "interpolate",
-    ]);
+    ])?;
 
     assert!(success, "Should run interpolate task");
     assert!(
@@ -84,7 +81,7 @@ fn test_task_basic_example() -> TestResult {
         "--package",
         "examples",
         "propagate",
-    ]);
+    ])?;
 
     assert!(success, "Should run propagate task");
     assert!(
@@ -101,7 +98,7 @@ fn test_task_basic_example() -> TestResult {
         "examples",
         "printenv",
         "NAME",
-    ]);
+    ])?;
 
     assert!(success, "Should run exec command");
     assert!(
@@ -113,8 +110,8 @@ fn test_task_basic_example() -> TestResult {
 
 #[test]
 fn test_complex_task_dependency_chain() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -155,7 +152,7 @@ tasks: {
 
     // Test running the final task should execute all dependencies
     let (stdout, stderr, success) =
-        run_cuenv(&["task", "-p", project_path, "--package", "test", "deploy"]);
+        run_cuenv(&["task", "-p", project_path, "--package", "test", "deploy"])?;
 
     assert!(
         success,
@@ -183,8 +180,8 @@ tasks: {
 
 #[test]
 fn test_task_failure_handling() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -208,7 +205,7 @@ tasks: {
         "--package",
         "test",
         "failing_task",
-    ]);
+    ])?;
 
     assert!(!success, "Command should fail");
     assert!(
@@ -220,8 +217,8 @@ tasks: {
 
 #[test]
 fn test_mixed_task_types() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -271,7 +268,7 @@ tasks: {
         "--package",
         "test",
         "single_task",
-    ]);
+    ])?;
     assert!(success);
     assert!(stdout.contains("MIX single"));
 
@@ -283,7 +280,7 @@ tasks: {
         "--package",
         "test",
         "sequential_tasks",
-    ]);
+    ])?;
     assert!(success);
     assert!(stdout.contains("MIX seq1"));
     assert!(stdout.contains("MIX seq2"));
@@ -296,7 +293,7 @@ tasks: {
         "--package",
         "test",
         "parallel_tasks",
-    ]);
+    ])?;
     assert!(success);
     // Both parallel tasks should execute
     assert!(stdout.contains("MIX par1") || stdout.contains("MIX par2"));
@@ -305,8 +302,8 @@ tasks: {
 
 #[test]
 fn test_special_characters_in_environment() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -345,7 +342,7 @@ tasks: {
         "--package",
         "test",
         "test_special",
-    ]);
+    ])?;
     assert!(success);
     assert!(stdout.contains("Hello $USER & $(whoami)"));
 
@@ -357,7 +354,7 @@ tasks: {
         "--package",
         "test",
         "test_quotes",
-    ]);
+    ])?;
     assert!(success);
     assert!(stdout.contains("\"Hello world\""));
 
@@ -369,7 +366,7 @@ tasks: {
         "--package",
         "test",
         "test_spaces",
-    ]);
+    ])?;
     assert!(success);
     assert!(stdout.contains("Value with spaces"));
     Ok(())
@@ -377,8 +374,8 @@ tasks: {
 
 #[test]
 fn test_exec_with_complex_args() -> TestResult {
-    let temp_dir = create_test_dir();
-    init_cue_module(temp_dir.path());
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
     let cue_content = r#"package test
 
 name: "test"
@@ -402,7 +399,7 @@ env: {
         "arg'with'single'quotes",
         "$TEST_VAR",
         "$(echo 'command substitution')",
-    ]);
+    ])?;
 
     assert!(success, "Command should succeed");
     // All arguments should be treated literally
