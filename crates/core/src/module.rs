@@ -438,9 +438,9 @@ mod tests {
     #[test]
     fn test_instance_deserialize_error() {
         #[derive(Debug, Deserialize)]
-        #[allow(dead_code)] // Test struct for deserialization error testing
         struct RequiredFields {
-            required_field: String,
+            #[serde(rename = "required_field")]
+            _required_field: String,
         }
 
         let instance = Instance {

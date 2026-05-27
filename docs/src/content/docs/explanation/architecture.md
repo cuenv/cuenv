@@ -83,7 +83,9 @@ conversion each live in sibling modules under `crates/core/src/manifest/`.
 Module-wide CUE evaluation assembly lives in `crates/core/src/module.rs`;
 task-reference/source enrichment lives in `crates/core/src/module/task_refs.rs`
 and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
-live in `crates/core/src/module/deserialize.rs`.
+live in `crates/core/src/module/deserialize.rs`. Deserialization error fixtures
+should name intentionally unread fields with an underscore rather than carrying
+local `dead_code` allowances.
 Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
 keeps the executable task and task-tree model, while params, retry config,
 legacy task-level Dagger config, cache policy, capture metadata, shell
