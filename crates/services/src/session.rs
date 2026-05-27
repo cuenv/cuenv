@@ -4,6 +4,7 @@
 //! `cuenv ps`, `cuenv logs`, `cuenv down`, and `cuenv restart`.
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -98,6 +99,7 @@ impl SessionManager {
 
         fs::create_dir_all(root.join("state"))?;
         fs::create_dir_all(root.join("logs"))?;
+        fs::create_dir_all(root.join("control").join("restart"))?;
 
         let info = SessionInfo {
             version: 1,
@@ -165,6 +167,30 @@ impl SessionManager {
         Ok(ShutdownRequestOutcome::Signaled {
             controller_pid: info.controller_pid,
         })
+    }
+
+    /// Queue a restart request for a running service supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control directory or request marker cannot be written.
+    pub fn request_service_restart(&self, name: &str) -> crate::Result<()> {
+        fs::create_dir_all(self.restart_request_dir())?;
+        fs::write(self.restart_request_path(name), Utc::now().to_rfc3339())?;
+        Ok(())
+    }
+
+    /// Consume a queued restart request for a service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request marker exists but cannot be removed.
+    pub fn take_service_restart_request(&self, name: &str) -> crate::Result<bool> {
+        match fs::remove_file(self.restart_request_path(name)) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Update a service's state.
@@ -261,6 +287,14 @@ impl SessionManager {
         let data = fs::read_to_string(root.join("session.json"))?;
         serde_json::from_str(&data)
             .map_err(|e| crate::Error::session(format!("corrupt session.json: {e}")))
+    }
+
+    fn restart_request_dir(&self) -> PathBuf {
+        self.root.join("control").join("restart")
+    }
+
+    fn restart_request_path(&self, name: &str) -> PathBuf {
+        self.restart_request_dir().join(format!("{name}.request"))
     }
 }
 
@@ -432,5 +466,17 @@ mod tests {
                 controller_pid: 999_999
             }
         );
+    }
+
+    #[test]
+    fn test_service_restart_request_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = SessionManager::create(dir.path(), "test-project").unwrap();
+
+        assert!(!session.take_service_restart_request("db").unwrap());
+
+        session.request_service_restart("db").unwrap();
+        assert!(session.take_service_restart_request("db").unwrap());
+        assert!(!session.take_service_restart_request("db").unwrap());
     }
 }

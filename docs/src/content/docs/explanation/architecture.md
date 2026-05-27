@@ -143,6 +143,9 @@ named-service shutdown fails clearly until supervisor IPC exists.
 `cuenv logs --follow` uses the same persisted session boundary, tailing
 appended log file content until the controller exits instead of claiming
 real-time follow support without streaming.
+`cuenv restart` also stays inside that boundary: the CLI queues persisted
+restart requests, and running supervisors consume those requests before
+stopping and re-spawning the selected services.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

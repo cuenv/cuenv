@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -134,6 +134,49 @@ pub struct StateUpdate<'a> {
     pub exit_code: Option<i32>,
     /// Error message (if failed).
     pub error: Option<&'a str>,
+}
+
+#[derive(Clone, Copy)]
+enum RestartTrigger {
+    Manual,
+    Watch,
+}
+
+impl RestartTrigger {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Watch => "watch",
+        }
+    }
+
+    fn counts_toward_budget(self) -> bool {
+        matches!(self, Self::Watch)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RestartStep {
+    trigger: RestartTrigger,
+    current_attempt: u32,
+}
+
+enum ServiceWait {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    Shutdown,
+    Restart(RestartTrigger),
+}
+
+fn abort_output_handles(
+    stdout_handle: Option<tokio::task::JoinHandle<()>>,
+    stderr_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(handle) = stdout_handle {
+        handle.abort();
+    }
+    if let Some(handle) = stderr_handle {
+        handle.abort();
+    }
 }
 
 impl ServiceSupervisor {
@@ -412,34 +455,47 @@ impl ServiceSupervisor {
                 }
             }
 
-            // Wait for process exit, shutdown, or watch event
-            let exit_status = tokio::select! {
-                status = child.wait() => status,
-                () = shutdown.cancelled() => {
-                    emit_service_stopping!(&self.name);
-                    self.stop_process(&mut child).await;
-                    return SupervisorResult::Stopped;
-                }
+            // Wait for process exit, shutdown, file watcher, or a manual
+            // restart queued by `cuenv restart`.
+            let wait = tokio::select! {
+                status = child.wait() => ServiceWait::Exited(status),
+                () = shutdown.cancelled() => ServiceWait::Shutdown,
                 Some(watch_event) = watch_rx.recv() => {
                     let changed: Vec<String> = watch_event.paths.iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
                     cuenv_events::emit_service_watch!(&self.name, &changed);
-                    emit_service_restarting!(&self.name, "watch", attempt);
+                    ServiceWait::Restart(RestartTrigger::Watch)
+                }
+                () = self.wait_for_restart_request() => ServiceWait::Restart(RestartTrigger::Manual),
+            };
+
+            let exit_status = match wait {
+                ServiceWait::Exited(status) => {
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    status
+                }
+                ServiceWait::Shutdown => {
+                    emit_service_stopping!(&self.name);
                     self.stop_process(&mut child).await;
-                    restart_history.push_back(Instant::now());
-                    attempt += 1;
+                    abort_output_handles(stdout_handle, stderr_handle);
+                    return SupervisorResult::Stopped;
+                }
+                ServiceWait::Restart(trigger) => {
+                    attempt = self
+                        .restart_running_process(
+                            &mut child,
+                            RestartStep {
+                                trigger,
+                                current_attempt: attempt,
+                            },
+                            &mut restart_history,
+                        )
+                        .await;
+                    abort_output_handles(stdout_handle, stderr_handle);
                     continue;
                 }
             };
-
-            // Clean up output handles
-            if let Some(h) = stdout_handle {
-                h.abort();
-            }
-            if let Some(h) = stderr_handle {
-                h.abort();
-            }
 
             let exit_code = exit_status.ok().and_then(|s| s.code());
             emit_service_stopped!(&self.name, exit_code);
@@ -576,6 +632,44 @@ impl ServiceSupervisor {
 
         let child = cmd.spawn()?;
         Ok(child)
+    }
+
+    async fn wait_for_restart_request(&self) {
+        let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            match self.session.take_service_restart_request(&self.name) {
+                Ok(true) => return,
+                Ok(false) => {}
+                Err(error) => warn!(
+                    service = %self.name,
+                    error = %error,
+                    "Failed to consume service restart request"
+                ),
+            }
+        }
+    }
+
+    async fn restart_running_process(
+        &self,
+        child: &mut Child,
+        step: RestartStep,
+        restart_history: &mut VecDeque<Instant>,
+    ) -> u32 {
+        let next_attempt = step.current_attempt + 1;
+        emit_service_restarting!(&self.name, step.trigger.reason(), next_attempt);
+        self.log_state_update(StateUpdate {
+            lifecycle: ServiceLifecycle::Restarting,
+            pid: None,
+            exit_code: None,
+            error: None,
+        });
+        self.stop_process(child).await;
+        if step.trigger.counts_toward_budget() {
+            restart_history.push_back(Instant::now());
+            return next_attempt;
+        }
+        step.current_attempt
     }
 
     async fn stop_process(&self, child: &mut tokio::process::Child) {
@@ -747,5 +841,32 @@ impl ServiceSupervisor {
             error: update.error.map(String::from),
         };
         self.session.update_service(&state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn wait_for_restart_request_consumes_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(SessionManager::create(dir.path(), "test-project").unwrap());
+        let supervisor = ServiceSupervisor::new(SupervisorConfig {
+            name: "db".to_string(),
+            service: Service::default(),
+            project_root: dir.path().to_path_buf(),
+            session: Arc::clone(&session),
+        });
+
+        session.request_service_restart("db").unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            supervisor.wait_for_restart_request(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!session.take_service_restart_request("db").unwrap());
     }
 }

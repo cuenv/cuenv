@@ -278,6 +278,10 @@ Restart one or more services.
 cuenv restart <SERVICES...> [OPTIONS]
 ```
 
+`cuenv restart` requires an active `cuenv up` session for the selected project.
+It queues a persisted restart request for each named service, and the running
+supervisor consumes that request to stop and re-spawn the service.
+
 **Arguments:**
 
 - `<SERVICES>`: Service names to restart (required).
