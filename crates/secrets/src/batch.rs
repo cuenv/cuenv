@@ -12,6 +12,7 @@ use crate::{
 };
 use futures::future::try_join_all;
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 
 /// Configuration for batch resolution.
 #[derive(Debug, Clone, Default)]
@@ -99,10 +100,13 @@ impl<'a> BatchResolver<'a> {
     /// - A required provider is not registered
     /// - Salt is missing when secrets have `cache_key: true`
     /// - Any secret resolution fails
-    pub async fn resolve_all(
+    pub async fn resolve_all<S>(
         &self,
-        secrets: &HashMap<String, (SecretSpec, &'static str)>,
-    ) -> Result<BatchSecrets, SecretError> {
+        secrets: &HashMap<String, (SecretSpec, &'static str), S>,
+    ) -> Result<BatchSecrets, SecretError>
+    where
+        S: BuildHasher + Sync,
+    {
         // Check salt requirements upfront
         let needs_salt = secrets.values().any(|(spec, _)| spec.cache_key);
         if needs_salt && !self.config.salt_config.has_salt() {
@@ -193,20 +197,27 @@ impl<'a> BatchResolver<'a> {
 ///
 /// let secrets = resolve_batch(&resolver, &specs, &salt).await?;
 /// ```
-#[allow(clippy::implicit_hasher)]
-pub async fn resolve_batch<R: SecretResolver>(
+pub async fn resolve_batch<R, S>(
     resolver: &R,
-    secrets: &HashMap<String, SecretSpec>,
+    secrets: &HashMap<String, SecretSpec, S>,
     salt_config: &SaltConfig,
-) -> Result<BatchSecrets, SecretError> {
+) -> Result<BatchSecrets, SecretError>
+where
+    R: SecretResolver,
+    S: BuildHasher + Sync,
+{
     // Check salt requirements
     let needs_salt = secrets.values().any(|s| s.cache_key);
     if needs_salt && !salt_config.has_salt() {
         return Err(SecretError::MissingSalt);
     }
 
-    // Resolve all secrets using the resolver's batch method
-    let batch_results = resolver.resolve_batch(secrets).await?;
+    // Resolve all secrets using the resolver's object-safe batch method.
+    let resolver_input = secrets
+        .iter()
+        .map(|(name, spec)| (name.clone(), spec.clone()))
+        .collect::<HashMap<_, _>>();
+    let batch_results = resolver.resolve_batch(&resolver_input).await?;
 
     // Build BatchSecrets with fingerprints
     let mut batch = BatchSecrets::with_capacity(secrets.len());

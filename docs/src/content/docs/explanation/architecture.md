@@ -299,6 +299,9 @@ for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs
 The default secret registry keeps a stable fallible `Result` API while
 registering env, exec, and optional 1Password/Infisical resolvers without a
 local `unnecessary_wraps` suppression.
+Secret batch convenience APIs accept caller-owned maps generically over their
+`BuildHasher`, while the object-safe resolver trait keeps its internal concrete
+map boundary for provider implementations.
 The exec resolver's JSON command shape stays private inside
 `crates/secrets/src/resolvers/exec.rs`; callers configure it through
 `schema.#ExecSecret` rather than a public Rust constructor.
