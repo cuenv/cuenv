@@ -126,7 +126,8 @@ including saturating elapsed-millisecond conversion for persisted hook results;
 source-hook shell environment capture lives in
 `crates/hooks/src/executor/source_environment.rs`. Supervisor integration tests
 scope `CUENV_EXECUTABLE` through `temp_env` instead of mutating the process
-environment globally. Hook integration tests share
+environment globally, and keep skip diagnostics on tracing instead of raw
+stderr. Hook integration tests share
 `crates/cuenv/tests/hook_test_support` for temporary CUE module setup, approval,
 and sandbox error handling; return `Result` from filesystem and command setup;
 and report unexpected exits as errors instead of using file-level unwrap/expect

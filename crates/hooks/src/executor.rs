@@ -711,8 +711,4 @@ fn duration_millis(duration: Duration) -> u64 {
 
 #[cfg(test)]
 #[path = "executor_tests.rs"]
-#[expect(
-    clippy::print_stderr,
-    reason = "Tests may use eprintln! to report skip conditions"
-)]
 mod tests;

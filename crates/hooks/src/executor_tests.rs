@@ -189,7 +189,7 @@ async fn test_command_validation() {
 async fn test_cancellation() {
     // Skip if cuenv binary is not available
     let Some(cuenv_binary) = cuenv_executable() else {
-        eprintln!("Skipping test_cancellation: cuenv binary not found");
+        tracing::info!("Skipping test_cancellation: cuenv binary not found");
         return;
     };
 
@@ -239,7 +239,7 @@ async fn test_cancellation() {
             }
 
             if !started {
-                eprintln!("Warning: Supervisor didn't start in time, skipping cancellation test");
+                tracing::warn!("Supervisor didn't start in time, skipping cancellation test");
                 return;
             }
 
@@ -300,7 +300,7 @@ async fn test_large_output_handling() {
 async fn test_state_cleanup() {
     // Skip if cuenv binary is not available
     let Some(cuenv_binary) = cuenv_executable() else {
-        eprintln!("Skipping test_state_cleanup: cuenv binary not found");
+        tracing::info!("Skipping test_state_cleanup: cuenv binary not found");
         return;
     };
 
@@ -350,7 +350,7 @@ async fn test_state_cleanup() {
             }
 
             if !state_exists {
-                eprintln!("Warning: State never created, skipping cleanup test");
+                tracing::warn!("State never created, skipping cleanup test");
                 return;
             }
 
@@ -359,10 +359,7 @@ async fn test_state_cleanup() {
                 .wait_for_completion(&directory_path, &config_hash, Some(15))
                 .await
             {
-                eprintln!(
-                    "Warning: wait_for_completion timed out: {}, skipping test",
-                    e
-                );
+                tracing::warn!("wait_for_completion timed out: {e}, skipping test");
                 return;
             }
 
