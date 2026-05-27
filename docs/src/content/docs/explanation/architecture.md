@@ -198,6 +198,9 @@ as unread per-client state.
 `crates/cuenv/src/performance.rs` exposes the opt-in performance registry,
 guards, and macros directly, so it does not need a module-level dead-code
 allowance.
+The CLI library root keeps the public module/re-export wiring only; broad
+derive-workaround allowances have been removed so warning exceptions stay local
+to the module that needs them.
 The async dispatcher owns direct async commands plus changeset/release output
 envelopes; the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through
