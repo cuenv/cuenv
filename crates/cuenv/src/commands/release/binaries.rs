@@ -112,7 +112,8 @@ pub async fn execute_release_binaries(opts: ReleaseBinariesOptions) -> cuenv_cor
         .with_output_dir("target/release-artifacts")
         .with_dry_run(dry_run);
     let phase = release_binary_phase(phase);
-    let backends = release_binary_backends(root, &binary_name, backends.as_deref(), &release_config);
+    let backends =
+        release_binary_backends(root, &binary_name, backends.as_deref(), &release_config);
     let report = run_release_binaries(config, backends, phase).await?;
 
     Ok(format_release_binaries_output(&ReleaseBinariesOutput {
@@ -164,7 +165,7 @@ fn release_binary_targets(
             Target::LinuxArm64,
             Target::DarwinArm64,
         ]);
-    };
+    }
 
     targets
         .iter()
@@ -200,6 +201,7 @@ fn release_binary_backends(
         root,
         configured_backends,
         config.backends.as_ref().and_then(|b| b.github.as_ref()),
+        &config.git.tag_prefix,
     );
     #[cfg(not(feature = "github"))]
     let _ = root;
@@ -210,6 +212,7 @@ fn release_binary_backends(
         binary_name,
         configured_backends,
         config.backends.as_ref().and_then(|b| b.homebrew.as_ref()),
+        &config.git.tag_prefix,
     );
     #[cfg(not(feature = "homebrew"))]
     let _ = binary_name;
@@ -228,6 +231,7 @@ fn add_github_release_backend(
     root: &Path,
     configured_backends: bool,
     config: Option<&GitHubBackendConfig>,
+    tag_prefix: &str,
 ) {
     if configured_backends && config.is_none() {
         return;
@@ -245,7 +249,8 @@ fn add_github_release_backend(
         if let Some((owner, repo)) = repo {
             let draft = config.is_some_and(|cfg| cfg.draft);
             let config = cuenv_github::GitHubReleaseConfig::new(&owner, &repo, token)
-                .with_draft(draft);
+                .with_draft(draft)
+                .with_tag_prefix(tag_prefix);
             backends.push(Box::new(cuenv_github::GitHubReleaseBackend::new(config)));
         }
     }
@@ -257,6 +262,7 @@ fn add_homebrew_release_backend(
     binary_name: &str,
     configured_backends: bool,
     config: Option<&HomebrewBackendConfig>,
+    tag_prefix: &str,
 ) {
     if configured_backends && config.is_none() {
         return;
@@ -276,7 +282,8 @@ fn add_homebrew_release_backend(
     let config = cuenv_homebrew::HomebrewConfig::new(&tap, formula)
         .with_license("AGPL-3.0-or-later")
         .with_homepage(format!("https://github.com/{binary_name}"))
-        .with_token_env(token_env);
+        .with_token_env(token_env)
+        .with_tag_prefix(tag_prefix);
     backends.push(Box::new(cuenv_homebrew::HomebrewBackend::new(config)));
 }
 

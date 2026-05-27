@@ -566,7 +566,7 @@ fn publish_to_crates_io(crate_dir: &Path) -> cuenv_core::Result<bool> {
     }
 }
 
-fn build_publish_plan(root: &Path) -> cuenv_core::Result<PublishPlan> {
+fn collect_publish_packages(root: &Path) -> cuenv_core::Result<Vec<PublishPackage>> {
     let manifest = CargoManifest::new(root);
 
     let package_paths = manifest.get_package_paths().map_err(|e| {
@@ -596,9 +596,20 @@ fn build_publish_plan(root: &Path) -> cuenv_core::Result<PublishPlan> {
         });
     }
 
-    PublishPlan::from_packages(publish_packages).map_err(|e| {
-        cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}"))
-    })
+    Ok(publish_packages)
+}
+
+fn build_publish_plan(root: &Path, ordered: bool) -> cuenv_core::Result<PublishPlan> {
+    let publish_packages = collect_publish_packages(root)?;
+
+    if !ordered {
+        return Ok(PublishPlan {
+            packages: publish_packages,
+        });
+    }
+
+    PublishPlan::from_packages(publish_packages)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}")))
 }
 
 fn publish_packages_to_crates_io(
@@ -685,7 +696,8 @@ pub fn execute_release_publish(
         ));
     }
 
-    let plan = build_publish_plan(root)?;
+    let ordered = crates_config.as_ref().is_none_or(|config| config.ordered);
+    let plan = build_publish_plan(root, ordered)?;
 
     // Extract package names in topological order
     let sorted_packages: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
