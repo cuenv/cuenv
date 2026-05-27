@@ -3,8 +3,6 @@
 //! These tests run the cuenv CLI and verify both the task DAG structure
 //! (via --dry-run) and the tracing spans emitted during execution.
 
-mod trace_testing;
-
 use serde::Deserialize;
 use std::error::Error;
 use std::ffi::OsStr;
