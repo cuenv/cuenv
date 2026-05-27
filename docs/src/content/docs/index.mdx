@@ -31,6 +31,43 @@ in [CUE](https://cuelang.org), a typed configuration language, and cuenv
 validates it, resolves secrets at runtime, runs your tasks, and generates your
 CI from the same definitions.
 
+## Feature matrix
+
+Everything cuenv offers today, with an honest status. **Stable** is safe to rely
+on, **Partial** works within documented limits, and **Preview** exists in the
+schema but isn't usable yet. The [schema status page](/reference/schema/status/)
+is the authoritative source.
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Typed environment variables | Stable | Enums, bounds, regex, defaults, interpolation, per-environment overrides |
+| `cuenv exec` — run a command in the resolved environment | Stable | |
+| Secrets: env vars, custom CLI, 1Password, Infisical | Stable | Resolved at runtime, redacted from output |
+| Secrets: AWS, GCP, Vault | Preview | Defined in the schema; runtime resolvers not registered yet |
+| Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
+| Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
+| Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
+| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Partial | Schema-visible; not fully enforced yet |
+| Shell integration & directory hooks | Stable | Auto-load on `cd`, with an approval gate (`cuenv allow`) |
+| CI: GitHub Actions generation (`cuenv sync ci`) | Stable | |
+| CI: run pipelines locally (`cuenv ci`) | Stable | |
+| CI: contributors (auto-injected setup tasks) | Stable | |
+| CI: Buildkite export | Partial | |
+| CI: GitLab | Preview | `cuenv sync ci` rejects it until an emitter exists |
+| Formatting (`cuenv fmt`) | Stable | rust, nix, go, cue |
+| Code generation (`cuenv sync codegen`) | Partial | Generates files; not all file types fully enforced |
+| Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Partial | From `.rules.cue` via `cuenv sync` |
+| Multi-source tools (`cuenv tools`) | Stable | Nix, GitHub releases, Rustup, URL, OCI |
+| Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
+| VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
+| Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
+| Runtimes: OCI binaries, Dagger | Partial | |
+| Runtime: container | Preview | |
+| Container image build (`cuenv build`) | Preview | Lists configured images; build backend not implemented |
+| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Session state works; task/image dependencies not yet |
+| Changesets (`cuenv changeset`) | Stable | |
+| Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
+
 ## A complete example
 
 ```cue
@@ -108,21 +145,6 @@ evaluation fails loudly when a value doesn't fit.
     of sync the way `.env` + `Makefile` + workflow YAML do.
   </Card>
 </CardGrid>
-
-## What works today
-
-cuenv covers a lot, and not all of it is equally finished. The
-[schema status page](/reference/schema/status/) is the authoritative source for
-what's wired up.
-
-- **Solid:** typed environments, `cuenv exec`, tasks (groups, sequences,
-  dependencies, params, output refs, opt-in caching), shell integration and
-  hooks, and GitHub Actions generation via `cuenv sync ci`.
-- **Secrets:** environment variables, any CLI (`#ExecSecret`), 1Password, and
-  Infisical resolve today. AWS, GCP, and Vault are schema-only for now.
-- **In progress:** Buildkite/GitLab CI, multi-source tools, codegen,
-  `.rules.cue` generation, release management, services, and container/Dagger
-  runtimes.
 
 ## Get started
 
