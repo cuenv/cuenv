@@ -636,7 +636,9 @@ The shell export formatter keeps the loaded-directory and pending-approval
 environment variable names as explicit constants that are interpolated into
 each supported shell snippet. Hook-backed export wait progress writes through
 an explicit stderr helper so prompt-time status rendering stays out of raw
-print macros.
+print macros. Export performance regression tests keep command execution behind
+small `Result`-returning helpers so the shell-prompt latency budget stays
+covered without file-level unwrap/expect allowances.
 
 ## Data Flow
 
