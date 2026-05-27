@@ -30,7 +30,7 @@ Use Nix for builds and checks. Use `cuenv` for orchestration, workflow sync, for
 # Build the CLI package (45+ seconds)
 nix build .#cuenv -L --accept-flake-config
 
-# Run the full check suite (90+ seconds)
+# Run the final review/merge/release gate, not the default per-commit check (90+ seconds)
 nix flake check -L --accept-flake-config
 
 # Run the nextest flake check only
@@ -51,7 +51,7 @@ cuenv task ci.schema-docs-check
 
 ## Validation Strategy
 
-Default to the smallest validation set that proves the current change. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit.
+Default to the smallest validation set that proves the current change. Full flake checks are required evidence for review/merge readiness and broad-risk changes, not a default proof for every isolated draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
 
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 

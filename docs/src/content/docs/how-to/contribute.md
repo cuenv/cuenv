@@ -65,7 +65,7 @@ git checkout -b feature/my-new-feature
 4. **Test Your Changes**
 
 ```bash
-# Run the full review/merge gate
+# Run the final review/merge/release gate, not the default per-commit check
 nix flake check -L --accept-flake-config
 
 # Run specific crate tests
@@ -80,7 +80,7 @@ cuenv sync ci --check
 cuenv fmt --fix
 ```
 
-Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit.
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit.
 
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 

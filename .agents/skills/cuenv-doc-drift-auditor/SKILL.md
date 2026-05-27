@@ -16,6 +16,7 @@ Validation scope:
 - For docs, prompts, examples, skills, or agent-guidance text such as `AGENTS.md`, `cuenv task ci.schema-docs-check` is the required focused gate.
 - Full root flake check is required when preparing the PR for review/merge/release, touching Nix, Cargo, flake outputs, CI/release, build/check wiring, generated workflow contracts, broad cross-crate runtime behavior, schema or CLI support that focused checks cannot fully cover, or when focused validation suggests wider breakage.
 - Do not run the full root flake check for docs-only, prompt-only, agent-guidance-only, repo-local skill-only, mechanical test extraction, test moves, behavior-preserving module splits, or tiny scoped draft commits when focused validation covers the touched surface.
+- If a change does not match a required full-flake trigger, keep validation focused and record the focused gate instead of spending a draft commit on the full root flake check.
 - If the change also alters CLI behavior or schema support, add focused CLI/schema tests and update the schema coverage matrix.
 
 Review this scope when docs or agent behavior changes:
