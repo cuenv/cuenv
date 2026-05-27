@@ -427,8 +427,8 @@ cuenv ci [OPTIONS]
 - `--pipeline <NAME>`: Force a specific pipeline to run.
 - `--export <FORMAT>`: Export pipeline YAML instead of running (`buildkite`, `gitlab`, `github-actions`, `circleci`).
 - `--output <PATH>`: Write exported YAML to a file instead of stdout.
-- `--filter-matrix <KEY=VALUE>`: Filter matrix dimensions. Accepted by the CLI; execution support is partial.
-- `--jobs <N>`: Maximum parallel tasks. Accepted by the CLI; execution support is partial.
+- `--filter-matrix <KEY=VALUE>`: Reserved for local runner matrix filtering. Currently rejected; use `cuenv sync ci` for provider-native matrix workflows.
+- `--jobs <N>`: Maximum parallel task DAG jobs. `0` uses host parallelism.
 - `--from <REF>`: Base ref to compare against (branch name or commit SHA) for affected detection.
 - `--environment, -e <NAME>`: Environment for secrets resolution.
 

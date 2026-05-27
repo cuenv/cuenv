@@ -13,7 +13,7 @@ mod task_execution;
 mod tools;
 
 pub use config::CIExecutorConfig;
-pub use orchestrator::run_ci;
+pub use orchestrator::{RunCiRequest, run_ci};
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 

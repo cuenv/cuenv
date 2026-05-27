@@ -12,6 +12,7 @@ use crate::ir::CachePolicy;
 use crate::report::{PipelineStatus, TaskReport, TaskStatus};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::captures::resolve_captures;
+use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
 use cuenv_core::tasks::{TaskGraph, TaskIndex};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ pub(super) struct PipelineTasksRequest<'a> {
     pub(super) cache_policy_override: Option<CachePolicy>,
     pub(super) hook_env: &'a BTreeMap<String, String>,
     pub(super) continue_on_error: bool,
+    pub(super) max_parallel: usize,
 }
 
 pub(super) struct PipelineTaskResults {
@@ -114,6 +116,7 @@ async fn execute_pipeline_task(request: PipelineTaskRequest<'_>) -> PipelineTask
         environment: pipeline.environment,
         hook_env: pipeline.hook_env,
         continue_on_error: pipeline.continue_on_error,
+        max_parallel: pipeline.max_parallel,
     })
     .await;
 
@@ -239,9 +242,6 @@ fn task_cache_key(output: &TaskOutput) -> String {
     }
 }
 
-/// Default in-project parallelism cap for the CI orchestrator.
-const CI_MAX_PARALLEL: usize = 4;
-
 struct TaskDagOptions<'a> {
     config: &'a Project,
     task_name: &'a str,
@@ -250,13 +250,12 @@ struct TaskDagOptions<'a> {
     environment: Option<&'a str>,
     hook_env: &'a BTreeMap<String, String>,
     continue_on_error: bool,
+    max_parallel: usize,
 }
 
 async fn execute_task_with_deps(
     opts: TaskDagOptions<'_>,
 ) -> std::result::Result<TaskOutput, ExecutorError> {
-    use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
-
     let TaskDagOptions {
         config,
         task_name,
@@ -265,6 +264,7 @@ async fn execute_task_with_deps(
         environment,
         hook_env,
         continue_on_error,
+        max_parallel,
     } = opts;
 
     let index =
@@ -301,10 +301,7 @@ async fn execute_task_with_deps(
     let environment = environment.map(str::to_string);
     let hook_env = Arc::new(hook_env.clone());
 
-    let policy = WalkPolicy {
-        max_parallel: CI_MAX_PARALLEL,
-        continue_on_error,
-    };
+    let policy = task_walk_policy(max_parallel, continue_on_error);
     let summary = walk_parallel_graph(
         graph.inner(),
         policy,
@@ -348,6 +345,13 @@ async fn execute_task_with_deps(
     outputs
         .remove(&canonical_name)
         .ok_or_else(|| ExecutorError::Compilation("No tasks to execute".into()))
+}
+
+fn task_walk_policy(max_parallel: usize, continue_on_error: bool) -> WalkPolicy {
+    WalkPolicy {
+        max_parallel: max_parallel.max(1),
+        continue_on_error,
+    }
 }
 
 async fn compile_and_execute_ir(
@@ -499,5 +503,26 @@ fn ensure_home_env(env: &mut BTreeMap<String, String>) {
         && let Ok(home) = std::env::var("HOME")
     {
         env.insert("HOME".to_string(), home);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_walk_policy_uses_requested_parallelism() {
+        let policy = task_walk_policy(8, true);
+
+        assert_eq!(policy.max_parallel, 8);
+        assert!(policy.continue_on_error);
+    }
+
+    #[test]
+    fn task_walk_policy_clamps_zero_parallelism() {
+        let policy = task_walk_policy(0, false);
+
+        assert_eq!(policy.max_parallel, 1);
+        assert!(!policy.continue_on_error);
     }
 }

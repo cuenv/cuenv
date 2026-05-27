@@ -29,7 +29,7 @@ Status guardrails:
 - Derived GitHub trigger paths are project-input based, but emitted as normalized repo-relative filters; nested inputs like `../flake.nix` must become `flake.nix`. Task inputs without glob metacharacters also emit a `path/**` companion entry so directory inputs trigger on descendants (mirroring `cuenv_core::affected::matches_pattern`). Inputs that escape the repository root are dropped and logged at `warn` level.
 - Runtime affected-task selection in `crates/ci/src/affected.rs` resolves local and external tasks through canonical `TaskIndex` instances. Core task indexing preserves the `#project:` separator, and CI cross-project refs split only on the first `:`, so nested refs like `#project:deploy:preview` keep `deploy:preview` as the task path.
 - `pipelines[*].continueOnError` (default `false`): when `true`, the per-project orchestrator does not abort on the first failure; dependents of the failing task become `task.skipped` events with a `DependencyFailed { dep }` reason while independent siblings keep running. A panic / `JoinError` is still fatal regardless of the flag — we don't reason about state after a panic. The pipeline still exits non-zero overall if any task failed; the flag controls scheduling, not success.
-- Per-project task execution is parallel (bounded `JoinSet`, cap `CI_MAX_PARALLEL = 4` in `crates/ci/src/executor/orchestrator.rs`). Ready-but-capped tasks emit one `task.queued` event each — the priming loop no longer re-emits on every iteration.
+- Per-project task DAG execution is parallel and bounded by `cuenv ci --jobs` via `crates/ci/src/executor/task_execution.rs`; the CLI default uses host parallelism. Ready-but-capped tasks emit one `task.queued` event each — the priming loop no longer re-emits on every iteration.
 - CI pipeline report durations are clamped through checked non-negative conversions in `crates/ci/src/executor/orchestrator.rs`; display formatting should use duration helpers rather than lossy numeric casts. Live pipeline progress percentages in `crates/ci/src/report/progress.rs` should stay on bounded integer basis-point math before converting to display percentages.
 - CI terminal reporter tests should read reporter state through named helpers with explicit failure messages instead of reintroducing module-level `unwrap_used` allowances.
 - Mixed CLI integration tests in `crates/cuenv/tests/integration_tests.rs` cover version, env print, sync, and sync-ci command surfaces. Keep command execution behind `CliOutput`, git/CUE fixtures fallible, and failure diagnostics in assertion messages instead of reintroducing file-level unwrap/expect or raw print allowances.
@@ -44,7 +44,7 @@ Status guardrails:
 - `crates/github/src/release.rs` owns GitHub release backend configuration and token environment parsing; keep tests on scoped `temp_env` overrides instead of unsafe process-wide environment mutation.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
-- `--filter-matrix` and `--jobs` are accepted but not fully applied.
+- `--jobs` is applied to local CI task DAG parallelism. `--filter-matrix` is rejected by the local runner until runtime matrix execution exists; provider-native matrix workflows still come from `cuenv sync ci`.
 - Release schema is partial because CLI release commands do not fully load config from `env.cue`.
 
 Adversarial prompts:

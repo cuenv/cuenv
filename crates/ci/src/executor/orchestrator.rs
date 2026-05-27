@@ -26,28 +26,39 @@ use super::reporting::{
 use super::task_env::resolve_environment;
 use super::task_execution::{PipelineTaskResults, PipelineTasksRequest, execute_pipeline_tasks};
 
+/// Request for running CI pipelines from the executor.
+pub struct RunCiRequest {
+    /// CI provider used for context, changed files, and reporting.
+    pub provider: Arc<dyn CIProvider>,
+    /// Whether to skip actual task execution.
+    pub dry_run: DryRun,
+    /// Optional pipeline name to run.
+    pub specific_pipeline: Option<String>,
+    /// Optional environment override for secrets resolution.
+    pub environment: Option<String>,
+    /// Optional module-root-relative project path filter.
+    pub path_filter: Option<String>,
+    /// Maximum parallel jobs inside each task DAG walk.
+    pub max_parallel: usize,
+}
+
 /// Run the CI pipeline logic
 ///
 /// This is the main entry point for CI execution, integrating with the provider
 /// system for context detection, file change tracking, and reporting.
 ///
-/// # Arguments
-///
-/// * `provider` - The CI provider to use for changed files detection and reporting
-/// * `dry_run` - Whether to skip actual task execution
-/// * `specific_pipeline` - If set, only run tasks from this pipeline
-/// * `environment` - Optional environment override for secrets resolution
-/// * `path_filter` - If set, only process projects under this path (relative to module root)
-///
 /// # Errors
 /// Returns error if IO errors occur or tasks fail
-pub async fn run_ci(
-    provider: Arc<dyn CIProvider>,
-    dry_run: DryRun,
-    specific_pipeline: Option<String>,
-    environment: Option<String>,
-    path_filter: Option<&str>,
-) -> Result<()> {
+pub async fn run_ci(request: RunCiRequest) -> Result<()> {
+    let RunCiRequest {
+        provider,
+        dry_run,
+        specific_pipeline,
+        environment,
+        path_filter,
+        max_parallel,
+    } = request;
+
     let context = provider.context();
     cuenv_events::emit_ci_context!(&context.provider, &context.event, &context.ref_name);
 
@@ -55,7 +66,7 @@ pub async fn run_ci(
     let changed_files = provider.changed_files().await?;
     cuenv_events::emit_ci_changed_files!(changed_files.len());
 
-    let Some(discovered) = load_ci_projects(path_filter)? else {
+    let Some(discovered) = load_ci_projects(path_filter.as_deref())? else {
         return Ok(());
     };
 
@@ -67,6 +78,7 @@ pub async fn run_ci(
         context,
         changed_files: &changed_files,
         discovered: &discovered,
+        max_parallel: max_parallel.max(1),
     })
     .await?;
 
@@ -164,6 +176,7 @@ struct CiProjectRunRequest<'a> {
     context: &'a crate::context::CIContext,
     changed_files: &'a [PathBuf],
     discovered: &'a DiscoveredCiProjects,
+    max_parallel: usize,
 }
 
 async fn run_ci_projects(
@@ -177,6 +190,7 @@ async fn run_ci_projects(
         context,
         changed_files,
         discovered,
+        max_parallel,
     } = request;
 
     // Track failures with structured errors
@@ -214,6 +228,7 @@ async fn run_ci_projects(
                 changed_files,
                 provider,
                 project_configs: &discovered.project_configs,
+                max_parallel,
             })
             .await;
 
@@ -333,6 +348,7 @@ pub struct PipelineExecutionRequest<'a> {
     pub changed_files: &'a [PathBuf],
     pub provider: &'a dyn CIProvider,
     pub project_configs: &'a HashMap<PathBuf, Project>,
+    pub max_parallel: usize,
 }
 
 /// Execute a project's pipeline and handle reporting
@@ -350,6 +366,7 @@ async fn execute_project_pipeline(
     let changed_files = request.changed_files;
     let provider = request.provider;
     let project_configs = request.project_configs;
+    let max_parallel = request.max_parallel;
 
     let start_time = Utc::now();
     let project_display = project_path.display().to_string();
@@ -381,6 +398,7 @@ async fn execute_project_pipeline(
         cache_policy_override,
         hook_env: &hook_env,
         continue_on_error: pipeline_continue_on_error(config, pipeline_name),
+        max_parallel,
     })
     .await;
 
