@@ -40,6 +40,7 @@ const ERROR_CODE_PANIC_RECOVER: &str = "PANIC_RECOVER";
 const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
 const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
 const ERROR_CODE_DEPENDENCY_RES: &str = "DEPENDENCY_RESOLUTION";
+const BRIDGE_PROTOCOL_VERSION: &str = "bridge/1";
 const MODULE_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Error response from the Go bridge
@@ -53,7 +54,6 @@ struct BridgeError {
 /// Structured response envelope from the Go bridge
 #[derive(Debug, Deserialize)]
 struct BridgeEnvelope<'a> {
-    #[allow(dead_code)] // Deserialized from Go FFI bridge; used in tests
     version: String,
     #[serde(borrow)]
     ok: Option<&'a serde_json::value::RawValue>,
@@ -473,7 +473,7 @@ fn call_ffi_eval_module(
 
 /// Parse the JSON envelope from the Go bridge.
 fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
-    serde_json::from_str(json_str).map_err(|e| {
+    let envelope: BridgeEnvelope = serde_json::from_str(json_str).map_err(|e| {
         tracing::error!(
             json_response = json_str,
             parse_error = %e,
@@ -483,7 +483,24 @@ fn parse_bridge_envelope(json_str: &str) -> Result<BridgeEnvelope<'_>> {
             "cue_eval_module",
             format!("Invalid JSON envelope from Go bridge: {e}"),
         )
-    })
+    })?;
+
+    validate_bridge_protocol(&envelope)?;
+    Ok(envelope)
+}
+
+fn validate_bridge_protocol(envelope: &BridgeEnvelope<'_>) -> Result<()> {
+    if envelope.version == BRIDGE_PROTOCOL_VERSION {
+        return Ok(());
+    }
+
+    Err(Error::ffi(
+        "cue_eval_module",
+        format!(
+            "Unsupported CUE bridge protocol version {}; expected {}",
+            envelope.version, BRIDGE_PROTOCOL_VERSION
+        ),
+    ))
 }
 
 /// Process the bridge response and return the module result.

@@ -321,7 +321,7 @@ fn test_bridge_error_constants_consistency() {
 fn test_bridge_envelope_parsing() {
     // Test parsing of valid success envelope
     let success_json = r#"{"version":"bridge/1","ok":{"test":"value"}}"#;
-    let envelope: BridgeEnvelope = serde_json::from_str(success_json).unwrap();
+    let envelope = parse_bridge_envelope(success_json).unwrap();
 
     assert_eq!(envelope.version, "bridge/1");
     assert!(envelope.ok.is_some());
@@ -329,7 +329,7 @@ fn test_bridge_envelope_parsing() {
 
     // Test parsing of valid error envelope
     let error_json = r#"{"version":"bridge/1","error":{"code":"INVALID_INPUT","message":"test error","hint":"test hint"}}"#;
-    let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
+    let envelope = parse_bridge_envelope(error_json).unwrap();
 
     assert_eq!(envelope.version, "bridge/1");
     assert!(envelope.ok.is_none());
@@ -346,7 +346,7 @@ fn test_bridge_envelope_parsing_minimal_error() {
     // Test parsing of error envelope without hint
     let error_json =
         r#"{"version":"bridge/1","error":{"code":"LOAD_INSTANCE","message":"test error"}}"#;
-    let envelope: BridgeEnvelope = serde_json::from_str(error_json).unwrap();
+    let envelope = parse_bridge_envelope(error_json).unwrap();
 
     let error = envelope.error.unwrap();
     assert_eq!(error.code, "LOAD_INSTANCE");
@@ -496,14 +496,12 @@ fn test_path_edge_cases() {
 
 #[test]
 fn test_json_envelope_version_mismatch() {
-    // Test version compatibility checking logic
-    // We can test this by creating mock JSON responses
-
     let incompatible_version_json = r#"{"version":"bridge/2","ok":{"test":"value"}}"#;
-    let envelope: BridgeEnvelope = serde_json::from_str(incompatible_version_json).unwrap();
+    let error = parse_bridge_envelope(incompatible_version_json).unwrap_err();
+    let message = error.to_string();
 
-    assert_eq!(envelope.version, "bridge/2");
-    assert!(!envelope.version.starts_with("bridge/1"));
+    assert!(message.contains("Unsupported CUE bridge protocol version bridge/2"));
+    assert!(message.contains("expected bridge/1"));
 }
 
 #[test]

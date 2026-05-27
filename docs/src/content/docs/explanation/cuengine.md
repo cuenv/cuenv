@@ -44,8 +44,11 @@ failures stay explicit without broad panic/expect lint allowances.
 
 Module evaluation is split into four Rust-side phases: C string preparation,
 a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
-parsing. Keeping those phases separate makes the Go boundary, timeout behavior,
-and response decoding auditable without changing the public API.
+parsing. Bridge-envelope parsing validates the Go bridge protocol version
+before accepting payloads, so incompatible bridge responses fail at the FFI
+boundary instead of flowing into module deserialization. Keeping those phases
+separate makes the Go boundary, timeout behavior, and response decoding
+auditable without changing the public API.
 
 Unit tests assert returned bridge data directly instead of printing successful
 FFI diagnostics. Integration tests keep FFI-unavailable paths quiet and return
