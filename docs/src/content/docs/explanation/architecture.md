@@ -315,9 +315,11 @@ per-task environment precedence and passthrough handling live in
 checked non-negative conversions and display formatting uses duration helpers
 rather than lossy numeric casts. Live pipeline progress percentages are
 calculated with bounded integer basis points in
-`crates/ci/src/report/progress.rs` before formatting as `f32` percentages. CI
-digest diff comparison remains in `crates/ci/src/diff.rs`; human diff
-formatting lives in `crates/ci/src/diff/format.rs`.
+`crates/ci/src/report/progress.rs` before formatting as `f32` percentages.
+CI report generation tests should assert reporter state through named helpers
+rather than lint-suppressed lock unwraps. CI digest diff comparison remains in
+`crates/ci/src/diff.rs`; human diff formatting lives in
+`crates/ci/src/diff/format.rs`.
 Core tool activation schema and environment mutation rules live in
 `crates/core/src/tools/activation.rs`; provider/cache/profile path discovery
 for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs`.

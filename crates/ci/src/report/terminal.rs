@@ -178,10 +178,21 @@ impl ProgressReporter for TerminalReporter {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)] // unwrap is fine in tests
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn current_progress(reporter: &TerminalReporter) -> LivePipelineProgress {
+        let guard = reporter
+            .progress
+            .read()
+            .expect("terminal reporter progress lock should not be poisoned");
+
+        guard
+            .as_ref()
+            .expect("terminal reporter should have started pipeline progress")
+            .clone()
+    }
 
     #[test]
     fn test_terminal_reporter_new() {
@@ -225,8 +236,7 @@ mod tests {
         reporter.pipeline_started("test", 2).await;
 
         {
-            let guard = reporter.progress.read().unwrap();
-            let progress = guard.as_ref().unwrap();
+            let progress = current_progress(&reporter);
             assert_eq!(progress.name, "test");
             assert_eq!(progress.total_tasks, 2);
         }
@@ -234,8 +244,7 @@ mod tests {
         reporter.task_started("t1", "Task 1").await;
 
         {
-            let guard = reporter.progress.read().unwrap();
-            let progress = guard.as_ref().unwrap();
+            let progress = current_progress(&reporter);
             assert_eq!(progress.tasks.len(), 1);
             assert_eq!(progress.tasks[0].status, LiveTaskStatus::Running);
         }
@@ -245,8 +254,7 @@ mod tests {
         reporter.task_completed(&task).await;
 
         {
-            let guard = reporter.progress.read().unwrap();
-            let progress = guard.as_ref().unwrap();
+            let progress = current_progress(&reporter);
             assert_eq!(progress.completed_tasks, 1);
         }
     }
@@ -259,8 +267,7 @@ mod tests {
         reporter.task_cached("t1", "Task 1").await;
 
         {
-            let guard = reporter.progress.read().unwrap();
-            let progress = guard.as_ref().unwrap();
+            let progress = current_progress(&reporter);
             assert_eq!(progress.completed_tasks, 1);
             assert_eq!(progress.cached_tasks, 1);
         }
