@@ -99,7 +99,10 @@ dotted/bracketed CUE task nodes lives in `crates/core/src/tasks/graph/resolver.r
 Advanced graph regression coverage is grouped under
 `crates/core/src/tasks/graph_advanced_tests/` by cross-project references,
 synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-task
-coverage, and scale/edge cases.
+coverage, and scale/edge cases. CLI task-graph stress tests in
+`crates/cuenv/tests/stress_tests.rs` keep ignored large-graph scenarios on
+fallible graph mutation and ordering helpers instead of file-level unwrap/expect
+allowances.
 Generic task DAG primitives live in `crates/task-graph/src/graph.rs`;
 affected-task and transitive-closure helpers live in
 `crates/task-graph/src/graph/analysis.rs`, while resolver-backed group expansion
