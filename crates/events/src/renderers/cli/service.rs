@@ -2,8 +2,7 @@ use super::{CliRenderer, stderr_line, stdout_line};
 use crate::event::{ServiceEvent, Stream};
 
 impl CliRenderer {
-    pub(super) fn render_service(&self, event: &ServiceEvent) {
-        let _ = &self.config; // Reserved for future service rendering options.
+    pub(super) fn render_service(event: &ServiceEvent) {
         match event {
             ServiceEvent::Pending { name } => {
                 stderr_line(format_args!(

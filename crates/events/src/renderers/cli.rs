@@ -116,14 +116,14 @@ impl CliRenderer {
     pub fn render(&self, event: &CuenvEvent) {
         match &event.category {
             EventCategory::Task(task_event) => self.render_task(task_event),
-            EventCategory::Service(service_event) => self.render_service(service_event),
-            EventCategory::Ci(ci_event) => self.render_ci(ci_event),
+            EventCategory::Service(service_event) => Self::render_service(service_event),
+            EventCategory::Ci(ci_event) => Self::render_ci(ci_event),
             EventCategory::Command(cmd_event) => self.render_command(cmd_event),
             EventCategory::Interactive(interactive_event) => {
-                self.render_interactive(interactive_event);
+                Self::render_interactive(interactive_event);
             }
             EventCategory::System(system_event) => self.render_system(system_event),
-            EventCategory::Output(output_event) => self.render_output(output_event),
+            EventCategory::Output(output_event) => Self::render_output(output_event),
         }
     }
 }

@@ -59,7 +59,9 @@ color and verbosity settings at the top level of `CliRendererConfig`, while
 spinner-specific toggles live under `CliSpinnerConfig` so task progress display
 can evolve independently from plain log rendering. Category-specific CLI output
 for task, service, CI, command, interactive, system, and output events lives
-under `crates/events/src/renderers/cli/`.
+under `crates/events/src/renderers/cli/`. Renderers that do not need
+`CliRendererConfig` stay as config-free category functions; only task, command,
+and system rendering read CLI configuration today.
 Spinner progress templates are named constants in
 `crates/events/src/renderers/spinner.rs`, keeping indicatif's `{...}` syntax out
 of normal Rust formatting call sites.

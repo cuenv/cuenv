@@ -2,8 +2,7 @@ use super::{CliRenderer, stderr_line, stdout_line};
 use crate::event::OutputEvent;
 
 impl CliRenderer {
-    pub(super) fn render_output(&self, event: &OutputEvent) {
-        let _ = &self.config; // Reserved for future output rendering options.
+    pub(super) fn render_output(event: &OutputEvent) {
         match event {
             OutputEvent::Stdout { content } => {
                 stdout_line(format_args!("{content}"));

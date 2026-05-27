@@ -2,8 +2,7 @@ use super::{CliRenderer, stdout_line};
 use crate::event::CiEvent;
 
 impl CliRenderer {
-    pub(super) fn render_ci(&self, event: &CiEvent) {
-        let _ = &self.config; // Reserved for future CI rendering options.
+    pub(super) fn render_ci(event: &CiEvent) {
         match event {
             CiEvent::ContextDetected {
                 provider,

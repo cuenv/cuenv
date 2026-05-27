@@ -2,8 +2,7 @@ use super::{CliRenderer, flush_stderr, flush_stdout, stderr, stdout, stdout_line
 use crate::event::InteractiveEvent;
 
 impl CliRenderer {
-    pub(super) fn render_interactive(&self, event: &InteractiveEvent) {
-        let _ = &self.config; // Reserved for future interactive rendering options.
+    pub(super) fn render_interactive(event: &InteractiveEvent) {
         match event {
             InteractiveEvent::PromptRequested {
                 message, options, ..
