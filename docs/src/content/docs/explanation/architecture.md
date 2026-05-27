@@ -147,13 +147,13 @@ keeps feature-gated executor construction in
 preparation, and execution orchestration. CLI task/exec integration coverage
 keeps the root runner in `crates/cuenv/tests/task_exec_integration.rs`, with
 shared harness and scenario groups split under
-`crates/cuenv/tests/task_exec_support/`. Basic task/exec scenarios keep fixture
-writes, UTF-8 path arguments, and ordered-output checks on fallible helpers
-instead of file-level unwrap allowances. Nix runtime integration tests keep
-fixture setup, state/cache/runtime directory creation, command execution, and
-Nix-hook retries behind fallible helpers so they can skip missing-Nix or
-sandboxed-FFI cases quietly without file-level unwrap/expect or raw stderr
-allowances.
+`crates/cuenv/tests/task_exec_support/`. Basic and hermetic task/exec scenarios
+keep fixture writes, UTF-8 path arguments, ordered-output checks, and PATH-line
+lookup on fallible helpers instead of file-level unwrap allowances. Nix runtime
+integration tests keep fixture setup, state/cache/runtime directory creation,
+command execution, and Nix-hook retries behind fallible helpers so they can
+skip missing-Nix or sandboxed-FFI cases quietly without file-level unwrap/expect
+or raw stderr allowances.
 
 **Error handling:**
 Uses `miette` for rich diagnostic errors with:

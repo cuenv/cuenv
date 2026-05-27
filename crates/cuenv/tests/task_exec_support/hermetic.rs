@@ -1,10 +1,33 @@
-#![allow(clippy::unwrap_used)]
-
 use super::{create_test_dir, find_in_path, init_cue_module, run_cuenv};
+use std::error::Error;
 use std::fs;
+use std::io;
+use std::path::Path;
+use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
+    fs::write(temp_dir.path().join("env.cue"), cue_content)?;
+    Ok(())
+}
+
+fn path_arg(path: &Path) -> TestResult<&str> {
+    path.to_str()
+        .ok_or_else(|| io::Error::other(format!("path is not valid UTF-8: {}", path.display())))
+        .map_err(Into::into)
+}
+
+fn find_path_line<'a>(stdout: &'a str, expected_prefix: &str) -> TestResult<&'a str> {
+    stdout
+        .lines()
+        .find(|line| line.starts_with(expected_prefix) || line.contains("PATH"))
+        .ok_or_else(|| io::Error::other(format!("missing PATH line in output: {stdout}")))
+        .map_err(Into::into)
+}
 
 #[test]
-fn test_exec_hermetic_path_no_host_pollution() {
+fn test_exec_hermetic_path_no_host_pollution() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
 
@@ -17,14 +40,14 @@ env: {
     PATH: "/cuenv/tools/bin"
 }"#;
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, cue_content)?;
 
     // Run printenv PATH via exec - use absolute path since PATH is hermetic
     let printenv = find_in_path("printenv");
     let (stdout, _stderr, success) = run_cuenv(&[
         "exec",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         &printenv,
@@ -53,10 +76,11 @@ env: {
         !path.contains("/opt/homebrew"),
         "PATH should not contain /opt/homebrew (host pollution)"
     );
+    Ok(())
 }
 
 #[test]
-fn test_task_hermetic_path_no_host_pollution() {
+fn test_task_hermetic_path_no_host_pollution() -> TestResult {
     let temp_dir = create_test_dir();
     init_cue_module(temp_dir.path());
 
@@ -80,13 +104,13 @@ tasks: {{
 }}"#
     );
 
-    fs::write(temp_dir.path().join("env.cue"), cue_content).unwrap();
+    write_env(&temp_dir, &cue_content)?;
 
     // Run the task
     let (stdout, _stderr, success) = run_cuenv(&[
         "task",
         "-p",
-        temp_dir.path().to_str().unwrap(),
+        path_arg(temp_dir.path())?,
         "--package",
         "test",
         "show_path",
@@ -95,10 +119,7 @@ tasks: {{
     assert!(success, "Command should succeed");
 
     // Extract PATH from output (task output includes other info)
-    let path_line = stdout
-        .lines()
-        .find(|line| line.starts_with("/cuenv/tools/bin") || line.contains("PATH"))
-        .unwrap_or("");
+    let path_line = find_path_line(&stdout, "/cuenv/tools/bin")?;
 
     // PATH should be exactly what we set
     assert!(
@@ -113,4 +134,5 @@ tasks: {{
         !path_line.contains("/usr/local"),
         "PATH should not contain /usr/local (host pollution). Got: {path_line}"
     );
+    Ok(())
 }
