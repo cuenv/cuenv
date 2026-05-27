@@ -70,6 +70,15 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tokio::time::{Duration, sleep};
 
+const VERSION_PROGRESS_STEPS: &[(f32, &str)] = &[
+    (0.0, "Initializing..."),
+    (0.2, "Loading version info..."),
+    (0.4, "Checking build metadata..."),
+    (0.6, "Gathering system info..."),
+    (0.8, "Formatting output..."),
+    (1.0, "Complete"),
+];
+
 /// Represents all available CLI commands with their associated parameters.
 ///
 /// Each variant corresponds to a subcommand in the CLI and contains
@@ -617,26 +626,14 @@ impl CommandExecutor {
             command: command_name.to_string(),
         });
 
-        for i in 0..=5 {
-            #[allow(clippy::cast_precision_loss)]
-            let progress = i as f32 / 5.0;
-            let message = match i {
-                0 => "Initializing...".to_string(),
-                1 => "Loading version info...".to_string(),
-                2 => "Checking build metadata...".to_string(),
-                3 => "Gathering system info...".to_string(),
-                4 => "Formatting output...".to_string(),
-                5 => "Complete".to_string(),
-                _ => "Processing...".to_string(),
-            };
-
+        for (index, (progress, message)) in VERSION_PROGRESS_STEPS.iter().enumerate() {
             self.send_event(Event::CommandProgress {
                 command: command_name.to_string(),
-                progress,
-                message,
+                progress: *progress,
+                message: (*message).to_string(),
             });
 
-            if i < 5 {
+            if index + 1 < VERSION_PROGRESS_STEPS.len() {
                 sleep(Duration::from_millis(200)).await;
             }
         }

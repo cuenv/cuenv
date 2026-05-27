@@ -175,6 +175,9 @@ Dynamic completions currently complete task names via discovery-based CUE
 evaluation; unused task-parameter completion scaffolding is not kept in-tree.
 The sync fast-path version command and `--llms` output use the same helper so
 static stdout output does not need local print suppressions.
+The event-driven version command emits progress from an explicit static step
+table, keeping user-facing progress messages and percentages synchronized
+without cast suppressions or fallback branches.
 The `cuenv` build script generates `llms-full.txt` from `llms.txt` plus schema
 files using a fallible `Result` path instead of build-script panic/unwrap
 allowances.
