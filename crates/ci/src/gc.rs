@@ -627,12 +627,12 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::assertions_on_constants)]
-    fn test_constants() {
+    fn test_default_gc_policy_is_bounded() {
         // Verify the default constants are reasonable
-        assert!(DEFAULT_MAX_SIZE_BYTES > 1024 * 1024); // > 1MB
-        assert!(DEFAULT_MAX_AGE_DAYS > 0);
-        assert!(DEFAULT_MAX_AGE_DAYS <= 365);
+        let config = GCConfig::default();
+        assert!(config.max_size_bytes > 1024 * 1024); // > 1MB
+        assert!(config.max_age_days > 0);
+        assert!(config.max_age_days <= 365);
     }
 
     #[test]

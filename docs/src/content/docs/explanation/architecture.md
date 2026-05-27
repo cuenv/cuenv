@@ -300,19 +300,21 @@ project maps are generic over the caller's `BuildHasher`, so the public API does
 not force or suppress default hashing.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
-depending on broad complexity suppressions. The CI crate root keeps only the
-temporary missing-docs allowance; parser, derive, and clippy warnings should be
-handled at the module that owns them. CI task DAG execution and IR runner setup
-live in `crates/ci/src/executor/task_execution.rs`. CI task tool download and
-lockfile activation support lives in `crates/ci/src/executor/tools.rs`; CI
-hook-backed environment assembly lives in `crates/ci/src/executor/hook_env.rs`,
-keeping the orchestrator focused on pipeline scheduling. CI report writing,
-provider notification, annotation resolution, and CI redaction setup live in
-`crates/ci/src/executor/reporting.rs`; per-task environment precedence and
-passthrough handling live in `crates/ci/src/executor/task_env.rs`. CI report
-durations are computed with checked non-negative conversions and display
-formatting uses duration helpers rather than lossy numeric casts. Live pipeline
-progress percentages are calculated with bounded integer basis points in
+depending on broad complexity suppressions. GC default-policy tests assert the
+runtime `GCConfig` bounds rather than constant-only expressions. The CI crate
+root keeps only the temporary missing-docs allowance; parser, derive, and clippy
+warnings should be handled at the module that owns them. CI task DAG execution
+and IR runner setup live in `crates/ci/src/executor/task_execution.rs`. CI task
+tool download and lockfile activation support lives in
+`crates/ci/src/executor/tools.rs`; CI hook-backed environment assembly lives in
+`crates/ci/src/executor/hook_env.rs`, keeping the orchestrator focused on
+pipeline scheduling. CI report writing, provider notification, annotation
+resolution, and CI redaction setup live in `crates/ci/src/executor/reporting.rs`;
+per-task environment precedence and passthrough handling live in
+`crates/ci/src/executor/task_env.rs`. CI report durations are computed with
+checked non-negative conversions and display formatting uses duration helpers
+rather than lossy numeric casts. Live pipeline progress percentages are
+calculated with bounded integer basis points in
 `crates/ci/src/report/progress.rs` before formatting as `f32` percentages. CI
 digest diff comparison remains in `crates/ci/src/diff.rs`; human diff
 formatting lives in `crates/ci/src/diff/format.rs`.
