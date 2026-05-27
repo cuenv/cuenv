@@ -1,36 +1,35 @@
 //! Build script for compiling the Go CUE bridge
-//!
-//! Build scripts should panic on failure - there's no recovery path for build errors.
-
-// Build scripts are expected to panic/expect on failure - no runtime recovery needed
-#![allow(clippy::panic, clippy::expect_used)]
 
 use std::collections::hash_map::DefaultHasher;
 use std::env;
+use std::error::Error;
 use std::fs;
 use std::hash::{Hash, Hasher};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::SystemTime;
 
-fn main() {
+type BuildResult<T> = Result<T, Box<dyn Error>>;
+
+fn main() -> BuildResult<()> {
     // Skip entire build script on docs.rs - no Go toolchain available
     if env::var("DOCS_RS").is_ok() {
         println!("cargo:warning=Skipping Go FFI build for docs.rs");
-        return;
+        return Ok(());
     }
 
-    let build = BridgeBuild::from_env();
-    emit_rerun_directives(&build.bridge_dir);
-    build.log_debug_context();
+    let build = BridgeBuild::from_env()?;
+    emit_rerun_directives(&build.bridge_dir)?;
+    build.log_debug_context()?;
     report_go_version();
 
     // Try to use prebuilt artifacts first (produced by Nix/flake builds), but
     // force a local rebuild when the tracked Go sources changed since the last
     // successful build in this OUT_DIR. This avoids stale prebuilt archives when
     // iterating on bridge.go.
-    let workspace_root = workspace_root(&build.bridge_dir);
-    let source_fingerprint = bridge_source_fingerprint(&build.bridge_dir);
+    let workspace_root = workspace_root(&build.bridge_dir)?;
+    let source_fingerprint = bridge_source_fingerprint(&build.bridge_dir)?;
     let fingerprint_path = build.out_dir.join("libcue_bridge.fingerprint");
     let sources_changed = bridge_sources_changed(&fingerprint_path, &source_fingerprint);
 
@@ -46,27 +45,32 @@ fn main() {
         header_path: &build.outputs.header_path,
     };
 
-    if sources_changed || !try_use_prebuilt(&prebuilt_request) {
+    if sources_changed || !try_use_prebuilt(&prebuilt_request)? {
         build_go_bridge(
             &build.bridge_dir,
             &build.outputs.output_path,
             &build.target_triple,
-        );
+        )?;
 
-        // Verify the library was actually created
-        assert!(
-            build.outputs.output_path.exists(),
-            "Go bridge library was not created at expected path: {}",
-            build.outputs.output_path.display()
-        );
+        if !build.outputs.output_path.exists() {
+            return Err(build_error(format!(
+                "Go bridge library was not created at expected path: {}",
+                build.outputs.output_path.display()
+            )));
+        }
         println!(
             "Successfully created library at: {}",
             build.outputs.output_path.display()
         );
     }
 
-    write_bridge_fingerprint(&fingerprint_path, &source_fingerprint);
+    write_bridge_fingerprint(&fingerprint_path, &source_fingerprint)?;
     configure_rustc_linking(&build.target_triple, &build.out_dir);
+    Ok(())
+}
+
+fn build_error(message: impl Into<String>) -> Box<dyn Error> {
+    io::Error::other(message.into()).into()
 }
 
 struct BridgeBuild {
@@ -77,23 +81,34 @@ struct BridgeBuild {
 }
 
 impl BridgeBuild {
-    fn from_env() -> Self {
+    fn from_env() -> BuildResult<Self> {
         let bridge_dir =
-            PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
-        let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set by cargo"));
+            PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(|_| {
+                io::Error::new(io::ErrorKind::NotFound, "CARGO_MANIFEST_DIR not set")
+            })?);
+        let out_dir =
+            PathBuf::from(env::var("OUT_DIR").map_err(|_| {
+                io::Error::new(io::ErrorKind::NotFound, "OUT_DIR not set by cargo")
+            })?);
         let target_triple = env::var("TARGET")
-            .unwrap_or_else(|_| env::var("HOST").expect("Neither TARGET nor HOST set by cargo"));
+            .or_else(|_| env::var("HOST"))
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Neither TARGET nor HOST set by cargo",
+                )
+            })?;
         let outputs = BridgeOutputs::new(&out_dir, &target_triple);
 
-        Self {
+        Ok(Self {
             bridge_dir,
             out_dir,
             target_triple,
             outputs,
-        }
+        })
     }
 
-    fn log_debug_context(&self) {
+    fn log_debug_context(&self) -> BuildResult<()> {
         println!("=== CUENGINE BUILD SCRIPT DEBUG ===");
         println!("Building for target: {}", self.target_triple);
         println!("Is Windows: {}", self.target_triple.contains("windows"));
@@ -106,12 +121,13 @@ impl BridgeBuild {
         );
         println!(
             "Go bridge source files: {}",
-            go_source_paths(&self.bridge_dir).len()
+            go_source_paths(&self.bridge_dir)?.len()
         );
         println!(
             "Go bridge build files: {}",
-            go_build_source_paths(&self.bridge_dir).len()
+            go_build_source_paths(&self.bridge_dir)?.len()
         );
+        Ok(())
     }
 }
 
@@ -137,12 +153,13 @@ impl BridgeOutputs {
     }
 }
 
-fn emit_rerun_directives(manifest_dir: &Path) {
+fn emit_rerun_directives(manifest_dir: &Path) -> BuildResult<()> {
     // Track all Go source files and module files for rebuild detection.
-    for path in tracked_build_inputs(manifest_dir) {
+    for path in tracked_build_inputs(manifest_dir)? {
         println!("cargo:rerun-if-changed={}", path.display());
     }
     println!("cargo:rerun-if-env-changed=CUE_BRIDGE_PATH");
+    Ok(())
 }
 
 fn report_go_version() {
@@ -158,30 +175,35 @@ fn report_go_version() {
     }
 }
 
-fn workspace_root(bridge_dir: &Path) -> PathBuf {
+fn workspace_root(bridge_dir: &Path) -> BuildResult<PathBuf> {
     env::var("CARGO_WORKSPACE_DIR").map_or_else(
         |_| {
             bridge_dir
                 .parent()
                 .and_then(Path::parent)
-                .expect("Failed to derive workspace root from crate manifest directory")
-                .to_path_buf()
+                .map(Path::to_path_buf)
+                .ok_or_else(|| {
+                    build_error(format!(
+                        "Failed to derive workspace root from crate manifest directory: {}",
+                        bridge_dir.display()
+                    ))
+                })
         },
-        PathBuf::from,
+        |path| Ok(PathBuf::from(path)),
     )
 }
 
-fn bridge_source_fingerprint(bridge_dir: &Path) -> String {
+fn bridge_source_fingerprint(bridge_dir: &Path) -> BuildResult<String> {
     let mut hasher = DefaultHasher::new();
 
-    for path in tracked_go_paths(bridge_dir) {
+    for path in tracked_go_paths(bridge_dir)? {
         path.hash(&mut hasher);
         if let Ok(bytes) = fs::read(&path) {
             bytes.hash(&mut hasher);
         }
     }
 
-    format!("{:016x}", hasher.finish())
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 fn bridge_sources_changed(fingerprint_path: &Path, source_fingerprint: &str) -> bool {
@@ -190,49 +212,56 @@ fn bridge_sources_changed(fingerprint_path: &Path, source_fingerprint: &str) -> 
         .unwrap_or(false)
 }
 
-fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) {
+fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) -> io::Result<()> {
     fs::write(fingerprint_path, source_fingerprint)
-        .unwrap_or_else(|e| panic!("Failed to write bridge fingerprint: {e}"));
 }
 
-fn tracked_build_inputs(bridge_dir: &Path) -> Vec<PathBuf> {
+fn tracked_build_inputs(bridge_dir: &Path) -> BuildResult<Vec<PathBuf>> {
     let mut paths = vec![
         bridge_dir.join("build.rs"),
         bridge_dir.join("bridge.h"),
         bridge_dir.join("go.mod"),
         bridge_dir.join("go.sum"),
     ];
-    paths.extend(go_source_paths(bridge_dir));
+    paths.extend(go_source_paths(bridge_dir)?);
     paths.sort();
-    paths
+    Ok(paths)
 }
 
-fn tracked_go_paths(bridge_dir: &Path) -> Vec<PathBuf> {
+fn tracked_go_paths(bridge_dir: &Path) -> BuildResult<Vec<PathBuf>> {
     let mut paths = vec![bridge_dir.join("go.mod"), bridge_dir.join("go.sum")];
-    paths.extend(go_source_paths(bridge_dir));
+    paths.extend(go_source_paths(bridge_dir)?);
     paths.sort();
-    paths
+    Ok(paths)
 }
 
-fn go_source_paths(bridge_dir: &Path) -> Vec<PathBuf> {
+fn go_source_paths(bridge_dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut paths = fs::read_dir(bridge_dir)
-        .unwrap_or_else(|e| panic!("Failed to read bridge source directory: {e}"))
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "Failed to read bridge source directory {}: {error}",
+                    bridge_dir.display()
+                ),
+            )
+        })?
         .filter_map(|entry| entry.ok().map(|entry| entry.path()))
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("go"))
         .collect::<Vec<_>>();
     paths.sort();
-    paths
+    Ok(paths)
 }
 
-fn go_build_source_paths(bridge_dir: &Path) -> Vec<PathBuf> {
-    go_source_paths(bridge_dir)
+fn go_build_source_paths(bridge_dir: &Path) -> io::Result<Vec<PathBuf>> {
+    Ok(go_source_paths(bridge_dir)?
         .into_iter()
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
                 .is_some_and(|name| !name.ends_with("_test.go"))
         })
-        .collect()
+        .collect())
 }
 
 struct PrebuiltBridgeRequest<'a> {
@@ -243,8 +272,8 @@ struct PrebuiltBridgeRequest<'a> {
     header_path: &'a Path,
 }
 
-fn try_use_prebuilt(request: &PrebuiltBridgeRequest<'_>) -> bool {
-    let newest_source_time = newest_tracked_source_time(request.bridge_dir);
+fn try_use_prebuilt(request: &PrebuiltBridgeRequest<'_>) -> BuildResult<bool> {
+    let newest_source_time = newest_tracked_source_time(request.bridge_dir)?;
 
     for (lib_path, header_path_candidate) in prebuilt_locations(request) {
         if !prebuilt_bridge_exists(&lib_path, &header_path_candidate) {
@@ -259,24 +288,24 @@ fn try_use_prebuilt(request: &PrebuiltBridgeRequest<'_>) -> bool {
             continue;
         }
 
-        copy_prebuilt_bridge(&lib_path, &header_path_candidate, request);
+        copy_prebuilt_bridge(&lib_path, &header_path_candidate, request)?;
         println!(
             "Using pre-built Go bridge ({}) from: {}",
             prebuilt_build_type(&lib_path),
             lib_path.display()
         );
-        return true;
+        return Ok(true);
     }
 
-    false
+    Ok(false)
 }
 
-fn newest_tracked_source_time(bridge_dir: &Path) -> Option<SystemTime> {
-    tracked_go_paths(bridge_dir)
+fn newest_tracked_source_time(bridge_dir: &Path) -> BuildResult<Option<SystemTime>> {
+    Ok(tracked_go_paths(bridge_dir)?
         .iter()
         .filter_map(|path| path.metadata().ok())
         .filter_map(|metadata| metadata.modified().ok())
-        .max()
+        .max())
 }
 
 fn prebuilt_locations(request: &PrebuiltBridgeRequest<'_>) -> [(PathBuf, PathBuf); 6] {
@@ -352,25 +381,30 @@ fn copy_prebuilt_bridge(
     lib_path: &Path,
     header_path_candidate: &Path,
     request: &PrebuiltBridgeRequest<'_>,
-) {
+) -> io::Result<()> {
     // Remove destination files if they exist (might be read-only).
     let _ = std::fs::remove_file(request.output_path);
     let _ = std::fs::remove_file(request.header_path);
 
-    std::fs::copy(lib_path, request.output_path).unwrap_or_else(|e| {
-        panic!(
-            "Failed to copy pre-built bridge from {}: {}",
-            lib_path.display(),
-            e
+    std::fs::copy(lib_path, request.output_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "Failed to copy pre-built bridge from {}: {error}",
+                lib_path.display()
+            ),
         )
-    });
-    std::fs::copy(header_path_candidate, request.header_path).unwrap_or_else(|e| {
-        panic!(
-            "Failed to copy pre-built header from {}: {}",
-            header_path_candidate.display(),
-            e
+    })?;
+    std::fs::copy(header_path_candidate, request.header_path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "Failed to copy pre-built header from {}: {error}",
+                header_path_candidate.display()
+            ),
         )
-    });
+    })?;
+    Ok(())
 }
 
 fn prebuilt_build_type(lib_path: &Path) -> &'static str {
@@ -381,7 +415,7 @@ fn prebuilt_build_type(lib_path: &Path) -> &'static str {
     }
 }
 
-fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
+fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) -> BuildResult<()> {
     // Build the Go static archive with CGO (fallback for non-Nix builds)
     println!("Building Go bridge from source");
     let mut cmd = Command::new("go");
@@ -410,7 +444,9 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
                 } else if target_triple.starts_with("aarch64") {
                     "aarch64"
                 } else {
-                    panic!("Unsupported cross-compilation architecture: {target_triple}");
+                    return Err(build_error(format!(
+                        "Unsupported cross-compilation architecture: {target_triple}"
+                    )));
                 };
 
                 let zig_target = format!("{zig_arch}-linux-gnu");
@@ -422,10 +458,10 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
                 cmd.env("CXX", format!("zig c++ -target {zig_target}"));
                 cmd.env("AR", "zig ar");
             } else {
-                panic!(
+                return Err(build_error(format!(
                     "Cross-compiling from {host_triple} to {target_triple} requires Zig.\n\
                      Install Zig (https://ziglang.org/download/) or set CUE_BRIDGE_PATH."
-                );
+                )));
             }
         }
     }
@@ -445,27 +481,27 @@ fn build_go_bridge(bridge_dir: &Path, output_path: &Path, target_triple: &str) {
         println!("Using vendor directory");
     }
 
-    let output_str = output_path
-        .to_str()
-        .expect("Failed to convert output path to string");
-
-    cmd.args(["-buildmode=c-archive", "-o", output_str]);
-    cmd.args(go_build_source_paths(bridge_dir));
+    cmd.arg("-buildmode=c-archive").arg("-o").arg(output_path);
+    cmd.args(go_build_source_paths(bridge_dir)?);
 
     println!("Running Go command: {cmd:?}");
 
-    let output = cmd
-        .output()
-        .expect("Failed to execute Go command. Make sure Go is installed.");
+    let output = cmd.output().map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!("Failed to execute Go command. Make sure Go is installed: {error}"),
+        )
+    })?;
 
     if !output.status.success() {
         println!("Go build failed!");
         println!("stdout: {}", String::from_utf8_lossy(&output.stdout));
         println!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-        panic!("Failed to build libcue bridge");
+        return Err(build_error("Failed to build libcue bridge"));
     }
 
     println!("Go build completed successfully");
+    Ok(())
 }
 
 fn go_os_from_target(target_triple: &str) -> Option<&'static str> {

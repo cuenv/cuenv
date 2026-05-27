@@ -37,7 +37,10 @@ Keeps `bridge.go` focused on exported cgo functions and evaluation
 orchestration. Source metadata/reference extraction lives in `metadata.go`, and
 clean CUE-to-JSON value rendering lives in `values.go`. Metadata is returned as
 a separate map rather than injected inline into JSON values; the build script
-compiles every non-test Go file in `crates/cuengine`.
+compiles every non-test Go file in `crates/cuengine`. Build-script failures are
+reported through ordinary `Result` errors so missing Cargo environment, stale
+prebuilt artifact copies, unsupported cross-compilation targets, and Go build
+failures stay explicit without broad panic/expect lint allowances.
 
 Module evaluation is split into four Rust-side phases: C string preparation,
 a blocking FFI worker thread, timeout-aware result receipt, and bridge-envelope
