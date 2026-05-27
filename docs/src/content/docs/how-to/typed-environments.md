@@ -7,27 +7,34 @@ cuenv treats environment variables as a typed configuration schema rather than a
 
 ## Defining Environments
 
-Environments are defined in the `env` block of your `env.cue` file. You can use CUE's powerful type system to enforce constraints.
+Environments are defined in the `env` block of your `env.cue` file. You can use CUE's type system to enforce constraints.
 
 ### Type Constraints
+
+Every `env` value must resolve to something concrete before cuenv runs — a
+literal value, or a constraint paired with a `*default` the value falls back to.
+A bare constraint like `PORT: string & =~"^[0-9]+$"` describes what's valid but
+has no value, so cuenv rejects it until you give it one.
 
 ```cue
 package cuenv
 
 env: {
-    // Basic types
-    HOST: string | *"0.0.0.0"
-    PORT: string & =~"^[0-9]+$"  // Regex validation
+    // A plain value.
+    HOST: "0.0.0.0"
 
-    // Enumerated values
-    NODE_ENV: "development" | "staging" | "production"
+    // Constrained, with a default the value falls back to.
+    PORT:      string & =~"^[0-9]+$" | *"3000"          // digits only, defaults to 3000
+    NODE_ENV:  "development" | "staging" | "production" | *"development"
     LOG_LEVEL: "trace" | "debug" | "info" | "warn" | "error" | *"info"
 
-    // Complex constraints
-    // Must be a valid URL
-    DATABASE_URL: string & =~"^postgres://"
+    // Must start with postgres://, defaults to a local database.
+    DATABASE_URL: string & =~"^postgres://" | *"postgres://localhost/app"
 }
 ```
+
+Set a value that breaks a constraint — say `NODE_ENV: "prod"` — and evaluation
+fails, pointing at the offending field, before any command runs.
 
 ## Environment Composition
 
@@ -38,12 +45,12 @@ You can organize your environment definitions into reusable schemas and compose 
 package shared
 
 #BaseEnv: {
-    LOG_LEVEL: "debug" | "info" | "warn" | "error"
+    LOG_LEVEL: "debug" | "info" | "warn" | "error" | *"info"
     REGION: string
 }
 
 #DatabaseEnv: {
-    DB_HOST: string
+    DB_HOST: string | *"localhost"
     DB_PORT: string | *"5432"
 }
 ```

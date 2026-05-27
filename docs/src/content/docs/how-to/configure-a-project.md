@@ -1,9 +1,9 @@
 ---
 title: Configuration
-description: Comprehensive guide to cuenv configuration
+description: Guide to configuring a cuenv project
 ---
 
-Learn how to configure cuenv for your projects using CUE's powerful constraint-based configuration language.
+Configure cuenv for your projects using CUE's constraint-based configuration language.
 
 ## Configuration Files
 
@@ -46,7 +46,7 @@ schema.#Project & {
 
 // Environment variables
 env: {
-    NODE_ENV:  "development" | "production"
+    NODE_ENV:  "development" | "production" | *"development"
     PORT:      8080
     LOG_LEVEL: "info"
 }
@@ -74,19 +74,21 @@ tasks: {
 
 Define environment variables with type constraints:
 
+Every value needs a concrete result — a literal, or a constraint paired with a
+`*default` to fall back to.
+
 ```cue
 env: {
-    // String variables
-    NODE_ENV: "development" | "staging" | "production"
-    SERVICE_NAME: string & =~"^[a-zA-Z][a-zA-Z0-9-]*$"
+    // Enumerated values with a default.
+    NODE_ENV:     "development" | "staging" | "production" | *"development"
+    SERVICE_NAME: string & =~"^[a-zA-Z][a-zA-Z0-9-]*$" | *"my-service"
 
-    // Numeric variables (CUE treats environment variables as strings, so conversion might be needed or validation logic adjusted)
-    // Typically env vars are strings:
-    PORT: string & =~"^[0-9]+$"
+    // Environment variables are strings, so validate the string form.
+    PORT:         string & =~"^[0-9]+$" | *"8080"
     WORKER_COUNT: string | *"4"
 
-    // Boolean variables (as strings)
-    DEBUG: "true" | "false" | *"false"
+    // Booleans as strings.
+    DEBUG:          "true" | "false" | *"false"
     ENABLE_METRICS: "true" | "false" | *"true"
 }
 ```
@@ -423,7 +425,7 @@ Extend validation with custom rules:
 ### Maintainability
 
 - Use schemas to enforce consistency
-- Leverage CUE's composition features
+- Use CUE's composition features
 - Keep environment differences minimal
 - Test configuration changes
 

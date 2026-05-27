@@ -345,7 +345,7 @@ The provider's cache key includes the profile, components, and targets to ensure
 ### Binary Verification
 
 1. **SHA256 hashing**: All downloaded binaries are verified against lockfile digests
-2. **Signature verification**: GitHub assets can leverage release signatures
+2. **Signature verification**: GitHub assets can use release signatures
 3. **Nix content-addressing**: Nix store paths are content-addressed
 
 ### Supply Chain

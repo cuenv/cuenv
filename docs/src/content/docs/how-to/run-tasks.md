@@ -3,7 +3,7 @@ title: Tasks
 description: Task orchestration and execution in cuenv
 ---
 
-cuenv provides a powerful task runner that leverages CUE for defining tasks, their dependencies, and their inputs/outputs. This enables parallel execution, caching, and hermetic builds.
+cuenv runs tasks defined in CUE. You declare each task's command, dependencies, and inputs/outputs; cuenv builds the dependency graph, runs independent tasks in parallel, caches results when you opt in, and isolates each task in its own working directory.
 
 ## Defining Tasks
 

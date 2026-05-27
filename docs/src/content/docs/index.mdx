@@ -1,11 +1,11 @@
 ---
 title: cuenv
-description: Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.
+description: One typed config for your project — environment variables, secrets, tasks, and CI in CUE.
 template: splash
 hero:
   title: |
     <span class="text-gradient">cuenv</span>
-  tagline: Two commands. Type-safe environments. Secrets that never leak. Tasks that run in parallel.
+  tagline: One typed config for your whole project — environment variables, secrets, tasks, and CI in CUE.
   actions:
     - text: Start a tutorial
       link: /tutorials/first-project/
@@ -19,57 +19,19 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## The Problem
+## What is cuenv?
 
-You've been here before: secrets in `.env` files that get committed, "works on my machine" bugs, CI pipelines that can't run in parallel, and copy-paste task definitions with no validation.
+Most projects accumulate a pile of loosely related config: a `.env` file for
+variables, a `Makefile` or `justfile` for tasks, and a hand-written CI workflow
+that tries to stay in sync with both. Nothing validates any of it, secrets end
+up committed, and the three slowly drift apart.
 
-**cuenv fixes this with two primitives.**
+cuenv replaces that pile with a single `env.cue`. You describe your project once
+in [CUE](https://cuelang.org), a typed configuration language, and cuenv
+validates it, resolves secrets at runtime, runs your tasks, and generates your
+CI from the same definitions.
 
----
-
-## Two Primitives
-
-<CardGrid>
-  <Card title="cuenv exec -- <command>" icon="rocket">
-    Run any command with validated environment variables and secrets resolved at runtime. Never store credentials on disk.
-
-    ```bash
-    cuenv exec -- npm start
-    cuenv exec -e production -- ./deploy.sh
-    ```
-  </Card>
-  <Card title="cuenv task <name>" icon="list-format">
-    Run named tasks with automatic dependency resolution, parallel execution, and opt-in content-aware caching.
-
-    ```bash
-    cuenv task build
-    cuenv task -e staging deploy
-    ```
-  </Card>
-</CardGrid>
-
----
-
-## Why This Matters
-
-<CardGrid>
-  <Card title="Secrets Never Leak" icon="lock">
-    Secrets are fetched at runtime from 1Password or custom exec providers, never written to disk, never exported to your shell, and redacted from logs.
-  </Card>
-  <Card title="Validate Before You Run" icon="approve-check-circle">
-    CUE constraints catch `NODE_ENV: "prod"` typos before they become runtime failures. Type-safe configuration for your entire team.
-  </Card>
-  <Card title="Parallel by Default" icon="random">
-    Object keys run in parallel. Arrays run sequentially. Dependencies are respected. Your CI gets faster automatically.
-  </Card>
-  <Card title="Works Everywhere" icon="laptop">
-    Shell integration loads your environment when you `cd` into a project. Nix integration provisions tools automatically.
-  </Card>
-</CardGrid>
-
----
-
-## See It In Action
+## A complete example
 
 ```cue
 package cuenv
@@ -77,67 +39,104 @@ package cuenv
 import "github.com/cuenv/cuenv/schema"
 
 schema.#Project & {
-  name: "my-project"
+	name: "checkout-api"
 }
 
 env: {
-    NODE_ENV: "development" | "staging" | "production"
+	// Only these three values are accepted; defaults to "development".
+	NODE_ENV: "development" | "staging" | "production" | *"development"
 
-    // Secrets resolved at runtime, never stored
-    DB_PASSWORD: schema.#OnePasswordRef & {
-        ref: "op://vault/database/password"
-    }
+	HOST: "127.0.0.1"
+	PORT: "8080"
+	URL:  "http://\(HOST):\(PORT)"
+
+	// Resolved at runtime from 1Password. Never written to disk or your shell.
+	DATABASE_PASSWORD: schema.#OnePasswordRef & {
+		ref: "op://Engineering/checkout-db/password"
+	}
 }
 
 tasks: {
-    // These run in parallel
-    test: schema.#TaskGroup & {
-        type: "group"
-        unit:        schema.#Task & { command: "npm", args: ["run", "test:unit"] }
-        integration: schema.#Task & { command: "npm", args: ["run", "test:e2e"] }
-        lint:        schema.#Task & { command: "npm", args: ["run", "lint"] }
-    }
+	// The three children run in parallel.
+	check: schema.#TaskGroup & {
+		type: "group"
+		lint:  schema.#Task & {command: "npm", args: ["run", "lint"]}
+		types: schema.#Task & {command: "npm", args: ["run", "typecheck"]}
+		test:  schema.#Task & {command: "npm", args: ["test"]}
+	}
 
-    // This waits for test to complete
-    build: schema.#Task & {
-        command:   "npm"
-        args:      ["run", "build"]
-        dependsOn: [test]
-    }
+	// Waits for `check`; only re-runs when its inputs change.
+	build: schema.#Task & {
+		command:   "npm"
+		args:      ["run", "build"]
+		dependsOn: [check]
+		inputs:    ["src/**", "package.json"]
+		outputs:   ["dist/**"]
+		cache: mode: "read-write"
+	}
 }
 ```
 
----
+```bash
+cuenv task            # list what the project defines
+cuenv env print       # print the resolved environment (secrets redacted)
+cuenv task build      # run `check` in parallel, then `build`
+cuenv exec -- npm start   # run any command in the validated environment
+```
 
-## Status
+## Why CUE?
+
+A `.env` file is just strings, so nothing catches `NODE_ENV=prodction` until
+something breaks. CUE lets you describe the shape of valid config, and
+evaluation fails loudly when a value doesn't fit.
 
 <CardGrid>
-  <Card title="Core Engine" icon="approve-check-circle">
-    Complete. Fast CUE evaluation with Rust performance.
+  <Card title="Validate before you run" icon="approve-check-circle">
+    Enums, numeric bounds, regex patterns, and defaults are checked at
+    evaluation time. `NODE_ENV: "prod"` is caught before any command runs.
   </Card>
-  <Card title="CLI + Tasks" icon="approve-check-circle">
-    Stable. `exec`, `task`, and shell integration working.
+  <Card title="Secrets stay out of files" icon="lock">
+    Secrets resolve at runtime from your provider, never landing in `env.cue`,
+    generated files, or your shell, and are redacted from output.
   </Card>
-  <Card title="Secrets + Dagger" icon="warning">
-    Beta. Secret resolvers and Dagger backend available.
+  <Card title="Parallel by structure" icon="random">
+    Object keys in a task group run in parallel; arrays run in order;
+    `dependsOn` uses CUE references, so a typo is a compile error.
+  </Card>
+  <Card title="One source, no drift" icon="setting">
+    Environments, tasks, and CI come from the same file, so they can't fall out
+    of sync the way `.env` + `Makefile` + workflow YAML do.
   </Card>
 </CardGrid>
 
----
+## What works today
 
-## Get Started
+cuenv covers a lot, and not all of it is equally finished. The
+[schema status page](/reference/schema/status/) is the authoritative source for
+what's wired up.
+
+- **Solid:** typed environments, `cuenv exec`, tasks (groups, sequences,
+  dependencies, params, output refs, opt-in caching), shell integration and
+  hooks, and GitHub Actions generation via `cuenv sync ci`.
+- **Secrets:** environment variables, any CLI (`#ExecSecret`), 1Password, and
+  Infisical resolve today. AWS, GCP, and Vault are schema-only for now.
+- **In progress:** Buildkite/GitLab CI, multi-source tools, codegen,
+  `.rules.cue` generation, release management, services, and container/Dagger
+  runtimes.
+
+## Get started
 
 <CardGrid>
   <Card title="Tutorials" icon="right-arrow">
-    Learn cuenv by doing: start with [Your first cuenv project](/tutorials/first-project/).
+    Learn by doing: start with [Your first cuenv project](/tutorials/first-project/).
   </Card>
   <Card title="How-to guides" icon="right-arrow">
     Get something done: [install](/how-to/install/), [configure](/how-to/configure-a-project/), and [run tasks](/how-to/run-tasks/).
   </Card>
   <Card title="Reference" icon="right-arrow">
-    Look things up: [CLI](/reference/cli/), [CUE schema](/reference/cue-schema/), [Rust API](/reference/rust-api/).
+    Look things up: [CLI](/reference/cli/), [CUE schema](/reference/cue-schema/), [schema status](/reference/schema/status/).
   </Card>
   <Card title="GitHub" icon="github">
-    [Star us on GitHub](https://github.com/cuenv/cuenv) and contribute to the project.
+    [Browse the source](https://github.com/cuenv/cuenv) and join the discussion.
   </Card>
 </CardGrid>
