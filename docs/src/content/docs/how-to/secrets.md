@@ -11,9 +11,10 @@ The current user-facing secret types are:
 
 - `schema.#OnePasswordRef` for 1Password references.
 - `schema.#InfisicalSecret` for Infisical REST API references.
+- `schema.#AwsSecret` for AWS Secrets Manager references.
 - `schema.#ExecSecret` for custom command-backed providers.
 
-`schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present
+`schema.#GcpSecret` and `schema.#VaultSecret` are present
 in the schema, but their default runtime resolvers are not registered yet. Treat
 them as schema-visible future work until the schema status page says otherwise.
 
@@ -105,6 +106,36 @@ cuenv env print
 instance. A secret can also set `apiUrl` directly. `cuenv secrets setup
 infisical` performs an authentication-environment preflight; it does not
 download files or contact the API.
+
+## AWS Secrets Manager
+
+Use `schema.#AwsSecret` when the secret already lives in AWS Secrets Manager:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    env: {
+        API_TOKEN: schema.#AwsSecret & {
+            secretId: "prod/api-token"
+        }
+
+        DATABASE_PASSWORD: schema.#AwsSecret & {
+            secretId: "prod/database"
+            jsonKey:  "password"
+        }
+    }
+}
+```
+
+The AWS resolver uses the AWS CLI, so authentication and region selection follow
+the standard AWS provider chain: `AWS_*` environment variables, shared config and
+credential files, profiles, and instance/task roles. `jsonKey` extracts a field
+from JSON `SecretString` values.
 
 ## Custom Command Secrets
 

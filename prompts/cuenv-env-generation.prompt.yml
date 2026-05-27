@@ -11,9 +11,10 @@ messages:
       2. For command-backed secrets, use: schema.#ExecSecret & { command: "op", args: ["read", "op://vault/path"] }
       3. For 1Password references, use: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
       4. For host environment passthrough, use: schema.#EnvPassthrough & { name: "HOST_VAR" }
-      5. Do not invent legacy provider type names. The current cloud secret schema names are schema.#AwsSecret, schema.#GcpSecret, and schema.#VaultSecret, and their runtime resolvers are not registered by default.
-      6. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
-      7. Output only CUE code, with no Markdown fences or explanations.
+      5. For AWS Secrets Manager, use: schema.#AwsSecret & { secretId: "secret/name" }
+      6. Do not invent legacy provider type names. GCP and Vault secret schemas exist, but their runtime resolvers are not registered by default.
+      7. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
+      8. Output only CUE code, with no Markdown fences or explanations.
 
       Example output format:
       ```cue
@@ -21,6 +22,7 @@ messages:
           VAR_NAME: "value" | "other"
           SECRET_VAR: schema.#ExecSecret & { command: "op", args: ["read", "op://vault/secret"] }
           OP_SECRET: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
+          AWS_SECRET: schema.#AwsSecret & { secretId: "prod/api" }
       }
       ```
 
@@ -52,6 +54,14 @@ testData:
       env: schema.#Env & {
         RELEASE_TAG: schema.#EnvPassthrough & {
           name: "GITHUB_REF_NAME"
+        }
+      }
+  - requirements: "Service with AWS Secrets Manager JSON secret prod/database and DATABASE_PASSWORD from its password field"
+    expected: |
+      env: schema.#Env & {
+        DATABASE_PASSWORD: schema.#AwsSecret & {
+          secretId: "prod/database"
+          jsonKey: "password"
         }
       }
   - requirements: "Simple app with LOG_LEVEL that must be debug, info, warn, or error"
