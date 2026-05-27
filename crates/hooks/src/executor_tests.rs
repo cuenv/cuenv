@@ -2,6 +2,15 @@ use super::*;
 use crate::types::Hook;
 use tempfile::TempDir;
 
+#[test]
+fn duration_millis_saturates_at_u64_max() {
+    assert_eq!(duration_millis(Duration::from_millis(42)), 42);
+    assert_eq!(
+        duration_millis(Duration::from_millis(u64::MAX).saturating_add(Duration::from_millis(1))),
+        u64::MAX
+    );
+}
+
 /// Helper to set up CUENV_EXECUTABLE for tests that spawn the supervisor.
 /// The cuenv binary must already be built (via `cargo build --bin cuenv`).
 fn setup_cuenv_executable() -> Option<PathBuf> {

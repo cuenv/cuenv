@@ -654,12 +654,7 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
     // Execute with timeout
     let execution_result = timeout(Duration::from_secs(*timeout_seconds), cmd.output()).await;
 
-    // Truncation is fine here - a u64 can hold ~584M years in milliseconds
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "u128 to u64 truncation is acceptable for duration"
-    )]
-    let duration_ms = start_time.elapsed().as_millis() as u64;
+    let duration_ms = duration_millis(start_time.elapsed());
 
     match execution_result {
         Ok(Ok(output)) => {
@@ -708,6 +703,10 @@ async fn execute_hook_with_timeout(hook: Hook, timeout_seconds: &u64) -> Result<
             ))
         }
     }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
