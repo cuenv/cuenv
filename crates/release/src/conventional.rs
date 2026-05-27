@@ -8,6 +8,7 @@ use crate::changeset::BumpType;
 use crate::config::TagType;
 use crate::error::{Error, Result};
 use gix::bstr::ByteSlice;
+use gix::traverse::commit::simple::CommitTimeOrder;
 use semver::Version as SemverVersion;
 use std::cmp::Ordering;
 use std::path::Path;
@@ -64,8 +65,6 @@ impl CommitParser {
     /// # Errors
     ///
     /// Returns an error if the repository cannot be opened or commits cannot be read.
-    #[allow(clippy::default_trait_access)] // gix API requires Default::default() for sorting config
-    #[allow(clippy::redundant_closure_for_method_calls)] // closures needed for type conversion from git_conventional types
     pub fn parse_since_tag(
         root: &Path,
         since_tag: Option<&str>,
@@ -85,7 +84,7 @@ impl CommitParser {
         let mut walk = repo
             .rev_walk([head])
             .sorting(gix::revision::walk::Sorting::ByCommitTime(
-                Default::default(),
+                CommitTimeOrder::NewestFirst,
             ))
             .all()
             .map_err(|e| Error::git(format!("Failed to create rev walk: {e}")))?;
@@ -258,11 +257,11 @@ fn parse_conventional_message(message: &str, hash: String) -> Option<Conventiona
     let parsed = git_conventional::Commit::parse(message).ok()?;
 
     Some(ConventionalCommit {
-        commit_type: parsed.type_().to_string(),
-        scope: parsed.scope().map(|scope| scope.to_string()),
+        commit_type: parsed.type_().as_str().to_string(),
+        scope: parsed.scope().map(|scope| scope.as_str().to_string()),
         breaking: parsed.breaking(),
         description: parsed.description().to_string(),
-        body: parsed.body().map(std::string::ToString::to_string),
+        body: parsed.body().map(str::to_string),
         hash,
     })
 }
