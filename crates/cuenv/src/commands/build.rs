@@ -1,10 +1,11 @@
 //! Implementation of the `cuenv build` command.
 //!
 //! Evaluates the CUE configuration and discovers container image definitions.
-//! Listing image definitions is implemented; executing image builds is not.
+//! Image execution is implemented through the local Docker CLI.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use cuenv_core::manifest::{ContainerImage, Project};
 use cuenv_events::emit_stdout;
@@ -78,11 +79,7 @@ pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuen
     }
 
     emit_build_plan(&selected);
-
-    Err(cuenv_core::Error::configuration(
-        "cuenv build: image execution backends are not implemented yet; \
-         omit image names and labels to list configured images",
-    ))
+    build_images(&target_path, &selected)
 }
 
 struct ImageFilters<'a> {
@@ -154,6 +151,118 @@ fn sorted_images(images: &HashMap<String, ContainerImage>) -> Vec<(&str, &Contai
         .collect();
     sorted.sort_by_key(|(name, _)| *name);
     sorted
+}
+
+fn build_images(project_dir: &Path, images: &[(&str, &ContainerImage)]) -> cuenv_core::Result<()> {
+    images.iter().try_for_each(|(name, image)| {
+        let invocation = DockerBuildInvocation::new(project_dir, name, image)?;
+        emit_stdout!(format!("cuenv build: running {}", invocation.display()));
+        invocation.run().map_err(|source| cuenv_core::Error::Io {
+            source,
+            path: None,
+            operation: "run docker build".to_string(),
+        })?;
+        Ok(())
+    })
+}
+
+struct DockerBuildInvocation {
+    program: &'static str,
+    args: Vec<String>,
+    current_dir: PathBuf,
+}
+
+impl DockerBuildInvocation {
+    fn new(project_dir: &Path, name: &str, image: &ContainerImage) -> cuenv_core::Result<Self> {
+        if image.registry.is_none() && image.platform.len() > 1 {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cuenv build: image '{name}' targets multiple platforms but has no registry; \
+                 set registry to push a multi-platform image"
+            )));
+        }
+
+        let push = image.registry.is_some();
+        let mut args = if push {
+            vec!["buildx".to_string(), "build".to_string(), "--push".to_string()]
+        } else {
+            vec!["build".to_string()]
+        };
+
+        if !image.platform.is_empty() {
+            args.extend(["--platform".to_string(), image.platform.join(",")]);
+        }
+
+        args.extend([
+            "-f".to_string(),
+            path_argument(Path::new(&image.context).join(&image.dockerfile)),
+        ]);
+
+        if let Some(target) = &image.target {
+            args.extend(["--target".to_string(), target.clone()]);
+        }
+
+        for (key, value) in &image.build_args {
+            let value = value.as_str().ok_or_else(|| {
+                cuenv_core::Error::configuration(format!(
+                    "cuenv build: image '{name}' build arg '{key}' uses an unresolved image output reference"
+                ))
+            })?;
+            args.extend(["--build-arg".to_string(), format!("{key}={value}")]);
+        }
+
+        args.extend(
+            image_refs(name, image)
+                .into_iter()
+                .flat_map(|tag| ["-t".to_string(), tag]),
+        );
+        args.push(path_argument(Path::new(&image.context)));
+
+        Ok(Self {
+            program: "docker",
+            args,
+            current_dir: project_dir.to_path_buf(),
+        })
+    }
+
+    fn run(&self) -> std::io::Result<()> {
+        let status = Command::new(self.program)
+            .args(&self.args)
+            .current_dir(&self.current_dir)
+            .status()?;
+
+        if status.success() {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "docker build failed with status {status}"
+            )))
+        }
+    }
+
+    fn display(&self) -> String {
+        std::iter::once(self.program.to_string())
+            .chain(self.args.iter().cloned())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+fn image_refs(name: &str, image: &ContainerImage) -> Vec<String> {
+    let repository = image.repository.as_deref().unwrap_or(name);
+    let base = image
+        .registry
+        .as_deref()
+        .map_or_else(|| repository.to_string(), |registry| format!("{registry}/{repository}"));
+
+    image
+        .tags
+        .iter()
+        .map(|tag| format!("{base}:{tag}"))
+        .collect()
+}
+
+fn path_argument(path: impl AsRef<Path>) -> String {
+    path.as_ref().to_string_lossy().into_owned()
 }
 
 #[cfg(test)]
@@ -251,5 +360,68 @@ mod tests {
         let result = matching_images(&images, &filters);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "api");
+    }
+
+    #[test]
+    fn test_docker_invocation_for_local_image() {
+        let image = test_image(vec!["latest"], vec![]);
+        let invocation =
+            DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
+                .expect("local invocation should be valid");
+
+        assert_eq!(invocation.program, "docker");
+        assert_eq!(invocation.current_dir, PathBuf::from("/workspace/app"));
+        assert_eq!(
+            invocation.args,
+            vec![
+                "build",
+                "-f",
+                "./Dockerfile",
+                "-t",
+                "api:latest",
+                "."
+            ]
+        );
+    }
+
+    #[test]
+    fn test_docker_invocation_pushes_registry_image() {
+        let mut image = test_image(vec!["v1"], vec![]);
+        image.context = "docker/api".to_string();
+        image.dockerfile = "Containerfile".to_string();
+        image.registry = Some("ghcr.io/acme".to_string());
+        image.repository = Some("services/api".to_string());
+        image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
+
+        let invocation =
+            DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
+                .expect("registry invocation should be valid");
+
+        assert_eq!(
+            invocation.args,
+            vec![
+                "buildx",
+                "build",
+                "--push",
+                "--platform",
+                "linux/amd64,linux/arm64",
+                "-f",
+                "docker/api/Containerfile",
+                "-t",
+                "ghcr.io/acme/services/api:v1",
+                "docker/api"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_multi_platform_local_image_requires_registry() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
+
+        let error = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
+            .expect_err("multi-platform local invocation should fail");
+
+        assert!(error.to_string().contains("multiple platforms"));
     }
 }
