@@ -274,6 +274,7 @@ impl ReleaseBackend for GitHubReleaseBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use temp_env::{with_var, with_var_unset};
 
     #[test]
     fn test_parse_github_remote_ssh() {
@@ -417,32 +418,30 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn test_from_env_no_token() {
-        // Clear any existing GITHUB_TOKEN
-        // SAFETY: This test should run in isolation
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-        }
-
-        let result = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git");
-        assert!(result.is_none());
+        with_var_unset("GITHUB_TOKEN", || {
+            let result = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git");
+            assert!(result.is_none());
+        });
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn test_from_env_invalid_url() {
-        // SAFETY: This test should run in isolation
-        unsafe {
-            std::env::set_var("GITHUB_TOKEN", "test_token");
-        }
+        with_var("GITHUB_TOKEN", Some("test_token"), || {
+            let result = GitHubReleaseConfig::from_env("not a valid url");
+            assert!(result.is_none());
+        });
+    }
 
-        let result = GitHubReleaseConfig::from_env("not a valid url");
-        assert!(result.is_none());
+    #[test]
+    fn test_from_env_reads_token_and_remote() {
+        with_var("GITHUB_TOKEN", Some("test_token"), || {
+            let config = GitHubReleaseConfig::from_env("git@github.com:owner/repo.git")
+                .expect("config should parse with token and GitHub remote");
 
-        // Clean up
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-        }
+            assert_eq!(config.owner, "owner");
+            assert_eq!(config.repo, "repo");
+            assert_eq!(config.token, "test_token");
+        });
     }
 }

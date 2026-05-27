@@ -34,6 +34,7 @@ Status guardrails:
 - The `cuenv-ci` crate root keeps only the temporary missing-docs allowance. Keep warning allowances scoped to the module that needs them instead of reintroducing crate-wide derive or parser suppressions.
 - The `cuenv-release` crate root uses the crate's normal warning policy without broad derive-workaround allowances. Keep release warning suppressions scoped to the module that needs them.
 - `crates/release/src/conventional.rs` owns conventional-commit parsing; keep gix commit walk ordering explicit and convert `git-conventional` components through their accessors instead of local interop lint suppressions.
+- `crates/github/src/release.rs` owns GitHub release backend configuration and token environment parsing; keep tests on scoped `temp_env` overrides instead of unsafe process-wide environment mutation.
 - Use `cuenv sync ci` to generate workflows.
 - Use `cuenv ci --export buildkite` for export-style CI output; GitLab export is not implemented.
 - `--filter-matrix` and `--jobs` are accepted but not fully applied.

@@ -240,9 +240,11 @@ in `crates/release/src/orchestrator/publish.rs`. Archive/checksum primitives
 for release binaries live in `crates/release/src/artifact.rs`. Conventional
 commit parsing uses explicit gix commit-time ordering and `git-conventional`
 component accessors so the release path does not need interop lint
-suppressions. The release crate root relies on its normal warning policy
-without broad derive-workaround allowances; warning suppressions belong with the
-module that actually needs them. Task-list data construction stays in
+suppressions. GitHub release backend environment-token tests use scoped
+environment overrides instead of raw unsafe process environment mutation. The
+release crate root relies on its normal warning policy without broad
+derive-workaround allowances; warning suppressions belong with the module that
+actually needs them. Task-list data construction stays in
 `crates/cuenv/src/commands/task_list.rs`;
 text, rich, tables, dashboard, and emoji renderers live in
 `crates/cuenv/src/commands/task_list/formatters.rs`.
