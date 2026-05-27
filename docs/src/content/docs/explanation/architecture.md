@@ -101,7 +101,8 @@ and sequence ordering live in
 `crates/task-graph/src/graph/resolver_build.rs`. Read-only DAG callers only
 need `TaskNodeData`; resolver-backed expansion and output-reference injection
 require `MutableTaskNodeData` so dependency mutation is explicit instead of a
-default panic on the base trait.
+default panic on the base trait. Service/image orchestration uses read-only
+mixed graph nodes with declared dependency names only.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

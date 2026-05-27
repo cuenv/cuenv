@@ -38,12 +38,6 @@ impl cuenv_task_graph::TaskNodeData for MixedNode {
     fn dependency_names(&self) -> impl Iterator<Item = &str> {
         self.dependencies.iter().map(String::as_str)
     }
-
-    fn add_dependency(&mut self, dep: String) {
-        if !self.dependencies.contains(&dep) {
-            self.dependencies.push(dep);
-        }
-    }
 }
 
 /// Build a mixed task/service graph from project configuration.
