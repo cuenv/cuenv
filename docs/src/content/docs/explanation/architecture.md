@@ -190,6 +190,9 @@ task help/detail rendering lives in
 Startup, runtime selection, and early process routing stay in
 `crates/cuenv/src/main.rs`; command paths that bypass the executor are isolated in
 `crates/cuenv/src/sync_dispatch.rs` and `crates/cuenv/src/async_dispatch.rs`.
+The internal event coordinator keeps the client registry to the active message
+sender only; registration metadata is logged at connect time rather than stored
+as unread per-client state.
 The async dispatcher owns direct async commands plus changeset/release output
 envelopes; the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through

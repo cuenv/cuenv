@@ -4,8 +4,7 @@
 //! - 4 bytes: big-endian message length
 //! - N bytes: JSON payload
 
-// Protocol has some unused fields/methods reserved for future multi-UI support
-#![allow(dead_code, clippy::cast_possible_truncation)]
+#![allow(clippy::cast_possible_truncation)]
 
 use cuenv_events::CuenvEvent;
 use serde::{Deserialize, Serialize};

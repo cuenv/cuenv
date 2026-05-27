@@ -3,9 +3,6 @@
 //! The coordinator accepts connections from CLI producers and UI consumers,
 //! broadcasting events from producers to all connected consumers.
 
-// Server is a work-in-progress for multi-UI support
-#![allow(dead_code)]
-
 use super::protocol::{ClientType, MessageType, RegisterPayload, WireMessage};
 use super::{pid_path, socket_path};
 use cuenv_events::CuenvEvent;
@@ -48,10 +45,6 @@ impl Default for CoordinatorConfig {
 /// Connected client information.
 #[derive(Debug)]
 struct ConnectedClient {
-    id: Uuid,
-    client_type: ClientType,
-    pid: u32,
-    connected_at: Instant,
     tx: mpsc::UnboundedSender<WireMessage>,
 }
 
@@ -253,13 +246,7 @@ async fn register_connected_client(
     registration: &RegisterPayload,
     tx: mpsc::UnboundedSender<WireMessage>,
 ) {
-    let client = ConnectedClient {
-        id: registration.client_id,
-        client_type: registration.client_type.clone(),
-        pid: registration.pid,
-        connected_at: Instant::now(),
-        tx,
-    };
+    let client = ConnectedClient { tx };
 
     tracing::debug!(
         client_id = %registration.client_id,
