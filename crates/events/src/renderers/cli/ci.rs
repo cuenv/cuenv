@@ -1,4 +1,4 @@
-use super::CliRenderer;
+use super::{CliRenderer, stdout_line};
 use crate::event::CiEvent;
 
 impl CliRenderer {
@@ -10,19 +10,21 @@ impl CliRenderer {
                 event_type,
                 ref_name,
             } => {
-                println!("Context: {provider} (event: {event_type}, ref: {ref_name})");
+                stdout_line(format_args!(
+                    "Context: {provider} (event: {event_type}, ref: {ref_name})"
+                ));
             }
             CiEvent::ChangedFilesFound { count } => {
-                println!("Changed files: {count}");
+                stdout_line(format_args!("Changed files: {count}"));
             }
             CiEvent::ProjectsDiscovered { count } => {
-                println!("Found {count} projects");
+                stdout_line(format_args!("Found {count} projects"));
             }
             CiEvent::ProjectSkipped { path, reason } => {
-                println!("Project {path}: {reason}");
+                stdout_line(format_args!("Project {path}: {reason}"));
             }
             CiEvent::TaskExecuting { task, .. } => {
-                println!("  -> Executing {task}");
+                stdout_line(format_args!("  -> Executing {task}"));
             }
             CiEvent::TaskResult {
                 task,
@@ -31,15 +33,15 @@ impl CliRenderer {
                 ..
             } => {
                 if *success {
-                    println!("  -> {task} passed");
+                    stdout_line(format_args!("  -> {task} passed"));
                 } else if let Some(err) = error {
-                    println!("  -> {task} failed: {err}");
+                    stdout_line(format_args!("  -> {task} failed: {err}"));
                 } else {
-                    println!("  -> {task} failed");
+                    stdout_line(format_args!("  -> {task} failed"));
                 }
             }
             CiEvent::ReportGenerated { path } => {
-                println!("Report written to: {path}");
+                stdout_line(format_args!("Report written to: {path}"));
             }
         }
     }

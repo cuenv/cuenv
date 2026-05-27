@@ -1,15 +1,13 @@
 //! CLI renderer for cuenv events.
 //!
 //! Renders events to stdout/stderr for terminal display.
-//! This module is allowed to use println!/eprintln! as it's the output layer.
-
-#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use crate::bus::EventReceiver;
 use crate::event::{CuenvEvent, EventCategory, SystemEvent};
 #[cfg(feature = "spinner")]
 use crate::renderers::SpinnerRenderer;
-use std::io::{self, IsTerminal};
+use std::fmt;
+use std::io::{self, IsTerminal, Write};
 #[cfg(feature = "spinner")]
 use std::sync::Mutex;
 
@@ -134,6 +132,58 @@ impl Default for CliRenderer {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub(super) fn stdout_line(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    write_line(stdout.lock(), args);
+}
+
+pub(super) fn stdout(args: fmt::Arguments<'_>) {
+    let stdout = io::stdout();
+    write(stdout.lock(), args);
+}
+
+pub(super) fn stderr_line(args: fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    write_line(stderr.lock(), args);
+}
+
+pub(super) fn stderr(args: fmt::Arguments<'_>) {
+    let stderr = io::stderr();
+    write(stderr.lock(), args);
+}
+
+pub(super) fn flush_stdout() {
+    let stdout = io::stdout();
+    flush(stdout.lock());
+}
+
+pub(super) fn flush_stderr() {
+    let stderr = io::stderr();
+    flush(stderr.lock());
+}
+
+fn write_line(mut writer: impl Write, args: fmt::Arguments<'_>) {
+    if let Err(error) = writer.write_fmt(format_args!("{args}\n")) {
+        log_cli_write_error(&error);
+    }
+}
+
+fn write(mut writer: impl Write, args: fmt::Arguments<'_>) {
+    if let Err(error) = writer.write_fmt(args) {
+        log_cli_write_error(&error);
+    }
+}
+
+fn flush(mut writer: impl Write) {
+    if let Err(error) = writer.flush() {
+        log_cli_write_error(&error);
+    }
+}
+
+fn log_cli_write_error(error: &io::Error) {
+    tracing::debug!(%error, "failed to write CLI event output");
 }
 
 #[cfg(test)]

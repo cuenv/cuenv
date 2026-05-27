@@ -1,4 +1,4 @@
-use super::CliRenderer;
+use super::{CliRenderer, stderr_line};
 use crate::event::CommandEvent;
 
 impl CliRenderer {
@@ -6,7 +6,7 @@ impl CliRenderer {
         match event {
             CommandEvent::Started { command, .. } => {
                 if self.config.verbose {
-                    eprintln!("Starting command: {command}");
+                    stderr_line(format_args!("Starting command: {command}"));
                 }
             }
             CommandEvent::Progress {
@@ -14,7 +14,7 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let pct = progress * 100.0;
-                    eprintln!("[{pct:.0}%] {message}");
+                    stderr_line(format_args!("[{pct:.0}%] {message}"));
                 }
             }
             CommandEvent::Completed {
@@ -24,7 +24,9 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    eprintln!("Command {command} {status} in {duration_ms}ms");
+                    stderr_line(format_args!(
+                        "Command {command} {status} in {duration_ms}ms"
+                    ));
                 }
             }
         }

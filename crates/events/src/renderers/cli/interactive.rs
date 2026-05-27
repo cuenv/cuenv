@@ -1,6 +1,5 @@
-use super::CliRenderer;
+use super::{CliRenderer, flush_stderr, flush_stdout, stderr, stdout, stdout_line};
 use crate::event::InteractiveEvent;
-use std::io::{self, Write};
 
 impl CliRenderer {
     pub(super) fn render_interactive(&self, event: &InteractiveEvent) {
@@ -9,12 +8,12 @@ impl CliRenderer {
             InteractiveEvent::PromptRequested {
                 message, options, ..
             } => {
-                println!("{message}");
+                stdout_line(format_args!("{message}"));
                 for (i, option) in options.iter().enumerate() {
-                    println!("  [{i}] {option}");
+                    stdout_line(format_args!("  [{i}] {option}"));
                 }
-                print!("> ");
-                let _ = io::stdout().flush();
+                stdout(format_args!("> "));
+                flush_stdout();
             }
             InteractiveEvent::PromptResolved { .. } => {
                 // Response handled elsewhere
@@ -23,8 +22,10 @@ impl CliRenderer {
                 target,
                 elapsed_secs,
             } => {
-                eprint!("\r\x1b[KWaiting for `{target}`... [{elapsed_secs}s]");
-                let _ = io::stderr().flush();
+                stderr(format_args!(
+                    "\r\x1b[KWaiting for `{target}`... [{elapsed_secs}s]"
+                ));
+                flush_stderr();
             }
         }
     }

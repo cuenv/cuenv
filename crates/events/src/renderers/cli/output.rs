@@ -1,4 +1,4 @@
-use super::CliRenderer;
+use super::{CliRenderer, stderr_line, stdout_line};
 use crate::event::OutputEvent;
 
 impl CliRenderer {
@@ -6,10 +6,10 @@ impl CliRenderer {
         let _ = &self.config; // Reserved for future output rendering options.
         match event {
             OutputEvent::Stdout { content } => {
-                println!("{content}");
+                stdout_line(format_args!("{content}"));
             }
             OutputEvent::Stderr { content } => {
-                eprintln!("{content}");
+                stderr_line(format_args!("{content}"));
             }
         }
     }

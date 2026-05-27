@@ -1,4 +1,4 @@
-use super::CliRenderer;
+use super::{CliRenderer, stderr_line, stdout_line};
 use crate::event::{Stream, TaskEvent};
 
 impl CliRenderer {
@@ -20,7 +20,7 @@ impl CliRenderer {
                 guard.apply(event);
                 // Route output through MultiProgress::println so it appears
                 // above the active spinners without corrupting their frames.
-                // Bare println! / eprintln! here would race indicatif's
+                // Direct terminal writes here would race indicatif's
                 // cursor moves on stderr.
                 if let TaskEvent::Output {
                     name,
@@ -51,19 +51,19 @@ impl CliRenderer {
                 ..
             } => {
                 let hermetic_indicator = if *hermetic { " (hermetic)" } else { "" };
-                eprintln!("> [{name}] {command}{hermetic_indicator}");
+                stderr_line(format_args!("> [{name}] {command}{hermetic_indicator}"));
             }
             TaskEvent::CacheHit { name, .. } => {
-                eprintln!("> [{name}] (cached)");
+                stderr_line(format_args!("> [{name}] (cached)"));
             }
             TaskEvent::CacheMiss { name, .. } => {
                 if self.config.verbose {
-                    eprintln!("> [{name}] cache miss, executing...");
+                    stderr_line(format_args!("> [{name}] cache miss, executing..."));
                 }
             }
             TaskEvent::CacheSkipped { name, reason, .. } => {
                 if self.config.verbose {
-                    eprintln!("> [{name}] cache skipped: {reason}");
+                    stderr_line(format_args!("> [{name}] cache skipped: {reason}"));
                 }
             }
             TaskEvent::Queued {
@@ -72,11 +72,13 @@ impl CliRenderer {
                 ..
             } => {
                 if self.config.verbose {
-                    eprintln!("> [{name}] queued (position {queue_position})");
+                    stderr_line(format_args!(
+                        "> [{name}] queued (position {queue_position})"
+                    ));
                 }
             }
             TaskEvent::Skipped { name, reason, .. } => {
-                eprintln!("> [{name}] skipped ({reason})");
+                stderr_line(format_args!("> [{name}] skipped ({reason})"));
             }
             TaskEvent::Retrying {
                 name,
@@ -84,16 +86,18 @@ impl CliRenderer {
                 max_attempts,
                 ..
             } => {
-                eprintln!("> [{name}] retrying (attempt {attempt}/{max_attempts})");
+                stderr_line(format_args!(
+                    "> [{name}] retrying (attempt {attempt}/{max_attempts})"
+                ));
             }
             TaskEvent::Output {
                 stream, content, ..
             } => match stream {
                 Stream::Stdout => {
-                    println!("{content}");
+                    stdout_line(format_args!("{content}"));
                 }
                 Stream::Stderr => {
-                    eprintln!("{content}");
+                    stderr_line(format_args!("{content}"));
                 }
             },
             TaskEvent::Completed {
@@ -104,7 +108,7 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    eprintln!("> [{name}] {status} in {duration_ms}ms");
+                    stderr_line(format_args!("> [{name}] {status} in {duration_ms}ms"));
                 }
             }
             TaskEvent::GroupStarted {
@@ -118,7 +122,9 @@ impl CliRenderer {
                 } else {
                     "parallel"
                 };
-                eprintln!("> Running {mode} group: {name} ({task_count} tasks)");
+                stderr_line(format_args!(
+                    "> Running {mode} group: {name} ({task_count} tasks)"
+                ));
             }
             TaskEvent::GroupCompleted {
                 name,
@@ -131,9 +137,9 @@ impl CliRenderer {
             } => {
                 if self.config.verbose {
                     let status = if *success { "completed" } else { "failed" };
-                    eprintln!(
+                    stderr_line(format_args!(
                         "> Group {name} {status} in {duration_ms}ms ({succeeded} ok, {failed} failed, {skipped} skipped)"
-                    );
+                    ));
                 }
             }
         }
