@@ -121,7 +121,9 @@ including saturating elapsed-millisecond conversion for persisted hook results;
 source-hook shell environment capture lives in
 `crates/hooks/src/executor/source_environment.rs`. Supervisor integration tests
 scope `CUENV_EXECUTABLE` through `temp_env` instead of mutating the process
-environment globally. CLI hook command
+environment globally. Hook syntax-error integration tests return `Result` from
+filesystem and command setup and report unexpected exits as errors instead of
+using file-level unwrap/expect allowances. CLI hook command
 orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
 snippet generation and status rendering live under
 `crates/cuenv/src/commands/hooks/`.

@@ -1,32 +1,27 @@
 //! Integration test for hooks with syntax errors
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::unwrap_used, clippy::expect_used)]
-
 use assert_cmd::Command;
+use std::error::Error;
 use std::fs;
 use tempfile::TempDir;
 
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
 /// Create a test directory with non-hidden name and CUE module setup
-fn create_test_dir() -> TempDir {
-    let temp_dir = tempfile::Builder::new()
-        .prefix("cuenv_test_")
-        .tempdir()
-        .expect("Failed to create temp directory");
+fn create_test_dir() -> TestResult<TempDir> {
+    let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
     let path = temp_dir.path();
-    // Create CUE module for module-wide evaluation
-    fs::create_dir_all(path.join("cue.mod")).unwrap();
+    fs::create_dir_all(path.join("cue.mod"))?;
     fs::write(
         path.join("cue.mod/module.cue"),
         "module: \"test.example/garbage\"\nlanguage: version: \"v0.9.0\"\n",
-    )
-    .unwrap();
-    temp_dir
+    )?;
+    Ok(temp_dir)
 }
 
 #[test]
-fn test_hook_with_syntax_error_output() {
-    let temp_dir = create_test_dir();
+fn test_hook_with_syntax_error_output() -> TestResult {
+    let temp_dir = create_test_dir()?;
     let path = temp_dir.path();
 
     // Create env.cue with a hook that outputs a SYNTAX ERROR (unclosed quote)
@@ -46,19 +41,15 @@ hooks: {
     }
 }
 "#;
-    fs::write(path.join("env.cue"), cue_content).unwrap();
+    fs::write(path.join("env.cue"), cue_content)?;
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
 
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let allow_output = cmd
+    let allow_output = Command::new(cuenv_bin)
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
-        .arg("allow")
-        .arg("--yes")
-        .output()
-        .unwrap();
+        .args(["allow", "--yes"])
+        .output()?;
 
     // Handle FFI error in sandbox during allow
     if allow_output.status.code() == Some(3) {
@@ -67,7 +58,7 @@ hooks: {
             stderr.contains("Evaluation/FFI error") || stderr.contains("Unexpected error"),
             "Expected FFI or Unexpected error in sandbox during allow, got: {stderr}"
         );
-        return; // Skip rest of test in sandbox
+        return Ok(());
     }
     assert!(
         allow_output.status.success(),
@@ -75,18 +66,17 @@ hooks: {
         String::from_utf8_lossy(&allow_output.stderr)
     );
 
-    #[allow(deprecated)]
-    let mut cmd = Command::cargo_bin("cuenv").unwrap();
-    let output = cmd
+    let output = Command::new(cuenv_bin)
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
-        .arg("exec")
-        .arg("--")
-        .arg("sh")
-        .arg("-c")
-        .arg("if [ \"$GOOD\" = \"success\" ]; then echo FOUND; else echo MISSING; exit 1; fi")
-        .output()
-        .unwrap();
+        .args([
+            "exec",
+            "--",
+            "sh",
+            "-c",
+            "if [ \"$GOOD\" = \"success\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
+        ])
+        .output()?;
 
     // Handle different behaviors based on environment and error handling:
     // - Exit code 3: FFI/sandbox error
@@ -120,7 +110,14 @@ hooks: {
             );
         }
         other => {
-            panic!("Unexpected exit code {other:?}.\nstdout: {stdout}\nstderr: {stderr}");
+            return Err(unexpected_exit(other, &stdout, &stderr).into());
         }
     }
+    Ok(())
+}
+
+fn unexpected_exit(exit_code: Option<i32>, stdout: &str, stderr: &str) -> std::io::Error {
+    std::io::Error::other(format!(
+        "Unexpected exit code {exit_code:?}.\nstdout: {stdout}\nstderr: {stderr}"
+    ))
 }
