@@ -115,10 +115,7 @@ pub fn execute_sync_command(command: Command, json_format: OutputFormat) -> Resu
 
 fn execute_version_command() {
     let version_info = commands::version::get_version_info();
-    #[allow(clippy::print_stdout)] // Version info contains no secrets
-    {
-        println!("{version_info}");
-    }
+    cuenv_events::println_redacted(&version_info);
 }
 
 fn execute_info_command(

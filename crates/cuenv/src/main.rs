@@ -258,10 +258,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
 
     // Handle --llms flag
     if cli.llms {
-        #[allow(clippy::print_stdout)] // LLMS_CONTENT is static documentation, no secrets
-        {
-            print!("{LLMS_CONTENT}");
-        }
+        cuenv_events::print_redacted(LLMS_CONTENT);
         return EXIT_OK;
     }
 
@@ -465,10 +462,7 @@ async fn real_main() -> Result<(), CliError> {
 
     // Handle --llms flag (print LLM context and exit)
     if init_result.cli.llms {
-        #[allow(clippy::print_stdout)] // LLMS_CONTENT is static documentation, no secrets
-        {
-            print!("{LLMS_CONTENT}");
-        }
+        cuenv_events::print_redacted(LLMS_CONTENT);
         return Ok(());
     }
 
