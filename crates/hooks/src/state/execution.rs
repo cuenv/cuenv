@@ -86,11 +86,7 @@ impl HookExecutionState {
     }
 
     /// Record the result of a hook execution
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "Takes ownership for API clarity, cloning is intentional"
-    )]
-    pub fn record_hook_result(&mut self, hook_index: usize, result: HookResult) {
+    pub fn record_hook_result(&mut self, hook_index: usize, result: &HookResult) {
         self.hook_results.insert(hook_index, result.clone());
         self.completed_hooks += 1;
         self.current_hook_index = None;

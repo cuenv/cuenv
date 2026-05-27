@@ -141,8 +141,10 @@ package-manager workspace contributor definitions live in
 the built-in Bun/npm/pnpm/Yarn setup catalog.
 Persistent hook execution state, marker files, cleanup, and execution hashes
 live under `crates/hooks/src/state/`, including integer duration display
-formatting; hook execution orchestration lives in `crates/hooks/src/executor.rs`,
-including saturating elapsed-millisecond conversion for persisted hook results;
+formatting. Hook result recording borrows execution results and clones only for
+the persisted state map. Hook execution orchestration lives in
+`crates/hooks/src/executor.rs`, including saturating elapsed-millisecond
+conversion for persisted hook results;
 source-hook shell environment capture lives in
 `crates/hooks/src/executor/source_environment.rs`. Supervisor integration tests
 scope `CUENV_EXECUTABLE` through `temp_env` instead of mutating the process

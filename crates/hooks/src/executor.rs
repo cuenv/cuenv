@@ -574,7 +574,7 @@ pub async fn execute_hooks(
                     }
                 }
 
-                state.record_hook_result(index, hook_result.clone());
+                state.record_hook_result(index, &hook_result);
                 if !hook_result.success && config.fail_fast {
                     warn!(
                         "Hook {} failed and fail_fast is enabled, stopping",
@@ -587,7 +587,7 @@ pub async fn execute_hooks(
                 let error_msg = format!("Hook execution error: {}", e);
                 state.record_hook_result(
                     index,
-                    HookResult::failure(HookFailure {
+                    &HookResult::failure(HookFailure {
                         hook: hook.clone(),
                         exit_status: None,
                         stdout: String::new(),

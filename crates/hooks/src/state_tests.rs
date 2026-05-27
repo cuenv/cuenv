@@ -115,7 +115,7 @@ async fn test_state_manager_operations() {
         100,
     );
 
-    state.record_hook_result(0, result);
+    state.record_hook_result(0, &result);
     state_manager.save_state(&state).await.unwrap();
 
     // Load updated state
@@ -198,7 +198,7 @@ fn test_hook_execution_state() {
         100,
     );
 
-    state.record_hook_result(0, result);
+    state.record_hook_result(0, &result);
     assert_eq!(state.completed_hooks, 1);
     assert_eq!(state.current_hook_index, None);
     assert_eq!(state.status, ExecutionStatus::Running);
@@ -214,7 +214,7 @@ fn test_hook_execution_state() {
         error: "Command failed".to_string(),
     });
 
-    state.record_hook_result(1, failed_result);
+    state.record_hook_result(1, &failed_result);
     assert_eq!(state.completed_hooks, 2);
     assert_eq!(state.status, ExecutionStatus::Failed);
     assert!(state.is_complete());
