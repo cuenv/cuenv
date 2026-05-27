@@ -176,6 +176,10 @@ Uses `miette` for rich diagnostic errors with:
 - Contextual help messages
 - Suggestions for fixes
 
+CLI error-conversion tests build invalid UTF-8 fixtures at runtime so the
+coverage exercises real `Utf8Error` handling without compile-time invalid UTF-8
+lint suppressions.
+
 ```rust
 use cuenv_core::{Error, Result};
 

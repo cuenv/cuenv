@@ -555,10 +555,9 @@ fn test_cuenv_core_platform_error() {
 }
 
 #[test]
-#[allow(invalid_from_utf8)]
 fn test_cuenv_core_utf8_error() {
-    // Create an actual UTF-8 error by parsing invalid bytes
-    let invalid_bytes = [0xff, 0xfe];
+    let mut invalid_bytes = Vec::from("valid");
+    invalid_bytes[0] = 0xff;
     let utf8_error = std::str::from_utf8(&invalid_bytes).unwrap_err();
     let utf8_err = cuenv_core::Error::Utf8 {
         source: utf8_error,
