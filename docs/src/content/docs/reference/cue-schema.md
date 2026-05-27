@@ -674,9 +674,11 @@ images: {
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
 
+When `registry` is set, `cuenv build` uses `docker buildx build --push` and tags the image as `<registry>/<repository-or-name>:<tag>`. Without `registry`, it runs a local `docker build`. Multi-platform builds require a registry so Docker can push a manifest list.
+
 #### Output References
 
-Images produce two output references resolved at runtime after the image is built:
+The schema exposes two image output references; downstream resolution remains partial:
 
 | Reference | Description                                      |
 | --------- | ------------------------------------------------ |

@@ -157,11 +157,7 @@ fn build_images(project_dir: &Path, images: &[(&str, &ContainerImage)]) -> cuenv
     images.iter().try_for_each(|(name, image)| {
         let invocation = DockerBuildInvocation::new(project_dir, name, image)?;
         emit_stdout!(format!("cuenv build: running {}", invocation.display()));
-        invocation.run().map_err(|source| cuenv_core::Error::Io {
-            source,
-            path: None,
-            operation: "run docker build".to_string(),
-        })?;
+        invocation.run()?;
         Ok(())
     })
 }
@@ -224,16 +220,21 @@ impl DockerBuildInvocation {
         })
     }
 
-    fn run(&self) -> std::io::Result<()> {
+    fn run(&self) -> cuenv_core::Result<()> {
         let status = Command::new(self.program)
             .args(&self.args)
             .current_dir(&self.current_dir)
-            .status()?;
+            .status()
+            .map_err(|source| cuenv_core::Error::Io {
+                source,
+                path: None,
+                operation: "run docker build".to_string(),
+            })?;
 
         if status.success() {
             Ok(())
         } else {
-            Err(std::io::Error::other(format!(
+            Err(cuenv_core::Error::execution(format!(
                 "docker build failed with status {status}"
             )))
         }
@@ -249,10 +250,10 @@ impl DockerBuildInvocation {
 
 fn image_refs(name: &str, image: &ContainerImage) -> Vec<String> {
     let repository = image.repository.as_deref().unwrap_or(name);
-    let base = image
-        .registry
-        .as_deref()
-        .map_or_else(|| repository.to_string(), |registry| format!("{registry}/{repository}"));
+    let base = image.registry.as_deref().map_or_else(
+        || repository.to_string(),
+        |registry| format!("{}/{}", registry.trim_end_matches('/'), repository),
+    );
 
     image
         .tags
@@ -365,9 +366,9 @@ mod tests {
     #[test]
     fn test_docker_invocation_for_local_image() {
         let image = test_image(vec!["latest"], vec![]);
-        let invocation =
-            DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
-                .expect("local invocation should be valid");
+        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_ok());
+        let invocation = result.unwrap_or_else(|_| unreachable!("result was checked above"));
 
         assert_eq!(invocation.program, "docker");
         assert_eq!(invocation.current_dir, PathBuf::from("/workspace/app"));
@@ -393,9 +394,9 @@ mod tests {
         image.repository = Some("services/api".to_string());
         image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
 
-        let invocation =
-            DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
-                .expect("registry invocation should be valid");
+        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_ok());
+        let invocation = result.unwrap_or_else(|_| unreachable!("result was checked above"));
 
         assert_eq!(
             invocation.args,
@@ -419,9 +420,10 @@ mod tests {
         let mut image = test_image(vec!["latest"], vec![]);
         image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
 
-        let error = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image)
-            .expect_err("multi-platform local invocation should fail");
+        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_err());
+        let message = result.err().map(|error| error.to_string()).unwrap_or_default();
 
-        assert!(error.to_string().contains("multiple platforms"));
+        assert!(message.contains("multiple platforms"));
     }
 }
