@@ -1,6 +1,7 @@
-#![allow(clippy::expect_used, clippy::needless_pass_by_value)]
+#![allow(clippy::needless_pass_by_value)]
 
-use super::TestWorld;
+use super::{StepResult, TestWorld};
+use cucumber::codegen::anyhow::anyhow;
 use cucumber::{given, then};
 use std::fmt::Write;
 
@@ -23,8 +24,14 @@ env: {
 }
 
 #[given(expr = "a project with environment variables:")]
-async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::gherkin::Step) {
-    let table = step.table.as_ref().expect("Expected a data table");
+async fn given_project_with_env_vars(
+    world: &mut TestWorld,
+    step: &cucumber::gherkin::Step,
+) -> StepResult {
+    let table = step
+        .table
+        .as_ref()
+        .ok_or_else(|| anyhow!("expected a data table for environment variables"))?;
 
     let vars: Vec<(String, String)> = table
         .rows
@@ -34,11 +41,11 @@ async fn given_project_with_env_vars(world: &mut TestWorld, step: &cucumber::ghe
         .collect();
 
     let cue_content = generate_env_cue(&vars);
-    world.write_test_project("env_test", &cue_content).await;
+    world.write_test_project("env_test", &cue_content).await
 }
 
 #[given(expr = "a project with no environment variables")]
-async fn given_project_with_no_env_vars(world: &mut TestWorld) {
+async fn given_project_with_no_env_vars(world: &mut TestWorld) -> StepResult {
     // Schema-free for test isolation
     let cue_content = r#"package test
 
@@ -49,11 +56,11 @@ env: {}
 
     world
         .write_test_project("empty_env_test", cue_content)
-        .await;
+        .await
 }
 
 #[given(expr = "a project with base environment {string}")]
-async fn given_project_with_base_env(world: &mut TestWorld, base_env: String) {
+async fn given_project_with_base_env(world: &mut TestWorld, base_env: String) -> StepResult {
     // Parse "VAR=value" format
     let parts: Vec<&str> = base_env.splitn(2, '=').collect();
     let (var_name, var_value) = if parts.len() == 2 {
@@ -81,7 +88,7 @@ env: {{
 
     world
         .write_test_project("env_inherit_test", &cue_content)
-        .await;
+        .await?;
 
     // Store the base var info for the next step
     world
@@ -90,10 +97,15 @@ env: {{
     world
         .env_vars
         .insert("_base_value".to_string(), var_value.to_string());
+    Ok(())
 }
 
 #[given(expr = "a derived environment {string} with {string}")]
-async fn given_derived_environment(world: &mut TestWorld, env_name: String, env_var: String) {
+async fn given_derived_environment(
+    world: &mut TestWorld,
+    env_name: String,
+    env_var: String,
+) -> StepResult {
     // Parse "VAR=value" format
     let parts: Vec<&str> = env_var.splitn(2, '=').collect();
     let (var_name, var_value) = if parts.len() == 2 {
@@ -130,7 +142,7 @@ env: {{
 "#
     );
 
-    world.write_current_env_cue(&cue_content).await;
+    world.write_current_env_cue(&cue_content).await
 }
 
 #[then(expr = "the output should be valid JSON")]
@@ -148,7 +160,7 @@ fn then_output_is_valid_json(world: &mut TestWorld) {
 // =============================================================================
 
 #[given(expr = "a project with invalid CUE syntax")]
-async fn given_project_with_invalid_cue(world: &mut TestWorld) {
+async fn given_project_with_invalid_cue(world: &mut TestWorld) -> StepResult {
     // Create a CUE file with intentionally broken syntax (schema-free for test isolation)
     let cue_content = r#"package test
 
@@ -162,11 +174,11 @@ env: {
 
     world
         .write_test_project("invalid_cue_test", cue_content)
-        .await;
+        .await
 }
 
 #[given(expr = "a project with no tasks or environment")]
-async fn given_project_with_no_tasks_or_env(world: &mut TestWorld) {
+async fn given_project_with_no_tasks_or_env(world: &mut TestWorld) -> StepResult {
     // Schema-free for test isolation
     let cue_content = r#"package test
 
@@ -175,5 +187,5 @@ name: "empty-project"
 
     world
         .write_test_project("empty_project_test", cue_content)
-        .await;
+        .await
 }

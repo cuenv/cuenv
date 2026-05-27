@@ -1,10 +1,7 @@
-#![allow(
-    clippy::expect_used,
-    clippy::needless_pass_by_value,
-    clippy::unwrap_used
-)]
+#![allow(clippy::needless_pass_by_value)]
 
-use super::TestWorld;
+use super::{StepResult, TestWorld};
+use cucumber::codegen::anyhow::anyhow;
 use cucumber::{given, then, when};
 use std::fmt::Write;
 
@@ -83,9 +80,15 @@ tasks: {
 }
 
 #[given(expr = "a project with tasks:")]
-async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherkin::Step) {
+async fn given_project_with_tasks(
+    world: &mut TestWorld,
+    step: &cucumber::gherkin::Step,
+) -> StepResult {
     // Parse the data table from the step
-    let table = step.table.as_ref().expect("Expected a data table");
+    let table = step
+        .table
+        .as_ref()
+        .ok_or_else(|| anyhow!("expected a data table for task definitions"))?;
 
     let tasks: Vec<(String, String, Vec<String>)> = table
         .rows
@@ -105,11 +108,15 @@ async fn given_project_with_tasks(world: &mut TestWorld, step: &cucumber::gherki
         .collect();
 
     let cue_content = generate_task_cue(&tasks);
-    world.write_test_project("task_test", &cue_content).await;
+    world.write_test_project("task_test", &cue_content).await
 }
 
 #[given(expr = "a project with parallel tasks {string} and {string}")]
-async fn given_project_with_parallel_tasks(world: &mut TestWorld, task1: String, task2: String) {
+async fn given_project_with_parallel_tasks(
+    world: &mut TestWorld,
+    task1: String,
+    task2: String,
+) -> StepResult {
     // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
@@ -134,7 +141,7 @@ tasks: {{
 
     world
         .write_test_project("parallel_test", &cue_content)
-        .await;
+        .await
 }
 
 #[given(expr = "a project with a parallel group {string} containing {string} and {string}")]
@@ -143,7 +150,7 @@ async fn given_project_with_parallel_group(
     group: String,
     task1: String,
     task2: String,
-) {
+) -> StepResult {
     // Schema-free for test isolation
     let cue_content = format!(
         r#"package test
@@ -166,41 +173,43 @@ tasks: {{
 "#
     );
 
-    world.write_test_project("group_test", &cue_content).await;
+    world.write_test_project("group_test", &cue_content).await
 }
 
 #[when(expr = "I run {string}")]
-async fn when_i_run_command(world: &mut TestWorld, command: String) {
+async fn when_i_run_command(world: &mut TestWorld, command: String) -> StepResult {
     // Parse the command - expecting "cuenv task <args>" or "cuenv env <args>"
     let parts: Vec<&str> = command.split_whitespace().collect();
 
     if parts.first() == Some(&"cuenv") {
         // Build args with --path and --package before the command args
-        let path = world.current_dir.to_str().unwrap().to_string();
-        let path_str: &'static str = Box::leak(path.into_boxed_str());
+        let path = TestWorld::path_arg(&world.current_dir)?;
 
         // Get the subcommand (e.g., "task" or "env")
-        let subcommand = parts.get(1).copied().unwrap_or("");
+        let subcommand = parts
+            .get(1)
+            .copied()
+            .ok_or_else(|| anyhow!("expected cuenv subcommand in `{command}`"))?;
 
         // Build the full args list with path/package options in correct position
-        let mut args = vec![subcommand];
+        let mut args = vec![subcommand.to_string()];
 
         // Add remaining args from the command
-        args.extend(parts[2..].iter().copied());
+        args.extend(parts[2..].iter().map(|part| (*part).to_string()));
 
         // Add --path and --package at the end (they're global options)
-        args.push("--path");
-        args.push(path_str);
-        args.push("--package");
-        args.push("test");
+        args.push("--path".to_string());
+        args.push(path);
+        args.push("--package".to_string());
+        args.push("test".to_string());
 
-        world.run_cuenv(&args).await.unwrap();
+        world.run_cuenv(args).await?;
     } else {
-        assert!(
-            command.starts_with("cuenv"),
-            "Expected command to start with 'cuenv', got: {command}"
-        );
+        return Err(anyhow!(
+            "expected command to start with `cuenv`, got: {command}"
+        ));
     }
+    Ok(())
 }
 
 #[then(expr = "the task {string} should complete before {string}")]
