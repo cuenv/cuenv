@@ -649,7 +649,13 @@ impl TaskExecutor {
         }
 
         if emit_lifecycle {
-            cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
+            cuenv_events::emit_task_group_started!(
+                prefix,
+                false,
+                group.children.len(),
+                None::<&str>,
+                group.max_concurrency
+            );
         }
         let started = std::time::Instant::now();
         let total_children = group.children.len();
