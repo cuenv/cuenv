@@ -187,13 +187,14 @@ where
             match joined {
                 Ok(Ok((name, outcome))) => {
                     let success = outcome.is_success();
+                    let continue_on_error = outcome.continue_on_error();
                     if !success {
                         failed += 1;
                         tainted.insert(name.clone());
                     }
                     outcomes_by_name.insert(name.clone(), outcome.clone());
                     outcomes.push((name, outcome));
-                    if !success && !(policy.continue_on_error || outcome.continue_on_error()) {
+                    if !success && !(policy.continue_on_error || continue_on_error) {
                         join_set.abort_all();
                         break 'outer;
                     }
