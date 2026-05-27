@@ -6,7 +6,7 @@
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We use Nix for builds and checks, cuenv for orchestration and workflow validation, and choose the smallest check that proves the current change.
 - `nix flake check -L --accept-flake-config` is the final review/merge/release gate and the escalation gate for broad-risk changes listed under Validation Strategy.
-- Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, test extraction or moves, behavior-preserving refactors, and one-crate test-only dependency changes when the focused gate proves the touched surface.
+- Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, simple test extractions or moves, behavior-preserving refactors, and one-crate test-only dependency changes when the focused gate proves the touched surface.
 - Always update ./docs for all work.
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
 - Every PR that changes prompts or agent guidance must update the affected docs and skills under `.agents/skills/`. Update the schema coverage matrix only when the change alters schema or CLI support status.
@@ -57,7 +57,7 @@ Before starting a full root flake check, name the trigger that requires it. If n
 
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
-- Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`, or an app-local Nix test/clippy check when that is the local boundary.
+- Simple test extractions, mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`, or an app-local Nix test/clippy check when that is the local boundary. Add all-target clippy for the touched crate when the commit removes lint allowances or changes test-only dependencies.
 - One-crate test-only Cargo manifest or lockfile changes, such as adding a dev-dependency used only by tests: run `cuenv fmt --fix`, `git diff --check`, the focused crate/module tests, and all-target clippy for that crate. Review `Cargo.lock` to confirm the delta is limited to the test dependency.
 - Docs, prompts, examples, repo-local skills, or agent-guidance text such as `AGENTS.md`: run `cuenv task ci.schema-docs-check`; add `cuenv fmt --fix` only when formatting applies.
 - Sync-provider changes that do not alter generated workflow contracts: run `cuenv sync ci --check` plus the focused tests for the touched provider.
@@ -67,7 +67,7 @@ Do not run the full root flake check for:
 
 - Exploratory review work while deciding what to change.
 - Docs-only, prompt-only, repo-local skill-only, or agent-guidance-only edits, including `AGENTS.md` text.
-- Mechanical test extraction, test moves, or behavior-preserving module splits while the PR remains draft.
+- Simple mechanical test extractions, test moves, or behavior-preserving module splits while the PR remains draft.
 - One-crate test-only dev-dependency changes while the PR remains draft, when the crate-local tests and clippy cover the touched test surface.
 - Tiny scoped commits where a focused crate/module check proves the touched surface.
 

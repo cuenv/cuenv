@@ -14,9 +14,10 @@ cuenv task ci.schema-docs-check
 Validation scope:
 
 - For docs, prompts, examples, skills, or agent-guidance text such as `AGENTS.md`, `cuenv task ci.schema-docs-check` is the required focused gate.
+- Simple mechanical test extractions, test moves, and behavior-preserving module splits stay in focused validation while the PR is draft: run formatting, diff checks, focused tests, and all-target clippy for the touched crate when lint allowances change.
 - One-crate test-only Cargo manifest or lockfile changes stay in focused validation while the PR is draft: run the focused crate tests, all-target clippy for that crate, and confirm `Cargo.lock` only moved for the test dependency.
 - Full root flake check is required when preparing the PR for review/merge/release, touching Nix, flake outputs, CI/release, build/check wiring, generated workflow contracts, broad cross-crate runtime behavior, schema or CLI support that focused checks cannot fully cover, or Cargo manifest/lockfile changes that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
-- Do not run the full root flake check for docs-only, prompt-only, agent-guidance-only, repo-local skill-only, mechanical test extraction, test moves, behavior-preserving module splits, one-crate test-only dev-dependency changes, or tiny scoped draft commits when focused validation covers the touched surface.
+- Do not run the full root flake check for docs-only, prompt-only, agent-guidance-only, repo-local skill-only, simple mechanical test extractions, test moves, behavior-preserving module splits, one-crate test-only dev-dependency changes, or tiny scoped draft commits when focused validation covers the touched surface.
 - Before starting a full root flake check, identify the trigger that requires it. If no trigger applies, keep validation focused.
 - If a change does not match a required full-flake trigger, keep validation focused and record the focused gate instead of spending a draft commit on the full root flake check.
 - If the change also alters CLI behavior or schema support, add focused CLI/schema tests and update the schema coverage matrix.
