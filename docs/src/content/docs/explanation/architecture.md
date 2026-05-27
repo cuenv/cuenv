@@ -274,6 +274,9 @@ for lockfile activation lives in `crates/core/src/tools/activation/path_index.rs
 The default secret registry keeps a stable fallible `Result` API while
 registering env, exec, and optional 1Password/Infisical resolvers without a
 local `unnecessary_wraps` suppression.
+The exec resolver's JSON command shape stays private inside
+`crates/secrets/src/resolvers/exec.rs`; callers configure it through
+`schema.#ExecSecret` rather than a public Rust constructor.
 
 ### cuenv-1password
 
