@@ -85,13 +85,14 @@ Use focused validation for isolated draft commits, then run the full Nix gate be
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test, or an app-local Nix test/clippy check when that is the local boundary.
+- One-crate test-only Cargo manifest or lockfile changes, such as adding a dev-dependency used only by tests: `cuenv fmt --fix`, `git diff --check`, focused crate/module tests, all-target clippy for that crate, and a `Cargo.lock` review confirming the delta is limited to the test dependency.
 - Docs, prompts, examples, repo-local agent skills, and agent-guidance text such as `AGENTS.md`: `cuenv task ci.schema-docs-check`.
 - CLI behavior changes: focused Rust tests plus a direct CLI smoke test for the changed command.
 - Sync-provider changes that do not alter generated workflow contracts: `cuenv sync ci --check` plus focused tests for the touched provider.
 
-Do not run the full root flake check for exploratory review work, docs-only edits, prompt or agent-guidance text including `AGENTS.md`, repo-local skill-only edits, mechanical test extraction commits, behavior-preserving module splits, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
+Do not run the full root flake check for exploratory review work, docs-only edits, prompt or agent-guidance text including `AGENTS.md`, repo-local skill-only edits, mechanical test extraction commits, behavior-preserving module splits, one-crate test-only dev-dependency changes, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
 
-Full root flake check is required before marking a PR ready for review, merging, release work, Nix/Cargo/flake output/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, schema or CLI support changes that focused checks cannot fully cover, or when a focused check suggests broader workspace breakage.
+Full root flake check is required before marking a PR ready for review, merging, release work, Nix/flake output/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, schema or CLI support changes that focused checks cannot fully cover, or Cargo manifest/lockfile changes that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
 
 If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 

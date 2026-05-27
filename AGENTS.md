@@ -6,7 +6,7 @@
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We use Nix for builds and checks, cuenv for orchestration and workflow validation, and choose the smallest check that proves the current change.
 - `nix flake check -L --accept-flake-config` is the final review/merge/release gate and the escalation gate for broad-risk changes listed under Validation Strategy.
-- Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, test extraction or moves, and behavior-preserving refactors when the focused gate proves the touched surface.
+- Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, test extraction or moves, behavior-preserving refactors, and one-crate test-only dependency changes when the focused gate proves the touched surface.
 - Always update ./docs for all work.
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
 - Every PR that changes prompts or agent guidance must update the affected docs and skills under `.agents/skills/`. Update the schema coverage matrix only when the change alters schema or CLI support status.
@@ -56,6 +56,7 @@ Default to the smallest validation set that proves the current change. Full flak
 Start with focused validation when the change is isolated and the focused gate directly covers the touched surface:
 
 - Mechanical refactors, test moves, or module splits with no behavior change: run `cuenv fmt --fix`, `git diff --check`, and the focused crate/module test such as `cuenv exec -- cargo test -p <crate> --lib <module>::tests`, or an app-local Nix test/clippy check when that is the local boundary.
+- One-crate test-only Cargo manifest or lockfile changes, such as adding a dev-dependency used only by tests: run `cuenv fmt --fix`, `git diff --check`, the focused crate/module tests, and all-target clippy for that crate. Review `Cargo.lock` to confirm the delta is limited to the test dependency.
 - Docs, prompts, examples, repo-local skills, or agent-guidance text such as `AGENTS.md`: run `cuenv task ci.schema-docs-check`; add `cuenv fmt --fix` only when formatting applies.
 - Sync-provider changes that do not alter generated workflow contracts: run `cuenv sync ci --check` plus the focused tests for the touched provider.
 - CLI behavior changes: run the focused Rust tests and at least one direct CLI smoke test for the changed command.
@@ -65,12 +66,13 @@ Do not run the full root flake check for:
 - Exploratory review work while deciding what to change.
 - Docs-only, prompt-only, repo-local skill-only, or agent-guidance-only edits, including `AGENTS.md` text.
 - Mechanical test extraction, test moves, or behavior-preserving module splits while the PR remains draft.
+- One-crate test-only dev-dependency changes while the PR remains draft, when the crate-local tests and clippy cover the touched test surface.
 - Tiny scoped commits where a focused crate/module check proves the touched surface.
 
 Full root flake check is required when any of these are true:
 
 - Marking a PR ready for review, requesting review, merging, or cutting a release.
-- Changing Nix expressions, Cargo manifests or lockfiles, flake outputs, build/check wiring, CI/release behavior, or generated workflow contracts.
+- Changing Nix expressions, flake outputs, build/check wiring, CI/release behavior, generated workflow contracts, or Cargo manifests/lockfiles that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
 - Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
 - Changing schema or CLI support in a way that focused tests, direct CLI smoke tests, and schema docs checks cannot fully cover.
 - A focused check fails in a way that could indicate broader workspace breakage.
@@ -197,7 +199,7 @@ cuenv exec -- cargo run -- env print --path examples/env-basic --package example
 
 ## Code Quality Checklist
 
-Before each isolated draft commit, run the focused checks that match the files touched. Include `git diff --check` and `cuenv fmt --fix` for code changes, app-local or crate-local checks for localized code, and `cuenv task ci.schema-docs-check` for schema, docs, prompts, examples, skills, or CLI surfaces.
+Before each isolated draft commit, run the focused checks that match the files touched. Include `git diff --check` and `cuenv fmt --fix` for code changes, app-local or crate-local checks for localized code, and `cuenv task ci.schema-docs-check` for schema, docs, prompts, examples, skills, or CLI surfaces. For one-crate test-only Cargo manifest or lockfile deltas, run the crate-local tests and all-target clippy instead of the full root flake check while the PR is still draft.
 
 Before requesting review or marking a PR ready:
 
