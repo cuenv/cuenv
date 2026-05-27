@@ -8,8 +8,10 @@
 //! - Restart supervision with exponential backoff
 //! - File watching for restart-on-change
 //! - Session state management under `.cuenv/run/`
+//! - Persisted manual service control requests
 //! - Top-level service controller for `cuenv up` orchestration
 
+pub(crate) mod control;
 pub mod controller;
 pub mod duration;
 pub mod lifecycle;

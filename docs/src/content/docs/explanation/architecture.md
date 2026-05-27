@@ -146,6 +146,8 @@ real-time follow support without streaming.
 `cuenv restart` also stays inside that boundary: the CLI queues persisted
 restart requests, and running supervisors consume those requests before
 stopping and re-spawning the selected services.
+The service control poller lives in `crates/services/src/control.rs`, keeping
+manual lifecycle command plumbing out of the process supervisor loop.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

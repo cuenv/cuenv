@@ -19,6 +19,7 @@ use cuenv_events::{
     emit_service_restarting, emit_service_starting, emit_service_stopped, emit_service_stopping,
 };
 
+use crate::control::{ManualControlRequest, wait_for_control_request};
 use crate::duration::parse_duration;
 use crate::lifecycle::ServiceLifecycle;
 use crate::probes::{self, ProbeLoopResult, log::LogProbe};
@@ -166,28 +167,6 @@ enum ServiceWait {
     Shutdown,
     Restart(RestartTrigger),
     Stop,
-}
-
-#[derive(Clone, Copy)]
-enum ManualControlRequest {
-    Restart,
-    Stop,
-}
-
-impl ManualControlRequest {
-    fn take(self, session: &SessionManager, name: &str) -> crate::Result<bool> {
-        match self {
-            Self::Restart => session.take_service_restart_request(name),
-            Self::Stop => session.take_service_stop_request(name),
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Restart => "restart",
-            Self::Stop => "stop",
-        }
-    }
 }
 
 fn abort_output_handles(
@@ -490,10 +469,18 @@ impl ServiceSupervisor {
                     cuenv_events::emit_service_watch!(&self.name, &changed);
                     ServiceWait::Restart(RestartTrigger::Watch)
                 }
-                () = self.wait_for_control_request(ManualControlRequest::Restart) => {
+                () = wait_for_control_request(
+                    self.session.as_ref(),
+                    &self.name,
+                    ManualControlRequest::Restart,
+                ) => {
                     ServiceWait::Restart(RestartTrigger::Manual)
                 }
-                () = self.wait_for_control_request(ManualControlRequest::Stop) => ServiceWait::Stop,
+                () = wait_for_control_request(
+                    self.session.as_ref(),
+                    &self.name,
+                    ManualControlRequest::Stop,
+                ) => ServiceWait::Stop,
             };
 
             let exit_status = match wait {
@@ -662,23 +649,6 @@ impl ServiceSupervisor {
 
         let child = cmd.spawn()?;
         Ok(child)
-    }
-
-    async fn wait_for_control_request(&self, request: ManualControlRequest) {
-        let mut interval = tokio::time::interval(Duration::from_millis(500));
-        loop {
-            interval.tick().await;
-            match request.take(&self.session, &self.name) {
-                Ok(true) => return,
-                Ok(false) => {}
-                Err(error) => warn!(
-                    service = %self.name,
-                    error = %error,
-                    request = request.name(),
-                    "Failed to consume service control request"
-                ),
-            }
-        }
     }
 
     async fn stop_running_process(&self, child: &mut Child) {
@@ -888,53 +858,5 @@ impl ServiceSupervisor {
             error: update.error.map(String::from),
         };
         self.session.update_service(&state)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn wait_for_restart_request_consumes_marker() {
-        let (_dir, session, supervisor) = build_supervisor();
-
-        session.request_service_restart("db").unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            supervisor.wait_for_control_request(ManualControlRequest::Restart),
-        )
-        .await
-        .unwrap();
-
-        assert!(!session.take_service_restart_request("db").unwrap());
-    }
-
-    #[tokio::test]
-    async fn wait_for_stop_request_consumes_marker() {
-        let (_dir, session, supervisor) = build_supervisor();
-
-        session.request_service_stop("db").unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            supervisor.wait_for_control_request(ManualControlRequest::Stop),
-        )
-        .await
-        .unwrap();
-
-        assert!(!session.take_service_stop_request("db").unwrap());
-    }
-
-    fn build_supervisor() -> (tempfile::TempDir, Arc<SessionManager>, ServiceSupervisor) {
-        let dir = tempfile::tempdir().unwrap();
-        let session = Arc::new(SessionManager::create(dir.path(), "test-project").unwrap());
-        let supervisor = ServiceSupervisor::new(SupervisorConfig {
-            name: "db".to_string(),
-            service: Service::default(),
-            project_root: dir.path().to_path_buf(),
-            session: Arc::clone(&session),
-        });
-
-        (dir, session, supervisor)
     }
 }
