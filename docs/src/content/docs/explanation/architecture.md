@@ -128,7 +128,10 @@ environment globally. Hook integration tests share
 `crates/cuenv/tests/hook_test_support` for temporary CUE module setup, approval,
 and sandbox error handling; return `Result` from filesystem and command setup;
 and report unexpected exits as errors instead of using file-level unwrap/expect
-allowances. CLI hook command
+allowances. Cucumber BDD coverage keeps the root runner in
+`crates/cuenv/tests/bdd.rs`, with shared world state and env/task/hook step
+definitions split under `crates/cuenv/tests/bdd_support/` so no single BDD
+test module carries all scenario concerns. CLI hook command
 orchestration lives in `crates/cuenv/src/commands/hooks.rs`; shell-init
 snippet generation and status rendering live under
 `crates/cuenv/src/commands/hooks/`.
