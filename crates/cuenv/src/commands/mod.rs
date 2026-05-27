@@ -5,7 +5,7 @@ pub mod changeset_picker;
 /// CI pipeline integration and generation commands.
 pub mod ci;
 mod dispatch;
-/// Tear down running services.
+/// Request shutdown of the active service session.
 pub mod down;
 /// Environment management commands (print, load, status, etc.).
 pub mod env;
@@ -395,13 +395,13 @@ pub enum Command {
         /// Optional environment name to apply to service env vars.
         environment: Option<String>,
     },
-    /// Tear down running services.
+    /// Request shutdown of the active service session.
     Down {
         /// Path to the CUE module or project directory.
         path: String,
         /// CUE package name to evaluate.
         package: String,
-        /// Specific service names to bring down (empty = all).
+        /// Reserved for named-service shutdown; empty stops all services.
         services: Vec<String>,
     },
     /// View service logs.

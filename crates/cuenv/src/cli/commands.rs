@@ -434,11 +434,11 @@ pub enum Commands {
         )]
         labels: Vec<String>,
     },
-    /// Tear down running services.
-    #[command(about = "Tear down running services")]
+    /// Request shutdown of the active service session.
+    #[command(about = "Request shutdown of the active service session")]
     Down {
-        /// Service names to bring down (default: all).
-        #[arg(help = "Service names to bring down (default: all)")]
+        /// Reserved for named-service shutdown; omit to stop all services.
+        #[arg(help = "Reserved for named-service shutdown; omit to stop all services")]
         services: Vec<String>,
         /// Path to directory containing CUE files.
         #[arg(

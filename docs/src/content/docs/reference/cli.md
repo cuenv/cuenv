@@ -217,15 +217,20 @@ cuenv up -e test
 
 ### `cuenv down`
 
-Tear down running services.
+Request graceful shutdown of the active service session.
 
 ```bash
 cuenv down [SERVICES...] [OPTIONS]
 ```
 
+`cuenv down` signals the persisted `cuenv up` controller for the selected
+project path. Omit service names to stop the whole active session. Named-service
+shutdown is not wired to the supervisor IPC yet and returns an error instead of
+pretending to stop services that may be restarted by the active controller.
+
 **Arguments:**
 
-- `[SERVICES]`: Service names to stop. If not provided, stops all services.
+- `[SERVICES]`: Reserved for named-service shutdown. Currently unsupported; omit to stop all services.
 
 **Options:**
 

@@ -137,6 +137,9 @@ dependency names only. Service readiness log probes borrow their stream selector
 from manifest state instead of cloning it into probe construction, and
 supervisor state-update parameters are copyable value bundles so lifecycle
 persistence and warning logs share the same update without ownership churn.
+`cuenv down` operates through persisted session state: whole-session shutdown
+signals the active `cuenv up` controller, stale sessions are cleaned, and
+named-service shutdown fails clearly until supervisor IPC exists.
 Task contributor schema models, activation context, DAG injection, and DAG
 verification helpers live under `crates/core/src/contributors/`; the built-in
 package-manager workspace contributor definitions live in

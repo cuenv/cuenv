@@ -20,7 +20,7 @@ Status guardrails:
 - Container runtime support is schema-only until the matrix says otherwise.
 - OCI runtime is partial: `cuenv sync lock` writes resolved digests and per-image `extract` entries to `cuenv.lock`, and `#OCIActivate` (running `cuenv runtime oci activate`) extracts those binaries to the content-addressed cache and emits a `export PATH=...` line through the events renderer. An end-to-end fixture is still pending.
 - `#ContainerImage` is schema-visible, but `cuenv build` does not yet build images.
-- Services are partial: `down` is stubbed, `logs --follow` is TODO, and `restart` does not fully signal supervisors.
+- Services are partial: `down` can request whole-session shutdown from the persisted `cuenv up` session, but named-service shutdown still needs supervisor IPC; `logs --follow` is TODO, and `restart` does not fully signal supervisors.
 - Service/image orchestration builds a read-only mixed graph in `crates/services/src/controller.rs`; it should implement `TaskNodeData` for declared dependency names only, not `MutableTaskNodeData`, unless the controller starts injecting dependencies itself.
 - Per-service process wrapping lives in `crates/services/src/supervisor.rs`: Linux relies on `PR_SET_PDEATHSIG`, while macOS wraps service commands with `cuenv __supervise` when the current executable can be resolved.
 - Log readiness probes in `crates/services/src/probes/log.rs` borrow the manifest stream selector; do not clone `l.source` just to pass `"stdout"`, `"stderr"`, or `"either"` through probe construction. `StateUpdate` in `crates/services/src/supervisor.rs` is a copyable value bundle for lifecycle persistence/logging.
