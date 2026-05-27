@@ -317,6 +317,8 @@ Cargo lockfile parsing keeps workspace member discovery in
 `crates/workspaces/src/parsers/rust/cargo/workspace.rs`, separate from
 `Cargo.lock` package entry and `SourceId` conversion in
 `crates/workspaces/src/parsers/rust/cargo.rs`.
+Workspace error tests keep the crate `Result` alias coverage on a genuinely
+fallible conversion, so they do not need module-level lint suppression.
 
 ## FFI Bridge
 
