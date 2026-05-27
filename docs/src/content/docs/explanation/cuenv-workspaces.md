@@ -182,6 +182,10 @@ Available implementations:
 npm parser coverage keeps nested `node_modules` fixture setup separate from
 workspace and registry assertions so npm workspace membership rules stay easy
 to audit.
+JavaScript parser integration tests return `Result` from parser, fixture, and
+temporary lockfile setup and use shared entry-lookup helpers, so checked-in
+fixture drift fails explicitly without file-level unwrap/expect or stderr-print
+allowances.
 
 Node module materializer cache-directory coverage scopes `HOME` through the
 test environment helper, so package-manager cache path assertions do not need
