@@ -6,22 +6,17 @@
 //! This prevents regressions where contributors fail to inject their setup tasks
 //! into CI workflows.
 
-// Integration tests can use unwrap/expect for cleaner assertions
-#![allow(clippy::expect_used)]
-
 use cuengine::evaluate_cue_package_typed;
 use cuenv_ci::compiler::{Compiler, CompilerOptions};
-use cuenv_ci::ir::{BuildStage, IntermediateRepresentation};
+use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, Task as IrTask};
 use cuenv_core::manifest::Project;
+use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 
 /// Get the path to the examples directory
-fn getexamples_dir() -> PathBuf {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    Path::new(manifest_dir)
-        .parent() // crates
-        .and_then(|p| p.parent()) // project root
-        .expect("Failed to find project root")
+fn examples_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
         .join("examples")
 }
 
@@ -33,7 +28,7 @@ fn load_example_manifest(example_path: &Path) -> Result<Project, String> {
 
 /// Check if the FFI/module evaluation is available for these tests.
 fn ffi_available() -> bool {
-    let examples_dir = getexamples_dir();
+    let examples_dir = examples_dir();
     let test_path = examples_dir.join("env-basic");
     load_example_manifest(&test_path).is_ok()
 }
@@ -42,12 +37,25 @@ fn ffi_available() -> bool {
 macro_rules! skip_if_ffi_unavailable {
     () => {
         if !ffi_available() {
-            eprintln!(
+            tracing::info!(
                 "Skipping test: FFI/module evaluation unavailable (examples need cue.mod root)"
             );
-            return;
+            return Ok(());
         }
     };
+}
+
+fn load_example(example: &str) -> Result<Project, String> {
+    load_example_manifest(&examples_dir().join(example))
+        .map_err(|e| format!("Failed to load {example}: {e}"))
+}
+
+fn compile_example(
+    example: &str,
+    pipeline_name: &str,
+) -> Result<IntermediateRepresentation, String> {
+    let project = load_example(example)?;
+    compile_with_pipeline(project, pipeline_name)
 }
 
 /// Compile a project to IR with a specific pipeline
@@ -74,12 +82,33 @@ fn compile_with_pipeline(
         .map_err(|e| format!("Compilation failed: {e}"))
 }
 
-/// Compile a project to IR without a specific pipeline context
-#[allow(dead_code)] // Test helper for non-pipeline compilation
-fn compile_without_pipeline(project: Project) -> Result<IntermediateRepresentation, String> {
-    Compiler::new(project)
-        .compile()
-        .map_err(|e| format!("Compilation failed: {e}"))
+fn phase_task<'a>(tasks: &[&'a IrTask], task_id: &str) -> Result<&'a IrTask, String> {
+    tasks
+        .iter()
+        .copied()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| format!("Expected contributed task '{task_id}'"))
+}
+
+fn github_action_hint(task: &IrTask) -> Result<&Value, String> {
+    task.provider_hints
+        .as_ref()
+        .and_then(|hints| hints.get("github_action"))
+        .ok_or_else(|| format!("{} should have a GitHub Action provider hint", task.id))
+}
+
+fn github_action_inputs(task: &IrTask) -> Result<&Map<String, Value>, String> {
+    github_action_hint(task)?
+        .get("inputs")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{} should define GitHub Action inputs", task.id))
+}
+
+fn github_action_uses(task: &IrTask) -> Result<&str, String> {
+    github_action_hint(task)?
+        .get("uses")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{} should define a GitHub Action uses field", task.id))
 }
 
 // ============================================================================
@@ -87,15 +116,11 @@ fn compile_without_pipeline(project: Project) -> Result<IntermediateRepresentati
 // ============================================================================
 
 #[test]
-fn test_nix_contributor_active_with_nix_runtime() {
+fn test_nix_contributor_active_with_nix_runtime() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-cachix");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
-
     // ci-cachix has a Nix runtime, so NixContributor should be active
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-cachix", "build")?;
 
     // Check that install-nix bootstrap task is present
     let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
@@ -105,28 +130,22 @@ fn test_nix_contributor_active_with_nix_runtime() {
     );
 
     // Verify it has the right contributor
-    let install_nix = bootstrap_tasks
-        .iter()
-        .find(|t| t.id == "install-nix")
-        .unwrap();
+    let install_nix = phase_task(&bootstrap_tasks, "install-nix")?;
     assert_eq!(install_nix.contributor.as_deref(), Some("nix"));
     assert_eq!(
         install_nix.priority,
         Some(2),
         "Nix install should leave room for Namespace cache preflight cleanup"
     );
+    Ok(())
 }
 
 #[test]
-fn test_nix_contributor_inactive_without_nix_runtime() {
+fn test_nix_contributor_inactive_without_nix_runtime() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-gh-models");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-gh-models");
-
     // ci-gh-models has no Nix runtime, so NixContributor should be inactive
-    let ir = compile_with_pipeline(project, "eval").expect("Failed to compile");
+    let ir = compile_example("ci-gh-models", "eval")?;
 
     // Check that install-nix bootstrap task is NOT present
     let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
@@ -134,6 +153,7 @@ fn test_nix_contributor_inactive_without_nix_runtime() {
         !bootstrap_tasks.iter().any(|t| t.id == "install-nix"),
         "NixContributor should NOT inject 'install-nix' task when no Nix runtime"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -141,14 +161,10 @@ fn test_nix_contributor_inactive_without_nix_runtime() {
 // ============================================================================
 
 #[test]
-fn test_cuenv_contributor_active_with_nix_runtime() {
+fn test_cuenv_contributor_active_with_nix_runtime() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-cachix");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
-
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-cachix", "build")?;
 
     // CuenvContributor should inject setup-cuenv task
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -158,11 +174,12 @@ fn test_cuenv_contributor_active_with_nix_runtime() {
     );
 
     // Verify it depends on install-nix
-    let setup_cuenv = setup_tasks.iter().find(|t| t.id == "setup-cuenv").unwrap();
+    let setup_cuenv = phase_task(&setup_tasks, "setup-cuenv")?;
     assert!(
         setup_cuenv.depends_on.contains(&"install-nix".to_string()),
         "setup-cuenv should depend on install-nix"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -170,15 +187,11 @@ fn test_cuenv_contributor_active_with_nix_runtime() {
 // ============================================================================
 
 #[test]
-fn test_onepassword_contributor_active_with_op_refs() {
+fn test_onepassword_contributor_active_with_op_refs() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-onepassword");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-onepassword");
-
     // ci-onepassword has op:// refs in production environment
-    let ir = compile_with_pipeline(project, "deploy").expect("Failed to compile");
+    let ir = compile_example("ci-onepassword", "deploy")?;
 
     // Check that setup-1password task is present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -188,26 +201,20 @@ fn test_onepassword_contributor_active_with_op_refs() {
     );
 
     // Verify the command
-    let setup_1password = setup_tasks
-        .iter()
-        .find(|t| t.id == "setup-1password")
-        .unwrap();
+    let setup_1password = phase_task(&setup_tasks, "setup-1password")?;
     assert!(
         setup_1password.command[0].contains("cuenv secrets setup onepassword"),
         "setup-1password should run 'cuenv secrets setup onepassword'"
     );
+    Ok(())
 }
 
 #[test]
-fn test_onepassword_contributor_inactive_without_op_refs() {
+fn test_onepassword_contributor_inactive_without_op_refs() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-pipeline");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
-
     // ci-pipeline has no 1Password references
-    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+    let ir = compile_example("ci-pipeline", "default")?;
 
     // Check that setup-1password task is NOT present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -215,6 +222,7 @@ fn test_onepassword_contributor_inactive_without_op_refs() {
         !setup_tasks.iter().any(|t| t.id == "setup-1password"),
         "OnePasswordContributor should NOT inject task when no op:// refs"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -222,15 +230,11 @@ fn test_onepassword_contributor_inactive_without_op_refs() {
 // ============================================================================
 
 #[test]
-fn test_cachix_contributor_active_with_config() {
+fn test_cachix_contributor_active_with_config() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-cachix");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
-
     // ci-cachix has cachix configuration
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-cachix", "build")?;
 
     // Check that setup-cachix bootstrap task is present before cuenv itself is built
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
@@ -240,22 +244,12 @@ fn test_cachix_contributor_active_with_config() {
     );
 
     // Verify it uses the configured cache name via the GitHub Action inputs
-    let setup_cachix = setup_tasks.iter().find(|t| t.id == "setup-cachix").unwrap();
-    let provider_hints = setup_cachix
-        .provider_hints
-        .as_ref()
-        .expect("setup-cachix should have provider hints");
-    let github_action = provider_hints
-        .get("github_action")
-        .expect("setup-cachix should use a GitHub Action");
-    let inputs = github_action
-        .get("inputs")
-        .and_then(|value| value.as_object())
-        .expect("setup-cachix should define action inputs");
+    let setup_cachix = phase_task(&setup_tasks, "setup-cachix")?;
+    let inputs = github_action_inputs(setup_cachix)?;
 
     assert_eq!(
-        github_action.get("uses").and_then(|value| value.as_str()),
-        Some("cachix/cachix-action@v17")
+        github_action_uses(setup_cachix)?,
+        "cachix/cachix-action@v17"
     );
     assert!(
         inputs.get("name").and_then(|value| value.as_str()) == Some("my-project-cache"),
@@ -265,18 +259,15 @@ fn test_cachix_contributor_active_with_config() {
         inputs.get("authToken").and_then(|value| value.as_str()) == Some("${CACHIX_AUTH_TOKEN}"),
         "setup-cachix should use the default Cachix auth token secret"
     );
+    Ok(())
 }
 
 #[test]
-fn test_cachix_contributor_inactive_without_config() {
+fn test_cachix_contributor_inactive_without_config() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-pipeline");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
-
     // ci-pipeline has no cachix configuration
-    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+    let ir = compile_example("ci-pipeline", "default")?;
 
     // Check that setup-cachix task is NOT present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -284,17 +275,14 @@ fn test_cachix_contributor_inactive_without_config() {
         !setup_tasks.iter().any(|t| t.id == "setup-cachix"),
         "CachixContributor should NOT inject task when no cachix config"
     );
+    Ok(())
 }
 
 #[test]
-fn test_namespace_cache_contributor_active_with_config() {
+fn test_namespace_cache_contributor_active_with_config() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-namespace-cache");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-namespace-cache");
-
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-namespace-cache", "build")?;
     let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
 
     assert!(
@@ -309,25 +297,13 @@ fn test_namespace_cache_contributor_active_with_config() {
         "Namespace cache contributor must not inject Determinate Nix"
     );
 
-    let setup_namespace_cache = bootstrap_tasks
-        .iter()
-        .find(|task| task.id == "namespaceCache.setup")
-        .expect("NamespaceCache contributor should inject namespaceCache.setup");
-    let provider_hints = setup_namespace_cache
-        .provider_hints
-        .as_ref()
-        .expect("namespaceCache.setup should have provider hints");
-    let github_action = provider_hints
-        .get("github_action")
-        .expect("namespaceCache.setup should use a GitHub Action");
-    let inputs = github_action
-        .get("inputs")
-        .and_then(|value| value.as_object())
-        .expect("namespaceCache.setup should define action inputs");
+    let setup_namespace_cache = phase_task(&bootstrap_tasks, "namespaceCache.setup")?;
+    let inputs = github_action_inputs(setup_namespace_cache)?;
+    let github_action = github_action_hint(setup_namespace_cache)?;
 
     assert_eq!(
-        github_action.get("uses").and_then(|value| value.as_str()),
-        Some("namespacelabs/nscloud-cache-action@v1")
+        github_action_uses(setup_namespace_cache)?,
+        "namespacelabs/nscloud-cache-action@v1"
     );
     assert!(
         inputs.get("cache").and_then(|value| value.as_str()) == Some("nix"),
@@ -339,12 +315,7 @@ fn test_namespace_cache_contributor_active_with_config() {
         "Namespace Nix cache mode should run only on Linux runners"
     );
 
-    let prepare_receipt = bootstrap_tasks
-        .iter()
-        .find(|task| task.id == "namespaceCache.prepareDeterminateReceipt")
-        .expect(
-            "NamespaceCache contributor should inject namespaceCache.prepareDeterminateReceipt",
-        );
+    let prepare_receipt = phase_task(&bootstrap_tasks, "namespaceCache.prepareDeterminateReceipt")?;
     assert_eq!(
         prepare_receipt.priority,
         Some(1),
@@ -362,12 +333,7 @@ fn test_namespace_cache_contributor_active_with_config() {
         "Namespace cache prepare should render as a shell step"
     );
 
-    let cleanup_receipt = bootstrap_tasks
-        .iter()
-        .find(|task| task.id == "namespaceCache.cleanupDeterminateReceipt")
-        .expect(
-            "NamespaceCache contributor should inject namespaceCache.cleanupDeterminateReceipt",
-        );
+    let cleanup_receipt = phase_task(&bootstrap_tasks, "namespaceCache.cleanupDeterminateReceipt")?;
     assert_eq!(
         cleanup_receipt.priority,
         Some(3),
@@ -384,6 +350,7 @@ fn test_namespace_cache_contributor_active_with_config() {
         cleanup_receipt.provider_hints.is_none(),
         "Namespace cache cleanup should render as a shell step"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -391,15 +358,11 @@ fn test_namespace_cache_contributor_active_with_config() {
 // ============================================================================
 
 #[test]
-fn test_gh_models_contributor_active_with_gh_models_task() {
+fn test_gh_models_contributor_active_with_gh_models_task() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-gh-models");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-gh-models");
-
     // ci-gh-models has a task that uses gh models
-    let ir = compile_with_pipeline(project, "eval").expect("Failed to compile");
+    let ir = compile_example("ci-gh-models", "eval")?;
 
     // Check that setup-gh-models task is present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -409,26 +372,20 @@ fn test_gh_models_contributor_active_with_gh_models_task() {
     );
 
     // Verify the command installs the extension
-    let setup_gh_models = setup_tasks
-        .iter()
-        .find(|t| t.id == "setup-gh-models")
-        .unwrap();
+    let setup_gh_models = phase_task(&setup_tasks, "setup-gh-models")?;
     assert!(
         setup_gh_models.command[0].contains("gh extension install github/gh-models"),
         "setup-gh-models should install the gh-models extension"
     );
+    Ok(())
 }
 
 #[test]
-fn test_gh_models_contributor_inactive_without_gh_models_task() {
+fn test_gh_models_contributor_inactive_without_gh_models_task() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-pipeline");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
-
     // ci-pipeline has no gh models tasks
-    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+    let ir = compile_example("ci-pipeline", "default")?;
 
     // Check that setup-gh-models task is NOT present
     let setup_tasks = ir.sorted_phase_tasks(BuildStage::Setup);
@@ -436,6 +393,7 @@ fn test_gh_models_contributor_inactive_without_gh_models_task() {
         !setup_tasks.iter().any(|t| t.id == "setup-gh-models"),
         "GhModelsContributor should NOT inject task when no gh models usage"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -443,14 +401,10 @@ fn test_gh_models_contributor_inactive_without_gh_models_task() {
 // ============================================================================
 
 #[test]
-fn test_phase_tasks_are_sorted_by_priority() {
+fn test_phase_tasks_are_sorted_by_priority() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-cachix");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
-
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-cachix", "build")?;
 
     // Bootstrap phase tasks should be sorted by priority (sorted_phase_tasks returns them sorted)
     let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
@@ -477,6 +431,7 @@ fn test_phase_tasks_are_sorted_by_priority() {
         setup_priorities, sorted_setup,
         "Setup tasks should be sorted by priority"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -484,38 +439,25 @@ fn test_phase_tasks_are_sorted_by_priority() {
 // ============================================================================
 
 #[test]
-fn test_nix_contributor_provides_github_action_hints() {
+fn test_nix_contributor_provides_github_action_hints() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-cachix");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-cachix");
-
-    let ir = compile_with_pipeline(project, "build").expect("Failed to compile");
+    let ir = compile_example("ci-cachix", "build")?;
 
     // NixContributor should provide provider_hints for GitHub Actions
     let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
-    let install_nix = bootstrap_tasks
-        .iter()
-        .find(|t| t.id == "install-nix")
-        .expect("install-nix task should exist");
+    let install_nix = phase_task(&bootstrap_tasks, "install-nix")?;
 
     assert!(
         install_nix.provider_hints.is_some(),
         "install-nix should have provider_hints for GitHub Actions"
     );
 
-    let hints = install_nix.provider_hints.as_ref().unwrap();
-    let github_action = hints
-        .get("github_action")
-        .expect("Should have github_action key");
-    let uses = github_action.get("uses").expect("Should have uses field");
     assert!(
-        uses.as_str()
-            .unwrap()
-            .contains("DeterminateSystems/determinate-nix-action"),
+        github_action_uses(install_nix)?.contains("DeterminateSystems/determinate-nix-action"),
         "provider_hints.github_action.uses should contain DeterminateSystems/determinate-nix-action"
     );
+    Ok(())
 }
 
 // ============================================================================
@@ -523,15 +465,11 @@ fn test_nix_contributor_provides_github_action_hints() {
 // ============================================================================
 
 #[test]
-fn test_codecov_contributor_active_with_test_label() {
+fn test_codecov_contributor_active_with_test_label() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-codecov");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-codecov");
-
     // ci-codecov has a task with "test" label, so Codecov contributor should be active
-    let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
+    let ir = compile_example("ci-codecov", "test")?;
 
     // Check that codecov-upload success task is present
     let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
@@ -541,61 +479,41 @@ fn test_codecov_contributor_active_with_test_label() {
     );
 
     // Verify it has the right contributor
-    let codecov_upload = success_tasks
-        .iter()
-        .find(|t| t.id == "codecov-upload")
-        .unwrap();
+    let codecov_upload = phase_task(&success_tasks, "codecov-upload")?;
     assert_eq!(codecov_upload.contributor.as_deref(), Some("codecov"));
+    Ok(())
 }
 
 #[test]
-fn test_codecov_contributor_provides_github_action_hints() {
+fn test_codecov_contributor_provides_github_action_hints() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-codecov");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-codecov");
-
-    let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
+    let ir = compile_example("ci-codecov", "test")?;
 
     // CodecovContributor should provide provider_hints for GitHub Actions
     let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
-    let codecov_upload = success_tasks
-        .iter()
-        .find(|t| t.id == "codecov-upload")
-        .expect("codecov-upload task should exist");
+    let codecov_upload = phase_task(&success_tasks, "codecov-upload")?;
 
     assert!(
         codecov_upload.provider_hints.is_some(),
         "codecov-upload should have provider_hints for GitHub Actions"
     );
 
-    let hints = codecov_upload.provider_hints.as_ref().unwrap();
-    let github_action = hints
-        .get("github_action")
-        .expect("Should have github_action key");
-    let uses = github_action.get("uses").expect("Should have uses field");
     assert!(
-        uses.as_str().unwrap().contains("codecov/codecov-action"),
+        github_action_uses(codecov_upload)?.contains("codecov/codecov-action"),
         "provider_hints.github_action.uses should contain codecov/codecov-action"
     );
+    Ok(())
 }
 
 #[test]
-fn test_codecov_contributor_command_structure() {
+fn test_codecov_contributor_command_structure() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-codecov");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-codecov");
-
-    let ir = compile_with_pipeline(project, "test").expect("Failed to compile");
+    let ir = compile_example("ci-codecov", "test")?;
 
     let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
-    let codecov_upload = success_tasks
-        .iter()
-        .find(|t| t.id == "codecov-upload")
-        .expect("codecov-upload task should exist");
+    let codecov_upload = phase_task(&success_tasks, "codecov-upload")?;
 
     // Verify the command structure
     assert_eq!(codecov_upload.command[0], "codecov");
@@ -611,18 +529,15 @@ fn test_codecov_contributor_command_structure() {
             .contains(&"--auto-detect".to_string()),
         "codecov-upload should use --auto-detect flag"
     );
+    Ok(())
 }
 
 #[test]
-fn test_codecov_contributor_inactive_without_labels() {
+fn test_codecov_contributor_inactive_without_labels() -> Result<(), String> {
     skip_if_ffi_unavailable!();
 
-    let examples_dir = getexamples_dir();
-    let example_path = examples_dir.join("ci-pipeline");
-    let project = load_example_manifest(&example_path).expect("Failed to load ci-pipeline");
-
     // ci-pipeline has no test/coverage labels, so Codecov should be inactive
-    let ir = compile_with_pipeline(project, "default").expect("Failed to compile");
+    let ir = compile_example("ci-pipeline", "default")?;
 
     // Check that codecov-upload task is NOT present
     let success_tasks = ir.sorted_phase_tasks(BuildStage::Success);
@@ -630,4 +545,5 @@ fn test_codecov_contributor_inactive_without_labels() {
         !success_tasks.iter().any(|t| t.id == "codecov-upload"),
         "CodecovContributor should NOT inject task when no test/coverage labels"
     );
+    Ok(())
 }
