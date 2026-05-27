@@ -169,6 +169,8 @@ output formats and JSON envelopes live in `crates/cuenv/src/cli/output.rs`;
 and CLI error mapping and rendering live in `crates/cuenv/src/cli/error.rs`.
 Static completion setup text is routed through the shared redacted stdout helper
 instead of raw print macros, even though it contains no secrets.
+Dynamic completions currently complete task names via discovery-based CUE
+evaluation; unused task-parameter completion scaffolding is not kept in-tree.
 The sync fast-path version command and `--llms` output use the same helper so
 static stdout output does not need local print suppressions.
 CLI error rendering and early startup failures use direct redacted stderr
