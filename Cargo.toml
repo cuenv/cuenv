@@ -102,6 +102,7 @@ chrono = { version = "0.4", features = ["serde"] }
 petgraph = "0.8.3"
 regex = "1"
 rustls = { version = "0.23.40", default-features = false, features = ["std", "ring"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
 # New dependencies for hook execution system
 dirs = "6.0"
 sha2 = "0.10"

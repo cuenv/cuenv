@@ -2,16 +2,13 @@
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use cuenv_secrets::http::{build_client, env_var, normalize_api_url};
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::OnceLock;
 use tokio::process::Command;
 
 const DEFAULT_SECRET_MANAGER_URL: &str = "https://secretmanager.googleapis.com";
-
-static RUSTLS_PROVIDER_INSTALL: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// Configuration for resolving a single Google Cloud Secret Manager secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -92,7 +89,7 @@ impl GcpSecretManagerResolver {
     /// Returns an error if the HTTP client cannot be initialized.
     pub fn new() -> Result<Self, SecretError> {
         Ok(Self {
-            client: build_client()?,
+            client: build_client("gcp")?,
         })
     }
 
@@ -154,16 +151,17 @@ impl GcpSecretManagerResolver {
 
     async fn send_secret_request(
         &self,
+        name: &str,
         config: &GcpSecretConfig,
         token: &str,
     ) -> Result<reqwest::Response, SecretError> {
-        let url = secret_url(config)?;
+        let url = secret_url(name, config)?;
         self.client
             .get(url)
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|e| gcp_error(&config.secret, format!("GCP Secret Manager read failed: {e}")))
+            .map_err(|e| gcp_error(name, format!("GCP Secret Manager read failed: {e}")))
     }
 
     async fn parse_secret_response(
@@ -178,12 +176,15 @@ impl GcpSecretManagerResolver {
             ));
         }
 
-        let body = response.json::<AccessSecretVersionResponse>().await.map_err(|e| {
-            gcp_error(
-                name,
-                format!("Failed to parse GCP Secret Manager response: {e}"),
-            )
-        })?;
+        let body = response
+            .json::<AccessSecretVersionResponse>()
+            .await
+            .map_err(|e| {
+                gcp_error(
+                    name,
+                    format!("Failed to parse GCP Secret Manager response: {e}"),
+                )
+            })?;
 
         let bytes = STANDARD.decode(body.payload.data).map_err(|e| {
             gcp_error(
@@ -206,7 +207,7 @@ impl SecretResolver for GcpSecretManagerResolver {
     async fn resolve(&self, name: &str, spec: &SecretSpec) -> Result<String, SecretError> {
         let config = Self::parse_config(name, spec)?;
         let token = Self::access_token(name).await?;
-        let response = self.send_secret_request(&config, &token).await?;
+        let response = self.send_secret_request(name, &config, &token).await?;
         Self::parse_secret_response(name, response).await
     }
 
@@ -225,73 +226,13 @@ struct SecretPayload {
     data: String,
 }
 
-fn build_client() -> Result<Client, SecretError> {
-    ensure_rustls_crypto_provider()?;
-
-    let primary = catch_unwind(AssertUnwindSafe(|| {
-        Client::builder().user_agent("cuenv").build()
-    }));
-
-    match primary {
-        Ok(Ok(client)) => Ok(client),
-        Ok(Err(primary_err)) => Client::builder()
-            .user_agent("cuenv")
-            .no_proxy()
-            .build()
-            .map_err(|fallback_err| {
-                gcp_error(
-                    "gcp",
-                    format!(
-                        "Failed to create GCP HTTP client: primary={primary_err}; fallback={fallback_err}"
-                    ),
-                )
-            }),
-        Err(_) => Client::builder()
-            .user_agent("cuenv")
-            .no_proxy()
-            .build()
-            .map_err(|fallback_err| {
-                gcp_error(
-                    "gcp",
-                    format!(
-                        "Failed to create GCP HTTP client after system proxy discovery panicked: fallback={fallback_err}"
-                    ),
-                )
-            }),
-    }
-}
-
-fn ensure_rustls_crypto_provider() -> Result<(), SecretError> {
-    let result = RUSTLS_PROVIDER_INSTALL.get_or_init(|| {
-        if rustls::crypto::CryptoProvider::get_default().is_some() {
-            return Ok(());
-        }
-        if rustls::crypto::ring::default_provider()
-            .install_default()
-            .is_ok()
-        {
-            return Ok(());
-        }
-        if rustls::crypto::CryptoProvider::get_default().is_some() {
-            return Ok(());
-        }
-        Err("Failed to install rustls crypto provider for GCP HTTP client".to_string())
-    });
-
-    result.clone().map_err(|message| gcp_error("gcp", message))
-}
-
-fn secret_url(config: &GcpSecretConfig) -> Result<Url, SecretError> {
-    let mut url = Url::parse(&format!("{}/v1", config.api_url())).map_err(|e| {
-        gcp_error(
-            &config.secret,
-            format!("Invalid GCP Secret Manager API URL: {e}"),
-        )
-    })?;
+fn secret_url(name: &str, config: &GcpSecretConfig) -> Result<Url, SecretError> {
+    let mut url = Url::parse(&format!("{}/v1", config.api_url()))
+        .map_err(|e| gcp_error(name, format!("Invalid GCP Secret Manager API URL: {e}")))?;
     let version_access = format!("{}:access", config.version);
 
     url.path_segments_mut()
-        .map_err(|()| gcp_error(&config.secret, "GCP Secret Manager API URL cannot be a base"))?
+        .map_err(|()| gcp_error(name, "GCP Secret Manager API URL cannot be a base"))?
         .extend([
             "projects",
             &config.project,
@@ -302,17 +243,6 @@ fn secret_url(config: &GcpSecretConfig) -> Result<Url, SecretError> {
         ]);
 
     Ok(url)
-}
-
-fn normalize_api_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_string()
-}
-
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn default_version() -> String {
@@ -378,7 +308,7 @@ mod tests {
         config.version = "7".to_string();
         config.api_url = Some("https://example.com/".to_string());
 
-        let url = secret_url(&config)?;
+        let url = secret_url("API KEY", &config)?;
 
         assert_eq!(
             url.as_str(),
