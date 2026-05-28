@@ -52,7 +52,12 @@ pub fn build_service_graph(
 
     // Add service nodes
     for (name, service) in services {
-        let deps: Vec<String> = service.depends_on.iter().map(|d| d.name.clone()).collect();
+        let deps: Vec<String> = service
+            .depends_on
+            .iter()
+            .map(|d| d.name.clone())
+            .filter(|dep| services.contains_key(dep))
+            .collect();
         let node = ServiceNode { dependencies: deps };
         graph.add_service(name, node)?;
     }
@@ -306,6 +311,23 @@ mod tests {
                 .flatten()
                 .all(|node| node.kind == NodeKind::Service)
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn service_graph_ignores_non_service_dependencies() -> crate::Result<()> {
+        let mut services = HashMap::new();
+        services.insert(
+            "api".to_string(),
+            service_with_deps(&["build", "api-image"]),
+        );
+
+        let graph = build_service_graph(&services)?;
+        let groups = graph.get_parallel_groups()?;
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0][0].name, "api");
 
         Ok(())
     }

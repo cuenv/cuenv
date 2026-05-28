@@ -479,7 +479,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service dependencies are supported; task and image dependencies are rejected by `cuenv up` until executor integration exists |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -597,6 +597,10 @@ restart: {
 | `maxRestarts` | `int`    | `5`           | Max restarts within sliding window       |
 | `window`      | `string` | `60s`         | Sliding window for restart counting      |
 
+`cuenv restart <service>` requires an active `cuenv up` session. It queues a
+persisted restart request; the running supervisor consumes it, stops the
+service, and spawns it again without restarting unrelated services.
+
 ### #Watch
 
 File watcher that triggers service restarts on file changes.
@@ -619,9 +623,18 @@ watch: {
 | `on`       | `string`        | `restart` | Action on change (`restart`)                 |
 | `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
 
+Watch events are debounced, then the supervisor restarts the service. The
+schema exposes `rebuild`, but restart-on-change is the supported behavior in
+the current implementation.
+
 ### #Shutdown
 
 Controls how services are stopped.
+
+Whole-session `cuenv down` asks the active `cuenv up` controller to shut down
+all services. `cuenv down <service>` writes a persisted stop request that the
+selected running supervisor consumes. The configured signal is sent first; if
+the process is still alive after `timeout`, cuenv escalates to a hard kill.
 
 | Field     | Type     | Default   | Description                          |
 | --------- | -------- | --------- | ------------------------------------ |
@@ -637,6 +650,9 @@ Log handling configuration for services.
 | `prefix`  | `string` | service name   | Stream prefix in multiplexed output      |
 | `color`   | `string` | auto           | ANSI color hint (red, green, yellow, blue, magenta, cyan, white) |
 | `persist` | `bool`   | `true`         | Persist logs to `.cuenv/run/<project>/logs/` |
+
+When persistence is enabled, `cuenv logs --follow` tails appended session log
+lines while the matching `cuenv up` controller is alive.
 
 ## Container Images
 
