@@ -181,7 +181,7 @@ fn codegen_accepts_all_schema_file_types() -> TestResult {
 
     fs::write(
         root.join("env.cue"),
-        r#"package cuenv
+        r##"package cuenv
 
 import (
   "github.com/cuenv/cuenv/schema"
@@ -241,7 +241,7 @@ schema.#Project & {
     }
   }
 }
-"#,
+"##,
     )?;
 
     let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;

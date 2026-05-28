@@ -144,7 +144,15 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
     let sync_result = sync_codegen_files(&sync_request)?;
 
     if options.should_check() && sync_result.had_drift {
-        return Err(cuenv_core::Error::configuration(sync_result.output));
+        let drift_lines: Vec<&str> = sync_result
+            .output
+            .lines()
+            .filter(|line| line.contains("Out of sync") || line.contains("Missing"))
+            .collect();
+        return Err(cuenv_core::Error::configuration(format!(
+            "Generated files are out of sync. Run 'cuenv sync codegen' to update:\n{}",
+            drift_lines.join("\n")
+        )));
     }
 
     // Run formatters on files that were actually written, or all configured files in check/dry-run.
@@ -207,9 +215,19 @@ struct SyncResult {
     had_drift: bool,
 }
 
-struct FileSyncOutcome {
-    written: bool,
-    drift: bool,
+/// Result of syncing a single codegen file.
+///
+/// `Written` and `Drift` are mutually exclusive: drift is only ever detected in
+/// check/diff mode (where nothing is written), and writes only happen outside
+/// those modes. Modelling this as an enum keeps the impossible
+/// "written and drifted" state unrepresentable.
+enum FileSyncOutcome {
+    /// The file was written to disk.
+    Written,
+    /// Check/diff mode found the file missing or stale.
+    Drift,
+    /// Nothing to do (already in sync, scaffold exists, or dry-run preview).
+    Unchanged,
 }
 
 /// Sync codegen files for a single project
@@ -227,14 +245,8 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
 
     for (file_path, file_def) in &codegen_config.files {
         let output_path = project_root.join(file_path);
-        validate_lint_config(
-            file_path,
-            &file_def.language,
-            &file_def.content,
-            file_def.lint.as_ref(),
-        )?;
-        let content =
-            format_codegen_content(&file_def.content, &file_def.language, &file_def.format)?;
+        validate_lint_config(file_path, file_def)?;
+        let content = format_codegen_content(file_def)?;
         let mut file_request = CodegenFileSyncRequest {
             output_lines: &mut output_lines,
             output_path: &output_path,
@@ -242,21 +254,14 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
             content: &content,
         };
 
-        match file_def.mode {
-            FileMode::Managed => {
-                let outcome = sync_managed_file(&mut file_request, options)?;
-                had_drift |= outcome.drift;
-                if outcome.written {
-                    written_files.push(output_path);
-                }
-            }
-            FileMode::Scaffold => {
-                let outcome = sync_scaffold_file(&mut file_request, options)?;
-                had_drift |= outcome.drift;
-                if outcome.written {
-                    written_files.push(output_path);
-                }
-            }
+        let outcome = match file_def.mode {
+            FileMode::Managed => sync_managed_file(&mut file_request, options)?,
+            FileMode::Scaffold => sync_scaffold_file(&mut file_request, options)?,
+        };
+        match outcome {
+            FileSyncOutcome::Written => written_files.push(output_path),
+            FileSyncOutcome::Drift => had_drift = true,
+            FileSyncOutcome::Unchanged => {}
         }
     }
 
@@ -284,7 +289,6 @@ fn sync_managed_file(
     options: CodegenSyncOptions,
 ) -> Result<FileSyncOutcome> {
     if options.should_check() {
-        let mut drift = false;
         if request.output_path.exists() {
             let contents = std::fs::read_to_string(request.output_path).map_err(|e| {
                 cuenv_core::Error::Io {
@@ -297,24 +301,21 @@ fn sync_managed_file(
                 request
                     .output_lines
                     .push(format!("  OK: {}", request.file_path));
+                Ok(FileSyncOutcome::Unchanged)
             } else {
                 request
                     .output_lines
                     .push(format!("  Out of sync: {}", request.file_path));
                 maybe_push_diff(request, Some(&contents), options);
-                drift = true;
+                Ok(FileSyncOutcome::Drift)
             }
         } else {
             request
                 .output_lines
                 .push(format!("  Missing: {}", request.file_path));
             maybe_push_diff(request, None, options);
-            drift = true;
+            Ok(FileSyncOutcome::Drift)
         }
-        Ok(FileSyncOutcome {
-            written: false,
-            drift,
-        })
     } else if options.dry_run.is_dry_run() {
         if request.output_path.exists() {
             request
@@ -325,10 +326,7 @@ fn sync_managed_file(
                 .output_lines
                 .push(format!("  Would create: {}", request.file_path));
         }
-        Ok(FileSyncOutcome {
-            written: false,
-            drift: false,
-        })
+        Ok(FileSyncOutcome::Unchanged)
     } else {
         let write_request = CodegenWriteRequest {
             output_path: request.output_path,
@@ -340,10 +338,7 @@ fn sync_managed_file(
         request
             .output_lines
             .push(format!("  Generated: {}", request.file_path));
-        Ok(FileSyncOutcome {
-            written: true,
-            drift: false,
-        })
+        Ok(FileSyncOutcome::Written)
     }
 }
 
@@ -364,27 +359,18 @@ fn sync_scaffold_file(
         request
             .output_lines
             .push(format!("  Skipped (exists): {}", request.file_path));
-        Ok(FileSyncOutcome {
-            written: false,
-            drift: false,
-        })
+        Ok(FileSyncOutcome::Unchanged)
     } else if options.should_check() {
         request
             .output_lines
             .push(format!("  Missing scaffold: {}", request.file_path));
         maybe_push_diff(request, None, options);
-        Ok(FileSyncOutcome {
-            written: false,
-            drift: true,
-        })
+        Ok(FileSyncOutcome::Drift)
     } else if options.dry_run.is_dry_run() {
         request
             .output_lines
             .push(format!("  Would scaffold: {}", request.file_path));
-        Ok(FileSyncOutcome {
-            written: false,
-            drift: false,
-        })
+        Ok(FileSyncOutcome::Unchanged)
     } else {
         let write_request = CodegenWriteRequest {
             output_path: request.output_path,
@@ -396,10 +382,7 @@ fn sync_scaffold_file(
         request
             .output_lines
             .push(format!("  Scaffolded: {}", request.file_path));
-        Ok(FileSyncOutcome {
-            written: true,
-            drift: false,
-        })
+        Ok(FileSyncOutcome::Written)
     }
 }
 
@@ -446,21 +429,17 @@ fn write_codegen_file(request: &CodegenWriteRequest<'_>) -> Result<()> {
     Ok(())
 }
 
-fn format_codegen_content(
-    content: &str,
-    language: &str,
-    format: &cuenv_core::manifest::FormatConfig,
-) -> Result<String> {
-    if language != "json" {
-        return Ok(content.to_string());
+fn format_codegen_content(file: &cuenv_core::manifest::ProjectFile) -> Result<String> {
+    if file.language != "json" {
+        return Ok(file.content.clone());
     }
 
-    let value: serde_json::Value = serde_json::from_str(content)
+    let value: serde_json::Value = serde_json::from_str(&file.content)
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
-    let indent_bytes = if format.indent == "tab" {
+    let indent_bytes = if file.format.indent == "tab" {
         b"\t".to_vec()
     } else {
-        vec![b' '; format.indent_size.unwrap_or(2)]
+        vec![b' '; file.format.indent_size.unwrap_or(2)]
     };
     let mut buf = Vec::new();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(&indent_bytes);
@@ -470,28 +449,34 @@ fn format_codegen_content(
     String::from_utf8(buf).map_err(|e| cuenv_core::Error::configuration(e.to_string()))
 }
 
-fn validate_lint_config(
-    file_path: &str,
-    language: &str,
-    content: &str,
-    lint: Option<&cuenv_core::manifest::LintConfig>,
-) -> Result<()> {
-    let Some(lint) = lint else {
+/// Validate generated content when the file opts into linting.
+///
+/// Linting is best-effort: JSON content is checked for valid syntax, and any
+/// other language is accepted as a no-op until a validator exists for it. The
+/// schema permits `lint.enabled` on every file type, so an unsupported language
+/// must not be a hard failure.
+fn validate_lint_config(file_path: &str, file: &cuenv_core::manifest::ProjectFile) -> Result<()> {
+    let Some(lint) = file.lint.as_ref() else {
         return Ok(());
     };
     if !lint.enabled {
         return Ok(());
     }
 
-    match language {
-        "json" => serde_json::from_str::<serde_json::Value>(content)
+    match file.language.as_str() {
+        "json" => serde_json::from_str::<serde_json::Value>(&file.content)
             .map(|_| ())
             .map_err(|e| {
                 cuenv_core::Error::configuration(format!("Lint failed for {file_path}: {e}"))
             }),
-        _ => Err(cuenv_core::Error::configuration(format!(
-            "Linting is not supported for generated {language} files: {file_path}"
-        ))),
+        other => {
+            tracing::debug!(
+                file = file_path,
+                language = other,
+                "Lint enabled but no validator for this language; skipping"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -585,9 +570,7 @@ fn format_unified_diff(path: &str, current: &str, expected: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::manifest::{
-        CodegenConfig, FileMode, FormatConfig, LintConfig, ProjectFile,
-    };
+    use cuenv_core::manifest::{CodegenConfig, FileMode, FormatConfig, LintConfig, ProjectFile};
     use std::collections::HashMap;
 
     fn options(check: bool) -> CodegenSyncOptions {
@@ -743,15 +726,18 @@ mod tests {
     #[test]
     fn enabled_json_lint_rejects_invalid_json_content() {
         let mut file = project_file("{ invalid json }", "json");
-        file.lint = Some(LintConfig {
-            enabled: true,
-            rules: serde_json::Value::Null,
-        });
+        file.lint = Some(LintConfig { enabled: true });
 
-        let err =
-            validate_lint_config("bad.json", &file.language, &file.content, file.lint.as_ref())
-                .expect_err("lint should fail");
+        let err = validate_lint_config("bad.json", &file).expect_err("lint should fail");
 
         assert!(err.to_string().contains("Lint failed for bad.json"));
+    }
+
+    #[test]
+    fn enabled_lint_on_unsupported_language_is_a_noop() {
+        let mut file = project_file("not really yaml", "yaml");
+        file.lint = Some(LintConfig { enabled: true });
+
+        validate_lint_config("config.yaml", &file).expect("unsupported lint should be a no-op");
     }
 }

@@ -47,9 +47,6 @@ pub struct LintConfig {
     /// Whether linting is enabled for this generated file.
     #[serde(default)]
     pub enabled: bool,
-    /// Optional linter-specific rules.
-    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
-    pub rules: serde_json::Value,
 }
 
 fn default_indent() -> String {

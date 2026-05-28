@@ -39,10 +39,11 @@ package codegen
 		quotes?:        "single" | "double"
 	}
 
-	// Optional: Validation/linting rules
+	// Optional: validation/linting. When enabled, generated content is
+	// validated during `cuenv sync codegen` (JSON syntax today; other
+	// languages are accepted as a no-op until validators are added).
 	lint?: {
 		enabled: bool
-		rules?: {...}
 	}
 }
 
