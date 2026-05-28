@@ -118,19 +118,24 @@ fn emit_available_images(images: &HashMap<String, ContainerImage>) {
 
 fn emit_build_plan(images: &[(&str, &ContainerImage)]) {
     for (name, image) in images {
-        let registry = image
-            .registry
-            .as_deref()
-            .map_or(String::from("local"), |r| r.to_string());
+        emit_stdout!(build_plan_line(name, image));
+    }
+}
+
+fn build_plan_line(name: &str, image: &ContainerImage) -> String {
+    let registry = image.registry.as_deref().unwrap_or("local");
+    if let Some(installable) = &image.installable {
+        format!("cuenv build: {name} (nix: {installable}, registry: {registry})")
+    } else {
         let platforms = if image.platform.is_empty() {
             String::from("native")
         } else {
             image.platform.join(", ")
         };
-        emit_stdout!(format!(
+        format!(
             "cuenv build: {name} (context: {}, dockerfile: {}, registry: {registry}, platform: {platforms})",
             image.context, image.dockerfile
-        ));
+        )
     }
 }
 
@@ -258,23 +263,7 @@ impl DockerBuildInvocation {
     }
 
     fn run(&self) -> cuenv_core::Result<()> {
-        let status = Command::new(self.program)
-            .args(&self.args)
-            .current_dir(&self.current_dir)
-            .status()
-            .map_err(|source| cuenv_core::Error::Io {
-                source,
-                path: None,
-                operation: "run docker build".to_string(),
-            })?;
-
-        if status.success() {
-            Ok(())
-        } else {
-            Err(cuenv_core::Error::execution(format!(
-                "docker build failed with status {status}"
-            )))
-        }
+        run_status(&self.current_dir, self.program, &self.args)
     }
 
     fn display(&self) -> String {
@@ -621,6 +610,34 @@ mod tests {
             .unwrap_or_default();
 
         assert!(message.contains("no tags"));
+    }
+
+    #[test]
+    fn test_build_plan_line_dockerfile() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.platform = vec!["linux/amd64".to_string(), "linux/arm64".to_string()];
+        image.registry = Some("ghcr.io/acme".to_string());
+
+        let line = build_plan_line("api", &image);
+
+        assert!(line.contains("context: ."));
+        assert!(line.contains("dockerfile: Dockerfile"));
+        assert!(line.contains("registry: ghcr.io/acme"));
+        assert!(line.contains("platform: linux/amd64, linux/arm64"));
+        assert!(!line.contains("nix:"));
+    }
+
+    #[test]
+    fn test_build_plan_line_nix_omits_dockerfile_fields() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.context = String::new();
+        image.installable = Some(".#images.api".to_string());
+
+        let line = build_plan_line("api", &image);
+
+        assert!(line.contains("nix: .#images.api"));
+        assert!(line.contains("registry: local"));
+        assert!(!line.contains("dockerfile"));
     }
 
     #[test]
