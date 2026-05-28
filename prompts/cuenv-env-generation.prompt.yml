@@ -11,7 +11,7 @@ messages:
       2. For command-backed secrets, use: schema.#ExecSecret & { command: "op", args: ["read", "op://vault/path"] }
       3. For 1Password references, use: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
       4. For host environment passthrough, use: schema.#EnvPassthrough & { name: "HOST_VAR" }
-      5. Do not invent legacy provider type names. The current cloud secret schema names are schema.#AwsSecret, schema.#GcpSecret, and schema.#VaultSecret, and their runtime resolvers are not registered by default.
+      5. Do not invent legacy provider type names. Use schema.#GcpSecret for Google Cloud Secret Manager; schema.#AwsSecret and schema.#VaultSecret remain schema-only and their runtime resolvers are not registered by default.
       6. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
       7. Output only CUE code, with no Markdown fences or explanations.
 
@@ -52,6 +52,14 @@ testData:
       env: schema.#Env & {
         RELEASE_TAG: schema.#EnvPassthrough & {
           name: "GITHUB_REF_NAME"
+        }
+      }
+  - requirements: "Production app with API_TOKEN from Google Cloud Secret Manager project my-gcp-project secret api-token"
+    expected: |
+      env: schema.#Env & {
+        API_TOKEN: schema.#GcpSecret & {
+          project: "my-gcp-project"
+          secret: "api-token"
         }
       }
   - requirements: "Simple app with LOG_LEVEL that must be debug, info, warn, or error"

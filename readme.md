@@ -211,6 +211,19 @@ Common flags: `-e/--env <name>` selects an environment, `-p/--path <dir>` points
 at the directory holding your CUE files, and `-L/--level <level>` sets log
 verbosity. Full details live in the [CLI reference](https://cuenv.dev/reference/cli/).
 
+## Status
+
+| Area                          | Where it stands                                                  |
+| ----------------------------- | ---------------------------------------------------------------- |
+| CUE evaluation engine         | Solid — fast evaluation through the Go bridge                    |
+| Environments & `exec`         | Solid                                                            |
+| Tasks (`task`)                | Solid for groups, sequences, deps, params, output refs, caching  |
+| Secrets                       | env / exec / 1Password / Infisical / GCP work; AWS and Vault are schema-only |
+| Shell integration & hooks     | Solid                                                            |
+| CI generation                 | GitHub works; Buildkite partial; GitLab schema-only              |
+| Tools, codegen, rules, release| In progress — see the schema status page                         |
+| Services, container/Dagger    | Partial — see the schema status page                             |
+
 ## How it compares
 
 cuenv overlaps with several tools at once. Roughly:

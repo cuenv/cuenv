@@ -25,6 +25,8 @@
 
 mod batch;
 mod fingerprint;
+#[cfg(feature = "http")]
+pub mod http;
 mod registry;
 mod resolved;
 pub mod resolvers;
