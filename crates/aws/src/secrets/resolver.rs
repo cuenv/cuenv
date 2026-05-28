@@ -130,7 +130,11 @@ impl AwsSecretsManagerResolver {
 
         // `jsonKey` extraction only makes sense for a textual `SecretString`.
         // `SecretBinary` is returned as the CLI's base64 string as-is.
-        match (body.secret_string, body.secret_binary, config.json_key.as_deref()) {
+        match (
+            body.secret_string,
+            body.secret_binary,
+            config.json_key.as_deref(),
+        ) {
             (Some(secret), _, Some(key)) => extract_json_key(name, &secret, key),
             (Some(secret), _, None) => Ok(secret),
             (None, Some(_), Some(_)) => Err(SecretError::resolution_failed(
@@ -297,8 +301,6 @@ printf '{"SecretString":"cli-secret"}\n'
         if let Some(current) = std::env::var_os("PATH") {
             parts.extend(std::env::split_paths(&current));
         }
-        Ok(std::env::join_paths(parts)?
-            .to_string_lossy()
-            .into_owned())
+        Ok(std::env::join_paths(parts)?.to_string_lossy().into_owned())
     }
 }

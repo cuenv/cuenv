@@ -72,22 +72,25 @@ impl InfisicalConfig {
 
     fn validate(&self, name: &str) -> Result<(), SecretError> {
         if self.project_id.trim().is_empty() {
-            return Err(infisical_error(name, "Infisical projectId cannot be empty"));
+            return Err(SecretError::resolution_failed(
+                name,
+                "Infisical projectId cannot be empty",
+            ));
         }
         if self.environment.trim().is_empty() {
-            return Err(infisical_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 "Infisical environment cannot be empty",
             ));
         }
         if self.secret_name.trim().is_empty() {
-            return Err(infisical_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 "Infisical secretName cannot be empty",
             ));
         }
         if self.secret_type != "shared" && self.secret_type != "personal" {
-            return Err(infisical_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 "Infisical secret type must be either 'shared' or 'personal'",
             ));
@@ -131,7 +134,7 @@ impl InfisicalResolver {
 
     fn parse_config(name: &str, spec: &SecretSpec) -> Result<InfisicalConfig, SecretError> {
         let config: InfisicalConfig = serde_json::from_str(&spec.source).map_err(|e| {
-            infisical_error(
+            SecretError::resolution_failed(
                 name,
                 format!("Infisical resolver requires structured config: {e}"),
             )
@@ -209,18 +212,20 @@ impl InfisicalResolver {
             .json(&request)
             .send()
             .await
-            .map_err(|e| infisical_error(name, format!("Infisical auth request failed: {e}")))?;
+            .map_err(|e| {
+                SecretError::resolution_failed(name, format!("Infisical auth request failed: {e}"))
+            })?;
 
         let status = response.status();
         if !status.is_success() {
-            return Err(infisical_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 format!("Infisical Universal Auth login failed with HTTP {status}"),
             ));
         }
 
         response.json::<LoginResponse>().await.map_err(|e| {
-            infisical_error(
+            SecretError::resolution_failed(
                 name,
                 format!("Failed to parse Infisical auth response: {e}"),
             )
@@ -244,7 +249,10 @@ impl InfisicalResolver {
             .send()
             .await
             .map_err(|e| {
-                infisical_error(&config.secret_name, format!("Infisical read failed: {e}"))
+                SecretError::resolution_failed(
+                    &config.secret_name,
+                    format!("Infisical read failed: {e}"),
+                )
             })
     }
 
@@ -254,14 +262,14 @@ impl InfisicalResolver {
     ) -> Result<String, SecretError> {
         let status = response.status();
         if !status.is_success() {
-            return Err(infisical_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 format!("Infisical secret read failed with HTTP {status}"),
             ));
         }
 
         let body = response.json::<SecretReadResponse>().await.map_err(|e| {
-            infisical_error(
+            SecretError::resolution_failed(
                 name,
                 format!("Failed to parse Infisical secret response: {e}"),
             )
@@ -316,12 +324,12 @@ impl AuthMode {
                 organization_slug: env_var("INFISICAL_ORGANIZATION_SLUG"),
             })),
             (None, None) => env_var("INFISICAL_TOKEN").map(Self::Token).ok_or_else(|| {
-                infisical_error(
+                SecretError::resolution_failed(
                     name,
                     "Set INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET, or set INFISICAL_TOKEN",
                 )
             }),
-            _ => Err(infisical_error(
+            _ => Err(SecretError::resolution_failed(
                 name,
                 "INFISICAL_CLIENT_ID and INFISICAL_CLIENT_SECRET must be set together",
             )),
@@ -389,7 +397,12 @@ struct SecretResponse {
 fn secret_url(config: &InfisicalConfig) -> Result<Url, SecretError> {
     let mut url = endpoint_url(&config.api_url(), "/api/v4/secrets", &config.secret_name)?;
     url.path_segments_mut()
-        .map_err(|()| infisical_error(&config.secret_name, "Infisical API URL cannot be a base"))?
+        .map_err(|()| {
+            SecretError::resolution_failed(
+                &config.secret_name,
+                "Infisical API URL cannot be a base",
+            )
+        })?
         .push(&config.secret_name);
 
     let mut query = url.query_pairs_mut();
@@ -423,8 +436,9 @@ fn secret_url(config: &InfisicalConfig) -> Result<Url, SecretError> {
 }
 
 fn endpoint_url(api_url: &str, path: &str, name: &str) -> Result<Url, SecretError> {
-    Url::parse(&format!("{api_url}{path}"))
-        .map_err(|e| infisical_error(name, format!("Invalid Infisical API URL: {e}")))
+    Url::parse(&format!("{api_url}{path}")).map_err(|e| {
+        SecretError::resolution_failed(name, format!("Invalid Infisical API URL: {e}"))
+    })
 }
 
 fn token_expiry(expires_in: u64) -> Instant {
@@ -442,13 +456,6 @@ fn default_secret_type() -> String {
 
 const fn default_true() -> bool {
     true
-}
-
-fn infisical_error(name: impl Into<String>, message: impl Into<String>) -> SecretError {
-    SecretError::ResolutionFailed {
-        name: name.into(),
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]
