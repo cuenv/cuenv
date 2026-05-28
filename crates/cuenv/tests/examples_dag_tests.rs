@@ -197,6 +197,27 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "ci-gcp-secret",
+            min_task_count: 1, // deploy
+            has_hooks: false,
+            has_env: true, // Has production environment with GCP Secret Manager refs
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "ci-aws-secrets",
+            min_task_count: 1, // deploy
+            has_hooks: false,
+            has_env: true, // Has production environment with AWS Secrets Manager refs
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
+            name: "services-readiness",
+            min_task_count: 1, // prepare
+            has_hooks: false,
+            has_env: false, // Services + a prepare task; no env block
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "ci-cachix",
             min_task_count: 1, // build
             has_hooks: false,

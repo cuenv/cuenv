@@ -1275,6 +1275,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-aws"
+version = "0.43.0"
+dependencies = [
+ "async-trait",
+ "cuenv-secrets",
+ "serde",
+ "serde_json",
+ "temp-env",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-bitbucket"
 version = "0.43.0"
 dependencies = [
@@ -1392,8 +1406,10 @@ dependencies = [
  "chrono",
  "cucumber",
  "cuenv-1password",
+ "cuenv-aws",
  "cuenv-cas",
  "cuenv-events",
+ "cuenv-gcp",
  "cuenv-hooks",
  "cuenv-infisical",
  "cuenv-secrets",
@@ -1462,6 +1478,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cuenv-gcp"
+version = "0.43.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "cuenv-secrets",
+ "reqwest 0.13.3",
+ "serde",
+ "serde_json",
+ "temp-env",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1546,7 +1577,6 @@ dependencies = [
  "async-trait",
  "cuenv-secrets",
  "reqwest 0.13.3",
- "rustls 0.23.40",
  "serde",
  "serde_json",
  "temp-env",
@@ -1590,6 +1620,8 @@ dependencies = [
  "async-trait",
  "futures",
  "hex",
+ "reqwest 0.13.3",
+ "rustls 0.23.40",
  "secrecy",
  "serde",
  "serde_json",

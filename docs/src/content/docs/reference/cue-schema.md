@@ -479,7 +479,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service dependencies are supported; task and image dependencies are rejected by `cuenv up` until executor integration exists |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -597,6 +597,10 @@ restart: {
 | `maxRestarts` | `int`    | `5`           | Max restarts within sliding window       |
 | `window`      | `string` | `60s`         | Sliding window for restart counting      |
 
+`cuenv restart <service>` requires an active `cuenv up` session. It queues a
+persisted restart request; the running supervisor consumes it, stops the
+service, and spawns it again without restarting unrelated services.
+
 ### #Watch
 
 File watcher that triggers service restarts on file changes.
@@ -619,9 +623,18 @@ watch: {
 | `on`       | `string`        | `restart` | Action on change (`restart`)                 |
 | `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
 
+Watch events are debounced, then the supervisor restarts the service. The
+schema exposes `rebuild`, but restart-on-change is the supported behavior in
+the current implementation.
+
 ### #Shutdown
 
 Controls how services are stopped.
+
+Whole-session `cuenv down` asks the active `cuenv up` controller to shut down
+all services. `cuenv down <service>` writes a persisted stop request that the
+selected running supervisor consumes. The configured signal is sent first; if
+the process is still alive after `timeout`, cuenv escalates to a hard kill.
 
 | Field     | Type     | Default   | Description                          |
 | --------- | -------- | --------- | ------------------------------------ |
@@ -638,11 +651,14 @@ Log handling configuration for services.
 | `color`   | `string` | auto           | ANSI color hint (red, green, yellow, blue, magenta, cyan, white) |
 | `persist` | `bool`   | `true`         | Persist logs to `.cuenv/run/<project>/logs/` |
 
+When persistence is enabled, `cuenv logs --follow` tails appended session log
+lines while the matching `cuenv up` controller is alive.
+
 ## Container Images
 
 ### #ContainerImage
 
-Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume once build execution exists. `cuenv build` currently lists image definitions; selected build requests fail until an execution backend is implemented.
+Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) whose downstream resolution is still partial. `cuenv build` lists image definitions and builds selected images. An image is built from **either** a Dockerfile (set `context`, built with `docker`/`buildx`) **or** a Nix flake output (set `installable`, built with `nix build` and delivered through `docker`); the two are mutually exclusive.
 
 ```cue
 images: {
@@ -661,9 +677,10 @@ images: {
 
 | Field         | Type                                   | Required | Default        | Description                              |
 | ------------- | -------------------------------------- | -------- | -------------- | ---------------------------------------- |
-| `context`     | `string`                               | Yes      | -              | Build context directory                  |
+| `context`     | `string`                               | One of\*  | -              | Build context directory (Dockerfile image) |
+| `installable` | `string`                               | One of\*  | -              | Nix flake installable (Nix image), e.g. `".#images.api"` |
 | `dockerfile`  | `string`                               | No       | `"Dockerfile"` | Dockerfile path relative to context      |
-| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments                          |
+| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments (Dockerfile image)       |
 | `target`      | `string`                               | No       | -              | Multi-stage build target                 |
 | `tags`        | `[...string]`                          | No       | -              | Image tags                               |
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
@@ -674,9 +691,15 @@ images: {
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
 
+\*Exactly one of `context` or `installable` must be set: `context` selects a Dockerfile build, `installable` selects a Nix-native build.
+
+**Dockerfile images** (`context` set): when `registry` is set, `cuenv build` uses `docker buildx build --push` and tags the image as `<registry>/<repository-or-name>:<tag>`. Without `registry`, it runs a local `docker build`. Multi-platform builds require a registry so Docker can push a manifest list.
+
+**Nix images** (`installable` set): `cuenv build` runs `nix build <installable>` (pin the derivation to `dockerTools.buildLayeredImage`/`streamLayeredImage`) and `docker load`s the resulting archive. It then tags the loaded image as `<registry>/<repository-or-name>:<tag>` for each tag, pushing with `docker push` when `registry` is set. Multi-architecture Nix images are not yet supported.
+
 #### Output References
 
-Images produce two output references resolved at runtime after the image is built:
+The schema exposes two image output references; downstream resolution remains partial:
 
 | Reference | Description                                      |
 | --------- | ------------------------------------------------ |
@@ -715,8 +738,8 @@ images: {
 
 ```bash
 cuenv build              # List all images
-cuenv build api          # Fails until image execution backends exist
-cuenv build --label ci   # Fails until image execution backends exist
+cuenv build api          # Build the api image with Docker
+cuenv build --label ci   # Build images matching the ci label
 ```
 
 ## Hooks

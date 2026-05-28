@@ -145,7 +145,7 @@ cuenv sync [PROVIDER] [OPTIONS]
 
 ### `cuenv build`
 
-List container images defined in CUE configuration.
+List or build container images defined in CUE configuration.
 
 ```bash
 cuenv build [NAMES...] [OPTIONS]
@@ -153,7 +153,7 @@ cuenv build [NAMES...] [OPTIONS]
 
 **Arguments:**
 
-- `[NAMES]`: Image names to build. Build execution is currently unsupported; omit names to list available images.
+- `[NAMES]`: Image names to build. Omit names to list available images.
 
 **Options:**
 
@@ -161,16 +161,22 @@ cuenv build [NAMES...] [OPTIONS]
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-l, --label <LABEL>`: Filter images by label (repeatable).
 
+Selected images are built with the local Docker CLI. Dockerfile images (with
+`context`) use `docker build`, or `docker buildx build --push` when `registry`
+is configured; local multi-platform builds require a registry. Nix images (with
+`installable`) are built with `nix build`, loaded via `docker load`, then tagged
+and pushed with `docker`.
+
 **Examples:**
 
 ```bash
 # List all images
 cuenv build
 
-# Build requests currently fail until image execution backends are implemented
+# Build the api image with the local Docker CLI
 cuenv build api
 
-# Label-selected build requests also fail until backends are implemented
+# Build all images with the ci label
 cuenv build --label ci
 ```
 
@@ -196,10 +202,10 @@ cuenv up [SERVICES...] [OPTIONS]
 Services are supervised processes with readiness probes, restart policies, and file watchers. Use `Ctrl+C` to shut down all services.
 
 Service-to-service dependencies wait for upstream services to become ready;
-starting a selected service also starts its service dependencies. Task and image
-dependencies in `services.*.dependsOn` are schema-visible but currently
-rejected by `cuenv up` until task execution and image build backends are wired
-into service startup.
+starting a selected service also starts its service dependencies. Task
+dependencies in `services.*.dependsOn` run to completion before service
+startup. Image dependencies are recognized in the dependency plan, but selected
+image builds still fail fast until image execution backends exist.
 
 On Linux, `cuenv up` promotes itself to a subreaper (`PR_SET_CHILD_SUBREAPER`) and installs `PR_SET_PDEATHSIG=SIGKILL` on each service so orphaned descendants are either reaped by cuenv or killed when cuenv exits. On macOS, services are spawned through a hidden `cuenv __supervise` wrapper that watches the parent via `kqueue`/`NOTE_EXIT` and forwards signals to the service's process group.
 
