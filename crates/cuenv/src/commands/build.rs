@@ -154,12 +154,36 @@ fn sorted_images(images: &HashMap<String, ContainerImage>) -> Vec<(&str, &Contai
 }
 
 fn build_images(project_dir: &Path, images: &[(&str, &ContainerImage)]) -> cuenv_core::Result<()> {
-    images.iter().try_for_each(|(name, image)| {
+    images
+        .iter()
+        .try_for_each(|(name, image)| build_one_image(project_dir, name, image))
+}
+
+fn build_one_image(
+    project_dir: &Path,
+    name: &str,
+    image: &ContainerImage,
+) -> cuenv_core::Result<()> {
+    if image.installable.is_some() && !image.context.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "cuenv build: image '{name}' sets both 'context' and 'installable'; choose one"
+        )));
+    }
+
+    if image.installable.is_none() && image.context.is_empty() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "cuenv build: image '{name}' must set either 'context' (Dockerfile) or 'installable' (Nix)"
+        )));
+    }
+
+    if let Some(installable) = &image.installable {
+        let invocation = NixBuildInvocation::new(name, image, installable, project_dir)?;
+        invocation.run()
+    } else {
         let invocation = DockerBuildInvocation::new(project_dir, name, image)?;
         emit_stdout!(format!("cuenv build: running {}", invocation.display()));
-        invocation.run()?;
-        Ok(())
-    })
+        invocation.run()
+    }
 }
 
 struct DockerBuildInvocation {
@@ -177,9 +201,20 @@ impl DockerBuildInvocation {
             )));
         }
 
+        if image.registry.is_some() && image.tags.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cuenv build: image '{name}' has a registry but no tags; \
+                 add at least one tag to push to the registry"
+            )));
+        }
+
         let push = image.registry.is_some();
         let mut args = if push {
-            vec!["buildx".to_string(), "build".to_string(), "--push".to_string()]
+            vec![
+                "buildx".to_string(),
+                "build".to_string(),
+                "--push".to_string(),
+            ]
         } else {
             vec!["build".to_string()]
         };
@@ -197,7 +232,9 @@ impl DockerBuildInvocation {
             args.extend(["--target".to_string(), target.clone()]);
         }
 
-        for (key, value) in &image.build_args {
+        let mut build_args: Vec<_> = image.build_args.iter().collect();
+        build_args.sort_by_key(|(key, _)| *key);
+        for (key, value) in build_args {
             let value = value.as_str().ok_or_else(|| {
                 cuenv_core::Error::configuration(format!(
                     "cuenv build: image '{name}' build arg '{key}' uses an unresolved image output reference"
@@ -266,6 +303,153 @@ fn path_argument(path: impl AsRef<Path>) -> String {
     path.as_ref().to_string_lossy().into_owned()
 }
 
+/// Builds a Nix-native image: `nix build` the installable, `docker load` the
+/// resulting archive, then tag (and optionally push) the configured references.
+struct NixBuildInvocation {
+    installable: String,
+    refs: Vec<String>,
+    push: bool,
+    current_dir: PathBuf,
+}
+
+impl NixBuildInvocation {
+    fn new(
+        name: &str,
+        image: &ContainerImage,
+        installable: &str,
+        project_dir: &Path,
+    ) -> cuenv_core::Result<Self> {
+        let push = image.registry.is_some();
+        if push && image.tags.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cuenv build: image '{name}' has a registry but no tags; \
+                 add at least one tag to push to the registry"
+            )));
+        }
+
+        Ok(Self {
+            installable: installable.to_string(),
+            refs: image_refs(name, image),
+            push,
+            current_dir: project_dir.to_path_buf(),
+        })
+    }
+
+    fn run(&self) -> cuenv_core::Result<()> {
+        emit_stdout!(format!(
+            "cuenv build: running nix build {}",
+            self.installable
+        ));
+        let build_output =
+            run_capture(&self.current_dir, "nix", &nix_build_args(&self.installable))?;
+        let archive = build_output.lines().next().unwrap_or("").trim();
+        if archive.is_empty() {
+            return Err(cuenv_core::Error::execution(format!(
+                "cuenv build: nix build produced no output path for '{}'",
+                self.installable
+            )));
+        }
+
+        emit_stdout!(format!("cuenv build: running docker load -i {archive}"));
+        let load_output = run_capture(&self.current_dir, "docker", &docker_load_args(archive))?;
+        let loaded = parse_loaded_image(&load_output).ok_or_else(|| {
+            cuenv_core::Error::execution(format!(
+                "cuenv build: could not determine loaded image from docker load output:\n{load_output}"
+            ))
+        })?;
+
+        for reference in &self.refs {
+            emit_stdout!(format!("cuenv build: tagging {loaded} as {reference}"));
+            run_status(
+                &self.current_dir,
+                "docker",
+                &docker_tag_args(&loaded, reference),
+            )?;
+            if self.push {
+                emit_stdout!(format!("cuenv build: running docker push {reference}"));
+                run_status(&self.current_dir, "docker", &docker_push_args(reference))?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn nix_build_args(installable: &str) -> Vec<String> {
+    vec![
+        "build".to_string(),
+        installable.to_string(),
+        "--no-link".to_string(),
+        "--print-out-paths".to_string(),
+    ]
+}
+
+fn docker_load_args(archive: &str) -> Vec<String> {
+    vec!["load".to_string(), "-i".to_string(), archive.to_string()]
+}
+
+fn docker_tag_args(source: &str, dest: &str) -> Vec<String> {
+    vec!["tag".to_string(), source.to_string(), dest.to_string()]
+}
+
+fn docker_push_args(reference: &str) -> Vec<String> {
+    vec!["push".to_string(), reference.to_string()]
+}
+
+/// Parses the local image reference from `docker load` output, which prints
+/// either `Loaded image: repo:tag` or `Loaded image ID: sha256:...`.
+fn parse_loaded_image(stdout: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        line.trim()
+            .strip_prefix("Loaded image ID: ")
+            .or_else(|| line.trim().strip_prefix("Loaded image: "))
+            .map(|reference| reference.trim().to_string())
+    })
+}
+
+fn run_capture(dir: &Path, program: &str, args: &[String]) -> cuenv_core::Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(|source| cuenv_core::Error::Io {
+            source,
+            path: None,
+            operation: format!("run {program}"),
+        })?;
+
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(cuenv_core::Error::execution(format!(
+            "{program} {} failed with status {}",
+            args.join(" "),
+            output.status
+        )))
+    }
+}
+
+fn run_status(dir: &Path, program: &str, args: &[String]) -> cuenv_core::Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .map_err(|source| cuenv_core::Error::Io {
+            source,
+            path: None,
+            operation: format!("run {program}"),
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(cuenv_core::Error::execution(format!(
+            "{program} {} failed with status {status}",
+            args.join(" ")
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -286,6 +470,7 @@ mod tests {
             },
             context: ".".to_string(),
             dockerfile: "Dockerfile".to_string(),
+            installable: None,
             build_args: HashMap::new(),
             target: None,
             tags: tags.into_iter().map(String::from).collect(),
@@ -374,14 +559,7 @@ mod tests {
         assert_eq!(invocation.current_dir, PathBuf::from("/workspace/app"));
         assert_eq!(
             invocation.args,
-            vec![
-                "build",
-                "-f",
-                "./Dockerfile",
-                "-t",
-                "api:latest",
-                "."
-            ]
+            vec!["build", "-f", "./Dockerfile", "-t", "api:latest", "."]
         );
     }
 
@@ -422,8 +600,146 @@ mod tests {
 
         let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
         assert!(result.is_err());
-        let message = result.err().map(|error| error.to_string()).unwrap_or_default();
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
 
         assert!(message.contains("multiple platforms"));
+    }
+
+    #[test]
+    fn test_registry_image_requires_tags() {
+        let mut image = test_image(vec![], vec![]);
+        image.registry = Some("ghcr.io/acme".to_string());
+
+        let result = DockerBuildInvocation::new(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_err());
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+
+        assert!(message.contains("no tags"));
+    }
+
+    #[test]
+    fn test_nix_build_args() {
+        assert_eq!(
+            nix_build_args(".#images.api"),
+            vec!["build", ".#images.api", "--no-link", "--print-out-paths"]
+        );
+    }
+
+    #[test]
+    fn test_docker_delivery_args() {
+        assert_eq!(
+            docker_load_args("/nix/store/x.tar.gz"),
+            vec!["load", "-i", "/nix/store/x.tar.gz"]
+        );
+        assert_eq!(
+            docker_tag_args("src:latest", "ghcr.io/acme/api:v1"),
+            vec!["tag", "src:latest", "ghcr.io/acme/api:v1"]
+        );
+        assert_eq!(
+            docker_push_args("ghcr.io/acme/api:v1"),
+            vec!["push", "ghcr.io/acme/api:v1"]
+        );
+    }
+
+    #[test]
+    fn test_parse_loaded_image_named() {
+        let out = "Some preamble\nLoaded image: api:latest\n";
+        assert_eq!(parse_loaded_image(out).as_deref(), Some("api:latest"));
+    }
+
+    #[test]
+    fn test_parse_loaded_image_id() {
+        let out = "Loaded image ID: sha256:deadbeef\n";
+        assert_eq!(parse_loaded_image(out).as_deref(), Some("sha256:deadbeef"));
+    }
+
+    #[test]
+    fn test_parse_loaded_image_none() {
+        assert_eq!(parse_loaded_image("nothing useful here"), None);
+    }
+
+    #[test]
+    fn test_nix_invocation_local_refs() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.context = String::new();
+        image.installable = Some(".#images.api".to_string());
+
+        let invocation =
+            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"))
+                .unwrap_or_else(|_| unreachable!("local nix image is valid"));
+
+        assert!(!invocation.push);
+        assert_eq!(invocation.refs, vec!["api:latest"]);
+        assert_eq!(invocation.current_dir, PathBuf::from("/workspace/app"));
+    }
+
+    #[test]
+    fn test_nix_invocation_registry_refs() {
+        let mut image = test_image(vec!["v1", "latest"], vec![]);
+        image.context = String::new();
+        image.installable = Some(".#images.api".to_string());
+        image.registry = Some("ghcr.io/acme".to_string());
+        image.repository = Some("services/api".to_string());
+
+        let invocation =
+            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"))
+                .unwrap_or_else(|_| unreachable!("registry nix image is valid"));
+
+        assert!(invocation.push);
+        assert_eq!(
+            invocation.refs,
+            vec![
+                "ghcr.io/acme/services/api:v1",
+                "ghcr.io/acme/services/api:latest"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_nix_invocation_registry_requires_tags() {
+        let mut image = test_image(vec![], vec![]);
+        image.context = String::new();
+        image.installable = Some(".#images.api".to_string());
+        image.registry = Some("ghcr.io/acme".to_string());
+
+        let result =
+            NixBuildInvocation::new("api", &image, ".#images.api", Path::new("/workspace/app"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_one_image_rejects_both_sources() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.installable = Some(".#images.api".to_string());
+        // context is still "." from test_image -> both set
+
+        let result = build_one_image(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_err());
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("both"));
+    }
+
+    #[test]
+    fn test_build_one_image_rejects_neither_source() {
+        let mut image = test_image(vec!["latest"], vec![]);
+        image.context = String::new();
+        image.installable = None;
+
+        let result = build_one_image(Path::new("/workspace/app"), "api", &image);
+        assert!(result.is_err());
+        let message = result
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(message.contains("either"));
     }
 }

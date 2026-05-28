@@ -642,7 +642,7 @@ Log handling configuration for services.
 
 ### #ContainerImage
 
-Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) whose downstream resolution is still partial. `cuenv build` lists image definitions and builds selected images with the local Docker CLI.
+Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) whose downstream resolution is still partial. `cuenv build` lists image definitions and builds selected images. An image is built from **either** a Dockerfile (set `context`, built with `docker`/`buildx`) **or** a Nix flake output (set `installable`, built with `nix build` and delivered through `docker`); the two are mutually exclusive.
 
 ```cue
 images: {
@@ -661,9 +661,10 @@ images: {
 
 | Field         | Type                                   | Required | Default        | Description                              |
 | ------------- | -------------------------------------- | -------- | -------------- | ---------------------------------------- |
-| `context`     | `string`                               | Yes      | -              | Build context directory                  |
+| `context`     | `string`                               | One of\*  | -              | Build context directory (Dockerfile image) |
+| `installable` | `string`                               | One of\*  | -              | Nix flake installable (Nix image), e.g. `".#images.api"` |
 | `dockerfile`  | `string`                               | No       | `"Dockerfile"` | Dockerfile path relative to context      |
-| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments                          |
+| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments (Dockerfile image)       |
 | `target`      | `string`                               | No       | -              | Multi-stage build target                 |
 | `tags`        | `[...string]`                          | No       | -              | Image tags                               |
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
@@ -674,7 +675,11 @@ images: {
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
 
-When `registry` is set, `cuenv build` uses `docker buildx build --push` and tags the image as `<registry>/<repository-or-name>:<tag>`. Without `registry`, it runs a local `docker build`. Multi-platform builds require a registry so Docker can push a manifest list.
+\*Exactly one of `context` or `installable` must be set: `context` selects a Dockerfile build, `installable` selects a Nix-native build.
+
+**Dockerfile images** (`context` set): when `registry` is set, `cuenv build` uses `docker buildx build --push` and tags the image as `<registry>/<repository-or-name>:<tag>`. Without `registry`, it runs a local `docker build`. Multi-platform builds require a registry so Docker can push a manifest list.
+
+**Nix images** (`installable` set): `cuenv build` runs `nix build <installable>` (pin the derivation to `dockerTools.buildLayeredImage`/`streamLayeredImage`) and `docker load`s the resulting archive. It then tags the loaded image as `<registry>/<repository-or-name>:<tag>` for each tag, pushing with `docker push` when `registry` is set. Multi-architecture Nix images are not yet supported.
 
 #### Output References
 

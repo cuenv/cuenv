@@ -161,9 +161,11 @@ cuenv build [NAMES...] [OPTIONS]
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-l, --label <LABEL>`: Filter images by label (repeatable).
 
-Selected images are built with the local Docker CLI. Images with `registry`
-configured are pushed with `docker buildx build --push`; local multi-platform
-builds require a registry.
+Selected images are built with the local Docker CLI. Dockerfile images (with
+`context`) use `docker build`, or `docker buildx build --push` when `registry`
+is configured; local multi-platform builds require a registry. Nix images (with
+`installable`) are built with `nix build`, loaded via `docker load`, then tagged
+and pushed with `docker`.
 
 **Examples:**
 
