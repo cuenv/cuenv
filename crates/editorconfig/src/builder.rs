@@ -130,8 +130,12 @@ impl EditorConfigFileBuilder {
     }
 
     /// Generate the file content as a string.
+    ///
+    /// Crate-internal: callers must go through [`generate`](Self::generate),
+    /// which validates section patterns before producing content. Exposing
+    /// this directly would let unvalidated patterns emit malformed output.
     #[must_use]
-    pub fn generate_content(&self) -> String {
+    pub(crate) fn generate_content(&self) -> String {
         let mut lines = Vec::new();
 
         // Add header comment if present
@@ -192,10 +196,12 @@ fn determine_dry_run_status(filepath: &Path, content: &str) -> Result<FileStatus
 fn validate_section_patterns(sections: &[(String, EditorConfigSection)]) -> Result<()> {
     sections
         .iter()
-        .map(|(pattern, _)| validate_section_pattern(pattern))
-        .collect()
+        .try_for_each(|(pattern, _)| validate_section_pattern(pattern))
 }
 
+// Keep these rules in sync with the key constraint in
+// `schema/rules/editorconfig.cue` (regex `^[^\[\]\r\n]+$`), which enforces the
+// same contract at CUE evaluation time.
 fn validate_section_pattern(pattern: &str) -> Result<()> {
     if pattern.is_empty() {
         return Err(Error::InvalidSectionPattern {
@@ -270,7 +276,10 @@ mod tests {
     #[test]
     fn generate_rejects_multiline_section_pattern() {
         let err = EditorConfigFile::builder()
-            .section("*.rs\n*.toml", EditorConfigSection::new().indent_style("space"))
+            .section(
+                "*.rs\n*.toml",
+                EditorConfigSection::new().indent_style("space"),
+            )
             .generate()
             .expect_err("multiline section pattern should fail");
 
