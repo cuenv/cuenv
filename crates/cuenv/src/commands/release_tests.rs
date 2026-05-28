@@ -1,4 +1,5 @@
 use super::*;
+use cuenv_release::TagType;
 use std::fs;
 use std::process::Command;
 use tempfile::TempDir;

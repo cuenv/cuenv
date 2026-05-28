@@ -280,11 +280,12 @@ impl ChangelogGenerator {
     }
 
     fn entry_to_markdown(&self, entry: &ChangelogEntry) -> String {
+        use std::fmt::Write;
+
         if self.config.categories.is_empty() {
             return entry.to_markdown();
         }
 
-        use std::fmt::Write;
         let mut output = String::new();
         let date_str = entry.date.format("%Y-%m-%d").to_string();
         let _ = writeln!(output, "## [{}] - {}\n", entry.version, date_str);

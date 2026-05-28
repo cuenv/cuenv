@@ -265,11 +265,8 @@ fn update_release_prepare_changelogs(
     let _ = writeln!(output, "Updating changelogs...");
 
     if analysis.release_config.changelog.workspace
-        && let Some(entry) =
-            generator.generate_workspace_entry(
-                &analysis.changelog_changesets,
-                &analysis.new_versions,
-            )
+        && let Some(entry) = generator
+            .generate_workspace_entry(&analysis.changelog_changesets, &analysis.new_versions)
     {
         generator
             .update_file(
@@ -297,11 +294,13 @@ fn update_release_prepare_changelogs(
             continue;
         };
         let changelog_path = generator.get_changelog_path(package_root);
-        generator.update_file(&changelog_path, &entry).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to update changelog for {package}: {e}"
-            ))
-        })?;
+        generator
+            .update_file(&changelog_path, &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update changelog for {package}: {e}"
+                ))
+            })?;
     }
 
     Ok(())

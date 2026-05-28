@@ -275,7 +275,10 @@ fn add_homebrew_release_backend(
     let tap = config
         .map(|cfg| cfg.tap.as_str())
         .filter(|tap| !tap.is_empty())
-        .map_or_else(|| format!("{binary_name}/homebrew-tap"), ToString::to_string);
+        .map_or_else(
+            || format!("{binary_name}/homebrew-tap"),
+            ToString::to_string,
+        );
     let formula = config
         .and_then(|cfg| cfg.formula.as_deref())
         .unwrap_or(binary_name);

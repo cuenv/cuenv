@@ -142,9 +142,7 @@ impl ReleasePackagesConfig {
     /// Check if a package is in a fixed group.
     #[must_use]
     pub fn is_in_fixed_group(&self, package: &str) -> bool {
-        self.fixed
-            .iter()
-            .any(|group| group.contains(&package.to_string()))
+        self.get_fixed_group(package).is_some()
     }
 
     /// Get the fixed group containing a package, if any.
@@ -152,15 +150,13 @@ impl ReleasePackagesConfig {
     pub fn get_fixed_group(&self, package: &str) -> Option<&Vec<String>> {
         self.fixed
             .iter()
-            .find(|group| group.contains(&package.to_string()))
+            .find(|group| group.iter().any(|member| member == package))
     }
 
     /// Check if a package is in a linked group.
     #[must_use]
     pub fn is_in_linked_group(&self, package: &str) -> bool {
-        self.linked
-            .iter()
-            .any(|group| group.contains(&package.to_string()))
+        self.get_linked_group(package).is_some()
     }
 
     /// Get the linked group containing a package, if any.
@@ -168,7 +164,7 @@ impl ReleasePackagesConfig {
     pub fn get_linked_group(&self, package: &str) -> Option<&Vec<String>> {
         self.linked
             .iter()
-            .find(|group| group.contains(&package.to_string()))
+            .find(|group| group.iter().any(|member| member == package))
     }
 }
 

@@ -13,12 +13,12 @@ mod prepare;
 pub use binaries::{ReleaseBinariesOptions, ReleaseBinariesPhase, execute_release_binaries};
 pub use prepare::{PackageBumpInfo, ReleasePrepareOptions, execute_release_prepare};
 
+use cuengine::ModuleEvalOptions;
 use cuenv_release::{
     BumpType, CargoManifest, ChangelogGenerator, Changeset, ChangesetManager, CommitAnalyzer,
     CommitParser, CratesBackendConfig, CueBackendConfig, PackageChange, PublishPackage,
-    PublishPlan, ReleaseConfig, TagType, Version, VersionCalculator,
+    PublishPlan, ReleaseConfig, Version, VersionCalculator,
 };
-use cuengine::ModuleEvalOptions;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -73,7 +73,7 @@ fn load_release_config(root: &Path) -> cuenv_core::Result<ReleaseConfig> {
 }
 
 fn release_config_from_value(value: &serde_json::Value) -> cuenv_core::Result<ReleaseConfig> {
-    serde_json::from_value::<ProjectReleaseConfig>(value.clone())
+    ProjectReleaseConfig::deserialize(value)
         .map_err(|e| cuenv_core::Error::configuration(format!("Invalid release config: {e}")))
         .map(|project| project.release.unwrap_or_default())
 }
@@ -575,11 +575,13 @@ fn update_release_changelogs(
             continue;
         };
         let changelog_path = generator.get_changelog_path(package_root);
-        generator.update_file(&changelog_path, &entry).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "Failed to update changelog for {package}: {e}"
-            ))
-        })?;
+        generator
+            .update_file(&changelog_path, &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update changelog for {package}: {e}"
+                ))
+            })?;
     }
 
     Ok(())
@@ -680,11 +682,10 @@ fn publish_packages_to_crates_io(
     publishable: &HashSet<String>,
     token_env: &str,
 ) -> cuenv_core::Result<()> {
-    let registry_token = if token_env == "CARGO_REGISTRY_TOKEN" {
-        None
-    } else {
-        std::env::var(token_env).ok()
-    };
+    // cargo reads CARGO_REGISTRY_TOKEN from the ambient environment; when a
+    // different env var is configured we read it and forward it under the name
+    // cargo expects. A missing var leaves cargo to fall back to its own config.
+    let registry_token = std::env::var(token_env).ok();
 
     for pkg in plan.iter() {
         if !publishable.contains(&pkg.name) {
@@ -793,7 +794,9 @@ pub fn execute_release_publish(
         }
     }
 
-    if !dry_run.is_dry_run() && let Some(crates_config) = &crates_config {
+    if !dry_run.is_dry_run()
+        && let Some(crates_config) = &crates_config
+    {
         publish_packages_to_crates_io(root, &plan, &publishable, &crates_config.token_env)?;
     }
 
@@ -857,7 +860,8 @@ pub fn execute_release_publish(
                 output.push_str("\nDry run complete.\n");
             }
             if cue_config.is_some() {
-                output.push_str("\nCUE registry publishing is configured but not implemented yet.\n");
+                output
+                    .push_str("\nCUE registry publishing is configured but not implemented yet.\n");
             }
 
             Ok(output)
