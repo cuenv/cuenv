@@ -282,8 +282,9 @@ Add custom validation constraints:
 
 cuenv resolves secrets at runtime. Use `schema.#OnePasswordRef` for 1Password,
 `schema.#InfisicalSecret` for Infisical, `schema.#AwsSecret` for AWS Secrets
-Manager, and `schema.#ExecSecret` for custom command-backed providers. GCP and
-Vault schema types exist, but their default runtime resolvers are not registered yet.
+Manager, `schema.#GcpSecret` for Google Cloud Secret Manager, and
+`schema.#ExecSecret` for custom command-backed providers. The Vault schema type
+exists, but its default runtime resolver is not registered yet.
 
 ```cue
 package cuenv

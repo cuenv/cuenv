@@ -35,6 +35,10 @@ pub use cuenv_infisical::secrets::{InfisicalConfig, InfisicalResolver};
 #[cfg(feature = "aws")]
 pub use cuenv_aws::secrets::{AwsSecretConfig, AwsSecretsManagerResolver};
 
+// Conditionally re-export GCP resolver when feature is enabled
+#[cfg(feature = "gcp")]
+pub use cuenv_gcp::secrets::{GcpSecretConfig, GcpSecretManagerResolver};
+
 /// Create a default secret registry with all built-in resolvers
 ///
 /// This registers:
@@ -43,10 +47,11 @@ pub use cuenv_aws::secrets::{AwsSecretConfig, AwsSecretsManagerResolver};
 /// - `onepassword`: 1Password resolver (when `1password` feature is enabled)
 /// - `infisical`: Infisical resolver (when `infisical` feature is enabled)
 /// - `aws`: AWS Secrets Manager resolver (when `aws` feature is enabled)
+/// - `gcp`: Google Cloud Secret Manager resolver (when `gcp` feature is enabled)
 ///
 /// # Errors
 ///
-/// Returns an error if an optional resolver initialization fails (when enabled).
+/// Returns an error if a feature-gated resolver initialization fails.
 pub fn create_default_registry() -> Result<SecretRegistry> {
     let mut registry = SecretRegistry::new();
 
@@ -76,6 +81,14 @@ pub fn create_default_registry() -> Result<SecretRegistry> {
     #[cfg(feature = "aws")]
     {
         registry.register(Arc::new(AwsSecretsManagerResolver::new()));
+    }
+
+    // Register GCP resolver if feature is enabled
+    #[cfg(feature = "gcp")]
+    {
+        let gcp_resolver = GcpSecretManagerResolver::new()
+            .map_err(|e| Error::configuration(format!("Failed to initialize GCP resolver: {e}")))?;
+        registry.register(Arc::new(gcp_resolver));
     }
 
     Ok(registry)
@@ -356,6 +369,25 @@ mod tests {
             extra: HashMap::new(),
         };
         assert_eq!(secret.provider(), "vault");
+    }
+
+    #[test]
+    fn test_default_registry_has_builtin_resolvers() -> Result<()> {
+        let registry = create_default_registry()?;
+
+        assert!(registry.has("env"));
+        assert!(registry.has("exec"));
+
+        #[cfg(feature = "1password")]
+        assert!(registry.has("onepassword"));
+
+        #[cfg(feature = "infisical")]
+        assert!(registry.has("infisical"));
+
+        #[cfg(feature = "gcp")]
+        assert!(registry.has("gcp"));
+
+        Ok(())
     }
 
     // ==========================================================================

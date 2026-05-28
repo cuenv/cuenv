@@ -34,6 +34,44 @@ It's written in Rust with a Go bridge to the CUE evaluator. The project moves
 fast (see the warning above), but the environment, task, and GitHub CI paths are
 in daily use.
 
+## Feature matrix
+
+Everything cuenv offers today, with an honest status. **Stable** is safe to rely
+on, **Partial** works within documented limits, and **Preview** exists in the
+schema but isn't usable yet. The
+[schema status page](https://cuenv.dev/reference/schema/status/) is the
+authoritative source.
+
+| Capability | Status | Notes |
+| --- | --- | --- |
+| Typed environment variables | Stable | Enums, bounds, regex, defaults, interpolation, per-environment overrides |
+| `cuenv exec` — run a command in the resolved environment | Stable | |
+| Secrets: env vars, custom CLI, 1Password, Infisical | Stable | Resolved at runtime, redacted from output |
+| Secrets: AWS, GCP, Vault | Preview | Defined in the schema; runtime resolvers not registered yet |
+| Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
+| Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
+| Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
+| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Partial | Schema-visible; not fully enforced yet |
+| Shell integration & directory hooks | Stable | Auto-load on `cd`, with an approval gate (`cuenv allow`) |
+| CI: GitHub Actions generation (`cuenv sync ci`) | Stable | |
+| CI: run pipelines locally (`cuenv ci`) | Stable | |
+| CI: contributors (auto-injected setup tasks) | Stable | |
+| CI: Buildkite export | Partial | |
+| CI: GitLab | Preview | `cuenv sync ci` rejects it until an emitter exists |
+| Formatting (`cuenv fmt`) | Stable | rust, nix, go, cue |
+| Code generation (`cuenv sync codegen`) | Partial | Generates files; not all file types fully enforced |
+| Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Partial | From `.rules.cue` via `cuenv sync` |
+| Multi-source tools (`cuenv tools`) | Stable | Nix, GitHub releases, Rustup, URL, OCI |
+| Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
+| VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
+| Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
+| Runtimes: OCI binaries, Dagger | Partial | |
+| Runtime: container | Preview | |
+| Container image build (`cuenv build`) | Preview | Lists configured images; build backend not implemented |
+| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Session state works; task/image dependencies not yet |
+| Changesets (`cuenv changeset`) | Stable | |
+| Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
+
 ## A complete example
 
 Here is a small project — a typed environment with a runtime secret, plus a few
@@ -143,45 +181,6 @@ many other constraints work the same way.
 New to CUE? The [CUE site](https://cuelang.org) is the best starting point; you
 only need the basics to be productive with cuenv.
 
-## What you can do today
-
-cuenv covers a lot of surface, and not all of it is equally finished. This is an
-honest map; the [schema status page](https://cuenv.dev/reference/schema/status/)
-is the authoritative source for what's wired up.
-
-**Typed environments.** Constrain values with enums, bounds, regexes, and
-defaults. Interpolate between variables. Define per-environment overrides and
-select them with `-e production`.
-
-**Runtime secrets.** Secrets are resolved when a command runs, kept out of
-`env.cue` and generated files, and redacted from output. Resolvers that work
-today: environment variables, any CLI via `#ExecSecret`, 1Password
-(`#OnePasswordRef`), Infisical (`#InfisicalSecret`), and AWS Secrets Manager
-(`#AwsSecret`). `#GcpSecret` and `#VaultSecret` exist in the schema but their
-runtime resolvers aren't registered yet — treat them as future work.
-
-**Tasks.** Object keys in a `#TaskGroup` run in parallel; arrays in a
-`#TaskSequence` run in order; `dependsOn` uses CUE references so a typo is a
-compile error, not a runtime surprise. Tasks support CLI parameters, output
-references between tasks, and opt-in content-addressed caching (`cache.mode`).
-`timeout`, `retry`, `continueOnError`, and group `maxConcurrency` are in the
-schema but not yet fully enforced.
-
-**Shell integration & hooks.** `cuenv shell init <shell>` loads a project's
-environment when you `cd` into it, direnv-style. Hooks run in the background
-behind an approval gate (`cuenv allow`) so a freshly cloned repo can't run code
-without your say-so.
-
-**CI generation.** `cuenv sync ci` turns your pipelines into GitHub Actions
-workflows, reusing the same task graph. GitHub is the solid path today;
-Buildkite export is partial, and GitLab is schema-only (sync rejects it until an
-emitter exists).
-
-**Also in progress.** Multi-source tool management (Nix, GitHub releases, OCI,
-URLs), code generation, `.gitignore`/`CODEOWNERS` generation from `.rules.cue`,
-release management with changesets, long-running services, and container/Dagger
-task runtimes. Check the schema status page before relying on any of these.
-
 ## Install
 
 ```bash
@@ -219,7 +218,7 @@ verbosity. Full details live in the [CLI reference](https://cuenv.dev/reference/
 | CUE evaluation engine         | Solid — fast evaluation through the Go bridge                    |
 | Environments & `exec`         | Solid                                                            |
 | Tasks (`task`)                | Solid for groups, sequences, deps, params, output refs, caching  |
-| Secrets                       | env / exec / 1Password / Infisical / AWS work; GCP and Vault are schema-only |
+| Secrets                       | env / exec / 1Password / Infisical / AWS / GCP work; Vault is schema-only |
 | Shell integration & hooks     | Solid                                                            |
 | CI generation                 | GitHub works; Buildkite partial; GitLab schema-only              |
 | Tools, codegen, rules, release| In progress — see the schema status page                         |

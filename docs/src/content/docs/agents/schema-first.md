@@ -20,7 +20,7 @@ allowances.
 ## Do not generate stale examples
 
 - Use `schema.#ExecSecret` for custom command secrets, not `schema.#Secret & { command: ... }`.
-- Use `schema.#AwsSecret` for AWS Secrets Manager. Use `schema.#GcpSecret` and `schema.#VaultSecret` only with a status note that runtime resolvers are not registered by default.
+- Use `schema.#AwsSecret` for AWS Secrets Manager and `schema.#GcpSecret` for Google Cloud Secret Manager. Use `schema.#VaultSecret` only with a status note that its runtime resolver is not registered by default.
 - Use `cuenv env print --output json`, not `--output-format`.
 - Use `cuenv sync ci`, not `cuenv ci --generate`.
 - Do not recommend `cuenv sync ignore` or `cuenv sync codeowners`; rules are handled through the default sync provider and `.rules.cue` schemas.

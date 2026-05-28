@@ -12,9 +12,10 @@ messages:
       3. For 1Password references, use: schema.#OnePasswordRef & { ref: "op://vault/item/field" }
       4. For host environment passthrough, use: schema.#EnvPassthrough & { name: "HOST_VAR" }
       5. For AWS Secrets Manager, use: schema.#AwsSecret & { secretId: "secret/name" }
-      6. Do not invent legacy provider type names. GCP and Vault secret schemas exist, but their runtime resolvers are not registered by default.
-      7. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
-      8. Output only CUE code, with no Markdown fences or explanations.
+      6. For Google Cloud Secret Manager, use: schema.#GcpSecret & { project: "my-gcp-project", secret: "secret-name" }
+      7. Do not invent legacy provider type names. The Vault secret schema exists, but its runtime resolver is not registered by default.
+      8. Do not use placeholder shell commands such as `sh`, `echo`, or `printenv` for secrets; use the provider command named in the requirement.
+      9. Output only CUE code, with no Markdown fences or explanations.
 
       Example output format:
       ```cue
@@ -62,6 +63,14 @@ testData:
         DATABASE_PASSWORD: schema.#AwsSecret & {
           secretId: "prod/database"
           jsonKey: "password"
+        }
+      }
+  - requirements: "Production app with API_TOKEN from Google Cloud Secret Manager project my-gcp-project secret api-token"
+    expected: |
+      env: schema.#Env & {
+        API_TOKEN: schema.#GcpSecret & {
+          project: "my-gcp-project"
+          secret: "api-token"
         }
       }
   - requirements: "Simple app with LOG_LEVEL that must be debug, info, warn, or error"

@@ -1,18 +1,15 @@
 //! Infisical REST API secret resolver.
 
 use async_trait::async_trait;
+use cuenv_secrets::http::{build_client, env_var, normalize_api_url};
 use cuenv_secrets::{SecretError, SecretResolver, SecretSpec};
 use reqwest::{Client, StatusCode, Url, header};
 use serde::{Deserialize, Serialize};
-use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
 const DEFAULT_API_URL: &str = "https://us.infisical.com";
 const TOKEN_REFRESH_SKEW_SECONDS: u64 = 60;
-
-static RUSTLS_PROVIDER_INSTALL: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// Configuration for resolving a single Infisical secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,7 +124,7 @@ impl InfisicalResolver {
     /// Returns an error if the HTTP client cannot be initialized.
     pub fn new() -> Result<Self, SecretError> {
         Ok(Self {
-            client: build_client()?,
+            client: build_client("infisical")?,
             cached_token: Mutex::new(None),
         })
     }
@@ -389,64 +386,6 @@ struct SecretResponse {
     secret_value: String,
 }
 
-fn build_client() -> Result<Client, SecretError> {
-    ensure_rustls_crypto_provider()?;
-
-    let primary = catch_unwind(AssertUnwindSafe(|| {
-        Client::builder().user_agent("cuenv").build()
-    }));
-
-    match primary {
-        Ok(Ok(client)) => Ok(client),
-        Ok(Err(primary_err)) => Client::builder()
-            .user_agent("cuenv")
-            .no_proxy()
-            .build()
-            .map_err(|fallback_err| {
-                infisical_error(
-                    "infisical",
-                    format!(
-                        "Failed to create Infisical HTTP client: primary={primary_err}; fallback={fallback_err}"
-                    ),
-                )
-            }),
-        Err(_) => Client::builder()
-            .user_agent("cuenv")
-            .no_proxy()
-            .build()
-            .map_err(|fallback_err| {
-                infisical_error(
-                    "infisical",
-                    format!(
-                        "Failed to create Infisical HTTP client after system proxy discovery panicked: fallback={fallback_err}"
-                    ),
-                )
-            }),
-    }
-}
-
-fn ensure_rustls_crypto_provider() -> Result<(), SecretError> {
-    let result = RUSTLS_PROVIDER_INSTALL.get_or_init(|| {
-        if rustls::crypto::CryptoProvider::get_default().is_some() {
-            return Ok(());
-        }
-        if rustls::crypto::ring::default_provider()
-            .install_default()
-            .is_ok()
-        {
-            return Ok(());
-        }
-        if rustls::crypto::CryptoProvider::get_default().is_some() {
-            return Ok(());
-        }
-        Err("Failed to install rustls crypto provider for Infisical HTTP client".to_string())
-    });
-
-    result
-        .clone()
-        .map_err(|message| infisical_error("infisical", message))
-}
-
 fn secret_url(config: &InfisicalConfig) -> Result<Url, SecretError> {
     let mut url = endpoint_url(&config.api_url(), "/api/v4/secrets", &config.secret_name)?;
     url.path_segments_mut()
@@ -491,17 +430,6 @@ fn endpoint_url(api_url: &str, path: &str, name: &str) -> Result<Url, SecretErro
 fn token_expiry(expires_in: u64) -> Instant {
     let refresh_after = expires_in.saturating_sub(TOKEN_REFRESH_SKEW_SECONDS);
     Instant::now() + Duration::from_secs(refresh_after)
-}
-
-fn normalize_api_url(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_string()
-}
-
-fn env_var(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn default_secret_path() -> String {

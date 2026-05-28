@@ -31,7 +31,8 @@ Generation rules:
 - Use `schema.#OnePasswordRef` for 1Password references.
 - Use `schema.#InfisicalSecret` for Infisical REST API references.
 - Use `schema.#AwsSecret` for AWS Secrets Manager references.
-- Treat `schema.#GcpSecret` and `schema.#VaultSecret` as schema-only unless the current matrix changes.
+- Use `schema.#GcpSecret` for Google Cloud Secret Manager references.
+- Treat `schema.#VaultSecret` as schema-only unless the current matrix changes.
 - Do not generate `schema.#Secret & { command: ... }`, `schema.#AWSSecretRef`, or `schema.#VaultRef`.
 - Do not confuse task `#ScriptShell` with shell command schemas in `schema/shell.cue`.
 
