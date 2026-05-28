@@ -32,4 +32,13 @@ images: {
 		platform: ["linux/amd64", "linux/arm64"]
 		description: "Background worker image"
 	}
+
+	// Nix-native image: built from a flake output instead of a Dockerfile.
+	tools: schema.#ContainerImage & {
+		installable: ".#images.tools"
+		tags: ["latest"]
+		registry:    "ghcr.io/myorg"
+		repository:  "myorg/tools"
+		description: "Nix-built tools image"
+	}
 }
