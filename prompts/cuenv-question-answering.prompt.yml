@@ -17,16 +17,16 @@ messages:
       - Task dependencies use `dependsOn` with CUE references to other tasks or images, for example `dependsOn: [test]`.
       - `cuenv exec` runs an arbitrary command with the validated cuenv environment and resolved secrets.
       - `cuenv task` runs named CUE-defined tasks with dependencies, parallel execution, and content-aware caching.
-      - Secrets are resolved at runtime and redacted from logs. `schema.#ExecSecret` and `schema.#OnePasswordRef` are implemented. AWS, GCP, and Vault secret schema shapes exist, but their runtime resolvers are not registered by default.
+      - Secrets are resolved at runtime and redacted from logs. `schema.#ExecSecret`, `schema.#OnePasswordRef`, `schema.#InfisicalSecret`, `schema.#AwsSecret`, and `schema.#GcpSecret` are implemented. The Vault secret schema shape exists, but its runtime resolver is not registered by default.
       - GitHub Actions workflow generation requires `ci.providers: ["github"]` and is generated with `cuenv sync ci`.
-      - `schema.#ContainerImage` exists, but `cuenv build` currently validates and lists image definitions; image build backends are not complete.
+      - `schema.#ContainerImage` exists, and `cuenv build` lists image definitions and builds selected images with the local Docker CLI. Dagger execution and downstream image output-reference resolution are not complete.
   - role: user
     content: "{{question}}"
 testData:
   - question: "How do I run tasks in parallel with cuenv?"
     expected: "Use object syntax with named keys in a task group - each key runs in parallel. Arrays run sequentially."
   - question: "How are secrets handled in cuenv?"
-    expected: "Secrets are resolved at runtime and redacted. Exec secrets and 1Password are implemented; AWS, GCP, and Vault have schema shapes but are not registered by default."
+    expected: "Secrets are resolved at runtime and redacted. Exec, 1Password, Infisical, AWS, and GCP secrets are implemented; Vault has a schema shape but is not registered by default."
   - question: "What is the difference between cuenv exec and cuenv task?"
     expected: "cuenv exec runs any command with validated environment and secrets. cuenv task runs named tasks defined in CUE with dependencies, parallelism, and caching."
   - question: "How do I define task dependencies in cuenv?"
@@ -36,7 +36,7 @@ testData:
   - question: "How do I generate GitHub Actions workflows?"
     expected: "Configure ci.providers with github and run cuenv sync ci."
   - question: "Can cuenv build container images from schema.#ContainerImage?"
-    expected: "The schema exists, but cuenv build currently validates and lists image definitions; image build backends are not complete."
+    expected: "The schema exists, and cuenv build lists image definitions and builds selected images with the local Docker CLI. Dagger execution and downstream image output-reference resolution are not complete."
   - question: "How should I run an existing scripts/release.sh file from a cuenv task?"
     expected: "Use a script task with CUE embed: add file-level @extern(embed), set script to _ @embed(file=scripts/release.sh,type=text), set scriptShell, and include scripts/release.sh in inputs."
 evaluators:

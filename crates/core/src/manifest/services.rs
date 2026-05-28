@@ -190,12 +190,17 @@ pub struct ContainerImage {
     /// Image digest output — resolved at runtime after build.
     pub digest: ImageOutputRef,
 
-    /// Build context directory (required).
+    /// Build context directory (Dockerfile images). Mutually exclusive with `installable`.
+    #[serde(default)]
     pub context: String,
 
     /// Dockerfile path relative to context.
     #[serde(default = "default_dockerfile")]
     pub dockerfile: String,
+
+    /// Nix flake installable (Nix-native images). Mutually exclusive with `context`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub installable: Option<String>,
 
     /// Build arguments (values may be literal strings or image output refs).
     #[serde(
