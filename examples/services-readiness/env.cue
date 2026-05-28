@@ -16,7 +16,7 @@ tasks: {
 services: {
 	port: schema.#Service & {
 		dependsOn: [tasks.prepare]
-		entrypoint: {
+		entrypoint: schema.#Command & {
 			command: "python3"
 			args: ["-c", "import socket, time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('127.0.0.1', 18080)); s.listen(1); time.sleep(3600)"]
 		}
@@ -28,7 +28,7 @@ services: {
 	}
 
 	http: schema.#Service & {
-		entrypoint: {
+		entrypoint: schema.#Command & {
 			command: "python3"
 			args: ["-m", "http.server", "18081", "--bind", "127.0.0.1"]
 		}
@@ -40,7 +40,7 @@ services: {
 	}
 
 	log: schema.#Service & {
-		entrypoint: {
+		entrypoint: schema.#Command & {
 			command: "sh"
 			args: ["-c", "echo 'worker ready'; while :; do sleep 60; done"]
 		}
@@ -57,7 +57,7 @@ services: {
 	}
 
 	command: schema.#Service & {
-		entrypoint: {
+		entrypoint: schema.#Command & {
 			command: "sh"
 			args: ["-c", "touch .cuenv-command-ready; while :; do sleep 60; done"]
 		}
@@ -70,7 +70,7 @@ services: {
 	}
 
 	delay: schema.#Service & {
-		entrypoint: {
+		entrypoint: schema.#Command & {
 			command: "sh"
 			args: ["-c", "while :; do sleep 60; done"]
 		}
