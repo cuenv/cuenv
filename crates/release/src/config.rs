@@ -69,6 +69,12 @@ impl fmt::Display for TagType {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReleaseConfig {
+    /// Binary name for distribution.
+    pub binary: Option<String>,
+    /// Build targets for binary distribution.
+    pub targets: Vec<String>,
+    /// Distribution backends configuration.
+    pub backends: Option<ReleaseBackendsConfig>,
     /// Git-related release settings.
     pub git: ReleaseGitConfig,
     /// Package grouping configuration.
@@ -136,9 +142,7 @@ impl ReleasePackagesConfig {
     /// Check if a package is in a fixed group.
     #[must_use]
     pub fn is_in_fixed_group(&self, package: &str) -> bool {
-        self.fixed
-            .iter()
-            .any(|group| group.contains(&package.to_string()))
+        self.get_fixed_group(package).is_some()
     }
 
     /// Get the fixed group containing a package, if any.
@@ -146,15 +150,13 @@ impl ReleasePackagesConfig {
     pub fn get_fixed_group(&self, package: &str) -> Option<&Vec<String>> {
         self.fixed
             .iter()
-            .find(|group| group.contains(&package.to_string()))
+            .find(|group| group.iter().any(|member| member == package))
     }
 
     /// Check if a package is in a linked group.
     #[must_use]
     pub fn is_in_linked_group(&self, package: &str) -> bool {
-        self.linked
-            .iter()
-            .any(|group| group.contains(&package.to_string()))
+        self.get_linked_group(package).is_some()
     }
 
     /// Get the linked group containing a package, if any.
@@ -162,7 +164,106 @@ impl ReleasePackagesConfig {
     pub fn get_linked_group(&self, package: &str) -> Option<&Vec<String>> {
         self.linked
             .iter()
-            .find(|group| group.contains(&package.to_string()))
+            .find(|group| group.iter().any(|member| member == package))
+    }
+}
+
+/// Distribution backends configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReleaseBackendsConfig {
+    /// GitHub Releases backend.
+    pub github: Option<GitHubBackendConfig>,
+    /// Homebrew tap backend.
+    pub homebrew: Option<HomebrewBackendConfig>,
+    /// crates.io publishing backend.
+    pub crates: Option<CratesBackendConfig>,
+    /// CUE registry publishing backend.
+    pub cue: Option<CueBackendConfig>,
+}
+
+/// GitHub Releases backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitHubBackendConfig {
+    /// Repository in owner/repo format.
+    pub repo: Option<String>,
+    /// Whether to upload release assets.
+    pub assets: bool,
+    /// Whether to create the release as a draft.
+    pub draft: bool,
+}
+
+impl Default for GitHubBackendConfig {
+    fn default() -> Self {
+        Self {
+            repo: None,
+            assets: true,
+            draft: false,
+        }
+    }
+}
+
+/// Homebrew tap backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HomebrewBackendConfig {
+    /// Tap repository in owner/repo format.
+    pub tap: String,
+    /// Formula name.
+    pub formula: Option<String>,
+    /// Token environment variable name.
+    #[serde(rename = "tokenEnv")]
+    pub token_env: String,
+}
+
+impl Default for HomebrewBackendConfig {
+    fn default() -> Self {
+        Self {
+            tap: String::new(),
+            formula: None,
+            token_env: "HOMEBREW_TAP_TOKEN".to_string(),
+        }
+    }
+}
+
+/// crates.io backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CratesBackendConfig {
+    /// Token environment variable name.
+    #[serde(rename = "tokenEnv")]
+    pub token_env: String,
+    /// Publish packages in dependency order.
+    pub ordered: bool,
+}
+
+impl Default for CratesBackendConfig {
+    fn default() -> Self {
+        Self {
+            token_env: "CARGO_REGISTRY_TOKEN".to_string(),
+            ordered: true,
+        }
+    }
+}
+
+/// CUE registry backend configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CueBackendConfig {
+    /// Module path.
+    pub module: Option<String>,
+    /// Token environment variable name.
+    #[serde(rename = "tokenEnv")]
+    pub token_env: String,
+}
+
+impl Default for CueBackendConfig {
+    fn default() -> Self {
+        Self {
+            module: None,
+            token_env: "CUE_REGISTRY_TOKEN".to_string(),
+        }
     }
 }
 
@@ -177,6 +278,8 @@ pub struct ChangelogConfig {
     pub per_package: bool,
     /// Whether to generate a root changelog for the entire workspace.
     pub workspace: bool,
+    /// Categories for organizing changelog entries.
+    pub categories: Vec<ChangelogCategory>,
 }
 
 impl Default for ChangelogConfig {
@@ -185,8 +288,18 @@ impl Default for ChangelogConfig {
             path: "CHANGELOG.md".to_string(),
             per_package: true,
             workspace: true,
+            categories: Vec::new(),
         }
     }
+}
+
+/// Changelog category configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChangelogCategory {
+    /// Category title.
+    pub title: String,
+    /// Changeset types included in this category.
+    pub types: Vec<String>,
 }
 
 #[cfg(test)]
@@ -267,6 +380,7 @@ mod tests {
         assert_eq!(config.path, "CHANGELOG.md");
         assert!(config.per_package);
         assert!(config.workspace);
+        assert!(config.categories.is_empty());
     }
 
     #[test]
