@@ -39,7 +39,10 @@ impl AwsSecretConfig {
 
     fn validate(&self, name: &str) -> Result<(), SecretError> {
         if self.secret_id.trim().is_empty() {
-            return Err(aws_error(name, "AWS secretId cannot be empty"));
+            return Err(SecretError::resolution_failed(
+                name,
+                "AWS secretId cannot be empty",
+            ));
         }
         Ok(())
     }
@@ -62,7 +65,7 @@ impl AwsSecretsManagerResolver {
 
     fn parse_config(name: &str, spec: &SecretSpec) -> Result<AwsSecretConfig, SecretError> {
         let config: AwsSecretConfig = serde_json::from_str(&spec.source).map_err(|e| {
-            aws_error(
+            SecretError::resolution_failed(
                 name,
                 format!("AWS resolver requires structured config: {e}"),
             )
@@ -91,24 +94,29 @@ impl AwsSecretsManagerResolver {
         args
     }
 
+    #[tracing::instrument(name = "aws_secrets_get", level = "debug", skip(config), fields(secret_id = %config.secret_id))]
     async fn execute_aws(name: &str, config: &AwsSecretConfig) -> Result<String, SecretError> {
+        tracing::debug!("reading secret from AWS Secrets Manager");
         let output = Command::new("aws")
             .args(Self::args(config))
             .env("AWS_PAGER", "")
             .output()
             .await
-            .map_err(|e| aws_error(name, format!("Failed to execute AWS CLI: {e}")))?;
+            .map_err(|e| {
+                SecretError::resolution_failed(name, format!("Failed to execute AWS CLI: {e}"))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(aws_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 format!("AWS Secrets Manager read failed: {stderr}"),
             ));
         }
 
-        String::from_utf8(output.stdout)
-            .map_err(|e| aws_error(name, format!("AWS CLI returned invalid UTF-8: {e}")))
+        String::from_utf8(output.stdout).map_err(|e| {
+            SecretError::resolution_failed(name, format!("AWS CLI returned invalid UTF-8: {e}"))
+        })
     }
 
     fn extract_secret(
@@ -116,17 +124,24 @@ impl AwsSecretsManagerResolver {
         response: &str,
         config: &AwsSecretConfig,
     ) -> Result<String, SecretError> {
-        let body: GetSecretValueResponse = serde_json::from_str(response)
-            .map_err(|e| aws_error(name, format!("Failed to parse AWS CLI response: {e}")))?;
+        let body: GetSecretValueResponse = serde_json::from_str(response).map_err(|e| {
+            SecretError::resolution_failed(name, format!("Failed to parse AWS CLI response: {e}"))
+        })?;
 
-        let secret = body
-            .secret_string
-            .or(body.secret_binary)
-            .ok_or_else(|| aws_error(name, "AWS response did not include a secret value"))?;
-
-        match config.json_key.as_deref() {
-            Some(key) => extract_json_key(name, &secret, key),
-            None => Ok(secret),
+        // `jsonKey` extraction only makes sense for a textual `SecretString`.
+        // `SecretBinary` is returned as the CLI's base64 string as-is.
+        match (body.secret_string, body.secret_binary, config.json_key.as_deref()) {
+            (Some(secret), _, Some(key)) => extract_json_key(name, &secret, key),
+            (Some(secret), _, None) => Ok(secret),
+            (None, Some(_), Some(_)) => Err(SecretError::resolution_failed(
+                name,
+                "AWS jsonKey requires a SecretString, but the secret only has a SecretBinary value",
+            )),
+            (None, Some(binary), None) => Ok(binary),
+            (None, None, _) => Err(SecretError::resolution_failed(
+                name,
+                "AWS response did not include a secret value",
+            )),
         }
     }
 }
@@ -152,20 +167,19 @@ struct GetSecretValueResponse {
 }
 
 fn extract_json_key(name: &str, secret: &str, key: &str) -> Result<String, SecretError> {
-    let value: serde_json::Value = serde_json::from_str(secret)
-        .map_err(|e| aws_error(name, format!("AWS SecretString is not valid JSON: {e}")))?;
+    let value: serde_json::Value = serde_json::from_str(secret).map_err(|e| {
+        SecretError::resolution_failed(name, format!("AWS SecretString is not valid JSON: {e}"))
+    })?;
 
-    let extracted = value
-        .get(key)
-        .ok_or_else(|| {
-            aws_error(
-                name,
-                format!("AWS SecretString JSON key '{key}' was not found"),
-            )
-        })?;
+    let extracted = value.get(key).ok_or_else(|| {
+        SecretError::resolution_failed(
+            name,
+            format!("AWS SecretString JSON key '{key}' was not found"),
+        )
+    })?;
 
     if extracted.is_null() {
-        return Err(aws_error(
+        return Err(SecretError::resolution_failed(
             name,
             format!("AWS SecretString JSON key '{key}' is null"),
         ));
@@ -174,13 +188,6 @@ fn extract_json_key(name: &str, secret: &str, key: &str) -> Result<String, Secre
     Ok(extracted
         .as_str()
         .map_or_else(|| extracted.to_string(), ToString::to_string))
-}
-
-fn aws_error(name: impl Into<String>, message: impl Into<String>) -> SecretError {
-    SecretError::ResolutionFailed {
-        name: name.into(),
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]
