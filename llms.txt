@@ -16,7 +16,7 @@ cuenv exec -e production -- ./deploy.sh
 ```
 
 - Environment variables are validated against CUE constraints
-- Secrets are resolved at runtime. Exec, 1Password, and Infisical are implemented; AWS, GCP, and Vault have schema definitions but are not registered by default.
+- Secrets are resolved at runtime. Exec, 1Password, Infisical, and GCP Secret Manager are implemented; AWS and Vault have schema definitions but are not registered by default.
 - Secrets are never written to disk or exported to shell history
 
 ### `cuenv task <name>`
@@ -132,7 +132,7 @@ env: {
 }
 ```
 
-Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `schema.#OnePasswordRef` for 1Password references, and `schema.#InfisicalSecret` for Infisical REST API references. `schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
+Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `schema.#OnePasswordRef` for 1Password references, `schema.#InfisicalSecret` for Infisical REST API references, and `schema.#GcpSecret` for Google Cloud Secret Manager references. `schema.#AwsSecret` and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
 
 ## Key Concepts
 

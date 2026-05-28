@@ -11,9 +11,10 @@ The current user-facing secret types are:
 
 - `schema.#OnePasswordRef` for 1Password references.
 - `schema.#InfisicalSecret` for Infisical REST API references.
+- `schema.#GcpSecret` for Google Cloud Secret Manager references.
 - `schema.#ExecSecret` for custom command-backed providers.
 
-`schema.#AwsSecret`, `schema.#GcpSecret`, and `schema.#VaultSecret` are present
+`schema.#AwsSecret` and `schema.#VaultSecret` are present
 in the schema, but their default runtime resolvers are not registered yet. Treat
 them as schema-visible future work until the schema status page says otherwise.
 
@@ -105,6 +106,48 @@ cuenv env print
 instance. A secret can also set `apiUrl` directly. `cuenv secrets setup
 infisical` performs an authentication-environment preflight; it does not
 download files or contact the API.
+
+## Google Cloud Secret Manager
+
+Use `schema.#GcpSecret` when the secret already lives in Google Cloud Secret
+Manager:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    env: {
+        DATABASE_URL: schema.#GcpSecret & {
+            project: "my-gcp-project"
+            secret:  "database-url"
+        }
+
+        API_KEY: schema.#GcpSecret & {
+            project: "my-gcp-project"
+            secret:  "api-key"
+            version: "5"
+        }
+    }
+}
+```
+
+Authenticate with Application Default Credentials before loading the
+environment:
+
+```bash
+gcloud auth application-default login
+cuenv env print
+```
+
+For CI or service accounts, set `GOOGLE_APPLICATION_CREDENTIALS` to the service
+account JSON file path and ensure `gcloud` is available. The resolver asks
+`gcloud auth application-default print-access-token` for an access token and
+then reads Secret Manager over HTTPS. Tests or advanced setups can provide an
+already-minted `GOOGLE_OAUTH_ACCESS_TOKEN` instead.
 
 ## Custom Command Secrets
 
