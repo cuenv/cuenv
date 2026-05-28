@@ -26,6 +26,8 @@ pub struct GitHubReleaseConfig {
     pub draft: bool,
     /// Whether to mark the release as a prerelease
     pub prerelease: bool,
+    /// Prefix to use when formatting release tag names
+    pub tag_prefix: String,
 }
 
 impl GitHubReleaseConfig {
@@ -42,6 +44,7 @@ impl GitHubReleaseConfig {
             token: token.into(),
             draft: false,
             prerelease: false,
+            tag_prefix: "v".to_string(),
         }
     }
 
@@ -56,6 +59,13 @@ impl GitHubReleaseConfig {
     #[must_use]
     pub const fn with_prerelease(mut self, prerelease: bool) -> Self {
         self.prerelease = prerelease;
+        self
+    }
+
+    /// Sets the tag prefix.
+    #[must_use]
+    pub fn with_tag_prefix(mut self, tag_prefix: impl Into<String>) -> Self {
+        self.tag_prefix = tag_prefix.into();
         self
     }
 
@@ -135,7 +145,7 @@ impl GitHubReleaseBackend {
 
     /// Creates a new release.
     async fn create_release(&self, client: &Octocrab, ctx: &BackendContext) -> Result<u64> {
-        let tag = format!("v{}", ctx.version);
+        let tag = format!("{}{}", self.config.tag_prefix, ctx.version);
         let repos = client.repos(&self.config.owner, &self.config.repo);
         let releases = repos.releases();
 

@@ -1,7 +1,8 @@
 //! Release preparation command orchestration.
 
 use cuenv_release::{
-    BumpType, CargoManifest, CommitAnalyzer, CommitParser, ConventionalCommit, TagType, Version,
+    BumpType, CargoManifest, ChangelogGenerator, Changeset, CommitAnalyzer, CommitParser,
+    ConventionalCommit, PackageChange, ReleaseConfig, Version, VersionCalculator,
 };
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -41,9 +42,11 @@ struct ReleasePrepareAnalysis {
     root: PathBuf,
     commits: Vec<ConventionalCommit>,
     manifest: CargoManifest,
+    release_config: ReleaseConfig,
     package_paths: HashMap<String, PathBuf>,
     new_versions: HashMap<String, Version>,
     bump_infos: Vec<PackageBumpInfo>,
+    changelog_changesets: Vec<Changeset>,
 }
 
 enum ReleasePreparePlan {
@@ -96,9 +99,15 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
     let root = Path::new(&opts.path).canonicalize().map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to resolve path '{}': {e}", &opts.path))
     })?;
+    let release_config = super::load_release_config(&root)?;
 
-    let commits = CommitParser::parse_since_tag(&root, opts.since.as_deref(), "", TagType::Semver)
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
+    let commits = CommitParser::parse_since_tag(
+        &root,
+        opts.since.as_deref(),
+        &release_config.git.tag_prefix,
+        release_config.git.tag_type,
+    )
+    .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
         return Ok(ReleasePreparePlan::Nothing(
@@ -125,49 +134,52 @@ fn analyze_release_prepare(opts: &ReleasePrepareOptions) -> cuenv_core::Result<R
         ));
     }
 
-    let max_bump = package_bumps
-        .values()
-        .filter(|b| **b != BumpType::None)
-        .max()
-        .copied()
-        .unwrap_or(BumpType::None);
-
-    if max_bump == BumpType::None {
+    if package_bumps.values().all(|b| *b == BumpType::None) {
         return Ok(ReleasePreparePlan::Nothing(
             "No version-bumping changes found. Nothing to release.".to_string(),
         ));
     }
 
-    let max_current = package_versions
-        .values()
-        .max()
-        .cloned()
-        .ok_or_else(|| cuenv_core::Error::configuration("No packages found in workspace"))?;
-    let adjusted_bump = max_current.adjusted_bump_type(max_bump);
-    let new_version = max_current.bump(adjusted_bump);
+    let calculator =
+        VersionCalculator::new(package_versions.clone(), release_config.packages.clone());
+    let new_versions = calculator.calculate(&package_bumps);
 
     let mut bump_infos = Vec::new();
-    for (pkg_name, current) in &package_versions {
+    for (pkg_name, new_version) in &new_versions {
+        let current = package_versions.get(pkg_name).ok_or_else(|| {
+            cuenv_core::Error::configuration(format!("No version found for package: {pkg_name}"))
+        })?;
+        let bump_type = package_bumps
+            .get(pkg_name)
+            .copied()
+            .unwrap_or(BumpType::None)
+            .to_string();
         bump_infos.push(PackageBumpInfo {
             name: pkg_name.clone(),
             current_version: current.to_string(),
             new_version: new_version.to_string(),
-            bump_type: adjusted_bump.to_string(),
+            bump_type,
         });
     }
-    let new_versions: HashMap<String, Version> = package_versions
-        .keys()
-        .map(|k| (k.clone(), new_version.clone()))
-        .collect();
+    let changelog_changesets = vec![Changeset::new(
+        format!("Release from {} commits", commits.len()),
+        package_bumps
+            .iter()
+            .map(|(name, bump)| PackageChange::new(name, *bump))
+            .collect(),
+        Some(CommitParser::summarize(&commits)),
+    )];
 
     Ok(ReleasePreparePlan::Ready(Box::new(
         ReleasePrepareAnalysis {
             root,
             commits,
             manifest,
+            release_config,
             package_paths,
             new_versions,
             bump_infos,
+            changelog_changesets,
         },
     )))
 }
@@ -178,6 +190,11 @@ fn render_release_prepare_summary(analysis: &ReleasePrepareAnalysis) -> String {
     let _ = writeln!(output, "=======================\n");
     let _ = writeln!(output, "Commits analyzed: {}", analysis.commits.len());
     let _ = writeln!(output, "Packages affected: {}\n", analysis.bump_infos.len());
+    let _ = writeln!(
+        output,
+        "Changelog path: {}\n",
+        analysis.release_config.changelog.path
+    );
 
     let _ = writeln!(output, "Version Bumps:");
     let _ = writeln!(output, "{:-<60}", "");
@@ -226,6 +243,62 @@ fn apply_release_prepare_versions(
             .map_err(|e| {
                 cuenv_core::Error::configuration(format!(
                     "Failed to update workspace dependency versions: {e}"
+                ))
+            })?;
+    }
+
+    update_release_prepare_changelogs(analysis, output)?;
+
+    Ok(())
+}
+
+fn update_release_prepare_changelogs(
+    analysis: &ReleasePrepareAnalysis,
+    output: &mut String,
+) -> cuenv_core::Result<()> {
+    let changelog_config = analysis.release_config.changelog.clone();
+    if !changelog_config.workspace && !changelog_config.per_package {
+        return Ok(());
+    }
+
+    let generator = ChangelogGenerator::new(changelog_config);
+    let _ = writeln!(output, "Updating changelogs...");
+
+    if analysis.release_config.changelog.workspace
+        && let Some(entry) = generator
+            .generate_workspace_entry(&analysis.changelog_changesets, &analysis.new_versions)
+    {
+        generator
+            .update_file(
+                &analysis.root.join(&analysis.release_config.changelog.path),
+                &entry,
+            )
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update workspace changelog: {e}"
+                ))
+            })?;
+    }
+
+    if !analysis.release_config.changelog.per_package {
+        return Ok(());
+    }
+
+    for (package, version) in &analysis.new_versions {
+        let Some(package_root) = analysis.package_paths.get(package) else {
+            continue;
+        };
+        let Some(entry) =
+            generator.generate_entries(&analysis.changelog_changesets, package, version)
+        else {
+            continue;
+        };
+        let changelog_path = generator.get_changelog_path(package_root);
+        generator
+            .update_file(&changelog_path, &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update changelog for {package}: {e}"
                 ))
             })?;
     }
