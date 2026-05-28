@@ -16,7 +16,7 @@ cuenv exec -e production -- ./deploy.sh
 ```
 
 - Environment variables are validated against CUE constraints
-- Secrets are resolved at runtime. Exec, 1Password, Infisical, and GCP Secret Manager are implemented; AWS and Vault have schema definitions but are not registered by default.
+- Secrets are resolved at runtime. Exec, 1Password, Infisical, AWS Secrets Manager, and GCP Secret Manager are implemented; Vault has a schema definition but is not registered by default.
 - Secrets are never written to disk or exported to shell history
 
 ### `cuenv task <name>`
@@ -132,12 +132,12 @@ env: {
 }
 ```
 
-Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `schema.#OnePasswordRef` for 1Password references, `schema.#InfisicalSecret` for Infisical REST API references, and `schema.#GcpSecret` for Google Cloud Secret Manager references. `schema.#AwsSecret` and `schema.#VaultSecret` are present in the schema but are not registered by default in the runtime resolver registry.
+Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `schema.#OnePasswordRef` for 1Password references, `schema.#InfisicalSecret` for Infisical REST API references, `schema.#AwsSecret` for AWS Secrets Manager references, and `schema.#GcpSecret` for Google Cloud Secret Manager references. `schema.#VaultSecret` is present in the schema but is not registered by default in the runtime resolver registry.
 
 ## Key Concepts
 
 - **Type Safety**: CUE constraints validate environment variables before execution
-- **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets, `schema.#OnePasswordRef` for 1Password, and `schema.#InfisicalSecret` for Infisical.
+- **Secret Management**: Use `schema.#ExecSecret` for command-backed secrets, `schema.#OnePasswordRef` for 1Password, `schema.#InfisicalSecret` for Infisical, `schema.#AwsSecret` for AWS Secrets Manager, and `schema.#GcpSecret` for Google Cloud Secret Manager.
 - **Parallel Execution**: Object keys in task groups run concurrently
 - **Sequential Execution**: Array elements in task groups run in order
 - **Caching**: Tasks with `cache.mode` and declared inputs/outputs can reuse results by content hash

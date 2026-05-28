@@ -41,11 +41,14 @@ impl CliResolver {
 
         match Self::read_reference(reference).await {
             Ok(secret) => Ok(secret),
-            Err(CliCommandError::NotFound) => Err(resolution_error(name, missing_op_message())),
-            Err(CliCommandError::Failed(details)) => {
-                Err(resolution_error(name, format!("op CLI failed: {details}")))
+            Err(CliCommandError::NotFound) => {
+                Err(SecretError::resolution_failed(name, missing_op_message()))
             }
-            Err(CliCommandError::Other(e)) => Err(resolution_error(
+            Err(CliCommandError::Failed(details)) => Err(SecretError::resolution_failed(
+                name,
+                format!("op CLI failed: {details}"),
+            )),
+            Err(CliCommandError::Other(e)) => Err(SecretError::resolution_failed(
                 name,
                 format!("Failed to execute op CLI: {e}"),
             )),
@@ -65,7 +68,7 @@ impl CliResolver {
         match &*state {
             CliAuthState::Authenticated => return Ok(None),
             CliAuthState::Failed(message) => {
-                return Err(resolution_error(name, message.clone()));
+                return Err(SecretError::resolution_failed(name, message.clone()));
             }
             CliAuthState::Unknown => {}
         }
@@ -173,7 +176,7 @@ fn fail_auth(
     message: String,
 ) -> Result<Option<String>, SecretError> {
     *state = CliAuthState::Failed(message.clone());
-    Err(resolution_error(name, message))
+    Err(SecretError::resolution_failed(name, message))
 }
 
 fn stderr_details(stderr: &[u8]) -> String {
@@ -188,11 +191,4 @@ fn stderr_details(stderr: &[u8]) -> String {
 fn missing_op_message() -> String {
     "1Password CLI not found (`op` command unavailable). Install the 1Password CLI and retry."
         .to_string()
-}
-
-fn resolution_error(name: &str, message: String) -> SecretError {
-    SecretError::ResolutionFailed {
-        name: name.to_string(),
-        message,
-    }
 }

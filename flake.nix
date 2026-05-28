@@ -282,6 +282,14 @@
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
         });
 
+        # Test binaries are built with the lightweight `ci` profile (no LTO,
+        # default codegen-units) so the workspace-wide nextest compile stays
+        # within CI runner memory. The release binary keeps `[profile.release]`.
+        workspaceCiCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
+          cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
+          CARGO_PROFILE = "ci";
+        });
+
         workspaceDocCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // {
           cargoExtraArgs = workspaceDocCargoExtraArgs;
         });
@@ -311,7 +319,9 @@
         });
 
         nextest-check = craneLib.cargoNextest (workspaceCheckArgs // {
+          cargoArtifacts = workspaceCiCargoArtifacts;
           cargoExtraArgs = workspaceAllFeaturesCargoExtraArgs;
+          CARGO_PROFILE = "ci";
         });
 
         doc-test-check = craneLib.cargoDocTest (workspaceDocCheckArgs // {

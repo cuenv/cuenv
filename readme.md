@@ -218,7 +218,7 @@ verbosity. Full details live in the [CLI reference](https://cuenv.dev/reference/
 | CUE evaluation engine         | Solid — fast evaluation through the Go bridge                    |
 | Environments & `exec`         | Solid                                                            |
 | Tasks (`task`)                | Solid for groups, sequences, deps, params, output refs, caching  |
-| Secrets                       | env / exec / 1Password / Infisical / GCP work; AWS and Vault are schema-only |
+| Secrets                       | env / exec / 1Password / Infisical / AWS / GCP work; Vault is schema-only |
 | Shell integration & hooks     | Solid                                                            |
 | CI generation                 | GitHub works; Buildkite partial; GitLab schema-only              |
 | Tools, codegen, rules, release| In progress — see the schema status page                         |

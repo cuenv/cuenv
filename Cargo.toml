@@ -30,6 +30,7 @@ members = [
     "crates/1password",
     "crates/gcp",
     "crates/infisical",
+    "crates/aws",
     # Tool provider crates
     "crates/tools/oci",
     "crates/tools/github",
@@ -79,6 +80,7 @@ cuenv-homebrew = { path = "crates/homebrew", version = "0.43.0" }
 cuenv-1password = { path = "crates/1password", version = "0.43.0" }
 cuenv-gcp = { path = "crates/gcp", version = "0.43.0" }
 cuenv-infisical = { path = "crates/infisical", version = "0.43.0" }
+cuenv-aws = { path = "crates/aws", version = "0.43.0" }
 # Tool provider crates
 cuenv-tools-oci = { path = "crates/tools/oci", version = "0.43.0" }
 cuenv-tools-github = { path = "crates/tools/github", version = "0.43.0" }

@@ -2,7 +2,7 @@ package schema
 
 // Base secret type with resolver
 // Mode is auto-negotiated based on environment variables:
-// - AWS: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY → HTTP, otherwise CLI
+// - AWS: AWS CLI standard credential and region chain
 // - GCP: GOOGLE_APPLICATION_CREDENTIALS → HTTP, otherwise CLI
 // - 1Password: OP_SERVICE_ACCOUNT_TOKEN → HTTP, otherwise CLI
 // - Vault: VAULT_TOKEN + VAULT_ADDR → HTTP, otherwise CLI

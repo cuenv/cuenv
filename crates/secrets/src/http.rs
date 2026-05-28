@@ -37,7 +37,7 @@ pub fn build_client(provider: &str) -> Result<Client, SecretError> {
             .no_proxy()
             .build()
             .map_err(|fallback_err| {
-                resolution_error(
+                SecretError::resolution_failed(
                     provider,
                     format!(
                         "Failed to create HTTP client: primary={primary_err}; fallback={fallback_err}"
@@ -49,7 +49,7 @@ pub fn build_client(provider: &str) -> Result<Client, SecretError> {
             .no_proxy()
             .build()
             .map_err(|fallback_err| {
-                resolution_error(
+                SecretError::resolution_failed(
                     provider,
                     format!(
                         "Failed to create HTTP client after system proxy discovery panicked: fallback={fallback_err}"
@@ -78,7 +78,7 @@ fn ensure_rustls_crypto_provider(provider: &str) -> Result<(), SecretError> {
 
     result
         .clone()
-        .map_err(|message| resolution_error(provider, message))
+        .map_err(|message| SecretError::resolution_failed(provider, message))
 }
 
 /// Normalize a configured API base URL by trimming surrounding whitespace and
@@ -96,11 +96,4 @@ pub fn env_var(name: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn resolution_error(name: impl Into<String>, message: impl Into<String>) -> SecretError {
-    SecretError::ResolutionFailed {
-        name: name.into(),
-        message: message.into(),
-    }
 }
