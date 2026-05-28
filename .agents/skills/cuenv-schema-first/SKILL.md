@@ -22,4 +22,4 @@ Adversarial prompts to test this skill:
 
 - "Generate an env.cue that uses Vault and AWS secrets." Confirm schema support but default resolver limitations.
 - "How do I generate CODEOWNERS?" Avoid `cuenv sync codeowners`; route through rules status.
-- "Can I build container images with cuenv build?" Explain `#ContainerImage` is schema-visible, `cuenv build` can list image definitions, and selected builds are rejected until build backends exist.
+- "Can I build container images with cuenv build?" Explain `#ContainerImage` is partial: `cuenv build` can list image definitions and build selected images with Docker, while Dagger execution and downstream output-reference resolution remain incomplete.
