@@ -94,6 +94,17 @@ pub enum SecretError {
     },
 }
 
+impl SecretError {
+    /// Construct a [`SecretError::ResolutionFailed`] for the named secret.
+    #[must_use]
+    pub fn resolution_failed(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::ResolutionFailed {
+            name: name.into(),
+            message: message.into(),
+        }
+    }
+}
+
 /// Configuration for a secret to resolve
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecretSpec {

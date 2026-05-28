@@ -43,13 +43,22 @@ impl GcpSecretConfig {
 
     fn validate(&self, name: &str) -> Result<(), SecretError> {
         if self.project.trim().is_empty() {
-            return Err(gcp_error(name, "GCP project cannot be empty"));
+            return Err(SecretError::resolution_failed(
+                name,
+                "GCP project cannot be empty",
+            ));
         }
         if self.secret.trim().is_empty() {
-            return Err(gcp_error(name, "GCP secret cannot be empty"));
+            return Err(SecretError::resolution_failed(
+                name,
+                "GCP secret cannot be empty",
+            ));
         }
         if self.version.trim().is_empty() {
-            return Err(gcp_error(name, "GCP secret version cannot be empty"));
+            return Err(SecretError::resolution_failed(
+                name,
+                "GCP secret version cannot be empty",
+            ));
         }
         Ok(())
     }
@@ -95,7 +104,7 @@ impl GcpSecretManagerResolver {
 
     fn parse_config(name: &str, spec: &SecretSpec) -> Result<GcpSecretConfig, SecretError> {
         let config: GcpSecretConfig = serde_json::from_str(&spec.source).map_err(|e| {
-            gcp_error(
+            SecretError::resolution_failed(
                 name,
                 format!("GCP resolver requires structured config: {e}"),
             )
@@ -118,7 +127,7 @@ impl GcpSecretManagerResolver {
         }
 
         let output = command.output().await.map_err(|e| {
-            gcp_error(
+            SecretError::resolution_failed(
                 name,
                 format!(
                     "Failed to run gcloud for Application Default Credentials: {e}. \
@@ -130,7 +139,7 @@ impl GcpSecretManagerResolver {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(gcp_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 format!(
                     "gcloud could not provide an Application Default Credentials token: {}",
@@ -141,7 +150,7 @@ impl GcpSecretManagerResolver {
 
         let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
         if token.is_empty() {
-            return Err(gcp_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 "gcloud returned an empty Application Default Credentials token",
             ));
@@ -161,7 +170,9 @@ impl GcpSecretManagerResolver {
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|e| gcp_error(name, format!("GCP Secret Manager read failed: {e}")))
+            .map_err(|e| {
+                SecretError::resolution_failed(name, format!("GCP Secret Manager read failed: {e}"))
+            })
     }
 
     async fn parse_secret_response(
@@ -170,7 +181,7 @@ impl GcpSecretManagerResolver {
     ) -> Result<String, SecretError> {
         let status = response.status();
         if !status.is_success() {
-            return Err(gcp_error(
+            return Err(SecretError::resolution_failed(
                 name,
                 format!("GCP Secret Manager read failed with HTTP {status}"),
             ));
@@ -180,21 +191,21 @@ impl GcpSecretManagerResolver {
             .json::<AccessSecretVersionResponse>()
             .await
             .map_err(|e| {
-                gcp_error(
+                SecretError::resolution_failed(
                     name,
                     format!("Failed to parse GCP Secret Manager response: {e}"),
                 )
             })?;
 
         let bytes = STANDARD.decode(body.payload.data).map_err(|e| {
-            gcp_error(
+            SecretError::resolution_failed(
                 name,
                 format!("Failed to decode GCP Secret Manager payload: {e}"),
             )
         })?;
 
         String::from_utf8(bytes).map_err(|e| {
-            gcp_error(
+            SecretError::resolution_failed(
                 name,
                 format!("GCP Secret Manager payload is not valid UTF-8: {e}"),
             )
@@ -227,12 +238,15 @@ struct SecretPayload {
 }
 
 fn secret_url(name: &str, config: &GcpSecretConfig) -> Result<Url, SecretError> {
-    let mut url = Url::parse(&format!("{}/v1", config.api_url()))
-        .map_err(|e| gcp_error(name, format!("Invalid GCP Secret Manager API URL: {e}")))?;
+    let mut url = Url::parse(&format!("{}/v1", config.api_url())).map_err(|e| {
+        SecretError::resolution_failed(name, format!("Invalid GCP Secret Manager API URL: {e}"))
+    })?;
     let version_access = format!("{}:access", config.version);
 
     url.path_segments_mut()
-        .map_err(|()| gcp_error(name, "GCP Secret Manager API URL cannot be a base"))?
+        .map_err(|()| {
+            SecretError::resolution_failed(name, "GCP Secret Manager API URL cannot be a base")
+        })?
         .extend([
             "projects",
             &config.project,
@@ -247,13 +261,6 @@ fn secret_url(name: &str, config: &GcpSecretConfig) -> Result<Url, SecretError> 
 
 fn default_version() -> String {
     "latest".to_string()
-}
-
-fn gcp_error(name: impl Into<String>, message: impl Into<String>) -> SecretError {
-    SecretError::ResolutionFailed {
-        name: name.into(),
-        message: message.into(),
-    }
 }
 
 #[cfg(test)]

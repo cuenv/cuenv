@@ -15,9 +15,10 @@ exclude = [
 ]
 
 [features]
-default = ["1password", "infisical", "gcp"]
+default = ["1password", "infisical", "aws", "gcp"]
 1password = ["dep:cuenv-1password"]
 infisical = ["dep:cuenv-infisical"]
+aws = ["dep:cuenv-aws"]
 gcp = ["dep:cuenv-gcp"]
 
 [dependencies]
@@ -36,6 +37,7 @@ futures = "0.3"
 cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true, optional = true }
 cuenv-infisical = { workspace = true, optional = true }
+cuenv-aws = { workspace = true, optional = true }
 cuenv-gcp = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
 cuenv-task-graph = { workspace = true }

@@ -1275,6 +1275,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-aws"
+version = "0.43.0"
+dependencies = [
+ "async-trait",
+ "cuenv-secrets",
+ "serde",
+ "serde_json",
+ "temp-env",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-bitbucket"
 version = "0.43.0"
 dependencies = [
@@ -1392,6 +1406,7 @@ dependencies = [
  "chrono",
  "cucumber",
  "cuenv-1password",
+ "cuenv-aws",
  "cuenv-cas",
  "cuenv-events",
  "cuenv-gcp",
