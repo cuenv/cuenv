@@ -19,7 +19,7 @@ Agents and contributors must use the matrix before generating examples or answer
 
 ## High-risk current gaps
 
-- Secrets: `#ExecSecret`, feature-gated `#OnePasswordRef`, and feature-gated `#InfisicalSecret` are implemented; `#AwsSecret`, `#GcpSecret`, and `#VaultSecret` are schema-only until runtime resolvers are registered.
+- Secrets: `#ExecSecret`, feature-gated `#OnePasswordRef`, feature-gated `#InfisicalSecret`, feature-gated `#AwsSecret`, and feature-gated `#GcpSecret` are implemented; `#VaultSecret` is schema-only until a runtime resolver is registered.
 - Runtime and tools: Nix, devenv, GitHub, Nix, Rustup, URL, and OCI tool sources are implemented; container runtime is not complete. OCI runtime (`#OCIRuntime`) is partial: `cuenv sync lock` resolves digests and per-image `extract` paths into `cuenv.lock`, and the `#OCIActivate` hook (`cuenv runtime oci activate`) extracts those binaries and prepends them to `PATH`.
 - Images: `#ContainerImage` is partially implemented: `cuenv build` lists image definitions and builds selected images with the local Docker CLI. Registry builds are pushed with Docker buildx; Dagger execution and downstream image output-reference resolution remain incomplete.
 - Services: `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` use persisted service session state; service-to-service dependencies are honored and selected service starts include their service deps, but task/image dependencies in `services.*.dependsOn` are rejected until executor integration exists; service docs and runnable fixtures are still partial.
