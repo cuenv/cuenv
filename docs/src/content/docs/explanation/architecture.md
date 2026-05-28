@@ -133,8 +133,9 @@ default panic on the base trait. Affected-task analysis accepts the named
 borrowed `ExternalAffectedResolver`, keeping the generic graph API focused on
 task data instead of encoding resolver ownership in its type parameters.
 Service orchestration uses read-only graph nodes with declared service
-dependency names only. `cuenv up` rejects task and image dependencies until
-task execution and image build backends are wired into service startup.
+dependency names only. `cuenv up` runs task dependencies before service
+startup; image dependencies are recognized but still fail fast until image
+build backends exist.
 When a specific service is selected, `cuenv up` expands the selection with
 transitive service dependencies before building the graph.
 Service readiness log probes borrow their stream selector from manifest state

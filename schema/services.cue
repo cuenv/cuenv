@@ -31,10 +31,10 @@ package schema
 	// Working directory override
 	dir?: string
 
-	// Dependencies. Service references are supported by `cuenv up` and must
-	// become ready before this service starts. Task and image references are
-	// schema-visible for future executor integration, but `cuenv up` rejects
-	// them until it can execute those dependencies.
+	// Dependencies. Service references become ready before this service starts.
+	// Task references run to completion before service startup. Image references
+	// are resolved in the dependency plan, but selected image builds still fail
+	// fast until image execution backends exist.
 	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
 
 	// Labels for discovery via #ServiceMatcher (mirrors #TaskMatcher)
