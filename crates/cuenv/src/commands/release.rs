@@ -13,17 +13,70 @@ mod prepare;
 pub use binaries::{ReleaseBinariesOptions, ReleaseBinariesPhase, execute_release_binaries};
 pub use prepare::{PackageBumpInfo, ReleasePrepareOptions, execute_release_prepare};
 
+use cuengine::ModuleEvalOptions;
 use cuenv_release::{
-    BumpType, CargoManifest, Changeset, ChangesetManager, CommitAnalyzer, CommitParser,
-    PackageChange, PublishPackage, PublishPlan, ReleasePackagesConfig, TagType, VersionCalculator,
+    BumpType, CargoManifest, ChangelogGenerator, Changeset, ChangesetManager, CommitAnalyzer,
+    CommitParser, CratesBackendConfig, CueBackendConfig, PackageChange, PublishPackage,
+    PublishPlan, ReleaseConfig, Version, VersionCalculator,
 };
-use std::collections::HashSet;
+use serde::Deserialize;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
 use toml::Value as TomlValue;
+
+const DEFAULT_RELEASE_PACKAGE: &str = "cuenv";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ProjectReleaseConfig {
+    release: Option<ReleaseConfig>,
+}
+
+fn load_release_config(root: &Path) -> cuenv_core::Result<ReleaseConfig> {
+    let config_dir = match super::env_file::find_env_file(root, DEFAULT_RELEASE_PACKAGE)? {
+        super::env_file::EnvFileStatus::Match(path) => path,
+        super::env_file::EnvFileStatus::Missing => return Ok(ReleaseConfig::default()),
+        super::env_file::EnvFileStatus::PackageMismatch { found_package } => {
+            return Err(cuenv_core::Error::configuration(format!(
+                "env.cue package mismatch for release config: expected '{DEFAULT_RELEASE_PACKAGE}', found '{}'",
+                found_package.unwrap_or_else(|| "unknown".to_string())
+            )));
+        }
+    };
+
+    let module_root = super::env_file::find_cue_module_root(&config_dir).ok_or_else(|| {
+        cuenv_core::Error::configuration(format!(
+            "No CUE module found (looking for cue.mod/) starting from: {}",
+            config_dir.display()
+        ))
+    })?;
+    super::module_version::ensure_compatible_module(&module_root)?;
+
+    let options = ModuleEvalOptions {
+        recursive: false,
+        target_dir: Some(config_dir.to_string_lossy().to_string()),
+        ..Default::default()
+    };
+    let raw = cuengine::evaluate_module(&module_root, DEFAULT_RELEASE_PACKAGE, Some(&options))
+        .map_err(super::convert_engine_error)?;
+
+    let value = raw
+        .instances
+        .get(".")
+        .or_else(|| raw.instances.values().next())
+        .ok_or_else(|| cuenv_core::Error::configuration("No env.cue instance found"))?;
+    release_config_from_value(value)
+}
+
+fn release_config_from_value(value: &serde_json::Value) -> cuenv_core::Result<ReleaseConfig> {
+    ProjectReleaseConfig::deserialize(value)
+        .map_err(|e| cuenv_core::Error::configuration(format!("Invalid release config: {e}")))
+        .map(|project| project.release.unwrap_or_default())
+}
 
 /// Execute the `changeset add` command.
 ///
@@ -291,11 +344,16 @@ pub fn execute_changeset_from_commits(
     since_tag: Option<&str>,
 ) -> cuenv_core::Result<String> {
     let root = Path::new(path);
+    let release_config = load_release_config(root)?;
 
     // Parse conventional commits
-    // TODO: Load tag_prefix and tag_type from project's release config (env.cue)
-    let commits = CommitParser::parse_since_tag(root, since_tag, "", TagType::Semver)
-        .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
+    let commits = CommitParser::parse_since_tag(
+        root,
+        since_tag,
+        &release_config.git.tag_prefix,
+        release_config.git.tag_type,
+    )
+    .map_err(|e| cuenv_core::Error::configuration(format!("Failed to parse commits: {e}")))?;
 
     if commits.is_empty() {
         return Ok("No conventional commits found since last tag.".to_string());
@@ -389,6 +447,7 @@ pub fn execute_release_version(
     let root = Path::new(path);
     let manager = ChangesetManager::new(root);
     let manifest = CargoManifest::new(root);
+    let release_config = load_release_config(root)?;
 
     let changesets = manager
         .list()
@@ -410,9 +469,8 @@ pub fn execute_release_version(
         .get_package_bumps()
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to aggregate bumps: {e}")))?;
 
-    // Calculate new versions - for a workspace with shared versions, all packages share the same version
-    let config = ReleasePackagesConfig::default();
-    let calculator = VersionCalculator::new(current_versions.clone(), config);
+    let calculator =
+        VersionCalculator::new(current_versions.clone(), release_config.packages.clone());
     let new_versions = calculator.calculate(&bumps);
 
     let mut output = String::new();
@@ -453,17 +511,80 @@ pub fn execute_release_version(
                     ))
                 })?;
 
+            update_release_changelogs(
+                root,
+                &manifest,
+                &changesets,
+                &new_versions,
+                &release_config,
+            )?;
+
             // Clear consumed changesets
             manager.clear().map_err(|e| {
                 cuenv_core::Error::configuration(format!("Failed to clear changesets: {e}"))
             })?;
 
             output.push_str("\nManifest files updated successfully.\n");
+            output.push_str("Changelogs have been updated.\n");
             output.push_str("Changesets have been consumed.\n");
         }
     }
 
     Ok(output)
+}
+
+fn update_release_changelogs(
+    root: &Path,
+    manifest: &CargoManifest,
+    changesets: &[Changeset],
+    new_versions: &HashMap<String, Version>,
+    release_config: &ReleaseConfig,
+) -> cuenv_core::Result<()> {
+    let changelog_config = release_config.changelog.clone();
+    if !changelog_config.workspace && !changelog_config.per_package {
+        return Ok(());
+    }
+
+    let generator = ChangelogGenerator::new(changelog_config);
+
+    if release_config.changelog.workspace
+        && let Some(entry) = generator.generate_workspace_entry(changesets, new_versions)
+    {
+        generator
+            .update_file(&root.join(&release_config.changelog.path), &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update workspace changelog: {e}"
+                ))
+            })?;
+    }
+
+    if !release_config.changelog.per_package {
+        return Ok(());
+    }
+
+    let package_paths = manifest.get_package_paths().map_err(|e| {
+        cuenv_core::Error::configuration(format!("Failed to read package paths: {e}"))
+    })?;
+
+    for (package, version) in new_versions {
+        let Some(package_root) = package_paths.get(package) else {
+            continue;
+        };
+        let Some(entry) = generator.generate_entries(changesets, package, version) else {
+            continue;
+        };
+        let changelog_path = generator.get_changelog_path(package_root);
+        generator
+            .update_file(&changelog_path, &entry)
+            .map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "Failed to update changelog for {package}: {e}"
+                ))
+            })?;
+    }
+
+    Ok(())
 }
 
 /// Output format for release publish command.
@@ -508,7 +629,7 @@ fn publish_to_crates_io(crate_dir: &Path) -> cuenv_core::Result<bool> {
     }
 }
 
-fn build_publish_plan(root: &Path) -> cuenv_core::Result<PublishPlan> {
+fn collect_publish_packages(root: &Path) -> cuenv_core::Result<Vec<PublishPackage>> {
     let manifest = CargoManifest::new(root);
 
     let package_paths = manifest.get_package_paths().map_err(|e| {
@@ -538,6 +659,18 @@ fn build_publish_plan(root: &Path) -> cuenv_core::Result<PublishPlan> {
         });
     }
 
+    Ok(publish_packages)
+}
+
+fn build_publish_plan(root: &Path, ordered: bool) -> cuenv_core::Result<PublishPlan> {
+    let publish_packages = collect_publish_packages(root)?;
+
+    if !ordered {
+        return Ok(PublishPlan {
+            packages: publish_packages,
+        });
+    }
+
     PublishPlan::from_packages(publish_packages).map_err(|e| {
         cuenv_core::Error::configuration(format!("Failed to create publish plan: {e}"))
     })
@@ -547,25 +680,38 @@ fn publish_packages_to_crates_io(
     root: &Path,
     plan: &PublishPlan,
     publishable: &HashSet<String>,
+    token_env: &str,
 ) -> cuenv_core::Result<()> {
+    // cargo reads CARGO_REGISTRY_TOKEN from the ambient environment; when a
+    // different env var is configured we read it and forward it under the name
+    // cargo expects. A missing var leaves cargo to fall back to its own config.
+    let registry_token = std::env::var(token_env).ok();
+
     for pkg in plan.iter() {
         if !publishable.contains(&pkg.name) {
             continue;
         }
 
-        let status = Command::new("cargo")
+        let mut command = Command::new("cargo");
+        command
             .current_dir(root)
-            .arg("publish")
-            .arg("-p")
+            .args(["publish", "-p"])
             .arg(&pkg.name)
-            .arg("--locked")
+            .arg("--locked");
+        if let Some(token) = &registry_token {
+            command.env("CARGO_REGISTRY_TOKEN", token);
+        }
+
+        let status = command
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
             .map_err(|e| {
                 cuenv_core::Error::execution_with_help(
                     format!("Failed to run 'cargo publish' for '{}': {e}", pkg.name),
-                    "Ensure Rust/Cargo is available and CARGO_REGISTRY_TOKEN is set for crates.io publishing",
+                    format!(
+                        "Ensure Rust/Cargo is available and {token_env} is set for crates.io publishing"
+                    ),
                 )
             })?;
 
@@ -578,6 +724,15 @@ fn publish_packages_to_crates_io(
     }
 
     Ok(())
+}
+
+fn configured_publish_backends(
+    config: &ReleaseConfig,
+) -> (Option<CratesBackendConfig>, Option<CueBackendConfig>) {
+    config.backends.as_ref().map_or_else(
+        || (Some(CratesBackendConfig::default()), None),
+        |backends| (backends.crates.clone(), backends.cue.clone()),
+    )
 }
 
 /// Execute the `release publish` command.
@@ -593,7 +748,19 @@ pub fn execute_release_publish(
     format: OutputFormat,
 ) -> cuenv_core::Result<String> {
     let root = Path::new(path);
-    let plan = build_publish_plan(root)?;
+    let release_config = load_release_config(root)?;
+    let (crates_config, cue_config) = configured_publish_backends(&release_config);
+    if crates_config.is_none() && cue_config.is_none() {
+        return Ok("No package release backends configured.".to_string());
+    }
+    if cue_config.is_some() && !dry_run.is_dry_run() {
+        return Err(cuenv_core::Error::configuration(
+            "CUE registry release publishing is not implemented yet",
+        ));
+    }
+
+    let ordered = crates_config.as_ref().is_none_or(|config| config.ordered);
+    let plan = build_publish_plan(root, ordered)?;
 
     // Extract package names in topological order
     let sorted_packages: Vec<String> = plan.iter().map(|p| p.name.clone()).collect();
@@ -601,12 +768,14 @@ pub fn execute_release_publish(
     // Determine which packages are configured to publish.
     let mut publishable: HashSet<String> = HashSet::new();
     let mut skipped: HashSet<String> = HashSet::new();
-    for pkg in plan.iter() {
-        let should_publish = publish_to_crates_io(&pkg.path)?;
-        if should_publish {
-            publishable.insert(pkg.name.clone());
-        } else {
-            skipped.insert(pkg.name.clone());
+    if crates_config.is_some() {
+        for pkg in plan.iter() {
+            let should_publish = publish_to_crates_io(&pkg.path)?;
+            if should_publish {
+                publishable.insert(pkg.name.clone());
+            } else {
+                skipped.insert(pkg.name.clone());
+            }
         }
     }
 
@@ -625,8 +794,10 @@ pub fn execute_release_publish(
         }
     }
 
-    if !dry_run.is_dry_run() {
-        publish_packages_to_crates_io(root, &plan, &publishable)?;
+    if !dry_run.is_dry_run()
+        && let Some(crates_config) = &crates_config
+    {
+        publish_packages_to_crates_io(root, &plan, &publishable, &crates_config.token_env)?;
     }
 
     match format {
@@ -654,6 +825,10 @@ pub fn execute_release_publish(
             let json = serde_json::json!({
                 "packages": sorted_packages,
                 "results": results,
+                "backends": {
+                    "crates": crates_config.is_some(),
+                    "cue": cue_config.is_some()
+                },
                 "dry_run": dry_run.is_dry_run()
             });
             serde_json::to_string_pretty(&json).map_err(|e| {
@@ -683,6 +858,10 @@ pub fn execute_release_publish(
 
             if dry_run.is_dry_run() {
                 output.push_str("\nDry run complete.\n");
+            }
+            if cue_config.is_some() {
+                output
+                    .push_str("\nCUE registry publishing is configured but not implemented yet.\n");
             }
 
             Ok(output)

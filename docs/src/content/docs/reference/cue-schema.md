@@ -90,18 +90,22 @@ Environment variable definitions with optional environment-specific overrides.
 ```cue
 env: {
     NODE_ENV: "development"
-    PORT: 3000
-    DEBUG: true
+    PORT: "3000"
+    DEBUG: "true"
 
     // Environment-specific overrides
     environment: {
         production: {
             NODE_ENV: "production"
-            DEBUG: false
+            DEBUG: "false"
         }
     }
 }
 ```
+
+Environment values are strings. The schema also accepts `int` and `bool` (they
+are converted to strings when exported), but this site standardizes on quoted
+strings so values look the same in CUE as they do in the process environment.
 
 ### #EnvironmentVariable
 
@@ -112,31 +116,46 @@ env: {
     // Simple string
     NAME: "value"
 
-    // Number (converted to string when exported)
-    PORT: 3000
+    // Numeric value as a string
+    PORT: "3000"
 
-    // Boolean (converted to string when exported)
-    DEBUG: true
+    // Boolean value as a string
+    DEBUG: "true"
 
     // Host environment passthrough for task execution
     GITHUB_ACTOR: schema.#EnvPassthrough
     TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
 
-    // Secret reference
-    API_KEY: schema.#Secret & {
-        command: "op"
-        args: ["read", "op://vault/item/field"]
+    // Secret reference (named resolver)
+    API_KEY: schema.#OnePasswordRef & {
+        ref: "op://vault/item/field"
+    }
+
+    // Custom command secret (#ExecSecret)
+    SESSION_TOKEN: schema.#ExecSecret & {
+        command: "vault-helper"
+        args: ["read", "session/token"]
     }
 
     // Value with access policies
     DB_PASSWORD: {
-        value: schema.#Secret & {...}
+        value: schema.#OnePasswordRef & {
+            ref: "op://vault/db/password"
+        }
         policies: [{
             allowTasks: ["migrate"]
         }]
     }
 }
 ```
+
+:::caution[Use a named resolver, not bare `#Secret`]
+`#Secret` is an open base type — it only constrains the `resolver` field and is
+not meant to be the user-facing shape. Always reach for a concrete secret type:
+`#OnePasswordRef`, `#AwsSecret`, `#GcpSecret`, `#InfisicalSecret`, or
+`#ExecSecret` for custom commands. See [Resolving secrets](/how-to/secrets/) and
+the [schema-first workflow](/agents/schema-first/) for the full rationale.
+:::
 
 `#EnvPassthrough` forwards a variable from the process running cuenv into the task environment.
 Use it for CI-provided context such as GitHub Actions actor and ref values. When `name` is omitted,
@@ -160,13 +179,17 @@ Task-level environment entries are resolved at execution time. Tasks that define
 entries are therefore excluded from task-result caching.
 ### #Environment
 
-Environment variable naming constraint: must match `^[A-Z][A-Z0-9_]*$` (uppercase with underscores).
+Environment variable names must match `^[A-Z0-9_]*$` — uppercase ASCII letters,
+digits, and underscores. There is no leading-letter requirement, so a key may
+start with a digit or underscore.
 
 ```cue
 env: {
     VALID_NAME: "ok"      // Valid
-    valid_name: "error"   // Invalid - must be uppercase
-    123_NAME: "error"     // Invalid - must start with letter
+    PORT_8080:  "ok"      // Valid - digits allowed
+    _PRIVATE:   "ok"      // Valid - leading underscore allowed
+    valid_name: "error"   // Invalid - lowercase not permitted
+    "with-dash": "error"  // Invalid - hyphen not permitted
 }
 ```
 
@@ -316,13 +339,27 @@ schema.#Project & {
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
 | `hermetic`       | `bool`                                            | No       | Isolated execution (default: true)       |
-| `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")          |
-| `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)     |
+| `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")†         |
+| `retry`          | `{ attempts: int \| *3, delay?: string }`         | No       | Retry policy: `attempts` defaults to 3, optional `delay` (e.g., "5s")† |
+| `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)†    |
+| `captures`       | `{[string]: #TaskCapture}`                        | No       | Named regex captures extracted from stdout/stderr after execution (Partial; see [#TaskCapture](#taskcapture)) |
 | `stdout`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stdout          |
 | `stderr`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stderr          |
 | `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
 
 *Either `command` or `script` should be provided.
+
+:::caution[Execution policy status]
+The task-level `timeout`, `retry`, and `continueOnError` fields (marked † above)
+are schema-visible but **only partially honored** by the executor today. Do not
+rely on them as guaranteed behavior — confirm against the
+[schema status page](/reference/schema/status/) before depending on them.
+
+Note that task-level `continueOnError` is distinct from **pipeline-level**
+`continueOnError` (on [`#Pipeline`](#pipeline)), which *is* honored: the CI
+orchestrator marks dependents of a failed task as `Skipped` and keeps running
+independent chains.
+:::
 
 `dir` accepts the legacy string form or an object:
 
@@ -360,7 +397,7 @@ Parallel execution - all child tasks run concurrently.
 tasks: {
     checks: schema.#TaskGroup & {
         type: "group"  // Required discriminator
-        maxConcurrency: 4  // Optional: limit parallel tasks
+        maxConcurrency: 4  // Schema-only today: NOT enforced per-group
         description: "Run all checks in parallel"
 
         // Named children - all run concurrently
@@ -377,9 +414,15 @@ tasks: {
 | ---------------- | ---------------- | -------- | ---------------------------------- |
 | `type`           | `"group"`        | Yes      | Type discriminator                 |
 | `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
-| `maxConcurrency` | `int`            | No       | Limit concurrent tasks (0 = unlimited) |
+| `maxConcurrency` | `int`            | No       | **Schema-only.** The executor honors global parallelism (`cuenv task -j <n>`); per-group caps are not yet enforced. |
 | `description`    | `string`         | No       | Human-readable description         |
 | `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|
+
+:::note[`maxConcurrency` is not enforced]
+`maxConcurrency` is accepted by the schema but the executor currently applies
+only the global parallelism limit set with `cuenv task -j <n>`, not per-group
+caps. Track this on the [schema status page](/reference/schema/status/).
+:::
 
 ### #TaskSequence
 
@@ -396,6 +439,73 @@ tasks: {
 ```
 
 A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
+
+### #TaskCapture
+
+Extracts a named value from a task's output stream with a regex. After the task
+runs, the executor matches `pattern` against the chosen stream and the **first
+capture group** becomes the named value.
+
+```cue
+tasks: {
+    deploy: schema.#TaskGroup & {
+        type: "group"
+        preview: schema.#Task & {
+            command: "deploy-preview"
+            captures: {
+                // The first () group of the match becomes "previewUrl"
+                previewUrl: { pattern: "Preview ready: (https://\\S+)" }
+                buildId:    { pattern: "build=(\\w+)", source: "stderr" }
+            }
+        }
+    }
+}
+```
+
+**Fields:**
+
+| Field     | Type                        | Required | Default    | Description                              |
+| --------- | --------------------------- | -------- | ---------- | ---------------------------------------- |
+| `pattern` | `string`                    | Yes      | -          | Regex; the first capture group is stored |
+| `source`  | `"stdout" \| "stderr"`      | No       | `"stdout"` | Which output stream to match against     |
+
+:::caution[Partial]
+`#TaskCapture` is **Partial**. The schema shape is stable, but capture extraction
+and downstream resolution are still being rounded out. See the
+[schema status page](/reference/schema/status/) before relying on it.
+:::
+
+### #TaskCaptureRef
+
+A reference to a value captured by another task, resolved at runtime by the
+executor. Typically used inside CI annotations to surface a captured value (such
+as a preview URL).
+
+```cue
+tasks: {
+    deploy: schema.#Task & {
+        command: "deploy"
+        captures: previewUrl: { pattern: "Preview ready: (https://\\S+)" }
+        annotations: "Preview URL": schema.#TaskCaptureRef & {
+            cuenvTask:    "deploy"
+            cuenvCapture: "previewUrl"
+        }
+    }
+}
+```
+
+**Fields:**
+
+| Field             | Type     | Required | Description                              |
+| ----------------- | -------- | -------- | ---------------------------------------- |
+| `cuenvCaptureRef` | `true`   | Auto     | Discriminator (always true)              |
+| `cuenvTask`       | `string` | Yes      | Name of the task that produced the capture |
+| `cuenvCapture`    | `string` | Yes      | Name of the captured value               |
+
+:::caution[Partial]
+`#TaskCaptureRef` is **Partial** — runtime resolution is still being completed.
+See the [schema status page](/reference/schema/status/).
+:::
 
 ### #ExternalInput
 
@@ -479,7 +589,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service dependencies are supported; task and image dependencies are rejected by `cuenv up` until executor integration exists |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -597,6 +707,10 @@ restart: {
 | `maxRestarts` | `int`    | `5`           | Max restarts within sliding window       |
 | `window`      | `string` | `60s`         | Sliding window for restart counting      |
 
+`cuenv restart <service>` requires an active `cuenv up` session. It queues a
+persisted restart request; the running supervisor consumes it, stops the
+service, and spawns it again without restarting unrelated services.
+
 ### #Watch
 
 File watcher that triggers service restarts on file changes.
@@ -619,9 +733,18 @@ watch: {
 | `on`       | `string`        | `restart` | Action on change (`restart`)                 |
 | `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
 
+Watch events are debounced, then the supervisor restarts the service. The
+schema exposes `rebuild`, but restart-on-change is the supported behavior in
+the current implementation.
+
 ### #Shutdown
 
 Controls how services are stopped.
+
+Whole-session `cuenv down` asks the active `cuenv up` controller to shut down
+all services. `cuenv down <service>` writes a persisted stop request that the
+selected running supervisor consumes. The configured signal is sent first; if
+the process is still alive after `timeout`, cuenv escalates to a hard kill.
 
 | Field     | Type     | Default   | Description                          |
 | --------- | -------- | --------- | ------------------------------------ |
@@ -638,11 +761,14 @@ Log handling configuration for services.
 | `color`   | `string` | auto           | ANSI color hint (red, green, yellow, blue, magenta, cyan, white) |
 | `persist` | `bool`   | `true`         | Persist logs to `.cuenv/run/<project>/logs/` |
 
+When persistence is enabled, `cuenv logs --follow` tails appended session log
+lines while the matching `cuenv up` controller is alive.
+
 ## Container Images
 
 ### #ContainerImage
 
-Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) that downstream tasks can consume once build execution exists. `cuenv build` currently lists image definitions; selected build requests fail until an execution backend is implemented.
+Declarative container image definitions as first-class project artifacts. Images participate in the task DAG and produce output references (`.ref`, `.digest`) whose downstream resolution is still partial. `cuenv build` lists image definitions and builds selected images. An image is built from **either** a Dockerfile (set `context`, built with `docker`/`buildx`) **or** a Nix flake output (set `installable`, built with `nix build` and delivered through `docker`); the two are mutually exclusive.
 
 ```cue
 images: {
@@ -661,9 +787,10 @@ images: {
 
 | Field         | Type                                   | Required | Default        | Description                              |
 | ------------- | -------------------------------------- | -------- | -------------- | ---------------------------------------- |
-| `context`     | `string`                               | Yes      | -              | Build context directory                  |
+| `context`     | `string`                               | One of\*  | -              | Build context directory (Dockerfile image) |
+| `installable` | `string`                               | One of\*  | -              | Nix flake installable (Nix image), e.g. `".#images.api"` |
 | `dockerfile`  | `string`                               | No       | `"Dockerfile"` | Dockerfile path relative to context      |
-| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments                          |
+| `buildArgs`   | `{[string]: string \| #ImageOutputRef}` | No       | -              | Build arguments (Dockerfile image)       |
 | `target`      | `string`                               | No       | -              | Multi-stage build target                 |
 | `tags`        | `[...string]`                          | No       | -              | Image tags                               |
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
@@ -674,9 +801,15 @@ images: {
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
 
+\*Exactly one of `context` or `installable` must be set: `context` selects a Dockerfile build, `installable` selects a Nix-native build.
+
+**Dockerfile images** (`context` set): when `registry` is set, `cuenv build` uses `docker buildx build --push` and tags the image as `<registry>/<repository-or-name>:<tag>`. Without `registry`, it runs a local `docker build`. Multi-platform builds require a registry so Docker can push a manifest list.
+
+**Nix images** (`installable` set): `cuenv build` runs `nix build <installable>` (pin the derivation to `dockerTools.buildLayeredImage`/`streamLayeredImage`) and `docker load`s the resulting archive. It then tags the loaded image as `<registry>/<repository-or-name>:<tag>` for each tag, pushing with `docker push` when `registry` is set. Multi-architecture Nix images are not yet supported.
+
 #### Output References
 
-Images produce two output references resolved at runtime after the image is built:
+The schema exposes two image output references; downstream resolution remains partial:
 
 | Reference | Description                                      |
 | --------- | ------------------------------------------------ |
@@ -715,8 +848,8 @@ images: {
 
 ```bash
 cuenv build              # List all images
-cuenv build api          # Fails until image execution backends exist
-cuenv build --label ci   # Fails until image execution backends exist
+cuenv build api          # Build the api image with Docker
+cuenv build --label ci   # Build images matching the ci label
 ```
 
 ## Hooks
@@ -841,25 +974,55 @@ tasks: {
 
 ### #Secret
 
-Base secret type with resolver-based resolution.
+`#Secret` is the **open base type** for all secrets. It only constrains the
+`resolver` field (`aws`, `gcp`, `onepassword`, `vault`, `infisical`, or `exec`)
+and is left open (`...`) so concrete secret types can extend it.
+
+:::caution[Do not use `#Secret` directly]
+`#Secret` is not the user-facing shape. Reach for a concrete secret type
+instead: [`#OnePasswordRef`](#onepasswordref), [`#GcpSecret`](#gcpsecret),
+[`#InfisicalSecret`](#infisicalsecret), `#AwsSecret`, `#VaultSecret`, or
+[`#ExecSecret`](#execsecret) for custom commands. See
+[Resolving secrets](/how-to/secrets/) and the
+[schema-first workflow](/agents/schema-first/). The bare
+`schema.#Secret & { resolver: "exec", command: ..., args: ... }` form is
+**legacy** — prefer `#ExecSecret`.
+:::
+
+**Definition:**
+
+```cue
+#Secret: {
+    resolver: "aws" | "gcp" | "onepassword" | "vault" | "infisical" | "exec"
+    ...
+}
+```
+
+The resolution mode (CLI vs. HTTP) is auto-negotiated from the environment
+(for example, `OP_SERVICE_ACCOUNT_TOKEN` selects 1Password HTTP mode,
+`VAULT_TOKEN` + `VAULT_ADDR` selects Vault HTTP mode).
+
+### #ExecSecret
+
+Resolves a secret by running a custom command. This is the supported shape for
+arbitrary credential helpers (replacing the legacy bare-`#Secret` exec form).
 
 ```cue
 env: {
-    MY_SECRET: schema.#Secret & {
-        resolver: "exec"
-        command: "echo"
-        args: ["secret-value"]
+    SESSION_TOKEN: schema.#ExecSecret & {
+        command: "vault-helper"
+        args: ["read", "session/token"]
     }
 }
 ```
 
 **Fields:**
 
-| Field      | Type                                                                | Description            |
-| ---------- | ------------------------------------------------------------------- | ---------------------- |
-| `resolver` | `exec`, `onepassword`, `infisical`, `aws`, `gcp`, `vault`           | Secret provider        |
-| `command`  | `string`                                                            | Exec command           |
-| `args`     | `[...string]`                                                       | Exec command arguments |
+| Field      | Type          | Required | Description                              |
+| ---------- | ------------- | -------- | ---------------------------------------- |
+| `resolver` | `"exec"`      | Auto     | Fixed to `exec`                          |
+| `command`  | `string`      | Yes      | Command to execute; stdout is the secret |
+| `args`     | `[...string]` | No       | Command arguments                        |
 
 ### #OnePasswordRef
 
@@ -939,7 +1102,9 @@ Access control policy for environment variables.
 ```cue
 env: {
     SENSITIVE_KEY: {
-        value: schema.#Secret & {...}
+        value: schema.#OnePasswordRef & {
+            ref: "op://vault/deploy-key/credential"
+        }
         policies: [{
             allowTasks: ["deploy", "release"]
             allowExec: ["kubectl", "helm"]
@@ -1436,8 +1601,236 @@ ci: {
 }
 ```
 
+## Release configuration
+
+cuenv can drive native release workflows — versioning, changelogs, binary builds,
+and publishing — from your `env.cue`. The whole `#Release` family is configured
+under the top-level `release` field.
+
+:::caution[Release family is Partial]
+The entire `#Release` family is **Partial**. CLI release commands load this
+configuration from `env.cue` and honor backend selection, token-env names, tag
+prefixes, versioning strategies, and changelog settings, but coverage is
+incomplete — for example, non-dry-run CUE registry publishing still fails fast
+as unimplemented. Always confirm behavior on the
+[schema status page](/reference/schema/status/) before depending on it. The
+`#Changeset`, `#PackageChange`, and `#ChangesetType` types are the exception:
+they are implemented, and changesets are normally generated with
+`cuenv changeset`, not hand-written.
+:::
+
+### #Release
+
+Top-level release configuration.
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-tool"
+    release: schema.#Release & {
+        binary: "my-tool"
+        targets: ["linux-x64", "linux-arm64", "darwin-arm64"]
+        backends: {
+            github: { assets: true }
+            homebrew: { tap: "myorg/homebrew-tap" }
+        }
+        git: { defaultBranch: "main" }
+        packages: { strategy: "independent" }
+        changelog: { path: "CHANGELOG.md" }
+    }
+}
+```
+
+**Fields:**
+
+| Field       | Type               | Required | Default        | Description                              |
+| ----------- | ------------------ | -------- | -------------- | ---------------------------------------- |
+| `binary`    | `string`           | No       | project name   | Binary name for distribution             |
+| `targets`   | `[...#Target]`     | No       | -              | Build targets for binary distribution    |
+| `backends`  | `#ReleaseBackends` | No       | -              | Distribution backends configuration      |
+| `git`       | `#ReleaseGit`      | No       | -              | Git settings for releases                |
+| `packages`  | `#ReleasePackages` | No       | -              | Package grouping / versioning            |
+| `changelog` | `#ChangelogConfig` | No       | -              | Changelog generation settings            |
+
+### #Target
+
+Supported binary build target triples.
+
+```cue
+#Target: "linux-x64" | "linux-arm64" | "darwin-arm64"
+```
+
+`cuenv release binaries` loads the configured `targets` from `env.cue`; the
+build-backend coverage for each target is still limited.
+
+### Backends
+
+The `backends` field (`#ReleaseBackends`) selects one or more distribution
+targets. Each backend is optional.
+
+```cue
+release: schema.#Release & {
+    backends: {
+        github:   { repo: "myorg/my-tool", assets: true, draft: false }
+        homebrew: { tap: "myorg/homebrew-tap", formula: "my-tool" }
+        crates:   { ordered: true }
+        cue:      { module: "github.com/myorg/my-tool" }
+    }
+}
+```
+
+#### #GitHubBackend
+
+Publishes a GitHub Release and (optionally) uploads binary tarballs as assets.
+
+| Field    | Type     | Default | Description                                       |
+| -------- | -------- | ------- | ------------------------------------------------- |
+| `repo`   | `string` | git remote | Repository in `owner/repo` form (auto-detected if omitted) |
+| `assets` | `bool`   | `true`  | Upload binary tarballs as release assets          |
+| `draft`  | `bool`   | `false` | Create the release as a draft                     |
+
+#### #HomebrewBackend
+
+Updates a Homebrew tap.
+
+| Field      | Type     | Default               | Description                              |
+| ---------- | -------- | --------------------- | ---------------------------------------- |
+| `tap`      | `string` | **required**          | Tap repository in `owner/repo` form      |
+| `formula`  | `string` | project name          | Formula name                             |
+| `tokenEnv` | `string` | `HOMEBREW_TAP_TOKEN`  | Env var holding the token used to push to the tap |
+
+#### #CratesBackend
+
+Publishes to crates.io. `cuenv release publish` honors `tokenEnv` and `ordered`.
+
+| Field      | Type     | Default                  | Description                              |
+| ---------- | -------- | ------------------------ | ---------------------------------------- |
+| `tokenEnv` | `string` | `CARGO_REGISTRY_TOKEN`   | Env var holding the crates.io token      |
+| `ordered`  | `bool`   | `true`                   | Publish packages in dependency order     |
+
+#### #CueBackend
+
+Publishes to a CUE registry.
+
+| Field      | Type     | Default            | Description                              |
+| ---------- | -------- | ------------------ | ---------------------------------------- |
+| `module`   | `string` | `cue.mod`          | Module path (auto-detected if omitted)   |
+| `tokenEnv` | `string` | `CUE_REGISTRY_TOKEN` | Env var holding the registry token     |
+
+:::note
+Non-dry-run CUE registry publishing currently fails fast as unimplemented even
+though the config is recognized.
+:::
+
+### #ReleaseGit
+
+Git-related release settings.
+
+```cue
+release: schema.#Release & {
+    git: {
+        defaultBranch: "main"
+        tagPrefix:     ""        // bare versions: 0.19.1 (no "v" prefix)
+        tagType:       "semver"
+        createTags:    true
+        pushTags:      true
+    }
+}
+```
+
+| Field           | Type       | Default    | Description                              |
+| --------------- | ---------- | ---------- | ---------------------------------------- |
+| `defaultBranch` | `string`   | `"main"`   | Default branch for releases              |
+| `tagPrefix`     | `string`   | `""`       | Tag prefix; empty means bare versions (`0.19.1`). `"v"` → `v0.19.1`; `"vscode/v"` → `vscode/v0.1.1` |
+| `tagType`       | `#TagType` | `"semver"` | `"semver"` (e.g. `0.19.1`) or `"calver"` (e.g. `2024.12.23`) |
+| `createTags`    | `bool`     | `true`     | Create tags during release               |
+| `pushTags`      | `bool`     | `true`     | Push tags to the remote                  |
+
+The default empty `tagPrefix` produces **bare versions** with no `v` prefix — a
+deliberate choice that matches cuenv's own no-`v`-prefix release convention.
+
+### #ReleasePackages
+
+Package grouping and versioning strategy for monorepos.
+
+```cue
+release: schema.#Release & {
+    packages: {
+        strategy: "independent"          // default
+        fixed:  [["crates/cuenv-core", "crates/cuenv-cli"]]
+        linked: [["crates/*"]]
+    }
+}
+```
+
+| Field      | Type                  | Default         | Description                              |
+| ---------- | --------------------- | --------------- | ---------------------------------------- |
+| `strategy` | `#VersioningStrategy` | `"independent"` | `"fixed"` (lockstep), `"linked"` (bumped together, versions may differ), or `"independent"` (each package versioned separately) |
+| `fixed`    | `[...[...string]]`    | -               | Groups that share one version (lockstep) |
+| `linked`   | `[...[...string]]`    | -               | Groups bumped together; versions may differ |
+
+### #ChangelogConfig
+
+CHANGELOG generation settings.
+
+```cue
+release: schema.#Release & {
+    changelog: {
+        path:       "CHANGELOG.md"
+        perPackage: true
+        workspace:  true
+        categories: [
+            { title: "Breaking Changes", types: ["major"] },
+            { title: "Features",         types: ["minor"] },
+            { title: "Fixes",            types: ["patch"] },
+        ]
+    }
+}
+```
+
+| Field        | Type                     | Default          | Description                              |
+| ------------ | ------------------------ | ---------------- | ---------------------------------------- |
+| `path`       | `string`                 | `"CHANGELOG.md"` | Changelog path relative to project/package root |
+| `perPackage` | `bool`                   | `true`           | Generate a changelog per package         |
+| `workspace`  | `bool`                   | `true`           | Generate a root changelog for the workspace |
+| `categories` | `[...#ChangelogCategory]`| -                | Category headings and their changeset types |
+
+A `#ChangelogCategory` has a `title` (string) and `types`
+(`[...#ChangesetType]`).
+
+### Changesets
+
+Changesets describe pending version bumps. The `#ChangesetType` enum is
+`"major" | "minor" | "patch" | "none"`.
+
+```cue
+schema.#Changeset & {
+    id:      "happy-otters-dance"
+    summary: "Add release backend configuration loading"
+    packages: [
+        { name: "crates/cuenv-release", bump: "minor" },
+        { name: "crates/cuenv-core",    bump: "patch" },
+    ]
+}
+```
+
+| Type           | Fields                                                      |
+| -------------- | ---------------------------------------------------------- |
+| `#Changeset`   | `id`, `summary`, `packages: [...#PackageChange]`, `description?` |
+| `#PackageChange` | `name` (package name/path), `bump` (`#ChangesetType`)    |
+
+:::note[Generate changesets with the CLI]
+Changesets are normally created with `cuenv changeset` rather than written by
+hand. `#Changeset`, `#PackageChange`, and `#ChangesetType` are the
+**implemented** members of the release family.
+:::
+
 ## See Also
 
+- [Schema status](/reference/schema/status/) - Authoritative implementation status
+- [Resolving secrets](/how-to/secrets/) - Secret providers and runtime resolution
+- [Schema-first workflow](/agents/schema-first/) - Avoiding stale or overclaimed features
 - [Configuration Guide](/how-to/configure-a-project/) - Usage patterns
 - [Tools Guide](/how-to/tools/) - Tools configuration and usage
 - [Tools Architecture](/explanation/tools/) - How the tools system works internally
