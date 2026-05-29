@@ -25,6 +25,8 @@
 
 mod batch;
 mod fingerprint;
+#[cfg(feature = "http")]
+pub mod http;
 mod registry;
 mod resolved;
 pub mod resolvers;
@@ -90,6 +92,17 @@ pub enum SecretError {
         /// The resolver type that was requested
         resolver: String,
     },
+}
+
+impl SecretError {
+    /// Construct a [`SecretError::ResolutionFailed`] for the named secret.
+    #[must_use]
+    pub fn resolution_failed(name: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::ResolutionFailed {
+            name: name.into(),
+            message: message.into(),
+        }
+    }
 }
 
 /// Configuration for a secret to resolve

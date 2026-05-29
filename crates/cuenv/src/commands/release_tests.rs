@@ -1,4 +1,5 @@
 use super::*;
+use cuenv_release::TagType;
 use std::fs;
 use std::process::Command;
 use tempfile::TempDir;
@@ -140,6 +141,69 @@ fn test_release_version_dry_run() {
     let output = result.unwrap();
     assert!(output.contains("Dry run"));
     assert!(output.contains("Version changes"));
+}
+
+#[test]
+fn test_release_config_from_evaluated_env_cue_value() {
+    let value = serde_json::json!({
+        "name": "demo",
+        "release": {
+            "binary": "demo-cli",
+            "targets": ["linux-x64"],
+            "git": {
+                "tagPrefix": "v",
+                "tagType": "calver"
+            },
+            "packages": {
+                "strategy": "fixed",
+                "fixed": [["foo", "bar"]]
+            },
+            "changelog": {
+                "path": "NEWS.md",
+                "categories": [
+                    { "title": "Features", "types": ["minor"] }
+                ]
+            },
+            "backends": {
+                "github": {
+                    "repo": "cuenv/cuenv",
+                    "draft": true
+                },
+                "homebrew": {
+                    "tap": "cuenv/homebrew-tap",
+                    "formula": "cuenv",
+                    "tokenEnv": "TAP_TOKEN"
+                },
+                "crates": {
+                    "tokenEnv": "CRATES_TOKEN",
+                    "ordered": false
+                },
+                "cue": {
+                    "module": "cue.dev/x/cuenv",
+                    "tokenEnv": "CUE_TOKEN"
+                }
+            }
+        }
+    });
+
+    let config = release_config_from_value(&value).unwrap();
+
+    assert_eq!(config.binary.as_deref(), Some("demo-cli"));
+    assert_eq!(config.targets, vec!["linux-x64"]);
+    assert_eq!(config.git.tag_prefix, "v");
+    assert_eq!(config.git.tag_type, TagType::Calver);
+    assert_eq!(
+        config.packages.strategy,
+        cuenv_release::VersioningStrategy::Fixed
+    );
+    assert_eq!(config.changelog.path, "NEWS.md");
+    assert_eq!(config.changelog.categories[0].title, "Features");
+
+    let backends = config.backends.unwrap();
+    assert!(backends.github.unwrap().draft);
+    assert_eq!(backends.homebrew.unwrap().token_env, "TAP_TOKEN");
+    assert_eq!(backends.crates.unwrap().token_env, "CRATES_TOKEN");
+    assert_eq!(backends.cue.unwrap().token_env, "CUE_TOKEN");
 }
 
 #[test]

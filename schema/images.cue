@@ -25,8 +25,10 @@ package schema
 // =============================================================================
 //
 // Declarative container image definitions as first-class project artifacts.
-// Images participate in the task DAG, but build execution backends are not
-// implemented yet; `cuenv build` currently lists configured images.
+// Images participate in the task DAG. `cuenv build` can list configured images
+// and build selected images. An image is built EITHER from a Dockerfile
+// (set `context`, built with docker/buildx) OR from a Nix flake output
+// (set `installable`, built with `nix build` and delivered via docker).
 //
 // Example:
 //   images: {
@@ -50,11 +52,12 @@ package schema
 	ref:    #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "ref"}
 	digest: #ImageOutputRef & {cuenvImage: _name, cuenvOutput: "digest"}
 
-	// Build source
-	context!:    string                  // Build context directory
+	// Build source — set EITHER context (Dockerfile) OR installable (Nix).
+	context?:    string                  // Build context directory (Dockerfile image)
 	dockerfile?: string | *"Dockerfile" // Relative to context
+	installable?: string                 // Nix flake installable, e.g. ".#images.api"
 
-	// Build configuration
+	// Build configuration (Dockerfile images)
 	buildArgs?: [string]: string | #ImageOutputRef
 	target?: string // Multi-stage build target
 
@@ -77,4 +80,7 @@ package schema
 
 	// Human-readable description
 	description?: string
+
+	// Exactly one of `context` (Dockerfile) or `installable` (Nix) must be set;
+	// `cuenv build` enforces this at build time.
 })

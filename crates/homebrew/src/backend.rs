@@ -27,6 +27,8 @@ pub struct HomebrewConfig {
     pub token: Option<String>,
     /// Token environment variable name (default: `HOMEBREW_TAP_TOKEN`)
     pub token_env: String,
+    /// Prefix to use when formatting release tag names
+    pub tag_prefix: String,
 }
 
 impl HomebrewConfig {
@@ -40,6 +42,7 @@ impl HomebrewConfig {
             homepage: String::new(),
             token: None,
             token_env: "HOMEBREW_TAP_TOKEN".to_string(),
+            tag_prefix: "v".to_string(),
         }
     }
 
@@ -68,6 +71,13 @@ impl HomebrewConfig {
     #[must_use]
     pub fn with_token_env(mut self, env_var: impl Into<String>) -> Self {
         self.token_env = env_var.into();
+        self
+    }
+
+    /// Sets the tag prefix.
+    #[must_use]
+    pub fn with_tag_prefix(mut self, tag_prefix: impl Into<String>) -> Self {
+        self.tag_prefix = tag_prefix.into();
         self
     }
 
@@ -111,7 +121,10 @@ impl HomebrewBackend {
             .unwrap_or("https://github.com/OWNER/REPO/releases/download");
 
         for artifact in artifacts {
-            let url = format!("{}/v{}/{}", base_url, ctx.version, artifact.archive_name);
+            let url = format!(
+                "{}/{}{}/{}",
+                base_url, self.config.tag_prefix, ctx.version, artifact.archive_name
+            );
             binaries.insert(
                 artifact.target,
                 BinaryInfo {

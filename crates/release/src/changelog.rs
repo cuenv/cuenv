@@ -227,7 +227,7 @@ impl ChangelogGenerator {
     ///
     /// Returns an error if the file cannot be read or written.
     pub fn update_file(&self, path: &Path, entry: &ChangelogEntry) -> Result<()> {
-        let new_content = entry.to_markdown();
+        let new_content = self.entry_to_markdown(entry);
 
         let existing = if path.exists() {
             fs::read_to_string(path).map_err(|e| {
@@ -277,6 +277,43 @@ impl ChangelogGenerator {
     #[must_use]
     pub fn get_changelog_path(&self, package_root: &Path) -> std::path::PathBuf {
         package_root.join(&self.config.path)
+    }
+
+    fn entry_to_markdown(&self, entry: &ChangelogEntry) -> String {
+        use std::fmt::Write;
+
+        if self.config.categories.is_empty() {
+            return entry.to_markdown();
+        }
+
+        let mut output = String::new();
+        let date_str = entry.date.format("%Y-%m-%d").to_string();
+        let _ = writeln!(output, "## [{}] - {}\n", entry.version, date_str);
+
+        for category in &self.config.categories {
+            let changes: Vec<_> = entry
+                .changes
+                .iter()
+                .filter(|change| {
+                    category
+                        .types
+                        .iter()
+                        .any(|kind| kind == &change.bump_type.to_string())
+                })
+                .collect();
+
+            if changes.is_empty() {
+                continue;
+            }
+
+            let _ = writeln!(output, "### {}\n", category.title);
+            for change in changes {
+                output.push_str(&format_change(change));
+            }
+            output.push('\n');
+        }
+
+        output
     }
 }
 
@@ -330,6 +367,34 @@ mod tests {
 
         assert!(md.contains("### Breaking Changes"));
         assert!(md.contains("Breaking API change"));
+    }
+
+    #[test]
+    fn test_changelog_generator_custom_categories() {
+        let version = Version::new(1, 2, 0);
+        let entry = ChangelogEntry::new(
+            version,
+            Utc::now(),
+            vec![ChangelogChange {
+                bump_type: BumpType::Minor,
+                summary: "Add configurable release categories".to_string(),
+                description: None,
+                packages: vec!["cuenv".to_string()],
+            }],
+        );
+        let generator = ChangelogGenerator::new(ChangelogConfig {
+            categories: vec![crate::config::ChangelogCategory {
+                title: "Added".to_string(),
+                types: vec!["minor".to_string()],
+            }],
+            ..Default::default()
+        });
+
+        let md = generator.entry_to_markdown(&entry);
+
+        assert!(md.contains("### Added"));
+        assert!(md.contains("Add configurable release categories"));
+        assert!(!md.contains("### Features"));
     }
 
     #[test]
