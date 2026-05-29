@@ -237,6 +237,7 @@ nix flake check -L --accept-flake-config
 - Git tags must be annotated: `git tag -a 0.27.1 -m "message"`.
 - Release commit message format: `release: 0.27.1`.
 - Version lives in root `Cargo.toml` under `[workspace.package]`. All crates inherit via `version.workspace = true`. Update the workspace version and all `[workspace.dependencies]` version strings.
+- Also bump the cuenv version marker in `cue.mod/module.cue` (`custom: "github.com/cuenv/cuenv": version`) to the same version, in the same release commit. CI builds cuenv from `version: self` at the tag and runs `cuenv sync` in its bootstrap, which stamps the marker to the running version; if the committed marker lags, that sync dirties the working tree and `cue mod publish` fails with "VCS state is not clean". Keeping it in sync makes the bootstrap sync a no-op.
 - Create a GitHub release with `gh release create <tag>` using the bare version as the title.
 
 ## Troubleshooting
