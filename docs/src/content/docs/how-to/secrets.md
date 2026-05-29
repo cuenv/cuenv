@@ -3,6 +3,13 @@ title: Secrets
 description: Secure secret management with cuenv
 ---
 
+A plaintext `.env` checked into a sibling branch, or a database password pasted
+straight into a CI YAML pipeline, is a leak waiting to happen. cuenv replaces
+both with a single typed reference — `op://Development/Postgres/password` — that
+resolves at runtime and is redacted from any output it routes. The reference is
+identical everywhere; only the authentication differs: `op signin` or
+Application Default Credentials on your laptop, a service-account token in CI.
+
 cuenv resolves secrets at runtime. Secret values stay out of `env.cue`,
 generated CI workflows, and generated files. Output routed through cuenv is
 redacted before it reaches the terminal.
@@ -15,9 +22,10 @@ The current user-facing secret types are:
 - `schema.#GcpSecret` for Google Cloud Secret Manager references.
 - `schema.#ExecSecret` for custom command-backed providers.
 
-`schema.#VaultSecret` is present
-in the schema, but its default runtime resolver is not registered yet. Treat
-it as schema-visible future work until the schema status page says otherwise.
+`schema.#VaultSecret` is present in the schema but has no runtime resolver
+registered. It is **schema-only** today — see
+[HashiCorp Vault (schema-only)](#hashicorp-vault-schema-only) below and the
+[schema status page](/reference/schema/status/) for the authoritative status.
 
 ## 1Password
 
@@ -59,6 +67,9 @@ selected:
 cuenv exec -e production -- printenv API_KEY
 ```
 
+1Password has no dedicated example directory; the snippet above is complete on
+its own.
+
 ## Infisical
 
 Use `schema.#InfisicalSecret` when the secret already lives in Infisical:
@@ -72,17 +83,19 @@ schema.#Project & {
     name: "my-project"
 
     env: {
-        DATABASE_URL: schema.#InfisicalSecret & {
-            projectId:   "00000000-0000-0000-0000-000000000000"
-            environment: "prod"
-            secretName:  "DATABASE_URL"
-        }
+        environment: production: {
+            DATABASE_URL: schema.#InfisicalSecret & {
+                projectId:   "00000000-0000-0000-0000-000000000000"
+                environment: "prod"
+                secretName:  "DATABASE_URL"
+            }
 
-        API_KEY: schema.#InfisicalSecret & {
-            projectId:   "00000000-0000-0000-0000-000000000000"
-            environment: "prod"
-            secretName:  "API_KEY"
-            secretPath:  "/backend"
+            API_KEY: schema.#InfisicalSecret & {
+                projectId:   "00000000-0000-0000-0000-000000000000"
+                environment: "prod"
+                secretName:  "API_KEY"
+                secretPath:  "/backend"
+            }
         }
     }
 }
@@ -108,6 +121,9 @@ instance. A secret can also set `apiUrl` directly. `cuenv secrets setup
 infisical` performs an authentication-environment preflight; it does not
 download files or contact the API.
 
+**See also:** the runnable [`examples/ci-infisical`](https://github.com/cuenv/cuenv/tree/main/examples/ci-infisical)
+fixture wires these references into a CI pipeline.
+
 ## AWS Secrets Manager
 
 Use `schema.#AwsSecret` when the secret already lives in AWS Secrets Manager:
@@ -121,13 +137,15 @@ schema.#Project & {
     name: "my-project"
 
     env: {
-        API_TOKEN: schema.#AwsSecret & {
-            secretId: "prod/api-token"
-        }
+        environment: production: {
+            API_TOKEN: schema.#AwsSecret & {
+                secretId: "prod/api-token"
+            }
 
-        DATABASE_PASSWORD: schema.#AwsSecret & {
-            secretId: "prod/database"
-            jsonKey:  "password"
+            DATABASE_PASSWORD: schema.#AwsSecret & {
+                secretId: "prod/database"
+                jsonKey:  "password"
+            }
         }
     }
 }
@@ -137,6 +155,9 @@ The AWS resolver uses the AWS CLI, so authentication and region selection follow
 the standard AWS provider chain: `AWS_*` environment variables, shared config and
 credential files, profiles, and instance/task roles. `jsonKey` extracts a field
 from JSON `SecretString` values.
+
+**See also:** the runnable [`examples/ci-aws-secrets`](https://github.com/cuenv/cuenv/tree/main/examples/ci-aws-secrets)
+fixture shows these references resolved inside a production CI pipeline.
 
 ## Google Cloud Secret Manager
 
@@ -152,15 +173,17 @@ schema.#Project & {
     name: "my-project"
 
     env: {
-        DATABASE_URL: schema.#GcpSecret & {
-            project: "my-gcp-project"
-            secret:  "database-url"
-        }
+        environment: production: {
+            DATABASE_URL: schema.#GcpSecret & {
+                project: "my-gcp-project"
+                secret:  "database-url"
+            }
 
-        API_KEY: schema.#GcpSecret & {
-            project: "my-gcp-project"
-            secret:  "api-key"
-            version: "5"
+            API_KEY: schema.#GcpSecret & {
+                project: "my-gcp-project"
+                secret:  "api-key"
+                version: "5"
+            }
         }
     }
 }
@@ -179,6 +202,50 @@ account JSON file path and ensure `gcloud` is available. The resolver asks
 `gcloud auth application-default print-access-token` for an access token and
 then reads Secret Manager over HTTPS. Tests or advanced setups can provide an
 already-minted `GOOGLE_OAUTH_ACCESS_TOKEN` instead.
+
+**See also:** the runnable [`examples/ci-gcp-secret`](https://github.com/cuenv/cuenv/tree/main/examples/ci-gcp-secret)
+fixture shows these references resolved inside a production CI pipeline.
+
+## HashiCorp Vault (schema-only)
+
+`schema.#VaultSecret` exists in the schema with `path`, `key`, and `mount`
+fields (`mount` defaults to `"secret"`), but **no runtime resolver is
+registered**, so it is **schema-only**: it will not resolve today. The
+[schema status page](/reference/schema/status/) records `#VaultSecret` as
+schema-only until a resolver is added. Do not rely on the following shape
+resolving at runtime yet:
+
+```cue
+// schema-only: validates, but does NOT resolve at runtime today
+DATABASE_PASSWORD: schema.#VaultSecret & {
+    path:  "myapp/config"
+    key:   "db_password"
+    mount: "secret"
+}
+```
+
+Until a resolver lands, read Vault secrets through `schema.#ExecSecret` running
+the `vault` CLI, which is fully supported:
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    env: {
+        DATABASE_PASSWORD: schema.#ExecSecret & {
+            command: "vault"
+            args: ["kv", "get", "-mount=secret", "-field=db_password", "myapp/config"]
+        }
+    }
+}
+```
+
+The `vault` CLI authenticates from the standard Vault environment
+(`VAULT_ADDR`, `VAULT_TOKEN`, or a configured auth method).
 
 ## Custom Command Secrets
 
@@ -204,6 +271,42 @@ schema.#Project & {
 The command must print the secret value to stdout. cuenv treats the resulting
 value as a secret and redacts it from task output routed through the cuenv event
 system.
+
+## Interpolated Secrets
+
+Sometimes a secret is only part of a larger value — a `DATABASE_URL` that
+embeds a password, for example. Instead of storing the whole assembled URL in
+your secret store, build it from parts with `schema.#InterpolatedEnv`: an array
+where each `schema.#EnvPart` is either a literal string or a `schema.#Secret`.
+This is a **Stable** capability defined in `schema/env.cue`.
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "my-project"
+
+    env: {
+        DATABASE_URL: [
+            "postgres://app:",
+            schema.#OnePasswordRef & {ref: "op://Development/Postgres/password"},
+            "@db.internal:5432/app",
+        ]
+    }
+}
+```
+
+At runtime cuenv resolves each `#Secret` part, then concatenates all the parts —
+literals and resolved secrets — into the final value. Because a resolved secret
+participates, the **entire assembled value is treated as a secret and redacted**
+from output routed through cuenv. Any resolver type can appear as a part, so you
+can mix `#AwsSecret`, `#GcpSecret`, `#ExecSecret`, and literal connection
+parameters in the same string.
+
+See [Environments](/how-to/typed-environments/) for how interpolated values fit
+alongside plain and constrained environment variables.
 
 ## Task-Local Secrets
 

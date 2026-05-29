@@ -40,6 +40,15 @@ pub struct FormatConfig {
     pub quotes: Option<String>,
 }
 
+/// Lint configuration for a generated file
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct LintConfig {
+    /// Whether linting is enabled for this generated file.
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 fn default_indent() -> String {
     "space".to_string()
 }
@@ -63,6 +72,9 @@ pub struct ProjectFile {
     ///   - scaffold: false (user-owned files should be committed)
     #[serde(default)]
     pub gitignore: bool,
+    /// Optional validation/linting configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<LintConfig>,
 }
 
 /// Codegen configuration containing file definitions for code generation

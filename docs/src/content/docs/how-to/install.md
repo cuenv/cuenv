@@ -1,351 +1,150 @@
 ---
-title: Installation
-description: Complete installation guide for cuenv
+title: Install cuenv
+description: Install cuenv from a release binary, Homebrew, Nix, or source, then verify it works.
 ---
 
-This guide covers all installation methods for cuenv across different platforms and environments.
+cuenv is a single static binary. One typed `env.cue` replaces your `.env` file, your `Makefile`, and a pile of CI YAML — but first you need the `cuenv` command on your `PATH`.
 
-## System Requirements
+Pick the method that fits your machine. The release-binary and Homebrew paths are the fastest; Nix and source builds are there when you want them.
 
-### Minimum Requirements
+:::note
+Releases publish binaries for `darwin-arm64` (Apple Silicon), `linux-x64`, and
+`linux-arm64`. Native Windows is not a release target — use
+[WSL2](https://learn.microsoft.com/windows/wsl/install) and follow the Linux
+steps.
+:::
 
-- **Operating System**: Linux, macOS, or Windows (WSL2 recommended)
-- **Rust**: 1.70 or later
-- **Memory**: 4 GB RAM minimum, 8 GB recommended
-- **Storage**: 1 GB free space
+## Release binary (fastest)
 
-### Optional Dependencies
-
-- **Nix Package Manager**: For enhanced package management features
-- **Docker**: For containerized environments
-- **Git**: For version control integration
-
-## Installation Methods
-
-### Method 1: Using Nix (Recommended)
-
-If you have Nix installed, this is the preferred way to install cuenv:
+Every release attaches prebuilt binaries to the [GitHub releases page](https://github.com/cuenv/cuenv/releases). Download the asset for your platform, make it executable, and move it onto your `PATH`.
 
 ```bash
-# Install from flake
+# Pick the asset for your platform:
+#   cuenv-darwin-arm64   (macOS, Apple Silicon)
+#   cuenv-linux-x64      (Linux, x86_64)
+#   cuenv-linux-arm64    (Linux, aarch64)
+ASSET=cuenv-linux-x64
+
+curl -fsSL -o cuenv \
+  "https://github.com/cuenv/cuenv/releases/latest/download/${ASSET}"
+
+chmod +x cuenv
+sudo mv cuenv /usr/local/bin/cuenv
+```
+
+No `sudo`? Drop the binary somewhere already on your `PATH`, such as `~/.local/bin`:
+
+```bash
+mkdir -p ~/.local/bin
+mv cuenv ~/.local/bin/cuenv
+# Make sure ~/.local/bin is on your PATH (add to your shell rc file if not):
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+## Homebrew
+
+cuenv ships a Homebrew tap at [`cuenv/homebrew-tap`](https://github.com/cuenv/homebrew-tap) that is updated automatically on every release:
+
+```bash
+brew install cuenv/tap/cuenv
+```
+
+This works on macOS (Apple Silicon) and Linux (x86_64 and arm64). The tap is also the supported way to install cuenv in CI without Nix — see the runnable [`examples/ci-cuenv-homebrew`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-homebrew) project.
+
+## Nix
+
+If you use Nix with flakes enabled, install directly from the repository flake:
+
+```bash
+# Install into your Nix profile
 nix profile install github:cuenv/cuenv
 
-# Or run directly
+# Or run it once without installing
 nix run github:cuenv/cuenv -- --help
 ```
 
-### Method 2: Using Homebrew
+For project development environments, cuenv loads your `flake.nix` dev shell automatically through its Nix runtime and `#NixFlake` hook. See [Nix Integration](/how-to/nix/) for the full workflow.
 
-For macOS and Linux users with Homebrew:
+## From source
 
-```bash
-brew install cuenv/cuenv/cuenv
-```
+Building from source gives you the latest `main`. You need a recent Rust toolchain and a C toolchain plus OpenSSL headers (the FFI bridge to CUE links against Go).
 
-### Method 3: From Crates.io
-
-:::note
-This method will be available once cuenv reaches stable release.
+:::caution
+cuenv requires **Rust 1.85.0 or later** (Edition 2024). Older toolchains will
+not compile the workspace. Update with `rustup update` if needed.
 :::
 
 ```bash
-cargo install cuenv
+git clone https://github.com/cuenv/cuenv.git
+cd cuenv
+
+# Build and install the CLI binary (crate: crates/cuenv, bin: cuenv)
+cargo install --path crates/cuenv
 ```
 
-### Method 4: From GitHub Releases
+Build dependencies: a C compiler and OpenSSL development headers. On Debian/Ubuntu that is `build-essential pkg-config libssl-dev`; on Fedora/RHEL `gcc pkg-config openssl-devel`; on macOS the Xcode Command Line Tools (`xcode-select --install`).
 
 :::note
-Pre-built binaries will be available once cuenv reaches stable release.
+cuenv is not currently published to crates.io, so `cargo install cuenv` will not
+work. Use a release binary, Homebrew, Nix, or `cargo install --path
+crates/cuenv` from a clone.
 :::
 
-Download pre-built binaries from the [releases page](https://github.com/cuenv/cuenv/releases).
+## Verify the install
 
-Release assets are published for:
-
-- `cuenv-darwin-arm64`
-- `cuenv-linux-x64`
-- `cuenv-linux-arm64`
-
-### Method 5: From Source
-
-Build from source for the latest development features:
+Confirm the binary is on your `PATH` and can evaluate a minimal config:
 
 ```bash
-# Clone the repository
-git clone https://github.com/cuenv/cuenv.git
-cd cuenv
-
-# Build with optimizations
-cargo build --release
-
-# Install to cargo bin directory
-cargo install --path crates/cuenv-cli
-```
-
-### Method 6: Development Environment
-
-For contributors and developers:
-
-```bash
-# Clone and enter development environment
-git clone https://github.com/cuenv/cuenv.git
-cd cuenv
-
-# Enter the development shell
-nix develop
-
-# Or using direnv (if configured)
-direnv allow
-```
-
-## Platform-Specific Setup
-
-### Linux
-
-#### Ubuntu/Debian
-
-```bash
-# Install dependencies
-sudo apt update
-sudo apt install build-essential pkg-config libssl-dev
-
-# Install Rust if not already installed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install cuenv
-cargo install cuenv
-```
-
-#### Fedora/RHEL
-
-```bash
-# Install dependencies
-sudo dnf install gcc pkg-config openssl-devel
-
-# Install Rust if not already installed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install cuenv
-cargo install cuenv
-```
-
-#### Arch Linux
-
-```bash
-# Install dependencies
-sudo pacman -S base-devel openssl pkg-config
-
-# Install Rust if not already installed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install cuenv
-cargo install cuenv
-```
-
-### macOS
-
-#### Using Homebrew
-
-```bash
-brew install cuenv/cuenv/cuenv
-```
-
-#### Manual Installation
-
-```bash
-# Install Xcode Command Line Tools
-xcode-select --install
-
-# Install Rust if not already installed
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Install cuenv
-cargo install cuenv
-```
-
-### Windows
-
-#### Windows Subsystem for Linux (Recommended)
-
-```bash
-# Install WSL2 and Ubuntu
-wsl --install -d Ubuntu
-
-# Follow Linux installation steps inside WSL
-```
-
-#### Native Windows
-
-```powershell
-# Install Visual Studio Build Tools
-# Download from: https://visualstudio.microsoft.com/downloads/
-
-# Install Rust
-# Download from: https://rustup.rs/
-
-# Install cuenv
-cargo install cuenv
-```
-
-## Verification
-
-After installation, verify cuenv is working correctly:
-
-```bash
-# Check version
 cuenv version
 
-# Test basic functionality
-mkdir test-cuenv
-cd test-cuenv
-# Create a simple configuration
-echo 'package cuenv' > env.cue
-echo 'env: {}' >> env.cue
-echo 'tasks: {}' >> env.cue
+mkdir cuenv-smoke-test && cd cuenv-smoke-test
+cat > env.cue <<'CUE'
+package cuenv
 
-# Verify it loads
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+	name: "smoke-test"
+	env: {
+		GREETING: "hello from cuenv"
+	}
+}
+CUE
+
 cuenv env print
 ```
 
-## Shell Integration
+You should see `GREETING` in the printed environment. If `cuenv: command not found`, the install directory is not on your `PATH` — see [Troubleshooting](/how-to/troubleshooting/).
 
-### Bash
+## Shell integration
 
-Add to `~/.bashrc`:
+cuenv can load and unload a project's environment automatically as you `cd` between directories. Add the appropriate line to your shell config:
 
 ```bash
-# cuenv shell integration
+# ~/.bashrc
 source <(cuenv shell init bash)
-
-# Enable shell completions
-source <(COMPLETE=bash cuenv)
 ```
-
-### Zsh
-
-Add to `~/.zshrc`:
 
 ```zsh
-# cuenv shell integration
+# ~/.zshrc
 source <(cuenv shell init zsh)
-
-# Enable shell completions
-source <(COMPLETE=zsh cuenv)
 ```
-
-### Fish
-
-Add to `~/.config/fish/config.fish`:
 
 ```fish
-# cuenv shell integration
+# ~/.config/fish/config.fish
 cuenv shell init fish | source
-
-# Enable shell completions
-COMPLETE=fish cuenv | source
 ```
 
-:::tip
-Shell completions provide tab-completion for all cuenv commands, options, and task names from your CUE configuration. See the [CLI reference](/reference/cli/#shell-completions) for more details.
-:::
+Supported shells are `bash`, `zsh`, and `fish`. For the full command surface, tab-completion setup, and `cuenv env export`, see the [CLI reference](/reference/cli/).
 
-## IDE Integration
+## Editor setup
 
-:::note
-Official IDE extensions are planned for future releases. The instructions below describe planned functionality and third-party CUE support.
-:::
+For CUE syntax highlighting and language-server support in your editor, see [Editor Setup](/how-to/editor-setup/).
 
-### Visual Studio Code
+## Next steps
 
-Install the official Cuenv extension for full IDE integration:
-
-```bash
-# Install the Cuenv extension
-code --install-extension cuenv.cuenv-vscode
-
-# Also install CUE language support
-code --install-extension cue-lang.vscode-cue
-```
-
-See the [VSCode Extension documentation](/vscode-extension/) for features and configuration.
-
-### IntelliJ/CLion
-
-:::caution
-The cuenv plugin is not yet available. For CUE support, use the CUE plugin from JetBrains Marketplace.
-:::
-
-### Vim/Neovim
-
-Add CUE syntax support with vim-cue:
-
-```vim
-" Add to your vimrc
-Plug 'jjo/vim-cue'
-```
-
-## Troubleshooting
-
-### Common Issues
-
-**Command not found**
-
-Ensure `~/.cargo/bin` is in your PATH:
-
-```bash
-echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
-
-**Permission denied**
-
-On Linux/macOS, ensure the binary is executable:
-
-```bash
-chmod +x ~/.cargo/bin/cuenv
-```
-
-**Build failures**
-
-Update Rust to the latest version:
-
-```bash
-rustup update
-```
-
-**SSL/TLS errors**
-
-Update certificates and try again:
-
-```bash
-# Ubuntu/Debian
-sudo apt update && sudo apt install ca-certificates
-
-# macOS
-brew install ca-certificates
-```
-
-### Getting Help
-
-If you encounter issues:
-
-1. Check the [troubleshooting guide](/how-to/troubleshooting/)
-2. Search existing [GitHub issues](https://github.com/cuenv/cuenv/issues)
-3. Create a new issue with:
-   - Your operating system and version
-   - Rust version (`rustc --version`)
-   - Installation method used
-   - Complete error message
-
-## Next Steps
-
-After installation:
-
-- Follow the [Quick Start guide](/tutorials/first-project/)
-- Explore [configuration options](/how-to/configure-a-project/)
-- Learn about [task orchestration](/how-to/run-tasks/)
-- Set up your first [typed environment](/how-to/typed-environments/)
+- Build your first project in the [Quick Start tutorial](/tutorials/first-project/).
+- Define [typed environments](/how-to/typed-environments/) instead of `.env` files.
+- Resolve [secrets at runtime](/how-to/secrets/) from 1Password, AWS, and more.
+- Replace your `Makefile` with [task orchestration](/how-to/run-tasks/).
+- Check the [schema status](/reference/schema/status/) page before relying on any feature.
