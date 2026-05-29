@@ -7,6 +7,7 @@
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 pub use super::command::{execute_command, execute_command_with_redaction};
+use super::process::TaskAttempt;
 pub use super::result::{TASK_FAILURE_SNIPPET_LINES, TaskResult, summarize_task_failure};
 #[cfg(test)]
 use super::result::{format_failure_streams, summarize_stream};
@@ -25,6 +26,7 @@ use async_recursion::async_recursion;
 use cuenv_workspaces::PackageManager;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::process::Command;
 use tokio::task::JoinSet;
 use tracing::instrument;
@@ -210,18 +212,7 @@ impl TaskExecutor {
 
         // Real execution. Both backends produce the same `TaskResult`.
         let start = std::time::Instant::now();
-        let result = if self.backend.name() == "dagger" {
-            let ctx = super::backend::TaskExecutionContext {
-                name,
-                task,
-                environment: &self.config.environment,
-                project_root: &self.config.project_root,
-                capture_output: self.config.capture_output,
-            };
-            self.backend.execute(&ctx).await?
-        } else {
-            self.execute_task_non_hermetic(name, task).await?
-        };
+        let result = self.execute_task_with_retries(name, task).await?;
         let duration_ms = start.elapsed().as_millis();
 
         // Persist on successful miss. Cache writes are best-effort: a write
@@ -244,6 +235,66 @@ impl TaskExecutor {
         }
 
         Ok(result)
+    }
+
+    async fn execute_task_with_retries(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        // Timeout on the dagger backend would drop the future without tearing
+        // down the remote container, leaking the running task. Reject it
+        // explicitly rather than silently leak (host-backend timeout is killed
+        // via the process group in `process::terminate_child`).
+        if self.backend.name() == "dagger" && task.timeout.is_some() {
+            return Err(Error::configuration(format!(
+                "task `timeout` is not yet supported on the dagger backend: the container \
+                 would keep running past the deadline. Remove `timeout` from task '{name}' \
+                 or run it on the host backend."
+            )));
+        }
+
+        let retry_attempts = task.retry.as_ref().map_or(0, |retry| retry.attempts);
+        let max_attempts = retry_attempts.saturating_add(1);
+        let retry_delay = task
+            .retry
+            .as_ref()
+            .and_then(|retry| retry.delay.as_deref())
+            .map(|delay| parse_task_duration("retry.delay", delay))
+            .transpose()?;
+
+        let mut attempt = 1_u32;
+        loop {
+            // A timeout is a hard policy violation, not a transient failure:
+            // retrying would re-incur the full timeout each attempt, so a
+            // timed-out attempt ends the task immediately.
+            let result = match self.execute_task_once(name, task).await? {
+                TaskAttempt::TimedOut(result) => return Ok(result),
+                TaskAttempt::Completed(result) => result,
+            };
+            if result.success || attempt >= max_attempts {
+                return Ok(result);
+            }
+
+            attempt = attempt.saturating_add(1);
+            cuenv_events::emit_task_retrying!(name, attempt, max_attempts);
+            if let Some(delay) = retry_delay {
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+
+    async fn execute_task_once(&self, name: &str, task: &Task) -> Result<TaskAttempt> {
+        if self.backend.name() == "dagger" {
+            // Dagger has no host timeout (rejected in `execute_task_with_retries`),
+            // so every dagger attempt runs to completion.
+            let ctx = super::backend::TaskExecutionContext {
+                name,
+                task,
+                environment: &self.config.environment,
+                project_root: &self.config.project_root,
+                capture_output: self.config.capture_output,
+            };
+            Ok(TaskAttempt::Completed(self.backend.execute(&ctx).await?))
+        } else {
+            self.execute_task_non_hermetic(name, task).await
+        }
     }
 
     /// Reproduce a [`TaskResult`] from a cache hit and emit the same
@@ -401,7 +452,7 @@ impl TaskExecutor {
     /// Execute a task non-hermetically (directly in workspace/project root)
     ///
     /// Used for tasks like `bun install` that need to write to the real filesystem.
-    async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskResult> {
+    async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskAttempt> {
         // Check if this is an unresolved TaskRef (should have been resolved before execution)
         if task.is_task_ref() && task.project_root.is_none() {
             return Err(Error::configuration(format!(
@@ -471,7 +522,12 @@ impl TaskExecutor {
             cmd.env("CLICOLOR_FORCE", "1");
         }
 
-        super::process::run_task_process(name, cmd, self.config.capture_output).await
+        let timeout = task
+            .timeout
+            .as_deref()
+            .map(|timeout| parse_task_duration("timeout", timeout))
+            .transpose()?;
+        super::process::run_task_process(name, cmd, self.config.capture_output, timeout).await
     }
 
     /// Execute a task node (single task, group, or list)
@@ -596,7 +652,13 @@ impl TaskExecutor {
         }
 
         if emit_lifecycle {
-            cuenv_events::emit_task_group_started!(prefix, false, group.children.len());
+            cuenv_events::emit_task_group_started!(
+                prefix,
+                false,
+                group.children.len(),
+                None::<&str>,
+                group.max_concurrency
+            );
         }
         let started = std::time::Instant::now();
         let total_children = group.children.len();
@@ -617,7 +679,9 @@ impl TaskExecutor {
         let all_tasks = Arc::new(all_tasks.clone());
         let mut all_results = Vec::new();
         let mut merge_results = |results: Vec<TaskResult>| -> Result<()> {
-            if let Some(failed) = results.iter().find(|r| !r.success) {
+            if let Some(failed) = results.iter().find(|r| !r.success)
+                && !self.config.continue_on_error
+            {
                 return Err(Error::task_failed(
                     &failed.name,
                     failed.exit_code.unwrap_or(-1),
@@ -628,6 +692,7 @@ impl TaskExecutor {
             all_results.extend(results);
             Ok(())
         };
+        let max_parallel = group_concurrency_limit(self.config.max_parallel, group.max_concurrency);
         for (name, child_node) in &group.children {
             let task_name = format!("{}.{}", prefix, name);
             let child_node = child_node.clone();
@@ -638,8 +703,8 @@ impl TaskExecutor {
                     .execute_node(&task_name, &child_node, &all_tasks)
                     .await
             });
-            if self.config.max_parallel > 0
-                && join_set.len() >= self.config.max_parallel
+            if max_parallel > 0
+                && join_set.len() >= max_parallel
                 && let Some(result) = join_set.join_next().await
             {
                 match result {
@@ -679,26 +744,48 @@ impl TaskExecutor {
             // completed in prior parallel groups. Intra-group siblings
             // are independent by definition so they don't appear here.
             |mut node, outcomes_so_far| -> Result<_> {
-                let resolver = super::output_refs::OutputRefResolver {
-                    task_name: &node.name,
-                    results: outcomes_so_far,
-                };
-                resolver.resolve(&mut node.task.args, &mut node.task.env)?;
+                // The walker tracks `TaskWalkOutcome` (result + continue_on_error),
+                // but the resolver only needs the prior `TaskResult`s. Project to
+                // them — and only when this node actually references an output, so
+                // ref-free nodes don't pay for the copy.
+                if super::output_refs::has_output_refs(&node.task.args, &node.task.env) {
+                    let results: std::collections::HashMap<String, TaskResult> = outcomes_so_far
+                        .iter()
+                        .map(|(name, outcome)| (name.clone(), outcome.result.clone()))
+                        .collect();
+                    let resolver = super::output_refs::OutputRefResolver {
+                        task_name: &node.name,
+                        results: &results,
+                    };
+                    resolver.resolve(&mut node.task.args, &mut node.task.env)?;
+                }
                 Ok(node)
             },
             {
                 let executor = Arc::new(self.clone_with_config());
                 move |node| {
                     let executor = Arc::clone(&executor);
-                    async move { executor.execute_task(&node.name, &node.task).await }
+                    async move {
+                        let continue_on_error = node.task.continue_on_error;
+                        executor
+                            .execute_task(&node.name, &node.task)
+                            .await
+                            .map(|result| TaskWalkOutcome {
+                                result,
+                                continue_on_error,
+                            })
+                    }
                 }
             },
             |join_err| Error::execution(format!("Task execution panicked: {join_err}")),
         )
         .await?;
 
-        let mut all_results: Vec<TaskResult> =
-            summary.outcomes.into_iter().map(|(_name, r)| r).collect();
+        let mut all_results: Vec<TaskResult> = summary
+            .outcomes
+            .into_iter()
+            .map(|(_name, outcome)| outcome.result)
+            .collect();
 
         // Under fail-fast, the walker short-circuits on the first failure
         // and we surface it via Err so callers see the failing task's
@@ -741,6 +828,22 @@ impl TaskExecutor {
     }
 }
 
+#[derive(Clone)]
+struct TaskWalkOutcome {
+    result: TaskResult,
+    continue_on_error: bool,
+}
+
+impl super::graph_walk::WalkOutcome for TaskWalkOutcome {
+    fn is_success(&self) -> bool {
+        self.result.success
+    }
+
+    fn continue_on_error(&self) -> bool {
+        self.continue_on_error
+    }
+}
+
 #[derive(Clone, Copy)]
 struct CacheHitInput<'a> {
     name: &'a str,
@@ -753,6 +856,54 @@ struct CacheHitInput<'a> {
 fn emit_cached_output_events(name: &str, stream: &'static str, content: &str) {
     for line in content.lines() {
         cuenv_events::emit_task_output!(name, stream, line);
+    }
+}
+
+fn group_concurrency_limit(global: usize, group: Option<u32>) -> usize {
+    let group = group.and_then(|value| usize::try_from(value).ok());
+    match (global, group) {
+        (0, Some(group)) => group,
+        (global, Some(group)) if group > 0 => global.min(group),
+        (global, _) => global,
+    }
+}
+
+fn parse_task_duration(field: &str, spec: &str) -> Result<Duration> {
+    let raw = spec.trim();
+    if raw.is_empty() {
+        return Err(Error::configuration(format!("{field} must not be empty")));
+    }
+
+    let digits_len = raw.bytes().take_while(|byte| byte.is_ascii_digit()).count();
+    if digits_len == 0 || digits_len == raw.len() {
+        return Err(Error::configuration(format!(
+            "invalid task {field} '{raw}': expected <int><unit> (e.g. 30m, 1h)"
+        )));
+    }
+
+    let quantity: u64 = raw[..digits_len]
+        .parse()
+        .map_err(|e| Error::configuration(format!("invalid task {field} '{raw}': {e}")))?;
+    let unit = raw[digits_len..].trim().to_ascii_lowercase();
+
+    // Convert `quantity` units of `factor` seconds each into a Duration,
+    // rejecting overflow with the field/spec context already in scope.
+    let secs = |factor: u64| -> Result<Duration> {
+        quantity
+            .checked_mul(factor)
+            .map(Duration::from_secs)
+            .ok_or_else(|| Error::configuration(format!("task {field} '{raw}' is too large")))
+    };
+
+    match unit.as_str() {
+        "ms" => Ok(Duration::from_millis(quantity)),
+        "s" => secs(1),
+        "m" => secs(60),
+        "h" => secs(60 * 60),
+        "d" => secs(24 * 60 * 60),
+        _ => Err(Error::configuration(format!(
+            "invalid task {field} unit in '{raw}': use ms|s|m|h|d"
+        ))),
     }
 }
 

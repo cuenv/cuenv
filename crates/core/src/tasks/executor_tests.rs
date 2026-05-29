@@ -1,6 +1,6 @@
 use super::*;
 use crate::tasks::cache::TaskCacheConfig;
-use crate::tasks::{SourceLocation, TaskDependency, TaskDirectoryOptions};
+use crate::tasks::{RetryConfig, SourceLocation, TaskDependency, TaskDirectoryOptions};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
 use cuenv_vcs::WalkHasher;
@@ -171,6 +171,144 @@ async fn test_execute_failing_task() {
     let result = executor.execute_task("test", &task).await.unwrap();
     assert!(!result.success);
     assert_eq!(result.exit_code, Some(1));
+}
+
+#[tokio::test]
+async fn test_execute_task_timeout() {
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "sleep 1".to_string()],
+        timeout: Some("50ms".to_string()),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("timeout", &task).await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+    assert!(result.stderr.contains("timed out"));
+}
+
+#[tokio::test]
+async fn test_execute_task_retries_until_success() {
+    let tmp = TempDir::new().unwrap();
+    let marker = tmp.path().join("attempts");
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "count=$(cat attempts 2>/dev/null || echo 0); count=$((count + 1)); echo $count > attempts; test $count -ge 2"
+                .to_string(),
+        ],
+        retry: Some(RetryConfig {
+            attempts: 2,
+            delay: Some("1ms".to_string()),
+        }),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("retry", &task).await.unwrap();
+
+    assert!(result.success);
+    assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "2");
+}
+
+#[tokio::test]
+async fn test_timeout_is_not_retried() {
+    // A timeout is a hard policy violation, not a transient failure: even with
+    // retries configured, a timed-out attempt must end the task immediately
+    // rather than re-incur the full timeout on every attempt.
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "echo x >> attempts; sleep 5".to_string()],
+        timeout: Some("100ms".to_string()),
+        retry: Some(RetryConfig {
+            attempts: 3,
+            delay: None,
+        }),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("noretry", &task).await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+    let attempts = std::fs::read_to_string(tmp.path().join("attempts")).unwrap();
+    assert_eq!(
+        attempts.lines().count(),
+        1,
+        "a timed-out attempt must not be retried"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_timeout_kills_process_tree() {
+    // The task spawns a grandchild (`sleep 30 &`) sharing its process group,
+    // then blocks. On timeout the whole group is signalled, so the grandchild
+    // must be reaped too — proving timeout enforcement isn't limited to the
+    // direct child (the orphaned-process failure mode).
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "sleep 30 & echo $! > grandchild.pid; sleep 30".to_string(),
+        ],
+        timeout: Some("150ms".to_string()),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("tree", &task).await.unwrap();
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+
+    let pid: i32 = std::fs::read_to_string(tmp.path().join("grandchild.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    // kill(pid, 0) returns Err(ESRCH) once the process is gone. Poll briefly
+    // for the OS to finish reaping after the SIGKILL.
+    let mut alive = true;
+    for _ in 0..40 {
+        #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
+        let exists = unsafe { libc::kill(pid, 0) } == 0;
+        if !exists {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        !alive,
+        "grandchild {pid} should be killed when the task times out"
+    );
 }
 
 #[tokio::test]
@@ -401,6 +539,50 @@ async fn test_execute_graph_parallel_groups() {
 }
 
 #[tokio::test]
+async fn test_execute_group_respects_max_concurrency() {
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let script = "if [ -f running ]; then echo overlap > violation; fi; touch running; sleep 0.1; rm running";
+    let group = TaskGroup {
+        type_: "group".to_string(),
+        depends_on: Vec::new(),
+        max_concurrency: Some(1),
+        description: None,
+        children: HashMap::from([
+            (
+                "a".to_string(),
+                TaskNode::Task(Box::new(Task {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), script.to_string()],
+                    ..Default::default()
+                })),
+            ),
+            (
+                "b".to_string(),
+                TaskNode::Task(Box::new(Task {
+                    command: "sh".to_string(),
+                    args: vec!["-c".to_string(), script.to_string()],
+                    ..Default::default()
+                })),
+            ),
+        ]),
+    };
+
+    let results = executor
+        .execute_node("limited", &TaskNode::Group(group), &Tasks::new())
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert!(!tmp.path().join("violation").exists());
+}
+
+#[tokio::test]
 async fn execute_graph_continue_on_error_skips_dependents() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
@@ -456,6 +638,68 @@ async fn execute_graph_continue_on_error_skips_dependents() {
     // though "fail" failed — that's the whole point of the flag.
     // (We can't easily assert on the results vec since the executor
     // returns Err; this is exercised in the integration suite.)
+}
+
+#[tokio::test]
+async fn execute_graph_task_continue_on_error_skips_dependents() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    let bus = EventBus::new();
+    let sender = bus.sender().expect("sender available");
+    let _ = cuenv_events::set_global_sender(sender);
+    let mut rx = bus.subscribe();
+
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        max_parallel: 1,
+        project_root: root.to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let mut tasks = Tasks::new();
+    tasks.tasks.insert(
+        "fail".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "sh".into(),
+            args: vec!["-c".into(), "exit 7".into()],
+            continue_on_error: true,
+            ..Default::default()
+        })),
+    );
+    tasks.tasks.insert(
+        "dependent".into(),
+        TaskNode::Task(Box::new(Task {
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo dependent ran".into()],
+            depends_on: vec![TaskDependency::from_name("fail")],
+            ..Default::default()
+        })),
+    );
+
+    let mut graph = TaskGraph::new();
+    graph.build_for_task("dependent", &tasks).unwrap();
+    let outcome = executor.execute_graph(&graph).await;
+    assert!(outcome.is_err(), "fail task should surface as error");
+
+    let mut saw_skip = false;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {
+            Ok(Some(event)) => {
+                if let EventCategory::Task(TaskEvent::Skipped { name, .. }) = event.category
+                    && name == "dependent"
+                {
+                    saw_skip = true;
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+
+    cuenv_events::clear_global_sender();
+    assert!(saw_skip, "dependent task should be skipped");
 }
 
 #[tokio::test]
