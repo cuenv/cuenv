@@ -43,7 +43,8 @@ is the authoritative source.
 | Typed environment variables | Stable | Enums, bounds, regex, defaults, interpolation, per-environment overrides |
 | `cuenv exec` — run a command in the resolved environment | Stable | |
 | Secrets: env vars, custom CLI, 1Password, Infisical | Stable | Resolved at runtime, redacted from output |
-| Secrets: AWS, GCP, Vault | Preview | Defined in the schema; runtime resolvers not registered yet |
+| Secrets: AWS Secrets Manager, GCP Secret Manager | Stable | Feature-gated resolvers; resolved at runtime, redacted from output |
+| Secrets: Vault | Preview | Defined in the schema; runtime resolver not registered yet |
 | Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
 | Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
 | Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
@@ -63,8 +64,8 @@ is the authoritative source.
 | Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
 | Runtimes: OCI binaries, Dagger | Partial | |
 | Runtime: container | Preview | |
-| Container image build (`cuenv build`) | Preview | Lists configured images; build backend not implemented |
-| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Session state works; task/image dependencies not yet |
+| Container image build (`cuenv build`) | Partial | Builds Dockerfile (Docker/buildx) and Nix images; multi-arch Nix, Dagger execution, and image output-reference resolution incomplete |
+| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Sessions, readiness, restart, watch, and service+task dependencies work; image-dependency builds fail fast |
 | Changesets (`cuenv changeset`) | Stable | |
 | Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
 
@@ -158,9 +159,11 @@ what's wired up.
 - **Secrets:** environment variables, any CLI (`#ExecSecret`), 1Password,
   Infisical, AWS Secrets Manager, and GCP Secret Manager resolve today. Vault is
   schema-only for now.
+- **Working within limits:** long-running services (sessions, readiness,
+  restart, watch, and service+task dependencies) and `cuenv build` (Dockerfile
+  and Nix images), each with documented gaps.
 - **In progress:** Buildkite/GitLab CI, multi-source tools, codegen,
-  `.rules.cue` generation, release management, services, and container/Dagger
-  runtimes.
+  `.rules.cue` generation, release management, and the container/Dagger runtimes.
 
 ## Get started
 
