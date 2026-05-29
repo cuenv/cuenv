@@ -272,5 +272,3 @@ Next steps:
 - [Schema status](/reference/schema/status/) — the authoritative source for what is implemented, partial, or schema-only.
 - [Run tasks](/how-to/run-tasks/) — define the tasks you wire into `dependsOn`.
 - [Secrets](/how-to/secrets/) — secrets in a service's `env` are resolved at runtime and redacted from logs.
-</content>
-</invoke>

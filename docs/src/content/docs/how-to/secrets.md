@@ -393,5 +393,3 @@ first, then rerun the cuenv command with `-L debug`.
 - [Schema status](/reference/schema/status/) - current secret resolver support
 - [Typed environments](/how-to/typed-environments/) - environment value shapes
 - [Run tasks](/how-to/run-tasks/) - task execution and cache behavior
-</content>
-</invoke>

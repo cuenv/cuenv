@@ -243,5 +243,3 @@ From here:
 If something didn't print what you expected, see
 [Troubleshooting](/how-to/troubleshooting/), and check the
 [schema status](/reference/schema/status/) page before relying on any feature.
-</content>
-</invoke>
