@@ -167,9 +167,122 @@ cuenv task dev --tui
 - `q` or `Esc`: Quit when execution is complete
 - `Ctrl+C`: Force quit/abort execution
 
+## Controlling execution
+
+`cuenv task` ships flags for inspecting, scoping, and hardening runs without editing your CUE. The most useful are below; the [CLI reference](/reference/cli/#cuenv-task) lists every flag.
+
+### Inspect the graph without running it
+
+`--dry-run` (short `-n`) resolves the full task DAG and exports it as JSON, then exits. Nothing is executed — perfect for code review, CI planning, or debugging dependency edges.
+
+```bash
+cuenv task build --dry-run
+```
+
+```json
+{
+  "tasks": [
+    { "name": "lint", "command": "cargo", "dependsOn": [] },
+    { "name": "test", "command": "cargo", "dependsOn": [] },
+    { "name": "build", "command": "cargo", "dependsOn": ["lint", "test"] }
+  ]
+}
+```
+
+(Sample trimmed for brevity; the real envelope includes more fields.)
+
+### Run by label
+
+Tasks can carry `labels`, and `-l/--label` runs every task that matches. Repeat the flag for AND semantics:
+
+```bash
+# Run everything labelled "ci"
+cuenv task -l ci
+
+# Run tasks labelled BOTH "test" and "unit"
+cuenv task -l test -l unit
+```
+
+### Resilient runs with `--continue-on-error`
+
+By default, the first failure aborts the run. `--continue-on-error` keeps unrelated siblings going and marks anything downstream of the failure as skipped:
+
+```bash
+cuenv task ci --continue-on-error
+```
+
+- Tasks that depend (directly or transitively) on the failed task are emitted as `task.skipped` — they never ran because a prerequisite failed.
+- Independent siblings keep running to completion, so one flaky check no longer hides the rest of your results.
+
+This mirrors how [CI pipelines](/how-to/ci/) report partial failures: you see every result in one pass instead of fixing one error at a time.
+
+### Skip dependencies for external orchestrators
+
+When a CI system already schedules upstream jobs, `-S/--skip-dependencies` runs only the named task and trusts that its dependencies were satisfied elsewhere:
+
+```bash
+cuenv task build --skip-dependencies
+```
+
+### Interactive picker
+
+On a TTY, `-i/--interactive` opens a picker so you can choose a task by browsing rather than typing its name:
+
+```bash
+cuenv task -i
+```
+
+### Backend selection
+
+By default tasks run on the host. `--backend` forces a specific backend:
+
+```bash
+cuenv task build --backend dagger
+```
+
+:::note[Dagger backend is Partial]
+The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage.
+:::
+
+### Cache helpers
+
+When a task uses `cache`, two flags help you work with the content-addressed store:
+
+```bash
+# Print the cache directory for this task's current key (does not run the task)
+cuenv task build --show-cache-path
+
+# On a cache hit, copy the cached outputs into a directory of your choice
+cuenv task build --materialize-outputs ./dist
+```
+
 ## Dependencies & Parallelism
 
-cuenv analyzes the dependency graph defined by `dependsOn`. Tasks that do not depend on each other will be executed in parallel, maximizing resource usage.
+A `Makefile` makes you spell out ordering by hand, re-runs everything every time, and runs serially unless you remember `-j`:
+
+```make
+build: lint test
+	cargo build --release
+lint:
+	cargo clippy
+test:
+	cargo test
+```
+
+The equivalent `#Task` declares the same edges, but cuenv derives the graph, runs the independent work in parallel, and (with `cache`, below) skips work whose inputs have not changed:
+
+```cue
+build: schema.#Task & {
+    command: "cargo"
+    args: ["build", "--release"]
+    dependsOn: [lint, test]
+    inputs:  ["src/**/*", "Cargo.toml", "Cargo.lock"]
+    outputs: ["target/release/myapp"]
+    cache: mode: "read-write"
+}
+```
+
+cuenv analyzes the dependency graph defined by `dependsOn`. Tasks that do not depend on each other run in parallel, maximizing resource usage.
 
 In the example above:
 
@@ -199,6 +312,41 @@ tasks: {
     }
 }
 ```
+
+### The payoff: parallel once, cached forever
+
+Point cuenv at the bundled `examples/task-basic` project to see the loop end to end. Listing first:
+
+```console
+$ cuenv task --path examples/task-basic --package examples
+Tasks:
+  greetAll          (sequence)
+  greetIndividual   (group)
+  interpolate
+  propagate
+  shellExample
+```
+
+Run a group and the independent children fan out across cores at once:
+
+```console
+$ cuenv task greetIndividual --path examples/task-basic --package examples
+✓ greetIndividual.jack    Hello Jack
+✓ greetIndividual.tealc   Hello Teal'c
+2 tasks completed in 0.04s
+```
+
+The real win shows up on the second run of a cached task. Once `cache: {mode: "read-write"}` is set and the declared `inputs` are unchanged, cuenv reuses the prior result instead of re-running the command:
+
+```console
+$ cuenv task build            # first run: actually compiles
+✓ build   compiled in 8.2s
+
+$ cuenv task build            # second run: inputs unchanged
+✓ build   cached (0.01s)
+```
+
+That is the "one typed config replaces .env + Makefile + CI YAML" story in miniature: the same `#Task` graph you run locally is the graph CI runs, with parallelism and content-addressed caching for free.
 
 ## Task Parameters
 
@@ -360,6 +508,39 @@ Each task exposes three output fields:
 
 When a task references another task's output, cuenv automatically adds a dependency edge — there is no need to add an explicit `dependsOn`. The upstream task is guaranteed to complete before the downstream task starts.
 
+### Captured values
+
+Where `stdout`/`stderr` hand the *whole* output stream to another task, `captures` pull a single value out of a stream with a regex. A capture names a `pattern` and a `source`, and the first capture group's match becomes the value:
+
+```cue
+import "github.com/cuenv/cuenv/schema"
+
+tasks: {
+    "deploy.preview": schema.#Task & {
+        command: "deploy-preview"
+        captures: {
+            previewUrl: {
+                pattern: "https://[^ ]+"
+                source:  "stdout"
+            }
+        }
+    }
+}
+```
+
+A captured value is referenced through `#TaskCaptureRef`, naming the producing task and the capture key. The intended surface is CI annotations:
+
+```cue
+annotations: "Preview URL": schema.#TaskCaptureRef & {
+    cuenvTask:    "deploy.preview"
+    cuenvCapture: "previewUrl"
+}
+```
+
+:::caution[`captures` is Partial — verify before relying on it]
+`captures` and `#TaskCaptureRef` exist in the schema (`schema/tasks.cue`) and are described here as designed, but task execution policies in this area are flagged for limitation notes and there is no bundled runnable example yet. Confirm current behavior against [Schema status](/reference/schema/status/) before depending on captured values in production.
+:::
+
 ## Environment Injection
 
 Tasks inherit the environment variables defined in your `env` block. You can also define task-specific environment variables:
@@ -424,3 +605,31 @@ tasks: {
 See [Schema status](/reference/schema/status/) for the current implementation
 limits around task execution policies such as `timeout`, `retry`,
 `continueOnError`, and group `maxConcurrency`.
+
+## Try it / See also
+
+:::tip[Run the real fixtures]
+Both snippets in this guide come from runnable example projects in the cuenv repo — clone it and point cuenv at them directly:
+
+```bash
+# Task types, groups, sequences, params, and script tasks
+cuenv task --path examples/task-basic --package examples
+
+# Output references between tasks (stdout/stderr piping + auto-deps)
+cuenv task --path examples/task-output-ref --package examples
+```
+
+`examples/task-basic/env.cue` defines the `interpolate`, `propagate`, `greetAll`
+(sequence), `greetIndividual` (group), and `shellExample` tasks shown above.
+`examples/task-output-ref/env.cue` wires `tmpdir` → `work`/`cleanup` and a
+`pipeline` sequence using the `tasks.tmpdir.stdout` references from the
+[Task Output References](#task-output-references) section.
+:::
+
+**Where to go next:**
+
+- [CLI reference: `cuenv task`](/reference/cli/#cuenv-task) — every flag, in one scannable table.
+- [Task scripts](/how-to/task-scripts/) — writing larger script tasks and embedding files.
+- [Run CI pipelines](/how-to/ci/) — the same task graph, executed in CI.
+- [Manage secrets](/how-to/secrets/) — inject runtime-resolved secrets into task `env`.
+- [Schema status](/reference/schema/status/) — what is Stable, Partial, or schema-only.

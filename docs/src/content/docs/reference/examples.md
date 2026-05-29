@@ -1,938 +1,568 @@
 ---
 title: Examples
-description: Practical examples and usage patterns for cuenv
+description: A curated index of the real, tested cuenv configs under examples/, one canonical snippet per feature.
 ---
 
-This page provides practical examples to help you get started with cuenv. Each example demonstrates common patterns you can adapt for your projects.
+Every snippet on this page is excerpted from a config that lives under
+[`examples/`](https://github.com/cuenv/cuenv/tree/main/examples) in the cuenv
+repository. Those configs are evaluated in CI, so what you copy here is what the
+tool actually runs.
 
-## Basic Environment Variables
-
-The simplest cuenv configuration defines environment variables with type safety:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-env: {
-    // Basic string values
-    DATABASE_URL: "postgres://localhost/mydb"
-    APP_NAME:     "my-application"
-
-    // Boolean and numeric values
-    DEBUG: true
-    PORT:  3000
-
-    // String interpolation
-    BASE_URL:     "https://api.example.com"
-    API_ENDPOINT: "\(BASE_URL)/v1"
-}
-```
-
-**Usage:**
+Clone the repo and run any of them directly:
 
 ```bash
-# Print environment variables
-cuenv env print
+git clone https://github.com/cuenv/cuenv.git
+cd cuenv
 
-# Execute a command with these variables
-cuenv exec -- bun server.js
+# Every example is loaded the same way: point --path at its directory
+# and use the shared "examples" package.
+cuenv env print --path examples/env-basic --package examples
+cuenv task --path examples/task-basic --package examples
 ```
 
-## Basic Tasks
+:::note[Status first]
+This page links each feature to its example, but it does **not** decide what is
+production-ready. Before you depend on a feature, check the
+[Schema status](/reference/schema/status/) page and the
+[schema coverage matrix](https://github.com/cuenv/cuenv/blob/main/docs/design/specs/schema-coverage-matrix.md).
+Some definitions are `partial` or `schema-only`; this page calls those out where
+they appear.
+:::
 
-Define tasks to automate common workflows using explicit type annotations:
+## How an example is shaped
+
+All examples share one header convention. They declare the package, import the
+schema, anchor the file to `schema.#Project`, then set top-level fields like
+`name` and `env`:
 
 ```cue
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-  name: "my-project"
-}
+schema.#Project
+
+name: "env-basic"
 
 env: {
-    NAME: "Developer"
-}
-
-tasks: {
-    // Simple command with arguments
-    greet: schema.#Task & {
-        command: "echo"
-        args: ["Hello", env.NAME, "!"]
-    }
-
-    // Task that uses environment variables
-    show_env: schema.#Task & {
-        command: "printenv"
-        args: ["NAME"]
-    }
-
-    // Script task with an explicit shell
-    shell_example: schema.#Task & {
-        script: """
-            echo "Running in Bash"
-            """
-        scriptShell: "bash"
-        shellOptions: {
-            errexit: true
-        }
-    }
+	DATABASE_URL: "postgres://localhost/mydb"
 }
 ```
 
-**Usage:**
+`schema.#Project` on its own line constrains the whole file; you then fill in the
+fields. (Some examples nest everything inside `schema.#Project & { ... }` — both
+forms are valid, but the top-level form is what most examples use.)
+
+:::caution[Environment values are strings]
+Every value under `env:` must be a string. Write `PORT: "3000"`, not
+`PORT: 3000`, and `DEBUG: "true"`, not `DEBUG: true`. cuenv exports environment
+variables, and environment variables are strings. See
+[Typed environments](/how-to/typed-environments/) for type-safe constraints like
+`PORT: string & =~"^[0-9]+$"`.
+:::
+
+## Environments and secrets
+
+[`examples/env-basic`](https://github.com/cuenv/cuenv/tree/main/examples/env-basic)
+shows plain values plus CUE string interpolation.
+
+```cue
+package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "env-basic"
+
+env: {
+	DATABASE_URL: "postgres://localhost/mydb"
+	DEBUG:        "true"
+	PORT:         "3000"
+
+	// Interpolation references another key
+	BASE_URL:     "https://api.example.com"
+	API_ENDPOINT: "\(BASE_URL)/v1"
+}
+```
 
 ```bash
-# List available tasks
-cuenv task
-
-# Run a specific task
-cuenv task greet
+cuenv env print --path examples/env-basic --package examples
+cuenv env print --path examples/env-basic --package examples --output json
 ```
 
-## Sequential Tasks
-
-Run tasks in a specific order using `#TaskSequence`:
+Secrets are resolved at runtime, never stored on disk. For a custom command-based
+secret, use `schema.#ExecSecret` — not the `schema.#Secret & {command, args}`
+shape:
 
 ```cue
-package cuenv
+env: {
+	DB_PASSWORD: schema.#ExecSecret & {
+		command: "vault"
+		args: ["kv", "get", "-field=password", "secret/db"]
+	}
+}
+```
+
+Named resolvers exist too. `#OnePasswordRef`, `#AwsSecret`, and `#GcpSecret` are
+implemented (feature-gated); `#VaultSecret` is schema-only until its runtime
+resolver is registered. See the [secrets how-to](/how-to/secrets/) and confirm
+support on the [status page](/reference/schema/status/).
+
+## Tasks
+
+[`examples/task-basic`](https://github.com/cuenv/cuenv/tree/main/examples/task-basic)
+covers commands, scripts, sequences, and parallel groups in one file.
+
+```cue
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-  name: "my-project"
-}
+schema.#Project
+
+name: "task-basic"
 
 env: {
-    PROJECT: "my-app"
+	NAME: "Jack O'Neill"
 }
 
 tasks: {
-    // Sequential execution - steps run in order
-    deploy: schema.#TaskSequence & [
-        schema.#Task & {
-            command: "echo"
-            args: ["Step 1: Building \(env.PROJECT)..."]
-        },
-        schema.#Task & {
-            command: "echo"
-            args: ["Step 2: Running tests..."]
-        },
-        schema.#Task & {
-            command: "echo"
-            args: ["Step 3: Deploying..."]
-        },
-    ]
+	// A single command with arguments
+	interpolate: schema.#Task & {
+		command: "echo"
+		args: ["Hello ", env.NAME, "!"]
+	}
+
+	// Steps run in order
+	greetAll: schema.#TaskSequence & [
+		schema.#Task & {command: "echo", args: ["Hello 1 ", env.NAME, "!"]},
+		schema.#Task & {command: "echo", args: ["Hello 2 ", env.NAME, "!"]},
+	]
+
+	// Children run in parallel
+	greetIndividual: schema.#TaskGroup & {
+		type: "group"
+		jack: schema.#Task & {command: "echo", args: ["Hello Jack"]}
+		tealc: schema.#Task & {command: "echo", args: ["Hello Teal'c"]}
+	}
+
+	// A script with an explicit shell
+	shellExample: schema.#Task & {
+		script: """
+			echo "Hello from Bash"
+			"""
+		scriptShell: "bash"
+		shellOptions: errexit: true
+	}
 }
 ```
-
-## Parallel Task Groups
-
-Organize related tasks into parallel groups using `#TaskGroup`:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-tasks: {
-    // Parallel execution - all children run concurrently
-    // Run with: cuenv task database.migrate
-    database: schema.#TaskGroup & {
-        type: "group"
-        migrate: schema.#Task & {
-            command: "migrate"
-            args: ["up"]
-        }
-        seed: schema.#Task & {
-            command: "seed"
-            args: ["--env", "development"]
-        }
-        reset: schema.#Task & {
-            command: "migrate"
-            args: ["reset"]
-        }
-    }
-
-    // Another parallel group
-    test: schema.#TaskGroup & {
-        type: "group"
-        unit: schema.#Task & {
-            command: "cargo"
-            args: ["test", "--lib"]
-        }
-        integration: schema.#Task & {
-            command: "cargo"
-            args: ["test", "--test", "integration"]
-        }
-    }
-}
-```
-
-**Usage:**
 
 ```bash
-cuenv task database.migrate
-cuenv task test.unit
+cuenv task --path examples/task-basic --package examples
+cuenv task interpolate --path examples/task-basic --package examples
+cuenv task greetIndividual.jack --path examples/task-basic --package examples
 ```
 
-## Shell Hooks
+Groups, sequences, params, and caching are real. `timeout`, `retry`,
+`continueOnError`, and group `maxConcurrency` carry limitations — see
+[status](/reference/schema/status/) and [Run tasks](/how-to/run-tasks/).
 
-Execute commands automatically when entering a directory:
+## Task output references
+
+[`examples/task-output-ref`](https://github.com/cuenv/cuenv/tree/main/examples/task-output-ref)
+wires one task's `stdout` into another. Referencing the output **auto-infers the
+dependency** — no manual `dependsOn` required for the reference.
 
 ```cue
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-  name: "my-project"
-}
+schema.#Project
 
-env: {
-    CUENV_TEST:   "loaded_successfully"
-    API_ENDPOINT: "http://localhost:8080/api"
-    DEBUG_MODE:   "true"
-    PROJECT_NAME: "my-project"
-}
-
-hooks: {
-    onEnter: [{
-        command: "echo"
-        args: ["Environment configured for development"]
-    }]
-}
+name: "task-output-ref"
 
 tasks: {
-    verify_env: {
-        command: "sh"
-        args: ["-c", "echo CUENV_TEST=$CUENV_TEST"]
-    }
+	tmpdir: schema.#Task & {
+		command: "mktemp"
+		args: ["-d"]
+	}
+
+	// tasks.tmpdir.stdout implies a dependency on tmpdir
+	work: schema.#Task & {
+		command: "echo"
+		args: ["working in", tasks.tmpdir.stdout]
+	}
+
+	cleanup: schema.#Task & {
+		command: "rm"
+		args: ["-rf", tasks.tmpdir.stdout]
+		dependsOn: [work]
+	}
 }
 ```
-
-**Setup:**
 
 ```bash
-# Approve the configuration (required for security)
-cuenv allow
-
-# Shell integration will now auto-load when you cd into this directory
+cuenv task work --path examples/task-output-ref --package examples
 ```
 
-## Bun/TypeScript Project
+## Hooks
 
-A complete example for a Bun project:
+[`examples/hook`](https://github.com/cuenv/cuenv/tree/main/examples/hook) runs a
+command on directory entry. Hooks require approval before they execute.
 
 ```cue
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-  name: "my-project"
-}
+schema.#Project
+
+name: "hook"
 
 env: {
-    NODE_ENV: "development" | "production" | *"development"
-    PORT:     3000
-
-    // Database configuration
-    DATABASE_URL: "postgresql://localhost:5432/myapp_dev"
-    REDIS_URL:    "redis://localhost:6379"
-
-    // API keys (use secrets in production)
-    JWT_SECRET: "dev-secret-change-in-production"
+	CUENV_TEST:   "loaded_successfully"
+	API_ENDPOINT: "http://localhost:8080/api"
 }
+
+// onEnter hooks are keyed maps of named entries
+hooks: onEnter: notify: {command: "echo", args: ["Environment configured"]}
 
 tasks: {
-    // Development tasks
-    dev: schema.#Task & {
-        command: "bun"
-        args: ["run", "dev"]
-    }
-
-    build: schema.#Task & {
-        command: "bun"
-        args: ["run", "build"]
-    }
-
-    // Testing - parallel execution
-    test: schema.#TaskGroup & {
-        type: "group"
-        unit: schema.#Task & {
-            command: "bun"
-            args: ["run", "test:unit"]
-        }
-        e2e: schema.#Task & {
-            command: "bun"
-            args: ["run", "test:e2e"]
-        }
-        coverage: schema.#Task & {
-            command: "bun"
-            args: ["run", "test:coverage"]
-        }
-    }
-
-    // Linting and formatting
-    lint: schema.#Task & {
-        command: "bun"
-        args: ["run", "lint"]
-    }
-
-    format: schema.#Task & {
-        command: "bun"
-        args: ["run", "format"]
-    }
-
-    // Database operations - parallel group
-    db: schema.#TaskGroup & {
-        type: "group"
-        migrate: schema.#Task & {
-            command: "bunx"
-            args: ["prisma", "migrate", "dev"]
-        }
-        seed: schema.#Task & {
-            command: "bunx"
-            args: ["prisma", "db", "seed"]
-        }
-        studio: schema.#Task & {
-            command: "bunx"
-            args: ["prisma", "studio"]
-        }
-    }
-
-    // CI pipeline - sequential execution
-    ci: schema.#TaskSequence & [
-        schema.#Task & {command: "bun", args: ["install", "--frozen-lockfile"]},
-        schema.#Task & {command: "bun", args: ["run", "lint"]},
-        schema.#Task & {command: "bun", args: ["run", "test"]},
-        schema.#Task & {command: "bun", args: ["run", "build"]},
-    ]
+	verify_env: schema.#Task & {
+		command: "sh"
+		args: ["-c", "echo CUENV_TEST=$CUENV_TEST"]
+	}
 }
 ```
-
-## Rust Project
-
-A complete example for a Rust project:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-env: {
-    RUST_LOG:       "info"
-    RUST_BACKTRACE: "1"
-    DATABASE_URL:   "postgres://localhost/myapp"
-}
-
-tasks: {
-    // Build tasks
-    build: schema.#Task & {
-        command: "cargo"
-        args: ["build"]
-    }
-
-    release: schema.#Task & {
-        command: "cargo"
-        args: ["build", "--release"]
-    }
-
-    // Testing
-    test: schema.#Task & {
-        command: "cargo"
-        args: ["test"]
-    }
-
-    // Code quality
-    lint: schema.#Task & {
-        command: "cargo"
-        args: ["clippy", "--", "-D", "warnings"]
-    }
-
-    // Format tasks - parallel group
-    format: schema.#TaskGroup & {
-        type: "group"
-        check: schema.#Task & {
-            command: "cargo"
-            args: ["fmt", "--check"]
-        }
-        fix: schema.#Task & {
-            command: "cargo"
-            args: ["fmt"]
-        }
-    }
-
-    // Documentation
-    doc: schema.#Task & {
-        command: "cargo"
-        args: ["doc", "--open"]
-    }
-
-    // CI pipeline - sequential execution
-    ci: schema.#TaskSequence & [
-        schema.#Task & {command: "cargo", args: ["fmt", "--check"]},
-        schema.#Task & {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
-        schema.#Task & {command: "cargo", args: ["test"]},
-        schema.#Task & {command: "cargo", args: ["build", "--release"]},
-    ]
-}
-```
-
-## Environment-Specific Policies
-
-Control which tasks and commands can access sensitive variables:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-// Reusable policies
-_databasePolicy: schema.#Policy & {
-    allowTasks: ["migrate", "db_backup", "db_restore"]
-    allowExec: ["psql", "pg_dump"]
-}
-
-_deployPolicy: schema.#Policy & {
-    allowTasks: ["deploy", "release"]
-    allowExec: ["kubectl", "terraform"]
-}
-
-env: {
-    // Public variables - accessible everywhere
-    APP_NAME: "my-app"
-    PORT:     8080
-    DEBUG:    true
-
-    // Restricted: only database tasks can access
-    DB_PASSWORD: {
-        value: schema.#Secret
-        policies: [_databasePolicy]
-    }
-
-    // Restricted: only deploy tasks can access
-    DEPLOY_TOKEN: {
-        value: schema.#Secret
-        policies: [_deployPolicy]
-    }
-}
-
-tasks: {
-    // Can access DB_PASSWORD
-    migrate: schema.#Task & {
-        command: "migrate"
-        args: ["up"]
-    }
-
-    // Can access DEPLOY_TOKEN
-    deploy: schema.#Task & {
-        command: "kubectl"
-        args: ["apply", "-f", "k8s/"]
-    }
-
-    // Cannot access restricted variables
-    build: schema.#Task & {
-        command: "bun"
-        args: ["run", "build"]
-    }
-}
-```
-
-## Monorepo Configuration
-
-Structure for a monorepo with multiple services:
-
-**Root `env.cue`:**
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-// Shared environment for all services
-env: {
-    ORGANIZATION: "myorg"
-    LOG_LEVEL:    "info"
-    ENVIRONMENT:  "development"
-}
-
-tasks: {
-    // Run all services - sequential
-    dev: schema.#TaskGroup & {
-        type: "group"
-        all: schema.#TaskSequence & [
-            schema.#Task & {command: "cuenv", args: ["task", "dev", "-p", "services/api"]},
-            schema.#Task & {command: "cuenv", args: ["task", "dev", "-p", "services/web"]},
-        ]
-    }
-
-    // Build all - sequential
-    build: schema.#TaskGroup & {
-        type: "group"
-        all: schema.#TaskSequence & [
-            schema.#Task & {command: "cuenv", args: ["task", "build", "-p", "services/api"]},
-            schema.#Task & {command: "cuenv", args: ["task", "build", "-p", "services/web"]},
-        ]
-    }
-
-    // Test all - sequential
-    test: schema.#TaskGroup & {
-        type: "group"
-        all: schema.#TaskSequence & [
-            schema.#Task & {command: "cuenv", args: ["task", "test", "-p", "services/api"]},
-            schema.#Task & {command: "cuenv", args: ["task", "test", "-p", "services/web"]},
-        ]
-    }
-}
-```
-
-Each task shells out to the `cuenv` CLI with `-p` (path) so that every service runs its own `env.cue` configuration.
-
-**`services/api/env.cue`:**
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-env: {
-    SERVICE_NAME: "api"
-    PORT:         8080
-    DATABASE_URL: "postgres://localhost/api_dev"
-}
-
-tasks: {
-    dev: schema.#Task & {
-        command: "cargo"
-        args: ["run"]
-    }
-    build: schema.#Task & {
-        command: "cargo"
-        args: ["build", "--release"]
-    }
-    test: schema.#Task & {
-        command: "cargo"
-        args: ["test"]
-    }
-}
-```
-
-## CI/CD Integration
-
-**GitHub Actions example (`.github/workflows/ci.yml`):**
-
-```yaml
-name: CI
-
-on: [push, pull_request]
-
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install cuenv
-        run: cargo install cuenv-cli
-
-      - name: Run CI pipeline
-        run: cuenv task ci
-```
-
-**cuenv configuration for CI:**
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-  name: "my-project"
-}
-
-env: {
-    CI: "true"
-    RUST_BACKTRACE: "1"
-}
-
-tasks: {
-    ci: schema.#TaskSequence & [
-        schema.#Task & {command: "cargo", args: ["fmt", "--check"]},
-        schema.#Task & {command: "cargo", args: ["clippy", "--", "-D", "warnings"]},
-        schema.#Task & {command: "cargo", args: ["test", "--workspace"]},
-        schema.#Task & {command: "cargo", args: ["build", "--release"]},
-    ]
-}
-```
-
-## Tools Management
-
-### Basic Tools Configuration
-
-Set up hermetic, reproducible CLI tools:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-    name: "my-project"
-}
-
-runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64"]
-    tools: {
-        // Simple version strings (uses Homebrew)
-        jq: "1.7.1"
-        yq: "4.44.6"
-        ripgrep: "14.1.1"
-    }
-}
-
-tasks: {
-    process: schema.#Task & {
-        command: "jq"
-        args: [".data", "input.json"]
-    }
-}
-```
-
-**Usage:**
 
 ```bash
-# Lock tools to create cuenv.lock
-cuenv sync lock
+# Approve the config (required before hooks run)
+cuenv allow --path examples/hook
 
-# Download all tools
-cuenv tools download
-
-# Run task with tools activated
-cuenv task process
-
-# Run arbitrary command with tools
-cuenv exec -- jq --version
+cuenv task verify_env --path examples/hook --package examples
 ```
 
-### GitHub Release Tools
+## CI pipeline
 
-Fetch tools directly from GitHub Releases:
+[`examples/ci-pipeline`](https://github.com/cuenv/cuenv/tree/main/examples/ci-pipeline)
+declares a pipeline by referencing tasks. A `let` binds the tasks block so the
+pipeline can point at concrete task values.
 
 ```cue
-package cuenv
+package examples
 
 import "github.com/cuenv/cuenv/schema"
 
-schema.#Project & {
-    name: "github-tools"
+schema.#Project
+
+let _t = tasks
+
+name: "ci-pipeline"
+
+ci: pipelines: {
+	default: {
+		tasks: [_t.test]
+	}
 }
 
-runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "linux-x86_64"]
-    tools: {
-        // GitHub CLI
-        gh: {
-            version: "2.62.0"
-            source: schema.#GitHub & {
-                repo: "cli/cli"
-                tag: "v{version}"
-                asset: "gh_{version}_{os}_{arch}.tar.gz"
-                path: "gh_{version}_{os}_{arch}/bin/gh"
-            }
-        }
-
-        // Just command runner with platform overrides
-        just: {
-            version: "1.40.0"
-            overrides: [
-                {os: "darwin", source: schema.#GitHub & {
-                    repo: "casey/just"
-                    tagPrefix: "v"
-                    asset: "just-{version}-{arch}-apple-darwin.tar.gz"
-                    path: "just"
-                }},
-                {os: "linux", source: schema.#GitHub & {
-                    repo: "casey/just"
-                    tagPrefix: "v"
-                    asset: "just-{version}-{arch}-unknown-linux-musl.tar.gz"
-                    path: "just"
-                }},
-            ]
-        }
-    }
+tasks: {
+	test: schema.#Task & {
+		command: "echo"
+		args: ["Running test task"]
+		inputs: ["env.cue"]
+	}
 }
 ```
 
-### Rust Development Environment
+```bash
+# Generate provider workflows (GitHub is the strongest path)
+cuenv sync ci --path examples/ci-pipeline --package examples
+```
 
-Complete Rust development setup using contrib modules:
+GitHub CI sync is the most complete. Buildkite sync is partial; GitLab is
+schema-only and `cuenv sync` rejects it. Emitting workflows also requires an
+explicit `ci.providers` list. Confirm on the [status page](/reference/schema/status/).
+
+## Services
+
+[`examples/services-readiness`](https://github.com/cuenv/cuenv/tree/main/examples/services-readiness)
+demonstrates every readiness `kind`, plus `restart` and `watch`.
 
 ```cue
-package cuenv
+package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "services-readiness"
+
+services: {
+	// Wait for a TCP port to accept connections
+	port: schema.#Service & {
+		dependsOn: [tasks.prepare]
+		entrypoint: schema.#Command & {command: "python3", args: ["-c", "..."]}
+		readiness: {kind: "port", port: 18080}
+		shutdown: timeout: "2s"
+	}
+
+	// Wait for an HTTP endpoint
+	http: schema.#Service & {
+		entrypoint: schema.#Command & {command: "python3", args: ["-m", "http.server", "18081"]}
+		readiness: {kind: "http", url: "http://127.0.0.1:18081/"}
+		shutdown: timeout: "2s"
+	}
+
+	// Wait for a log line; restart on file change
+	delay: schema.#Service & {
+		entrypoint: schema.#Command & {command: "sh", args: ["-c", "while :; do sleep 60; done"]}
+		readiness: {kind: "delay", delay: "1s"}
+		restart: {mode: "unlessStopped", maxRestarts: 3, window: "30s"}
+		watch: {paths: ["env.cue"], on: "restart"}
+		shutdown: timeout: "2s"
+	}
+}
+```
+
+Readiness kinds in the example: `port`, `http`, `log`, `command`, and `delay`.
+
+```bash
+cuenv up --path examples/services-readiness --package examples
+cuenv ps --path examples/services-readiness --package examples
+cuenv down --path examples/services-readiness --package examples
+```
+
+Service-to-service dependencies and task `dependsOn` are honored. Image
+dependencies are recognized but image execution backends are still being wired
+in. See [status](/reference/schema/status/).
+
+## Container images
+
+[`examples/container-image`](https://github.com/cuenv/cuenv/tree/main/examples/container-image)
+shows Dockerfile builds and a Nix-native build from a flake output.
+
+```cue
+package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "container-image-example"
+
+images: {
+	// Dockerfile build with task and input dependencies
+	api: schema.#ContainerImage & {
+		context:    "."
+		dockerfile: "Dockerfile"
+		tags: ["latest", "v1.0.0"]
+		dependsOn: [tasks.codegen]
+		inputs: ["src/**", "Dockerfile"]
+	}
+
+	// Nix-native: built from a flake output, no Dockerfile
+	tools: schema.#ContainerImage & {
+		installable: ".#images.tools"
+		tags: ["latest"]
+		registry:   "ghcr.io/myorg"
+		repository: "myorg/tools"
+	}
+}
+```
+
+```bash
+cuenv build --path examples/container-image --package examples
+```
+
+`#ContainerImage` is **partial**: `cuenv build` lists and builds images with the
+local Docker CLI, and registry builds push via buildx. Dagger execution and
+downstream image output-reference resolution are incomplete — see
+[status](/reference/schema/status/).
+
+## Codegen
+
+[`examples/codegen-hello`](https://github.com/cuenv/cuenv/tree/main/examples/codegen-hello)
+generates files from CUE using typed file kinds and a shared `context`.
+
+```cue
+package examples
 
 import (
-    "github.com/cuenv/cuenv/schema"
-    xRust "github.com/cuenv/cuenv/contrib/rust"
+	"github.com/cuenv/cuenv/schema"
+	gen "github.com/cuenv/cuenv/schema/codegen"
 )
 
 schema.#Project & {
-    name: "rust-project"
+	name: "codegen-hello-example"
+
+	codegen: {
+		context: serviceName: "hello-world"
+
+		files: {
+			"package.json": gen.#JSONFile & {
+				mode: "managed"
+				content: """
+					{ "name": "\(context.serviceName)", "version": "1.0.0" }
+					"""
+			}
+			"src/main.ts": gen.#TypeScriptFile & {
+				mode: "scaffold"
+				content: """
+					console.log("Hello, \(context.serviceName)!");
+					"""
+			}
+		}
+	}
 }
+```
+
+`mode: "managed"` keeps the file in sync; `mode: "scaffold"` writes it once and
+leaves it alone.
+
+## CODEOWNERS and rules
+
+[`examples/owners-basic`](https://github.com/cuenv/cuenv/tree/main/examples/owners-basic)
+uses the **legacy top-level `owners:`** shape.
+
+```cue
+package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "owners-basic"
+
+owners: {
+	output: platform: "github"
+	rules: {
+		"default": {pattern: "*", owners: ["@core-team"], order: 0}
+		"rust-files": {pattern: "*.rs", owners: ["@rust-team"], section: "Backend", order: 1}
+		"docs": {pattern: "/docs/**", owners: ["@docs-team"], order: 3}
+	}
+}
+```
+
+:::caution[Prefer the .rules.cue path]
+This is the legacy shape kept for compatibility. For new projects, define
+ownership through the canonical `.rules.cue` schemas and the default sync
+provider rather than top-level `owners:`. Do **not** use `cuenv sync codeowners`.
+See the [CODEOWNERS how-to](/how-to/codeowners/).
+:::
+
+## VCS dependencies
+
+[`examples/vcs-subdir`](https://github.com/cuenv/cuenv/tree/main/examples/vcs-subdir)
+pulls a subdirectory of another git repo into the project.
+
+```cue
+package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+	name: "vcs-subdir"
+
+	vcs: "agent-skills": {
+		url:       "https://github.com/cuenv/cuenv.git"
+		reference: "main"
+		vendor:    false
+		subdir:    ".agents/skills"
+		path:      ".agents/skills"
+	}
+
+	tasks: inspect: schema.#Task & {
+		command: "sh"
+		args: ["-c", "find .agents/skills -maxdepth 2 -type f | sort | head"]
+	}
+}
+```
+
+```bash
+cuenv task inspect --path examples/vcs-subdir --package examples
+```
+
+## Tools
+
+[`examples/ci-bun-workspace`](https://github.com/cuenv/cuenv/tree/main/examples/ci-bun-workspace)
+pins a tool through a contrib module and runs it.
+
+```cue
+package examples
+
+import (
+	"github.com/cuenv/cuenv/schema"
+	xBun "github.com/cuenv/cuenv/contrib/bun"
+)
+
+schema.#Project
+
+name: "ci-bun-workspace"
 
 runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64"]
-    flakes: nixpkgs: "github:NixOS/nixpkgs/nixos-24.11"
-    tools: {
-        // Rust toolchain via rustup
-        rust: xRust.#Rust & {
-            version: "1.83.0"
-            source: {
-                profile: "default"
-                components: ["clippy", "rustfmt", "rust-src", "llvm-tools-preview"]
-                targets: ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
-            }
-        }
-
-        // LSP server (date-based version)
-        "rust-analyzer": xRust.#RustAnalyzer & {version: "2025-12-29"}
-
-        // Testing
-        "cargo-nextest": xRust.#CargoNextest & {version: "0.9.116"}
-
-        // Security
-        "cargo-deny": xRust.#CargoDeny & {version: "0.18.9"}
-
-        // Coverage
-        "cargo-llvm-cov": xRust.#CargoLlvmCov & {version: "0.7.0"}
-
-        // Build caching
-        sccache: xRust.#SccacheTool & {version: "0.10.0"}
-    }
-}
-
-env: {
-    RUSTC_WRAPPER: "sccache"
-    CARGO_INCREMENTAL: "0"
+	platforms: ["linux-x86_64", "darwin-arm64"]
+	tools: {
+		bun: xBun.#Bun & {version: "1.1.0"}
+	}
 }
 
 tasks: {
-    build: schema.#Task & {
-        command: "cargo"
-        args: ["build"]
-    }
-    test: schema.#Task & {
-        command: "cargo-nextest"
-        args: ["run"]
-    }
-    lint: schema.#Task & {
-        command: "cargo"
-        args: ["clippy", "--", "-D", "warnings"]
-    }
-    coverage: schema.#Task & {
-        command: "cargo-llvm-cov"
-        args: ["--html"]
-    }
+	version: schema.#Task & {
+		command: "bun"
+		args: ["--version"]
+	}
 }
 ```
 
-### Nix-Based Tools
-
-Use Nix for complex toolchains or tools without GitHub releases:
+The tool map accepts either a bare version string or a full `#Tool`. A bare
+string (`jq: "1.7.1"`) is **only valid when a source is configured** — cuenv has
+no implicit default source. There is no Homebrew tool source: `#Source` is
+`#Oci | #GitHub | #Nix | #Rustup | #URL`. So spell the source out:
 
 ```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-    name: "nix-tools"
-}
-
 runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "linux-x86_64"]
-    flakes: {
-        nixpkgs: "github:NixOS/nixpkgs/nixos-24.11"
-        unstable: "github:NixOS/nixpkgs/nixos-unstable"
-    }
-    tools: {
-        // Python from stable nixpkgs
-        python: {
-            version: "3.11"
-            source: schema.#Nix & {
-                flake: "nixpkgs"
-                package: "python311"
-            }
-        }
+	platforms: ["darwin-arm64", "linux-x86_64"]
+	tools: {
+		// Explicit GitHub Releases source
+		gh: {
+			version: "2.62.0"
+			source: schema.#GitHub & {
+				repo:  "cli/cli"
+				tag:   "v{version}"
+				asset: "gh_{version}_{os}_{arch}.tar.gz"
+				path:  "gh_{version}_{os}_{arch}/bin/gh"
+			}
+		}
 
-        // Latest package from unstable
-        deno: {
-            version: "2.0"
-            source: schema.#Nix & {
-                flake: "unstable"
-                package: "deno"
-            }
-        }
-    }
+		// Or a contrib module that fills in the source for you
+		bun: xBun.#Bun & {version: "1.1.0"}
+	}
 }
 ```
-
-### OCI Container Tools
-
-Extract binaries from container images:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-    name: "oci-tools"
-}
-
-runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "linux-x86_64"]
-    tools: {
-        kubectl: {
-            version: "1.31.0"
-            source: schema.#Oci & {
-                image: "bitnami/kubectl:{version}"
-                path: "/opt/bitnami/kubectl/bin/kubectl"
-            }
-        }
-
-        helm: {
-            version: "3.16.3"
-            source: schema.#Oci & {
-                image: "alpine/helm:{version}"
-                path: "/usr/bin/helm"
-            }
-        }
-    }
-}
-```
-
-### Mixed Source Configuration
-
-Combine multiple sources with platform overrides:
-
-```cue
-package cuenv
-
-import (
-    "github.com/cuenv/cuenv/schema"
-    xTools "github.com/cuenv/cuenv/contrib/tools"
-    xBun "github.com/cuenv/cuenv/contrib/bun"
-)
-
-schema.#Project & {
-    name: "mixed-tools"
-}
-
-runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "darwin-x86_64", "linux-x86_64", "linux-arm64"]
-    flakes: nixpkgs: "github:NixOS/nixpkgs/nixos-24.11"
-    tools: {
-        // Contrib modules handle platform complexity
-        jq: xTools.#Jq & {version: "1.7.1"}
-        yq: xTools.#Yq & {version: "4.44.6"}
-        bun: xBun.#Bun & {version: "1.3.5"}
-
-        // Simple Homebrew tool
-        ripgrep: "14.1.1"
-
-        // GitHub with fallback to OCI on Linux
-        dive: {
-            version: "0.12.0"
-            source: schema.#Homebrew
-            overrides: [
-                {os: "linux", source: schema.#Oci & {
-                    image: "wagoodman/dive:{version}"
-                    path: "/usr/local/bin/dive"
-                }}
-            ]
-        }
-    }
-}
-```
-
-### Tools with Shell Integration
-
-Activate tools automatically when entering a project:
-
-```cue
-package cuenv
-
-import "github.com/cuenv/cuenv/schema"
-
-schema.#Project & {
-    name: "interactive-project"
-}
-
-runtime: schema.#ToolsRuntime & {
-    platforms: ["darwin-arm64", "linux-x86_64"]
-    tools: {
-        jq: "1.7.1"
-        yq: "4.44.6"
-    }
-}
-
-hooks: {
-    onEnter: {
-        // Activate tools for interactive shell use
-        tools: schema.#ToolsActivate
-
-        // Also load Nix environment if present
-        nix: schema.#NixFlake
-    }
-}
-```
-
-**Setup:**
 
 ```bash
-# Approve the configuration
-cuenv allow
-
-# Lock tools
-cuenv sync lock
-
-# Now tools are auto-activated when you cd into the directory
-cd /path/to/project
-jq --version  # Works!
+cuenv sync lock --path examples/ci-bun-workspace --package examples
+cuenv exec --path examples/ci-bun-workspace --package examples -- bun --version
 ```
 
-## See Also
+See [Tools](/how-to/tools/) for sources, overrides, and shell activation.
 
-- [Configuration Guide](/how-to/configure-a-project/) - Detailed configuration reference
-- [Tasks](/how-to/run-tasks/) - Task orchestration documentation
-- [Environments](/how-to/typed-environments/) - Environment management
-- [Secrets](/how-to/secrets/) - Secret management patterns
-- [Tools](/how-to/tools/) - Tools management guide
+## Installing cuenv
+
+This page does not duplicate install guidance. The
+[installation how-to](/how-to/install/) is the canonical source. Note that
+cuenv is not currently published to crates.io, so `cargo install cuenv` will not
+work — use a release binary, Nix, Homebrew, or `cargo install --path
+crates/cuenv` from a clone.
+
+## See also
+
+- [Schema status](/reference/schema/status/) — what is stable, partial, or schema-only
+- [Configure a project](/how-to/configure-a-project/)
+- [Run tasks](/how-to/run-tasks/)
+- [Typed environments](/how-to/typed-environments/)
+- [Secrets](/how-to/secrets/)
+- [Tools](/how-to/tools/)
+- [CLI reference](/reference/cli/)
