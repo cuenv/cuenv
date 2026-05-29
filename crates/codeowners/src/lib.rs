@@ -40,7 +40,7 @@
 
 pub mod provider;
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 
 #[cfg(feature = "schemars")]
@@ -228,17 +228,24 @@ impl CodeOwners {
             output.push('\n');
         }
 
-        // Group rules by section for contiguous output
-        let mut rules_by_section: BTreeMap<Option<&str>, Vec<&Rule>> = BTreeMap::new();
+        // Group rules by section for contiguous output, preserving the order
+        // in which each section first appears in `self.rules`. Callers order
+        // rules deliberately (e.g. by an `order` field so a broad CODEOWNERS
+        // rule precedes narrower overrides and last-match precedence works),
+        // so sections must emit in that order rather than sorted alphabetically.
+        let mut section_order: Vec<Option<&str>> = Vec::new();
+        let mut rules_by_section: HashMap<Option<&str>, Vec<&Rule>> = HashMap::new();
         for rule in &self.rules {
-            rules_by_section
-                .entry(rule.section.as_deref())
-                .or_default()
-                .push(rule);
+            let key = rule.section.as_deref();
+            if !rules_by_section.contains_key(&key) {
+                section_order.push(key);
+            }
+            rules_by_section.entry(key).or_default().push(rule);
         }
 
         let mut first_section = true;
-        for (section, rules) in rules_by_section {
+        for section in section_order {
+            let rules = &rules_by_section[&section];
             if !first_section {
                 output.push('\n');
             }

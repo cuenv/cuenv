@@ -266,6 +266,53 @@ schema.#Project & {{
     )
 }
 
+fn all_rules_cue() -> &'static str {
+    r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema/rules"
+
+rules.#DirectoryRules & {
+  ignore: {
+    git: [
+      "target/",
+      ".env",
+    ]
+    docker: [
+      "target/",
+      ".git/",
+    ]
+  }
+
+  editorconfig: {
+    "*": {
+      indent_style: "space"
+      indent_size: 2
+      end_of_line: "lf"
+      insert_final_newline: true
+    }
+    "*.md": {
+      trim_trailing_whitespace: false
+    }
+  }
+
+  owners: rules: {
+    default: {
+      pattern: "**"
+      owners: ["@cuenv/maintainers"]
+      order: 0
+    }
+    rust: {
+      pattern: "*.rs"
+      owners: ["@cuenv/rust"]
+      description: "Rust files override the fallback owner"
+      section: "Language owners"
+      order: 10
+    }
+  }
+}
+"#
+}
+
 fn stale_lockfile() -> &'static str {
     r#"version = 3
 
@@ -649,6 +696,92 @@ fn sync_check_fails_when_nix_runtime_lockfile_digest_changes() -> TestResult {
     assert!(
         output.contains("Lockfile is out of date"),
         "sync --check should report lock drift: {output}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn sync_check_covers_all_rules_outputs() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join(".rules.cue"), all_rules_cue())?;
+
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
+
+    let gitignore = root.join(".gitignore");
+    let dockerignore = root.join(".dockerignore");
+    let editorconfig = root.join(".editorconfig");
+    let codeowners = root.join(".github/CODEOWNERS");
+
+    assert!(gitignore.exists(), ".gitignore should be generated");
+    assert!(dockerignore.exists(), ".dockerignore should be generated");
+    assert!(editorconfig.exists(), ".editorconfig should be generated");
+    assert!(codeowners.exists(), "CODEOWNERS should be generated");
+
+    let output = run_cuenv(root, &["sync", "--check"])?;
+    assert!(
+        output.success,
+        "sync --check should pass for freshly generated rules outputs\nstdout: {}\nstderr: {}",
+        output.stdout, output.stderr
+    );
+
+    for (path, expected) in [
+        (&gitignore, ".gitignore"),
+        (&dockerignore, ".dockerignore"),
+        (&editorconfig, ".editorconfig"),
+        (&codeowners, "CODEOWNERS"),
+    ] {
+        let original = fs::read_to_string(path)?;
+        fs::write(path, format!("{original}\n# drift\n"))?;
+
+        let output = run_cuenv(root, &["sync", "--check"])?;
+        assert!(
+            !output.success,
+            "sync --check should fail when {expected} drifts"
+        );
+
+        let combined = format!("{}{}", output.stdout, output.stderr);
+        assert!(
+            combined.contains(expected),
+            "sync --check should report drift for {expected}: {combined}"
+        );
+
+        fs::write(path, original)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn rules_codeowners_order_controls_precedence() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+    fs::write(root.join(".rules.cue"), all_rules_cue())?;
+
+    let output = run_cuenv(root, &["sync"])?;
+    assert!(output.success, "sync failed: {}", output.stderr);
+
+    let codeowners = fs::read_to_string(root.join(".github/CODEOWNERS"))?;
+    let fallback = codeowners
+        .find("/** @cuenv/maintainers")
+        .ok_or_else(|| std::io::Error::other("fallback CODEOWNERS rule missing"))?;
+    let rust = codeowners
+        .find("/*.rs @cuenv/rust")
+        .ok_or_else(|| std::io::Error::other("Rust CODEOWNERS rule missing"))?;
+
+    assert!(
+        fallback < rust,
+        "broad fallback rule must be emitted before narrower Rust rule so CODEOWNERS precedence works:\n{codeowners}"
+    );
+    assert!(
+        codeowners.contains("# Rust files override the fallback owner"),
+        "rule descriptions should be emitted before generated rules:\n{codeowners}"
     );
 
     Ok(())

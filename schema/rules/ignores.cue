@@ -15,10 +15,10 @@ package rules
 //           filename: ".myignore"  // override default .<tool>ignore
 //       }
 //   }
-#IgnoreEntry: {
+#IgnoreEntry: close({
 	patterns!: [...string]
 	filename?: string
-}
+})
 
 #Ignore: {
 	[string]: [...string] | #IgnoreEntry

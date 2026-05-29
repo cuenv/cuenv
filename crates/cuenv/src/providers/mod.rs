@@ -24,3 +24,4 @@ pub use ci::CiProvider;
 pub use codegen::CodegenProvider;
 pub use detection::{detect_ci_provider, detect_code_owners_provider};
 pub use rules::RulesProvider;
+pub use rules_eval::evaluate_rules_file;

@@ -114,6 +114,11 @@ In dry-run mode:
 
 ## Examples
 
+Dedicated runnable examples live in:
+
+- `examples/rules-gitignore/.rules.cue`
+- `examples/rules-dockerignore/.rules.cue`
+
 ### Node.js Project
 
 ```cue
@@ -175,5 +180,6 @@ Manual edits should be made in `.rules.cue`, then regenerated with `cuenv sync`.
 ## See Also
 
 - [CODEOWNERS](/how-to/codeowners/) - `.rules.cue` ownership rules
+- [EditorConfig](/how-to/editorconfig/) - `.rules.cue` editor settings
 - [Codegen](/how-to/codegen/) - generated files and Git tracking
 - [Schema status](/reference/schema/status/) - current rules schema coverage
