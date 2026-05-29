@@ -5,10 +5,12 @@ package rules
 #EditorConfig: {
 	// File-pattern specific settings
 	// Patterns use EditorConfig glob syntax (e.g., "*", "*.md", "Makefile")
-	[pattern=string]: #EditorConfigSection
+	// Pattern rules mirror `validate_section_pattern` in
+	// crates/editorconfig/src/builder.rs; keep both in sync.
+	[pattern=string & =~"^[^\\[\\]\\r\\n]+$"]: #EditorConfigSection
 }
 
-#EditorConfigSection: {
+#EditorConfigSection: close({
 	// Indentation style: "tab" or "space"
 	indent_style?: "tab" | "space"
 
@@ -32,4 +34,4 @@ package rules
 
 	// Maximum line length (soft limit), or "off" to disable
 	max_line_length?: int | "off"
-}
+})

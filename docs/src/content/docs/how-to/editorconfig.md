@@ -18,10 +18,10 @@ the repository.
 <Aside type="caution" title="Partial support">
 EditorConfig generation is **partial**. The `#EditorConfig` and
 `#EditorConfigSection` schema is wired into the default `cuenv sync` rules
-provider and backed by real `.rules.cue` fixtures, but reference docs and
-section-glob validation examples are still being filled in. Confirm current
-behavior against the [schema status](/reference/schema/status/) before relying on
-it in a strict pipeline.
+provider and backed by real `.rules.cue` fixtures, including the section-glob
+validation examples below. Confirm current behavior against the
+[schema status](/reference/schema/status/) before relying on it in a strict
+pipeline.
 </Aside>
 
 ## Quick Start
@@ -65,6 +65,36 @@ The `editorconfig` block maps **glob patterns** to `#EditorConfigSection`
 settings. Patterns use EditorConfig glob syntax, such as `*`, `*.md`, or
 `Makefile`. The wildcard `*` is the common base, and more specific patterns
 override it for matching files.
+
+### Section globs
+
+The `editorconfig` map keys are EditorConfig section globs. Write the glob only;
+cuenv adds the square brackets in the generated file.
+
+Valid examples:
+
+```cue
+editorconfig: {
+    "*": {indent_style: "space"}
+    "*.rs": {indent_size: 4}
+    "{Makefile,*.mk}": {indent_style: "tab"}
+    "docs/**.md": {trim_trailing_whitespace: false}
+}
+```
+
+Invalid examples:
+
+```cue
+editorconfig: {
+    // Empty section globs are rejected.
+    "": {indent_style: "space"}
+
+    // Do not include the generated brackets in the key.
+    "[*.rs]": {indent_style: "space"}
+}
+```
+
+Section globs also cannot contain line breaks.
 
 ### Section fields
 

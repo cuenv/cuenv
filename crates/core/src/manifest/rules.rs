@@ -19,6 +19,7 @@ pub enum IgnoreValue {
 
 /// Extended ignore configuration with patterns and optional filename override.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IgnoreEntry {
     /// List of patterns to include in the ignore file
     pub patterns: Vec<String>,
@@ -56,6 +57,7 @@ impl IgnoreValue {
 /// Each .rules.cue file is evaluated independently (no CUE unification).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct DirectoryRules {
     /// Ignore patterns for tool-specific ignore files.
     /// Generates files in the same directory as .rules.cue.
@@ -76,6 +78,7 @@ pub struct DirectoryRules {
 
 /// Simplified owners for directory rules (no output config).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct RulesOwners {
     /// Code ownership rules - maps rule names to rule definitions.
     #[serde(default)]
@@ -88,6 +91,11 @@ pub struct RulesOwners {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct EditorConfig {
     /// File-pattern specific settings.
+    ///
+    /// Unlike the other rules types, this struct intentionally omits
+    /// `deny_unknown_fields`: the flattened map keys are arbitrary section
+    /// globs (e.g. `*`, `*.rs`), so every key is a valid section name. Unknown
+    /// *field* rejection happens one level down on [`EditorConfigSection`].
     #[serde(flatten)]
     pub sections: std::collections::BTreeMap<String, EditorConfigSection>,
 }
@@ -95,6 +103,7 @@ pub struct EditorConfig {
 /// A section in an EditorConfig file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 pub struct EditorConfigSection {
     /// Indentation style: "tab" or "space"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -137,4 +146,69 @@ pub enum EditorConfigValue {
     Int(u32),
     /// String value (e.g., "tab" for indent_size, "off" for max_line_length)
     String(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_rules_rejects_unknown_top_level_fields() {
+        let err = serde_json::from_value::<DirectoryRules>(serde_json::json!({
+            "ignore": {
+                "git": ["target/"]
+            },
+            "unexpected": true
+        }))
+        .expect_err("unknown top-level rules field should fail");
+
+        assert!(
+            err.to_string().contains("unknown field `unexpected`"),
+            "expected unknown field error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn ignore_entry_rejects_unknown_fields() {
+        let err = serde_json::from_value::<IgnoreValue>(serde_json::json!({
+            "patterns": ["target/"],
+            "path": ".gitignore"
+        }))
+        .expect_err("unknown ignore entry field should fail");
+
+        assert!(
+            err.to_string().contains("data did not match any variant"),
+            "expected untagged enum rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn editorconfig_section_rejects_unknown_fields() {
+        let err = serde_json::from_value::<EditorConfig>(serde_json::json!({
+            "*": {
+                "indent_style": "space",
+                "indent": 2
+            }
+        }))
+        .expect_err("unknown editorconfig section field should fail");
+
+        assert!(
+            err.to_string().contains("unknown field `indent`"),
+            "expected unknown field error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rules_owners_rejects_unknown_fields() {
+        let err = serde_json::from_value::<RulesOwners>(serde_json::json!({
+            "rules": {},
+            "output": {}
+        }))
+        .expect_err("unknown rules owners field should fail");
+
+        assert!(
+            err.to_string().contains("unknown field `output`"),
+            "expected unknown field error, got: {err}"
+        );
+    }
 }

@@ -1,4 +1,4 @@
-use crate::{EditorConfigSection, FileStatus, Result, SyncResult};
+use crate::{EditorConfigSection, Error, FileStatus, Result, SyncResult};
 use std::path::{Path, PathBuf};
 
 /// Builder for generating an EditorConfig file.
@@ -104,6 +104,7 @@ impl EditorConfigFileBuilder {
     pub fn generate(self) -> Result<SyncResult> {
         let dir = self.directory.clone().unwrap_or_else(|| PathBuf::from("."));
         let filepath = dir.join(".editorconfig");
+        validate_section_patterns(&self.sections)?;
 
         tracing::info!(
             path = %filepath.display(),
@@ -129,8 +130,12 @@ impl EditorConfigFileBuilder {
     }
 
     /// Generate the file content as a string.
+    ///
+    /// Crate-internal: callers must go through [`generate`](Self::generate),
+    /// which validates section patterns before producing content. Exposing
+    /// this directly would let unvalidated patterns emit malformed output.
     #[must_use]
-    pub fn generate_content(&self) -> String {
+    pub(crate) fn generate_content(&self) -> String {
         let mut lines = Vec::new();
 
         // Add header comment if present
@@ -188,6 +193,40 @@ fn determine_dry_run_status(filepath: &Path, content: &str) -> Result<FileStatus
     })
 }
 
+fn validate_section_patterns(sections: &[(String, EditorConfigSection)]) -> Result<()> {
+    sections
+        .iter()
+        .try_for_each(|(pattern, _)| validate_section_pattern(pattern))
+}
+
+// Keep these rules in sync with the key constraint in
+// `schema/rules/editorconfig.cue` (regex `^[^\[\]\r\n]+$`), which enforces the
+// same contract at CUE evaluation time.
+fn validate_section_pattern(pattern: &str) -> Result<()> {
+    if pattern.is_empty() {
+        return Err(Error::InvalidSectionPattern {
+            pattern: pattern.to_string(),
+            reason: "pattern cannot be empty".to_string(),
+        });
+    }
+
+    if pattern.contains('[') || pattern.contains(']') {
+        return Err(Error::InvalidSectionPattern {
+            pattern: pattern.to_string(),
+            reason: "pattern cannot contain '[' or ']'".to_string(),
+        });
+    }
+
+    if pattern.contains('\r') || pattern.contains('\n') {
+        return Err(Error::InvalidSectionPattern {
+            pattern: pattern.to_string(),
+            reason: "pattern cannot contain line breaks".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
 /// Write a file and return the status.
 fn write_file(filepath: &Path, content: &str) -> Result<FileStatus> {
     let status = if filepath.exists() {
@@ -202,4 +241,51 @@ fn write_file(filepath: &Path, content: &str) -> Result<FileStatus> {
 
     std::fs::write(filepath, content)?;
     Ok(status)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_rejects_empty_section_pattern() {
+        let err = EditorConfigFile::builder()
+            .section("", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .expect_err("empty section pattern should fail");
+
+        assert!(
+            err.to_string().contains("pattern cannot be empty"),
+            "expected empty pattern validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn generate_rejects_bracketed_section_pattern() {
+        let err = EditorConfigFile::builder()
+            .section("[*.rs]", EditorConfigSection::new().indent_style("space"))
+            .generate()
+            .expect_err("bracketed section pattern should fail");
+
+        assert!(
+            err.to_string().contains("cannot contain '[' or ']'"),
+            "expected bracket validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn generate_rejects_multiline_section_pattern() {
+        let err = EditorConfigFile::builder()
+            .section(
+                "*.rs\n*.toml",
+                EditorConfigSection::new().indent_style("space"),
+            )
+            .generate()
+            .expect_err("multiline section pattern should fail");
+
+        assert!(
+            err.to_string().contains("cannot contain line breaks"),
+            "expected line-break validation error, got: {err}"
+        );
+    }
 }

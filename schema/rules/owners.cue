@@ -3,9 +3,9 @@ package rules
 // #RulesOwners - simplified owners for directory rules (no output config)
 // Rules are aggregated across all .rules.cue files to generate
 // a single CODEOWNERS file at the repository root
-#RulesOwners: {
+#RulesOwners: close({
 	rules: [string]: #OwnerRule
-}
+})
 
 // #OwnerRule defines a single code ownership rule
 #OwnerRule: close({
