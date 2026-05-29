@@ -7,13 +7,26 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 
+/// Outcome of a single host process attempt.
+///
+/// A timeout is a hard policy violation, not an ordinary failure: callers must
+/// be able to tell the two apart without inspecting stderr text (so a task that
+/// merely prints "timed out" is never mistaken for one that exceeded its
+/// deadline, and so timed-out attempts are never retried).
+pub enum TaskAttempt {
+    /// The process ran to completion (the inner result may still be a failure).
+    Completed(TaskResult),
+    /// The process exceeded its timeout and its process group was terminated.
+    TimedOut(TaskResult),
+}
+
 /// Run a host task process in captured or inherited-output mode.
 pub async fn run_task_process(
     name: &str,
     command: Command,
     capture_output: OutputCapture,
     timeout: Option<Duration>,
-) -> Result<TaskResult> {
+) -> Result<TaskAttempt> {
     if capture_output.should_capture() {
         run_captured_process(name, command, timeout).await
     } else {
@@ -25,7 +38,7 @@ async fn run_captured_process(
     name: &str,
     mut command: Command,
     timeout: Option<Duration>,
-) -> Result<TaskResult> {
+) -> Result<TaskAttempt> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     let start_time = std::time::Instant::now();
@@ -77,35 +90,22 @@ async fn run_captured_process(
         lines
     });
 
-    let status = if let Some(timeout) = timeout {
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(status) => status.map_err(|e| Error::Io {
-                source: e,
-                path: None,
-                operation: format!("wait for task {}", name),
-            })?,
-            Err(_) => {
-                terminate_child(&mut child, child_pid).await?;
-                if let Some(pid) = child_pid {
-                    global_registry().unregister(pid).await;
-                }
-                let stdout_lines = stdout_task.await.unwrap_or_default();
-                let stderr_lines = stderr_task.await.unwrap_or_default();
-                return Ok(timeout_result(
-                    name,
-                    timeout,
-                    start_time,
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                ));
+    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+        WaitOutcome::Exited(status) => status,
+        WaitOutcome::TimedOut(timeout) => {
+            if let Some(pid) = child_pid {
+                global_registry().unregister(pid).await;
             }
+            let stdout = stdout_task.await.unwrap_or_default().join("\n");
+            let stderr = stderr_task.await.unwrap_or_default().join("\n");
+            return Ok(TaskAttempt::TimedOut(timeout_result(TimedOutTask {
+                name,
+                timeout,
+                start_time,
+                stdout,
+                stderr,
+            })));
         }
-    } else {
-        child.wait().await.map_err(|e| Error::Io {
-            source: e,
-            path: None,
-            operation: format!("wait for task {}", name),
-        })?
     };
 
     if let Some(pid) = child_pid {
@@ -128,20 +128,20 @@ async fn run_captured_process(
         tracing::error!(task = %name, "Task stderr:\n{}", stderr);
     }
 
-    Ok(TaskResult {
+    Ok(TaskAttempt::Completed(TaskResult {
         name: name.to_string(),
         exit_code: Some(exit_code),
         stdout,
         stderr,
         success,
-    })
+    }))
 }
 
 async fn run_inherited_process(
     name: &str,
     mut command: Command,
     timeout: Option<Duration>,
-) -> Result<TaskResult> {
+) -> Result<TaskAttempt> {
     #[cfg(unix)]
     setup_process_group(&mut command);
 
@@ -162,33 +162,20 @@ async fn run_inherited_process(
     }
 
     let start_time = std::time::Instant::now();
-    let status = if let Some(timeout) = timeout {
-        match tokio::time::timeout(timeout, child.wait()).await {
-            Ok(status) => status.map_err(|e| Error::Io {
-                source: e,
-                path: None,
-                operation: format!("wait for task {}", name),
-            })?,
-            Err(_) => {
-                terminate_child(&mut child, child_pid).await?;
-                if let Some(pid) = child_pid {
-                    global_registry().unregister(pid).await;
-                }
-                return Ok(timeout_result(
-                    name,
-                    timeout,
-                    start_time,
-                    String::new(),
-                    String::new(),
-                ));
+    let status = match wait_or_terminate(name, &mut child, timeout).await? {
+        WaitOutcome::Exited(status) => status,
+        WaitOutcome::TimedOut(timeout) => {
+            if let Some(pid) = child_pid {
+                global_registry().unregister(pid).await;
             }
+            return Ok(TaskAttempt::TimedOut(timeout_result(TimedOutTask {
+                name,
+                timeout,
+                start_time,
+                stdout: String::new(),
+                stderr: String::new(),
+            })));
         }
-    } else {
-        child.wait().await.map_err(|e| Error::Io {
-            source: e,
-            path: None,
-            operation: format!("wait for task {}", name),
-        })?
     };
 
     if let Some(pid) = child_pid {
@@ -202,36 +189,79 @@ async fn run_inherited_process(
         tracing::warn!(task = %name, exit = exit_code, "Task failed");
     }
 
-    Ok(TaskResult {
+    Ok(TaskAttempt::Completed(TaskResult {
         name: name.to_string(),
         exit_code: Some(exit_code),
         stdout: String::new(),
         stderr: String::new(),
         success,
-    })
+    }))
 }
 
-fn timeout_result(
+/// Whether a child exited on its own or was terminated for exceeding its timeout.
+enum WaitOutcome {
+    Exited(std::process::ExitStatus),
+    TimedOut(Duration),
+}
+
+/// Wait for `child` to exit, terminating its whole process group if `timeout`
+/// elapses first. This is the single place both capture modes share their
+/// timeout handling, so the SIGTERM/SIGKILL ladder lives in exactly one path.
+async fn wait_or_terminate(
     name: &str,
+    child: &mut tokio::process::Child,
+    timeout: Option<Duration>,
+) -> Result<WaitOutcome> {
+    let Some(timeout) = timeout else {
+        let status = child.wait().await.map_err(|e| Error::Io {
+            source: e,
+            path: None,
+            operation: format!("wait for task {name}"),
+        })?;
+        return Ok(WaitOutcome::Exited(status));
+    };
+
+    match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(status) => {
+            let status = status.map_err(|e| Error::Io {
+                source: e,
+                path: None,
+                operation: format!("wait for task {name}"),
+            })?;
+            Ok(WaitOutcome::Exited(status))
+        }
+        Err(_) => {
+            let child_pid = child.id();
+            terminate_child(child, child_pid).await?;
+            Ok(WaitOutcome::TimedOut(timeout))
+        }
+    }
+}
+
+/// Inputs for building a timed-out [`TaskResult`].
+struct TimedOutTask<'a> {
+    name: &'a str,
     timeout: Duration,
     start_time: std::time::Instant,
     stdout: String,
     stderr: String,
-) -> TaskResult {
-    let duration_ms = u64::try_from(start_time.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let message = format!("Task timed out after {}", format_duration(timeout));
-    cuenv_events::emit_task_output!(name, "stderr", &message);
-    cuenv_events::emit_task_completed!(name, false, None, duration_ms);
-    tracing::warn!(task = %name, timeout_ms = timeout.as_millis(), "Task timed out");
+}
+
+fn timeout_result(task: TimedOutTask<'_>) -> TaskResult {
+    let duration_ms = u64::try_from(task.start_time.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let message = format!("Task timed out after {}", format_duration(task.timeout));
+    cuenv_events::emit_task_output!(task.name, "stderr", &message);
+    cuenv_events::emit_task_completed!(task.name, false, None, duration_ms);
+    tracing::warn!(task = %task.name, timeout_ms = task.timeout.as_millis(), "Task timed out");
 
     TaskResult {
-        name: name.to_string(),
+        name: task.name.to_string(),
         exit_code: None,
-        stdout,
-        stderr: if stderr.is_empty() {
+        stdout: task.stdout,
+        stderr: if task.stderr.is_empty() {
             message
         } else {
-            format!("{stderr}\n{message}")
+            format!("{}\n{message}", task.stderr)
         },
         success: false,
     }

@@ -194,7 +194,7 @@ where
                     }
                     outcomes_by_name.insert(name.clone(), outcome.clone());
                     outcomes.push((name, outcome));
-                    if !success && !(policy.continue_on_error || continue_on_error) {
+                    if !(success || policy.continue_on_error || continue_on_error) {
                         join_set.abort_all();
                         break 'outer;
                     }

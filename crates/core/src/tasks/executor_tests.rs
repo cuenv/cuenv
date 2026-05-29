@@ -225,6 +225,93 @@ async fn test_execute_task_retries_until_success() {
 }
 
 #[tokio::test]
+async fn test_timeout_is_not_retried() {
+    // A timeout is a hard policy violation, not a transient failure: even with
+    // retries configured, a timed-out attempt must end the task immediately
+    // rather than re-incur the full timeout on every attempt.
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "echo x >> attempts; sleep 5".to_string()],
+        timeout: Some("100ms".to_string()),
+        retry: Some(RetryConfig {
+            attempts: 3,
+            delay: None,
+        }),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("noretry", &task).await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+    let attempts = std::fs::read_to_string(tmp.path().join("attempts")).unwrap();
+    assert_eq!(
+        attempts.lines().count(),
+        1,
+        "a timed-out attempt must not be retried"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_timeout_kills_process_tree() {
+    // The task spawns a grandchild (`sleep 30 &`) sharing its process group,
+    // then blocks. On timeout the whole group is signalled, so the grandchild
+    // must be reaped too — proving timeout enforcement isn't limited to the
+    // direct child (the orphaned-process failure mode).
+    let tmp = TempDir::new().unwrap();
+    let config = ExecutorConfig {
+        capture_output: OutputCapture::Capture,
+        project_root: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let executor = TaskExecutor::new(config);
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "sleep 30 & echo $! > grandchild.pid; sleep 30".to_string(),
+        ],
+        timeout: Some("150ms".to_string()),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("tree", &task).await.unwrap();
+    assert!(!result.success);
+    assert_eq!(result.exit_code, None);
+
+    let pid: i32 = std::fs::read_to_string(tmp.path().join("grandchild.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    // kill(pid, 0) returns Err(ESRCH) once the process is gone. Poll briefly
+    // for the OS to finish reaping after the SIGKILL.
+    let mut alive = true;
+    for _ in 0..40 {
+        #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
+        let exists = unsafe { libc::kill(pid, 0) } == 0;
+        if !exists {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        !alive,
+        "grandchild {pid} should be killed when the task times out"
+    );
+}
+
+#[tokio::test]
 async fn test_execute_script_task() {
     let config = ExecutorConfig {
         capture_output: OutputCapture::Capture,
