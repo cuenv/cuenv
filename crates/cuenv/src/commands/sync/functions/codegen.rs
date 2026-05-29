@@ -143,15 +143,15 @@ fn execute_sync_codegen_local(context: &CodegenSyncContext<'_>) -> Result<String
     };
     let sync_result = sync_codegen_files(&sync_request)?;
 
-    if options.should_check() && sync_result.had_drift {
-        let drift_lines: Vec<&str> = sync_result
-            .output
-            .lines()
-            .filter(|line| line.contains("Out of sync") || line.contains("Missing"))
-            .collect();
+    if !sync_result.drift_paths.is_empty() {
+        let drift_list = sync_result
+            .drift_paths
+            .iter()
+            .map(|path| format!("  {path}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(cuenv_core::Error::configuration(format!(
-            "Generated files are out of sync. Run 'cuenv sync codegen' to update:\n{}",
-            drift_lines.join("\n")
+            "Generated files are out of sync. Run 'cuenv sync codegen' to update:\n{drift_list}"
         )));
     }
 
@@ -211,8 +211,10 @@ struct SyncResult {
     output: String,
     /// Files that were actually written to disk
     written_files: Vec<PathBuf>,
-    /// Whether check mode found missing or stale generated state.
-    had_drift: bool,
+    /// Paths that check mode found missing or stale. Empty unless drift was
+    /// detected (which only happens in check mode). The check-mode error is
+    /// built directly from these paths, so it never has to re-parse `output`.
+    drift_paths: Vec<String>,
 }
 
 /// Result of syncing a single codegen file.
@@ -241,7 +243,7 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
 
     let mut output_lines = Vec::new();
     let mut written_files = Vec::new();
-    let mut had_drift = false;
+    let mut drift_paths = Vec::new();
 
     for (file_path, file_def) in &codegen_config.files {
         let output_path = project_root.join(file_path);
@@ -260,12 +262,17 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
         };
         match outcome {
             FileSyncOutcome::Written => written_files.push(output_path),
-            FileSyncOutcome::Drift => had_drift = true,
+            FileSyncOutcome::Drift => drift_paths.push(file_path.clone()),
             FileSyncOutcome::Unchanged => {}
         }
     }
 
-    had_drift |= sync_gitignore_entries(&mut output_lines, project_root, codegen_config, options)?;
+    drift_paths.extend(sync_gitignore_entries(
+        &mut output_lines,
+        project_root,
+        codegen_config,
+        options,
+    )?);
 
     tracing::info!(
         project = project_name,
@@ -277,7 +284,7 @@ fn sync_codegen_files(request: &CodegenSyncFilesRequest<'_>) -> Result<SyncResul
     Ok(SyncResult {
         output: output_lines.join("\n"),
         written_files,
-        had_drift,
+        drift_paths,
     })
 }
 
@@ -480,12 +487,15 @@ fn validate_lint_config(file_path: &str, file: &cuenv_core::manifest::ProjectFil
     }
 }
 
+/// Sync the `cuenv codegen` `.gitignore` section, returning any paths that
+/// drifted. Drift is only reported in check mode (dry-run previews are not
+/// failures), mirroring the per-file drift semantics.
 fn sync_gitignore_entries(
     output_lines: &mut Vec<String>,
     project_root: &Path,
     codegen_config: &cuenv_core::manifest::CodegenConfig,
     options: CodegenSyncOptions,
-) -> Result<bool> {
+) -> Result<Vec<String>> {
     let patterns: Vec<String> = codegen_config
         .files
         .iter()
@@ -494,7 +504,7 @@ fn sync_gitignore_entries(
         .collect();
 
     if patterns.is_empty() && !gitignore_has_codegen_section(project_root)? {
-        return Ok(false);
+        return Ok(Vec::new());
     }
 
     let result = IgnoreFiles::builder()
@@ -504,7 +514,7 @@ fn sync_gitignore_entries(
         .generate()
         .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
 
-    let mut had_drift = false;
+    let mut drift_paths = Vec::new();
     for file in result.files {
         match file.status {
             FileStatus::Created | FileStatus::Updated => {
@@ -514,18 +524,20 @@ fn sync_gitignore_entries(
                 output_lines.push(format!("  OK: {}", file.filename));
             }
             FileStatus::WouldCreate | FileStatus::WouldUpdate => {
-                had_drift = true;
                 let action = if options.should_check() {
                     "Out of sync"
                 } else {
                     "Would update"
                 };
                 output_lines.push(format!("  {action}: {}", file.filename));
+                if options.should_check() {
+                    drift_paths.push(file.filename);
+                }
             }
         }
     }
 
-    Ok(had_drift && options.should_check())
+    Ok(drift_paths)
 }
 
 fn gitignore_has_codegen_section(project_root: &Path) -> Result<bool> {
@@ -615,7 +627,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(result.had_drift);
+        assert!(!result.drift_paths.is_empty());
         assert!(result.output.contains("Missing: generated.json"));
     }
 
@@ -633,7 +645,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(result.had_drift);
+        assert!(!result.drift_paths.is_empty());
         assert!(result.output.contains("Out of sync: generated.txt"));
     }
 
@@ -696,7 +708,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(result.had_drift);
+        assert!(!result.drift_paths.is_empty());
         assert!(result.output.contains("Out of sync: .gitignore"));
     }
 
@@ -719,7 +731,7 @@ mod tests {
 
         let result = sync_codegen_files(&request).expect("sync check");
 
-        assert!(result.had_drift);
+        assert!(!result.drift_paths.is_empty());
         assert!(result.output.contains("Out of sync: .gitignore"));
     }
 
