@@ -174,6 +174,110 @@ schema.#Project & {{
 }
 
 #[test]
+fn codegen_accepts_all_schema_file_types() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r##"package cuenv
+
+import (
+  "github.com/cuenv/cuenv/schema"
+  gen "github.com/cuenv/cuenv/schema/codegen"
+)
+
+schema.#Project & {
+  name: "app"
+  codegen: {
+    files: {
+      "src/app.ts": gen.#TypeScriptFile & {
+        content: "export const answer = 42;\n"
+        lint: {
+          enabled: false
+        }
+      }
+      "src/app.js": gen.#JavaScriptFile & {
+        content: "export const answer = 42;\n"
+      }
+      "package.json": gen.#JSONFile & {
+        content: "{\"name\":\"app\"}"
+        gitignore: false
+        format: {
+          indentSize: 4
+        }
+      }
+      "tsconfig.jsonc": gen.#JSONCFile & {
+        content: "{ // comment\n  \"compilerOptions\": {}\n}\n"
+      }
+      "config.yaml": gen.#YAMLFile & {
+        content: "name: app\n"
+      }
+      "Cargo.toml": gen.#TOMLFile & {
+        content: "[package]\nname = \"app\"\n"
+      }
+      "src/main.rs": gen.#RustFile & {
+        content: "fn main() {}\n"
+      }
+      "main.go": gen.#GoFile & {
+        content: "package main\n"
+      }
+      "main.py": gen.#PythonFile & {
+        content: "print(\"app\")\n"
+      }
+      "README.md": gen.#MarkdownFile & {
+        content: "# app\n"
+      }
+      "scripts/run.sh": gen.#ShellScriptFile & {
+        content: "#!/usr/bin/env bash\n"
+      }
+      "Dockerfile": gen.#DockerfileFile & {
+        content: "FROM scratch\n"
+      }
+      "flake.nix": gen.#NixFile & {
+        content: "{ }\n"
+      }
+    }
+  }
+}
+"##,
+    )?;
+
+    let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
+    let codegen = project.codegen.ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "schema should evaluate codegen config",
+        )
+    })?;
+
+    assert_eq!(codegen.files.len(), 13);
+    assert_eq!(codegen.files["src/app.ts"].language, "typescript");
+    assert_eq!(codegen.files["src/app.js"].language, "javascript");
+    assert_eq!(codegen.files["package.json"].language, "json");
+    assert_eq!(codegen.files["tsconfig.jsonc"].language, "jsonc");
+    assert_eq!(codegen.files["config.yaml"].language, "yaml");
+    assert_eq!(codegen.files["Cargo.toml"].language, "toml");
+    assert_eq!(codegen.files["src/main.rs"].language, "rust");
+    assert_eq!(codegen.files["main.go"].language, "go");
+    assert_eq!(codegen.files["main.py"].language, "python");
+    assert_eq!(codegen.files["README.md"].language, "markdown");
+    assert_eq!(codegen.files["scripts/run.sh"].language, "shell");
+    assert_eq!(codegen.files["Dockerfile"].language, "dockerfile");
+    assert_eq!(codegen.files["flake.nix"].language, "nix");
+    assert_eq!(codegen.files["package.json"].format.indent_size, Some(4));
+    assert_eq!(
+        codegen.files["src/app.ts"]
+            .lint
+            .as_ref()
+            .map(|lint| lint.enabled),
+        Some(false)
+    );
+    Ok(())
+}
+
+#[test]
 fn base_can_be_composed_standalone() -> TestResult {
     let tmp = create_test_dir()?;
     let root = tmp.path();
