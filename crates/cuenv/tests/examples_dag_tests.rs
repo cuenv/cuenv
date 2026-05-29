@@ -432,6 +432,19 @@ fn test_allexamples_have_expected_env() -> TestResult {
     Ok(())
 }
 
+/// Example directories that are `.rules.cue` files (`DirectoryRules`) rather
+/// than `Project` manifests (`env.cue`).
+///
+/// These cannot be loaded as a `Project` (they have no `name` field), so they
+/// are deliberately excluded from `get_example_expectations()` and validated
+/// separately by `test_rules_examples_evaluate`, which evaluates them through
+/// the real `cuenv sync` `.rules.cue` path.
+const RULES_ONLY_EXAMPLES: &[&str] = &[
+    "rules-gitignore",
+    "rules-dockerignore",
+    "rules-codeowners-precedence",
+];
+
 #[test]
 fn test_no_unexpected_example_directories() -> TestResult {
     let examples_dir = get_examples_dir()?;
@@ -465,11 +478,52 @@ fn test_no_unexpected_example_directories() -> TestResult {
                 continue;
             }
 
+            // Rules-only examples are tracked and validated separately.
+            if RULES_ONLY_EXAMPLES.contains(&dir_name) {
+                continue;
+            }
+
             assert!(
                 expected_names.contains(&dir_name),
-                "Found unexpected example directory '{dir_name}'. Add it to get_example_expectations() or remove it.",
+                "Found unexpected example directory '{dir_name}'. Add it to get_example_expectations() (Project examples) or RULES_ONLY_EXAMPLES (.rules.cue examples), or remove it.",
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Every `.rules.cue` example must evaluate through the real `cuenv sync`
+/// `.rules.cue` path into a valid `DirectoryRules`. This gives the example
+/// files actual coverage (the `schema-coverage-matrix.md` rows cite them as
+/// fixtures) and proves each example parses with the field-enforcing serde
+/// boundary applied.
+#[test]
+fn test_rules_examples_evaluate() -> TestResult {
+    skip_if_ffi_unavailable!();
+
+    let examples_dir = get_examples_dir()?;
+
+    for name in RULES_ONLY_EXAMPLES {
+        let rules_file = examples_dir.join(name).join(".rules.cue");
+        assert!(
+            rules_file.exists(),
+            "Rules example '{name}' is missing its .rules.cue file at {rules_file:?}",
+        );
+
+        let rules = cuenv::providers::evaluate_rules_file(&rules_file).map_err(|err| {
+            Box::new(io::Error::other(format!(
+                "Failed to evaluate rules example '{name}': {err}"
+            ))) as Box<dyn Error>
+        })?;
+
+        // Each example must populate at least the rule family it demonstrates.
+        let populated =
+            rules.ignore.is_some() || rules.owners.is_some() || rules.editorconfig.is_some();
+        assert!(
+            populated,
+            "Rules example '{name}' evaluated to empty DirectoryRules",
+        );
     }
 
     Ok(())

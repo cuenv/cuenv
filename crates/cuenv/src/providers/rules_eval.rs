@@ -21,6 +21,12 @@ use cuenv_core::manifest::DirectoryRules;
 /// (e.g. `rules.#DirectoryRules &`) so the file evaluates as plain CUE data.
 /// A minimal `cue.mod/module.cue` is also created since the Go bridge
 /// requires a module root.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be read, the temporary module cannot be
+/// created, or the CUE engine fails to evaluate the patched content into a
+/// [`DirectoryRules`] value (including unknown-field rejection by serde).
 pub fn evaluate_rules_file(file_path: &Path) -> Result<DirectoryRules> {
     let original = std::fs::read_to_string(file_path).map_err(|e| cuenv_core::Error::Io {
         source: e,
@@ -74,6 +80,14 @@ pub fn evaluate_rules_file(file_path: &Path) -> Result<DirectoryRules> {
 /// Strips the package declaration (replaced with `package rules`), import
 /// blocks, and schema type constraint references so the file can evaluate
 /// without its parent module's dependencies.
+///
+/// Enforcement boundary: because the `rules.#DirectoryRules` constraint is
+/// stripped here, the CUE schema's `close()` checks do NOT run on the `cuenv
+/// sync` path. The structural contract on this path is enforced solely by the
+/// `#[serde(deny_unknown_fields)]` attributes on the `DirectoryRules` types
+/// when the evaluated JSON is deserialized. The CUE `close()` checks only fire
+/// when a file is evaluated in-module (e.g. `cue vet`). Keep the serde
+/// attributes and the schema constraints in agreement.
 fn prepare_isolated_cue(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     result.push_str("package rules\n");

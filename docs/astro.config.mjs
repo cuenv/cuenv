@@ -43,6 +43,7 @@ export default defineConfig({
 						{ label: 'Codegen', slug: 'how-to/codegen' },
 						{ label: 'Formatters', slug: 'how-to/formatters' },
 						{ label: 'Ignore files', slug: 'how-to/ignore-files' },
+						{ label: 'EditorConfig', slug: 'how-to/editorconfig' },
 						{ label: 'CODEOWNERS', slug: 'how-to/codeowners' },
 						{ label: 'Typed environments', slug: 'how-to/typed-environments' },
 						{ label: 'Secrets', slug: 'how-to/secrets' },

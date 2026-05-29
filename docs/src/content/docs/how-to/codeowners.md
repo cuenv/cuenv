@@ -145,6 +145,8 @@ owners: rules: {
 The generated CODEOWNERS output places `/** @myorg/maintainers` before
 `/*.rs @myorg/rust`, so Rust files match the narrower owner rule.
 
+A dedicated runnable example lives in `examples/rules-codeowners-precedence/.rules.cue`.
+
 ## Generated File
 
 cuenv detects the repository provider and writes the conventional CODEOWNERS

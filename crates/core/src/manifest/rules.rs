@@ -91,6 +91,11 @@ pub struct RulesOwners {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct EditorConfig {
     /// File-pattern specific settings.
+    ///
+    /// Unlike the other rules types, this struct intentionally omits
+    /// `deny_unknown_fields`: the flattened map keys are arbitrary section
+    /// globs (e.g. `*`, `*.rs`), so every key is a valid section name. Unknown
+    /// *field* rejection happens one level down on [`EditorConfigSection`].
     #[serde(flatten)]
     pub sections: std::collections::BTreeMap<String, EditorConfigSection>,
 }
