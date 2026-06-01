@@ -24,7 +24,14 @@ path = "src/main.rs"
 workspace = true
 
 [features]
-default = ["dagger-backend", "github", "gitlab", "bitbucket", "buildkite", "homebrew"]
+default = [
+    "dagger-backend",
+    "github",
+    "gitlab",
+    "bitbucket",
+    "buildkite",
+    "homebrew",
+]
 dagger-backend = ["dep:cuenv-dagger"]
 # Platform-specific providers
 github = ["dep:cuenv-github"]
@@ -45,7 +52,11 @@ cuenv-vcs = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
 cuenv-hooks = { workspace = true }
-cuenv-workspaces = { workspace = true, features = ["detection", "discovery-javascript", "discovery-rust"] }
+cuenv-workspaces = { workspace = true, features = [
+    "detection",
+    "discovery-javascript",
+    "discovery-rust",
+] }
 cuenv-codegen = { workspace = true }
 cuenv-dagger = { workspace = true, optional = true }
 cuenv-ci = { workspace = true }
@@ -97,7 +108,10 @@ walkdir = "2.5"
 dirs = { workspace = true }
 ctrlc = "3.5"
 similar = "2.7"
-reqwest = { version = "0.13.3", default-features = false, features = ["blocking", "rustls-no-provider"] }
+reqwest = { version = "0.13.3", default-features = false, features = [
+    "blocking",
+    "rustls-no-provider",
+] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 tempfile = { workspace = true }
 
@@ -109,3 +123,6 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 which = "8.0.2"
 cuenv-task-graph = { workspace = true }
+
+[build-dependencies]
+chrono = { workspace = true }
