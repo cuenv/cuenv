@@ -1,4 +1,3 @@
-use std::env;
 use tracing::instrument;
 
 /// Get formatted version information for display.
@@ -19,10 +18,10 @@ pub fn get_version_info() -> String {
         "Gathering package information"
     );
 
-    // Get build information if available
-    let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
-    let rustc_version = env::var("RUSTC_VERSION").unwrap_or_else(|_| "unknown".to_string());
-    let build_date = env::var("BUILD_DATE").unwrap_or_else(|_| "unknown".to_string());
+    // Build metadata is injected at compile time by build.rs via cargo::rustc-env.
+    let target = env!("CUENV_BUILD_TARGET");
+    let rustc_version = env!("CUENV_BUILD_RUSTC_VERSION");
+    let build_date = env!("CUENV_BUILD_DATE");
 
     tracing::debug!(
         target = %target,
