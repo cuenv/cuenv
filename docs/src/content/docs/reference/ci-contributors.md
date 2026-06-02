@@ -211,6 +211,13 @@ import "github.com/cuenv/cuenv/contrib/contributors"
 ci: contributors: [contributors.#CuenvNix]
 ```
 
+In generated GitHub workflows, expanded jobs that run through `cuenv task`
+can share a `#CuenvNix` bootstrap. The workflow emits one `build.cuenv` job per
+runner, uploads the built `result/bin/cuenv` binary, and has downstream
+orchestrated jobs download that artifact before running later setup tasks such
+as 1Password. Direct Nix jobs, such as `nix build .#checks...`, do not consume
+that bootstrap and start as soon as their normal Nix setup is ready.
+
 Examples: [`examples/ci-cuenv-nix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-nix)
 and [`examples/ci-cuenv-homebrew`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-homebrew).
 

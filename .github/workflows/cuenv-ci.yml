@@ -62,41 +62,9 @@ permissions:
   pull-requests: write
   id-token: write
 jobs:
-  build-cuenv:
-    name: build.cuenv
-    runs-on: namespace-profile-cuenv-linux-x86
-    timeout-minutes: 30
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 2
-    - name: Setup Namespace Nix Cache
-      if: runner.os == 'Linux'
-      uses: namespacelabs/nscloud-cache-action@v1
-      with:
-        cache: nix
-    - name: Prepare Namespace Nix Cache
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Install Determinate Nix
-      uses: DeterminateSystems/determinate-nix-action@v3
-      with:
-        extra-conf: accept-flake-config = true
-    - name: Prune Determinate Nix receipt
-      run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
-      run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   checks-audit:
     name: checks.audit
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -126,8 +94,6 @@ jobs:
   checks-bdd:
     name: checks.bdd
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -157,8 +123,6 @@ jobs:
   checks-clippy:
     name: checks.clippy
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -188,8 +152,6 @@ jobs:
   checks-cuenv:
     name: checks.cuenv
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -219,8 +181,6 @@ jobs:
   checks-deny:
     name: checks.deny
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -250,8 +210,6 @@ jobs:
   checks-doctest:
     name: checks.doctest
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4
@@ -281,8 +239,6 @@ jobs:
   checks-nextest:
     name: checks.nextest
     runs-on: namespace-profile-cuenv-linux-x86
-    needs:
-    - build-cuenv
     steps:
     - name: Checkout
       uses: actions/checkout@v4

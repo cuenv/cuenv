@@ -32,6 +32,9 @@ pub mod schema;
 pub mod stage_renderer;
 
 pub use emitter::{GitHubActionsEmitter, ReleaseWorkflowBuilder};
-pub use jobs::{SimpleJobOptions, TaskExecution};
+pub use jobs::{
+    ArtifactAggregationJobOptions, CuenvBootstrapJobOptions, CuenvSetup, MatrixJobOptions,
+    SimpleJobOptions, TaskExecution,
+};
 pub use schema::*;
 pub use stage_renderer::{GitHubStageRenderer, transform_secret_ref};

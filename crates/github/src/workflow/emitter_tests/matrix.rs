@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 #[test]
 fn test_build_matrix_jobs() {
@@ -17,7 +18,17 @@ fn test_build_matrix_jobs() {
     });
     let ir = make_ir(vec![task.clone()]);
 
-    let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], None);
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            environment: None,
+            arch_runners: None,
+            previous_jobs: &[],
+            project_path: None,
+            cuenv_artifacts_by_runner: None,
+        },
+    );
 
     // Should create 2 jobs, one per arch
     assert_eq!(jobs.len(), 2);
@@ -66,7 +77,17 @@ fn test_build_matrix_jobs_with_arch_runners() {
     .into_iter()
     .collect();
 
-    let jobs = emitter.build_matrix_jobs(&task, &ir, None, Some(&arch_runners), &[], None);
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            environment: None,
+            arch_runners: Some(&arch_runners),
+            previous_jobs: &[],
+            project_path: None,
+            cuenv_artifacts_by_runner: None,
+        },
+    );
 
     // Check runners are correctly mapped
     let linux_job = jobs.get("build-linux-x64").unwrap();
@@ -96,7 +117,16 @@ fn test_build_artifact_aggregation_job() {
         "release-build-darwin-arm64".to_string(),
     ];
 
-    let job = emitter.build_artifact_aggregation_job(&task, &ir, None, &previous_jobs, None);
+    let job = emitter.build_artifact_aggregation_job(
+        &task,
+        &ir,
+        &ArtifactAggregationJobOptions {
+            environment: None,
+            previous_jobs: &previous_jobs,
+            project_path: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
+        },
+    );
 
     assert_eq!(job.name, Some("release.publish".to_string()));
     assert_eq!(job.needs, previous_jobs);
@@ -121,6 +151,98 @@ fn test_build_artifact_aggregation_job() {
         Some(&"1.0.0".to_string())
     );
     assert_github_context_env(task_step.unwrap());
+}
+
+#[test]
+fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
+    use cuenv_ci::ir::MatrixConfig;
+
+    let emitter = GitHubActionsEmitter::new().with_runner("ubuntu-latest");
+    let mut cuenv_setup = make_phase_task(
+        "cuenv:contributor:cuenv.setup",
+        &["nix build .#cuenv"],
+        BuildStage::Setup,
+        10,
+    );
+    cuenv_setup.label = Some("Build cuenv (nix)".to_string());
+    cuenv_setup.contributor = Some("cuenv".to_string());
+
+    let mut onepassword_setup = make_phase_task(
+        "cuenv:contributor:1password.setup",
+        &["cuenv secrets setup onepassword"],
+        BuildStage::Setup,
+        20,
+    );
+    onepassword_setup.label = Some("Setup 1Password".to_string());
+    onepassword_setup.contributor = Some("1password".to_string());
+    onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
+
+    let mut task = make_task("release.build", &["cargo", "build"]);
+    task.matrix = Some(MatrixConfig {
+        dimensions: [(
+            "arch".to_string(),
+            vec!["linux-x64".to_string(), "darwin-arm64".to_string()],
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    });
+    let ir = make_ir(vec![cuenv_setup, onepassword_setup, task.clone()]);
+    let arch_runners: HashMap<String, String> = [
+        ("linux-x64".to_string(), "ubuntu-24.04".to_string()),
+        ("darwin-arm64".to_string(), "macos-14".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let cuenv_artifacts_by_runner: HashMap<String, String> = [
+        (
+            "ubuntu-24.04".to_string(),
+            "cuenv-bootstrap-ubuntu-24-04".to_string(),
+        ),
+        (
+            "macos-14".to_string(),
+            "cuenv-bootstrap-macos-14".to_string(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            environment: None,
+            arch_runners: Some(&arch_runners),
+            previous_jobs: &[],
+            project_path: None,
+            cuenv_artifacts_by_runner: Some(&cuenv_artifacts_by_runner),
+        },
+    );
+    let linux_job = jobs
+        .get("release-build-linux-x64")
+        .expect("missing linux matrix job");
+    let step_names: Vec<_> = linux_job
+        .steps
+        .iter()
+        .filter_map(|s| s.name.as_deref())
+        .collect();
+
+    assert!(step_names.contains(&"Download cuenv"));
+    assert!(step_names.contains(&"Add cuenv to PATH"));
+    assert!(step_names.contains(&"Setup 1Password"));
+    assert!(!step_names.contains(&"Build cuenv (nix)"));
+
+    let download_step = linux_job
+        .steps
+        .iter()
+        .find(|s| s.name.as_deref() == Some("Download cuenv"))
+        .expect("missing cuenv download step");
+    assert_eq!(
+        download_step.with_inputs.get("name"),
+        Some(&serde_yaml::Value::String(
+            "cuenv-bootstrap-ubuntu-24-04".to_string()
+        ))
+    );
 }
 
 #[test]

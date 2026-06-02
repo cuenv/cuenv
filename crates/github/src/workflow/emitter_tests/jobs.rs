@@ -6,7 +6,7 @@ fn test_build_simple_job() {
     let task = make_task("build", &["cargo", "build"]);
     let ir = make_ir(vec![task.clone()]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
 
     assert_eq!(job.name, Some("build".to_string()));
     assert!(matches!(job.runs_on, RunsOn::Label(ref l) if l == "ubuntu-latest"));
@@ -36,7 +36,7 @@ fn test_build_simple_job_preserves_explicit_task_env() {
     );
     let ir = make_ir(vec![task.clone()]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
     let task_step = job
         .steps
         .iter()
@@ -60,8 +60,11 @@ fn test_build_simple_job_with_environment() {
     let ir = make_ir(vec![task.clone()]);
     let env = "production".to_string();
 
-    let job =
-        emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(Some(&env), None));
+    let job = emitter.build_simple_job(
+        &task,
+        &ir,
+        &SimpleJobOptions::orchestrated(Some(&env), None),
+    );
 
     // Find the task step and check command includes environment
     let task_step = job
@@ -83,7 +86,7 @@ fn test_build_simple_job_with_working_directory() {
     let job = emitter.build_simple_job(
         &task,
         &ir,
-        SimpleJobOptions::orchestrated(None, Some("platform/my-project")),
+        &SimpleJobOptions::orchestrated(None, Some("platform/my-project")),
     );
 
     // Find the task step and check working-directory is set
@@ -113,7 +116,7 @@ fn test_build_simple_job_direct_execution_runs_ir_command() {
     );
     let ir = make_ir(vec![task.clone()]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
 
     let task_step = job
         .steps
@@ -141,7 +144,7 @@ fn test_build_simple_job_direct_execution_preserves_shell_command() {
     task.shell = true;
     let ir = make_ir(vec![task.clone()]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
 
     let task_step = job
         .steps
@@ -201,7 +204,7 @@ fn test_build_simple_job_direct_execution_skips_cuenv_setup_and_dependents() {
         task.clone(),
     ]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::direct(None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::direct(None));
     let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
 
     assert!(step_names.contains(&"Checkout"));
@@ -262,8 +265,11 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
     let job = emitter
         .build_cuenv_bootstrap_job(
             &ir,
-            RunsOn::Label("ubuntu-latest".to_string()),
-            "build.cuenv",
+            CuenvBootstrapJobOptions {
+                runs_on: RunsOn::Label("ubuntu-latest".to_string()),
+                name: "build.cuenv",
+                artifact_name: "cuenv-bootstrap-ubuntu-latest",
+            },
         )
         .expect("expected cuenv bootstrap job");
     let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
@@ -272,7 +278,28 @@ fn test_build_cuenv_bootstrap_job_includes_cuenv_and_prereqs_but_not_dependents(
     assert!(step_names.contains(&"Install Nix"));
     assert!(step_names.contains(&"Setup Cachix"));
     assert!(step_names.contains(&"Build cuenv (nix)"));
+    assert!(step_names.contains(&"Upload cuenv"));
     assert!(!step_names.contains(&"Setup 1Password"));
+
+    let upload_step = job
+        .steps
+        .iter()
+        .find(|s| s.name.as_deref() == Some("Upload cuenv"))
+        .expect("missing cuenv upload step");
+    assert_eq!(
+        upload_step.uses.as_deref(),
+        Some("actions/upload-artifact@v4")
+    );
+    assert_eq!(
+        upload_step.with_inputs.get("name"),
+        Some(&serde_yaml::Value::String(
+            "cuenv-bootstrap-ubuntu-latest".to_string()
+        ))
+    );
+    assert_eq!(
+        upload_step.with_inputs.get("path"),
+        Some(&serde_yaml::Value::String("result/bin/cuenv".to_string()))
+    );
 }
 
 #[test]
@@ -294,9 +321,83 @@ fn test_build_cuenv_bootstrap_job_respects_disabled_cuenv_build() {
         emitter
             .build_cuenv_bootstrap_job(
                 &ir,
-                RunsOn::Label("ubuntu-latest".to_string()),
-                "build.cuenv"
+                CuenvBootstrapJobOptions {
+                    runs_on: RunsOn::Label("ubuntu-latest".to_string()),
+                    name: "build.cuenv",
+                    artifact_name: "cuenv-bootstrap-ubuntu-latest",
+                }
             )
             .is_none()
+    );
+}
+
+#[test]
+fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
+    let emitter = GitHubActionsEmitter::new();
+
+    let mut bootstrap_task = make_phase_task(
+        "cuenv:contributor:nix.install",
+        &["install nix"],
+        BuildStage::Bootstrap,
+        0,
+    );
+    bootstrap_task.label = Some("Install Nix".to_string());
+    bootstrap_task.contributor = Some("nix".to_string());
+
+    let mut cuenv_setup = make_phase_task(
+        "cuenv:contributor:cuenv.setup",
+        &["nix build .#cuenv"],
+        BuildStage::Setup,
+        10,
+    );
+    cuenv_setup.label = Some("Build cuenv (nix)".to_string());
+    cuenv_setup.contributor = Some("cuenv".to_string());
+
+    let mut onepassword_setup = make_phase_task(
+        "cuenv:contributor:1password.setup",
+        &["cuenv secrets setup onepassword"],
+        BuildStage::Setup,
+        20,
+    );
+    onepassword_setup.label = Some("Setup 1Password".to_string());
+    onepassword_setup.contributor = Some("1password".to_string());
+    onepassword_setup.depends_on = vec!["cuenv:contributor:cuenv.setup".to_string()];
+
+    let task = make_task("publish.github", &["gh", "release", "upload"]);
+    let ir = make_ir(vec![
+        bootstrap_task,
+        cuenv_setup,
+        onepassword_setup,
+        task.clone(),
+    ]);
+
+    let job = emitter.build_simple_job(
+        &task,
+        &ir,
+        &SimpleJobOptions::orchestrated_with_cuenv_artifact(
+            None,
+            None,
+            "cuenv-bootstrap-ubuntu-latest".to_string(),
+        ),
+    );
+    let step_names: Vec<_> = job.steps.iter().filter_map(|s| s.name.as_deref()).collect();
+
+    assert!(step_names.contains(&"Install Nix"));
+    assert!(step_names.contains(&"Download cuenv"));
+    assert!(step_names.contains(&"Add cuenv to PATH"));
+    assert!(step_names.contains(&"Setup 1Password"));
+    assert!(step_names.contains(&"publish.github"));
+    assert!(!step_names.contains(&"Build cuenv (nix)"));
+
+    let download_step = job
+        .steps
+        .iter()
+        .find(|s| s.name.as_deref() == Some("Download cuenv"))
+        .expect("missing cuenv download step");
+    assert_eq!(
+        download_step.with_inputs.get("name"),
+        Some(&serde_yaml::Value::String(
+            "cuenv-bootstrap-ubuntu-latest".to_string()
+        ))
     );
 }

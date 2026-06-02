@@ -6,7 +6,7 @@ use super::{CiSyncOptions, ProjectInfo};
 use cuenv_core::Result;
 use cuenv_github::GitHubConfigExt;
 use matrix::emit_matrix_workflow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use tracing::instrument;
 
@@ -387,23 +387,47 @@ fn prepend_need(job: &mut cuenv_github::workflow::schema::Job, dependency: &str)
     job.needs = needs;
 }
 
+fn cuenv_bootstrap_artifact_name(runs_on: &cuenv_github::workflow::schema::RunsOn) -> String {
+    format!("cuenv-bootstrap-{}", runner_suffix(runs_on))
+}
+
+fn can_use_cuenv_bootstrap(
+    emitter: &cuenv_github::workflow::GitHubActionsEmitter,
+    ir: &cuenv_ci::ir::IntermediateRepresentation,
+) -> bool {
+    emitter.build_cuenv
+        && ir
+            .sorted_phase_tasks(cuenv_ci::ir::BuildStage::Setup)
+            .iter()
+            .any(|task| task.contributor.as_deref() == Some("cuenv"))
+}
+
 fn inject_cuenv_bootstrap_jobs(
     jobs: &mut indexmap::IndexMap<String, cuenv_github::workflow::schema::Job>,
     ir: &cuenv_ci::ir::IntermediateRepresentation,
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
+    bootstrap_consumers: &HashSet<String>,
 ) {
     use cuenv_github::workflow::schema::RunsOn;
     use indexmap::IndexMap;
 
-    if jobs.is_empty() {
+    if jobs.is_empty() || bootstrap_consumers.is_empty() {
         return;
     }
 
     let mut runners = IndexMap::<String, RunsOn>::new();
-    for job in jobs.values() {
+    for (job_id, job) in jobs.iter() {
+        if !bootstrap_consumers.contains(job_id) {
+            continue;
+        }
+
         runners
             .entry(runner_key(&job.runs_on))
             .or_insert_with(|| job.runs_on.clone());
+    }
+
+    if runners.is_empty() {
+        return;
     }
 
     let multiple_runners = runners.len() > 1;
@@ -421,7 +445,15 @@ fn inject_cuenv_bootstrap_jobs(
             ("build-cuenv".to_string(), "build.cuenv".to_string())
         };
 
-        let Some(job) = emitter.build_cuenv_bootstrap_job(ir, runs_on, &display_name) else {
+        let artifact_name = cuenv_bootstrap_artifact_name(&runs_on);
+        let Some(job) = emitter.build_cuenv_bootstrap_job(
+            ir,
+            cuenv_github::workflow::CuenvBootstrapJobOptions {
+                runs_on,
+                name: &display_name,
+                artifact_name: &artifact_name,
+            },
+        ) else {
             return;
         };
 
@@ -429,7 +461,11 @@ fn inject_cuenv_bootstrap_jobs(
         bootstrap_jobs.insert(bootstrap_job_id, job);
     }
 
-    for job in jobs.values_mut() {
+    for (job_id, job) in jobs.iter_mut() {
+        if !bootstrap_consumers.contains(job_id) {
+            continue;
+        }
+
         if let Some(bootstrap_job_id) = runner_bootstrap_jobs.get(&runner_key(&job.runs_on)) {
             prepend_need(job, bootstrap_job_id);
         }
@@ -444,15 +480,33 @@ fn inject_cuenv_bootstrap_jobs(
 ///
 /// Builds jobs directly using `build_simple_job` which supports `project_path`
 /// for setting working-directory in monorepo workflows.
-fn simple_job_options<'a>(
-    ctx: &'a PipelineContext,
+fn simple_job_execution(
+    ctx: &PipelineContext,
     task: &cuenv_ci::ir::Task,
-) -> cuenv_github::workflow::SimpleJobOptions<'a> {
+) -> cuenv_github::workflow::TaskExecution {
     let is_direct_nix_job =
         !ctx.is_release && task.command.first().is_some_and(|command| command == "nix");
 
     if is_direct_nix_job {
+        cuenv_github::workflow::TaskExecution::Direct
+    } else {
+        cuenv_github::workflow::TaskExecution::Orchestrated
+    }
+}
+
+fn simple_job_options<'a>(
+    ctx: &'a PipelineContext,
+    task: &cuenv_ci::ir::Task,
+    cuenv_artifact_name: Option<String>,
+) -> cuenv_github::workflow::SimpleJobOptions<'a> {
+    if simple_job_execution(ctx, task) == cuenv_github::workflow::TaskExecution::Direct {
         cuenv_github::workflow::SimpleJobOptions::direct(ctx.project_path.as_deref())
+    } else if let Some(artifact_name) = cuenv_artifact_name {
+        cuenv_github::workflow::SimpleJobOptions::orchestrated_with_cuenv_artifact(
+            ctx.environment.as_ref(),
+            ctx.project_path.as_deref(),
+            artifact_name,
+        )
     } else {
         cuenv_github::workflow::SimpleJobOptions::orchestrated(
             ctx.environment.as_ref(),
@@ -476,21 +530,37 @@ fn emit_standard_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
+    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(&emitter, &ir);
+    let default_runner = cuenv_github::workflow::schema::RunsOn::Label(emitter.runner.clone());
+    let default_artifact_name =
+        use_cuenv_bootstrap.then(|| cuenv_bootstrap_artifact_name(&default_runner));
 
     // Build jobs using build_simple_job (which supports project_path for working-directory)
     // Only iterate over regular tasks (non-phase tasks) - phase tasks are handled internally
     let mut jobs = IndexMap::new();
+    let mut bootstrap_consumers = HashSet::new();
     for task in ctx.regular_tasks() {
-        let mut job = emitter.build_simple_job(task, &ir, simple_job_options(ctx, task));
+        let job_id = task.id.replace(['.', ' '], "-");
+        let execution = simple_job_execution(ctx, task);
+        let artifact_name = if execution == cuenv_github::workflow::TaskExecution::Orchestrated {
+            default_artifact_name.clone()
+        } else {
+            None
+        };
+        let mut job =
+            emitter.build_simple_job(task, &ir, &simple_job_options(ctx, task, artifact_name));
         job.needs = task
             .depends_on
             .iter()
             .map(|d| d.replace(['.', ' '], "-"))
             .collect();
-        jobs.insert(task.id.replace(['.', ' '], "-"), job);
+        if use_cuenv_bootstrap && execution == cuenv_github::workflow::TaskExecution::Orchestrated {
+            bootstrap_consumers.insert(job_id.clone());
+        }
+        jobs.insert(job_id, job);
     }
 
-    inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter);
+    inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter, &bootstrap_consumers);
 
     let filename = format!("{}.yml", sanitize_workflow_name(&workflow_name));
 
@@ -578,5 +648,165 @@ fn build_github_trigger_condition(
         release,
         manual,
         paths: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cuenv_ci::ir::{
+        BuildStage, CachePolicy, IntermediateRepresentation, PipelineMetadata, Task,
+    };
+    use cuenv_core::ci::PipelineMode;
+    use cuenv_github::workflow::schema::{Job, RunsOn};
+    use indexmap::IndexMap;
+    use std::collections::{BTreeMap, HashSet};
+
+    struct PhaseTaskFixture<'a> {
+        id: &'a str,
+        contributor: &'a str,
+        phase: BuildStage,
+        priority: i32,
+        label: &'a str,
+        command: &'a [&'a str],
+    }
+
+    fn make_ir(tasks: Vec<Task>) -> IntermediateRepresentation {
+        IntermediateRepresentation {
+            version: "1.5".to_string(),
+            pipeline: PipelineMetadata {
+                name: "ci".to_string(),
+                mode: PipelineMode::Expanded,
+                environment: None,
+                requires_onepassword: false,
+                project_name: None,
+                project_path: None,
+                trigger: None,
+                pipeline_tasks: vec![],
+                pipeline_task_defs: vec![],
+            },
+            runtimes: vec![],
+            tasks,
+        }
+    }
+
+    fn make_phase_task(fixture: &PhaseTaskFixture<'_>) -> Task {
+        Task {
+            id: fixture.id.to_string(),
+            runtime: None,
+            command: fixture
+                .command
+                .iter()
+                .map(|part| (*part).to_string())
+                .collect(),
+            shell: fixture.command.len() == 1,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: Some(fixture.phase),
+            label: Some(fixture.label.to_string()),
+            priority: Some(fixture.priority),
+            contributor: Some(fixture.contributor.to_string()),
+            condition: None,
+            provider_hints: None,
+        }
+    }
+
+    fn make_job(runs_on: RunsOn) -> Job {
+        Job {
+            name: Some("job".to_string()),
+            runs_on,
+            needs: Vec::new(),
+            if_condition: None,
+            strategy: None,
+            environment: None,
+            env: IndexMap::new(),
+            concurrency: None,
+            continue_on_error: None,
+            timeout_minutes: None,
+            steps: Vec::new(),
+        }
+    }
+
+    fn make_bootstrap_ir() -> IntermediateRepresentation {
+        make_ir(vec![
+            make_phase_task(&PhaseTaskFixture {
+                id: "cuenv:contributor:nix.install",
+                contributor: "nix",
+                phase: BuildStage::Bootstrap,
+                priority: 0,
+                label: "Install Nix",
+                command: &["install nix"],
+            }),
+            make_phase_task(&PhaseTaskFixture {
+                id: "cuenv:contributor:cuenv.setup",
+                contributor: "cuenv",
+                phase: BuildStage::Setup,
+                priority: 10,
+                label: "Build cuenv (nix)",
+                command: &["nix build .#cuenv"],
+            }),
+        ])
+    }
+
+    #[test]
+    fn bootstrap_injection_skips_all_direct_jobs() {
+        let ir = make_bootstrap_ir();
+        let emitter = cuenv_github::workflow::GitHubActionsEmitter::new().with_nix();
+        let mut jobs = IndexMap::new();
+        jobs.insert(
+            "checks-nextest".to_string(),
+            make_job(RunsOn::Label("ubuntu-latest".to_string())),
+        );
+
+        inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter, &HashSet::new());
+
+        assert!(!jobs.contains_key("build-cuenv"));
+        assert!(jobs["checks-nextest"].needs.is_empty());
+    }
+
+    #[test]
+    fn bootstrap_injection_targets_only_orchestrated_runner_consumers() {
+        let ir = make_bootstrap_ir();
+        let emitter = cuenv_github::workflow::GitHubActionsEmitter::new().with_nix();
+        let mut jobs = IndexMap::new();
+        jobs.insert(
+            "checks-nextest".to_string(),
+            make_job(RunsOn::Label("macos-14".to_string())),
+        );
+        jobs.insert(
+            "publish-github".to_string(),
+            make_job(RunsOn::Label("ubuntu-latest".to_string())),
+        );
+        let bootstrap_consumers = HashSet::from(["publish-github".to_string()]);
+
+        inject_cuenv_bootstrap_jobs(&mut jobs, &ir, &emitter, &bootstrap_consumers);
+
+        assert_eq!(jobs.len(), 3);
+        assert!(jobs.contains_key("build-cuenv"));
+        assert!(jobs["checks-nextest"].needs.is_empty());
+        assert_eq!(jobs["publish-github"].needs, vec!["build-cuenv"]);
+
+        let bootstrap = &jobs["build-cuenv"];
+        assert!(matches!(
+            bootstrap.runs_on,
+            RunsOn::Label(ref label) if label == "ubuntu-latest"
+        ));
+        assert!(
+            bootstrap
+                .steps
+                .iter()
+                .any(|step| step.name.as_deref() == Some("Upload cuenv"))
+        );
     }
 }
