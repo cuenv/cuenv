@@ -52,6 +52,12 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload cuenv
+      uses: actions/upload-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
+        path: result/bin/cuenv
+        if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-arm64:
     name: build.cuenv (namespace-profile-cuenv-linux-arm64)
     runs-on: namespace-profile-cuenv-linux-arm64
@@ -82,6 +88,12 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload cuenv
+      uses: actions/upload-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
+        path: result/bin/cuenv
+        if-no-files-found: error
   build-cuenv-namespace-profile-cuenv-linux-x86:
     name: build.cuenv (namespace-profile-cuenv-linux-x86)
     runs-on: namespace-profile-cuenv-linux-x86
@@ -112,6 +124,12 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload cuenv
+      uses: actions/upload-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: result/bin/cuenv
+        if-no-files-found: error
   cargo-build-darwin-arm64:
     name: cargo.build (darwin-arm64)
     runs-on: namespace-profile-cuenv-macos-arm64
@@ -136,14 +154,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -189,14 +208,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -242,14 +262,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -298,14 +319,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -359,14 +381,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -405,14 +428,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -451,14 +475,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -500,14 +525,15 @@ jobs:
         extra-conf: accept-flake-config = true
     - name: Prune Determinate Nix receipt
       run: "if [ -e /nix/receipt.json ]; then\n\tif command -v sudo >/dev/null 2>&1; then\n\t\tsudo rm -f /nix/receipt.json\n\telse\n\t\trm -f /nix/receipt.json\n\tfi\nfi"
-    - name: Build cuenv (nix)
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
+        path: .cuenv-bootstrap
+    - name: Add cuenv to PATH
       run: |-
-        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
-        nix build .#cuenv -L --accept-flake-config
-        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
-        ./result/bin/cuenv sync ci
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        chmod +x .cuenv-bootstrap/cuenv
+        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
