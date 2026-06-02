@@ -240,6 +240,14 @@ which stamps the marker to the running version. With a lagging committed marker
 that sync rewrites `cue.mod/module.cue`, leaving the working tree dirty, and
 `cue mod publish` aborts with `VCS state is not clean`. Keeping the marker in
 sync makes the bootstrap sync a no-op.
+
+After the marker is bumped, an older installed `cuenv` may refuse to run in the
+checkout with `Project requires cuenv <new>; this CLI is <old>`. For the
+lockfile refresh and locked metadata verification, use direct Cargo commands if
+needed: `cargo update --workspace` and
+`cargo metadata --locked --format-version 1`. For cuenv-owned workflows such as
+formatting or schema-doc checks, run the checked-out release tree through Nix,
+for example `nix run .#cuenv -- fmt --fix`.
 :::
 
 ## 5. Prepare a release in one shot
@@ -397,6 +405,8 @@ cuenv release version
 
 # Bump the CUE module marker to match (release version does NOT do this):
 # in cue.mod/module.cue set custom["github.com/cuenv/cuenv"].version = "0.51.0"
+# If the installed cuenv is now too old for the marker, use direct Cargo for the
+# lockfile/metadata refresh and `nix run .#cuenv -- <command>` for cuenv tasks.
 
 # Commit the version + changelog + module marker updates, tag (bare version!), then publish:
 git commit -am "release: 0.51.0"
