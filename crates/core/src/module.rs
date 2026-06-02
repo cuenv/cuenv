@@ -798,6 +798,80 @@ mod tests {
     }
 
     #[test]
+    fn test_from_raw_parts_prefers_authored_task_field_source_over_schema_source() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            "nix".to_string(),
+            json!({
+                "name": "nix",
+                "tasks": {
+                    "update": {
+                        "description": "Update flake inputs",
+                        "hermetic": false,
+                        "script": "test -f flake.lock",
+                        "scriptShell": "sh"
+                    }
+                }
+            }),
+        );
+
+        let mut sources = SourceMap::new();
+        sources.insert(
+            "nix/tasks.update".to_string(),
+            SourceLocation {
+                file: "/cache/github.com/cuenv/cuenv/schema/core.cue".to_string(),
+                line: 23,
+                column: 1,
+            },
+        );
+        sources.insert(
+            "nix/tasks.update.description".to_string(),
+            SourceLocation {
+                file: "nix/env.cue".to_string(),
+                line: 22,
+                column: 1,
+            },
+        );
+        sources.insert(
+            "nix/tasks.update.hermetic".to_string(),
+            SourceLocation {
+                file: "nix/env.cue".to_string(),
+                line: 25,
+                column: 1,
+            },
+        );
+
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["nix".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
+
+        let project = module
+            .get(Path::new("nix"))
+            .expect("project should exist")
+            .deserialize::<Project>()
+            .expect("project should deserialize");
+
+        let TaskNode::Task(task) = project
+            .tasks
+            .get("update")
+            .expect("update task should exist")
+        else {
+            panic!("update should be a single task");
+        };
+
+        assert_eq!(
+            task.source.as_ref().map(|source| source.file.as_str()),
+            Some("nix/env.cue")
+        );
+    }
+
+    #[test]
     fn test_from_raw_parts_injects_definition_and_caller_metadata() {
         let mut raw = HashMap::new();
         raw.insert(
