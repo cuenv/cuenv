@@ -65,20 +65,18 @@ impl StateManager {
                 && let Ok(instance_hash) = fs::read_to_string(&path).await
             {
                 let instance_hash = instance_hash.trim();
-                match self.load_state(instance_hash).await {
-                    Ok(None) => {
-                        if fs::remove_file(&path).await.is_ok() {
-                            cleaned_count += 1;
-                            debug!("Cleaned up orphaned marker: {}", path.display());
-                        }
-                    }
+                let cleanup_reason = match self.load_state(instance_hash).await {
+                    Ok(None) => Some("orphaned"),
                     Ok(Some(state)) if state.is_complete() && !state.should_display_completed() => {
-                        if fs::remove_file(&path).await.is_ok() {
-                            cleaned_count += 1;
-                            debug!("Cleaned up expired marker: {}", path.display());
-                        }
+                        Some("expired")
                     }
-                    _ => {}
+                    _ => None,
+                };
+                if let Some(reason) = cleanup_reason
+                    && fs::remove_file(&path).await.is_ok()
+                {
+                    cleaned_count += 1;
+                    debug!("Cleaned up {reason} marker: {}", path.display());
                 }
             }
         }

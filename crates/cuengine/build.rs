@@ -207,9 +207,7 @@ fn bridge_source_fingerprint(bridge_dir: &Path) -> BuildResult<String> {
 }
 
 fn bridge_sources_changed(fingerprint_path: &Path, source_fingerprint: &str) -> bool {
-    fs::read_to_string(fingerprint_path)
-        .map(|existing| existing != source_fingerprint)
-        .unwrap_or(false)
+    fs::read_to_string(fingerprint_path).is_ok_and(|existing| existing != source_fingerprint)
 }
 
 fn write_bridge_fingerprint(fingerprint_path: &Path, source_fingerprint: &str) -> io::Result<()> {

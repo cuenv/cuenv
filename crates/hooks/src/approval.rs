@@ -48,10 +48,7 @@ const CI_VARS: &[&str] = &[
 #[must_use]
 pub fn is_ci() -> bool {
     // Check for the generic CI variable first (most CI systems set this)
-    if std::env::var("CI")
-        .map(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
-        .unwrap_or(false)
-    {
+    if std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false") {
         return true;
     }
 

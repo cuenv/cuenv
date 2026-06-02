@@ -385,6 +385,11 @@ tasks: {
 }
 ```
 
+When `dir` is omitted, non-hermetic tasks run from the directory that owns the
+user-authored executable task definition, including `schema.#Task` tasks whose
+script content is loaded with `@embed`. Schema helper source locations are not
+used as the default working directory.
+
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 When using `scriptShell: "sh"`, set `shellOptions.pipefail: false`. Plain `sh` does not reliably support `set -o pipefail`.
