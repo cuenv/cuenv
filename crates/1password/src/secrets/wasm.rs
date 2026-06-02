@@ -35,7 +35,7 @@ pub fn onepassword_wasm_path() -> Result<PathBuf, SecretError> {
 /// Check if the 1Password WASM SDK is available in the cache
 #[must_use]
 pub fn onepassword_wasm_available() -> bool {
-    onepassword_wasm_path().map(|p| p.exists()).unwrap_or(false)
+    onepassword_wasm_path().is_ok_and(|p| p.exists())
 }
 
 /// Load the 1Password WASM SDK from the cache

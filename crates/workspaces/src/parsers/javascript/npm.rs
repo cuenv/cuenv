@@ -115,7 +115,7 @@ fn entry_from_package(
             .clone()
             .ok_or_else(|| Error::LockfileParseFailed {
                 path: lockfile_path.to_path_buf(),
-                message: format!("Missing version for package entry '{pkg_path}': {pkg_entry:?}",),
+                message: format!("Missing version for package entry '{pkg_path}': {pkg_entry:?}"),
             })?
     };
 

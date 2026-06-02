@@ -2,6 +2,7 @@ use super::{TestResult, create_test_dir, init_cue_module, run_cuenv};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 fn write_env(temp_dir: &TempDir, cue_content: &str) -> TestResult {
@@ -15,11 +16,104 @@ fn path_arg(path: &Path) -> TestResult<&str> {
         .map_err(Into::into)
 }
 
+fn repo_root() -> TestResult<PathBuf> {
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()?)
+}
+
+fn copy_cue_files_recursive(source: &Path, destination: &Path) -> TestResult {
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if source_path.is_dir() {
+            copy_cue_files_recursive(&source_path, &destination_path)?;
+        } else if source_path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            == Some("cue")
+        {
+            fs::copy(&source_path, &destination_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn init_local_cuenv_schema_module(dir: &Path) -> TestResult {
+    fs::create_dir_all(dir.join("cue.mod"))?;
+    fs::write(
+        dir.join("cue.mod/module.cue"),
+        r#"module: "github.com/cuenv/cuenv"
+language: version: "v0.15.0"
+"#,
+    )?;
+    copy_cue_files_recursive(&repo_root()?.join("schema"), &dir.join("schema"))?;
+    Ok(())
+}
+
 fn output_position(output: &str, needle: &'static str) -> TestResult<usize> {
     output
         .find(needle)
         .ok_or_else(|| io::Error::other(format!("missing `{needle}` in output")))
         .map_err(Into::into)
+}
+
+#[test]
+fn test_schema_typed_embedded_script_runs_from_nested_project_directory() -> TestResult {
+    let temp_dir = create_test_dir()?;
+    init_local_cuenv_schema_module(temp_dir.path())?;
+
+    let project_dir = temp_dir.path().join("nix");
+    fs::create_dir_all(&project_dir)?;
+    fs::write(project_dir.join("flake.lock"), "{}")?;
+    fs::write(
+        project_dir.join("check.sh"),
+        "if [ -f flake.lock ]; then echo nested-ok; else echo missing-lock; exit 1; fi\n",
+    )?;
+    fs::write(
+        project_dir.join("env.cue"),
+        r#"@extern(embed)
+
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+    name: "nix"
+
+    tasks: {
+        check: schema.#Task & {
+            description: "Check nested working directory"
+            script:      _ @embed(file=check.sh,type=text)
+            scriptShell: "sh"
+            hermetic:    false
+        }
+    }
+}
+"#,
+    )?;
+
+    let (stdout, stderr, success) = run_cuenv(&[
+        "task",
+        "-p",
+        path_arg(&project_dir)?,
+        "--package",
+        "cuenv",
+        "check",
+    ])?;
+
+    assert!(
+        success,
+        "schema-typed embedded script should run from nested project directory\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("nested-ok"),
+        "task should find flake.lock in nested project directory\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    Ok(())
 }
 
 #[test]

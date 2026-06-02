@@ -62,8 +62,7 @@ fn load_named_example(examples_dir: &Path, name: &str) -> TestResult<Project> {
 /// Returns false if examples can't be evaluated due to module root requirements.
 fn ffi_available() -> bool {
     get_examples_dir()
-        .map(|examples_dir| load_example_manifest(&examples_dir.join("env-basic")).is_ok())
-        .unwrap_or(false)
+        .is_ok_and(|examples_dir| load_example_manifest(&examples_dir.join("env-basic")).is_ok())
 }
 
 /// Skip test with message if FFI is unavailable

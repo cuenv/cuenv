@@ -575,6 +575,9 @@ outside the declared input/output boundary.
 Non-hermetic tasks run from the directory containing the `env.cue` file where
 the executable task is defined. This matters for imported tasks: a task imported
 from another package keeps the imported package's directory by default.
+Tasks typed with `schema.#Task` and scripts loaded with `@embed` still use the
+user-authored task fields for this default; imported schema helper definitions
+do not change the working directory.
 
 Set `dir` when a task must run somewhere else. A string value is resolved
 relative to the CUE module root for backwards compatibility. The object form can

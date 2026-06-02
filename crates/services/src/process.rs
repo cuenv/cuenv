@@ -163,7 +163,7 @@ impl<'a> ServiceProcess<'a> {
             )
             .await?;
         if !secrets.is_empty() {
-            cuenv_events::register_secrets(secrets.into_iter());
+            cuenv_events::register_secrets(secrets);
         }
         for (key, value) in resolved_env {
             command.env(key, value);

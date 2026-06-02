@@ -3,6 +3,30 @@ use serde_json::{Map, Value};
 
 use super::SourceMap;
 
+const AUTHORED_TASK_SOURCE_FIELDS: &[&str] = &[
+    "command",
+    "script",
+    "description",
+    "scriptShell",
+    "shellOptions",
+    "hermetic",
+    "dir",
+    "args",
+    "env",
+    "dependsOn",
+    "inputs",
+    "outputs",
+    "cache",
+    "labels",
+    "params",
+    "timeout",
+    "retry",
+    "continueOnError",
+    "captures",
+    "runtime",
+    "dagger",
+];
+
 pub(super) struct TaskSourceMaps<'a> {
     pub definitions: &'a SourceMap,
     pub callers: Option<&'a SourceMap>,
@@ -82,6 +106,7 @@ impl TaskSourceContext<'_> {
     ) -> Option<&SourceLocation> {
         let exact = self.meta_key(field_path);
         self.executable_body_source(&exact, obj, self.maps.definitions)
+            .or_else(|| self.authored_task_field_source(&exact, obj, self.maps.definitions))
             .or_else(|| self.maps.definitions.get(&exact))
             .or_else(|| self.source_for_nearest_ancestor(field_path, self.maps.definitions))
     }
@@ -109,6 +134,46 @@ impl TaskSourceContext<'_> {
             .iter()
             .filter(|field| obj.contains_key(**field))
             .find_map(|field| sources.get(&format!("{exact}.{field}")))
+    }
+
+    fn authored_task_field_source<'a>(
+        &self,
+        exact: &str,
+        obj: &Map<String, Value>,
+        sources: &'a SourceMap,
+    ) -> Option<&'a SourceLocation> {
+        AUTHORED_TASK_SOURCE_FIELDS
+            .iter()
+            .filter(|field| obj.contains_key(**field))
+            .find_map(|field| self.source_for_task_field(exact, field, sources))
+    }
+
+    fn source_for_task_field<'a>(
+        &self,
+        exact: &str,
+        field: &str,
+        sources: &'a SourceMap,
+    ) -> Option<&'a SourceLocation> {
+        let field_key = format!("{exact}.{field}");
+        sources
+            .get(&field_key)
+            .or_else(|| self.source_for_field_descendant(&field_key, sources))
+    }
+
+    fn source_for_field_descendant<'a>(
+        &self,
+        field_key: &str,
+        sources: &'a SourceMap,
+    ) -> Option<&'a SourceLocation> {
+        let mut matches = sources
+            .iter()
+            .filter(|(key, _)| {
+                key.strip_prefix(field_key)
+                    .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
+            })
+            .collect::<Vec<_>>();
+        matches.sort_by_key(|(key, _)| *key);
+        matches.into_iter().next().map(|(_, source)| source)
     }
 
     fn source_for_nearest_ancestor<'a>(

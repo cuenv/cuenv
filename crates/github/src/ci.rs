@@ -56,8 +56,7 @@ impl GitHubCIProvider {
         Command::new("git")
             .args(["rev-parse", "--is-shallow-repository"])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
-            .unwrap_or(false)
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "true")
     }
 
     fn fetch_ref(refspec: &str) -> bool {
@@ -65,8 +64,7 @@ impl GitHubCIProvider {
         Command::new("git")
             .args(["fetch", "--depth=1", "origin", refspec])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .is_ok_and(|o| o.status.success())
     }
 
     fn get_before_sha() -> Option<String> {
