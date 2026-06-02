@@ -165,15 +165,14 @@ impl TaskSourceContext<'_> {
         field_key: &str,
         sources: &'a SourceMap,
     ) -> Option<&'a SourceLocation> {
-        let mut matches = sources
+        sources
             .iter()
             .filter(|(key, _)| {
                 key.strip_prefix(field_key)
                     .is_some_and(|rest| rest.starts_with('.') || rest.starts_with('['))
             })
-            .collect::<Vec<_>>();
-        matches.sort_by_key(|(key, _)| *key);
-        matches.into_iter().next().map(|(_, source)| source)
+            .min_by_key(|(key, _)| *key)
+            .map(|(_, source)| source)
     }
 
     fn source_for_nearest_ancestor<'a>(

@@ -43,14 +43,14 @@ fn copy_cue_files_recursive(source: &Path, destination: &Path) -> TestResult {
 }
 
 fn init_local_cuenv_schema_module(dir: &Path) -> TestResult {
-    fs::create_dir_all(dir.join("cue.mod"))?;
-    fs::write(
-        dir.join("cue.mod/module.cue"),
-        r#"module: "github.com/cuenv/cuenv"
-language: version: "v0.15.0"
-"#,
+    let repo_root = repo_root()?;
+    let cue_mod_dir = dir.join("cue.mod");
+    fs::create_dir_all(&cue_mod_dir)?;
+    fs::copy(
+        repo_root.join("cue.mod/module.cue"),
+        cue_mod_dir.join("module.cue"),
     )?;
-    copy_cue_files_recursive(&repo_root()?.join("schema"), &dir.join("schema"))?;
+    copy_cue_files_recursive(&repo_root.join("schema"), &dir.join("schema"))?;
     Ok(())
 }
 
