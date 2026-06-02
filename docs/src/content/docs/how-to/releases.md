@@ -248,6 +248,14 @@ needed: `cargo update --workspace` and
 `cargo metadata --locked --format-version 1`. For cuenv-owned workflows such as
 formatting or schema-doc checks, run the checked-out release tree through Nix,
 for example `nix run .#cuenv -- fmt --fix`.
+
+The generated release workflow also bootstraps cuenv separately in each isolated
+job when `config.ci.cuenv.version: "self"` is active. A downstream job such as
+`publish.cue` may still show a `Build cuenv (nix)` step even though an earlier
+`build.cuenv` job succeeded; the earlier job orders the pipeline, but it does
+not pass its `result/bin/cuenv` as an artifact. Linux jobs restore the Namespace
+`/nix` cache before that step, while macOS jobs skip that cache and use normal
+Nix installation.
 :::
 
 ## 5. Prepare a release in one shot
