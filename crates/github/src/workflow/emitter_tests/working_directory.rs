@@ -7,7 +7,7 @@ fn test_build_simple_job_without_working_directory() {
     let ir = make_ir(vec![task.clone()]);
 
     // project_path = None means root project, no working-directory
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
 
     let task_step = job
         .steps
@@ -31,7 +31,7 @@ fn test_build_simple_job_with_nested_working_directory() {
     let job = emitter.build_simple_job(
         &task,
         &ir,
-        SimpleJobOptions::orchestrated(
+        &SimpleJobOptions::orchestrated(
             None,
             Some("projects/rawkode.academy/platform/email-preferences"),
         ),
@@ -63,7 +63,17 @@ fn test_build_matrix_jobs_with_working_directory() {
     });
     let ir = make_ir(vec![task.clone()]);
 
-    let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], Some("apps/my-service"));
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            environment: None,
+            arch_runners: None,
+            previous_jobs: &[],
+            project_path: Some("apps/my-service"),
+            cuenv_artifacts_by_runner: None,
+        },
+    );
 
     assert_eq!(jobs.len(), 1);
     let job = jobs.get("release-build-linux-x64").unwrap();
@@ -95,7 +105,17 @@ fn test_build_matrix_jobs_without_working_directory() {
     let ir = make_ir(vec![task.clone()]);
 
     // project_path = None
-    let jobs = emitter.build_matrix_jobs(&task, &ir, None, None, &[], None);
+    let jobs = emitter.build_matrix_jobs(
+        &task,
+        &ir,
+        &MatrixJobOptions {
+            environment: None,
+            arch_runners: None,
+            previous_jobs: &[],
+            project_path: None,
+            cuenv_artifacts_by_runner: None,
+        },
+    );
 
     let job = jobs.get("build-linux-x64").unwrap();
     let task_step = job
@@ -123,12 +143,16 @@ fn test_build_artifact_aggregation_job_with_working_directory() {
     }];
     let ir = make_ir(vec![task.clone()]);
 
+    let previous_jobs = vec!["build-linux-x64".to_string()];
     let job = emitter.build_artifact_aggregation_job(
         &task,
         &ir,
-        None,
-        &["build-linux-x64".to_string()],
-        Some("services/api"),
+        &ArtifactAggregationJobOptions {
+            environment: None,
+            previous_jobs: &previous_jobs,
+            project_path: Some("services/api"),
+            cuenv_setup: CuenvSetup::BuildInJob,
+        },
     );
 
     let task_step = job
@@ -156,12 +180,16 @@ fn test_build_artifact_aggregation_job_without_working_directory() {
     }];
     let ir = make_ir(vec![task.clone()]);
 
+    let previous_jobs = vec!["build-linux-x64".to_string()];
     let job = emitter.build_artifact_aggregation_job(
         &task,
         &ir,
-        None,
-        &["build-linux-x64".to_string()],
-        None,
+        &ArtifactAggregationJobOptions {
+            environment: None,
+            previous_jobs: &previous_jobs,
+            project_path: None,
+            cuenv_setup: CuenvSetup::BuildInJob,
+        },
     );
 
     let task_step = job
@@ -185,7 +213,7 @@ fn test_working_directory_yaml_serialization() {
     let job = emitter.build_simple_job(
         &task,
         &ir,
-        SimpleJobOptions::orchestrated(None, Some("my-project")),
+        &SimpleJobOptions::orchestrated(None, Some("my-project")),
     );
 
     // Serialize job to YAML and verify working-directory appears
@@ -202,7 +230,7 @@ fn test_working_directory_not_in_yaml_when_none() {
     let task = make_task("test", &["cargo", "test"]);
     let ir = make_ir(vec![task.clone()]);
 
-    let job = emitter.build_simple_job(&task, &ir, SimpleJobOptions::orchestrated(None, None));
+    let job = emitter.build_simple_job(&task, &ir, &SimpleJobOptions::orchestrated(None, None));
 
     // Serialize job to YAML and verify working-directory does NOT appear
     let yaml = serde_yaml::to_string(&job).expect("Failed to serialize job");

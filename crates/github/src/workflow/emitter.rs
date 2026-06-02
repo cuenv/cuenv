@@ -13,7 +13,10 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, TriggerCo
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
-pub use super::jobs::{SimpleJobOptions, TaskExecution};
+pub use super::jobs::{
+    ArtifactAggregationJobOptions, CuenvBootstrapJobOptions, CuenvSetup, MatrixJobOptions,
+    SimpleJobOptions, TaskExecution,
+};
 pub use super::release::{ReleaseTarget, ReleaseWorkflowBuilder};
 
 /// GitHub Actions workflow emitter
@@ -499,7 +502,7 @@ impl GitHubActionsEmitter {
             let mut job = self.build_simple_job(
                 task,
                 ir,
-                SimpleJobOptions::orchestrated(
+                &SimpleJobOptions::orchestrated(
                     ir.pipeline.environment.as_ref(),
                     None, // project_path - not used in single-project mode
                 ),
@@ -580,7 +583,8 @@ impl Emitter for GitHubActionsEmitter {
         );
 
         // Bootstrap and setup phase steps
-        let (phase_steps, secret_env) = self.render_phase_steps(ir, TaskExecution::Orchestrated);
+        let (phase_steps, secret_env) =
+            self.render_phase_steps(ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
         steps.extend(phase_steps);
 
         // Main execution step: cuenv ci --pipeline <name>
