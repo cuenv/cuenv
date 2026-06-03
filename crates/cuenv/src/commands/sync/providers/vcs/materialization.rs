@@ -1,17 +1,18 @@
 //! VCS dependency checkout and materialization helpers.
 
-use super::git::{git_output, run_git};
+use super::git::{git_output, git_output_bytes, run_git};
 use super::paths::{
     TempPath, ensure_managed_internal_path, temporary_backup_path, temporary_target_path,
-    validate_materialization_path, validate_subdir,
+    validate_materialization_path, validate_overlay_child_name, validate_subdir,
 };
 use super::{
-    FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, MARKER_FILE, PrepareDependencyRequest,
-    PrepareSubdirDependencyRequest,
+    FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, InstallOverlayDependencyRequest, MARKER_FILE,
+    PrepareDependencyRequest, PrepareSubdirDependencyRequest,
 };
 use cuenv_core::lockfile::LockedVcsDependency;
 use cuenv_core::manifest::VcsDependency;
 use cuenv_core::{Error, Result};
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
@@ -23,6 +24,21 @@ pub(super) fn prune_removed_vcs_dependencies(
 ) -> Result<()> {
     for dependency in dependencies {
         let target = validate_materialization_path(git_root, &dependency.path)?;
+        if dependency.overlay {
+            ensure_overlay_parent_target(&target)?;
+            // Overlay deps never own the parent `path`; remove only the managed
+            // children, leaving repo-local siblings intact.
+            for (child, child_tree) in &dependency.children {
+                let child_target = target.join(child);
+                if fs::symlink_metadata(&child_target).is_ok() {
+                    let child_previous = child_locked(dependency, child, child_tree);
+                    ensure_replaceable_target(&child_target, Some(&child_previous))?;
+                    fs::remove_dir_all(&child_target)
+                        .map_err(|e| Error::configuration(e.to_string()))?;
+                }
+            }
+            continue;
+        }
         if fs::symlink_metadata(&target).is_ok() {
             ensure_replaceable_target(&target, Some(dependency))?;
             fs::remove_dir_all(&target).map_err(|e| Error::configuration(e.to_string()))?;
@@ -46,6 +62,7 @@ pub(super) fn locked_matches(locked: Option<&LockedVcsDependency>, spec: &VcsDep
             && locked.vendor == spec.vendor
             && locked.path == spec.path
             && locked.subdir == spec.subdir
+            && locked.overlay == spec.overlay
     })
 }
 
@@ -57,6 +74,18 @@ pub(super) fn resolve_dependency(
     validate_git_input("url", &spec.url)?;
     validate_git_input("reference", &spec.reference)?;
     let normalized_subdir = spec.subdir.as_deref().map(validate_subdir).transpose()?;
+    if spec.overlay {
+        if spec.vendor {
+            return Err(Error::configuration(format!(
+                "VCS dependency '{name}': overlay is incompatible with vendor"
+            )));
+        }
+        if normalized_subdir.is_none() {
+            return Err(Error::configuration(format!(
+                "VCS dependency '{name}': overlay requires a subdir"
+            )));
+        }
+    }
     let cache_path = cache_root.join(name);
     fs::create_dir_all(cache_root).map_err(|e| Error::configuration(e.to_string()))?;
     ensure_managed_internal_path(cache_root, &cache_path)?;
@@ -130,6 +159,14 @@ pub(super) fn resolve_dependency(
         None
     };
 
+    let children = match normalized_subdir.as_deref() {
+        // Guarded above: overlay implies a subdir, so this branch always runs.
+        Some(subdir) if spec.overlay => {
+            list_subtree_children(&cache_path, &format!("{commit}:{subdir}"), subdir)?
+        }
+        _ => BTreeMap::new(),
+    };
+
     Ok(LockedVcsDependency {
         url: spec.url.clone(),
         reference: spec.reference.clone(),
@@ -139,7 +176,98 @@ pub(super) fn resolve_dependency(
         path: spec.path.clone(),
         subdir: normalized_subdir,
         subtree,
+        overlay: spec.overlay,
+        children,
     })
+}
+
+/// Synthesize a per-child locked entry from an overlay parent. Each child is a
+/// self-contained snapshot materialization at `parent.path/child` whose marker
+/// records the parent commit and whose snapshot tree is the child's own tree.
+fn child_locked(
+    parent: &LockedVcsDependency,
+    child: &str,
+    child_tree: &str,
+) -> LockedVcsDependency {
+    let subdir = parent
+        .subdir
+        .as_deref()
+        .map(|subdir| format!("{}/{}", subdir.trim_end_matches('/'), child));
+    LockedVcsDependency {
+        url: parent.url.clone(),
+        reference: parent.reference.clone(),
+        commit: parent.commit.clone(),
+        tree: parent.tree.clone(),
+        vendor: false,
+        path: format!("{}/{}", parent.path.trim_end_matches('/'), child),
+        subdir,
+        subtree: Some(child_tree.to_string()),
+        overlay: false,
+        children: BTreeMap::new(),
+    }
+}
+
+/// Enumerate the immediate children of a git tree as `name -> tree SHA`, using
+/// a NUL-delimited `git ls-tree` so names with spaces or newlines parse safely.
+/// Overlay only supports directory children; files and submodules are rejected.
+fn list_subtree_children(
+    repo: &Path,
+    tree_ref: &str,
+    context: &str,
+) -> Result<BTreeMap<String, String>> {
+    let raw = git_output_bytes(
+        [
+            OsStr::new("ls-tree"),
+            OsStr::new("-z"),
+            OsStr::new(tree_ref),
+        ],
+        Some(repo),
+    )?;
+    let text = std::str::from_utf8(&raw).map_err(|e| {
+        Error::configuration(format!(
+            "overlay subtree '{context}': git ls-tree returned non-UTF-8 output: {e}"
+        ))
+    })?;
+    let mut children = BTreeMap::new();
+    for record in text.split('\0').filter(|record| !record.is_empty()) {
+        // Each record is "<mode> <type> <oid>\t<name>".
+        let (meta, name) = record.split_once('\t').ok_or_else(|| {
+            Error::configuration(format!(
+                "overlay subtree '{context}': unexpected git ls-tree record"
+            ))
+        })?;
+        let mut fields = meta.split_whitespace();
+        let _mode = fields.next();
+        let kind = fields.next().unwrap_or_default();
+        let oid = fields.next().unwrap_or_default();
+        match kind {
+            "tree" => {
+                validate_overlay_child_name(name, context)?;
+                children.insert(name.to_string(), oid.to_string());
+            }
+            "blob" => {
+                return Err(Error::configuration(format!(
+                    "overlay subtree '{context}' contains file '{name}'; overlay supports directory children only"
+                )));
+            }
+            "commit" => {
+                return Err(Error::configuration(format!(
+                    "overlay subtree '{context}' contains submodule '{name}'; overlay supports directory children only"
+                )));
+            }
+            other => {
+                return Err(Error::configuration(format!(
+                    "overlay subtree '{context}' contains entry '{name}' of unsupported type '{other}'"
+                )));
+            }
+        }
+    }
+    if children.is_empty() {
+        return Err(Error::configuration(format!(
+            "overlay subtree '{context}' has no directory children"
+        )));
+    }
+    Ok(children)
 }
 
 pub(super) fn prepare_dependency(request: PrepareDependencyRequest<'_>) -> Result<TempPath> {
@@ -301,6 +429,216 @@ fn prepare_subdir_dependency(request: PrepareSubdirDependencyRequest<'_>) -> Res
     Ok(extracted_guard)
 }
 
+/// Overlay path: materialize each immediate child of the subtree as its own
+/// snapshot under `target/<child>`. Returns one prepared temp dir per child;
+/// the caller installs them individually and never replaces `target` wholesale.
+pub(super) fn prepare_overlay_dependency(
+    request: PrepareDependencyRequest<'_>,
+) -> Result<Vec<(String, TempPath)>> {
+    let PrepareDependencyRequest {
+        temp_root,
+        target,
+        locked,
+        previous,
+    } = request;
+    validate_git_input("url", &locked.url)?;
+    validate_git_input("reference", &locked.reference)?;
+    validate_git_input("commit", &locked.commit)?;
+    let subdir = locked.subdir.as_deref().ok_or_else(|| {
+        Error::configuration(format!(
+            "VCS dependency '{}': overlay requires a subdir",
+            locked.path
+        ))
+    })?;
+    let expected_subtree = locked.subtree.as_deref().ok_or_else(|| {
+        Error::configuration(format!(
+            "VCS dependency '{}': locked entry has subdir but no subtree hash",
+            locked.path
+        ))
+    })?;
+
+    ensure_overlay_parent_target(target)?;
+    // Refuse to clobber unmanaged or locally-modified content before touching
+    // the filesystem. A previous non-overlay entry owned the whole parent, so a
+    // clean parent marker authorizes replacing its children during migration.
+    if let Some(parent_previous) = previous_parent_materialization(previous) {
+        ensure_replaceable_target(target, Some(parent_previous))?;
+    } else {
+        for child in locked.children.keys() {
+            let child_target = target.join(child);
+            let child_previous = previous.and_then(|prev| {
+                prev.children
+                    .get(child)
+                    .map(|tree| child_locked(prev, child, tree))
+            });
+            ensure_replaceable_target(&child_target, child_previous.as_ref())?;
+        }
+    }
+
+    fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
+    let clone_target = temporary_target_path(temp_root, target, "clone")?;
+    let clone_guard = TempPath::new(clone_target);
+    let clone_path = clone_guard.path();
+    run_git(
+        [
+            OsStr::new("clone"),
+            OsStr::new("--no-checkout"),
+            OsStr::new("--filter=blob:none"),
+            OsStr::new(&locked.url),
+            clone_path.as_os_str(),
+        ],
+        None,
+    )?;
+    run_git(
+        [
+            OsStr::new("sparse-checkout"),
+            OsStr::new("init"),
+            OsStr::new("--cone"),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("sparse-checkout"),
+            OsStr::new("set"),
+            OsStr::new("--"),
+            OsStr::new(subdir),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("fetch"),
+            OsStr::new("origin"),
+            OsStr::new(&locked.commit),
+        ],
+        Some(clone_path),
+    )?;
+    run_git(
+        [
+            OsStr::new("checkout"),
+            OsStr::new("--detach"),
+            OsStr::new(&locked.commit),
+        ],
+        Some(clone_path),
+    )?;
+    let subtree = git_output(
+        [
+            OsStr::new("rev-parse"),
+            OsStr::new(&format!("HEAD:{}", subdir)),
+        ],
+        Some(clone_path),
+    )
+    .map_err(|_| {
+        Error::configuration(format!(
+            "VCS dependency '{}': subdir '{}' not present at locked commit",
+            locked.path, subdir
+        ))
+    })?;
+    if subtree != expected_subtree {
+        return Err(Error::configuration(format!(
+            "VCS dependency '{}': subdir tree {} does not match locked subtree {}",
+            locked.path, subtree, expected_subtree
+        )));
+    }
+
+    // Guard against the subtree's children drifting from the lockfile between
+    // resolve and prepare.
+    let actual_children = list_subtree_children(clone_path, &format!("HEAD:{}", subdir), subdir)?;
+    if actual_children != locked.children {
+        return Err(Error::configuration(format!(
+            "VCS dependency '{}': overlay children at the locked commit differ from cuenv.lock; re-run 'cuenv sync vcs'",
+            locked.path
+        )));
+    }
+
+    let mut prepared = Vec::new();
+    for (child, child_tree) in &locked.children {
+        let extracted_source = clone_path.join(subdir).join(child);
+        if !extracted_source.is_dir() {
+            return Err(Error::configuration(format!(
+                "VCS dependency '{}': sparse checkout did not materialize child '{}'",
+                locked.path, child
+            )));
+        }
+        let child_target = target.join(child);
+        let extracted_target = temporary_target_path(temp_root, &child_target, "tmp")?;
+        let extracted_guard = TempPath::new(extracted_target);
+        fs::rename(&extracted_source, extracted_guard.path())
+            .map_err(|e| Error::configuration(e.to_string()))?;
+        let child_locked = child_locked(locked, child, child_tree);
+        ensure_dependency_does_not_reserve_marker(extracted_guard.path(), &child_locked)?;
+        write_ownership_marker(extracted_guard.path(), &child_locked)?;
+        prepared.push((child.clone(), extracted_guard));
+    }
+    drop(clone_guard);
+    Ok(prepared)
+}
+
+/// Check that every managed child of an overlay dependency is materialized,
+/// owned, and unmodified.
+pub(super) fn check_overlay_materialized(
+    target: &Path,
+    locked: &LockedVcsDependency,
+) -> Result<()> {
+    ensure_overlay_parent_target(target)?;
+    for (child, child_tree) in &locked.children {
+        let child_target = target.join(child);
+        let child_locked = child_locked(locked, child, child_tree);
+        check_materialized(&child_target, &child_locked)?;
+    }
+    Ok(())
+}
+
+/// Child names that were managed by `previous` but are no longer in the
+/// resolved child set. Pure; used for dry-run reporting.
+pub(super) fn overlay_stale_children(
+    previous: Option<&LockedVcsDependency>,
+    resolved: &LockedVcsDependency,
+) -> Vec<String> {
+    previous
+        .filter(|prev| prev.overlay)
+        .map(|prev| {
+            prev.children
+                .keys()
+                .filter(|child| !resolved.children.contains_key(*child))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Remove overlay children dropped upstream. A stale child is only removed when
+/// it still carries a valid cuenv marker matching its previous commit/tree; if
+/// the marker is gone or the content was edited locally, it is left in place as
+/// effectively repo-local content. Returns the names actually removed.
+pub(super) fn prune_overlay_children(
+    target: &Path,
+    previous: Option<&LockedVcsDependency>,
+    resolved: &LockedVcsDependency,
+) -> Result<Vec<String>> {
+    let mut removed = Vec::new();
+    let Some(previous) = previous.filter(|prev| prev.overlay) else {
+        return Ok(removed);
+    };
+    ensure_overlay_parent_target(target)?;
+    for (child, child_tree) in &previous.children {
+        if resolved.children.contains_key(child) {
+            continue;
+        }
+        let child_target = target.join(child);
+        if fs::symlink_metadata(&child_target).is_err() {
+            continue;
+        }
+        let child_previous = child_locked(previous, child, child_tree);
+        if ensure_replaceable_target(&child_target, Some(&child_previous)).is_ok() {
+            fs::remove_dir_all(&child_target).map_err(|e| Error::configuration(e.to_string()))?;
+            removed.push(child.clone());
+        }
+    }
+    Ok(removed)
+}
+
 pub(super) fn install_prepared_dependency(target: &Path, prepared: &Path) -> Result<()> {
     let parent = target
         .parent()
@@ -309,12 +647,68 @@ pub(super) fn install_prepared_dependency(target: &Path, prepared: &Path) -> Res
     replace_target_with_prepared_checkout(target, prepared)
 }
 
+pub(super) fn install_prepared_overlay_dependency(
+    request: InstallOverlayDependencyRequest<'_>,
+) -> Result<()> {
+    let InstallOverlayDependencyRequest {
+        temp_root,
+        target,
+        previous,
+        children,
+    } = request;
+    ensure_overlay_parent_target(target)?;
+    if let Some(parent_previous) = previous_parent_materialization(previous) {
+        ensure_replaceable_target(target, Some(parent_previous))?;
+        let parent_target = temporary_target_path(temp_root, target, "overlay")?;
+        let parent_guard = TempPath::new(parent_target);
+        fs::create_dir_all(parent_guard.path()).map_err(|e| Error::configuration(e.to_string()))?;
+        for (child, temp) in children {
+            fs::rename(temp.path(), parent_guard.path().join(child))
+                .map_err(|e| Error::configuration(e.to_string()))?;
+        }
+        install_prepared_dependency(target, parent_guard.path())?;
+        return Ok(());
+    }
+
+    for (child, temp) in children {
+        install_prepared_dependency(&target.join(child), temp.path())?;
+    }
+    Ok(())
+}
+
 fn validate_git_input(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() || value.starts_with('-') || value.chars().any(|c| c.is_control()) {
         return Err(Error::configuration(format!(
             "Invalid VCS dependency {label} '{}'",
             value
         )));
+    }
+    Ok(())
+}
+
+fn previous_parent_materialization(
+    previous: Option<&LockedVcsDependency>,
+) -> Option<&LockedVcsDependency> {
+    previous.filter(|previous| !previous.overlay)
+}
+
+fn ensure_overlay_parent_target(target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(Error::configuration(format!(
+                "Refusing to use symlinked VCS overlay parent '{}'",
+                target.display()
+            )));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(Error::configuration(format!(
+                "Refusing to use non-directory VCS overlay parent '{}'",
+                target.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Error::configuration(e.to_string())),
     }
     Ok(())
 }

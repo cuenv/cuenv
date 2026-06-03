@@ -87,6 +87,32 @@ network-free by seeding a local git source repository from the checkout's
 running `cuenv sync vcs`, `cuenv sync vcs --check`, and `cuenv task inspect`
 against the temporary target module.
 
+## Overlay Subdirectories
+
+Set `overlay: true` when a synced subtree should share a destination directory
+with repo-local content. Overlay mode materializes each immediate directory
+child of `subdir` as its own managed child under `path`, and `.gitignore` tracks
+those generated children individually instead of ignoring the whole parent.
+
+```cue
+vcs: "cuenv-skills": {
+    url:       "https://github.com/cuenv/cuenv.git"
+    reference: "0.27.1"
+    vendor:    false
+    subdir:    ".agents/skills"
+    path:      ".agents/skills"
+    overlay:   true
+}
+```
+
+Requirements and behavior:
+
+- `overlay: true` requires `subdir` and `vendor: false`.
+- The overlay subtree may contain only immediate directory children. Loose files and submodules are rejected.
+- Child names must be safe single path components: no spaces, control characters, glob characters, `.`, `..`, `.git`, path separators, or leading `-`.
+- Cuenv writes an ownership marker into each managed child, not into the parent `path`, so hand-written siblings can live alongside synced children.
+- Switching an existing managed VCS dependency at the same `path` from non-overlay to overlay is supported when the previous materialization is still unmodified.
+
 ## Updating
 
 By default, cuenv reuses the commit already recorded in `cuenv.lock`.

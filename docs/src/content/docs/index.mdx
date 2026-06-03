@@ -60,7 +60,7 @@ is the authoritative source.
 | Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Partial | From `.rules.cue` via `cuenv sync` |
 | Multi-source tools (`cuenv tools`) | Stable | Nix, GitHub releases, Rustup, URL, OCI |
 | Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
-| VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
+| VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout and overlay child materialization |
 | Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
 | Runtimes: OCI binaries, Dagger | Partial | |
 | Runtime: container | Preview | |
