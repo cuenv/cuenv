@@ -1186,6 +1186,7 @@ VCS dependency names must match `#VcsDependencyName`: ASCII letters, digits, `_`
 | `vendor`    | `bool`   | Yes      | Track the materialized content (`true`) or ignore generated content (`false`) |
 | `path`      | `string` | Yes      | Repository-relative materialization path         |
 | `subdir`    | `string` | No       | Repo-relative subtree to materialize via sparse checkout |
+| `overlay`   | `bool`   | No       | Materialize each immediate directory child of `subdir` under `path` while preserving repo-local siblings. Requires `subdir` and `vendor: false` |
 
 ## Runtimes
 

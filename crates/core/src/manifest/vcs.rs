@@ -16,6 +16,12 @@ pub struct VcsDependency {
     /// Subdirectory of the repo to materialize via sparse checkout.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subdir: Option<String>,
+    /// Overlay mode: materialize each immediate child of the subtree into its own
+    /// `path/<child>` and gitignore each child individually, leaving the parent
+    /// `path` un-ignored and never replaced wholesale. Requires `subdir` and
+    /// `vendor: false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overlay: bool,
 }
 
 fn default_vcs_reference() -> String {

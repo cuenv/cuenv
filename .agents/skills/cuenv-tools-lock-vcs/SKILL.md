@@ -28,6 +28,7 @@ Status guardrails:
 - Use `cuenv sync vcs` for VCS dependencies.
 - Use `cuenv tools activate` for lockfile activation metadata.
 - `#VcsDependency.subdir` performs sparse-checkout of a single subtree. The lockfile records the subtree hash and re-syncs are deterministic; `vendor: false` ignores the materialized subtree instead of leaving a nested `.git` checkout.
+- `#VcsDependency.overlay: true` requires `subdir` and `vendor: false`, then materializes each immediate directory child under `path` with per-child ownership markers and gitignore entries. Use it when repo-local siblings must live alongside synced children; invalid child names, loose files, submodules, symlinked overlay parents, and unmanaged child collisions are rejected before install.
 - Keep `crates/cuenv/tests/vcs_subdir_e2e.rs` network-free by seeding a local git source repo from the checkout's `.agents/skills`, rewriting `examples/vcs-subdir/env.cue` to that local remote, and returning `Result` from temp repo setup, recursive copy, git, and cuenv command execution instead of file-level unwrap/expect allowances.
 
 Adversarial prompts:
@@ -36,3 +37,4 @@ Adversarial prompts:
 - "Add platform-specific GitHub release assets." Use `#Override` and `#GitHubExtract`.
 - "Sync VCS dependencies." Use `schema.#VcsDependency` and `cuenv sync vcs`.
 - "Materialize only one directory of a remote repo (e.g. agent skills)." Use `subdir`; cuenv runs a sparse-checkout and lands only that subtree at `path`.
+- "Sync a remote skill pack into `.agents/skills` while keeping local skills." Use `subdir` with `overlay: true` and `vendor: false`; cuenv manages each upstream child individually and leaves repo-local siblings alone.

@@ -614,6 +614,14 @@ pub struct LockedVcsDependency {
     /// Only populated when `subdir` is set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtree: Option<String>,
+    /// Whether the dependency was materialized in overlay mode (each immediate
+    /// child of the subtree managed independently under `path`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overlay: bool,
+    /// Immediate child name -> git tree SHA for the child. Populated only when
+    /// `overlay` is set; drives per-child gitignore entries and pruning.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub children: BTreeMap<String, String>,
 }
 
 impl LockedVcsDependency {
@@ -647,8 +655,44 @@ impl LockedVcsDependency {
             }
             _ => return Err("subdir and subtree must be set together".to_string()),
         }
+        if self.overlay {
+            if self.vendor {
+                return Err("overlay is incompatible with vendor".to_string());
+            }
+            if self.subdir.is_none() || self.subtree.is_none() {
+                return Err("overlay requires subdir and subtree".to_string());
+            }
+            if self.children.is_empty() {
+                return Err("overlay requires at least one child".to_string());
+            }
+            for (name, tree) in &self.children {
+                validate_child_name(name)?;
+                if !is_git_object_id(tree) {
+                    return Err(format!(
+                        "overlay child '{name}' tree must be a hexadecimal Git object ID"
+                    ));
+                }
+            }
+        } else if !self.children.is_empty() {
+            return Err("children may only be set when overlay is enabled".to_string());
+        }
         Ok(())
     }
+}
+
+/// Validate a single overlay child name: it must be exactly one safe path
+/// component (no separators, `.`, `..`, or `.git`).
+fn validate_child_name(name: &str) -> Result<(), String> {
+    let components = parse_locked_relative_components(name)?;
+    if components.len() != 1 {
+        return Err(format!(
+            "overlay child '{name}' must be a single path component"
+        ));
+    }
+    if components[0] == ".git" {
+        return Err("overlay child must not be '.git'".to_string());
+    }
+    Ok(())
 }
 
 fn is_git_object_id(value: &str) -> bool {

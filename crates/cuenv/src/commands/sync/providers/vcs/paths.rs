@@ -101,6 +101,20 @@ fn components_start_with(components: &[String], prefix: &[&str]) -> bool {
             .all(|(component, expected)| component == expected)
 }
 
+pub(super) fn validate_overlay_child_name(name: &str, context: &str) -> Result<()> {
+    validate_path_component(name, context).map_err(|_| {
+        Error::configuration(format!(
+            "Invalid VCS dependency overlay child '{name}' in subtree '{context}': child names may only use literal safe names"
+        ))
+    })?;
+    if name == ".git" {
+        return Err(Error::configuration(format!(
+            "Invalid VCS dependency overlay child '{name}' in subtree '{context}': child must not be '.git'"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_path_component(component: &str, original_path: &str) -> Result<()> {
     if component.is_empty()
         || component == "."
