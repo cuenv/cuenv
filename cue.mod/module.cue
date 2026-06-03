@@ -7,6 +7,6 @@ source: {
 }
 custom: {
 	"github.com/cuenv/cuenv": {
-		version: "0.51.1"
+		version: "0.51.2"
 	}
 }
