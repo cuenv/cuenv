@@ -61,6 +61,8 @@ fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections()
             path: "vendor/lib".to_string(),
             subdir: None,
             subtree: None,
+            overlay: false,
+            children: BTreeMap::new(),
         },
     );
 

@@ -412,6 +412,8 @@ fn test_vcs_serialization() {
                 path: "vendor/mylib".to_string(),
                 subdir: None,
                 subtree: None,
+                overlay: false,
+                children: BTreeMap::new(),
             },
         )
         .unwrap();
@@ -440,6 +442,8 @@ fn test_vcs_subdir_serialization_roundtrip() {
                 path: ".agents/skills".to_string(),
                 subdir: Some(".agents/skills".to_string()),
                 subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+                overlay: false,
+                children: BTreeMap::new(),
             },
         )
         .unwrap();
@@ -472,6 +476,8 @@ fn test_non_vendored_vcs_subdir_serialization_roundtrip() {
                 path: ".cuenv/vcs/generated-skills".to_string(),
                 subdir: Some(".agents/skills".to_string()),
                 subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+                overlay: false,
+                children: BTreeMap::new(),
             },
         )
         .unwrap();
@@ -505,6 +511,8 @@ fn test_vcs_without_subdir_omits_fields() {
                 path: "vendor/plain".to_string(),
                 subdir: None,
                 subtree: None,
+                overlay: false,
+                children: BTreeMap::new(),
             },
         )
         .unwrap();
@@ -759,4 +767,111 @@ fn test_tool_names() {
     assert_eq!(names.len(), 2);
     assert!(names.contains(&"jq"));
     assert!(names.contains(&"yq"));
+}
+
+fn overlay_dep(children: BTreeMap<String, String>) -> LockedVcsDependency {
+    LockedVcsDependency {
+        url: "https://github.com/cuenv/cuenv.git".to_string(),
+        reference: "main".to_string(),
+        commit: "0123456789abcdef0123456789abcdef01234567".to_string(),
+        tree: "89abcdef012345670123456789abcdef01234567".to_string(),
+        vendor: false,
+        path: ".agents/skills".to_string(),
+        subdir: Some(".agents/skills".to_string()),
+        subtree: Some("ffffffffffffffffffffffffffffffffffffffff".to_string()),
+        overlay: true,
+        children,
+    }
+}
+
+#[test]
+fn test_overlay_lockfile_roundtrip_and_validate() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "example".to_string(),
+        "1111111111111111111111111111111111111111".to_string(),
+    );
+    children.insert(
+        "other".to_string(),
+        "2222222222222222222222222222222222222222".to_string(),
+    );
+    let mut lockfile = Lockfile::new();
+    lockfile
+        .upsert_vcs("skills".to_string(), overlay_dep(children))
+        .expect("overlay dep with children validates");
+
+    let toml_str = toml::to_string_pretty(&lockfile).unwrap();
+    assert!(toml_str.contains("overlay = true"));
+    assert!(toml_str.contains("example"));
+
+    let parsed: Lockfile = toml::from_str(&toml_str).unwrap();
+    let dep = parsed.find_vcs("skills").unwrap();
+    assert!(dep.overlay);
+    assert_eq!(dep.children.len(), 2);
+}
+
+#[test]
+fn test_overlay_requires_children() {
+    let mut lockfile = Lockfile::new();
+    let err = lockfile
+        .upsert_vcs("skills".to_string(), overlay_dep(BTreeMap::new()))
+        .expect_err("overlay without children is rejected");
+    assert!(err.to_string().contains("at least one child"));
+}
+
+#[test]
+fn test_overlay_rejects_vendor() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "example".to_string(),
+        "1111111111111111111111111111111111111111".to_string(),
+    );
+    let mut dep = overlay_dep(children);
+    dep.vendor = true;
+    let mut lockfile = Lockfile::new();
+    let err = lockfile
+        .upsert_vcs("skills".to_string(), dep)
+        .expect_err("overlay with vendor is rejected");
+    assert!(err.to_string().contains("incompatible with vendor"));
+}
+
+#[test]
+fn test_overlay_rejects_bad_child_name() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "nested/child".to_string(),
+        "1111111111111111111111111111111111111111".to_string(),
+    );
+    let mut lockfile = Lockfile::new();
+    let err = lockfile
+        .upsert_vcs("skills".to_string(), overlay_dep(children))
+        .expect_err("multi-component child name is rejected");
+    assert!(err.to_string().contains("single path component"));
+}
+
+#[test]
+fn test_overlay_rejects_non_hex_child_tree() {
+    let mut children = BTreeMap::new();
+    children.insert("example".to_string(), "not-a-sha".to_string());
+    let mut lockfile = Lockfile::new();
+    let err = lockfile
+        .upsert_vcs("skills".to_string(), overlay_dep(children))
+        .expect_err("non-hex child tree is rejected");
+    assert!(err.to_string().contains("Git object ID"));
+}
+
+#[test]
+fn test_children_rejected_without_overlay() {
+    let mut children = BTreeMap::new();
+    children.insert(
+        "example".to_string(),
+        "1111111111111111111111111111111111111111".to_string(),
+    );
+    let mut dep = overlay_dep(children);
+    dep.overlay = false;
+    let mut lockfile = Lockfile::new();
+    let err = lockfile
+        .upsert_vcs("skills".to_string(), dep)
+        .expect_err("children without overlay are rejected");
+    assert!(err.to_string().contains("only be set when overlay"));
 }

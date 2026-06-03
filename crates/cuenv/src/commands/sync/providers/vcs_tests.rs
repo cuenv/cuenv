@@ -67,6 +67,7 @@ fn syncs_vendored_dependency_from_local_repo() {
             vendor: true,
             path: "vendor/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
 
@@ -99,6 +100,7 @@ fn check_rejects_changed_vcs_spec() {
             vendor: true,
             path: "vendor/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -137,6 +139,7 @@ fn check_rejects_modified_vendored_content() {
             vendor: true,
             path: "vendor/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -175,6 +178,7 @@ fn unmanaged_git_target_is_not_replaced() {
             vendor: true,
             path: "vendor/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
 
@@ -200,6 +204,7 @@ fn dry_run_does_not_write_workspace_cache() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     let options = SyncOptions {
@@ -232,6 +237,7 @@ fn duplicate_names_and_paths_are_rejected() {
             vendor: true,
             path: "vendor/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     let mut conflicting_name = dependency.clone();
@@ -275,6 +281,7 @@ fn non_vendored_dependency_updates_gitignore() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
 
@@ -331,6 +338,7 @@ fn nested_module_cache_path_is_ignored_relative_to_git_root() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
 
@@ -368,6 +376,7 @@ fn check_update_does_not_write_workspace_cache() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -406,6 +415,7 @@ fn workspace_sync_prunes_removed_vcs_entries() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -445,6 +455,7 @@ fn workspace_sync_prunes_changed_vcs_paths() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -480,6 +491,7 @@ fn workspace_sync_prunes_parent_before_materializing_child_path() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -515,6 +527,7 @@ fn workspace_sync_allows_renamed_dependency_at_same_path() {
             vendor: false,
             path: ".cuenv/vcs/lib".to_string(),
             subdir: None,
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -643,6 +656,7 @@ fn non_vendored_subdir_extracts_subdir_and_is_ignored() {
             vendor: false,
             path: ".cuenv/vcs/skills".to_string(),
             subdir: Some(".agents/skills".to_string()),
+            overlay: false,
         },
     };
 
@@ -713,6 +727,7 @@ fn sparse_checkout_extracts_only_subdir() {
             vendor: true,
             path: ".agents/skills".to_string(),
             subdir: Some(".agents/skills".to_string()),
+            overlay: false,
         },
     };
 
@@ -752,6 +767,7 @@ fn check_rejects_modified_vendored_subdir() {
             vendor: true,
             path: ".agents/skills".to_string(),
             subdir: Some(".agents/skills".to_string()),
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -815,6 +831,7 @@ fn changing_subdir_at_same_path_rematerialises() {
             vendor: true,
             path: "vendor/pack".to_string(),
             subdir: Some(".agents/skills/example".to_string()),
+            overlay: false,
         },
     };
     sync_vcs!(
@@ -851,6 +868,7 @@ fn subdir_referencing_blob_rejected() {
             vendor: true,
             path: "vendor/blob".to_string(),
             subdir: Some("other.txt".to_string()),
+            overlay: false,
         },
     };
     let err = sync_vcs!(
@@ -862,6 +880,267 @@ fn subdir_referencing_blob_rejected() {
     .expect_err("subdir pointing at a file must be rejected");
     assert!(
         err.to_string().contains("subdir") && err.to_string().contains("tree"),
+        "unexpected error: {err}"
+    );
+}
+
+/// Source repo whose `.agents/skills` subtree has two directory children, so
+/// overlay tests can verify per-child materialization and pruning.
+fn create_source_repo_with_overlay_children() -> tempfile::TempDir {
+    let dir = create_source_repo();
+    for child in ["example", "other"] {
+        let skill = dir.path().join(format!(".agents/skills/{child}"));
+        fs::create_dir_all(&skill).expect("create skill dir");
+        fs::write(skill.join("SKILL.md"), format!("# {child}\n")).expect("write SKILL.md");
+    }
+    run_git(
+        [OsStr::new("add"), OsStr::new(".agents")],
+        Some(dir.path()),
+    )
+    .expect("git add skills");
+    run_git(
+        [
+            OsStr::new("commit"),
+            OsStr::new("-m"),
+            OsStr::new("add overlay children"),
+        ],
+        Some(dir.path()),
+    )
+    .expect("git commit skills");
+    dir
+}
+
+fn overlay_dependency(url: String) -> CollectedVcsDependency {
+    CollectedVcsDependency {
+        name: "skills".to_string(),
+        spec: VcsDependency {
+            url,
+            reference: "main".to_string(),
+            vendor: false,
+            path: ".agents/skills".to_string(),
+            subdir: Some(".agents/skills".to_string()),
+            overlay: true,
+        },
+    }
+}
+
+#[test]
+fn overlay_syncs_children_individually() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("overlay sync should succeed");
+
+    let base = workspace.path().join(".agents/skills");
+    assert!(base.join("example/SKILL.md").exists());
+    assert!(base.join("other/SKILL.md").exists());
+    assert!(base.join("example/.cuenv-vcs").exists());
+    assert!(base.join("other/.cuenv-vcs").exists());
+    // The parent dir is not itself owned: no top-level marker.
+    assert!(!base.join(".cuenv-vcs").exists());
+
+    let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
+    assert!(gitignore.contains(".agents/skills/example/"));
+    assert!(gitignore.contains(".agents/skills/other/"));
+    assert!(
+        !gitignore.lines().any(|line| line.trim() == ".agents/skills/"),
+        "parent dir must not be blanket-ignored: {gitignore}"
+    );
+
+    let lockfile = Lockfile::load(&workspace.path().join(LOCKFILE_NAME))
+        .expect("load lockfile")
+        .expect("lockfile present");
+    let entry = lockfile.find_vcs("skills").expect("entry present");
+    assert!(entry.overlay);
+    assert_eq!(entry.children.len(), 2);
+}
+
+#[test]
+fn overlay_preserves_repo_local_sibling() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+
+    // A hand-written skill the user keeps alongside the synced ones.
+    let local = workspace.path().join(".agents/skills/local-skill");
+    fs::create_dir_all(&local).expect("create local skill");
+    fs::write(local.join("SKILL.md"), "# Local\n").expect("write local skill");
+
+    for _ in 0..2 {
+        sync_vcs!(
+            workspace.path(),
+            vec![dependency.clone()],
+            &SyncOptions::default(),
+            VcsSyncScope::Path,
+        )
+        .expect("overlay sync should succeed");
+    }
+
+    assert!(local.join("SKILL.md").exists(), "repo-local skill survives");
+    let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
+    assert!(
+        !gitignore.contains("local-skill"),
+        "repo-local skill must not be gitignored: {gitignore}"
+    );
+}
+
+#[test]
+fn overlay_prunes_dropped_child() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency.clone()],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("initial overlay sync");
+    assert!(workspace.path().join(".agents/skills/other/SKILL.md").exists());
+
+    // Upstream drops the `other` child.
+    fs::remove_dir_all(source.path().join(".agents/skills/other")).expect("remove other");
+    run_git(
+        [OsStr::new("add"), OsStr::new("-A")],
+        Some(source.path()),
+    )
+    .expect("git add removal");
+    run_git(
+        [
+            OsStr::new("commit"),
+            OsStr::new("-m"),
+            OsStr::new("drop other"),
+        ],
+        Some(source.path()),
+    )
+    .expect("git commit removal");
+
+    let options = SyncOptions {
+        update_tools: Some(Vec::new()),
+        ..SyncOptions::default()
+    };
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &options,
+        VcsSyncScope::Path,
+    )
+    .expect("re-sync should prune dropped child");
+
+    assert!(workspace.path().join(".agents/skills/example/SKILL.md").exists());
+    assert!(!workspace.path().join(".agents/skills/other").exists());
+    let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
+    assert!(!gitignore.contains(".agents/skills/other/"));
+}
+
+#[test]
+fn overlay_refuses_unmanaged_child_collision() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+
+    // Repo-local content occupying a child name the overlay wants, with no marker.
+    let clash = workspace.path().join(".agents/skills/example");
+    fs::create_dir_all(&clash).expect("create clashing dir");
+    fs::write(clash.join("SKILL.md"), "# mine\n").expect("write clashing skill");
+
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay must refuse to clobber unmanaged child");
+    assert!(
+        err.to_string().contains("Refusing to overwrite unmanaged"),
+        "unexpected error: {err}"
+    );
+    // Local content untouched.
+    assert_eq!(
+        fs::read_to_string(clash.join("SKILL.md")).expect("read"),
+        "# mine\n"
+    );
+}
+
+#[test]
+fn overlay_rejects_file_child() {
+    let source = create_source_repo_with_overlay_children();
+    // Add a loose file directly under the subtree root.
+    fs::write(source.path().join(".agents/skills/loose.txt"), "loose\n").expect("write loose");
+    run_git(
+        [OsStr::new("add"), OsStr::new(".agents/skills/loose.txt")],
+        Some(source.path()),
+    )
+    .expect("git add loose");
+    run_git(
+        [
+            OsStr::new("commit"),
+            OsStr::new("-m"),
+            OsStr::new("add loose file"),
+        ],
+        Some(source.path()),
+    )
+    .expect("git commit loose");
+
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay must reject a file child");
+    assert!(
+        err.to_string().contains("contains file"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn overlay_requires_subdir() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let mut dependency = overlay_dependency(source.path().display().to_string());
+    dependency.spec.subdir = None;
+
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay without subdir must be rejected");
+    assert!(
+        err.to_string().contains("overlay requires a subdir"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn overlay_rejects_vendor() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let mut dependency = overlay_dependency(source.path().display().to_string());
+    dependency.spec.vendor = true;
+
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay with vendor must be rejected");
+    assert!(
+        err.to_string().contains("incompatible with vendor"),
         "unexpected error: {err}"
     );
 }
@@ -878,6 +1157,7 @@ fn subdir_missing_at_reference_rejected() {
             vendor: true,
             path: "vendor/missing".to_string(),
             subdir: Some("does/not/exist".to_string()),
+            overlay: false,
         },
     };
     let err = sync_vcs!(

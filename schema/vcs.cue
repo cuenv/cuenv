@@ -18,4 +18,9 @@ package schema
 	// When set, only this subtree is materialized at `path`.
 	// Must be a forward-slash relative path with no ".", "..", or glob characters.
 	subdir?: string
+	// Overlay mode: materialize each immediate child of the subtree into its own
+	// `path/<child>` and gitignore each child individually, instead of taking over
+	// (and gitignoring) the whole `path`. This lets repo-local content live in
+	// `path` alongside the synced children. Requires `subdir` and `vendor: false`.
+	overlay?: bool
 })

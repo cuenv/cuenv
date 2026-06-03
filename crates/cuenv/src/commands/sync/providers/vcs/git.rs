@@ -39,6 +39,27 @@ where
     )))
 }
 
+/// Run a git command and return raw stdout bytes without trimming.
+///
+/// Used for `git ls-tree -z`, whose records are NUL-delimited and may contain
+/// names with spaces or newlines that trimming would corrupt.
+pub(super) fn git_output_bytes<I, S>(args: I, cwd: Option<&Path>) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = git_command(args, cwd)
+        .output()
+        .map_err(|e| Error::configuration(e.to_string()))?;
+    if output.status.success() {
+        return Ok(output.stdout);
+    }
+    Err(Error::configuration(format!(
+        "git command failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    )))
+}
+
 fn git_command<I, S>(args: I, cwd: Option<&Path>) -> ProcessCommand
 where
     I: IntoIterator<Item = S>,

@@ -11,8 +11,9 @@ use cuenv_core::manifest::{Base, Project, VcsDependency};
 use cuenv_core::{Error, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 use materialization::{
-    check_materialized, install_prepared_dependency, locked_matches, prepare_dependency,
-    prune_removed_vcs_dependencies, resolve_dependency, should_update,
+    check_materialized, check_overlay_materialized, install_prepared_dependency, locked_matches,
+    overlay_stale_children, prepare_dependency, prepare_overlay_dependency,
+    prune_overlay_children, prune_removed_vcs_dependencies, resolve_dependency, should_update,
 };
 use paths::{
     TempPath, ensure_managed_internal_path, temporary_cache_root, validate_materialization_path,
@@ -227,7 +228,11 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
 
     if options.mode == SyncMode::Check {
         for plan in &plans {
-            check_materialized(&plan.path, &plan.resolved)?;
+            if plan.resolved.overlay {
+                check_overlay_materialized(&plan.path, &plan.resolved)?;
+            } else {
+                check_materialized(&plan.path, &plan.resolved)?;
+            }
             outputs.push(format!("{}: in sync", plan.name));
         }
         check_gitignore(&git_root, &gitignore_paths)?;
@@ -241,33 +246,74 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
         ensure_managed_internal_path(&git_root, &temp_root)?;
         let mut prepared = Vec::new();
         for plan in plans {
-            let temp = prepare_dependency(PrepareDependencyRequest {
+            let request = PrepareDependencyRequest {
                 temp_root: &temp_root,
                 target: &plan.path,
                 locked: &plan.resolved,
                 previous: plan.locked.as_ref(),
-            })?;
-            prepared.push((plan, temp));
+            };
+            let prep = if plan.resolved.overlay {
+                PreparedVcs::Overlay(prepare_overlay_dependency(request)?)
+            } else {
+                PreparedVcs::Single(prepare_dependency(request)?)
+            };
+            prepared.push((plan, prep));
         }
         prune_removed_vcs_dependencies(&git_root, &removed_vcs)?;
         for dependency in &removed_vcs {
             outputs.push(format!("{}: Removed stale checkout", dependency.path));
         }
-        for (plan, temp) in &prepared {
-            install_prepared_dependency(&plan.path, temp.path())?;
-            outputs.push(format!(
-                "{}: Synced {} to {}",
-                plan.name, plan.resolved.commit, plan.resolved.path
-            ));
+        for (plan, prep) in &prepared {
+            match prep {
+                PreparedVcs::Single(temp) => {
+                    install_prepared_dependency(&plan.path, temp.path())?;
+                    outputs.push(format!(
+                        "{}: Synced {} to {}",
+                        plan.name, plan.resolved.commit, plan.resolved.path
+                    ));
+                }
+                PreparedVcs::Overlay(children) => {
+                    for (child, temp) in children {
+                        install_prepared_dependency(&plan.path.join(child), temp.path())?;
+                    }
+                    for child in prune_overlay_children(
+                        &plan.path,
+                        plan.locked.as_ref(),
+                        &plan.resolved,
+                    )? {
+                        outputs.push(format!("{}: Removed stale child {}", plan.name, child));
+                    }
+                    outputs.push(format!(
+                        "{}: Synced {} children of {} to {}",
+                        plan.name,
+                        children.len(),
+                        plan.resolved.commit,
+                        plan.resolved.path
+                    ));
+                }
+            }
         }
         next_lockfile.save(&lockfile_path)?;
         sync_gitignore(&git_root, &gitignore_paths)?;
     } else {
         for plan in &plans {
-            outputs.push(format!(
-                "{}: Would sync {} at {}",
-                plan.name, plan.resolved.commit, plan.resolved.path
-            ));
+            if plan.resolved.overlay {
+                outputs.push(format!(
+                    "{}: Would sync {} children of {} at {}",
+                    plan.name,
+                    plan.resolved.children.len(),
+                    plan.resolved.commit,
+                    plan.resolved.path
+                ));
+                for child in overlay_stale_children(plan.locked.as_ref(), &plan.resolved) {
+                    outputs.push(format!("{}: Would remove stale child {}", plan.name, child));
+                }
+            } else {
+                outputs.push(format!(
+                    "{}: Would sync {} at {}",
+                    plan.name, plan.resolved.commit, plan.resolved.path
+                ));
+            }
         }
         for dependency in &removed_vcs {
             outputs.push(format!(
@@ -306,6 +352,13 @@ struct VcsSyncPlan {
     path: PathBuf,
     resolved: LockedVcsDependency,
     locked: Option<LockedVcsDependency>,
+}
+
+/// A prepared dependency awaiting installation: either a single materialized
+/// checkout, or (for overlay deps) one prepared checkout per managed child.
+enum PreparedVcs {
+    Single(TempPath),
+    Overlay(Vec<(String, TempPath)>),
 }
 
 struct VcsPlanOutput {
@@ -453,7 +506,14 @@ fn gitignore_paths_from_lockfile(
 ) -> Result<Vec<String>> {
     let mut paths = Vec::new();
     for dependency in lockfile.vcs.values() {
-        if dependency.vendor {
+        if dependency.overlay {
+            // Ignore each managed child individually, never the parent `path`,
+            // so repo-local siblings remain tracked.
+            let base = dependency.path.trim_end_matches('/');
+            for child in dependency.children.keys() {
+                paths.push(escape_gitignore_path(&format!("{base}/{child}/")));
+            }
+        } else if dependency.vendor {
             paths.push(format!(
                 "{}/{}",
                 dependency.path.trim_end_matches('/'),

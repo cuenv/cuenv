@@ -196,6 +196,104 @@ fn vcs_subdir_example_syncs_agent_skills_without_vendor_requirement() -> TestRes
     Ok(())
 }
 
+fn create_overlay_target_repo(source: &Path) -> TestResult<TempDir> {
+    let target = tempfile::Builder::new()
+        .prefix("cuenv_overlay_target_")
+        .tempdir()?;
+    init_git_repo(target.path())?;
+    write_local_cuenv_module(target.path())?;
+
+    let env_cue = format!(
+        "package examples\n\nimport \"github.com/cuenv/cuenv/schema\"\n\nschema.#Project & {{\n\tname: \"vcs-overlay\"\n\n\tvcs: \"agent-skills\": {{\n\t\turl:       \"{url}\"\n\t\treference: \"main\"\n\t\tvendor:    false\n\t\tsubdir:    \".agents/skills\"\n\t\tpath:      \".agents/skills\"\n\t\toverlay:   true\n\t}}\n}}\n",
+        url = cue_string(&source.display().to_string()),
+    );
+    fs::write(target.path().join("env.cue"), env_cue)?;
+    Ok(target)
+}
+
+#[test]
+fn vcs_overlay_example_syncs_children_individually() -> TestResult {
+    let source = create_agent_skills_source_repo()?;
+    let target = create_overlay_target_repo(source.path())?;
+
+    // A hand-written skill the user keeps in the same directory as the synced ones.
+    let local = target.path().join(".agents/skills/local-skill");
+    fs::create_dir_all(&local)?;
+    fs::write(local.join("SKILL.md"), "# Local skill\n")?;
+
+    let target_arg = target_path_arg(&target)?;
+    let sync = run_cuenv(
+        &[
+            "sync",
+            "vcs",
+            "--path",
+            &target_arg,
+            "--package",
+            "examples",
+        ],
+        target.path(),
+    )?;
+    assert!(
+        sync.status.success(),
+        "cuenv sync vcs (overlay) failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&sync.stdout),
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    // Synced children land individually, each independently owned.
+    assert!(
+        target
+            .path()
+            .join(".agents/skills/cuenv-schema-first/SKILL.md")
+            .exists()
+    );
+    assert!(
+        target
+            .path()
+            .join(".agents/skills/cuenv-schema-first/.cuenv-vcs")
+            .exists()
+    );
+    // The parent dir is not owned: no top-level marker.
+    assert!(!target.path().join(".agents/skills/.cuenv-vcs").exists());
+    // Repo-local sibling survives.
+    assert!(local.join("SKILL.md").exists());
+
+    let gitignore = fs::read_to_string(target.path().join(".gitignore"))?;
+    assert!(gitignore.contains(".agents/skills/cuenv-schema-first/"));
+    assert!(
+        !gitignore.lines().any(|line| line.trim() == ".agents/skills/"),
+        "parent dir must not be blanket-ignored: {gitignore}"
+    );
+    assert!(
+        !gitignore.contains("local-skill"),
+        "repo-local skill must not be gitignored: {gitignore}"
+    );
+
+    let lockfile = fs::read_to_string(target.path().join("cuenv.lock"))?;
+    assert!(lockfile.contains("overlay = true"));
+
+    // Re-running --check must pass without re-materializing.
+    let check = run_cuenv(
+        &[
+            "sync",
+            "vcs",
+            "--path",
+            &target_arg,
+            "--package",
+            "examples",
+            "--check",
+        ],
+        target.path(),
+    )?;
+    assert!(
+        check.status.success(),
+        "cuenv sync vcs --check (overlay) failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+    Ok(())
+}
+
 fn target_path_arg(target: &TempDir) -> TestResult<String> {
     target.path().to_str().map(str::to_owned).ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "target path is not UTF-8").into()
