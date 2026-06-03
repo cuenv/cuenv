@@ -3,11 +3,11 @@
 use super::git::{git_output, git_output_bytes, run_git};
 use super::paths::{
     TempPath, ensure_managed_internal_path, temporary_backup_path, temporary_target_path,
-    validate_materialization_path, validate_subdir,
+    validate_materialization_path, validate_overlay_child_name, validate_subdir,
 };
 use super::{
-    FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, MARKER_FILE, PrepareDependencyRequest,
-    PrepareSubdirDependencyRequest,
+    FETCH_HEAD_COMMIT, FETCH_HEAD_TREE, HEAD_TREE, InstallOverlayDependencyRequest, MARKER_FILE,
+    PrepareDependencyRequest, PrepareSubdirDependencyRequest,
 };
 use cuenv_core::lockfile::LockedVcsDependency;
 use cuenv_core::manifest::VcsDependency;
@@ -25,6 +25,7 @@ pub(super) fn prune_removed_vcs_dependencies(
     for dependency in dependencies {
         let target = validate_materialization_path(git_root, &dependency.path)?;
         if dependency.overlay {
+            ensure_overlay_parent_target(&target)?;
             // Overlay deps never own the parent `path`; remove only the managed
             // children, leaving repo-local siblings intact.
             for (child, child_tree) in &dependency.children {
@@ -241,6 +242,7 @@ fn list_subtree_children(
         let oid = fields.next().unwrap_or_default();
         match kind {
             "tree" => {
+                validate_overlay_child_name(name, context)?;
                 children.insert(name.to_string(), oid.to_string());
             }
             "blob" => {
@@ -455,17 +457,22 @@ pub(super) fn prepare_overlay_dependency(
         ))
     })?;
 
-    // Refuse to clobber unmanaged or locally-modified children before touching
-    // the filesystem. A new child (absent from `previous`) only passes when its
-    // target does not already exist.
-    for child in locked.children.keys() {
-        let child_target = target.join(child);
-        let child_previous = previous.and_then(|prev| {
-            prev.children
-                .get(child)
-                .map(|tree| child_locked(prev, child, tree))
-        });
-        ensure_replaceable_target(&child_target, child_previous.as_ref())?;
+    ensure_overlay_parent_target(target)?;
+    // Refuse to clobber unmanaged or locally-modified content before touching
+    // the filesystem. A previous non-overlay entry owned the whole parent, so a
+    // clean parent marker authorizes replacing its children during migration.
+    if let Some(parent_previous) = previous_parent_materialization(previous) {
+        ensure_replaceable_target(target, Some(parent_previous))?;
+    } else {
+        for child in locked.children.keys() {
+            let child_target = target.join(child);
+            let child_previous = previous.and_then(|prev| {
+                prev.children
+                    .get(child)
+                    .map(|tree| child_locked(prev, child, tree))
+            });
+            ensure_replaceable_target(&child_target, child_previous.as_ref())?;
+        }
     }
 
     fs::create_dir_all(temp_root).map_err(|e| Error::configuration(e.to_string()))?;
@@ -570,7 +577,11 @@ pub(super) fn prepare_overlay_dependency(
 
 /// Check that every managed child of an overlay dependency is materialized,
 /// owned, and unmodified.
-pub(super) fn check_overlay_materialized(target: &Path, locked: &LockedVcsDependency) -> Result<()> {
+pub(super) fn check_overlay_materialized(
+    target: &Path,
+    locked: &LockedVcsDependency,
+) -> Result<()> {
+    ensure_overlay_parent_target(target)?;
     for (child, child_tree) in &locked.children {
         let child_target = target.join(child);
         let child_locked = child_locked(locked, child, child_tree);
@@ -610,6 +621,7 @@ pub(super) fn prune_overlay_children(
     let Some(previous) = previous.filter(|prev| prev.overlay) else {
         return Ok(removed);
     };
+    ensure_overlay_parent_target(target)?;
     for (child, child_tree) in &previous.children {
         if resolved.children.contains_key(child) {
             continue;
@@ -635,12 +647,68 @@ pub(super) fn install_prepared_dependency(target: &Path, prepared: &Path) -> Res
     replace_target_with_prepared_checkout(target, prepared)
 }
 
+pub(super) fn install_prepared_overlay_dependency(
+    request: InstallOverlayDependencyRequest<'_>,
+) -> Result<()> {
+    let InstallOverlayDependencyRequest {
+        temp_root,
+        target,
+        previous,
+        children,
+    } = request;
+    ensure_overlay_parent_target(target)?;
+    if let Some(parent_previous) = previous_parent_materialization(previous) {
+        ensure_replaceable_target(target, Some(parent_previous))?;
+        let parent_target = temporary_target_path(temp_root, target, "overlay")?;
+        let parent_guard = TempPath::new(parent_target);
+        fs::create_dir_all(parent_guard.path()).map_err(|e| Error::configuration(e.to_string()))?;
+        for (child, temp) in children {
+            fs::rename(temp.path(), parent_guard.path().join(child))
+                .map_err(|e| Error::configuration(e.to_string()))?;
+        }
+        install_prepared_dependency(target, parent_guard.path())?;
+        return Ok(());
+    }
+
+    for (child, temp) in children {
+        install_prepared_dependency(&target.join(child), temp.path())?;
+    }
+    Ok(())
+}
+
 fn validate_git_input(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() || value.starts_with('-') || value.chars().any(|c| c.is_control()) {
         return Err(Error::configuration(format!(
             "Invalid VCS dependency {label} '{}'",
             value
         )));
+    }
+    Ok(())
+}
+
+fn previous_parent_materialization(
+    previous: Option<&LockedVcsDependency>,
+) -> Option<&LockedVcsDependency> {
+    previous.filter(|previous| !previous.overlay)
+}
+
+fn ensure_overlay_parent_target(target: &Path) -> Result<()> {
+    match fs::symlink_metadata(target) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(Error::configuration(format!(
+                "Refusing to use symlinked VCS overlay parent '{}'",
+                target.display()
+            )));
+        }
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(Error::configuration(format!(
+                "Refusing to use non-directory VCS overlay parent '{}'",
+                target.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(Error::configuration(e.to_string())),
     }
     Ok(())
 }

@@ -11,9 +11,10 @@ use cuenv_core::manifest::{Base, Project, VcsDependency};
 use cuenv_core::{Error, Result};
 use cuenv_ignore::{FileStatus, IgnoreFiles, IgnoreSection};
 use materialization::{
-    check_materialized, check_overlay_materialized, install_prepared_dependency, locked_matches,
-    overlay_stale_children, prepare_dependency, prepare_overlay_dependency,
-    prune_overlay_children, prune_removed_vcs_dependencies, resolve_dependency, should_update,
+    check_materialized, check_overlay_materialized, install_prepared_dependency,
+    install_prepared_overlay_dependency, locked_matches, overlay_stale_children,
+    prepare_dependency, prepare_overlay_dependency, prune_overlay_children,
+    prune_removed_vcs_dependencies, resolve_dependency, should_update,
 };
 use paths::{
     TempPath, ensure_managed_internal_path, temporary_cache_root, validate_materialization_path,
@@ -273,15 +274,20 @@ fn sync_vcs_dependencies(request: VcsSyncRequest<'_>) -> Result<String> {
                     ));
                 }
                 PreparedVcs::Overlay(children) => {
-                    for (child, temp) in children {
-                        install_prepared_dependency(&plan.path.join(child), temp.path())?;
-                    }
-                    for child in prune_overlay_children(
-                        &plan.path,
-                        plan.locked.as_ref(),
-                        &plan.resolved,
-                    )? {
-                        outputs.push(format!("{}: Removed stale child {}", plan.name, child));
+                    install_prepared_overlay_dependency(InstallOverlayDependencyRequest {
+                        temp_root: &temp_root,
+                        target: &plan.path,
+                        previous: plan.locked.as_ref(),
+                        children,
+                    })?;
+                    if plan.locked.as_ref().is_none_or(|previous| previous.overlay) {
+                        for child in prune_overlay_children(
+                            &plan.path,
+                            plan.locked.as_ref(),
+                            &plan.resolved,
+                        )? {
+                            outputs.push(format!("{}: Removed stale child {}", plan.name, child));
+                        }
                     }
                     outputs.push(format!(
                         "{}: Synced {} children of {} to {}",
@@ -389,6 +395,14 @@ struct PrepareSubdirDependencyRequest<'a> {
     target: &'a Path,
     locked: &'a LockedVcsDependency,
     subdir: &'a str,
+}
+
+#[derive(Clone, Copy)]
+struct InstallOverlayDependencyRequest<'a> {
+    temp_root: &'a Path,
+    target: &'a Path,
+    previous: Option<&'a LockedVcsDependency>,
+    children: &'a [(String, TempPath)],
 }
 
 struct VcsSyncRequest<'a> {

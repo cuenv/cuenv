@@ -893,11 +893,7 @@ fn create_source_repo_with_overlay_children() -> tempfile::TempDir {
         fs::create_dir_all(&skill).expect("create skill dir");
         fs::write(skill.join("SKILL.md"), format!("# {child}\n")).expect("write SKILL.md");
     }
-    run_git(
-        [OsStr::new("add"), OsStr::new(".agents")],
-        Some(dir.path()),
-    )
-    .expect("git add skills");
+    run_git([OsStr::new("add"), OsStr::new(".agents")], Some(dir.path())).expect("git add skills");
     run_git(
         [
             OsStr::new("commit"),
@@ -950,7 +946,9 @@ fn overlay_syncs_children_individually() {
     assert!(gitignore.contains(".agents/skills/example/"));
     assert!(gitignore.contains(".agents/skills/other/"));
     assert!(
-        !gitignore.lines().any(|line| line.trim() == ".agents/skills/"),
+        !gitignore
+            .lines()
+            .any(|line| line.trim() == ".agents/skills/"),
         "parent dir must not be blanket-ignored: {gitignore}"
     );
 
@@ -960,6 +958,84 @@ fn overlay_syncs_children_individually() {
     let entry = lockfile.find_vcs("skills").expect("entry present");
     assert!(entry.overlay);
     assert_eq!(entry.children.len(), 2);
+}
+
+#[test]
+fn overlay_adopts_existing_non_overlay_materialization() {
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let mut dependency = overlay_dependency(source.path().display().to_string());
+    dependency.spec.overlay = false;
+
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency.clone()],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("initial non-overlay sync should succeed");
+
+    let base = workspace.path().join(".agents/skills");
+    assert!(base.join(".cuenv-vcs").exists());
+    assert!(base.join("example/SKILL.md").exists());
+
+    dependency.spec.overlay = true;
+    sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect("overlay should adopt an existing managed parent");
+
+    assert!(base.join("example/SKILL.md").exists());
+    assert!(base.join("other/SKILL.md").exists());
+    assert!(base.join("example/.cuenv-vcs").exists());
+    assert!(base.join("other/.cuenv-vcs").exists());
+    assert!(!base.join(".cuenv-vcs").exists());
+
+    let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
+    assert!(gitignore.contains(".agents/skills/example/"));
+    assert!(gitignore.contains(".agents/skills/other/"));
+    assert!(
+        !gitignore
+            .lines()
+            .any(|line| line.trim() == ".agents/skills/"),
+        "parent dir must not be blanket-ignored after migration: {gitignore}"
+    );
+
+    let lockfile = Lockfile::load(&workspace.path().join(LOCKFILE_NAME))
+        .expect("load lockfile")
+        .expect("lockfile present");
+    let entry = lockfile.find_vcs("skills").expect("entry present");
+    assert!(entry.overlay);
+    assert_eq!(entry.children.len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn overlay_rejects_symlinked_parent() {
+    use std::os::unix::fs::symlink;
+
+    let source = create_source_repo_with_overlay_children();
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+    let outside = tempdir().expect("outside tempdir");
+    fs::create_dir_all(workspace.path().join(".agents")).expect("create agents dir");
+    symlink(outside.path(), workspace.path().join(".agents/skills")).expect("symlink parent");
+
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay must reject a symlinked parent");
+    assert!(
+        err.to_string().contains("symlinked VCS overlay parent"),
+        "unexpected error: {err}"
+    );
+    assert!(!outside.path().join("example").exists());
 }
 
 #[test]
@@ -1004,15 +1080,16 @@ fn overlay_prunes_dropped_child() {
         VcsSyncScope::Path,
     )
     .expect("initial overlay sync");
-    assert!(workspace.path().join(".agents/skills/other/SKILL.md").exists());
+    assert!(
+        workspace
+            .path()
+            .join(".agents/skills/other/SKILL.md")
+            .exists()
+    );
 
     // Upstream drops the `other` child.
     fs::remove_dir_all(source.path().join(".agents/skills/other")).expect("remove other");
-    run_git(
-        [OsStr::new("add"), OsStr::new("-A")],
-        Some(source.path()),
-    )
-    .expect("git add removal");
+    run_git([OsStr::new("add"), OsStr::new("-A")], Some(source.path())).expect("git add removal");
     run_git(
         [
             OsStr::new("commit"),
@@ -1035,7 +1112,12 @@ fn overlay_prunes_dropped_child() {
     )
     .expect("re-sync should prune dropped child");
 
-    assert!(workspace.path().join(".agents/skills/example/SKILL.md").exists());
+    assert!(
+        workspace
+            .path()
+            .join(".agents/skills/example/SKILL.md")
+            .exists()
+    );
     assert!(!workspace.path().join(".agents/skills/other").exists());
     let gitignore = fs::read_to_string(workspace.path().join(".gitignore")).expect("gitignore");
     assert!(!gitignore.contains(".agents/skills/other/"));
@@ -1103,6 +1185,47 @@ fn overlay_rejects_file_child() {
         err.to_string().contains("contains file"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn overlay_rejects_invalid_child_name_before_materializing() {
+    let source = create_source_repo_with_overlay_children();
+    let invalid = source.path().join(".agents/skills/-bad");
+    fs::create_dir_all(&invalid).expect("create invalid child");
+    fs::write(invalid.join("SKILL.md"), "# Bad\n").expect("write invalid child");
+    run_git(
+        [
+            OsStr::new("add"),
+            OsStr::new(".agents/skills/-bad/SKILL.md"),
+        ],
+        Some(source.path()),
+    )
+    .expect("git add invalid child");
+    run_git(
+        [
+            OsStr::new("commit"),
+            OsStr::new("-m"),
+            OsStr::new("add invalid overlay child"),
+        ],
+        Some(source.path()),
+    )
+    .expect("git commit invalid child");
+
+    let workspace = create_workspace();
+    let dependency = overlay_dependency(source.path().display().to_string());
+    let err = sync_vcs!(
+        workspace.path(),
+        vec![dependency],
+        &SyncOptions::default(),
+        VcsSyncScope::Path,
+    )
+    .expect_err("overlay must reject an invalid child name");
+    assert!(
+        err.to_string().contains("overlay child '-bad'"),
+        "unexpected error: {err}"
+    );
+    assert!(!workspace.path().join(".agents/skills/-bad").exists());
+    assert!(!workspace.path().join(LOCKFILE_NAME).exists());
 }
 
 #[test]

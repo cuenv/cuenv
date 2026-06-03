@@ -261,7 +261,9 @@ fn vcs_overlay_example_syncs_children_individually() -> TestResult {
     let gitignore = fs::read_to_string(target.path().join(".gitignore"))?;
     assert!(gitignore.contains(".agents/skills/cuenv-schema-first/"));
     assert!(
-        !gitignore.lines().any(|line| line.trim() == ".agents/skills/"),
+        !gitignore
+            .lines()
+            .any(|line| line.trim() == ".agents/skills/"),
         "parent dir must not be blanket-ignored: {gitignore}"
     );
     assert!(
