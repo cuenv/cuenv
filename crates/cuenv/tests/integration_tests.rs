@@ -131,7 +131,9 @@ env: {
     Ok((temp_dir, path_str))
 }
 
-fn create_git_test_env_with_cuenv_version(version: &str) -> TestResult<(TempDir, String, PathBuf)> {
+fn create_git_test_env_with_schema_dependency(
+    version: &str,
+) -> TestResult<(TempDir, String, PathBuf)> {
     let (temp_dir, path_str) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
     fs::write(
@@ -139,7 +141,7 @@ fn create_git_test_env_with_cuenv_version(version: &str) -> TestResult<(TempDir,
         format!(
             r#"module: "test.example/sync"
 language: version: "v0.14.1"
-custom: "github.com/cuenv/cuenv": version: "{version}"
+deps: "github.com/cuenv/cuenv@v0": v: "v{version}"
 "#
         ),
     )?;
@@ -504,22 +506,20 @@ fn test_sync_command_dry_run_reports_provider_status() -> TestResult {
 }
 
 #[test]
-fn test_cue_command_fails_when_module_requires_newer_cuenv() -> TestResult {
-    let (_temp_dir, test_path, _module_file) = create_git_test_env_with_cuenv_version("999.0.0")?;
+fn test_cue_command_warns_when_schema_dependency_differs_from_cli() -> TestResult {
+    let (_temp_dir, test_path, _module_file) =
+        create_git_test_env_with_schema_dependency("0.999.0")?;
     let output = run_cuenv_command(&["env", "print", "--path", &test_path, "--package", "cuenv"])?;
 
-    assert!(
-        !output.success,
-        "Command should fail when module requires newer cuenv"
-    );
+    assert_success(&output, "command should warn but continue");
     let combined = output.combined();
-    assert!(combined.contains("Project requires cuenv 999.0.0"));
-    assert!(combined.contains("Upgrade cuenv"));
+    assert!(combined.contains("Warning: cuenv schema dependency is v0.999.0"));
+    assert!(combined.contains("CLI is"));
     Ok(())
 }
 
 #[test]
-fn test_sync_dry_run_reports_missing_marker_without_writing() -> TestResult {
+fn test_sync_dry_run_does_not_write_module_cue() -> TestResult {
     let (temp_dir, test_path) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
     let before = fs::read_to_string(&module_file)?;
@@ -533,19 +533,13 @@ fn test_sync_dry_run_reports_missing_marker_without_writing() -> TestResult {
     ])?;
 
     assert_success(&output, "sync --dry-run should succeed");
-    assert!(
-        output
-            .stdout
-            .contains("module.cue cuenv version marker missing")
-    );
-    assert!(output.stdout.contains(EXPECTED_VERSION));
     let after = fs::read_to_string(&module_file)?;
     assert_eq!(before, after, "dry-run must not update module.cue");
     Ok(())
 }
 
 #[test]
-fn test_sync_check_fails_when_marker_missing() -> TestResult {
+fn test_sync_check_allows_missing_schema_dependency() -> TestResult {
     let (_temp_dir, test_path) = create_git_test_env()?;
     let output = run_cuenv_command(&[
         "sync",
@@ -556,29 +550,23 @@ fn test_sync_check_fails_when_marker_missing() -> TestResult {
         "--check",
     ])?;
 
-    assert!(
-        !output.success,
-        "sync --check should fail for missing marker"
-    );
-    assert!(
-        output
-            .combined()
-            .contains("module.cue cuenv version marker missing")
+    assert_success(
+        &output,
+        "sync --check should not require a schema dependency",
     );
     Ok(())
 }
 
 #[test]
-fn test_sync_writes_current_marker() -> TestResult {
+fn test_sync_does_not_write_module_cue() -> TestResult {
     let (temp_dir, test_path) = create_git_test_env()?;
     let module_file = temp_dir.path().join("cue.mod/module.cue");
+    let before = fs::read_to_string(&module_file)?;
     let output = run_cuenv_command(&["sync", "--path", &test_path, "--package", "cuenv"])?;
 
     assert_success(&output, "sync should succeed");
-    let module = fs::read_to_string(&module_file)?;
-    assert!(module.contains("custom: {"));
-    assert!(module.contains("\"github.com/cuenv/cuenv\": {"));
-    assert!(module.contains(&format!("version: \"{EXPECTED_VERSION}\"")));
+    let after = fs::read_to_string(&module_file)?;
+    assert_eq!(before, after, "sync must not update module.cue");
     Ok(())
 }
 

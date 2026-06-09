@@ -69,21 +69,6 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     Ok(())
 }
 
-fn write_current_cuenv_marker(root: &Path) -> TestResult {
-    fs::write(
-        root.join("cue.mod/module.cue"),
-        format!(
-            r#"module: "github.com/cuenv/cuenv"
-language: {{
-  version: "v0.9.0"
-}}
-custom: "github.com/cuenv/cuenv": version: "{EXPECTED_VERSION}"
-"#
-        ),
-    )?;
-    Ok(())
-}
-
 fn run_git(root: &Path, args: &[&str]) -> TestResult {
     let output = Command::new("git").args(args).current_dir(root).output()?;
     assert!(
@@ -648,7 +633,6 @@ fn sync_ci_rejects_schema_only_gitlab_provider() -> TestResult {
 fn sync_ci_check_fails_when_configured_provider_is_out_of_sync() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
-    write_current_cuenv_marker(root)?;
 
     fs::write(
         root.join("env.cue"),

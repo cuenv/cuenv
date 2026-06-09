@@ -100,12 +100,8 @@ func createSuccessResponse(data string) *C.char {
 	return C.CString(string(responseBytes))
 }
 
-type moduleCustomVersion struct {
+type moduleDependencyVersion struct {
 	Version *string `json:"version"`
-}
-
-type moduleFormattedFile struct {
-	Content string `json:"content"`
 }
 
 func readModuleFile(moduleRoot string) (string, []byte, error) {
@@ -132,8 +128,8 @@ func parseModuleFile(moduleRoot string) (*modfile.File, string, error) {
 	return file, moduleFile, nil
 }
 
-//export cue_module_custom_version
-func cue_module_custom_version(moduleRootPath *C.char, namespace *C.char) *C.char {
+//export cue_module_dependency_version
+func cue_module_dependency_version(moduleRootPath *C.char, dependencyPath *C.char) *C.char {
 	var result *C.char
 	defer func() {
 		if r := recover(); r != nil {
@@ -143,7 +139,7 @@ func cue_module_custom_version(moduleRootPath *C.char, namespace *C.char) *C.cha
 	}()
 
 	moduleRoot := C.GoString(moduleRootPath)
-	customNamespace := C.GoString(namespace)
+	dependencyBasePath := C.GoString(dependencyPath)
 	file, moduleFile, err := parseModuleFile(moduleRoot)
 	if err != nil {
 		hint := "Ensure path contains a valid cue.mod/module.cue file"
@@ -152,64 +148,32 @@ func cue_module_custom_version(moduleRootPath *C.char, namespace *C.char) *C.cha
 	}
 
 	var version *string
-	if file.Custom != nil {
-		if customData, ok := file.Custom[customNamespace]; ok {
-			if rawVersion, ok := customData["version"].(string); ok {
-				version = &rawVersion
+	if file.Deps != nil {
+		for depPath, dep := range file.Deps {
+			if dep == nil || moduleBasePath(depPath) != dependencyBasePath {
+				continue
 			}
+			rawVersion := dep.Version
+			version = &rawVersion
+			break
 		}
 	}
 
-	payload, err := json.Marshal(moduleCustomVersion{Version: version})
+	payload, err := json.Marshal(moduleDependencyVersion{Version: version})
 	if err != nil {
-		result = createErrorResponse(ErrorCodeJSONMarshal, fmt.Sprintf("Failed to marshal module custom version: %v", err), nil)
+		result = createErrorResponse(ErrorCodeJSONMarshal, fmt.Sprintf("Failed to marshal module dependency version: %v", err), nil)
 		return result
 	}
 	result = createSuccessResponse(string(payload))
 	return result
 }
 
-//export cue_format_module_with_custom_version
-func cue_format_module_with_custom_version(moduleRootPath *C.char, namespace *C.char, version *C.char) *C.char {
-	var result *C.char
-	defer func() {
-		if r := recover(); r != nil {
-			panicMsg := fmt.Sprintf("Internal panic: %v", r)
-			result = createErrorResponse(ErrorCodePanicRecover, panicMsg, nil)
-		}
-	}()
-
-	moduleRoot := C.GoString(moduleRootPath)
-	customNamespace := C.GoString(namespace)
-	customVersion := C.GoString(version)
-	file, moduleFile, err := parseModuleFile(moduleRoot)
-	if err != nil {
-		hint := "Ensure path contains a valid cue.mod/module.cue file"
-		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Failed to parse %s: %v", moduleFile, err), &hint)
-		return result
+func moduleBasePath(path string) string {
+	basePath, _, found := strings.Cut(path, "@v")
+	if !found {
+		return path
 	}
-
-	if file.Custom == nil {
-		file.Custom = make(map[string]map[string]any)
-	}
-	if file.Custom[customNamespace] == nil {
-		file.Custom[customNamespace] = make(map[string]any)
-	}
-	file.Custom[customNamespace]["version"] = customVersion
-
-	formatted, err := modfile.Format(file)
-	if err != nil {
-		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Failed to format %s: %v", moduleFile, err), nil)
-		return result
-	}
-
-	payload, err := json.Marshal(moduleFormattedFile{Content: string(formatted)})
-	if err != nil {
-		result = createErrorResponse(ErrorCodeJSONMarshal, fmt.Sprintf("Failed to marshal formatted module file: %v", err), nil)
-		return result
-	}
-	result = createSuccessResponse(string(payload))
-	return result
+	return basePath
 }
 
 // ModuleInstance represents a single evaluated CUE instance within a module

@@ -228,32 +228,18 @@ Changesets have been consumed.
 If there are no changesets, the command stops with an error telling you to run
 `cuenv changeset add` first.
 
-:::caution[Also bump the CUE module marker]
-`cuenv release version` rewrites the Cargo manifests, but it does **not** update
-the cuenv version marker in `cue.mod/module.cue`
-(`custom: "github.com/cuenv/cuenv": version`). Bump that marker to the new
-version in the **same release commit**, alongside `Cargo.toml`/`Cargo.lock`.
-
-If you skip it, CUE publishing breaks. CI builds cuenv from the release tag
-(`config.ci.cuenv: {source: "nix", version: "self"}`) and runs `cuenv sync` in
-its bootstrap, which stamps the marker to the running version. With a lagging
-committed marker that sync rewrites `cue.mod/module.cue`, leaving the working
-tree dirty, and `cue mod publish` aborts with `VCS state is not clean`. Keeping
-the marker in sync makes the bootstrap sync a no-op.
-
-After the marker is bumped, an older installed `cuenv` may refuse to run in the
-checkout with `Project requires cuenv <new>; this CLI is <old>`. For the
-lockfile refresh and locked metadata verification, use direct Cargo commands if
-needed: `cargo update --workspace` and
-`cargo metadata --locked --format-version 1`. For cuenv-owned workflows such as
-formatting or schema-doc checks, run the checked-out release tree through Nix,
-for example `nix run .#cuenv -- fmt --fix`.
+:::note[Do not restamp `cue.mod/module.cue`]
+`cuenv release version` rewrites the Cargo manifests, changelogs, and lockfile
+inputs. It does **not** update `cue.mod/module.cue`, and release-only version
+bumps should not edit that file. cuenv publishes the CUE module at the release
+tag; consumer projects update their schema dependency with `cue mod get`.
+:::
 
 For a release-only version bump from an already-green `main`, do not rerun the
 local test suite or full root flake check just to restamp versions. Before
 tagging, verify `HEAD` matches the green `origin/main` commit, ensure
-`Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` all agree on the target
-version, inspect that the lockfile only changes workspace package versions, run
+`Cargo.toml` and `Cargo.lock` agree on the target version, inspect that the
+lockfile only changes workspace package versions, run
 locked Cargo metadata, and run `git diff --check`. Releases that include code,
 schema, workflow, dependency, feature, or behavior changes still need the normal
 broader release gate.
@@ -398,10 +384,9 @@ do not present it as a finished pipeline.
   affected backend rather than erroring.
 - **No `v` prefix, ever.** Tags and release titles are bare versions. The
   schema default for `git.tagPrefix` is empty, which already enforces this.
-- **`release version` does not touch `cue.mod/module.cue`.** You must bump the
-  cuenv version marker there yourself in the release commit, or CUE publishing
-  fails with `VCS state is not clean` (see [Apply version
-  bumps](#4-apply-version-bumps)).
+- **`release version` does not touch `cue.mod/module.cue`.** That is expected.
+  Do not edit `cue.mod/module.cue` for a release-only version bump unless there
+  is a separate CUE module metadata change.
 
 The authoritative per-definition status lives in the
 [schema status page](/reference/schema/status/) and the schema coverage matrix.
@@ -420,12 +405,7 @@ cuenv changeset status
 cuenv release version --dry-run
 cuenv release version
 
-# Bump the CUE module marker to match (release version does NOT do this):
-# in cue.mod/module.cue set custom["github.com/cuenv/cuenv"].version = "0.51.0"
-# If the installed cuenv is now too old for the marker, use direct Cargo for the
-# lockfile/metadata refresh and `nix run .#cuenv -- <command>` for cuenv tasks.
-
-# Commit the version + changelog + module marker updates, tag (bare version!), then publish:
+# Commit the version + changelog updates, tag (bare version!), then publish:
 git commit -am "release: 0.51.0"
 git tag -a 0.51.0 -m "0.51.0"
 cuenv release publish --dry-run

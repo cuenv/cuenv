@@ -5,8 +5,3 @@ language: {
 source: {
 	kind: "git"
 }
-custom: {
-	"github.com/cuenv/cuenv": {
-		version: "0.51.3"
-	}
-}

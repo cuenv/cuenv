@@ -252,9 +252,8 @@ cuenv release version --dry-run
 # Apply version changes (updates Cargo manifests and changelogs)
 cuenv release version
 
-# Keep the workspace lockfile and CUE module marker in sync before committing
+# Keep the workspace lockfile in sync before committing
 cuenv exec -- cargo update --workspace
-# in cue.mod/module.cue, set custom["github.com/cuenv/cuenv"].version to match
 
 # See publish order
 cuenv release publish --dry-run
@@ -269,20 +268,13 @@ dependency ordering constraints that `cuenv release publish` handles explicitly.
 When applying a manual patch release outside the release tooling, keep the root
 `[workspace.package]` version and every internal `[workspace.dependencies]`
 version in `Cargo.toml` on the same semver value, then refresh `Cargo.lock` so
-all workspace crate package entries match. Keep
-`cue.mod/module.cue`'s `custom["github.com/cuenv/cuenv"].version` marker on the
-same version in the release commit.
-
-Once that marker is bumped, an older installed `cuenv` can reject the checkout
-with `Project requires cuenv <new>; this CLI is <old>`. For Cargo-owned
-lockfile and metadata refreshes, direct `cargo update --workspace` and
-`cargo metadata --locked --format-version 1` are acceptable fallbacks. For
-cuenv-owned workflows such as formatting or schema-doc checks, run the
-checked-out release tree with `nix run .#cuenv -- <command>`.
+all workspace crate package entries match. Do not edit `cue.mod/module.cue` for
+a release-only version bump unless there is a separate CUE module metadata
+change.
 
 For release-only patch bumps from an already-green `main`, skip local test
 execution and the full root flake check. Verify that `HEAD` is the green
-`origin/main` commit, Cargo and the CUE module marker agree on the target
+`origin/main` commit, Cargo manifests and `Cargo.lock` agree on the target
 version, `Cargo.lock` only updates workspace package versions, locked Cargo
 metadata succeeds, and `git diff --check` passes before committing and tagging.
 Use the broader gate for any release that also changes code, schema, workflows,

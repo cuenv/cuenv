@@ -1,4 +1,4 @@
-use super::{CommandExecutor, convert_engine_error, env_file, module_version};
+use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
@@ -15,7 +15,7 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
-        module_version::ensure_compatible_module(&module_root)?;
+        schema_compat::warn_for_module(&module_root)?;
 
         let target_rel_path = compute_relative_path(target_path, &module_root);
         let options = ModuleEvalOptions {

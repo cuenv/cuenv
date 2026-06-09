@@ -54,7 +54,7 @@ fn load_release_config(root: &Path) -> cuenv_core::Result<ReleaseConfig> {
             config_dir.display()
         ))
     })?;
-    super::module_version::ensure_compatible_module(&module_root)?;
+    super::schema_compat::warn_for_module(&module_root)?;
 
     let options = ModuleEvalOptions {
         recursive: false,

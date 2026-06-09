@@ -5,15 +5,19 @@ description: Complete command-line interface reference for cuenv — every comma
 
 The `cuenv` CLI provides tools for managing environments, executing tasks, and integrating with your shell. This page is the authoritative, scannable lookup for every command and flag the binary ships today. Where a feature is partial or schema-only, this page says so explicitly and links to [Schema status](/reference/schema/status/) — never trust a reference that quietly drops behavior on the floor.
 
-## CUE Module Compatibility
+## CUE Schema Compatibility
 
-Commands that operate on a CUE module check `cue.mod/module.cue` for cuenv's compatibility marker:
+Commands that operate on a CUE module read the module's cuenv schema dependency
+from `cue.mod/module.cue` when one is present:
 
 ```cue
-custom: "github.com/cuenv/cuenv": version: "0.41.5"
+deps: "github.com/cuenv/cuenv@v0": v: "v0.51.3"
 ```
 
-If the marker is newer than the running CLI, the command exits and asks you to upgrade cuenv. Missing markers are accepted for existing projects; `cuenv sync` adds the current CLI version.
+If that schema dependency version differs from the running CLI version, cuenv
+prints a warning and continues. Missing dependencies are accepted for modules
+that vendor schema locally or for the cuenv repository itself. `cuenv sync`
+never writes `cue.mod/module.cue`.
 
 ## Global Options
 
@@ -541,18 +545,16 @@ For generating committed workflow files (rather than running or exporting on the
 
 ### `cuenv sync`
 
-Synchronize generated files from CUE configuration and the module's cuenv version marker. When run without a subcommand, executes all sync operations.
+Synchronize generated files from CUE configuration. When run without a
+subcommand, executes all sync operations.
 
 ```bash
 cuenv sync [OPTIONS] [SUBCOMMAND]
 ```
 
-`cuenv sync` always checks `cue.mod/module.cue` before provider work:
-
-- default write mode adds or updates `custom."github.com/cuenv/cuenv".version`
-- `--check` fails if the marker is missing or stale
-- `--dry-run` reports the marker change without writing
-- a marker newer than the running CLI fails and requires a cuenv upgrade
+`cuenv sync` does not update CUE module dependencies. Use `cue mod get
+github.com/cuenv/cuenv@<version>` when you want to change the schema dependency
+recorded in `cue.mod/module.cue`.
 
 **Options:**
 
