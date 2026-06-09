@@ -280,6 +280,14 @@ lockfile and metadata refreshes, direct `cargo update --workspace` and
 cuenv-owned workflows such as formatting or schema-doc checks, run the
 checked-out release tree with `nix run .#cuenv -- <command>`.
 
+For release-only patch bumps from an already-green `main`, skip local test
+execution and the full root flake check. Verify that `HEAD` is the green
+`origin/main` commit, Cargo and the CUE module marker agree on the target
+version, `Cargo.lock` only updates workspace package versions, locked Cargo
+metadata succeeds, and `git diff --check` passes before committing and tagging.
+Use the broader gate for any release that also changes code, schema, workflows,
+dependencies, features, or behavior.
+
 ## IDE Setup
 
 ### VS Code

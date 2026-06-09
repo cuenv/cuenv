@@ -5,8 +5,8 @@
 - Never allow clippy warnings, fix the root cause.
 - It doesn't matter if it's pre-existing, we fix issues; we don't swerve accountability.
 - We use Nix for builds and checks, cuenv for orchestration and workflow validation, and choose the smallest check that proves the current change.
-- `nix flake check -L --accept-flake-config` is the final review/merge/release gate and the escalation gate for broad-risk changes listed under Validation Strategy.
-- Isolated draft commits may be committed and pushed after focused validation when no full-flake trigger applies. Do not request review, mark ready, merge, or release until the full root flake check has passed.
+- `nix flake check -L --accept-flake-config` is the final review/merge gate and the escalation gate for broad-risk changes listed under Validation Strategy. Release-only version bumps from an already-green `main` do not rerun the local full flake gate; rely on current main CI plus version/lock consistency checks.
+- Isolated draft commits may be committed and pushed after focused validation when no full-flake trigger applies. Do not request review, mark ready, merge, or cut a non-version-only release until the full root flake check has passed.
 - Do not run a full root flake check for every isolated draft commit. Use focused validation for docs-only edits, simple test extractions or moves, behavior-preserving refactors, and one-crate test-only dependency changes when the focused gate proves the touched surface.
 - Always update ./docs for all work.
 - Every PR that changes `schema/**`, CLI behavior, sync providers, task execution, CI/release behavior, or examples must update `docs/design/specs/schema-coverage-matrix.md`.
@@ -31,7 +31,7 @@ Use Nix for builds and checks. Use `cuenv` for orchestration, workflow sync, for
 # Build the CLI package (45+ seconds)
 nix build .#cuenv -L --accept-flake-config
 
-# Run the final review/merge/release gate, not the default per-commit check (90+ seconds)
+# Run the final review/merge/broad-release gate, not the default per-commit check (90+ seconds)
 nix flake check -L --accept-flake-config
 
 # Run the nextest flake check only
@@ -74,11 +74,18 @@ Do not run the full root flake check for:
 
 Full root flake check is required when any of these are true:
 
-- Marking a PR ready for review, requesting review, merging, or cutting a release.
+- Marking a PR ready for review, requesting review, merging, or cutting a release that is not a release-only version bump from an already-green `main`.
 - Changing Nix expressions, flake outputs, build/check wiring, CI/release behavior, generated workflow contracts, or Cargo manifests/lockfiles that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
 - Changing cross-crate runtime behavior in evaluation, task execution, caching, secrets, hooks, events, sync, or provider boundaries.
 - Changing schema or CLI support in a way that focused tests, direct CLI smoke tests, and schema docs checks cannot fully cover.
 - A focused check fails in a way that could indicate broader workspace breakage.
+
+Release-only version bumps are the exception to the release trigger when `HEAD`
+matches the already-green `origin/main` commit. For those cuts, skip local test
+execution and the full root flake check. Verify the target version is consistent
+across `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue`; run locked Cargo
+metadata; inspect that the lockfile delta only updates workspace package
+versions; and run `git diff --check` before committing, tagging, or publishing.
 
 If a change does not match one of the required full-flake triggers, keep the check focused and record the focused validation in the PR. Keep draft commits isolated, push them, and update the PR with the focused validation that was actually run. If the PR is moving from draft to review, run the full flake check once after the focused commits have landed.
 
