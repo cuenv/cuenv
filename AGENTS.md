@@ -83,9 +83,9 @@ Full root flake check is required when any of these are true:
 Release-only version bumps are the exception to the release trigger when `HEAD`
 matches the already-green `origin/main` commit. For those cuts, skip local test
 execution and the full root flake check. Verify the target version is consistent
-across `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue`; run locked Cargo
-metadata; inspect that the lockfile delta only updates workspace package
-versions; and run `git diff --check` before committing, tagging, or publishing.
+across `Cargo.toml` and `Cargo.lock`; run locked Cargo metadata; inspect that
+the lockfile delta only updates workspace package versions; and run
+`git diff --check` before committing, tagging, or publishing.
 
 If a change does not match one of the required full-flake triggers, keep the check focused and record the focused validation in the PR. Keep draft commits isolated, push them, and update the PR with the focused validation that was actually run. If the PR is moving from draft to review, run the full flake check once after the focused commits have landed.
 
@@ -244,7 +244,7 @@ nix flake check -L --accept-flake-config
 - Git tags must be annotated: `git tag -a 0.27.1 -m "message"`.
 - Release commit message format: `release: 0.27.1`.
 - Version lives in root `Cargo.toml` under `[workspace.package]`. All crates inherit via `version.workspace = true`. Update the workspace version and all `[workspace.dependencies]` version strings.
-- Also bump the cuenv version marker in `cue.mod/module.cue` (`custom: "github.com/cuenv/cuenv": version`) to the same version, in the same release commit. CI builds cuenv from `version: self` at the tag and runs `cuenv sync` in its bootstrap, which stamps the marker to the running version; if the committed marker lags, that sync dirties the working tree and `cue mod publish` fails with "VCS state is not clean". Keeping it in sync makes the bootstrap sync a no-op.
+- Do not edit `cue.mod/module.cue` for release-only version bumps unless there is a separate CUE module metadata change. `cuenv sync` never writes `cue.mod/module.cue`; consumer projects update their schema dependency with `cue mod get`.
 - Create a GitHub release with `gh release create <tag>` using the bare version as the title.
 
 ## Troubleshooting

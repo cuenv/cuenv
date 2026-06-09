@@ -1,6 +1,6 @@
 ---
 name: cuenv-release-cut
-description: "Use when cutting a cuenv release manually: bumping the workspace Cargo version and internal crate dependency versions, refreshing Cargo.lock, updating cue.mod/module.cue, creating annotated bare-version tags, creating GitHub releases, and monitoring the release workflow."
+description: "Use when cutting a cuenv release manually: bumping the workspace Cargo version and internal crate dependency versions, refreshing Cargo.lock, creating annotated bare-version tags, creating GitHub releases, and monitoring the release workflow."
 ---
 
 # Cuenv Release Cut
@@ -12,7 +12,7 @@ Read the current release rules before acting:
 - `AGENTS.md` release section for project policy.
 - `docs/src/content/docs/how-to/releases.md` for release-tooling limits.
 - `docs/src/content/docs/how-to/develop-cuenv.md` for maintainer release notes.
-- `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` for the current version state.
+- `Cargo.toml` and `Cargo.lock` for the current version state.
 - `env.cue` and `.github/workflows/cuenv-release.yml` when GitHub release workflow behavior matters.
 
 ## Manual Release Workflow
@@ -26,24 +26,21 @@ Read the current release rules before acting:
 2. Bump versions:
    - In root `Cargo.toml`, set `[workspace.package].version` to the new bare semver.
    - In root `Cargo.toml`, set every internal path dependency under `[workspace.dependencies]` (`cuenv-*` and `cuengine`) to the same version.
-   - In `cue.mod/module.cue`, set `custom."github.com/cuenv/cuenv".version` to the same version.
-   - Do not change `cue.mod/module.cue` `language.version`; that is the CUE language version.
+   - Do not edit `cue.mod/module.cue` for a release-only version bump unless there is a separate CUE module metadata change.
 
 3. Refresh and verify the lockfile:
    - Run `cuenv exec -- cargo update --workspace`.
    - Run `cuenv exec -- cargo metadata --locked --format-version 1`.
-   - If the installed `cuenv` rejects the bumped marker with `Project requires cuenv <new>; this CLI is <old>`, use direct Cargo for this Cargo-owned step instead: `cargo update --workspace` and `cargo metadata --locked --format-version 1`. Record that fallback in the release notes or final summary.
    - Inspect `git diff -- Cargo.lock`; expected release-only lockfile changes are workspace package version entries matching the new version.
 
 4. Validate before committing or tagging:
-   - For a release-only version bump from an already-green `main`, do not rerun local tests or the full root flake gate. Verify `HEAD` matches `origin/main`, confirm the current main CI is green for that commit, run the lockfile and metadata checks above, inspect that `Cargo.lock` only updates workspace package versions, verify `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` agree on the target version, and run `git diff --check`.
+   - For a release-only version bump from an already-green `main`, do not rerun local tests or the full root flake gate. Verify `HEAD` matches `origin/main`, confirm the current main CI is green for that commit, run the lockfile and metadata checks above, inspect that `Cargo.lock` only updates workspace package versions, verify `Cargo.toml` and `Cargo.lock` agree on the target version, and run `git diff --check`.
    - For releases that include code, schema, CI/release workflow, dependency, feature, or behavior changes beyond the version bump, run `cuenv fmt --fix`, `git diff --check`, and `nix flake check -L --accept-flake-config`.
-   - If `cuenv fmt --fix` is blocked by the same bumped-marker version guard, run the formatter through the checked-out release tree instead: `nix run .#cuenv -- fmt --fix`. This can require building the new cuenv binary and may take several minutes; do not cancel it.
-   - If docs, schema, prompts, examples, or `.agents/skills/**` changed, also run `cuenv task ci.schema-docs-check`. Use `nix run .#cuenv -- task ci.schema-docs-check` if the installed CLI is version-gated out.
+   - If docs, schema, prompts, examples, or `.agents/skills/**` changed, also run `cuenv task ci.schema-docs-check`.
    - Do not tag, create a GitHub release, publish, request review, merge, or release if a required check failed or was skipped.
 
 5. Commit and push:
-   - Stage `Cargo.toml`, `Cargo.lock`, `cue.mod/module.cue`, and any changelog/docs files that changed.
+   - Stage `Cargo.toml`, `Cargo.lock`, and any changelog/docs files that changed.
    - Commit as `release: <version>`.
    - Push the release commit to `origin main`.
 
@@ -66,6 +63,6 @@ Read the current release rules before acting:
 ## Guardrails
 
 - Never run `cargo publish --workspace` for cuenv; use `cuenv release publish` when crates.io publishing is needed.
-- `cuenv release version` is allowed when the user asks for the changeset-driven path, but it consumes changesets and does not update `cue.mod/module.cue`; fix the marker before committing.
-- Stop before tagging if `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` disagree on the cuenv version.
+- `cuenv release version` is allowed when the user asks for the changeset-driven path, but it consumes changesets and does not update `cue.mod/module.cue`; that is expected for release-only bumps.
+- Stop before tagging if `Cargo.toml` and `Cargo.lock` disagree on the cuenv version.
 - Stop before release creation if the tag is missing, lightweight, prefixed with `v`, or not pushed to origin.

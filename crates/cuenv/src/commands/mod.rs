@@ -29,14 +29,14 @@ pub mod info;
 pub mod logs;
 mod module_evaluation;
 mod module_utils;
-/// CUE module cuenv version compatibility checks.
-pub mod module_version;
 /// List running services and their status.
 pub mod ps;
 /// Release management commands (prepare, version, publish, binaries).
 pub mod release;
 /// Restart one or more services.
 pub mod restart;
+/// CUE schema dependency compatibility warnings.
+pub mod schema_compat;
 /// Secrets provider setup and management.
 pub mod secrets;
 /// Hidden process-babysitter subcommand (`cuenv __supervise`).
@@ -534,13 +534,12 @@ impl CommandExecutor {
                 target_path.display()
             ))
         })?;
-        module_version::ensure_compatible_module(&module_root)?;
-
         let mut guard = self.workspace_modules.lock().map_err(|_| {
             cuenv_core::Error::configuration("Failed to acquire workspace module cache lock")
         })?;
 
         if !guard.contains_key(&module_root) {
+            schema_compat::warn_for_module(&module_root)?;
             let module = self.evaluate_workspace_module(&module_root)?;
             guard.insert(module_root.clone(), module);
         }

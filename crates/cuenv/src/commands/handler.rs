@@ -14,7 +14,7 @@ use cuenv_events::{emit_stderr, emit_stdout};
 use crate::cli::{ShellType, StatusFormat};
 use crate::events::Event;
 
-use super::{CommandExecutor, ci, env, exec, export, hooks, module_version, sync};
+use super::{CommandExecutor, ci, env, exec, export, hooks, sync};
 
 pub use task_handler::TaskHandler;
 
@@ -80,13 +80,6 @@ impl CommandRunner for CommandExecutor {
 // ============================================================================
 // Command Handler Implementations
 // ============================================================================
-
-fn marker_sync_output(marker_sync: &module_version::ModuleVersionSync) -> String {
-    match marker_sync {
-        module_version::ModuleVersionSync::InSync => String::new(),
-        _ => marker_sync.message(),
-    }
-}
 
 /// Handler for `env print` command.
 pub struct EnvPrintHandler {
@@ -512,7 +505,6 @@ impl CommandHandler for SyncHandler {
         };
 
         let path = std::path::Path::new(&self.path);
-        let marker_sync = module_version::sync_marker_for_path(path, &options.mode)?;
         let sync_all = self.scope == SyncScope::Workspace;
         let project_error = |path: &std::path::Path| {
             cuenv_core::Error::configuration(format!(
@@ -561,7 +553,7 @@ impl CommandHandler for SyncHandler {
                     .sync_provider("vcs", path, &self.package, &options, false, executor)
                     .await?
                     .output;
-                return Ok([marker_sync_output(&marker_sync), rules_output, vcs_output]
+                return Ok([rules_output, vcs_output]
                     .into_iter()
                     .filter(|output| !output.is_empty())
                     .collect::<Vec<_>>()
@@ -581,11 +573,7 @@ impl CommandHandler for SyncHandler {
             let result = registry
                 .sync_provider(name, path, &self.package, &options, use_workspace, executor)
                 .await?;
-            return Ok([marker_sync_output(&marker_sync), result.output]
-                .into_iter()
-                .filter(|output| !output.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n"));
+            return Ok(result.output);
         }
 
         let provider_output = run_selected_sync_providers(SelectedSyncProvidersRequest {
@@ -599,11 +587,7 @@ impl CommandHandler for SyncHandler {
         })
         .await?;
 
-        Ok([marker_sync_output(&marker_sync), provider_output]
-            .into_iter()
-            .filter(|output| !output.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n\n"))
+        Ok(provider_output)
     }
 }
 

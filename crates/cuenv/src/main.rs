@@ -289,18 +289,18 @@ fn run_sync(cli: cli::Cli) -> i32 {
     }
 }
 
-fn ensure_command_module_compatibility(command: &Command) -> Result<(), CliError> {
-    if !should_precheck_command_module_compatibility(command) {
+fn warn_for_schema_cli_mismatch(command: &Command) -> Result<(), CliError> {
+    if !should_precheck_schema_cli_mismatch(command) {
         return Ok(());
     }
 
     let Some(path) = cue_module_command_path(command) else {
         return Ok(());
     };
-    commands::module_version::ensure_compatible_for_path(path).map_err(CliError::from)
+    commands::schema_compat::warn_for_path(path).map_err(CliError::from)
 }
 
-fn should_precheck_command_module_compatibility(command: &Command) -> bool {
+fn should_precheck_schema_cli_mismatch(command: &Command) -> bool {
     matches!(command, Command::Info { .. })
 }
 

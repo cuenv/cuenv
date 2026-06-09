@@ -19,19 +19,22 @@ Common organization patterns include:
 - Splitting large sections into files such as `tasks.cue` or directories like `.cuenv/`
 - Importing shared packages from elsewhere in your CUE module (for example `import "github.com/myorg/common"`)
 
-### Module Compatibility
+### Schema Compatibility
 
-cuenv records the CLI version used to sync a project in `cue.mod/module.cue`:
+cuenv projects use the normal CUE module dependency entry for the cuenv schema:
 
 ```cue
-custom: "github.com/cuenv/cuenv": {
-    version: "0.41.5"
-}
+deps: "github.com/cuenv/cuenv@v0": v: "v0.51.3"
 ```
 
-This field is tool metadata supported by CUE modules. `language.version` remains the CUE language version and should not be used for cuenv compatibility.
+`language.version` remains the CUE language version and should not be used for
+cuenv compatibility.
 
-When a cuenv command operates on a CUE module, it checks this marker before evaluation. Missing, older, or equal versions are accepted. If the marker is newer than the running CLI, cuenv exits and asks you to upgrade the CLI. Run `cuenv sync` with a current CLI to add or refresh the marker.
+When a cuenv command operates on a CUE module, it reads the cuenv schema
+dependency if present. If the schema dependency version differs from the running
+CLI version, cuenv prints a warning and continues. `cuenv sync` never updates
+`cue.mod/module.cue`; use `cue mod get github.com/cuenv/cuenv@<version>` to
+change the schema dependency.
 
 ### Basic Structure
 

@@ -1,4 +1,4 @@
-use super::{create_executor, ensure_command_module_compatibility};
+use super::{create_executor, warn_for_schema_cli_mismatch};
 use cuenv::cli::{self, CliError, OkEnvelope, OutputFormat};
 use cuenv::commands::{self, Command};
 use tracing::instrument;
@@ -50,7 +50,7 @@ struct ExportSyncRequest {
 }
 
 pub fn execute_sync_command(command: Command, json_format: OutputFormat) -> Result<(), CliError> {
-    ensure_command_module_compatibility(&command)?;
+    warn_for_schema_cli_mismatch(&command)?;
 
     match command {
         Command::Version { format: _ } => {

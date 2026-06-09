@@ -186,14 +186,9 @@ unsafe extern "C" {
         package_name: *const c_char,
         options_json: *const c_char,
     ) -> *mut c_char;
-    fn cue_module_custom_version(
+    fn cue_module_dependency_version(
         module_root: *const c_char,
-        namespace: *const c_char,
-    ) -> *mut c_char;
-    fn cue_format_module_with_custom_version(
-        module_root: *const c_char,
-        namespace: *const c_char,
-        version: *const c_char,
+        dependency_path: *const c_char,
     ) -> *mut c_char;
     fn cue_free_string(s: *mut c_char);
     fn cue_bridge_version() -> *mut c_char;
@@ -206,16 +201,7 @@ unsafe fn cue_eval_module(_: *const c_char, _: *const c_char, _: *const c_char) 
 }
 
 #[cfg(docsrs)]
-unsafe fn cue_module_custom_version(_: *const c_char, _: *const c_char) -> *mut c_char {
-    panic!("FFI not available in documentation builds")
-}
-
-#[cfg(docsrs)]
-unsafe fn cue_format_module_with_custom_version(
-    _: *const c_char,
-    _: *const c_char,
-    _: *const c_char,
-) -> *mut c_char {
+unsafe fn cue_module_dependency_version(_: *const c_char, _: *const c_char) -> *mut c_char {
     panic!("FFI not available in documentation builds")
 }
 
@@ -284,16 +270,11 @@ pub struct ModuleResult {
     pub meta: std::collections::HashMap<String, FieldMeta>,
 }
 
-/// Cuenv custom metadata extracted from `cue.mod/module.cue`.
+/// CUE module dependency metadata extracted from `cue.mod/module.cue`.
 #[derive(Debug, Deserialize)]
-pub struct ModuleCustomVersion {
-    /// The custom cuenv version marker, if present.
+pub struct ModuleDependencyVersion {
+    /// The dependency version, if present.
     pub version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FormattedModuleFile {
-    content: String,
 }
 
 struct ModuleEvalWorker {
@@ -696,67 +677,33 @@ fn process_bridge_json<T: DeserializeOwned>(
     })
 }
 
-/// Read cuenv custom version metadata from `cue.mod/module.cue`.
+/// Read dependency version metadata from `cue.mod/module.cue`.
 ///
 /// # Errors
 ///
 /// Returns an error if the module file cannot be read or parsed.
-pub fn module_custom_version(module_root: &Path, namespace: &str) -> Result<ModuleCustomVersion> {
-    const FUNCTION_NAME: &str = "cue_module_custom_version";
+pub fn module_dependency_version(
+    module_root: &Path,
+    dependency_path: &str,
+) -> Result<ModuleDependencyVersion> {
+    const FUNCTION_NAME: &str = "cue_module_dependency_version";
     let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
-    let c_namespace = str_to_cstring(namespace, FUNCTION_NAME, "namespace")?;
+    let c_dependency_path = str_to_cstring(dependency_path, FUNCTION_NAME, "dependency path")?;
 
-    // Safety: cue_module_custom_version takes valid C strings and returns a
+    // Safety: cue_module_dependency_version takes valid C strings and returns a
     // heap-allocated C string owned by the caller.
     let result_ptr = {
-        #[expect(unsafe_code, reason = "Required to call the Go custom-version bridge")]
+        #[expect(
+            unsafe_code,
+            reason = "Required to call the Go module-dependency bridge"
+        )]
         unsafe {
-            cue_module_custom_version(c_module_root.as_ptr(), c_namespace.as_ptr())
+            cue_module_dependency_version(c_module_root.as_ptr(), c_dependency_path.as_ptr())
         }
     };
     let result = bridge_owned_c_string(result_ptr);
     let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
     process_bridge_json(&json_str, module_root, FUNCTION_NAME)
-}
-
-/// Return a formatted `cue.mod/module.cue` with cuenv custom version metadata set.
-///
-/// This function does not write to disk; callers decide how to handle dry-run
-/// and check modes.
-///
-/// # Errors
-///
-/// Returns an error if the module file cannot be read, parsed, or formatted.
-pub fn format_module_with_custom_version(
-    module_root: &Path,
-    namespace: &str,
-    version: &str,
-) -> Result<String> {
-    const FUNCTION_NAME: &str = "cue_format_module_with_custom_version";
-    let c_module_root = path_to_cstring(module_root, FUNCTION_NAME, "module root")?;
-    let c_namespace = str_to_cstring(namespace, FUNCTION_NAME, "namespace")?;
-    let c_version = str_to_cstring(version, FUNCTION_NAME, "version")?;
-
-    // Safety: cue_format_module_with_custom_version takes valid C strings and
-    // returns a heap-allocated C string owned by the caller.
-    let result_ptr = {
-        #[expect(
-            unsafe_code,
-            reason = "Required to call the Go module-formatting bridge"
-        )]
-        unsafe {
-            cue_format_module_with_custom_version(
-                c_module_root.as_ptr(),
-                c_namespace.as_ptr(),
-                c_version.as_ptr(),
-            )
-        }
-    };
-    let result = bridge_owned_c_string(result_ptr);
-    let json_str = extract_ffi_string(&result, FUNCTION_NAME)?;
-    let formatted: FormattedModuleFile =
-        process_bridge_json(&json_str, module_root, FUNCTION_NAME)?;
-    Ok(formatted.content)
 }
 
 /// Convenience wrapper around `evaluate_module` for single-directory evaluation.

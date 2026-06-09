@@ -1,4 +1,4 @@
-use super::{ensure_command_module_compatibility, run_oci_activate};
+use super::{run_oci_activate, warn_for_schema_cli_mismatch};
 use cuenv::cli::{self, CliError, OkEnvelope, OutputFormat};
 use cuenv::commands::{self, Command, CommandExecutor};
 use tracing::instrument;
@@ -31,7 +31,7 @@ pub async fn execute_command_safe(
     json_format: OutputFormat,
     executor: &CommandExecutor,
 ) -> Result<(), CliError> {
-    ensure_command_module_compatibility(&command)?;
+    warn_for_schema_cli_mismatch(&command)?;
 
     if let Some(result) = execute_direct_command(&command).await {
         return result;
