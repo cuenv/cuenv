@@ -495,7 +495,27 @@ impl Compiler {
     fn resolve_contributor_value(&self, contributor_id: &str, value: &str) -> String {
         match contributor_id {
             "cachix" => self.resolve_cachix_value(value),
+            "cuenv" => self.resolve_cuenv_value(value),
             _ => value.to_string(),
+        }
+    }
+
+    fn resolve_cuenv_value(&self, value: &str) -> String {
+        value.replace("${CUENV_VERSION}", self.configured_cuenv_version())
+    }
+
+    fn configured_cuenv_version(&self) -> &str {
+        let configured = self
+            .project
+            .config
+            .as_ref()
+            .and_then(|config| config.ci.as_ref())
+            .and_then(|ci| ci.cuenv.as_ref())
+            .map(|cuenv| cuenv.version.as_str());
+
+        match configured {
+            Some("self") | None => cuenv_core::VERSION,
+            Some(version) => version,
         }
     }
 

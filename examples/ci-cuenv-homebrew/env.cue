@@ -9,10 +9,7 @@ let _t = tasks
 name: "ci-cuenv-homebrew"
 
 // Use Homebrew to install cuenv in CI - no Nix required
-config: ci: cuenv: {
-	source:  "homebrew"
-	version: "latest" // Version is ignored for homebrew
-}
+config: ci: cuenv: source: "homebrew"
 
 ci: pipelines: {
 	build: {
