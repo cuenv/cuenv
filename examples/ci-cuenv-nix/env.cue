@@ -8,10 +8,10 @@ let _t = tasks
 
 name: "ci-cuenv-nix"
 
-// Use Nix flake to install cuenv in CI with the configured Nix binary cache
+// Build cuenv from the checked-out repository flake in CI.
 config: ci: cuenv: {
 	source:  "nix"
-	version: "0.19.0" // Install specific version via nix profile
+	version: "self"
 }
 
 ci: pipelines: {

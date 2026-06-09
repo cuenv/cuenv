@@ -427,16 +427,21 @@ and [`examples/ci-cuenv-nix`](https://github.com/cuenv/cuenv/tree/main/examples/
 — pick how CI installs cuenv via `config.ci.cuenv.source`.
 
 ```cue
-// Homebrew (no Nix required):
+// GitHub Release (default): pin to the cuenv version that generated the workflow.
 config: ci: cuenv: {
-	source:  "homebrew"
-	version: "latest"
+	source: "release"
+	// version defaults to "self"; use "latest" or "0.19.0" to override.
 }
 
-// Or Nix flake (specific version via nix profile):
+// Homebrew (no Nix required):
+config: ci: cuenv: {
+	source: "homebrew"
+}
+
+// Or build cuenv from the checked-out repository flake:
 config: ci: cuenv: {
 	source:  "nix"
-	version: "0.19.0"
+	version: "self"
 }
 ```
 

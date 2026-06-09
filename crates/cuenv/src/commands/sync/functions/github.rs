@@ -148,6 +148,7 @@ fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Re
 /// Collected pipeline context from project discovery.
 struct PipelineContext {
     is_release: bool,
+    cuenv_source: cuenv_core::config::CuenvSource,
     /// Pipeline generation mode (thin vs expanded)
     mode: cuenv_core::ci::PipelineMode,
     github_config: cuenv_github::config::GitHubConfig,
@@ -255,6 +256,15 @@ fn build_project_pipeline_context(
         .ci
         .as_ref()
         .ok_or_else(|| cuenv_core::Error::configuration("Project has no CI configuration"))?;
+    let cuenv_source = project
+        .config
+        .config
+        .as_ref()
+        .and_then(|config| config.ci.as_ref())
+        .and_then(|ci| ci.cuenv.as_ref())
+        .map_or(cuenv_core::config::CuenvSource::Release, |cuenv| {
+            cuenv.source
+        });
 
     // Detect release pipelines by checking if they have release event triggers
     let is_release = pipeline.when.as_ref().is_some_and(|w| w.release.is_some());
@@ -303,6 +313,7 @@ fn build_project_pipeline_context(
 
     Ok(PipelineContext {
         is_release,
+        cuenv_source,
         mode: pipeline.mode,
         github_config: ci.github_config_for_pipeline(pipeline_name),
         trigger,
@@ -392,10 +403,12 @@ fn cuenv_bootstrap_artifact_name(runs_on: &cuenv_github::workflow::schema::RunsO
 }
 
 fn can_use_cuenv_bootstrap(
+    ctx: &PipelineContext,
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
     ir: &cuenv_ci::ir::IntermediateRepresentation,
 ) -> bool {
-    emitter.build_cuenv
+    ctx.cuenv_source == cuenv_core::config::CuenvSource::Nix
+        && emitter.build_cuenv
         && ir
             .sorted_phase_tasks(cuenv_ci::ir::BuildStage::Setup)
             .iter()
@@ -530,7 +543,7 @@ fn emit_standard_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(&emitter, &ir);
+    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(ctx, &emitter, &ir);
     let default_runner = cuenv_github::workflow::schema::RunsOn::Label(emitter.runner.clone());
     let default_artifact_name =
         use_cuenv_bootstrap.then(|| cuenv_bootstrap_artifact_name(&default_runner));
@@ -738,6 +751,34 @@ mod tests {
         }
     }
 
+    fn make_regular_task(id: &str) -> Task {
+        Task {
+            id: id.to_string(),
+            runtime: None,
+            command: vec!["cargo".to_string(), "test".to_string()],
+            shell: false,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: vec![],
+            outputs: vec![],
+            depends_on: vec![],
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: vec![],
+            params: BTreeMap::new(),
+            phase: None,
+            label: None,
+            priority: None,
+            contributor: None,
+            condition: None,
+            provider_hints: None,
+        }
+    }
+
     fn make_bootstrap_ir() -> IntermediateRepresentation {
         make_ir(vec![
             make_phase_task(&PhaseTaskFixture {
@@ -757,6 +798,53 @@ mod tests {
                 command: &["nix build .#cuenv"],
             }),
         ])
+    }
+
+    fn make_pipeline_context(
+        cuenv_source: cuenv_core::config::CuenvSource,
+        tasks: Vec<Task>,
+    ) -> PipelineContext {
+        PipelineContext {
+            is_release: false,
+            cuenv_source,
+            mode: PipelineMode::Expanded,
+            github_config: cuenv_github::config::GitHubConfig::default(),
+            trigger: cuenv_ci::ir::TriggerCondition {
+                branches: vec![],
+                pull_request: None,
+                scheduled: vec![],
+                release: vec![],
+                manual: None,
+                paths: vec![],
+            },
+            project_name: Some("test".to_string()),
+            project_path: None,
+            environment: None,
+            runtimes: vec![],
+            tasks,
+            pipeline_tasks: vec![cuenv_core::ci::PipelineTask::Simple(
+                cuenv_core::ci::TaskRef::from_name("build"),
+            )],
+        }
+    }
+
+    #[test]
+    fn nix_source_standard_workflow_emits_cuenv_bootstrap_artifact() -> cuenv_core::Result<()> {
+        let mut tasks = make_bootstrap_ir().tasks;
+        tasks.push(make_regular_task("build"));
+        let ctx = make_pipeline_context(cuenv_core::config::CuenvSource::Nix, tasks);
+
+        let workflows = emit_standard_workflow("ci", &ctx)?;
+
+        assert_eq!(workflows.len(), 1);
+        let workflow = &workflows[0].1;
+        assert!(workflow.contains("build.cuenv"), "{workflow}");
+        assert!(workflow.contains("result/bin/cuenv"), "{workflow}");
+        assert!(
+            workflow.contains("actions/upload-artifact@v4"),
+            "{workflow}"
+        );
+        Ok(())
     }
 
     #[test]

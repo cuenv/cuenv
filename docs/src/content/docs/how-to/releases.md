@@ -235,11 +235,11 @@ the cuenv version marker in `cue.mod/module.cue`
 version in the **same release commit**, alongside `Cargo.toml`/`Cargo.lock`.
 
 If you skip it, CUE publishing breaks. CI builds cuenv from the release tag
-(`config.ci.cuenv.version: "self"`) and runs `cuenv sync` in its bootstrap,
-which stamps the marker to the running version. With a lagging committed marker
-that sync rewrites `cue.mod/module.cue`, leaving the working tree dirty, and
-`cue mod publish` aborts with `VCS state is not clean`. Keeping the marker in
-sync makes the bootstrap sync a no-op.
+(`config.ci.cuenv: {source: "nix", version: "self"}`) and runs `cuenv sync` in
+its bootstrap, which stamps the marker to the running version. With a lagging
+committed marker that sync rewrites `cue.mod/module.cue`, leaving the working
+tree dirty, and `cue mod publish` aborts with `VCS state is not clean`. Keeping
+the marker in sync makes the bootstrap sync a no-op.
 
 After the marker is bumped, an older installed `cuenv` may refuse to run in the
 checkout with `Project requires cuenv <new>; this CLI is <old>`. For the
@@ -249,12 +249,13 @@ needed: `cargo update --workspace` and
 formatting or schema-doc checks, run the checked-out release tree through Nix,
 for example `nix run .#cuenv -- fmt --fix`.
 
-The generated release workflow builds cuenv once per runner when
-`config.ci.cuenv.version: "self"` is active. Each `build.cuenv` job uploads the
+The generated release workflow builds cuenv once per runner only when
+`config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job uploads the
 checked-out `result/bin/cuenv` as a runner-specific artifact, and downstream
 orchestrated jobs download that binary instead of rebuilding cuenv in every job.
-Linux jobs still restore the Namespace `/nix` cache before Nix setup, while macOS
-jobs skip that cache and use normal Nix installation.
+Release, Homebrew, native, git, and artifact sources render their setup task
+inside each job. Linux jobs still restore the Namespace `/nix` cache before Nix
+setup, while macOS jobs skip that cache and use normal Nix installation.
 :::
 
 ## 5. Prepare a release in one shot

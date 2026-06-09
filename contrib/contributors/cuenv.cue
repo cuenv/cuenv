@@ -34,7 +34,13 @@ import "github.com/cuenv/cuenv/schema"
 			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
 			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
 			esac
-			curl -sSL -o /usr/local/bin/cuenv "https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync ci
+			cuenv_version="${CUENV_VERSION}"
+			if [ "$cuenv_version" = "latest" ]; then
+			  cuenv_url="https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}"
+			else
+			  cuenv_url="https://github.com/cuenv/cuenv/releases/download/${cuenv_version}/${cuenv_asset}"
+			fi
+			curl -sSL -o /usr/local/bin/cuenv "$cuenv_url" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync ci
 			"""
 	}]
 }
@@ -56,7 +62,13 @@ import "github.com/cuenv/cuenv/schema"
 			  aarch64|arm64) cuenv_asset="cuenv-linux-arm64" ;;
 			  *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
 			esac
-			curl -sSL -o /usr/local/bin/cuenv "https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A
+			cuenv_version="${CUENV_VERSION}"
+			if [ "$cuenv_version" = "latest" ]; then
+			  cuenv_url="https://github.com/cuenv/cuenv/releases/latest/download/${cuenv_asset}"
+			else
+			  cuenv_url="https://github.com/cuenv/cuenv/releases/download/${cuenv_version}/${cuenv_asset}"
+			fi
+			curl -sSL -o /usr/local/bin/cuenv "$cuenv_url" && chmod +x /usr/local/bin/cuenv && /usr/local/bin/cuenv sync -A
 			"""
 	}]
 }
