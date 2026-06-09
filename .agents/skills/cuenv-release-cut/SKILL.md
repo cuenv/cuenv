@@ -36,10 +36,11 @@ Read the current release rules before acting:
    - Inspect `git diff -- Cargo.lock`; expected release-only lockfile changes are workspace package version entries matching the new version.
 
 4. Validate before committing or tagging:
-   - Release work is a full-gate trigger. Run `cuenv fmt --fix`, `git diff --check`, and `nix flake check -L --accept-flake-config`.
+   - For a release-only version bump from an already-green `main`, do not rerun local tests or the full root flake gate. Verify `HEAD` matches `origin/main`, confirm the current main CI is green for that commit, run the lockfile and metadata checks above, inspect that `Cargo.lock` only updates workspace package versions, verify `Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` agree on the target version, and run `git diff --check`.
+   - For releases that include code, schema, CI/release workflow, dependency, feature, or behavior changes beyond the version bump, run `cuenv fmt --fix`, `git diff --check`, and `nix flake check -L --accept-flake-config`.
    - If `cuenv fmt --fix` is blocked by the same bumped-marker version guard, run the formatter through the checked-out release tree instead: `nix run .#cuenv -- fmt --fix`. This can require building the new cuenv binary and may take several minutes; do not cancel it.
    - If docs, schema, prompts, examples, or `.agents/skills/**` changed, also run `cuenv task ci.schema-docs-check`. Use `nix run .#cuenv -- task ci.schema-docs-check` if the installed CLI is version-gated out.
-   - Do not tag, create a GitHub release, publish, request review, merge, or release if the full flake check failed or was skipped.
+   - Do not tag, create a GitHub release, publish, request review, merge, or release if a required check failed or was skipped.
 
 5. Commit and push:
    - Stage `Cargo.toml`, `Cargo.lock`, `cue.mod/module.cue`, and any changelog/docs files that changed.

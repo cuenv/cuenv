@@ -249,6 +249,15 @@ needed: `cargo update --workspace` and
 formatting or schema-doc checks, run the checked-out release tree through Nix,
 for example `nix run .#cuenv -- fmt --fix`.
 
+For a release-only version bump from an already-green `main`, do not rerun the
+local test suite or full root flake check just to restamp versions. Before
+tagging, verify `HEAD` matches the green `origin/main` commit, ensure
+`Cargo.toml`, `Cargo.lock`, and `cue.mod/module.cue` all agree on the target
+version, inspect that the lockfile only changes workspace package versions, run
+locked Cargo metadata, and run `git diff --check`. Releases that include code,
+schema, workflow, dependency, feature, or behavior changes still need the normal
+broader release gate.
+
 The generated release workflow builds cuenv once per runner only when
 `config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job uploads the
 checked-out `result/bin/cuenv` as a runner-specific artifact, and downstream
