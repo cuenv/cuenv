@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,19 @@ import (
 )
 
 const BridgeVersion = "bridge/1"
+
+// init relaxes the Go garbage collector for the embedded CUE evaluator.
+//
+// CUE evaluation is allocation-heavy and short-lived: with the default
+// GOGC=100 roughly half of the evaluation CPU time is spent in GC
+// (runtime.scanobject/findObject). Raising the GC target trades transient
+// memory for a substantially faster evaluation. Users can still override the
+// behavior by setting GOGC explicitly.
+func init() {
+	if os.Getenv("GOGC") == "" {
+		debug.SetGCPercent(800)
+	}
+}
 
 // Bridge error codes - keep in sync with Rust side
 const (

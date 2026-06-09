@@ -67,6 +67,55 @@ impl CommandExecutor {
     }
 
     pub(super) fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
+        // Fast path: evaluate the entire module in a single recursive CUE
+        // evaluation (equivalent to `cue eval ./...`). This loads the module
+        // and compiles imported schema packages once instead of once per
+        // directory, which is significantly faster for monorepos.
+        match self.evaluate_workspace_module_recursive(module_root) {
+            Ok(module) => Ok(module),
+            Err(e) => {
+                tracing::warn!(
+                    module_root = %module_root.display(),
+                    error = %e,
+                    "Recursive workspace evaluation failed - falling back to per-directory evaluation"
+                );
+                self.evaluate_workspace_module_fan_out(module_root)
+            }
+        }
+    }
+
+    /// Evaluate the whole workspace with one recursive CUE evaluation.
+    ///
+    /// The Go bridge loads the module once and builds every package instance
+    /// in a shared CUE context, skipping directories whose package does not
+    /// match or that fail to build (matching the per-directory fan-out
+    /// semantics).
+    fn evaluate_workspace_module_recursive(&self, module_root: &Path) -> Result<ModuleEvaluation> {
+        let options = ModuleEvalOptions {
+            recursive: true,
+            with_meta: true,
+            with_references: true,
+            ..Default::default()
+        };
+
+        tracing::info!("evaluate_workspace_module single recursive evaluation");
+        let raw = cuengine::evaluate_module(module_root, &self.package, Some(&options))
+            .map_err(convert_engine_error)?;
+
+        let mut metadata = EvaluationMetadataBuilder::default();
+        for (meta_key, meta_value) in raw.meta {
+            metadata.insert(meta_key, meta_value);
+        }
+
+        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: module_root.to_path_buf(),
+            raw_instances: raw.instances,
+            project_paths: raw.projects,
+            metadata: metadata.finish(),
+        }))
+    }
+
+    fn evaluate_workspace_module_fan_out(&self, module_root: &Path) -> Result<ModuleEvaluation> {
         // For workspace-wide operations, consider all env.cue files regardless
         // of package so evaluation covers the full repository tree.
         let env_cue_dirs =
