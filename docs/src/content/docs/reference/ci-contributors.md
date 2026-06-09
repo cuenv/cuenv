@@ -198,11 +198,13 @@ Example: [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/example
 - **Activates when:** always (cuenv is needed to run your tasks)
 - **Dependencies:** when built from a Nix-backed source, `cuenv.setup` depends on `nix.install` (`install-nix` in the IR)
 
-The default `#Cuenv` downloads the matching release binary and runs
-`cuenv sync ci`. Sibling variants select other install strategies via the
-`cuenvSource` condition: `#CuenvRelease`, `#CuenvGit`, `#CuenvNix`,
-`#CuenvHomebrew`, `#CuenvNative`, and `#CuenvFromArtifact`. Pick one to override
-the default behaviour:
+The default `#Cuenv` downloads a release binary and runs `cuenv sync ci`. In
+release mode, `config.ci.cuenv.version` defaults to `"self"`, which pins the
+download URL to the version of the `cuenv` binary that generated the workflow;
+set it to `"latest"` or a concrete version to override that. Sibling variants
+select other install strategies via the `cuenvSource` condition:
+`#CuenvRelease`, `#CuenvGit`, `#CuenvNix`, `#CuenvHomebrew`, `#CuenvNative`, and
+`#CuenvFromArtifact`. Pick one to override the default behaviour:
 
 ```cue
 import "github.com/cuenv/cuenv/contrib/contributors"
@@ -211,12 +213,14 @@ import "github.com/cuenv/cuenv/contrib/contributors"
 ci: contributors: [contributors.#CuenvNix]
 ```
 
-In generated GitHub workflows, expanded jobs that run through `cuenv task`
-can share a `#CuenvNix` bootstrap. The workflow emits one `build.cuenv` job per
-runner, uploads the built `result/bin/cuenv` binary, and has downstream
-orchestrated jobs download that artifact before running later setup tasks such
-as 1Password. Direct Nix jobs, such as `nix build .#checks...`, do not consume
-that bootstrap and start as soon as their normal Nix setup is ready.
+In generated GitHub workflows, expanded jobs that run through `cuenv task` can
+share a bootstrap artifact only when `config.ci.cuenv.source: "nix"` selects
+`#CuenvNix`. The workflow emits one `build.cuenv` job per runner, uploads the
+built `result/bin/cuenv` binary, and has downstream orchestrated jobs download
+that artifact before running later setup tasks such as 1Password. Release,
+Homebrew, native, git, and artifact sources render their normal setup task
+inside each job instead. Direct Nix jobs, such as `nix build .#checks...`, do
+not consume that bootstrap and start as soon as their normal Nix setup is ready.
 
 Examples: [`examples/ci-cuenv-nix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-nix)
 and [`examples/ci-cuenv-homebrew`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cuenv-homebrew).

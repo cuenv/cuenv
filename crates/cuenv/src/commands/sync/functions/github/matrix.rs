@@ -50,7 +50,7 @@ pub(super) fn emit_matrix_workflow(
 
     let ir = ctx.to_ir(pipeline_name);
     let emitter = GitHubActionsEmitter::from_config(&ctx.github_config).with_nix();
-    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(&emitter, &ir);
+    let use_cuenv_bootstrap = can_use_cuenv_bootstrap(ctx, &emitter, &ir);
 
     let explicit_task_names: HashSet<String> = ctx
         .pipeline_tasks

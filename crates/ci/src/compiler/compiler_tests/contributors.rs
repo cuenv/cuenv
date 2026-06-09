@@ -137,6 +137,78 @@ fn test_contributor_cuenv_source_matches() {
     assert!(compiler.cue_contributor_is_active(&contributor, &ir));
 }
 
+fn cuenv_version_script_for_config(configured_version: Option<&str>) -> Vec<String> {
+    use cuenv_core::config::{CIConfig, Config, CuenvConfig};
+
+    let mut project = Project::new("test");
+    if let Some(version) = configured_version {
+        project.config = Some(Config {
+            ci: Some(CIConfig {
+                cuenv: Some(CuenvConfig {
+                    version: version.to_string(),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        });
+    }
+
+    let contributor_task = ContributorTask {
+        id: "cuenv.setup".to_string(),
+        label: None,
+        description: None,
+        command: None,
+        args: vec![],
+        script: Some("echo ${CUENV_VERSION}".to_string()),
+        shell: true,
+        env: HashMap::default(),
+        secrets: HashMap::default(),
+        inputs: vec![],
+        outputs: vec![],
+        hermetic: false,
+        depends_on: vec![],
+        priority: 10,
+        condition: None,
+        provider: None,
+    };
+
+    Compiler::new(project)
+        .contributor_task_to_ir(&contributor_task, "cuenv")
+        .command
+}
+
+#[test]
+fn test_cuenv_contributor_version_defaults_to_active_binary() {
+    assert_eq!(
+        cuenv_version_script_for_config(None),
+        vec![format!("echo {}", cuenv_core::VERSION)]
+    );
+}
+
+#[test]
+fn test_cuenv_contributor_version_self_uses_active_binary() {
+    assert_eq!(
+        cuenv_version_script_for_config(Some("self")),
+        vec![format!("echo {}", cuenv_core::VERSION)]
+    );
+}
+
+#[test]
+fn test_cuenv_contributor_version_preserves_latest() {
+    assert_eq!(
+        cuenv_version_script_for_config(Some("latest")),
+        vec!["echo latest".to_string()]
+    );
+}
+
+#[test]
+fn test_cuenv_contributor_version_preserves_explicit_version() {
+    assert_eq!(
+        cuenv_version_script_for_config(Some("0.51.2")),
+        vec!["echo 0.51.2".to_string()]
+    );
+}
+
 #[test]
 fn test_contributor_multiple_conditions_and_logic() {
     use cuenv_core::manifest::{NixRuntime, Runtime};

@@ -112,6 +112,13 @@ fn create_repo() -> TestResult<TempDir> {
     Ok(temp_dir)
 }
 
+fn copy_builtin_contributors(root: &Path) -> TestResult {
+    copy_dir_recursive(
+        &repo_root()?.join("contrib/contributors"),
+        &root.join("contrib/contributors"),
+    )
+}
+
 fn project_env_cue(name: &str, pipeline: &str, task: &str, _owner: &str) -> String {
     format!(
         r#"package cuenv
@@ -137,6 +144,53 @@ schema.#Project & {{
     {task}: {{
       command: "echo"
       args: ["{task}"]
+      inputs: ["env.cue"]
+    }}
+  }}
+}}
+"#
+    )
+}
+
+fn cuenv_release_project_env_cue(name: &str, configured_version: Option<&str>) -> String {
+    let config = configured_version.map_or_else(String::new, |version| {
+        format!(
+            r#"
+  config: ci: cuenv: {{
+    source: "release"
+    version: "{version}"
+  }}
+"#
+        )
+    });
+
+    format!(
+        r#"package cuenv
+
+import (
+  "github.com/cuenv/cuenv/schema"
+  c "github.com/cuenv/cuenv/contrib/contributors"
+)
+
+schema.#Project & {{
+  let _t = tasks
+
+  name: "{name}"
+{config}
+  ci: {{
+    providers: ["github"]
+    contributors: [c.#CuenvRelease]
+    pipelines: {{
+      build: {{
+        tasks: [_t.build]
+      }}
+    }}
+  }}
+
+  tasks: {{
+    build: schema.#Task & {{
+      command: "echo"
+      args: ["build"]
       inputs: ["env.cue"]
     }}
   }}
@@ -374,6 +428,12 @@ fn run_cuenv(current_dir: &Path, args: &[&str]) -> TestResult<CuenvOutput> {
     })
 }
 
+fn assert_no_cuenv_bootstrap_artifact(workflow: &str) {
+    assert!(!workflow.contains("build.cuenv"), "{workflow}");
+    assert!(!workflow.contains("result/bin/cuenv"), "{workflow}");
+    assert!(!workflow.contains("actions/upload-artifact"), "{workflow}");
+}
+
 #[test]
 fn sync_root_project_only_generates_root_ci() -> TestResult {
     let tmp = create_repo()?;
@@ -449,6 +509,78 @@ fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
     assert!(workflow.contains("server/env.cue"), "{workflow}");
     assert!(!workflow.contains("server/../"), "{workflow}");
     assert!(!workflow.contains("../"), "{workflow}");
+
+    Ok(())
+}
+
+#[test]
+fn sync_ci_cuenv_release_defaults_to_active_binary_version() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+    copy_builtin_contributors(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        cuenv_release_project_env_cue("root", None),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "ci"])?;
+    assert!(output.success, "sync ci failed: {}", output.stderr);
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/root-build.yml"))?;
+    let expected_version = format!(r#"cuenv_version="{EXPECTED_VERSION}""#);
+    assert!(workflow.contains(&expected_version), "{workflow}");
+    assert!(
+        workflow.contains("releases/download/${cuenv_version}/${cuenv_asset}"),
+        "{workflow}"
+    );
+    assert_no_cuenv_bootstrap_artifact(&workflow);
+
+    Ok(())
+}
+
+#[test]
+fn sync_ci_cuenv_release_preserves_configured_latest_version() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+    copy_builtin_contributors(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        cuenv_release_project_env_cue("root", Some("latest")),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "ci"])?;
+    assert!(output.success, "sync ci failed: {}", output.stderr);
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/root-build.yml"))?;
+    assert!(workflow.contains("releases/latest/download"), "{workflow}");
+    assert_no_cuenv_bootstrap_artifact(&workflow);
+
+    Ok(())
+}
+
+#[test]
+fn sync_ci_cuenv_release_preserves_configured_concrete_version() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+    copy_builtin_contributors(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        cuenv_release_project_env_cue("root", Some("0.1.2")),
+    )?;
+
+    let output = run_cuenv(root, &["sync", "ci"])?;
+    assert!(output.success, "sync ci failed: {}", output.stderr);
+
+    let workflow = fs::read_to_string(root.join(".github/workflows/root-build.yml"))?;
+    assert!(workflow.contains(r#"cuenv_version="0.1.2""#), "{workflow}");
+    assert!(
+        workflow.contains("releases/download/${cuenv_version}/${cuenv_asset}"),
+        "{workflow}"
+    );
+    assert_no_cuenv_bootstrap_artifact(&workflow);
 
     Ok(())
 }
