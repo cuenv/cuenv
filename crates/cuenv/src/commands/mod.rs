@@ -501,13 +501,39 @@ impl CommandExecutor {
         })?;
 
         if !guard.contains_key(&target_path) {
-            let module = self.evaluate_path_module(&target_path)?;
+            let module = match self.local_module_from_workspace_cache(&target_path) {
+                Some(module) => module,
+                None => self.evaluate_path_module(&target_path)?,
+            };
             guard.insert(target_path.clone(), module);
         }
 
         Ok(ModuleGuard {
             guard,
             key: target_path,
+        })
+    }
+
+    /// Derive a path-local module evaluation from a cached workspace evaluation.
+    ///
+    /// Workspace evaluations (built by `discover_all_modules`) already contain
+    /// the per-directory instance for every `env.cue` in the module, evaluated
+    /// with the same options as a path-local evaluation. Reusing that cached
+    /// instance avoids a redundant CUE evaluation per project during
+    /// workspace-wide operations such as `cuenv sync -A`.
+    ///
+    /// Returns `None` when no cached workspace evaluation covers `target_path`,
+    /// in which case the caller falls back to a fresh path-local evaluation.
+    fn local_module_from_workspace_cache(&self, target_path: &Path) -> Option<ModuleEvaluation> {
+        let workspace = self.workspace_modules.lock().ok()?;
+        workspace.values().find_map(|module| {
+            target_path.strip_prefix(&module.root).ok()?;
+            let rel_path = relative_path_from_root(&module.root, target_path);
+            let instance = module.get(&rel_path)?;
+            Some(ModuleEvaluation {
+                root: module.root.clone(),
+                instances: HashMap::from([(rel_path, instance.clone())]),
+            })
         })
     }
 
