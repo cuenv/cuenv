@@ -2,7 +2,7 @@
 //!
 //! These tests verify evaluation scope behavior:
 //! - path sync evaluates only local scope
-//! - workspace sync (`-A`) evaluates workspace scope
+//! - workspace sync (`-A`) evaluates workspace scope in one recursive module evaluation
 //!
 //! Note: These tests run against the actual cuenv repository since setting up
 //! a proper CUE environment with schema imports in a temp directory is complex.
@@ -47,13 +47,13 @@ fn count_evaluate_module_calls_in_repo(args: &[&str]) -> TestResult<usize> {
         .count())
 }
 
-/// Test that workspace sync (`-A`) evaluates more than one module in this repo.
+/// Test that workspace sync (`-A`) uses one recursive workspace evaluation in this repo.
 #[test]
-fn test_sync_all_evaluates_workspace_scope() -> TestResult {
+fn test_sync_all_uses_single_workspace_evaluation() -> TestResult {
     let eval_count = count_evaluate_module_calls_in_repo(&["sync", "-A"])?;
     assert!(
-        eval_count > 1,
-        "sync -A should evaluate workspace scope (multiple modules) in this repository, but evaluated {eval_count}"
+        eval_count == 1,
+        "sync -A should evaluate workspace scope with one recursive module evaluation in this repository, but evaluated {eval_count}"
     );
     Ok(())
 }

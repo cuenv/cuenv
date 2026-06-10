@@ -384,23 +384,15 @@ impl TaskExecutor {
             .as_ref()
             .unwrap_or(&self.config.project_root);
 
-        let (base, path) = match directory {
-            TaskDirectory::ModuleRelative(path) => (module_root.clone(), path.as_str()),
-            TaskDirectory::Scoped(options) => {
-                let base = match options.from {
-                    TaskDirectoryBase::Definition => {
-                        self.source_base(task.source.as_ref(), "definition")?
-                    }
-                    TaskDirectoryBase::Caller => {
-                        self.source_base(task.caller_source.as_ref(), "caller")?
-                    }
-                    TaskDirectoryBase::Module => module_root.clone(),
-                };
-                (base, options.path.as_str())
+        let base = match directory.from {
+            TaskDirectoryBase::Definition => {
+                self.source_base(task.source.as_ref(), "definition")?
             }
+            TaskDirectoryBase::Caller => self.source_base(task.caller_source.as_ref(), "caller")?,
+            TaskDirectoryBase::Module => module_root.clone(),
         };
 
-        self.resolve_directory_path(module_root, &base, path)
+        self.resolve_directory_path(module_root, &base, &directory.path)
     }
 
     fn source_base(

@@ -126,6 +126,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "contrib-rust-task",
+            min_task_count: 1, // fmt
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "reusable-task-refs",
             min_task_count: 2, // migrate, deploy
             has_hooks: false,
