@@ -34,6 +34,134 @@ fn strip_task_ref_prefix(reference: &str) -> &str {
 }
 
 #[test]
+fn recursively_extracts_metadata_for_imported_caller_tasks() {
+    let temp = tempfile::Builder::new()
+        .prefix("cuengine-recursive-meta-")
+        .tempdir()
+        .expect("failed to create temp dir");
+    let module_root = temp.path();
+
+    let init = init_module(module_root, "example.com/recursive-meta-test");
+    assert!(
+        init.is_ok(),
+        "failed to initialize module fixture: {:?}",
+        init.err()
+    );
+
+    let shared_dir = module_root.join("shared");
+    let api_dir = module_root.join("apps/api");
+    let web_dir = module_root.join("apps/web");
+    fs::create_dir_all(&shared_dir).expect("failed to create shared dir");
+    fs::create_dir_all(&api_dir).expect("failed to create app dir");
+    fs::create_dir_all(&web_dir).expect("failed to create web dir");
+
+    fs::write(
+        shared_dir.join("tasks.cue"),
+        r#"package shared
+
+tasks: {
+    lint: {
+        command: "echo"
+        args: ["lint"]
+        dir: from: "caller"
+    }
+}
+"#,
+    )
+    .expect("failed to write shared tasks");
+
+    fs::write(
+        api_dir.join("env.cue"),
+        r#"package cuenv
+
+import shared "example.com/recursive-meta-test/shared"
+
+{
+    name: "api"
+    tasks: {
+        compile: {
+            command: "echo"
+            args: ["compile"]
+        }
+        lint: shared.tasks.lint & {
+            dependsOn: [compile]
+        }
+    }
+}
+"#,
+    )
+    .expect("failed to write app env.cue");
+
+    fs::write(
+        web_dir.join("env.cue"),
+        r#"package cuenv
+
+import shared "example.com/recursive-meta-test/shared"
+
+{
+    name: "web"
+    tasks: {
+        build: {
+            command: "echo"
+            args: ["build"]
+        }
+        lint: shared.tasks.lint & {
+            dependsOn: [build]
+        }
+    }
+}
+"#,
+    )
+    .expect("failed to write web env.cue");
+
+    let options = ModuleEvalOptions {
+        recursive: true,
+        with_meta: true,
+        with_references: true,
+        target_dir: Some(module_root.display().to_string()),
+        ..Default::default()
+    };
+
+    let result = evaluate_module(module_root, "cuenv", Some(&options))
+        .expect("recursive module evaluation should succeed");
+
+    let instance_keys: Vec<&String> = result.instances.keys().collect();
+    assert!(
+        result.instances.contains_key("apps/api"),
+        "nested app instance should be evaluated, got keys: {instance_keys:?}"
+    );
+    assert!(
+        result.instances.contains_key("apps/web"),
+        "sibling app instance should be evaluated, got keys: {instance_keys:?}"
+    );
+
+    let caller_meta = result
+        .meta
+        .get("apps/api/tasks.lint")
+        .expect("imported task binding should have caller metadata");
+    assert_eq!(caller_meta.directory, "apps/api");
+    assert_eq!(caller_meta.filename, "apps/api/env.cue");
+
+    let command_meta = result
+        .meta
+        .get("apps/api/tasks.lint.command")
+        .expect("imported command should have definition metadata");
+    assert_eq!(command_meta.definition_directory, "shared");
+    assert_eq!(command_meta.definition_filename, "shared/tasks.cue");
+
+    let reference = result
+        .meta
+        .get("apps/api/tasks.lint.dependsOn[0]")
+        .and_then(|meta| meta.reference.as_deref());
+    let normalized = reference.map(strip_task_ref_prefix);
+    assert_eq!(
+        normalized,
+        Some("compile"),
+        "nested task dependency reference should stay tied to the local task"
+    );
+}
+
+#[test]
 fn extracts_depends_on_reference_inside_selector_wrapped_expression() {
     let temp = TempDir::new().expect("failed to create temp dir");
     let module_root = temp.path();
