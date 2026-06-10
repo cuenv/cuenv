@@ -516,7 +516,16 @@ fn sync_ci_cuenv_release_defaults_to_active_binary_version() -> TestResult {
     let expected_version = format!(r#"cuenv_version="{EXPECTED_VERSION}""#);
     assert!(workflow.contains(&expected_version), "{workflow}");
     assert!(
+        workflow.contains(r#"if [ -z "$cuenv_version" ]; then"#),
+        "{workflow}"
+    );
+    assert!(workflow.contains(r#"cuenv_version="latest""#), "{workflow}");
+    assert!(
         workflow.contains("releases/download/${cuenv_version}/${cuenv_asset}"),
+        "{workflow}"
+    );
+    assert!(
+        workflow.contains(r#"curl -fsSL -o /usr/local/bin/cuenv "$cuenv_url""#),
         "{workflow}"
     );
     assert_no_cuenv_bootstrap_artifact(&workflow);
@@ -540,6 +549,11 @@ fn sync_ci_cuenv_release_preserves_configured_latest_version() -> TestResult {
 
     let workflow = fs::read_to_string(root.join(".github/workflows/root-build.yml"))?;
     assert!(workflow.contains("releases/latest/download"), "{workflow}");
+    assert!(workflow.contains(r#"cuenv_version="latest""#), "{workflow}");
+    assert!(
+        workflow.contains(r#"curl -fsSL -o /usr/local/bin/cuenv "$cuenv_url""#),
+        "{workflow}"
+    );
     assert_no_cuenv_bootstrap_artifact(&workflow);
 
     Ok(())
@@ -562,7 +576,15 @@ fn sync_ci_cuenv_release_preserves_configured_concrete_version() -> TestResult {
     let workflow = fs::read_to_string(root.join(".github/workflows/root-build.yml"))?;
     assert!(workflow.contains(r#"cuenv_version="0.1.2""#), "{workflow}");
     assert!(
+        workflow.contains(r#"if [ -z "$cuenv_version" ]; then"#),
+        "{workflow}"
+    );
+    assert!(
         workflow.contains("releases/download/${cuenv_version}/${cuenv_asset}"),
+        "{workflow}"
+    );
+    assert!(
+        workflow.contains(r#"curl -fsSL -o /usr/local/bin/cuenv "$cuenv_url""#),
         "{workflow}"
     );
     assert_no_cuenv_bootstrap_artifact(&workflow);

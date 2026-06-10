@@ -431,6 +431,7 @@ and [`examples/ci-cuenv-nix`](https://github.com/cuenv/cuenv/tree/main/examples/
 config: ci: cuenv: {
 	source: "release"
 	// version defaults to "self"; use "latest" or "0.19.0" to override.
+	// Generated downloads fail fast if the selected release asset is missing.
 }
 
 // Homebrew (no Nix required):

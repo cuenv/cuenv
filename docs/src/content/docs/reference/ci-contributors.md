@@ -201,8 +201,11 @@ Example: [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/example
 The default `#Cuenv` downloads a release binary and runs `cuenv sync ci`. In
 release mode, `config.ci.cuenv.version` defaults to `"self"`, which pins the
 download URL to the version of the `cuenv` binary that generated the workflow;
-set it to `"latest"` or a concrete version to override that. Sibling variants
-select other install strategies via the `cuenvSource` condition:
+set it to `"latest"` or a concrete version to override that. Generated release
+downloads use `curl -f` so missing assets fail during download, and the shell
+script falls back to `"latest"` only if an older cuenv binary leaves the version
+placeholder unresolved. Sibling variants select other install strategies via the
+`cuenvSource` condition:
 `#CuenvRelease`, `#CuenvGit`, `#CuenvNix`, `#CuenvHomebrew`, `#CuenvNative`, and
 `#CuenvFromArtifact`. Pick one to override the default behaviour:
 
