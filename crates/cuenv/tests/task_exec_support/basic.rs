@@ -264,7 +264,10 @@ tasks: {
         }
     }
     moduleRelative: shared.tasks.readMarker & {
-        dir: "."
+        dir: {
+            from: "module"
+            path: "."
+        }
     }
 }
 "#,

@@ -333,7 +333,7 @@ schema.#Project & {
 | `scriptShell`    | `#ScriptShell`                                    | No       | Shell for script execution (default: bash) |
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
-| `dir`            | `string \| #TaskDir`                             | No       | Working directory override; strings are module-root-relative, objects can resolve from task definition, caller, or module root |
+| `dir`            | `#TaskDir`                                       | No       | Working directory override; defaults to `{from: "definition", path: "."}` |
 | `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
@@ -361,13 +361,11 @@ orchestrator marks dependents of a failed task as `Skipped` and keeps running
 independent chains.
 :::
 
-`dir` accepts the legacy string form or an object:
+`dir` is an object. It defaults to the task definition directory with
+`{from: "definition", path: "."}`:
 
 ```cue
 tasks: {
-    // CUE module root relative.
-    legacy: imported.tasks.build & {dir: "apps/web"}
-
     // Imported task definition directory.
     fromDefinition: imported.tasks.build & {
         dir: {from: "definition", path: "frontend"}
@@ -385,16 +383,16 @@ tasks: {
 }
 ```
 
-When `dir` is omitted, non-hermetic tasks run from the directory that owns the
-user-authored executable task definition, including `schema.#Task` tasks whose
-script content is loaded with `@embed`. Schema helper source locations are not
-used as the default working directory.
+When `dir` is omitted, tasks default to the directory that owns the executable
+task definition, including `schema.#Task` tasks whose script content is loaded
+with `@embed`. Schema helper source locations are not used as the default
+working directory.
 
 Reusable task packages may provide their own default `dir`. For example, the
 bundled `contrib/rust` Cargo task helpers default to `dir: {from: "caller"}` so
-imported Rust tasks run in the project that binds them unless explicitly
-overridden. Cuenv derives the caller from the local CUE binding and any local
-task fields unified into the imported helper.
+imported Rust tasks run in the project that binds them. Cuenv derives the caller
+from the local CUE binding and any local task fields unified into the imported
+helper.
 
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
