@@ -158,11 +158,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -212,11 +212,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-arm64
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -266,11 +266,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -323,11 +323,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -385,11 +385,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -432,11 +432,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -479,11 +479,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
@@ -529,11 +529,11 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         name: cuenv-bootstrap-namespace-profile-cuenv-linux-x86
-        path: .cuenv-bootstrap
+        path: ${{ runner.temp }}/cuenv-bootstrap
     - name: Add cuenv to PATH
       run: |-
-        chmod +x .cuenv-bootstrap/cuenv
-        echo "$PWD/.cuenv-bootstrap" >> "$GITHUB_PATH"
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
       run: cuenv exec -- cuenv secrets setup onepassword
       env:

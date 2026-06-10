@@ -7,6 +7,9 @@ use cuenv_ci::ir::{BuildStage, IntermediateRepresentation, OutputType, Task};
 use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 
+const CUENV_BOOTSTRAP_ARTIFACT_DIR: &str = "${{ runner.temp }}/cuenv-bootstrap";
+const CUENV_BOOTSTRAP_ARTIFACT_PATH: &str = "$RUNNER_TEMP/cuenv-bootstrap";
+
 /// How a regular GitHub Actions job should execute its main task.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TaskExecution {
@@ -186,10 +189,12 @@ impl GitHubActionsEmitter {
                 .with_input("name", serde_yaml::Value::String(artifact_name.to_string()))
                 .with_input(
                     "path",
-                    serde_yaml::Value::String(".cuenv-bootstrap".to_string()),
+                    serde_yaml::Value::String(CUENV_BOOTSTRAP_ARTIFACT_DIR.to_string()),
                 ),
-            Step::run("chmod +x .cuenv-bootstrap/cuenv\necho \"$PWD/.cuenv-bootstrap\" >> \"$GITHUB_PATH\"")
-                .with_name("Add cuenv to PATH"),
+            Step::run(format!(
+                "chmod +x \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}/cuenv\"\necho \"{CUENV_BOOTSTRAP_ARTIFACT_PATH}\" >> \"$GITHUB_PATH\""
+            ))
+            .with_name("Add cuenv to PATH"),
         ]
     }
 

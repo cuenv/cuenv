@@ -400,4 +400,22 @@ fn test_build_simple_job_artifact_setup_skips_only_cuenv_setup() {
             "cuenv-bootstrap-ubuntu-latest".to_string()
         ))
     );
+    assert_eq!(
+        download_step.with_inputs.get("path"),
+        Some(&serde_yaml::Value::String(
+            "${{ runner.temp }}/cuenv-bootstrap".to_string()
+        ))
+    );
+
+    let path_step = job
+        .steps
+        .iter()
+        .find(|s| s.name.as_deref() == Some("Add cuenv to PATH"))
+        .expect("missing cuenv path step");
+    assert_eq!(
+        path_step.run.as_deref(),
+        Some(
+            "chmod +x \"$RUNNER_TEMP/cuenv-bootstrap/cuenv\"\necho \"$RUNNER_TEMP/cuenv-bootstrap\" >> \"$GITHUB_PATH\""
+        )
+    );
 }

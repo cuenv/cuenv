@@ -220,7 +220,9 @@ In generated GitHub workflows, expanded jobs that run through `cuenv task` can
 share a bootstrap artifact only when `config.ci.cuenv.source: "nix"` selects
 `#CuenvNix`. The workflow emits one `build.cuenv` job per runner, uploads the
 built `result/bin/cuenv` binary, and has downstream orchestrated jobs download
-that artifact before running later setup tasks such as 1Password. Release,
+that artifact into the runner temp directory before running later setup tasks
+such as 1Password. The temp-directory download keeps the checkout clean for
+VCS-sensitive release commands such as `cue mod publish`. Release,
 Homebrew, native, git, and artifact sources render their normal setup task
 inside each job instead. Direct Nix jobs, such as `nix build .#checks...`, do
 not consume that bootstrap and start as soon as their normal Nix setup is ready.

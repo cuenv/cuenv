@@ -243,6 +243,24 @@ fn test_build_matrix_jobs_download_cuenv_artifact_per_runner() {
             "cuenv-bootstrap-ubuntu-24-04".to_string()
         ))
     );
+    assert_eq!(
+        download_step.with_inputs.get("path"),
+        Some(&serde_yaml::Value::String(
+            "${{ runner.temp }}/cuenv-bootstrap".to_string()
+        ))
+    );
+
+    let path_step = linux_job
+        .steps
+        .iter()
+        .find(|s| s.name.as_deref() == Some("Add cuenv to PATH"))
+        .expect("missing cuenv path step");
+    assert_eq!(
+        path_step.run.as_deref(),
+        Some(
+            "chmod +x \"$RUNNER_TEMP/cuenv-bootstrap/cuenv\"\necho \"$RUNNER_TEMP/cuenv-bootstrap\" >> \"$GITHUB_PATH\""
+        )
+    );
 }
 
 #[test]
