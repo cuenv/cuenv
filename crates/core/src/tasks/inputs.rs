@@ -104,23 +104,13 @@ fn default_task_directory_path() -> String {
     ".".to_string()
 }
 
-/// Object-shaped working directory override.
+/// Working directory override.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TaskDirectoryOptions {
+pub struct TaskDirectory {
     /// Base directory used to resolve `path`.
     #[serde(default, rename = "from")]
     pub from: TaskDirectoryBase,
     /// Relative path from `from`.
     #[serde(default = "default_task_directory_path")]
     pub path: String,
-}
-
-/// Working directory override for a task.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(untagged)]
-pub enum TaskDirectory {
-    /// Backwards-compatible form: resolve from the CUE module root.
-    ModuleRelative(String),
-    /// Explicit form: choose the resolution base.
-    Scoped(TaskDirectoryOptions),
 }

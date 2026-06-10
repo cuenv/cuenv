@@ -2,6 +2,7 @@
 
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::{Base, Project};
+use cuenv_core::tasks::TaskDirectoryBase;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fs;
@@ -103,6 +104,74 @@ schema.#Project & {
 
     let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
     assert!(res.is_err(), "schema should reject empty `name`");
+    Ok(())
+}
+
+#[test]
+fn task_dir_defaults_to_definition_dot() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    build: schema.#Task & {
+      command: "true"
+    }
+  }
+}
+"#,
+    )?;
+
+    let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
+    let task = project
+        .tasks
+        .get("build")
+        .and_then(|node| node.as_task())
+        .ok_or_else(|| std::io::Error::other("expected build task"))?;
+    let dir = task
+        .directory
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("expected task dir default"))?;
+
+    assert_eq!(dir.from, TaskDirectoryBase::Definition);
+    assert_eq!(dir.path, ".");
+    Ok(())
+}
+
+#[test]
+fn task_dir_rejects_string_form() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    build: schema.#Task & {
+      command: "true"
+      dir: "apps/web"
+        }
+    }
+}
+"#,
+    )?;
+
+    let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
+    assert!(res.is_err(), "schema should reject string task dir");
     Ok(())
 }
 

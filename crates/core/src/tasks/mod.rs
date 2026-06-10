@@ -45,8 +45,7 @@ pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
 pub use inputs::{
-    Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase,
-    TaskDirectoryOptions, TaskOutput,
+    Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
 };
 pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
@@ -204,8 +203,7 @@ pub struct Task {
     pub caller_source: Option<SourceLocation>,
 
     /// Working directory override.
-    /// String values remain relative to the cue.mod root. Object values can
-    /// resolve relative to the task definition, caller, or module root.
+    /// Resolves relative to the task definition, caller, or module root.
     #[serde(default, rename = "dir", skip_serializing_if = "Option::is_none")]
     pub directory: Option<TaskDirectory>,
 }

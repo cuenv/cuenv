@@ -19,16 +19,12 @@ import "github.com/cuenv/cuenv/schema"
 // Users should override this to match their project structure
 #BaseInputs: [...string] | *["Cargo.toml", "Cargo.lock", "src"]
 
-// Reusable Rust task helpers should run from the importing project by default.
-// The default keeps explicit `dir` overrides valid.
-#CallerDir: *{from: "caller"} | schema.#TaskDir
-
 // #Build runs 'cargo build'
 #Build: schema.#Task & {
 	command: "cargo"
 	args: ["build", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // #Test runs 'cargo test'
@@ -36,7 +32,7 @@ import "github.com/cuenv/cuenv/schema"
 	command: "cargo"
 	args: ["test", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // #Clippy runs 'cargo clippy'
@@ -44,7 +40,7 @@ import "github.com/cuenv/cuenv/schema"
 	command: "cargo"
 	args: ["clippy", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // #Fmt runs 'cargo fmt'
@@ -52,7 +48,7 @@ import "github.com/cuenv/cuenv/schema"
 	command: "cargo"
 	args: ["fmt", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // #Check runs 'cargo check' (faster than build)
@@ -60,7 +56,7 @@ import "github.com/cuenv/cuenv/schema"
 	command: "cargo"
 	args: ["check", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // #Doc runs 'cargo doc'
@@ -68,7 +64,7 @@ import "github.com/cuenv/cuenv/schema"
 	command: "cargo"
 	args: ["doc", ...string]
 	inputs: #BaseInputs
-	dir: #CallerDir
+	dir: from: "caller"
 }
 
 // Default tasks exposed by this module

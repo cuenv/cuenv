@@ -1,6 +1,6 @@
 use super::*;
 use crate::tasks::cache::TaskCacheConfig;
-use crate::tasks::{RetryConfig, SourceLocation, TaskDependency, TaskDirectoryOptions};
+use crate::tasks::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
 use cuenv_vcs::WalkHasher;
@@ -24,10 +24,10 @@ fn source(file: &str) -> SourceLocation {
 }
 
 fn scoped_dir(from: TaskDirectoryBase, path: &str) -> TaskDirectory {
-    TaskDirectory::Scoped(TaskDirectoryOptions {
+    TaskDirectory {
         from,
         path: path.to_string(),
-    })
+    }
 }
 
 #[tokio::test]
@@ -962,7 +962,7 @@ fn test_workdir_for_non_hermetic_package_task_prefers_source_directory() {
 }
 
 #[test]
-fn test_workdir_legacy_string_dir_is_module_relative() {
+fn test_workdir_module_dir_is_module_relative() {
     let tmp = TempDir::new().unwrap();
     let app_dir = tmp.path().join("apps").join("web");
 
@@ -970,7 +970,7 @@ fn test_workdir_legacy_string_dir_is_module_relative() {
 
     let task = Task {
         command: "pwd".to_string(),
-        directory: Some(TaskDirectory::ModuleRelative("apps/web".to_string())),
+        directory: Some(scoped_dir(TaskDirectoryBase::Module, "apps/web")),
         source: Some(source("templates/env.cue")),
         ..Task::default()
     };
