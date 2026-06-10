@@ -121,6 +121,7 @@ impl TaskSourceContext<'_> {
         sources
             .get(&exact)
             .or_else(|| self.executable_body_source(&exact, obj, sources))
+            .or_else(|| self.authored_task_field_source(&exact, obj, sources))
             .or_else(|| self.source_for_nearest_ancestor(field_path, sources))
     }
 

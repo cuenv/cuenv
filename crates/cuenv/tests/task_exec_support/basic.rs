@@ -225,6 +225,12 @@ tasks: {
         args: ["marker.txt"]
         hermetic: false
     }
+    readCallerDefault: {
+        command: "cat"
+        args: ["marker.txt"]
+        hermetic: false
+        dir: from: "caller"
+    }
 }
 "#,
     )?;
@@ -239,6 +245,9 @@ name: "test"
 
 tasks: {
     definition: shared.tasks.readMarker
+    callerDefault: shared.tasks.readCallerDefault & {
+        inputs: ["marker.txt"]
+    }
     caller: shared.tasks.readMarker & {
         dir: from: "caller"
     }
@@ -265,6 +274,7 @@ tasks: {
 
     for (task, marker) in [
         ("definition", "definition-root"),
+        ("callerDefault", "caller-root"),
         ("caller", "caller-root"),
         ("definitionSubdir", "definition-fixture"),
         ("callerSubdir", "caller-fixture"),
