@@ -54,6 +54,37 @@ fn test_environment_merge_with_system() {
 }
 
 #[test]
+fn test_hermetic_merge_omits_missing_system_temp_dirs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let missing = temp.path().join("removed");
+    let missing = missing.to_string_lossy().into_owned();
+
+    temp_env::with_var("TMPDIR", Some(missing.as_str()), || {
+        let env = Environment::new();
+        let merged = env.merge_with_system_hermetic();
+
+        assert!(!merged.contains_key("TMPDIR"));
+    });
+}
+
+#[test]
+fn test_hermetic_merge_keeps_project_temp_dir_override() {
+    let system_temp = tempfile::tempdir().expect("system tempdir");
+    let project_temp = tempfile::tempdir().expect("project tempdir");
+    let system_temp = system_temp.path().to_string_lossy().into_owned();
+    let project_temp = project_temp.path().to_string_lossy().into_owned();
+
+    temp_env::with_var("TMPDIR", Some(system_temp.as_str()), || {
+        let mut env = Environment::new();
+        env.set("TMPDIR".to_string(), project_temp.clone());
+
+        let merged = env.merge_with_system_hermetic();
+
+        assert_eq!(merged.get("TMPDIR"), Some(&project_temp));
+    });
+}
+
+#[test]
 fn test_environment_iteration() {
     let mut env = Environment::new();
     env.set("A".to_string(), "1".to_string());
