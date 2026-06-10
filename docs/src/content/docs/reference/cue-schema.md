@@ -390,6 +390,12 @@ user-authored executable task definition, including `schema.#Task` tasks whose
 script content is loaded with `@embed`. Schema helper source locations are not
 used as the default working directory.
 
+Reusable task packages may provide their own default `dir`. For example, the
+bundled `contrib/rust` Cargo task helpers default to `dir: {from: "caller"}` so
+imported Rust tasks run in the project that binds them unless explicitly
+overridden. Cuenv derives the caller from the local CUE binding and any local
+task fields unified into the imported helper.
+
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 When using `scriptShell: "sh"`, set `shellOptions.pipefail: false`. Plain `sh` does not reliably support `set -o pipefail`.

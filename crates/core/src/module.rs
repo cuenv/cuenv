@@ -941,4 +941,90 @@ mod tests {
             Some("apps/web/env.cue")
         );
     }
+
+    #[test]
+    fn test_from_raw_parts_uses_descendant_caller_metadata_for_imported_tasks() {
+        let mut raw = HashMap::new();
+        raw.insert(
+            "server".to_string(),
+            json!({
+                "name": "server",
+                "tasks": {
+                    "clippy": {
+                        "command": "cargo",
+                        "args": ["clippy", "--all-targets"],
+                        "inputs": ["Cargo.toml", "src"],
+                        "dir": {
+                            "from": "caller"
+                        },
+                        "hermetic": true
+                    }
+                }
+            }),
+        );
+
+        let mut sources = SourceMap::new();
+        sources.insert(
+            "server/tasks.clippy.command".to_string(),
+            SourceLocation {
+                file: "/cache/github.com/cuenv/cuenv/contrib/rust/tasks.cue".to_string(),
+                line: 41,
+                column: 1,
+            },
+        );
+
+        let mut caller_sources = SourceMap::new();
+        caller_sources.insert(
+            "server/tasks.clippy.dir.from".to_string(),
+            SourceLocation {
+                file: "server/env.cue".to_string(),
+                line: 269,
+                column: 1,
+            },
+        );
+        caller_sources.insert(
+            "server/tasks.clippy.args[0]".to_string(),
+            SourceLocation {
+                file: "server/env.cue".to_string(),
+                line: 270,
+                column: 1,
+            },
+        );
+
+        let module = ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
+            root: PathBuf::from("/test/repo"),
+            raw_instances: raw,
+            project_paths: vec!["server".to_string()],
+            metadata: ModuleEvaluationMetadata {
+                sources: Some(sources),
+                caller_sources: Some(caller_sources),
+                ..ModuleEvaluationMetadata::default()
+            },
+        });
+
+        let project = module
+            .get(Path::new("server"))
+            .expect("project should exist")
+            .deserialize::<Project>()
+            .expect("project should deserialize");
+
+        let TaskNode::Task(task) = project
+            .tasks
+            .get("clippy")
+            .expect("clippy task should exist")
+        else {
+            panic!("clippy should be a single task");
+        };
+
+        assert_eq!(
+            task.source.as_ref().map(|source| source.file.as_str()),
+            Some("/cache/github.com/cuenv/cuenv/contrib/rust/tasks.cue")
+        );
+        assert_eq!(
+            task.caller_source
+                .as_ref()
+                .map(|source| source.file.as_str()),
+            Some("server/env.cue")
+        );
+    }
 }

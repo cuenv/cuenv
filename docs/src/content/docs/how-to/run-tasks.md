@@ -579,6 +579,13 @@ Tasks typed with `schema.#Task` and scripts loaded with `@embed` still use the
 user-authored task fields for this default; imported schema helper definitions
 do not change the working directory.
 
+Reusable task packages can set their own default `dir`. The bundled
+`contrib/rust` Cargo helpers default to `dir: {from: "caller"}`, so importing
+`xRust.#Check`, `xRust.#Test`, or the other Rust helpers runs Cargo in the
+project that binds the task unless you set a different `dir`. Cuenv derives the
+caller from the local CUE binding and any local task fields unified into the
+imported helper.
+
 Set `dir` when a task must run somewhere else. A string value is resolved
 relative to the CUE module root for backwards compatibility. The object form can
 resolve relative to the task definition, the importing caller, or the module
