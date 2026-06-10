@@ -387,6 +387,10 @@ do not present it as a finished pipeline.
 - **`release version` does not touch `cue.mod/module.cue`.** That is expected.
   Do not edit `cue.mod/module.cue` for a release-only version bump unless there
   is a separate CUE module metadata change.
+- **CUE publish tasks need a valid temp directory.** `cuenv task publish.cue`
+  runs hermetically and should not inherit stale Nix shell temp directories; if
+  `cue mod publish` reports a missing `cue-publish-*` path, check that the
+  task environment is not preserving a removed `TMPDIR`, `TMP`, or `TEMP`.
 
 The authoritative per-definition status lives in the
 [schema status page](/reference/schema/status/) and the schema coverage matrix.

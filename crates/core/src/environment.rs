@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
+use std::path::Path;
 use std::sync::Arc;
 
 mod values;
@@ -89,6 +90,8 @@ impl Environment {
         "XDG_DATA_HOME",
     ];
 
+    const HERMETIC_TEMP_VARS: &'static [&'static str] = &["TMPDIR", "TMP", "TEMP"];
+
     /// Merge with only essential system environment variables (hermetic mode).
     ///
     /// Unlike `merge_with_system()`, this excludes PATH and other potentially
@@ -105,7 +108,9 @@ impl Environment {
 
         // Only include allowed system variables
         for var in Self::HERMETIC_ALLOWED_VARS {
-            if let Ok(value) = env::var(var) {
+            if let Ok(value) = env::var(var)
+                && Self::should_preserve_system_var(var, &value)
+            {
                 merged.insert((*var).to_string(), value);
             }
         }
@@ -123,6 +128,10 @@ impl Environment {
         }
 
         merged
+    }
+
+    fn should_preserve_system_var(var: &str, value: &str) -> bool {
+        !Self::HERMETIC_TEMP_VARS.contains(&var) || Path::new(value).is_dir()
     }
 
     /// Convert to a vector of key=value strings including system environment
