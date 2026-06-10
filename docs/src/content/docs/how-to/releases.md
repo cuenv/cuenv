@@ -247,7 +247,10 @@ broader release gate.
 The generated release workflow builds cuenv once per runner only when
 `config.ci.cuenv.source: "nix"` is active. Each `build.cuenv` job uploads the
 checked-out `result/bin/cuenv` as a runner-specific artifact, and downstream
-orchestrated jobs download that binary instead of rebuilding cuenv in every job.
+orchestrated jobs download that binary into the runner temp directory instead
+of rebuilding cuenv in every job. Keeping the downloaded binary outside the
+checkout preserves a clean VCS state for release steps such as
+`cue mod publish`.
 Release, Homebrew, native, git, and artifact sources render their setup task
 inside each job. Linux jobs still restore the Namespace `/nix` cache before Nix
 setup, while macOS jobs skip that cache and use normal Nix installation.
