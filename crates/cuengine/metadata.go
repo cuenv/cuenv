@@ -55,13 +55,13 @@ func extractFieldMetaSeparate(inst *build.Instance, moduleRoot, instancePath str
 		}
 
 		for _, decl := range f.Decls {
-			field, ok := decl.(*ast.Field)
-			if !ok {
-				continue
+			switch d := decl.(type) {
+			case *ast.Field:
+				label, _, _ := ast.LabelName(d.Label)
+				extractFieldMetaRecursive(d, label, relPath, dir, instancePath, positions)
+			case *ast.EmbedDecl:
+				extractFieldMetaFromExpr(d.Expr, "", relPath, dir, instancePath, positions)
 			}
-
-			label, _, _ := ast.LabelName(field.Label)
-			extractFieldMetaRecursive(field, label, relPath, dir, instancePath, positions)
 		}
 	}
 
@@ -189,32 +189,41 @@ func extractFieldMetaRecursive(field *ast.Field, fieldPath, filename, directory,
 		Line:      pos.Line(),
 	}
 
-	// Recurse into struct literals
-	if st, ok := field.Value.(*ast.StructLit); ok {
-		for _, elem := range st.Elts {
-			if childField, ok := elem.(*ast.Field); ok {
-				childLabel, _, _ := ast.LabelName(childField.Label)
-				childPath := fieldPath + "." + childLabel
-				extractFieldMetaRecursive(childField, childPath, filename, directory, instancePath, positions)
-			}
-		}
+	extractFieldMetaFromExpr(field.Value, fieldPath, filename, directory, instancePath, positions)
+}
+
+func extractFieldMetaFromExpr(expr ast.Expr, fieldPath, filename, directory, instancePath string, positions map[string]ValueMeta) {
+	if expr == nil {
+		return
 	}
 
-	// Recurse into list literals (arrays)
-	if list, ok := field.Value.(*ast.ListLit); ok {
-		for i, elem := range list.Elts {
-			// Handle struct elements within lists
-			if st, ok := elem.(*ast.StructLit); ok {
-				indexPath := fmt.Sprintf("%s[%d]", fieldPath, i)
-				for _, structElem := range st.Elts {
-					if childField, ok := structElem.(*ast.Field); ok {
-						childLabel, _, _ := ast.LabelName(childField.Label)
-						childPath := indexPath + "." + childLabel
-						extractFieldMetaRecursive(childField, childPath, filename, directory, instancePath, positions)
-					}
+	switch e := expr.(type) {
+	case *ast.StructLit:
+		for _, elem := range e.Elts {
+			switch child := elem.(type) {
+			case *ast.Field:
+				childLabel, _, _ := ast.LabelName(child.Label)
+				childPath := childLabel
+				if fieldPath != "" {
+					childPath = fieldPath + "." + childLabel
 				}
+				extractFieldMetaRecursive(child, childPath, filename, directory, instancePath, positions)
+			case *ast.EmbedDecl:
+				extractFieldMetaFromExpr(child.Expr, fieldPath, filename, directory, instancePath, positions)
 			}
 		}
+	case *ast.ListLit:
+		for i, elem := range e.Elts {
+			indexPath := fmt.Sprintf("%s[%d]", fieldPath, i)
+			extractFieldMetaFromExpr(elem, indexPath, filename, directory, instancePath, positions)
+		}
+	case *ast.BinaryExpr:
+		extractFieldMetaFromExpr(e.X, fieldPath, filename, directory, instancePath, positions)
+		extractFieldMetaFromExpr(e.Y, fieldPath, filename, directory, instancePath, positions)
+	case *ast.UnaryExpr:
+		extractFieldMetaFromExpr(e.X, fieldPath, filename, directory, instancePath, positions)
+	case *ast.ParenExpr:
+		extractFieldMetaFromExpr(e.X, fieldPath, filename, directory, instancePath, positions)
 	}
 }
 

@@ -136,7 +136,11 @@ go build -buildmode=c-archive -o libcue_bridge.a $(find . -maxdepth 1 -name '*.g
 1. **Memory Safety**: All C strings from Go must be freed with `cue_free_string`
 2. **Error Handling**: The bridge uses a JSON envelope for structured errors
 3. **Thread Safety**: `CStringPtr` is intentionally `!Send + !Sync`
-4. **Testing**: Test both Go and Rust sides when modifying the bridge
+4. **CUE Value Traversal**: Build and post-process values from one `cue.Context`
+   sequentially. `cue.Value` APIs such as `Fields`, `Decode`, and
+   `ReferencePath` can update shared evaluator caches even when the caller only
+   reads data.
+5. **Testing**: Test both Go and Rust sides when modifying the bridge
 
 ### Modifying the Bridge
 

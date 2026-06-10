@@ -14,7 +14,6 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
-	"sync"
 	"unsafe"
 
 	"cuelang.org/go/cue"
@@ -212,16 +211,6 @@ type ModuleEvalOptions struct {
 	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
 }
 
-// instanceResult holds the result of evaluating a single CUE instance (used for parallel evaluation)
-type instanceResult struct {
-	relPath   string
-	jsonBytes []byte
-	isProject bool
-	meta      map[string]ValueMeta
-	refs      map[string]string // Reference paths extracted from cue.Value
-	err       error
-}
-
 //export cue_eval_module
 func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C.char) *C.char {
 	// Add recover to catch any panics
@@ -270,9 +259,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		return result
 	}
 
-	// NOTE: We don't create a global CUE context here because each goroutine
-	// creates its own context for thread safety during parallel evaluation.
-
 	// Initialize registry
 	registry, err := modconfig.NewRegistry(&modconfig.Config{
 		Transport:  http.DefaultTransport,
@@ -296,11 +282,19 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		evalDir = *options.TargetDir
 	}
 
+	// Recursive workspace loading must discover every directory first. Setting
+	// load.Config.Package here narrows "./..." before we can apply the explicit
+	// post-load package filter below.
+	loaderPackage := effectivePackageName
+	if options.Recursive {
+		loaderPackage = ""
+	}
+
 	cfg := &load.Config{
 		Dir:        evalDir,
 		ModuleRoot: goModuleRoot,
 		Registry:   registry,
-		Package:    effectivePackageName,
+		Package:    loaderPackage,
 	}
 
 	var loadPattern string
@@ -353,7 +347,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// Build CUE values SEQUENTIALLY to avoid race conditions.
 	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
 	// so concurrent BuildInstance calls on different instances can race.
-	// JSON serialization is expensive but thread-safe, so we parallelize that below.
 	type builtInstance struct {
 		relPath   string
 		value     cue.Value
@@ -400,99 +393,61 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		})
 	}
 
-	// Parallel JSON serialization with worker pool
-	// JSON marshaling is expensive but thread-safe, so we parallelize this part.
-	results := make(chan instanceResult, len(builtInstances))
-	var wg sync.WaitGroup
-
-	// Limit concurrency to avoid memory pressure
-	semaphore := make(chan struct{}, runtime.NumCPU())
-
-	// Capture variables for goroutines
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 	withReferences := options.WithReferences
 
+	// Walk built CUE values sequentially. Values from one cue.Context share
+	// evaluator caches; read-looking APIs such as Fields, Decode, and
+	// ReferencePath can mutate that state and must not run concurrently.
 	for _, built := range builtInstances {
-		wg.Add(1)
-		go func(b builtInstance) {
-			defer wg.Done()
-			semaphore <- struct{}{}        // Acquire
-			defer func() { <-semaphore }() // Release
-
-			// Build clean JSON (without inline _meta) - thread-safe
-			jsonBytes, err := buildJSONClean(b.value)
-			if err != nil {
-				results <- instanceResult{err: err}
-				return
-			}
-
-			// Extract meta separately if requested - thread-safe (read-only)
-			var meta map[string]ValueMeta
-			if withMeta {
-				meta = extractFieldMetaSeparate(b.inst, moduleRoot, b.relPath)
-				definitionMeta := extractValueMetaSeparate(b.value, moduleRoot, b.relPath)
-				for k, definition := range definitionMeta {
-					existing := meta[k]
-					existing.DefinitionDirectory = definition.DefinitionDirectory
-					existing.DefinitionFilename = definition.DefinitionFilename
-					existing.DefinitionLine = definition.DefinitionLine
-					meta[k] = existing
-				}
-			}
-
-			// Extract reference paths if requested - thread-safe (read-only)
-			var refs map[string]string
-			if withReferences {
-				refs = make(map[string]string)
-				// Extract from evaluated value for canonical paths (resolves let bindings)
-				extractReferencesFromValue(b.value, b.relPath, "", refs)
-				// Fall back to AST extraction for other references (backwards compat)
-				astRefs := extractReferencesFromAST(b.inst, b.relPath)
-				for k, v := range astRefs {
-					if _, exists := refs[k]; !exists {
-						refs[k] = v
-					}
-				}
-			}
-
-			results <- instanceResult{
-				relPath:   b.relPath,
-				jsonBytes: jsonBytes,
-				isProject: b.isProject,
-				meta:      meta,
-				refs:      refs,
-			}
-		}(built)
-	}
-
-	// Close results channel when all goroutines complete
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect results (order doesn't matter for maps)
-	for r := range results {
-		if r.err != nil {
-			buildErrors = append(buildErrors, r.err.Error())
+		jsonBytes, err := buildJSONClean(built.value)
+		if err != nil {
+			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", built.relPath, err))
 			continue // Skip failed instances
 		}
-		instances[r.relPath] = json.RawMessage(r.jsonBytes)
-		if r.isProject {
-			projects = append(projects, r.relPath)
+		instances[built.relPath] = json.RawMessage(jsonBytes)
+		if built.isProject {
+			projects = append(projects, built.relPath)
 		}
-		for k, v := range r.meta {
-			allMeta[k] = v
+
+		if withMeta {
+			meta := extractFieldMetaSeparate(built.inst, moduleRoot, built.relPath)
+			definitionMeta := extractValueMetaSeparate(built.value, moduleRoot, built.relPath)
+			for k, definition := range definitionMeta {
+				existing := meta[k]
+				existing.DefinitionDirectory = definition.DefinitionDirectory
+				existing.DefinitionFilename = definition.DefinitionFilename
+				existing.DefinitionLine = definition.DefinitionLine
+				meta[k] = existing
+			}
+
+			for k, v := range meta {
+				allMeta[k] = v
+			}
 		}
-		// Merge reference paths into meta entries
-		for k, refPath := range r.refs {
-			if existing, ok := allMeta[k]; ok {
-				existing.Reference = refPath
-				allMeta[k] = existing
-			} else {
-				// Create a meta entry with just the reference if no source position exists
-				allMeta[k] = ValueMeta{Reference: refPath}
+
+		if withReferences {
+			refs := make(map[string]string)
+			// Extract from evaluated value for canonical paths (resolves let bindings).
+			extractReferencesFromValue(built.value, built.relPath, "", refs)
+			// Fall back to AST extraction for other references (backwards compat).
+			astRefs := extractReferencesFromAST(built.inst, built.relPath)
+			for k, v := range astRefs {
+				if _, exists := refs[k]; !exists {
+					refs[k] = v
+				}
+			}
+
+			// Merge reference paths into meta entries.
+			for k, refPath := range refs {
+				if existing, ok := allMeta[k]; ok {
+					existing.Reference = refPath
+					allMeta[k] = existing
+				} else {
+					// Create a meta entry with just the reference if no source position exists.
+					allMeta[k] = ValueMeta{Reference: refPath}
+				}
 			}
 		}
 	}
