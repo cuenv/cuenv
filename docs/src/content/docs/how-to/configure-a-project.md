@@ -11,7 +11,7 @@ cuenv uses CUE files for configuration, following a hierarchical structure that 
 
 ### Configuration Layout
 
-cuenv evaluates the CUE package you point it at (by default the `cuenv` package in the current directory). Every `.cue` file that belongs to that package participates automatically—there is no fixed file ordering or special filename.
+cuenv projects should use `package cuenv`. Every `.cue` file in that package participates automatically—there is no fixed file ordering or special filename. Other CUE packages may live beside cuenv configuration for unrelated tooling, but cuenv workspace discovery ignores them and only evaluates matching `env.cue` entry points.
 
 Common organization patterns include:
 
