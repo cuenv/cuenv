@@ -282,12 +282,13 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		evalDir = *options.TargetDir
 	}
 
-	// Recursive workspace loading must discover every directory first. Setting
-	// load.Config.Package here narrows "./..." before we can apply the explicit
-	// post-load package filter below.
+	// Recursive workspace loading must discover directories without letting a
+	// second package in the same directory poison the selected package. The "*"
+	// package asks CUE to split packages during discovery; post-processing below
+	// keeps only effectivePackageName before any instance is built.
 	loaderPackage := effectivePackageName
-	if options.Recursive {
-		loaderPackage = ""
+	if options.Recursive && effectivePackageName != "" {
+		loaderPackage = "*"
 	}
 
 	cfg := &load.Config{
@@ -327,12 +328,12 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	var loadErrors []string
 	var packageMismatches []string
 	for _, inst := range loadedInstances {
-		if inst.Err != nil {
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
-			continue
-		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
 			packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
+			continue
+		}
+		if inst.Err != nil {
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
 			continue
 		}
 		validInstances = append(validInstances, inst)
