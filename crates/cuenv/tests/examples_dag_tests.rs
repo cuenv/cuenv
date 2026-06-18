@@ -280,6 +280,13 @@ fn get_example_expectations() -> Vec<ExampleExpectations> {
             expect_eval_failure: false,
         },
         ExampleExpectations {
+            name: "task-captures",
+            min_task_count: 2, // build, report
+            has_hooks: false,
+            has_env: false,
+            expect_eval_failure: false,
+        },
+        ExampleExpectations {
             name: "vcs-subdir",
             min_task_count: 1, // inspect
             has_hooks: false,
