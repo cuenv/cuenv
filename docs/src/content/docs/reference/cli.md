@@ -881,10 +881,6 @@ cuenv release version [OPTIONS]
 - `-p, --path <PATH>`: Path to project root. Default: `.`
 - `--dry-run`: Show what would change without making changes.
 
-:::caution[Manifest reading is incomplete]
-The clap help for `cuenv release version` flags manifest reading as not yet implemented. Prefer `cuenv release prepare` for the full analyze → bump → changelog → PR flow until manifest reading lands.
-:::
-
 #### `cuenv release publish`
 
 Publish packages in topological order.
