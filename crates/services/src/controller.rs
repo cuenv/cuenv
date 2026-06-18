@@ -143,11 +143,10 @@ impl ServiceController {
                         }
                     }
                     NodeKind::Image => {
-                        return Err(cuenv_core::Error::configuration(format!(
-                            "cuenv up cannot execute image dependency '{}' yet",
-                            node.name
-                        ))
-                        .into());
+                        // Image build nodes in the service graph represent build
+                        // artifacts that were already materialized by the task
+                        // roots in `execute_service_dependencies`. Skip them here.
+                        debug!(image = %node.name, "Skipping image node — built via task roots");
                     }
                 }
             }

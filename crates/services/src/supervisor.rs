@@ -13,6 +13,9 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+#[cfg(unix)]
+use libc;
+
 use cuenv_core::manifest::Service;
 use cuenv_events::{
     emit_service_failed, emit_service_output, emit_service_ready, emit_service_ready_timeout,
@@ -143,6 +146,8 @@ enum ServiceWait {
     Exited(std::io::Result<std::process::ExitStatus>),
     Shutdown,
     Restart(RestartTrigger),
+    /// Send SIGHUP to the running process (watch `on: sync`).
+    Sync,
     Stop,
 }
 
@@ -155,6 +160,45 @@ fn abort_output_handles(
     }
     if let Some(handle) = stderr_handle {
         handle.abort();
+    }
+}
+
+/// Send SIGHUP to a running service process for in-place config reload.
+///
+/// On non-Unix platforms, logs a warning since SIGHUP is not available.
+fn send_sighup(pid: u32, service_name: &str) {
+    #[cfg(unix)]
+    {
+        let Ok(raw_pid) = i32::try_from(pid) else {
+            warn!(service = %service_name, pid, "PID does not fit platform pid_t; skipping SIGHUP");
+            return;
+        };
+        #[expect(
+            unsafe_code,
+            reason = "kill(pid, SIGHUP) sends a config-reload signal to the supervised process"
+        )]
+        // SAFETY: SIGHUP is sent to the supervised child process, which was
+        // spawned by this supervisor and whose PID is still valid at this point
+        // (we hold `child` which owns the process handle).
+        let result = unsafe { libc::kill(raw_pid, libc::SIGHUP) };
+        if result != 0 {
+            warn!(
+                service = %service_name,
+                pid,
+                error = %std::io::Error::last_os_error(),
+                "Failed to send SIGHUP"
+            );
+        } else {
+            debug!(service = %service_name, pid, "Sent SIGHUP for config reload");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        warn!(
+            service = %service_name,
+            "watch.on: sync is not supported on this platform; SIGHUP unavailable"
+        );
     }
 }
 
@@ -434,6 +478,13 @@ impl ServiceSupervisor {
                 }
             }
 
+            let watch_on = self
+                .service
+                .watch
+                .as_ref()
+                .and_then(|w| w.on.as_deref())
+                .unwrap_or("restart");
+
             // Wait for process exit, shutdown, file watcher, or a manual
             // control request queued by `cuenv down` / `cuenv restart`.
             let wait = tokio::select! {
@@ -444,7 +495,11 @@ impl ServiceSupervisor {
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect();
                     cuenv_events::emit_service_watch!(&self.name, &changed);
-                    ServiceWait::Restart(RestartTrigger::Watch)
+                    if watch_on == "sync" {
+                        ServiceWait::Sync
+                    } else {
+                        ServiceWait::Restart(RestartTrigger::Watch)
+                    }
                 }
                 () = wait_for_control_request(
                     self.session.as_ref(),
@@ -474,6 +529,14 @@ impl ServiceSupervisor {
                     self.stop_running_process(&mut child).await;
                     abort_output_handles(stdout_handle, stderr_handle);
                     return SupervisorResult::Stopped;
+                }
+                ServiceWait::Sync => {
+                    // Send SIGHUP to the running process for in-place config reload.
+                    // No restart counter increment — the process keeps running.
+                    if let Some(pid) = child.id() {
+                        send_sighup(pid, &self.name);
+                    }
+                    continue;
                 }
                 ServiceWait::Restart(trigger) => {
                     attempt = self
@@ -634,6 +697,7 @@ impl ServiceSupervisor {
             }),
             exit_code: update.exit_code,
             error: update.error.map(String::from),
+            ports: self.service.ports.clone(),
         };
         self.session.update_service(&state)
     }
