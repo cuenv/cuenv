@@ -516,9 +516,7 @@ pub enum ReleaseCommands {
         no_pr: bool,
     },
     /// Calculate and apply version bumps from changesets.
-    #[command(
-        about = "Calculate and apply version bumps from changesets (manifest reading not yet implemented)"
-    )]
+    #[command(about = "Calculate and apply version bumps from changesets")]
     Version {
         /// Path to project root.
         #[arg(long, short = 'p', help = "Path to project root", default_value = ".")]

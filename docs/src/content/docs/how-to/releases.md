@@ -372,9 +372,6 @@ do not present it as a finished pipeline.
 - **CUE registry publishing is not implemented.** If you configure a `cue`
   backend, `cuenv release publish` accepts it in `--dry-run` but **fails fast**
   with "CUE registry release publishing is not implemented yet" on a real run.
-- **`release version` help carries a caveat.** Its clap help notes that manifest
-  reading is "not yet implemented" in full; treat workspace-only manifests as
-  the supported shape and verify the rewritten files.
 - **Binary backend coverage is limited.** `release binaries` loads configured
   targets and backends from `env.cue`, but build-backend coverage is partial —
   validate artifacts before trusting a `--publish-only` run.
