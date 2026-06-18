@@ -454,8 +454,9 @@ pub fn execute_release_version(
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to read changesets: {e}")))?;
 
     if changesets.is_empty() {
-        return Err(cuenv_core::Error::configuration(
-            "No changesets found. Run 'cuenv changeset add' first.",
+        return Err(cuenv_core::Error::execution_with_help(
+            "No changesets found",
+            "Create a changeset first: cuenv changeset add",
         ));
     }
 
