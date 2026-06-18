@@ -6,7 +6,7 @@ description: Declare your dev stack once and let cuenv supervise it with readine
 You already declare your environment and tasks in CUE. Services are the missing third piece: the long-running processes you actually develop against — Postgres, an API, a worker. Declare them once and `cuenv up` brings the whole stack online in dependency order, waits for each process to become *ready* (not just *started*), tails the logs, and tears everything down cleanly on `Ctrl+C`. No `docker-compose.yml` drifting away from your real config, no hand-rolled `wait-for-it.sh` — the same typed configuration that powers `cuenv exec` and `cuenv task` also powers your dev stack.
 
 :::note[Status: partial]
-Services are a **partial** feature. `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` work today over persisted session state, and readiness probes, restart policies, file watching, and shutdown control are all live. The known gaps are in `dependsOn`: image-backed dependencies fail fast (see [dependsOn semantics](#dependson-semantics)). Always check [Schema status](/reference/schema/status/) before relying on a capability.
+Services are a **partial** feature. `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` work today over persisted session state, and readiness probes, restart policies, file watching, and shutdown control are all live. Image-backed `dependsOn` entries are skipped with a warning (container execution is not yet implemented); task-backed entries run before service startup. Always check [Schema status](/reference/schema/status/) before relying on a capability.
 :::
 
 ## A minimal working example
