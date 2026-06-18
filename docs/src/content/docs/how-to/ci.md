@@ -321,6 +321,68 @@ env: {
 
 See [How to manage secrets](/how-to/secrets/) for provider details.
 
+## Pipeline annotations
+
+A pipeline can declare **annotations** — named string values that appear in the
+GitHub job summary table after the pipeline finishes. Annotations can be literal
+strings or resolved from task captures.
+
+### Literal annotations
+
+```cue
+ci: pipelines: default: {
+    tasks: [tasks.deploy]
+    annotations: {
+        "Deployed to": "production"
+        "Region":      "us-east-1"
+    }
+}
+```
+
+### Capture-backed annotations
+
+A `#TaskCaptureRef` names a task and one of its named captures; the executor
+resolves the value after the task runs. This is how deploy preview URLs, build
+versions, or bundle sizes surface in CI summaries without piping between jobs.
+
+First, define the capture on the task — the **first capture group** of the regex
+becomes the named value:
+
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "my-build-tool"
+        captures: {
+            version: { pattern: "Built version ([^ ]+)" }
+            size:    { pattern: "Bundle size: ([0-9.]+[kKmMgG]?B)", source: "stderr" }
+        }
+    }
+}
+```
+
+Then reference those captures in the pipeline's `annotations` map:
+
+```cue
+ci: pipelines: default: {
+    tasks: [tasks.build]
+    annotations: {
+        "Build version": schema.#TaskCaptureRef & {
+            cuenvTask:    "build"
+            cuenvCapture: "version"
+        }
+        "Bundle size": schema.#TaskCaptureRef & {
+            cuenvTask:    "build"
+            cuenvCapture: "size"
+        }
+    }
+}
+```
+
+Annotations whose capture is not matched (e.g., the task didn't produce the
+expected output) are silently dropped — the job summary omits them. See the
+[runnable example](https://github.com/cuenv/cuenv/tree/main/examples/task-captures)
+for a complete working project.
+
 ## Worked examples
 
 Every scenario below maps to a runnable project under

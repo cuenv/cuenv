@@ -510,36 +510,44 @@ When a task references another task's output, cuenv automatically adds a depende
 
 ### Captured values
 
-Where `stdout`/`stderr` hand the *whole* output stream to another task, `captures` pull a single value out of a stream with a regex. A capture names a `pattern` and a `source`, and the first capture group's match becomes the value:
+Where `stdout`/`stderr` hand the *whole* output stream to another task, `captures` pull a single named value out of a stream with a regex. The **first capture group** of `pattern` becomes the value; unmatched captures are silently dropped.
 
 ```cue
 import "github.com/cuenv/cuenv/schema"
 
 tasks: {
-    "deploy.preview": schema.#Task & {
+    build: schema.#Task & {
         command: "deploy-preview"
         captures: {
-            previewUrl: {
-                pattern: "https://[^ ]+"
-                source:  "stdout"
+            // First () group match → "previewUrl"
+            previewUrl: { pattern: "Preview ready: (https://\\S+)" }
+            // Extract from stderr instead of stdout
+            buildId:    { pattern: "build=(\\w+)", source: "stderr" }
+        }
+    }
+}
+```
+
+Captured values are not available as cross-task input refs (use `tasks.build.stdout` for whole-stream dependencies). Their primary surface is **CI pipeline annotations**: a `#TaskCaptureRef` names the producing task and capture key, and the resolved value appears in the GitHub job summary table.
+
+```cue
+ci: {
+    providers: ["github"]
+    pipelines: {
+        default: {
+            tasks: [tasks.build]
+            annotations: {
+                "Preview URL": schema.#TaskCaptureRef & {
+                    cuenvTask:    "build"
+                    cuenvCapture: "previewUrl"
+                }
             }
         }
     }
 }
 ```
 
-A captured value is referenced through `#TaskCaptureRef`, naming the producing task and the capture key. The intended surface is CI annotations:
-
-```cue
-annotations: "Preview URL": schema.#TaskCaptureRef & {
-    cuenvTask:    "deploy.preview"
-    cuenvCapture: "previewUrl"
-}
-```
-
-:::caution[`captures` is Partial — verify before relying on it]
-`captures` and `#TaskCaptureRef` exist in the schema (`schema/tasks.cue`) and are described here as designed, but task execution policies in this area are flagged for limitation notes and there is no bundled runnable example yet. Confirm current behavior against [Schema status](/reference/schema/status/) before depending on captured values in production.
-:::
+See the [runnable example](https://github.com/cuenv/cuenv/tree/main/examples/task-captures) for a complete working project demonstrating both single-stream and multi-capture patterns with CI annotations.
 
 ## Environment Injection
 
