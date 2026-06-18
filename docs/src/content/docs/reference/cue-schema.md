@@ -478,11 +478,7 @@ tasks: {
 | `pattern` | `string`                    | Yes      | -          | Regex; the first capture group is stored |
 | `source`  | `"stdout" \| "stderr"`      | No       | `"stdout"` | Which output stream to match against     |
 
-:::caution[Partial]
-`#TaskCapture` is **Partial**. The schema shape is stable, but capture extraction
-and downstream resolution are still being rounded out. See the
-[schema status page](/reference/schema/status/) before relying on it.
-:::
+See the [task captures how-to](/how-to/run-tasks/#captured-values) for a complete example including CI annotations.
 
 ### #TaskCaptureRef
 
@@ -491,13 +487,27 @@ executor. Typically used inside CI annotations to surface a captured value (such
 as a preview URL).
 
 ```cue
+// Captures are defined on the task; refs go on the CI pipeline.
 tasks: {
     deploy: schema.#Task & {
         command: "deploy"
-        captures: previewUrl: { pattern: "Preview ready: (https://\\S+)" }
-        annotations: "Preview URL": schema.#TaskCaptureRef & {
-            cuenvTask:    "deploy"
-            cuenvCapture: "previewUrl"
+        captures: {
+            previewUrl: { pattern: "Preview ready: (https://\\S+)" }
+        }
+    }
+}
+
+ci: {
+    providers: ["github"]
+    pipelines: {
+        default: {
+            tasks: [tasks.deploy]
+            annotations: {
+                "Preview URL": schema.#TaskCaptureRef & {
+                    cuenvTask:    "deploy"
+                    cuenvCapture: "previewUrl"
+                }
+            }
         }
     }
 }
@@ -511,9 +521,8 @@ tasks: {
 | `cuenvTask`       | `string` | Yes      | Name of the task that produced the capture |
 | `cuenvCapture`    | `string` | Yes      | Name of the captured value               |
 
-:::caution[Partial]
-`#TaskCaptureRef` is **Partial** — runtime resolution is still being completed.
-See the [schema status page](/reference/schema/status/).
+:::note
+`annotations` is a field on `#Pipeline` (inside `ci.pipelines.<name>`), not on `#Task`. Captures are defined on the task; their resolved values are surfaced through the pipeline's annotation map.
 :::
 
 ### #ExternalInput
