@@ -352,13 +352,16 @@ async fn execute_service_dependencies(
     plan: &ServiceDependencyPlan,
     context: ServiceTaskContext<'_>,
 ) -> cuenv_core::Result<()> {
-    // Fail fast on image dependencies before running any task roots, so we do
-    // not perform build side effects only to abort on the unsupported backend.
+    // Image roots are resolved by the DependencyPlanner, which already walks
+    // their `dependsOn` edges and collects the transitive task deps into
+    // `task_roots`. Running those task roots builds the images via the task
+    // DAG, making them available in the local Docker daemon before services
+    // start. Log an informational message when image builds are involved.
     if !plan.image_roots.is_empty() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "cuenv up resolved image dependencies but image execution backends are not implemented yet: {}",
+        emit_stdout!(format!(
+            "cuenv up: image dependencies will be built via their task roots: {}",
             plan.image_roots.join(", ")
-        )));
+        ));
     }
 
     if !plan.task_roots.is_empty() {

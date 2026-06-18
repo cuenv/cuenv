@@ -43,10 +43,10 @@ pub fn execute_ps(options: &PsOptions) -> cuenv_core::Result<String> {
     } else {
         // Table format
         emit_stdout!(format!(
-            "{:<20} {:<12} {:<12} {:<10} {:<8}",
-            "NAME", "STATE", "UPTIME", "RESTARTS", "PID"
+            "{:<20} {:<12} {:<20} {:<12} {:<10} {:<8}",
+            "NAME", "STATE", "ENDPOINTS", "UPTIME", "RESTARTS", "PID"
         ));
-        emit_stdout!(format!("{}", "-".repeat(62)));
+        emit_stdout!(format!("{}", "-".repeat(84)));
 
         for svc in &services {
             let uptime = match svc.started_at {
@@ -62,9 +62,26 @@ pub fn execute_ps(options: &PsOptions) -> cuenv_core::Result<String> {
                 None => "-".to_string(),
             };
 
+            let endpoints = if svc.ports.is_empty() {
+                "-".to_string()
+            } else {
+                svc.ports
+                    .iter()
+                    .map(|p| {
+                        let proto = if p.protocol == "udp" { "udp" } else { "tcp" };
+                        if let Some(name) = &p.name {
+                            format!("{}:{}/{}", name, p.port, proto)
+                        } else {
+                            format!(":{}/{}", p.port, proto)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+
             emit_stdout!(format!(
-                "{:<20} {:<12} {:<12} {:<10} {:<8}",
-                svc.name, svc.lifecycle, uptime, svc.restarts, pid
+                "{:<20} {:<12} {:<20} {:<12} {:<10} {:<8}",
+                svc.name, svc.lifecycle, endpoints, uptime, svc.restarts, pid
             ));
         }
     }

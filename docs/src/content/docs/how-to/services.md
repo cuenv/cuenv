@@ -6,7 +6,7 @@ description: Declare your dev stack once and let cuenv supervise it with readine
 You already declare your environment and tasks in CUE. Services are the missing third piece: the long-running processes you actually develop against — Postgres, an API, a worker. Declare them once and `cuenv up` brings the whole stack online in dependency order, waits for each process to become *ready* (not just *started*), tails the logs, and tears everything down cleanly on `Ctrl+C`. No `docker-compose.yml` drifting away from your real config, no hand-rolled `wait-for-it.sh` — the same typed configuration that powers `cuenv exec` and `cuenv task` also powers your dev stack.
 
 :::note[Status: partial]
-Services are a **partial** feature. `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` work today over persisted session state, and readiness probes, restart policies, file watching, and shutdown control are all live. The known gaps are in `dependsOn`: image-backed dependencies fail fast (see [dependsOn semantics](#dependson-semantics)). Always check [Schema status](/reference/schema/status/) before relying on a capability.
+Services are a **partial** feature. `cuenv up`, `ps`, `down`, `restart`, and `logs --follow` work today over persisted session state, and readiness probes, restart policies, file watching, and shutdown control are all live. Image-backed `dependsOn` entries are skipped with a warning (container execution is not yet implemented); task-backed entries run before service startup. Always check [Schema status](/reference/schema/status/) before relying on a capability.
 :::
 
 ## A minimal working example
@@ -89,12 +89,14 @@ cuenv ps --path examples/services-readiness --package examples
 `cuenv ps` reads the session state and prints a table:
 
 ```text
-NAME                 STATE        UPTIME       RESTARTS   PID
---------------------------------------------------------------
-port                 ready        12s          0          48213
-http                 ready        12s          0          48214
-log                  ready        12s          0          48215
+NAME                 STATE        ENDPOINTS            UPTIME       RESTARTS   PID
+------------------------------------------------------------------------------------
+port                 ready        :8080/tcp            12s          0          48213
+http                 ready        http:8081/tcp        12s          0          48214
+log                  ready        -                    12s          0          48215
 ```
+
+When a service declares `ports`, the `ENDPOINTS` column shows `label:port/proto`. Services with no ports declared show `-`.
 
 Use `-o json` for machine-readable output.
 
@@ -203,16 +205,55 @@ restart: {
 }
 ```
 
-### File watching
+### Port declarations
 
-`watch` re-runs the service when files change — the fast inner loop for local development. `paths` (glob patterns relative to the project root) is required; `ignore` uses gitignore syntax; `debounce` (default `200ms`) batches rapid changes. `on` supports `restart` only in v1. Use `rebuild` to run tasks (for example, recompile a binary) before the restart.
+Declare `ports` so that `cuenv ps` shows the endpoints a service exposes. Ports are informational only — cuenv does not bind them or perform port mapping.
 
 ```cue
+postgres: schema.#Service & {
+    // ...
+    ports: [
+        {port: 5432},                          // :5432/tcp (unnamed)
+        {port: 5433, name: "replica"},         // replica:5433/tcp
+        {port: 9187, name: "metrics"},         // metrics:9187/tcp
+        {port: 53, protocol: "udp"},           // :53/udp
+    ]
+}
+```
+
+`cuenv ps` shows the ENDPOINTS column when any service has ports declared:
+
+```text
+NAME      STATE   ENDPOINTS          UPTIME   RESTARTS   PID
+-------------------------------------------------------------
+postgres  ready   :5432/tcp          30s      0          12345
+          .       replica:5433/tcp
+          .       metrics:9187/tcp
+```
+
+### File watching
+
+`watch` re-runs or reloads the service when files change — the fast inner loop for local development. `paths` (glob patterns relative to the project root) is required; `ignore` uses gitignore syntax; `debounce` (default `200ms`) batches rapid changes. Use `rebuild` to run tasks (for example, recompile a binary) before acting.
+
+`on` controls what happens when a change is detected:
+
+- `"restart"` (default): kills the process and respawns it.
+- `"sync"`: sends `SIGHUP` to the running process for in-place config reload. Use this for nginx, haproxy, database servers, or any program that reloads configuration on SIGHUP. No restart counter is incremented. Unix only; Windows falls back to a warning.
+
+```cue
+// Restart on source changes (default)
 watch: {
     paths: ["src/**/*.go"]
     ignore: ["**/*_test.go"]
     debounce: "300ms"
     on: "restart"
+}
+
+// Reload nginx config in place on change
+watch: {
+    paths: ["nginx.conf", "conf.d/**/*.conf"]
+    debounce: "500ms"
+    on: "sync"  // sends SIGHUP; no downtime
 }
 ```
 
