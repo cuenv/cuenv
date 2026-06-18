@@ -46,13 +46,16 @@ package schema
 	// Runtime override for this service
 	runtime?: #Runtime
 
+	// Declared ports (informational, for `cuenv ps`). Does not bind or map.
+	ports?: [...#ServicePort]
+
 	// Readiness probe (single probe per service in v1)
 	readiness?: #Readiness
 
 	// Restart policy
 	restart?: #RestartPolicy
 
-	// File watcher → restart loop
+	// File watcher → restart or reload loop
 	watch?: #Watch
 
 	// Log handling
@@ -154,8 +157,9 @@ package schema
 	ignore?: [...string]
 	// Debounce window for batched changes
 	debounce?: string | *"200ms"
-	// What to do on change. v1 supports "restart" only.
-	on?: "restart" | *"restart"
+	// What to do on change: "restart" kills and respawns the process;
+	// "sync" sends SIGHUP for in-place config reload (Unix only).
+	on?: "restart" | "sync" | *"restart"
 	// Optional dependency tasks to re-run before restart
 	// (e.g., rebuild a binary). Treated as ad-hoc additions to the DAG.
 	rebuild?: [...#TaskNode]
@@ -192,4 +196,20 @@ package schema
 #ServiceMatcher: close({
 	labels?: [...string]
 	parallel: bool | *true
+})
+
+// =============================================================================
+// Service Port Declaration (informational, for `cuenv ps`)
+// =============================================================================
+//
+// Ports are declared to let `cuenv ps` display endpoints. They do not perform
+// port mapping or binding — the service process is responsible for binding.
+
+#ServicePort: close({
+	// Port number the service listens on (1–65535).
+	port!: int & >0 & <65536
+	// Protocol (default: "tcp").
+	protocol?: "tcp" | "udp" | *"tcp"
+	// Optional human-readable label (e.g., "http", "grpc", "metrics").
+	name?: string
 })

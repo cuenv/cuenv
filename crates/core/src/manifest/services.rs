@@ -67,6 +67,26 @@ impl Default for Entrypoint {
     }
 }
 
+/// Port declaration for a service (informational only, for `cuenv ps` display).
+///
+/// Does not perform port mapping or binding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ServicePort {
+    /// Protocol (default: "tcp").
+    #[serde(default = "default_tcp")]
+    pub protocol: String,
+    /// Port number the service listens on (1–65535).
+    pub port: u16,
+    /// Optional human-readable name (e.g., "http", "grpc", "metrics").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+fn default_tcp() -> String {
+    "tcp".to_string()
+}
+
 /// Long-running supervised process definition.
 ///
 /// Services live alongside tasks on a project but execute under different
@@ -105,6 +125,10 @@ pub struct Service {
     /// Runtime override for this service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<Runtime>,
+
+    /// Ports this service listens on (informational only, for `cuenv ps`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<ServicePort>,
 
     /// Readiness probe (single probe per service).
     #[serde(default, skip_serializing_if = "Option::is_none")]

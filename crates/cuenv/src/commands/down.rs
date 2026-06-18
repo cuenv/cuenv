@@ -180,6 +180,7 @@ mod tests {
                 restarts: 0,
                 exit_code: None,
                 error: None,
+                ports: vec![],
             })
             .unwrap();
     }

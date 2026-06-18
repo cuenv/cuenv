@@ -341,8 +341,11 @@ impl Environment {
     ///
     /// Services use the same 3-phase secret resolution pipeline as tasks
     /// (collect, resolve in parallel via `SecretRegistry` + `JoinSet`,
-    /// reassemble). Access policies are checked against the service name
-    /// just as they are checked against task names for tasks.
+    /// reassemble). Unlike tasks, services bypass `allowTasks` policy
+    /// filtering: services are long-running processes that are not tasks, so
+    /// restricting a variable to specific task names should not exclude it
+    /// from services. `allowExec` policies are also not applied here — exec
+    /// command filtering is irrelevant to service spawning.
     ///
     /// Returns `(resolved_env_vars, secret_values)` where `secret_values`
     /// contains the resolved values of any secrets for log redaction.
@@ -356,10 +359,9 @@ impl Environment {
             "resolve_for_service_with_secrets"
         );
 
-        let accessible: Vec<_> = env_vars
-            .iter()
-            .filter(|(_, value)| value.is_accessible_by_task(service_name))
-            .collect();
+        // Services are not tasks, so allowTasks policies must not filter them out.
+        // Include all variables regardless of task-name policies.
+        let accessible: Vec<_> = env_vars.iter().collect();
 
         Self::resolve_filtered_with_secrets(&accessible).await
     }

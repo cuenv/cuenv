@@ -11,6 +11,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use cuenv_core::manifest::ServicePort;
+
 use crate::lifecycle::ServiceLifecycle;
 
 /// Top-level session metadata.
@@ -47,6 +49,9 @@ pub struct ServiceState {
     pub exit_code: Option<i32>,
     /// Last error message.
     pub error: Option<String>,
+    /// Declared ports for this service (from CUE definition).
+    #[serde(default)]
+    pub ports: Vec<ServicePort>,
 }
 
 /// Manages session state on disk.
@@ -458,6 +463,7 @@ mod tests {
             restarts: 0,
             exit_code: None,
             error: None,
+            ports: vec![],
         };
         session.update_service(&state).unwrap();
 
