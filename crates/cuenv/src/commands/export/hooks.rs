@@ -145,7 +145,7 @@ fn collect_hooks_from_ancestors(
     Ok(all_hooks)
 }
 
-/// Request for resolving static environment variables plus hook-generated variables.
+/// Request for resolving shell-export environment variables plus hook-generated variables.
 pub struct HookEnvironmentRequest<'a> {
     /// Project directory whose environment should be resolved.
     directory: &'a Path,
@@ -191,12 +191,12 @@ struct BackgroundHookWait<'a> {
     config: &'a Project,
 }
 
-/// Get environment variables with hook-generated vars merged in.
+/// Get shell-export environment variables with hook-generated vars merged in.
 ///
 /// This function checks if hooks have completed and merges their environment
-/// with the static environment from the CUE manifest. This is used by
-/// `cuenv task` and `cuenv exec` to ensure they have access to hook-generated
-/// environment variables.
+/// with the static environment from the CUE manifest. This is used by the shell
+/// integration path; `cuenv exec` and `cuenv task` use static env plus runtime
+/// activation directly and do not execute shell hooks.
 ///
 /// This function walks up from `directory` to find all ancestor env.cue files
 /// with hooks, resolves each hook's `dir` field relative to its source env.cue,

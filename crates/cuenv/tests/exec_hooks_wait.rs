@@ -1,74 +1,82 @@
-//! Integration test for exec hooks waiting behavior
-
-mod hook_test_support;
+//! Integration test for exec shell-hook isolation.
 
 use assert_cmd::Command;
-use hook_test_support::{
-    ApprovalOutcome, TestResult, approve_config, assert_sandbox_error, create_test_dir,
-};
+use std::error::Error;
 use std::fs;
+use tempfile::TempDir;
+
+type TestResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn create_test_dir(module: &str) -> TestResult<TempDir> {
+    let temp_dir = tempfile::Builder::new().prefix("cuenv_test_").tempdir()?;
+    let path = temp_dir.path();
+    fs::create_dir_all(path.join("cue.mod"))?;
+    fs::write(
+        path.join("cue.mod/module.cue"),
+        format!("module: \"{module}\"\nlanguage: version: \"v0.9.0\"\n"),
+    )?;
+    Ok(temp_dir)
+}
 
 #[test]
-fn test_exec_waits_for_hooks() -> TestResult {
+fn test_exec_does_not_run_or_warn_about_unapproved_shell_hooks() -> TestResult {
     let temp_dir = create_test_dir("test.example/hooks")?;
     let path = temp_dir.path();
 
-    // Create env.cue with a slow hook that exports a variable
-    let cue_content = r#"
-package cuenv
+    fs::write(
+        path.join("env.cue"),
+        r#"package cuenv
 
 name: "test"
 
+env: {
+    STATIC_VAR: "static-value"
+}
+
 hooks: {
     onEnter: {
-        slow_hook: {
+        shell_only: {
             command: "sh"
-            args: ["-c", "sleep 0.1 && echo export HOOK_VAR=success"]
+            args: ["-c", "touch hook-ran && echo export HOOK_VAR=from-hook"]
             source: true
         }
     }
 }
-"#;
-    fs::write(path.join("env.cue"), cue_content)?;
+"#,
+    )?;
+
+    let hook_var_expr = "$".to_owned() + "{HOOK_VAR:-missing}";
+    let check_script = format!("printf '%s:%s\n' \"$STATIC_VAR\" \"{hook_var_expr}\"");
 
     let cuenv_bin = env!("CARGO_BIN_EXE_cuenv");
-
-    match approve_config(path, cuenv_bin)? {
-        ApprovalOutcome::Approved => {}
-        ApprovalOutcome::SandboxError => return Ok(()),
-    }
-
-    // We check that HOOK_VAR is "success".
-    // Since the hook sleeps for 0.1s, and cuenv exec (currently) only waits 10ms,
-    // this should fail if the bug exists.
     let output = Command::new(cuenv_bin)
         .current_dir(path)
         .env("CUENV_EXECUTABLE", cuenv_bin)
-        .args([
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "if [ \"$HOOK_VAR\" = \"success\" ]; then echo FOUND; exit 0; else echo MISSING; exit 1; fi",
-        ])
+        .args(["exec", "--", "sh", "-c", &check_script])
         .output()?;
 
-    // In sandbox/CI, onEnter hooks with source: true seem to cause FFI errors or I/O errors.
-    // We accept this failure mode to allow the build to pass, while asserting success locally.
-    if output.status.code() == Some(3) {
-        assert_sandbox_error(&output, "in sandbox");
-    } else {
-        assert!(
-            output.status.success(),
-            "Command failed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("FOUND"),
-            "Expected FOUND in stdout, got: {stdout}"
-        );
-    }
+    assert!(
+        output.status.success(),
+        "exec should succeed without hook approval\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("static-value:missing"),
+        "exec should receive static env but not hook-generated env\nstdout:\n{stdout}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Hooks not run") && !stderr.contains("approval required"),
+        "exec should not print shell hook approval guidance\nstderr:\n{stderr}"
+    );
+    assert!(
+        !path.join("hook-ran").exists(),
+        "exec should not execute onEnter shell hooks"
+    );
+
     Ok(())
 }
