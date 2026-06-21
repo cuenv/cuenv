@@ -52,13 +52,14 @@ impl JsonRenderer {
     ///
     /// # Errors
     ///
-    /// Returns an error if writing to the target fails.
+    /// Returns an error if JSON serialization or writing to the target fails.
     pub fn render_to_writer(&self, event: &CuenvEvent, mut writer: impl Write) -> io::Result<()> {
-        let Some(json) = self.render_to_string(event) else {
-            return Ok(());
-        };
-
-        writeln!(writer, "{json}")
+        if self.pretty {
+            serde_json::to_writer_pretty(&mut writer, event).map_err(json_error_to_io)?;
+        } else {
+            serde_json::to_writer(&mut writer, event).map_err(json_error_to_io)?;
+        }
+        writer.write_all(b"\n")
     }
 
     /// Render a single event to a string (for testing).
@@ -72,11 +73,31 @@ impl JsonRenderer {
     }
 }
 
+fn json_error_to_io(error: serde_json::Error) -> io::Error {
+    if let Some(kind) = error.io_error_kind() {
+        io::Error::new(kind, error)
+    } else {
+        io::Error::other(error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::{EventCategory, EventSource, OutputEvent};
     use uuid::Uuid;
+
+    struct BrokenPipeWriter;
+
+    impl std::io::Write for BrokenPipeWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn create_test_event() -> CuenvEvent {
         CuenvEvent::new(
@@ -143,6 +164,18 @@ mod tests {
         assert!(output.ends_with(b"\n"));
         let json = std::str::from_utf8(&output).unwrap();
         assert!(json.contains("Test message"));
+    }
+
+    #[test]
+    fn test_render_to_writer_preserves_writer_error_kind() {
+        let renderer = JsonRenderer::new();
+        let event = create_test_event();
+
+        let error = renderer
+            .render_to_writer(&event, BrokenPipeWriter)
+            .expect_err("broken writer should fail");
+
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[test]
