@@ -1469,6 +1469,7 @@ name = "cuenv-events"
 version = "0.54.0"
 dependencies = [
  "chrono",
+ "criterion",
  "indicatif",
  "serde",
  "serde_json",

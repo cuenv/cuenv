@@ -4,6 +4,7 @@
 //! to handle dependencies and determine execution order.
 
 use crate::{Error, Result, TaskNodeData};
+use petgraph::Direction::Incoming;
 use petgraph::algo::{is_cyclic_directed, toposort};
 use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::IntoNodeReferences;
@@ -232,27 +233,23 @@ impl<T: TaskNodeData> TaskGraph<T> {
         is_cyclic_directed(&self.graph)
     }
 
+    fn topological_indices(&self) -> Result<Vec<NodeIndex>> {
+        toposort(&self.graph, None).map_err(|_| Error::CycleDetected {
+            message: "Task dependency graph contains cycles".to_string(),
+        })
+    }
+
     /// Get topologically sorted list of tasks.
     ///
     /// # Errors
     ///
     /// Returns an error if the graph contains cycles.
     pub fn topological_sort(&self) -> Result<Vec<GraphNode<T>>> {
-        if self.has_cycles() {
-            return Err(Error::CycleDetected {
-                message: "Task dependency graph contains cycles".to_string(),
-            });
-        }
-
-        match toposort(&self.graph, None) {
-            Ok(sorted_indices) => Ok(sorted_indices
-                .into_iter()
-                .map(|idx| self.graph[idx].clone())
-                .collect()),
-            Err(_) => Err(Error::TopologicalSortFailed {
-                reason: "petgraph toposort failed".to_string(),
-            }),
-        }
+        let sorted_indices = self.topological_indices()?;
+        Ok(sorted_indices
+            .into_iter()
+            .map(|idx| self.graph[idx].clone())
+            .collect())
     }
 
     /// Get all tasks that can run in parallel (no dependencies between them).
@@ -264,31 +261,29 @@ impl<T: TaskNodeData> TaskGraph<T> {
     ///
     /// Returns an error if the graph contains cycles.
     pub fn get_parallel_groups(&self) -> Result<Vec<Vec<GraphNode<T>>>> {
-        let sorted = self.topological_sort()?;
+        let sorted = self.topological_indices()?;
 
         if sorted.is_empty() {
             return Ok(vec![]);
         }
 
-        // Group tasks by their dependency level
-        let mut groups: Vec<Vec<GraphNode<T>>> = vec![];
-        let mut processed: HashMap<String, usize> = HashMap::new();
+        let mut groups: Vec<Vec<GraphNode<T>>> = Vec::new();
+        let mut levels: HashMap<NodeIndex, usize> = HashMap::with_capacity(self.graph.node_count());
 
-        for task in sorted {
-            // Find the maximum level of all dependencies
-            let mut level = 0;
-            for dep in task.task.dependency_names() {
-                if let Some(&dep_level) = processed.get(dep) {
-                    level = level.max(dep_level + 1);
-                }
-            }
+        for node_index in sorted {
+            let level = self
+                .graph
+                .neighbors_directed(node_index, Incoming)
+                .filter_map(|dependency_index| levels.get(&dependency_index).copied())
+                .map(|dependency_level| dependency_level + 1)
+                .max()
+                .unwrap_or(0);
 
-            // Add to appropriate group
             if level >= groups.len() {
                 groups.resize(level + 1, vec![]);
             }
-            groups[level].push(task.clone());
-            processed.insert(task.name.clone(), level);
+            groups[level].push(self.graph[node_index].clone());
+            levels.insert(node_index, level);
         }
 
         Ok(groups)

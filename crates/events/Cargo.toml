@@ -42,8 +42,13 @@ thiserror = { workspace = true }
 indicatif = { workspace = true, optional = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tokio = { workspace = true, features = ["full", "test-util"] }
 tempfile = { workspace = true }
+
+[[bench]]
+name = "json_renderer"
+harness = false
 
 [lints]
 workspace = true

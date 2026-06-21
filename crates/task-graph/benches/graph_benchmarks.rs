@@ -10,6 +10,7 @@ use std::hint::black_box;
 #[derive(Debug, Clone)]
 struct BenchTask {
     deps: Vec<String>,
+    affected: bool,
 }
 
 impl TaskNodeData for BenchTask {
@@ -23,13 +24,17 @@ fn generate_wide_graph(task_count: usize) -> GraphResult<TaskGraph<BenchTask>> {
     let mut graph = TaskGraph::new();
 
     // Add root task
-    let root = BenchTask { deps: vec![] };
+    let root = BenchTask {
+        deps: vec![],
+        affected: false,
+    };
     graph.add_task("root", root)?;
 
     // Add many tasks that depend on root
     for i in 0..task_count {
         let task = BenchTask {
             deps: vec!["root".to_string()],
+            affected: false,
         };
         graph.add_task(&format!("task_{i}"), task)?;
     }
@@ -45,13 +50,17 @@ fn generate_deep_graph(depth: usize) -> GraphResult<TaskGraph<BenchTask>> {
     let mut graph = TaskGraph::new();
 
     // Add first task with no deps
-    let first = BenchTask { deps: vec![] };
+    let first = BenchTask {
+        deps: vec![],
+        affected: false,
+    };
     graph.add_task("task_0", first)?;
 
     // Add chain of tasks, each depending on the previous
     for i in 1..depth {
         let task = BenchTask {
             deps: vec![format!("task_{}", i - 1)],
+            affected: false,
         };
         graph.add_task(&format!("task_{i}"), task)?;
     }
@@ -67,7 +76,10 @@ fn generate_diamond_graph(width: usize, depth: usize) -> GraphResult<TaskGraph<B
     let mut graph = TaskGraph::new();
 
     // Root task
-    let root = BenchTask { deps: vec![] };
+    let root = BenchTask {
+        deps: vec![],
+        affected: false,
+    };
     graph.add_task("root", root)?;
 
     // Fan out: many tasks depend on root
@@ -80,6 +92,7 @@ fn generate_diamond_graph(width: usize, depth: usize) -> GraphResult<TaskGraph<B
             let task_name = format!("level_{level}_task_{w}");
             let task = BenchTask {
                 deps: prev_level.clone(),
+                affected: false,
             };
             graph.add_task(&task_name, task)?;
             current_level.push(task_name);
@@ -89,13 +102,52 @@ fn generate_diamond_graph(width: usize, depth: usize) -> GraphResult<TaskGraph<B
     }
 
     // Final task depends on all leaf tasks
-    let final_task = BenchTask { deps: prev_level };
+    let final_task = BenchTask {
+        deps: prev_level,
+        affected: false,
+    };
     graph.add_task("final", final_task)?;
 
     // Wire dependencies
     graph.add_dependency_edges()?;
 
     Ok(graph)
+}
+
+/// Generate a deep pipeline where the first task is directly affected and every
+/// later task depends on the previous task.
+fn generate_affected_chain(task_count: usize) -> GraphResult<(TaskGraph<BenchTask>, Vec<String>)> {
+    let mut graph = TaskGraph::new();
+    let mut pipeline_tasks = Vec::with_capacity(task_count);
+
+    for i in 0..task_count {
+        let name = format!("task_{i}");
+        let deps = if i == 0 {
+            Vec::new()
+        } else {
+            vec![format!("task_{}", i - 1)]
+        };
+        let task = BenchTask {
+            deps,
+            affected: i == 0,
+        };
+        graph.add_task(&name, task)?;
+        pipeline_tasks.push(name);
+    }
+
+    graph.add_dependency_edges()?;
+
+    Ok((graph, pipeline_tasks))
+}
+
+/// Generate the same dependency chain as [`generate_affected_chain`], but with
+/// pipeline order reversed to exercise order-independent propagation cost.
+fn generate_reverse_affected_chain(
+    task_count: usize,
+) -> GraphResult<(TaskGraph<BenchTask>, Vec<String>)> {
+    let (graph, mut pipeline_tasks) = generate_affected_chain(task_count)?;
+    pipeline_tasks.reverse();
+    Ok((graph, pipeline_tasks))
 }
 
 fn benchmark_get_parallel_groups(c: &mut Criterion) {
@@ -182,6 +234,48 @@ fn benchmark_graph_construction(c: &mut Criterion) {
     group.finish();
 }
 
+fn benchmark_compute_affected(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compute_affected_ordered_deep_chain");
+
+    for count in [100, 500, 1000, 2000] {
+        let fixture = generate_affected_chain(count);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(count),
+            &fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
+                        graph.compute_affected(pipeline_tasks, |task| task.affected, None)
+                    }))
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn benchmark_compute_affected_reverse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("compute_affected_reverse_deep_chain");
+
+    for count in [100, 500, 1000, 2000] {
+        let fixture = generate_reverse_affected_chain(count);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(count),
+            &fixture,
+            |b, fixture| {
+                b.iter(|| {
+                    black_box(fixture.as_ref().map(|(graph, pipeline_tasks)| {
+                        graph.compute_affected(pipeline_tasks, |task| task.affected, None)
+                    }))
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     benchmark_get_parallel_groups,
@@ -189,6 +283,8 @@ criterion_group!(
     benchmark_diamond_graph,
     benchmark_cycle_detection,
     benchmark_graph_construction,
+    benchmark_compute_affected,
+    benchmark_compute_affected_reverse,
 );
 
 criterion_main!(benches);

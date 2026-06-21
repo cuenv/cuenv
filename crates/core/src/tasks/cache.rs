@@ -151,6 +151,14 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }
     }
 
+    if !task.env.is_empty() {
+        tracing::debug!(
+            task = %task_name,
+            "skipping cache: task defines task-level environment entries resolved at execution time"
+        );
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv));
+    }
+
     let hashed = match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
         ResolveOutcome::Resolved(h) => h,
         ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
@@ -163,14 +171,6 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         return Ok(CacheOutcome::Skipped(CacheSkipReason::NoResolvedInputs));
     }
     let input_root_digest = build_input_root_digest(&hashed)?;
-
-    if !task.env.is_empty() {
-        tracing::debug!(
-            task = %task_name,
-            "skipping cache: task defines task-level environment entries resolved at execution time"
-        );
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv));
-    }
 
     let mut environment_variables = BTreeMap::new();
     let resolved = environment.merge_with_system_hermetic();
