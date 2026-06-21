@@ -1,6 +1,7 @@
 use super::TaskGraph;
 use crate::TaskNodeData;
-use std::collections::HashSet;
+use petgraph::Direction::Outgoing;
+use std::collections::{HashSet, VecDeque};
 
 /// Borrowed predicate used to resolve whether an external dependency is affected.
 pub type ExternalAffectedResolver<'a> = &'a dyn Fn(&str) -> bool;
@@ -49,87 +50,48 @@ impl<T: TaskNodeData> TaskGraph<T> {
     where
         F: Fn(&T) -> bool,
     {
+        let pipeline_names: Vec<&str> = pipeline_tasks.iter().map(AsRef::as_ref).collect();
+        let pipeline_set: HashSet<&str> = pipeline_names.iter().copied().collect();
         let mut affected = HashSet::new();
+        let mut queue = VecDeque::new();
 
-        self.mark_directly_affected(pipeline_tasks, &is_directly_affected, &mut affected);
-        self.propagate_affected(pipeline_tasks, is_external_affected, &mut affected);
-        affected_in_pipeline_order(pipeline_tasks, &affected)
-    }
-
-    fn mark_directly_affected<F>(
-        &self,
-        pipeline_tasks: &[impl AsRef<str>],
-        is_directly_affected: &F,
-        affected: &mut HashSet<String>,
-    ) where
-        F: Fn(&T) -> bool,
-    {
-        for task_name in pipeline_tasks {
-            let task_name = task_name.as_ref();
-            if let Some(node) = self.get_node_by_name(task_name)
-                && is_directly_affected(&node.task)
+        for task_name in &pipeline_names {
+            let Some(&node_index) = self.name_to_node.get(*task_name) else {
+                continue;
+            };
+            let node = &self.graph[node_index];
+            if (is_directly_affected(&node.task)
+                || Self::has_affected_external_dependency(&node.task, is_external_affected))
+                && affected.insert((*task_name).to_string())
             {
-                affected.insert(task_name.to_string());
+                queue.push_back(node_index);
             }
         }
-    }
 
-    fn propagate_affected(
-        &self,
-        pipeline_tasks: &[impl AsRef<str>],
-        is_external_affected: Option<ExternalAffectedResolver<'_>>,
-        affected: &mut HashSet<String>,
-    ) {
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for task_name in pipeline_tasks {
-                changed |= self.propagate_task_affected(
-                    task_name.as_ref(),
-                    is_external_affected,
-                    affected,
-                );
+        while let Some(node_index) = queue.pop_front() {
+            for dependent_index in self.graph.neighbors_directed(node_index, Outgoing) {
+                let dependent_name = self.graph[dependent_index].name.as_str();
+                if !pipeline_set.contains(dependent_name) || affected.contains(dependent_name) {
+                    continue;
+                }
+                affected.insert(dependent_name.to_string());
+                queue.push_back(dependent_index);
             }
         }
+
+        affected_in_pipeline_order(&pipeline_names, &affected)
     }
 
-    fn propagate_task_affected(
-        &self,
-        task_name: &str,
+    fn has_affected_external_dependency(
+        task: &T,
         is_external_affected: Option<ExternalAffectedResolver<'_>>,
-        affected: &mut HashSet<String>,
     ) -> bool {
-        if affected.contains(task_name) {
-            return false;
-        }
-
-        let Some(node) = self.get_node_by_name(task_name) else {
+        let Some(resolver) = is_external_affected else {
             return false;
         };
 
-        for dep in node.task.dependency_names() {
-            if self.dependency_is_affected(dep, is_external_affected, affected) {
-                affected.insert(task_name.to_string());
-                return true;
-            }
-        }
-
-        false
-    }
-
-    fn dependency_is_affected(
-        &self,
-        dep: &str,
-        is_external_affected: Option<ExternalAffectedResolver<'_>>,
-        affected: &HashSet<String>,
-    ) -> bool {
-        if dep.starts_with('#') {
-            return is_external_affected.is_some_and(|resolver| resolver(dep));
-        }
-
-        self.expand_dep_to_leaf_tasks(dep)
-            .into_iter()
-            .any(|leaf_dep| affected.contains(&leaf_dep))
+        task.dependency_names()
+            .any(|dep| dep.starts_with('#') && resolver(dep))
     }
 }
 
@@ -139,8 +101,10 @@ fn affected_in_pipeline_order(
 ) -> Vec<String> {
     pipeline_tasks
         .iter()
-        .map(|task| task.as_ref().to_string())
-        .filter(|task| affected.contains(task))
+        .filter_map(|task| {
+            let task = task.as_ref();
+            affected.contains(task).then(|| task.to_string())
+        })
         .collect()
 }
 

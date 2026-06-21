@@ -603,6 +603,40 @@ fn test_compute_affected_transitive_only() {
 }
 
 #[test]
+fn test_compute_affected_reverse_pipeline_order() {
+    let mut graph = TaskGraph::new();
+    graph.add_task("build", TestTask::new(&[])).unwrap();
+    graph.add_task("test", TestTask::new(&["build"])).unwrap();
+    graph.add_task("deploy", TestTask::new(&["test"])).unwrap();
+    graph.add_dependency_edges().unwrap();
+
+    let affected = graph.compute_affected(
+        &["deploy", "test", "build"],
+        |task| task.depends_on.is_empty(),
+        None,
+    );
+
+    assert_eq!(affected, vec!["deploy", "test", "build"]);
+}
+
+#[test]
+fn test_compute_affected_does_not_propagate_through_non_pipeline_tasks() {
+    let mut graph = TaskGraph::new();
+    graph.add_task("build", TestTask::new(&[])).unwrap();
+    graph.add_task("test", TestTask::new(&["build"])).unwrap();
+    graph.add_task("deploy", TestTask::new(&["test"])).unwrap();
+    graph.add_dependency_edges().unwrap();
+
+    let affected = graph.compute_affected(
+        &["build", "deploy"],
+        |task| task.depends_on.is_empty(),
+        None,
+    );
+
+    assert_eq!(affected, vec!["build"]);
+}
+
+#[test]
 fn test_compute_affected_with_external_resolver() {
     let mut graph = TaskGraph::new();
     // build depends on an external project task, test depends on build

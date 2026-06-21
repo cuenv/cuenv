@@ -98,6 +98,17 @@ Full root flake check is required before marking a PR ready for review, merging,
 
 If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 
+For performance changes, make the claim measurable. Add or update Criterion
+coverage next to the hot path, keep a behavior regression test for the
+optimized code path, and run the narrow benchmark slice before and after the
+change. For example, task graph work can use
+`cargo bench -p cuenv-task-graph --bench graph_benchmarks -- <group>` and event
+rendering work can use
+`cargo bench -p cuenv-events --bench json_renderer -- <group>`. Treat the
+benchmark output as draft evidence; the full Nix gate is still only required
+when one of the full-flake triggers applies or the PR is being readied for
+review.
+
 5. **Commit and Push**
 
 ```bash

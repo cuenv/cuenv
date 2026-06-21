@@ -54,11 +54,12 @@ impl JsonRenderer {
     ///
     /// Returns an error if writing to the target fails.
     pub fn render_to_writer(&self, event: &CuenvEvent, mut writer: impl Write) -> io::Result<()> {
-        let Some(json) = self.render_to_string(event) else {
-            return Ok(());
-        };
-
-        writeln!(writer, "{json}")
+        if self.pretty {
+            serde_json::to_writer_pretty(&mut writer, event).map_err(io::Error::other)?;
+        } else {
+            serde_json::to_writer(&mut writer, event).map_err(io::Error::other)?;
+        }
+        writer.write_all(b"\n")
     }
 
     /// Render a single event to a string (for testing).

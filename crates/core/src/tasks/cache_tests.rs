@@ -2,9 +2,22 @@ use super::*;
 use crate::environment::Environment;
 use crate::tasks::{Input, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{LocalActionCache, LocalCas};
-use cuenv_vcs::WalkHasher;
+use cuenv_vcs::{HashedInput, VcsHasher, WalkHasher};
 use std::fs;
 use tempfile::TempDir;
+
+struct PanicHasher;
+
+#[async_trait::async_trait]
+impl VcsHasher for PanicHasher {
+    async fn resolve_and_hash(&self, _patterns: &[String]) -> cuenv_vcs::Result<Vec<HashedInput>> {
+        panic!("runtime-env tasks should skip cache before hashing inputs");
+    }
+
+    fn name(&self) -> &'static str {
+        "panic"
+    }
+}
 
 fn make_cache(root: &Path) -> TaskCacheConfig {
     TaskCacheConfig {
@@ -164,6 +177,36 @@ async fn build_action_returns_none_when_task_has_task_level_env() {
 
     assert!(result.is_none());
     assert!(!side_effect.exists());
+}
+
+#[tokio::test]
+async fn build_action_skips_runtime_env_before_hashing_inputs() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.vcs_hasher = Arc::new(PanicHasher);
+
+    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    task.env
+        .insert("TOKEN".to_string(), serde_json::json!("runtime"));
+    let env = Environment::new();
+
+    let outcome = build_action(BuildActionInput {
+        task: &task,
+        task_name: "task-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv)
+    ));
 }
 
 #[tokio::test]
