@@ -865,7 +865,9 @@ cuenv build --label ci   # Build images matching the ci label
 
 ### #Hooks
 
-Shell hooks executed on directory entry/exit.
+Shell hooks executed by the shell integration on directory entry/exit. `cuenv exec`
+and `cuenv task` do not run these hooks or require hook approval; they use static
+environment values plus runtime/tool activation directly.
 
 ```cue
 hooks: {
@@ -920,7 +922,9 @@ hooks: {
 
 ### #NixFlake
 
-Built-in hook for loading Nix flake environments.
+Built-in shell hook for loading Nix flake environments in an interactive shell.
+For `cuenv exec` and `cuenv task`, prefer `runtime: schema.#NixRuntime`; those
+commands activate runtimes directly and do not run `onEnter` hooks.
 
 ```cue
 hooks: {
