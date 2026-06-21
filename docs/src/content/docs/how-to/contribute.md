@@ -9,7 +9,7 @@ We welcome contributions to cuenv! This guide will help you get started with con
 
 ### Prerequisites
 
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
+- Rust 1.85.0+ (install via [rustup](https://rustup.rs/))
 - Git for version control
 - Nix (optional, for reproducible development environment)
 - Go 1.21+ (for CUE engine development)
@@ -65,7 +65,8 @@ git checkout -b feature/my-new-feature
 4. **Test Your Changes**
 
 ```bash
-# Run the final review/merge/release gate, not the default per-commit check
+# Run the final review/merge/release gate, not the default per-commit check.
+# Release-only version bumps from an already-green main use the release-only checks below instead.
 nix flake check -L --accept-flake-config
 
 # Run specific crate tests
@@ -80,7 +81,7 @@ cuenv sync ci --check
 cuenv fmt --fix
 ```
 
-Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit; commit and push the isolated draft change with the focused validation recorded in the PR.
+Use focused validation for isolated draft commits, then run the full Nix gate before requesting review or merging. Full flake checks are review/merge/release evidence and broad-risk safety nets, not the default proof for every draft commit. Release-only version bumps from an already-green `main` are the release exception: skip local test execution and the full root flake check, then verify version and lockfile consistency before tagging or publishing. If the change does not match a required full-flake trigger below, do not run the full root flake check before a draft commit; commit and push the isolated draft change with the focused validation recorded in the PR.
 
 Before starting a full root flake check, identify the trigger that requires it. If no trigger applies, keep validation focused and record the focused gate instead.
 
@@ -94,7 +95,7 @@ Start with focused validation when the change is isolated and the focused gate d
 
 Do not run the full root flake check for exploratory review work, docs-only edits, prompt or agent-guidance text including `AGENTS.md`, repo-local skill-only edits, simple mechanical test extraction commits, test moves, behavior-preserving module splits, one-crate test-only dev-dependency changes, or tiny scoped commits while the PR is still draft and focused checks cover the touched surface.
 
-Full root flake check is required before marking a PR ready for review, merging, release work, Nix/flake output/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, schema or CLI support changes that focused checks cannot fully cover, or Cargo manifest/lockfile changes that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
+Full root flake check is required before marking a PR ready for review, merging, release work that is not a release-only version bump from an already-green `main`, Nix/flake output/build/check wiring changes, CI/release behavior changes, generated workflow contract changes, broad cross-crate runtime changes, schema or CLI support changes that focused checks cannot fully cover, or Cargo manifest/lockfile changes that affect production dependencies, crate features, workspace membership, MSRV, published package metadata, or more than one crate.
 
 If a change does not match one of those full-flake triggers, keep the check focused and record the focused validation in the PR.
 

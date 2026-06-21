@@ -210,6 +210,36 @@ async fn build_action_skips_runtime_env_before_hashing_inputs() {
 }
 
 #[tokio::test]
+async fn build_action_runtime_env_skip_precedes_hasher_root_mismatch() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.vcs_hasher_root = tmp.path().join("other-root");
+
+    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    task.env
+        .insert("TOKEN".to_string(), serde_json::json!("runtime"));
+    let env = Environment::new();
+
+    let outcome = build_action(BuildActionInput {
+        task: &task,
+        task_name: "task-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv)
+    ));
+}
+
+#[tokio::test]
 async fn build_action_hashes_inputs_relative_to_task_project_root() {
     let tmp = TempDir::new().unwrap();
     let workspace_root = tmp.path();
