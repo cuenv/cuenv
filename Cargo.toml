@@ -107,7 +107,7 @@ rustls = { version = "0.23.40", default-features = false, features = ["std", "ri
 reqwest = { version = "0.13.3", default-features = false, features = ["json", "rustls-no-provider"] }
 # New dependencies for hook execution system
 dirs = "6.0"
-sha2 = "0.10"
+sha2 = "0.11"
 secrecy = { version = "0.10", features = ["serde"] }
 futures = "0.3"
 rayon = "1.12"
