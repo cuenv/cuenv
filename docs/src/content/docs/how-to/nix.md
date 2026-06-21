@@ -102,6 +102,7 @@ import (
 
 schema.#Project & {
   name: "my-project"
+  // Used directly by `cuenv exec` and `cuenv task`.
   runtime: schema.#NixRuntime
 }
 
@@ -112,7 +113,7 @@ env: {
 
 hooks: {
     onEnter: {
-        // Load Nix flake environment
+        // Load Nix flake environment for interactive shell integration
         nix: xNix.#NixFlake
     }
 }
@@ -127,7 +128,7 @@ tasks: {
 
 ## The #NixFlake Hook
 
-cuenv provides a contrib `#NixFlake` hook type that loads your Nix development environment:
+cuenv provides a contrib `#NixFlake` hook type that loads your Nix development environment for interactive shells:
 
 ```cue
 import xNix "github.com/cuenv/cuenv/contrib/nix"
@@ -147,6 +148,9 @@ The `#NixFlake` hook:
 2. Runs `nix print-dev-env` to get the environment
 3. Sources the environment variables into your shell
 4. Tracks `flake.nix` and `flake.lock` as inputs for cache invalidation
+
+`cuenv exec` and `cuenv task` do not run `onEnter` hooks. Use
+`runtime: schema.#NixRuntime` for command and task runtime activation.
 
 When the project also declares `runtime: schema.#NixRuntime`, `cuenv sync`
 records the Nix runtime state in `cuenv.lock` using a digest derived from the

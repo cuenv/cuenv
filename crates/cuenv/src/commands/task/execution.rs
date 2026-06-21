@@ -8,7 +8,7 @@ use super::{
     format_task_results, resolve_runtime_cache_identity,
 };
 use crate::commands::env_file::find_cue_module_root;
-use crate::commands::export::{HookEnvironmentRequest, get_environment_with_hooks};
+use crate::commands::export::extract_static_env_vars;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::{Project, Runtime};
@@ -245,12 +245,7 @@ async fn prepare_task_runtime(
     context: &TaskExecutionContext,
     resolution: &TaskResolution,
 ) -> Result<PreparedTaskRuntime> {
-    let directory = context.project_root.clone();
-    let base_env_vars = get_environment_with_hooks(
-        HookEnvironmentRequest::new(&directory, &context.manifest, input.package)
-            .with_executor(input.executor),
-    )
-    .await?;
+    let base_env_vars = extract_static_env_vars(&context.manifest);
 
     let mut runtime_env = base_runtime_environment(context).await?;
     apply_task_environment(TaskEnvironmentApplication {

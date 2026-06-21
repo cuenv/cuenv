@@ -210,7 +210,9 @@ cuenv task work --path examples/task-output-ref --package examples
 ## Hooks
 
 [`examples/hook`](https://github.com/cuenv/cuenv/tree/main/examples/hook) runs a
-command on directory entry. Hooks require approval before they execute.
+command on directory entry through the shell integration. Hooks require approval
+before shell integration executes them; `cuenv exec` and `cuenv task` do not run
+these hooks or require hook approval.
 
 ```cue
 package examples
@@ -238,9 +240,11 @@ tasks: {
 ```
 
 ```bash
-# Approve the config (required before hooks run)
+# Approve the config and start shell hook execution
 cuenv allow --path examples/hook
+cuenv env load --path examples/hook --package examples
 
+# Tasks use static env directly and do not require hook approval
 cuenv task verify_env --path examples/hook --package examples
 ```
 

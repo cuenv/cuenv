@@ -276,7 +276,8 @@ tools:
 
 ### Automatic Activation
 
-When using `cuenv exec` or `cuenv task`, tools are activated automatically:
+When using `cuenv exec` or `cuenv task`, tools are activated automatically. This
+does not run shell hooks and does not require `cuenv allow`:
 
 1. Read `cuenv.lock` for current platform
 2. Check cache for each tool

@@ -339,6 +339,68 @@ tasks: {
 }
 
 #[test]
+fn test_task_does_not_run_or_warn_about_unapproved_shell_hooks() -> TestResult {
+    let temp_dir = create_test_dir()?;
+    init_cue_module(temp_dir.path())?;
+    let hook_var_expr = "$".to_owned() + "{HOOK_VAR:-missing}";
+    let cue_content = r#"package test
+
+name: "test"
+
+env: {
+    STATIC_VAR: "static-value"
+}
+
+hooks: {
+    onEnter: {
+        shell_only: {
+            command: "sh"
+            args: ["-c", "touch hook-ran && echo export HOOK_VAR=from-hook"]
+            source: true
+        }
+    }
+}
+
+tasks: {
+    check_hooks: {
+        command: "sh"
+        args: ["-c", "printf '%s:%s\n' \"$STATIC_VAR\" \"__HOOK_VAR_EXPR__\""]
+        hermetic: false
+    }
+}"#
+    .replace("__HOOK_VAR_EXPR__", &hook_var_expr);
+
+    write_env(&temp_dir, &cue_content)?;
+
+    let (stdout, stderr, success) = run_cuenv(&[
+        "task",
+        "-p",
+        path_arg(temp_dir.path())?,
+        "--package",
+        "test",
+        "check_hooks",
+    ])?;
+
+    assert!(
+        success,
+        "task should succeed without hook approval\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("static-value:missing"),
+        "task should receive static env but not hook-generated env\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Hooks not run") && !stderr.contains("approval required"),
+        "task should not print shell hook approval guidance\nstderr:\n{stderr}"
+    );
+    assert!(
+        !temp_dir.path().join("hook-ran").exists(),
+        "task should not execute onEnter shell hooks"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_exec_command_with_shorthand() -> TestResult {
     let temp_dir = create_test_dir()?;
     init_cue_module(temp_dir.path())?;

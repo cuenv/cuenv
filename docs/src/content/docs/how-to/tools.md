@@ -43,7 +43,7 @@ Lock the tools to create `cuenv.lock`:
 cuenv sync lock
 ```
 
-Run tasks - tools are activated automatically:
+Run tasks - tools are activated automatically without shell hooks:
 
 ```bash
 cuenv task process
@@ -247,7 +247,7 @@ Commit `cuenv.lock` to your repository for reproducible builds across machines.
 ## Automatic Activation
 
 :::tip[No Hook Required]
-When using `cuenv exec` or `cuenv task`, tools from the lockfile are activated automatically. You don't need to configure a hook for tool activation.
+When using `cuenv exec` or `cuenv task`, tools from the lockfile are activated automatically. You don't need to configure a hook for tool activation or run `cuenv allow`.
 :::
 
 cuenv automatically:

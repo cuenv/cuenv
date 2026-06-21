@@ -126,9 +126,9 @@ cuenv sync lock
 
 This resolves each image to a content-addressed digest and records the per-image `extract` paths for every configured platform into `cuenv.lock`. Commit the lockfile so every machine and CI run resolves the same bytes. See [Lockfiles](/how-to/lockfiles/) for the full lock model.
 
-### 3. Activate binaries with the #OCIActivate hook
+### 3. Activate binaries in your shell with the #OCIActivate hook
 
-The lockfile alone does not change `PATH`. Add the pre-configured `#OCIActivate` hook to `onEnter`:
+For interactive shells, the lockfile alone does not change `PATH`. Add the pre-configured `#OCIActivate` hook to `onEnter`:
 
 ```cue
 hooks: {
@@ -143,6 +143,10 @@ hooks: {
 1. Reads `cuenv.lock` to find artifacts for the current platform.
 2. Pulls and extracts the binaries (skipping anything already cached).
 3. Emits `export PATH=...` so the extracted binaries lead your `PATH`.
+
+`cuenv exec` and `cuenv task` do not run `onEnter` hooks or require hook
+approval. Use hooks for interactive shell activation, and use the command
+runtime paths for command/task execution.
 
 You can also run the activation directly in a script:
 

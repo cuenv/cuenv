@@ -20,10 +20,7 @@ use cuenv_core::tasks::execute_command_with_redaction;
 use cuenv_core::tools::apply_resolved_tool_activation;
 use std::path::Path;
 
-use cuenv_events::emit_stderr;
-use cuenv_hooks::{ApprovalManager, ApprovalStatus, ConfigSummary, check_approval_status};
-
-use super::export::{HookEnvironmentRequest, extract_static_env_vars, get_environment_with_hooks};
+use super::export::extract_static_env_vars;
 use tracing::instrument;
 
 /// Represents the type of manifest found at a path.
@@ -65,7 +62,6 @@ struct ExecEnvironmentRequest<'a, 'b> {
     exec: &'a ExecRequest<'b>,
     directory: &'a Path,
     manifest_kind: &'a ManifestKind,
-    executor: &'a CommandExecutor,
 }
 
 struct PreparedExecEnvironment {
@@ -142,9 +138,10 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
             })?;
 
     let manifest_kind = load_manifest_kind(&target_path, executor)?;
-    let project_for_hooks = manifest_kind.project();
+    let project_for_runtime = manifest_kind.project();
 
-    // Get environment with hook-generated vars merged in
+    // Get the command environment. Shell hooks are intentionally not executed by
+    // `cuenv exec`; runtime activation is handled below.
     let directory = std::fs::canonicalize(request.path)
         .unwrap_or_else(|_| Path::new(request.path).to_path_buf());
 
@@ -152,17 +149,16 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
         exec: &request,
         directory: &directory,
         manifest_kind: &manifest_kind,
-        executor,
     })
     .await?;
 
     // Ensure lockfile is up to date for tools declared in the current project.
     // This keeps `cuenv exec` self-healing when runtime tool definitions change.
-    if let Some(project) = project_for_hooks {
+    if let Some(project) = project_for_runtime {
         ensure_lockfile_for_runtime_tools(&target_path, request.package, project, executor).await?;
     }
 
-    if should_activate_lockfile_tools(project_for_hooks) {
+    if should_activate_lockfile_tools(project_for_runtime) {
         // Download and activate tools from lockfile by prepending to PATH and library path.
         // This happens automatically without requiring hook approval since tool
         // activation is a controlled, safe operation (just adds paths to the environment).
@@ -215,43 +211,13 @@ async fn prepare_exec_environment(
         exec,
         directory,
         manifest_kind,
-        executor,
     } = request;
     let mut runtime_env = Environment::new();
     let mut secrets_for_redaction: Vec<String> = Vec::new();
 
     if let Some(project) = manifest_kind.project() {
-        let summary = ConfigSummary::from_hooks(project.hooks.as_ref());
-
-        let hooks_approved = if summary.has_hooks {
-            let mut approval_manager = ApprovalManager::with_default_file()?;
-            approval_manager.load_approvals().await?;
-            let approval_status =
-                check_approval_status(&approval_manager, directory, project.hooks.as_ref())?;
-            matches!(approval_status, ApprovalStatus::Approved)
-        } else {
-            true
-        };
-
-        if !hooks_approved {
-            emit_stderr!(
-                "\x1b[1;33mWarning:\x1b[0m Hooks not run (approval required). Run '\x1b[36mcuenv allow\x1b[0m' to enable."
-            );
-        }
-
-        let base_env_vars = if hooks_approved {
-            get_environment_with_hooks(
-                HookEnvironmentRequest::new(directory, project, exec.package)
-                    .with_executor(executor),
-            )
-            .await?
-        } else {
-            extract_static_env_vars(project)
-        };
-        tracing::debug!(
-            "Base environment variables after hooks: {:?}",
-            base_env_vars
-        );
+        let base_env_vars = extract_static_env_vars(project);
+        tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
 
         let runtime_env_vars =
             resolve_runtime_environment(directory, project.runtime.as_ref()).await?;
