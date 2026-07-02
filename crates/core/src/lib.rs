@@ -43,7 +43,7 @@ pub mod contributors;
 pub mod cue;
 pub mod environment;
 pub mod http;
-pub mod lockfile;
+pub use cuenv_manifest::lockfile;
 pub mod manifest;
 pub mod module;
 pub use cuenv_manifest::owners;
@@ -424,6 +424,12 @@ impl From<std::io::Error> for Error {
 impl From<std::str::Utf8Error> for Error {
     fn from(source: std::str::Utf8Error) -> Self {
         Error::Utf8 { source, file: None }
+    }
+}
+
+impl From<cuenv_manifest::lockfile::LockfileError> for Error {
+    fn from(source: cuenv_manifest::lockfile::LockfileError) -> Self {
+        Error::configuration(source.to_string())
     }
 }
 

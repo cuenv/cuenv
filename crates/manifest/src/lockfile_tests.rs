@@ -27,14 +27,14 @@ fn test_lockfile_serialization() {
                 "darwin-arm64".to_string(),
                 PlatformData {
                     digest: "sha256:abc123".to_string(),
-                    size: Some(1234567),
+                    size: Some(1_234_567),
                 },
             ),
             (
                 "linux-x86_64".to_string(),
                 PlatformData {
                     digest: "sha256:def456".to_string(),
-                    size: Some(1345678),
+                    size: Some(1_345_678),
                 },
             ),
         ]),
@@ -321,7 +321,7 @@ fn test_tools_serialization() {
                     provider: "github".to_string(),
                     digest: "sha256:abc123".to_string(),
                     source: serde_json::json!({ "repo": "jqlang/jq", "tag": "jq-1.7.1", "asset": "jq-macos-arm64" }),
-                    size: Some(1234567),
+                    size: Some(1_234_567),
                     dependencies: vec![],
                 },
             )
@@ -336,7 +336,7 @@ fn test_tools_serialization() {
                     provider: "github".to_string(),
                     digest: "sha256:def456".to_string(),
                     source: serde_json::json!({ "repo": "jqlang/jq", "tag": "jq-1.7.1", "asset": "jq-linux-amd64" }),
-                    size: Some(1345678),
+                    size: Some(1_345_678),
                     dependencies: vec![],
                 },
             )

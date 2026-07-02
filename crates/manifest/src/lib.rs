@@ -15,7 +15,10 @@
 pub mod ci;
 pub mod config;
 pub mod environment;
+/// Lockfile schema types (cuenv.lock).
+pub mod lockfile;
 pub mod manifest;
 pub mod owners;
 pub mod secrets;
 pub mod tasks;
+pub mod tools;

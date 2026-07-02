@@ -54,6 +54,19 @@
 //! ```
 
 use crate::tools::ToolActivationStep;
+
+/// Error type for lockfile load/save/validation operations.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct LockfileError(String);
+
+impl LockfileError {
+    /// Create a lockfile error from any displayable message.
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -110,11 +123,15 @@ impl Lockfile {
     /// Load a lockfile from a TOML file.
     ///
     /// Returns `None` if the file doesn't exist.
-    /// Returns an error if the file exists but is invalid.
-    pub fn load(path: &Path) -> crate::Result<Option<Self>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but cannot be read, is a
+    /// symlink, fails to parse, or fails validation.
+    pub fn load(path: &Path) -> Result<Option<Self>, LockfileError> {
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(crate::Error::configuration(format!(
+                return Err(LockfileError::new(format!(
                     "Refusing to read symlinked lockfile at {}",
                     path.display()
                 )));
@@ -122,7 +139,7 @@ impl Lockfile {
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => {
-                return Err(crate::Error::configuration(format!(
+                return Err(LockfileError::new(format!(
                     "Failed to inspect lockfile at {}: {}",
                     path.display(),
                     e
@@ -131,10 +148,10 @@ impl Lockfile {
         }
 
         let content = std::fs::read_to_string(path)
-            .map_err(|e| crate::Error::configuration(format!("Failed to read lockfile: {}", e)))?;
+            .map_err(|e| LockfileError::new(format!("Failed to read lockfile: {}", e)))?;
 
         let lockfile: Self = toml::from_str(&content).map_err(|e| {
-            crate::Error::configuration(format!(
+            LockfileError::new(format!(
                 "Failed to parse lockfile at {}: {}",
                 path.display(),
                 e
@@ -143,30 +160,34 @@ impl Lockfile {
 
         // Version check for future migrations
         if lockfile.version > LOCKFILE_VERSION {
-            return Err(crate::Error::configuration(format!(
+            return Err(LockfileError::new(format!(
                 "Lockfile version {} is newer than supported version {}. Please upgrade cuenv.",
                 lockfile.version, LOCKFILE_VERSION
             )));
         }
         lockfile.validate().map_err(|msg| {
-            crate::Error::configuration(format!("Invalid lockfile at {}: {}", path.display(), msg))
+            LockfileError::new(format!("Invalid lockfile at {}: {}", path.display(), msg))
         })?;
 
         Ok(Some(lockfile))
     }
 
     /// Save the lockfile to a TOML file.
-    pub fn save(&self, path: &Path) -> crate::Result<()> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the lockfile fails validation, cannot be
+    /// serialized, or cannot be written.
+    pub fn save(&self, path: &Path) -> Result<(), LockfileError> {
         self.validate().map_err(|msg| {
-            crate::Error::configuration(format!("Refusing to write invalid lockfile: {msg}"))
+            LockfileError::new(format!("Refusing to write invalid lockfile: {msg}"))
         })?;
 
-        let content = toml::to_string_pretty(self).map_err(|e| {
-            crate::Error::configuration(format!("Failed to serialize lockfile: {}", e))
-        })?;
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| LockfileError::new(format!("Failed to serialize lockfile: {}", e)))?;
 
         if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-            return Err(crate::Error::configuration(format!(
+            return Err(LockfileError::new(format!(
                 "Refusing to write symlinked lockfile at {}",
                 path.display()
             )));
@@ -180,31 +201,29 @@ impl Lockfile {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| crate::Error::configuration(e.to_string()))?
+                .map_err(|e| LockfileError::new(e.to_string()))?
                 .as_nanos()
         ));
         let mut temp_file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp_path)
-            .map_err(|e| crate::Error::configuration(format!("Failed to write lockfile: {}", e)))?;
+            .map_err(|e| LockfileError::new(format!("Failed to write lockfile: {}", e)))?;
         temp_file
             .write_all(content.as_bytes())
-            .map_err(|e| crate::Error::configuration(format!("Failed to write lockfile: {}", e)))?;
+            .map_err(|e| LockfileError::new(format!("Failed to write lockfile: {}", e)))?;
         temp_file
             .sync_all()
-            .map_err(|e| crate::Error::configuration(format!("Failed to sync lockfile: {}", e)))?;
+            .map_err(|e| LockfileError::new(format!("Failed to sync lockfile: {}", e)))?;
         drop(temp_file);
         std::fs::rename(&temp_path, path).map_err(|e| {
             let _ = std::fs::remove_file(&temp_path);
-            crate::Error::configuration(format!("Failed to replace lockfile: {}", e))
+            LockfileError::new(format!("Failed to replace lockfile: {}", e))
         })?;
         let parent = lockfile_parent_for_sync(path);
         std::fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
-            .map_err(|e| {
-                crate::Error::configuration(format!("Failed to sync lockfile directory: {}", e))
-            })?;
+            .map_err(|e| LockfileError::new(format!("Failed to sync lockfile directory: {}", e)))?;
 
         Ok(())
     }
@@ -247,10 +266,9 @@ impl Lockfile {
     ///
     /// Returns an error if the tool fails validation (empty platforms or
     /// invalid digest format).
-    pub fn upsert_tool(&mut self, name: String, tool: LockedTool) -> crate::Result<()> {
-        tool.validate().map_err(|msg| {
-            crate::Error::configuration(format!("Invalid tool '{}': {}", name, msg))
-        })?;
+    pub fn upsert_tool(&mut self, name: String, tool: LockedTool) -> Result<(), LockfileError> {
+        tool.validate()
+            .map_err(|msg| LockfileError::new(format!("Invalid tool '{}': {}", name, msg)))?;
 
         self.tools.insert(name, tool);
         Ok(())
@@ -265,9 +283,9 @@ impl Lockfile {
         &mut self,
         project_path: String,
         runtime: LockedRuntime,
-    ) -> crate::Result<()> {
+    ) -> Result<(), LockfileError> {
         runtime.validate().map_err(|msg| {
-            crate::Error::configuration(format!(
+            LockfileError::new(format!(
                 "Invalid runtime for project '{}': {}",
                 project_path, msg
             ))
@@ -286,9 +304,9 @@ impl Lockfile {
         &mut self,
         name: String,
         dependency: LockedVcsDependency,
-    ) -> crate::Result<()> {
+    ) -> Result<(), LockfileError> {
         dependency.validate().map_err(|msg| {
-            crate::Error::configuration(format!("Invalid VCS dependency '{}': {}", name, msg))
+            LockfileError::new(format!("Invalid VCS dependency '{}': {}", name, msg))
         })?;
 
         self.vcs.insert(name, dependency);
@@ -308,10 +326,10 @@ impl Lockfile {
         version: &str,
         platform: &str,
         data: LockedToolPlatform,
-    ) -> crate::Result<()> {
+    ) -> Result<(), LockfileError> {
         // Validate digest format
         if !data.digest.starts_with("sha256:") && !data.digest.starts_with("sha512:") {
-            return Err(crate::Error::configuration(format!(
+            return Err(LockfileError::new(format!(
                 "Invalid digest format for tool '{}' platform '{}': must start with 'sha256:' or 'sha512:'",
                 name, platform
             )));
@@ -342,11 +360,11 @@ impl Lockfile {
     ///
     /// Returns an error if the artifact fails validation (empty platforms or
     /// invalid digest format).
-    pub fn upsert_artifact(&mut self, artifact: LockedArtifact) -> crate::Result<()> {
+    pub fn upsert_artifact(&mut self, artifact: LockedArtifact) -> Result<(), LockfileError> {
         // Validate the artifact before inserting
         artifact
             .validate()
-            .map_err(|msg| crate::Error::configuration(format!("Invalid artifact: {}", msg)))?;
+            .map_err(|msg| LockfileError::new(format!("Invalid artifact: {}", msg)))?;
 
         // Find existing artifact with same identity (match Image by full reference)
         let existing_idx = self
