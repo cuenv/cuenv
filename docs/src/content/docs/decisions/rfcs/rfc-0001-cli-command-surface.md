@@ -13,7 +13,7 @@ related_features:
 
 ## Summary
 
-This RFC defines the canonical command surface for the cuenv CLI. It captures the hierarchy, naming, default argument semantics, and discoverability strategies already prototyped in [crates/cuenv-cli/src/cli.rs](crates/cuenv-cli/src/cli.rs:211). The goal is to stabilise the structural expectations that other tooling (documentation, BDD scenarios, IDE integrations) depend on before the CLI transitions from alpha to beta.
+This RFC defines the canonical command surface for the cuenv CLI. It captures the hierarchy, naming, default argument semantics, and discoverability strategies already prototyped in [crates/cuenv/src/cli.rs](crates/cuenv/src/cli.rs:211). The goal is to stabilise the structural expectations that other tooling (documentation, BDD scenarios, IDE integrations) depend on before the CLI transitions from alpha to beta.
 
 ## Problem Statement
 

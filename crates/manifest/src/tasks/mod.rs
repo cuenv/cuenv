@@ -30,7 +30,7 @@ pub use inputs::{
 };
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use retry::RetryConfig;
-pub use shell::{ScriptShell, Shell, ShellOptions};
+pub use shell::{ScriptShell, Shell, ShellOptionToggle, ShellOptions};
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

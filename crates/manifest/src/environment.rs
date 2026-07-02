@@ -278,8 +278,8 @@ impl EnvValue {
                 EnvValueSimple::Int(i) => (i.to_string(), vec![]),
                 EnvValueSimple::Bool(b) => (b.to_string(), vec![]),
                 EnvValueSimple::Secret(_) => {
-                    let val = resolved_secrets.get(&0).cloned().unwrap_or_default();
-                    (val.clone(), vec![val])
+                    let resolved = resolved_secrets.get(&0).cloned().unwrap_or_default();
+                    (resolved.clone(), vec![resolved])
                 }
                 EnvValueSimple::Interpolated(parts) => {
                     Self::reassemble_parts(parts, resolved_secrets)
@@ -299,9 +299,9 @@ impl EnvValue {
             match part {
                 EnvPart::Literal(s) => result.push_str(s),
                 EnvPart::Secret(_) => {
-                    if let Some(val) = resolved_secrets.get(&i) {
-                        result.push_str(val);
-                        secrets.push(val.clone());
+                    if let Some(resolved) = resolved_secrets.get(&i) {
+                        result.push_str(resolved);
+                        secrets.push(resolved.clone());
                     }
                 }
             }

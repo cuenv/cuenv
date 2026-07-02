@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-`cuenv env load` initiates background hooks that configure development environments. The prototype in [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69) introduced a configuration approval requirement to prevent unreviewed hook execution. Without a ratified decision the behaviour could regress, exposing users to malicious hook payloads or unexpected configuration drifts.
+`cuenv env load` initiates background hooks that configure development environments. The prototype in [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69) introduced a configuration approval requirement to prevent unreviewed hook execution. Without a ratified decision the behaviour could regress, exposing users to malicious hook payloads or unexpected configuration drifts.
 
 This ADR builds upon [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/) and stabilises the approval contract.
 
@@ -55,7 +55,7 @@ This ADR builds upon [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/d
 ## Related Documents
 
 - [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/)
-- [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:191)
+- [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:191)
 - [adr-0002-background-hook-execution-with-shell-self-unload](/decisions/adrs/adr-0002-background-hook-execution-with-shell-self-unload/)
 
 ## Status

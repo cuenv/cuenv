@@ -15,7 +15,7 @@ superseded_by: []
 
 ## Context
 
-cuenv’s shell integration spawns hooks asynchronously so developers can keep working while environment setup completes. The implementation at [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:238) uses prompt- or directory-change hooks (for example: `PROMPT_COMMAND` in Bash, `precmd`/`preexec` in Zsh, and `on-variable PWD` in Fish) to trigger the export flow on each prompt. These handlers are implemented to be safe and idempotent: when no work is required the export flow is a fast no-op.
+cuenv’s shell integration spawns hooks asynchronously so developers can keep working while environment setup completes. The implementation at [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:238) uses prompt- or directory-change hooks (for example: `PROMPT_COMMAND` in Bash, `precmd`/`preexec` in Zsh, and `on-variable PWD` in Fish) to trigger the export flow on each prompt. These handlers are implemented to be safe and idempotent: when no work is required the export flow is a fast no-op.
 
 This ADR depends on the workflow outlined in [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/).
 
@@ -57,7 +57,7 @@ This ADR depends on the workflow outlined in [rfc-0003-shell-integration-workflo
 
 - [rfc-0003-shell-integration-workflow-and-hook-lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/)
 - [adr-0001-hook-approval-gate-for-environment-loading](/decisions/adrs/adr-0001-hook-approval-gate-for-environment-loading/)
-- [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:238)
+- [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:238)
 
 ## Status
 

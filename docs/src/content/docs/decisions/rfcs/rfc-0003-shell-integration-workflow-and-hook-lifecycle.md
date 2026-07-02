@@ -12,7 +12,7 @@ related_features:
 
 ## Summary
 
-This RFC captures the intended behaviour for shell integration in cuenv: how hooks are scheduled, executed, monitored, and torn down across supported shells (Bash, Zsh, Fish). The implementation in [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69) already embodies a number of implicit decisions such as pre-approval requirements and background execution semantics. Documenting these expectations ensures parity with BDD scenarios like those in [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:1).
+This RFC captures the intended behaviour for shell integration in cuenv: how hooks are scheduled, executed, monitored, and torn down across supported shells (Bash, Zsh, Fish). The implementation in [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69) already embodies a number of implicit decisions such as pre-approval requirements and background execution semantics. Documenting these expectations ensures parity with BDD scenarios like those in [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:1).
 
 ## Problem Statement
 
@@ -40,7 +40,7 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 ## Proposed Approach
 
 1. **Approval First**
-   - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv-cli/src/commands/hooks.rs:191).
+   - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv/src/commands/hooks.rs:191).
    - Document responses for `Approved`, `RequiresApproval`, and `NotApproved` states.
 
 2. **Background Execution Contract**
@@ -99,7 +99,7 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 
 | Artifact                                                                                                                                | Purpose                                                            |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69)                                                     | Primary implementation of lifecycle logic.                         |
+| [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69)                                                     | Primary implementation of lifecycle logic.                         |
 | [adr-0001-hook-approval-gate-for-environment-loading](/decisions/adrs/adr-0001-hook-approval-gate-for-environment-loading/)             | Ratified decision covering approval guarantees.                    |
 | [adr-0002-background-hook-execution-with-shell-self-unload](/decisions/adrs/adr-0002-background-hook-execution-with-shell-self-unload/) | Ratified decision covering self-unload and background semantics.   |
 | [readme.md](readme.md:214)                                                                                                              | Shell integration section that must stay consistent with this RFC. |

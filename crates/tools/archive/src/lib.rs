@@ -47,7 +47,13 @@ impl ArchiveError {
 pub type Result<T> = std::result::Result<T, ArchiveError>;
 
 /// Case-insensitive suffix check that avoids allocating.
+///
+/// Compares raw bytes so it is safe for names containing non-ASCII
+/// characters (a `&str` byte-index slice could split a UTF-8 codepoint
+/// and panic).
 fn has_suffix_ignore_case(name: &str, suffix: &str) -> bool {
+    let name = name.as_bytes();
+    let suffix = suffix.as_bytes();
     name.len() >= suffix.len() && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
@@ -425,10 +431,34 @@ fn finalize_extracted_tree(dest: &Path, temp_dir: &Path) -> Result<()> {
         std::fs::remove_dir_all(temp_dir)?;
     }
 
-    if dest.exists() {
-        std::fs::remove_dir_all(dest)?;
+    // Replace the destination via a backup sibling so a crash or rename
+    // failure never leaves the destination missing.
+    let backup_dir = temp_dir.with_file_name(format!(
+        ".{}.old",
+        dest.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("extract")
+    ));
+    if backup_dir.exists() {
+        std::fs::remove_dir_all(&backup_dir)?;
     }
-    std::fs::rename(normalized_dir, dest)?;
+
+    let had_previous = dest.exists();
+    if had_previous {
+        std::fs::rename(dest, &backup_dir)?;
+    }
+
+    if let Err(rename_err) = std::fs::rename(&normalized_dir, dest) {
+        if had_previous {
+            let _ = std::fs::rename(&backup_dir, dest);
+        }
+        let _ = std::fs::remove_dir_all(&normalized_dir);
+        return Err(rename_err.into());
+    }
+
+    if had_previous {
+        std::fs::remove_dir_all(&backup_dir)?;
+    }
     Ok(())
 }
 

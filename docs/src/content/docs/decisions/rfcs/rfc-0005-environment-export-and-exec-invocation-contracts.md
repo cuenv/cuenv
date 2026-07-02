@@ -13,7 +13,7 @@ related_features:
 
 ## Summary
 
-This RFC formalises how cuenv derives, filters, and surfaces environment variables through the `env print`, `env check`, and `exec` commands. The implementation in [crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:6) and [crates/cuenv-cli/src/commands/exec.rs](crates/cuenv-cli/src/commands/exec.rs:10) already encodes key behaviours such as secret elision and shell-specific formatting. By documenting the user-facing contract we ensure that features, documentation, and future extensions preserve predictable semantics.
+This RFC formalises how cuenv derives, filters, and surfaces environment variables through the `env print`, `env check`, and `exec` commands. The implementation in [crates/cuenv/src/commands/env.rs](crates/cuenv/src/commands/env.rs:6) and [crates/cuenv/src/commands/exec.rs](crates/cuenv/src/commands/exec.rs:10) already encodes key behaviours such as secret elision and shell-specific formatting. By documenting the user-facing contract we ensure that features, documentation, and future extensions preserve predictable semantics.
 
 ## Problem Statement
 
@@ -102,7 +102,7 @@ Without a canonical contract:
 
 | Artifact                                                                                                      | Purpose                                                       |
 | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| [crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:6)                                | Environment extraction and formatting logic.                  |
-| [crates/cuenv-cli/src/commands/exec.rs](crates/cuenv-cli/src/commands/exec.rs:10)                             | Exec command environment application.                         |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:238)                          | Export integration post-hook execution.                       |
+| [crates/cuenv/src/commands/env.rs](crates/cuenv/src/commands/env.rs:6)                                | Environment extraction and formatting logic.                  |
+| [crates/cuenv/src/commands/exec.rs](crates/cuenv/src/commands/exec.rs:10)                             | Exec command environment application.                         |
+| [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:238)                          | Export integration post-hook execution.                       |
 | [adr-0004-environment-export-filtering-policy](/decisions/adrs/adr-0004-environment-export-filtering-policy/) | Ratified decision that enforces filtering rules defined here. |

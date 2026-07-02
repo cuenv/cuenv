@@ -14,7 +14,7 @@ superseded_by: []
 
 ## Context
 
-cuenv exposes evaluated environment variables through `env print`, `env check`, and the hidden `export` command. During implementation ([crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:41), [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:264)) we introduced rules to protect secrets and ensure shell-safe output. To guarantee consistent, secure behaviour across releases, these rules must be formally adopted.
+cuenv exposes evaluated environment variables through `env print`, `env check`, and the hidden `export` command. During implementation ([crates/cuenv/src/commands/env.rs](crates/cuenv/src/commands/env.rs:41), [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:264)) we introduced rules to protect secrets and ensure shell-safe output. To guarantee consistent, secure behaviour across releases, these rules must be formally adopted.
 
 This ADR complements [rfc-0005-environment-export-and-exec-invocation-contracts](/decisions/rfcs/rfc-0005-environment-export-and-exec-invocation-contracts/).
 
@@ -51,8 +51,8 @@ This ADR complements [rfc-0005-environment-export-and-exec-invocation-contracts]
 ## Related Documents
 
 - [rfc-0005-environment-export-and-exec-invocation-contracts](/decisions/rfcs/rfc-0005-environment-export-and-exec-invocation-contracts/)
-- [crates/cuenv-cli/src/commands/env.rs](crates/cuenv-cli/src/commands/env.rs:41)
-- [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:264)
+- [crates/cuenv/src/commands/env.rs](crates/cuenv/src/commands/env.rs:41)
+- [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:264)
 
 ## Status
 

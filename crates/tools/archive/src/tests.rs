@@ -77,6 +77,47 @@ fn test_path_looks_like_library() {
 }
 
 #[test]
+fn test_suffix_checks_handle_non_ascii_names() {
+    // Regression: the suffix check used to byte-slice the &str, which
+    // panics when the boundary lands inside a multi-byte character
+    // ("xéxx" with ".so" slices at byte 2, mid-'é').
+    assert!(!path_looks_like_library("xéxx"));
+    assert!(!path_looks_like_library("outil-é"));
+    assert!(path_looks_like_library("libé.so"));
+
+    let temp = temp_dir();
+    let dest = temp.path().join("tool");
+    let extracted = extract_binary(b"#!/bin/sh\n", "outil-\u{e9}x", None, &dest).unwrap();
+    assert!(extracted.exists());
+}
+
+#[test]
+fn test_extract_preserves_previous_dest_on_success() {
+    // Re-extraction over an existing destination replaces it and leaves
+    // no backup/temp siblings behind.
+    let temp = temp_dir();
+    let dest = temp.path().join("tool");
+
+    let first = build_tar_gz(&[("tool-1.0/tool", b"#!/bin/sh\necho one\n", 0o755)]);
+    extract_from_tar_gz(&first, None, &dest).unwrap();
+    let second = build_tar_gz(&[("tool-2.0/tool", b"#!/bin/sh\necho two\n", 0o755)]);
+    let extracted = extract_from_tar_gz(&second, None, &dest).unwrap();
+
+    let contents = std::fs::read(&extracted).unwrap();
+    assert_eq!(contents, b"#!/bin/sh\necho two\n");
+    let siblings: Vec<String> = std::fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        siblings,
+        vec!["tool".to_string()],
+        "no leftover temp/backup dirs"
+    );
+}
+
+#[test]
 fn test_file_looks_like_library() {
     assert!(file_looks_like_library(Path::new("/x/libfoo.so")));
     assert!(file_looks_like_library(Path::new("/x/libfoo.so.6.1")));

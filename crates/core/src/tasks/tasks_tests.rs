@@ -332,10 +332,10 @@ fn test_script_shell_from_command() {
 #[test]
 fn test_shell_options_default() {
     let opts = ShellOptions::default();
-    assert!(opts.errexit);
-    assert!(opts.nounset);
-    assert!(opts.pipefail);
-    assert!(!opts.xtrace);
+    assert!(opts.errexit.is_enabled());
+    assert!(opts.nounset.is_enabled());
+    assert!(opts.pipefail.is_enabled());
+    assert!(!opts.xtrace.is_enabled());
 }
 
 #[test]
@@ -344,18 +344,18 @@ fn test_shell_options_to_set_commands() {
     assert_eq!(opts.to_set_commands(), "set -e -u -o pipefail\n");
 
     let debug_opts = ShellOptions {
-        errexit: true,
-        nounset: false,
-        pipefail: true,
-        xtrace: true,
+        errexit: ShellOptionToggle::Enabled,
+        nounset: ShellOptionToggle::Disabled,
+        pipefail: ShellOptionToggle::Enabled,
+        xtrace: ShellOptionToggle::Enabled,
     };
     assert_eq!(debug_opts.to_set_commands(), "set -e -o pipefail -x\n");
 
     let no_opts = ShellOptions {
-        errexit: false,
-        nounset: false,
-        pipefail: false,
-        xtrace: false,
+        errexit: ShellOptionToggle::Disabled,
+        nounset: ShellOptionToggle::Disabled,
+        pipefail: ShellOptionToggle::Disabled,
+        xtrace: ShellOptionToggle::Disabled,
     };
     assert_eq!(no_opts.to_set_commands(), "");
 }
@@ -381,10 +381,10 @@ fn test_task_command_spec_prepends_shell_options() {
     let task = Task {
         script: Some("echo hello".to_string()),
         shell_options: Some(ShellOptions {
-            errexit: true,
-            nounset: false,
-            pipefail: false,
-            xtrace: true,
+            errexit: ShellOptionToggle::Enabled,
+            nounset: ShellOptionToggle::Disabled,
+            pipefail: ShellOptionToggle::Disabled,
+            xtrace: ShellOptionToggle::Enabled,
         }),
         ..Default::default()
     };

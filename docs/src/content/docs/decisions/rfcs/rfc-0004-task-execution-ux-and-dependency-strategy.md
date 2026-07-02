@@ -12,7 +12,7 @@ related_features:
 
 ## Summary
 
-This RFC records the intended user experience and dependency resolution model for `cuenv task`. The existing implementation, centred on [crates/cuenv-cli/src/commands/task.rs](crates/cuenv-cli/src/commands/task.rs:10), establishes behaviour for listing tasks, executing individual or grouped tasks, and applying environments. Documenting these choices ensures the behaviour remains stable as we expand task orchestration.
+This RFC records the intended user experience and dependency resolution model for `cuenv task`. The existing implementation, centred on [crates/cuenv/src/commands/task.rs](crates/cuenv/src/commands/task.rs:10), establishes behaviour for listing tasks, executing individual or grouped tasks, and applying environments. Documenting these choices ensures the behaviour remains stable as we expand task orchestration.
 
 ## Problem Statement
 
@@ -45,7 +45,7 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 
 2. **Execution Semantics**
    - For `TaskNode::Task` without dependencies, execute directly and stream output if `capture_output` is enabled.
-   - For tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`), construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv-cli/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
+   - For tasks with dependencies, groups (`TaskNode::Group`), or sequences (`TaskNode::Sequence`), construct a `TaskGraph` via [TaskGraph::build_for_task](crates/cuenv/src/commands/task.rs:92) and execute using `execute_graph`, preserving topological order.
 
 3. **Environment Handling**
    - Build a task-specific environment using `Environment::build_for_task`, injecting base variables while respecting secret redaction.

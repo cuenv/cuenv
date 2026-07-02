@@ -91,34 +91,72 @@ impl ScriptShell {
     }
 }
 
+/// A shell option toggle.
+///
+/// Serializes as a plain boolean, so the CUE schema wire format is
+/// unchanged.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "bool", into = "bool")]
+pub enum ShellOptionToggle {
+    /// The option is enabled (its `set` flag is emitted).
+    Enabled,
+    /// The option is disabled.
+    #[default]
+    Disabled,
+}
+
+impl ShellOptionToggle {
+    /// Whether the option is enabled.
+    #[must_use]
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+impl From<bool> for ShellOptionToggle {
+    fn from(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+}
+
+impl From<ShellOptionToggle> for bool {
+    fn from(toggle: ShellOptionToggle) -> Self {
+        toggle.is_enabled()
+    }
+}
+
 /// Shell options for bash-like shells
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShellOptions {
-    /// -e: exit on error (default: true)
-    #[serde(default = "default_true")]
-    pub errexit: bool,
-    /// -u: error on undefined vars (default: true)
-    #[serde(default = "default_true")]
-    pub nounset: bool,
-    /// -o pipefail: fail on pipe errors (default: true, requires bash or zsh)
-    #[serde(default = "default_true")]
-    pub pipefail: bool,
-    /// -x: debug/trace mode (default: false)
+    /// -e: exit on error (default: enabled)
+    #[serde(default = "default_enabled")]
+    pub errexit: ShellOptionToggle,
+    /// -u: error on undefined vars (default: enabled)
+    #[serde(default = "default_enabled")]
+    pub nounset: ShellOptionToggle,
+    /// -o pipefail: fail on pipe errors (default: enabled, requires bash or zsh)
+    #[serde(default = "default_enabled")]
+    pub pipefail: ShellOptionToggle,
+    /// -x: debug/trace mode (default: disabled)
     #[serde(default)]
-    pub xtrace: bool,
+    pub xtrace: ShellOptionToggle,
 }
 
-fn default_true() -> bool {
-    true
+fn default_enabled() -> ShellOptionToggle {
+    ShellOptionToggle::Enabled
 }
 
 impl Default for ShellOptions {
     fn default() -> Self {
         Self {
-            errexit: true,
-            nounset: true,
-            pipefail: true,
-            xtrace: false,
+            errexit: ShellOptionToggle::Enabled,
+            nounset: ShellOptionToggle::Enabled,
+            pipefail: ShellOptionToggle::Enabled,
+            xtrace: ShellOptionToggle::Disabled,
         }
     }
 }
@@ -128,16 +166,16 @@ impl ShellOptions {
     #[must_use]
     pub fn to_set_commands(&self) -> String {
         let mut opts = Vec::new();
-        if self.errexit {
+        if self.errexit.is_enabled() {
             opts.push("-e");
         }
-        if self.nounset {
+        if self.nounset.is_enabled() {
             opts.push("-u");
         }
-        if self.pipefail {
+        if self.pipefail.is_enabled() {
             opts.push("-o pipefail");
         }
-        if self.xtrace {
+        if self.xtrace.is_enabled() {
             opts.push("-x");
         }
         if opts.is_empty() {

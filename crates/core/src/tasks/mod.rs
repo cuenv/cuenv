@@ -157,7 +157,7 @@ fn prepare_script(
         )));
     }
 
-    if shell_options.pipefail && !shell.supports_pipefail {
+    if shell_options.pipefail.is_enabled() && !shell.supports_pipefail {
         return Err(crate::Error::configuration(format!(
             "Task uses shellOptions.pipefail with unsupported script shell '{}'. \
              Disable pipefail or use scriptShell 'bash' or 'zsh'.",

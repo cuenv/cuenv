@@ -70,7 +70,7 @@ Clear actionable errors are returned for:
 
 ## Tests
 
-Integration tests (`crates/cuenv-cli/tests/cross_project_deps.rs`) cover:
+Integration tests (`crates/cuenv/tests/cross_project_deps.rs`) cover:
 
 - First run: external task auto-runs; dependent materializes vendor/app.txt; task succeeds
 - Second run: cache hits for both external and dependent; no re-execution
