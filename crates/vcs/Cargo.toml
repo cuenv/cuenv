@@ -17,13 +17,13 @@ default = []
 [dependencies]
 serde = { workspace = true }
 sha2 = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
-walkdir = "2.5"
-globset = "0.4"
-async-trait = "0.1"
+walkdir = { workspace = true }
+globset = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
