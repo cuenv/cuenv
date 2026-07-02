@@ -22,8 +22,11 @@ pub struct TaskParams {
 #[serde(rename_all = "lowercase")]
 pub enum ParamType {
     #[default]
+    /// String-valued parameter
     String,
+    /// Boolean-valued parameter
     Bool,
+    /// Integer-valued parameter
     Int,
 }
 
@@ -62,12 +65,14 @@ pub struct ResolvedArgs {
 
 impl ResolvedArgs {
     /// Create empty resolved args
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Interpolate placeholders in a string
     /// Supports {{0}}, {{1}} for positional and {{name}} for named args
+    #[must_use]
     pub fn interpolate(&self, template: &str) -> String {
         let mut result = template.to_string();
 
@@ -85,6 +90,7 @@ impl ResolvedArgs {
     }
 
     /// Interpolate all args in a list
+    #[must_use]
     pub fn interpolate_args(&self, args: &[String]) -> Vec<String> {
         args.iter().map(|arg| self.interpolate(arg)).collect()
     }

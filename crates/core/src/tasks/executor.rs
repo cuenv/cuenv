@@ -4,6 +4,7 @@
 //! - Parallel and sequential execution
 //! - Host execution; isolation/caching is delegated to other backends
 
+use super::TaskCommandExt;
 use super::backend::{BackendFactory, TaskBackend, create_backend_with_factory};
 use super::cache::{BuildActionInput, RecordInput, TaskCacheConfig};
 pub use super::command::{execute_command, execute_command_with_redaction};

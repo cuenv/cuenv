@@ -39,6 +39,7 @@ pub struct TaskRef {
 impl TaskRef {
     /// Parse the TaskRef into project name and task name
     /// Returns None if the format is invalid or if project/task names are empty
+    #[must_use]
     pub fn parse(&self) -> Option<(String, String)> {
         let ref_str = self.ref_.strip_prefix('#')?;
         let parts: Vec<&str> = ref_str.splitn(2, ':').collect();

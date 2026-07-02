@@ -16,3 +16,4 @@ pub mod environment;
 pub mod manifest;
 pub mod owners;
 pub mod secrets;
+pub mod tasks;

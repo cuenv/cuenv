@@ -14,6 +14,7 @@ categories.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
 cuenv-hooks = { workspace = true }
+cuenv-task-graph = { workspace = true }
 
 [lints]
 workspace = true

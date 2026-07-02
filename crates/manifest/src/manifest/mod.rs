@@ -1,12 +1,14 @@
 //! Manifest configuration DTOs shared across directories.
 //!
-//! Based on schema/core.cue. Task-coupled DTOs (`Project`, services, hook
-//! items) remain in `cuenv-core` until the task types migrate here.
+//! Based on schema/core.cue. `Project` remains in `cuenv-core` until the CI
+//! DTOs migrate here too.
 
 mod codegen;
 mod formatters;
+mod hooks;
 mod rules;
 mod runtime;
+mod services;
 mod vcs;
 
 use serde::{Deserialize, Serialize};
@@ -18,8 +20,10 @@ use cuenv_hooks::Hooks;
 
 pub use codegen::*;
 pub use formatters::*;
+pub use hooks::*;
 pub use rules::*;
 pub use runtime::*;
+pub use services::*;
 pub use vcs::VcsDependency;
 
 /// Base configuration structure (composable across directories)

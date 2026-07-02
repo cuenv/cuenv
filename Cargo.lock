@@ -1591,6 +1591,7 @@ name = "cuenv-manifest"
 version = "0.54.0"
 dependencies = [
  "cuenv-hooks",
+ "cuenv-task-graph",
  "serde",
  "serde_json",
 ]

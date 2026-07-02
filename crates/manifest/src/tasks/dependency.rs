@@ -1,6 +1,7 @@
 use serde::Serialize;
 
-/// A task dependency - an embedded task reference with _name field
+/// A task dependency - an embedded task reference with `_name` field.
+///
 /// When tasks reference other tasks directly in CUE (e.g., `dependsOn: [build]`),
 /// the Go bridge injects the `_name` field to identify the dependency.
 ///
@@ -88,6 +89,7 @@ impl TaskDependency {
     }
 
     /// Check if this dependency matches a given task name
+    #[must_use]
     pub fn matches(&self, name: &str) -> bool {
         self.name == name
     }

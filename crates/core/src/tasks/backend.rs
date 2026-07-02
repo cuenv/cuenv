@@ -4,6 +4,7 @@
 //! The default backend is `Host`, which runs tasks directly on the host machine.
 //! For Dagger container execution, use the `cuenv-dagger` crate.
 
+use super::TaskCommandExt;
 use super::{Task, TaskResult};
 use crate::OutputCapture;
 use crate::config::BackendConfig;

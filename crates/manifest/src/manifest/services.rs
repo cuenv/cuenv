@@ -63,7 +63,7 @@ pub enum Entrypoint {
 
 impl Default for Entrypoint {
     fn default() -> Self {
-        Entrypoint::Command(Command::default())
+        Self::Command(Command::default())
     }
 }
 
@@ -189,10 +189,13 @@ fn default_service_type() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ImageOutputRef {
     #[serde(rename = "cuenvOutputRef")]
+    /// Marker distinguishing output references during deserialization
     pub cuenv_output_ref: bool,
     #[serde(rename = "cuenvImage")]
+    /// Task path that produces the referenced image
     pub cuenv_image: String,
     #[serde(rename = "cuenvOutput")]
+    /// Output name exposed by the producing task
     pub cuenv_output: String,
 }
 

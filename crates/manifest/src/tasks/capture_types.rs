@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum CaptureSource {
     #[default]
+    /// Capture from standard output
     Stdout,
+    /// Capture from standard error
     Stderr,
 }
 
@@ -28,7 +30,10 @@ pub struct TaskCapture {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskCaptureRef {
+    /// Marker distinguishing capture references during deserialization
     pub cuenv_capture_ref: bool,
+    /// Task path whose captures are referenced
     pub cuenv_task: String,
+    /// Name of the referenced capture
     pub cuenv_capture: String,
 }

@@ -22,24 +22,30 @@ pub enum Input {
 }
 
 impl Input {
+    /// Return the path/glob pattern if this input is a local path.
+    #[must_use]
     pub fn as_path(&self) -> Option<&String> {
         match self {
-            Input::Path(path) => Some(path),
-            Input::Project(_) | Input::Task(_) => None,
+            Self::Path(path) => Some(path),
+            Self::Project(_) | Self::Task(_) => None,
         }
     }
 
+    /// Return the project reference if this input references another project.
+    #[must_use]
     pub fn as_project(&self) -> Option<&ProjectReference> {
         match self {
-            Input::Project(reference) => Some(reference),
-            Input::Path(_) | Input::Task(_) => None,
+            Self::Project(reference) => Some(reference),
+            Self::Path(_) | Self::Task(_) => None,
         }
     }
 
+    /// Return the task output reference if this input references a task output.
+    #[must_use]
     pub fn as_task_output(&self) -> Option<&TaskOutput> {
         match self {
-            Input::Task(output) => Some(output),
-            Input::Path(_) | Input::Project(_) => None,
+            Self::Task(output) => Some(output),
+            Self::Path(_) | Self::Project(_) => None,
         }
     }
 }
@@ -79,6 +85,7 @@ pub struct SourceLocation {
 
 impl SourceLocation {
     /// Get the directory containing this source file
+    #[must_use]
     pub fn directory(&self) -> Option<&str> {
         std::path::Path::new(&self.file)
             .parent()

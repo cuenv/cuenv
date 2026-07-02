@@ -1,12 +1,12 @@
 //! Task path resolution for the core task graph wrapper.
 
-use crate::tasks::{Task, TaskNode, Tasks};
+use super::{Task, TaskNode, Tasks};
 use cuenv_task_graph::{TaskResolution, TaskResolver};
 
 impl TaskResolver<Task> for Tasks {
     fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
         let node = self.resolve_path(name)?;
-        Some(self.node_to_resolution(name, node))
+        Some(node_to_resolution(name, node))
     }
 }
 
@@ -44,26 +44,26 @@ impl Tasks {
 
         Some(current)
     }
+}
 
-    fn node_to_resolution(&self, name: &str, node: &TaskNode) -> TaskResolution<Task> {
-        match node {
-            TaskNode::Task(task) => TaskResolution::Single(task.as_ref().clone()),
-            TaskNode::Sequence(steps) => TaskResolution::Sequential {
-                children: (0..steps.len()).map(|i| format!("{name}[{i}]")).collect(),
-            },
-            TaskNode::Group(group) => TaskResolution::Parallel {
-                children: group
-                    .children
-                    .keys()
-                    .map(|child| format!("{name}.{child}"))
-                    .collect(),
-                depends_on: group
-                    .depends_on
-                    .iter()
-                    .map(|dependency| dependency.task_name().to_string())
-                    .collect(),
-            },
-        }
+fn node_to_resolution(name: &str, node: &TaskNode) -> TaskResolution<Task> {
+    match node {
+        TaskNode::Task(task) => TaskResolution::Single(task.as_ref().clone()),
+        TaskNode::Sequence(steps) => TaskResolution::Sequential {
+            children: (0..steps.len()).map(|i| format!("{name}[{i}]")).collect(),
+        },
+        TaskNode::Group(group) => TaskResolution::Parallel {
+            children: group
+                .children
+                .keys()
+                .map(|child| format!("{name}.{child}"))
+                .collect(),
+            depends_on: group
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.task_name().to_string())
+                .collect(),
+        },
     }
 }
 
@@ -117,8 +117,15 @@ fn push_index_segment(segments: &mut Vec<PathSegment>, chars: &mut std::str::Cha
 mod tests {
     use super::*;
     use crate::tasks::{TaskDependency, TaskGroup, TaskNode};
-    use crate::test_utils::create_task;
     use std::collections::HashMap;
+
+    fn create_task(name: &str, deps: Vec<&str>, _inputs: Vec<&str>) -> Task {
+        Task {
+            command: format!("echo {name}"),
+            depends_on: deps.into_iter().map(TaskDependency::from_name).collect(),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_parse_path_segments_simple_name() {
@@ -214,12 +221,12 @@ mod tests {
 
     #[test]
     fn test_task_resolver_sequential_group() {
-        let task1 = create_task("t1", vec![], vec![]);
-        let task2 = create_task("t2", vec![], vec![]);
+        let first = create_task("t1", vec![], vec![]);
+        let second = create_task("t2", vec![], vec![]);
 
         let sequence = TaskNode::Sequence(vec![
-            TaskNode::Task(Box::new(task1)),
-            TaskNode::Task(Box::new(task2)),
+            TaskNode::Task(Box::new(first)),
+            TaskNode::Task(Box::new(second)),
         ]);
 
         let mut tasks = Tasks::new();
