@@ -6,8 +6,8 @@ decision_date: 2025-09-25
 approvers:
   - Core Maintainers
 related_features:
-  - features/cli/env.feature:1
-  - features/cli/hooks.feature:104
+  - crates/cuenv/tests/bdd/features/env.feature:1
+  - crates/cuenv/tests/bdd/features/hooks.feature:104
 supersedes: []
 superseded_by: []
 ---
@@ -45,8 +45,8 @@ This ADR complements [rfc-0005-environment-export-and-exec-invocation-contracts]
 
 | Feature Scenario                                                                                           | Impact                                                   |
 | ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| [features/cli/env.feature](features/cli/env.feature:1) — Pending scenarios                                 | Must verify secret filtering and deterministic ordering. |
-| [features/cli/hooks.feature](features/cli/hooks.feature:104) — Environment variables persist after loading | Relies on merged hook variables obeying filtering rules. |
+| [crates/cuenv/tests/bdd/features/env.feature](crates/cuenv/tests/bdd/features/env.feature:1) — Pending scenarios                                 | Must verify secret filtering and deterministic ordering. |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:104) — Environment variables persist after loading | Relies on merged hook variables obeying filtering rules. |
 
 ## Related Documents
 

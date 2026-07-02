@@ -6,9 +6,9 @@ decision_date: 2025-09-25
 approvers:
   - TBD
 related_features:
-  - features/cli/env.feature:1
-  - features/cli/help.feature:1
-  - features/cli/task.feature:1
+  - crates/cuenv/tests/bdd/features/env.feature:1
+  - crates/cuenv/tests/bdd/features/help.feature:1
+  - crates/cuenv/tests/bdd/features/task.feature:1
 ---
 
 ## Summary
@@ -83,9 +83,9 @@ Left undocumented, future changes risk fragmenting the user experience and break
 
 | Feature Specification                                    | Coverage                                                 | Notes                                                    |
 | -------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
-| [features/cli/help.feature](features/cli/help.feature:1) | `Scenario: Full CLI help surfaces subcommands` (pending) | This RFC defines the structure the scenario must assert. |
-| [features/cli/env.feature](features/cli/env.feature:1)   | `Scenario: TBD` (pending)                                | To be updated to verify default path/package handling.   |
-| [features/cli/task.feature](features/cli/task.feature:1) | `Scenario: Task listing respects hierarchy` (pending)    | Aligns aliases (`cuenv task`, `cuenv t`).                |
+| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) | `Scenario: Full CLI help surfaces subcommands` (pending) | This RFC defines the structure the scenario must assert. |
+| [crates/cuenv/tests/bdd/features/env.feature](crates/cuenv/tests/bdd/features/env.feature:1)   | `Scenario: TBD` (pending)                                | To be updated to verify default path/package handling.   |
+| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) | `Scenario: Task listing respects hierarchy` (pending)    | Aligns aliases (`cuenv task`, `cuenv t`).                |
 
 ## Open Questions
 

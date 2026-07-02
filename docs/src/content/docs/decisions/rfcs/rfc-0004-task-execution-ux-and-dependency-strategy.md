@@ -6,8 +6,8 @@ decision_date: 2025-09-25
 approvers:
   - TBD
 related_features:
-  - features/cli/task.feature:1
-  - features/cli/help.feature:1
+  - crates/cuenv/tests/bdd/features/task.feature:1
+  - crates/cuenv/tests/bdd/features/help.feature:1
 ---
 
 ## Summary
@@ -20,7 +20,7 @@ Without explicit documentation of task graph semantics:
 
 - Contributors cannot easily reason about when to use sequential versus graph execution.
 - Users do not know what to expect when a task has dependencies, or how environment variables are applied.
-- BDD scenarios (e.g. [features/cli/task.feature](features/cli/task.feature:1)) remain empty, missing valuable acceptance coverage.
+- BDD scenarios (e.g. [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1)) remain empty, missing valuable acceptance coverage.
 
 We need a durable reference that captures intents, trade-offs, and consequences.
 
@@ -56,7 +56,7 @@ We need a durable reference that captures intents, trade-offs, and consequences.
    - Provide structured output summarising success/failure, aligning with `format_task_results`.
 
 5. **UX Enhancements**
-   - Provide optional `--capture-output` and upcoming `--select` flag alignment with `features/cli/task.feature`.
+   - Provide optional `--capture-output` and upcoming `--select` flag alignment with `crates/cuenv/tests/bdd/features/task.feature`.
    - Document event emission (via `Event::CommandProgress`) to enable TUI visualisations.
 
 ## Alternatives Considered
@@ -76,15 +76,15 @@ We need a durable reference that captures intents, trade-offs, and consequences.
 ## Migration Plan
 
 - Publish this RFC and coordinate with cuenv-core team to ensure alignment.
-- Fill [features/cli/task.feature](features/cli/task.feature:1) with scenarios covering listing, successful execution, dependency failure, and output capture.
+- Fill [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) with scenarios covering listing, successful execution, dependency failure, and output capture.
 - Ratify via ADR-0003 once behaviour is final.
 
 ## Features Alignment
 
 | Feature Specification                                    | Coverage                              | Notes                                                    |
 | -------------------------------------------------------- | ------------------------------------- | -------------------------------------------------------- |
-| [features/cli/task.feature](features/cli/task.feature:1) | Pending scenarios defined by this RFC | Will cover listing, execution, dependency failure cases. |
-| [features/cli/help.feature](features/cli/help.feature:1) | Pending                               | Help output must describe task behaviour and flags.      |
+| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) | Pending scenarios defined by this RFC | Will cover listing, execution, dependency failure cases. |
+| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) | Pending                               | Help output must describe task behaviour and flags.      |
 
 ## Open Questions
 

@@ -1,10 +1,16 @@
 ---
-title: "ADR: Cross-Project Task Dependencies"
+id: ADR-0007
+title: "Cross-Project Task Dependencies"
 description: "Monorepo-only cross-project task dependencies and explicit output materialization."
+status: Accepted
+decision_date: 2025-10-07
+approvers:
+  - Core Maintainers
+related_features: []
+supersedes: []
+superseded_by: []
 ---
 
-Status: Accepted
-Date: 2025-10-07
 
 ## Context
 

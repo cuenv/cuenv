@@ -22,7 +22,6 @@ on:
     - env.cue
     - env.cue/**
     - examples/**
-    - features/**
     - flake.lock
     - flake.lock/**
     - flake.nix
@@ -47,7 +46,6 @@ on:
     - env.cue
     - env.cue/**
     - examples/**
-    - features/**
     - flake.lock
     - flake.lock/**
     - flake.nix

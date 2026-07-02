@@ -6,9 +6,9 @@ decision_date: 2025-09-25
 approvers:
   - Core Maintainers
 related_features:
-  - features/cli/hooks.feature:9
-  - features/cli/hooks.feature:45
-  - features/cli/hooks.feature:78
+  - crates/cuenv/tests/bdd/features/hooks.feature:9
+  - crates/cuenv/tests/bdd/features/hooks.feature:45
+  - crates/cuenv/tests/bdd/features/hooks.feature:78
 supersedes: []
 superseded_by: []
 ---
@@ -49,9 +49,9 @@ This ADR depends on the workflow outlined in [rfc-0003-shell-integration-workflo
 
 | Feature Scenario                                                                                    | Impact                                                            |
 | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| [features/cli/hooks.feature](features/cli/hooks.feature:9) — Environment loads after hooks complete | Affirmed by background execution and prompt-hook lifecycle.       |
-| [features/cli/hooks.feature](features/cli/hooks.feature:45) — Preexec checks while hooks run        | Ensures prompt-hook handlers are idempotent during execution.     |
-| [features/cli/hooks.feature](features/cli/hooks.feature:78) — Shell-specific integration            | Documents expectations for fish, bash, zsh prompt-hook behaviour. |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:9) — Environment loads after hooks complete | Affirmed by background execution and prompt-hook lifecycle.       |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:45) — Preexec checks while hooks run        | Ensures prompt-hook handlers are idempotent during execution.     |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:78) — Shell-specific integration            | Documents expectations for fish, bash, zsh prompt-hook behaviour. |
 
 ## Related Documents
 

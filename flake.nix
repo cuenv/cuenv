@@ -181,7 +181,6 @@
               isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
               isInTestsDir = builtins.match ".*/_tests/.*" path != null || baseName == "_tests";
-              isInFeaturesDir = builtins.match ".*/features/.*" path != null || baseName == "features";
               isAgentsRootDir = baseName == ".agents";
               isAgentsSkillsRoot = builtins.match ".*/\\.agents/skills" path != null;
               isInAgentsSkillsDir = builtins.match ".*/\\.agents/skills/.*" path != null;
@@ -197,7 +196,6 @@
                   || isInExamplesDir
                   || isInCueModDir
                   || isInTestsDir
-                  || isInFeaturesDir
                   || isInContribDir
                   || isAgentsRootDir
                   || isAgentsSkillsRoot
@@ -214,7 +212,6 @@
             isDenyToml ||
             isAllowedDir ||
             isInTestsDir ||
-            isInFeaturesDir ||
             ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
         };
 

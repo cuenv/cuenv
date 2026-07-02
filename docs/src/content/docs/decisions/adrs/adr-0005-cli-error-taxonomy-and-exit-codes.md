@@ -6,8 +6,8 @@ decision_date: 2025-09-25
 approvers:
   - Core Maintainers
 related_features:
-  - features/cli/errors.feature:1
-  - features/cli/help.feature:1
+  - crates/cuenv/tests/bdd/features/errors.feature:1
+  - crates/cuenv/tests/bdd/features/help.feature:1
 supersedes: []
 superseded_by: []
 ---
@@ -46,8 +46,8 @@ This ADR builds on [rfc-0002-output-formatting-and-error-envelope-strategy](/dec
 
 | Feature Scenario                                                       | Impact                                                                        |
 | ---------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| [features/cli/errors.feature](features/cli/errors.feature:1) — Pending | Must verify exit codes, envelope structure, and redaction rules per this ADR. |
-| [features/cli/help.feature](features/cli/help.feature:1) — Pending     | Help output should highlight error categories and exit codes.                 |
+| [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) — Pending | Must verify exit codes, envelope structure, and redaction rules per this ADR. |
+| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) — Pending     | Help output should highlight error categories and exit codes.                 |
 
 ## Related Documents
 

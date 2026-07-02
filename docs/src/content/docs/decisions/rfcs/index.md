@@ -16,5 +16,5 @@ This section enumerates open design proposals targeted for stabilization or adop
 
 ## Notes
 
-- Each RFC includes `related_features` metadata that binds the proposal to behaviour described in `features/cli`.
+- Each RFC includes `related_features` metadata that binds the proposal to behaviour described in `crates/cuenv/tests/bdd/features`.
 - When an RFC is ratified it will be migrated into [ADRs](/decisions/adrs/).

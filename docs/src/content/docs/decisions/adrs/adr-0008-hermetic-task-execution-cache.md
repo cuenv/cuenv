@@ -1,10 +1,16 @@
 ---
-title: "ADR: Hermetic, Input-Addressed Task Execution with Persistent Cache"
+id: ADR-0008
+title: "Hermetic, Input-Addressed Task Execution with Persistent Cache"
 description: "Hermetic task workspaces, content-addressed cache keys, and cache layout."
+status: Accepted
+decision_date: 2025-10-07
+approvers:
+  - Core Maintainers
+related_features: []
+supersedes: []
+superseded_by: []
 ---
 
-Status: Accepted
-Date: 2025-10-07
 
 ## Context
 
