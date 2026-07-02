@@ -1684,23 +1684,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-tool-archive"
+version = "0.54.0"
+dependencies = [
+ "flate2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+ "xz2",
+ "zip",
+]
+
+[[package]]
 name = "cuenv-tools-github"
 version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
- "flate2",
+ "cuenv-tool-archive",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
  "sha2",
- "tar",
  "temp-env",
  "tempfile",
  "tokio",
  "tracing",
- "xz2",
- "zip",
 ]
 
 [[package]]
@@ -1757,17 +1767,14 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
- "flate2",
+ "cuenv-tool-archive",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
  "sha2",
- "tar",
  "tempfile",
  "tokio",
  "tracing",
- "xz2",
- "zip",
 ]
 
 [[package]]

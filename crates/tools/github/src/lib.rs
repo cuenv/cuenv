@@ -5,8 +5,6 @@
 //! - Automatic archive extraction (zip, tar.gz, tar.xz, pkg)
 //! - Path-based binary extraction from archives
 
-mod extract;
-
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::http::ensure_rustls_crypto_provider;
@@ -14,11 +12,23 @@ use cuenv_core::tools::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource,
 };
+use cuenv_tool_archive as archive;
 use reqwest::Client;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+
+/// Map archive extraction errors into core tool-resolution errors.
+fn archive_err(e: archive::ArchiveError) -> cuenv_core::Error {
+    cuenv_core::Error::tool_resolution(e.to_string())
+}
+
+/// Ensure a file is executable, mapping archive errors into core errors.
+fn ensure_executable_mapped(path: &Path) -> Result<()> {
+    archive::ensure_executable(path).map_err(archive_err)
+}
+
 use std::sync::OnceLock;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
@@ -332,28 +342,6 @@ impl GitHubToolProvider {
             .map_err(|e| cuenv_core::Error::tool_resolution(format!("Failed to read asset: {}", e)))
     }
 
-    /// Determine whether a path looks like a dynamic library.
-    fn path_looks_like_library(path: &str) -> bool {
-        let path_lower = path.to_ascii_lowercase();
-        path_lower.ends_with(".dylib")
-            || path_lower.ends_with(".so")
-            || path_lower.contains(".so.")
-            || path_lower.ends_with(".dll")
-    }
-
-    /// Determine whether a filesystem path looks like a dynamic library.
-    fn file_looks_like_library(path: &Path) -> bool {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        name.ends_with(".dylib")
-            || name.ends_with(".so")
-            || name.contains(".so.")
-            || name.ends_with(".dll")
-    }
-
     fn expand_extract_templates(
         &self,
         extract: &[ToolExtract],
@@ -538,7 +526,7 @@ impl ToolProvider for GitHubToolProvider {
             && let Some(path) = path.as_deref()
         {
             let expanded_path = self.expand_template(path, version, platform);
-            if Self::path_looks_like_library(&expanded_path) {
+            if archive::path_looks_like_library(&expanded_path) {
                 expanded_extract.push(ToolExtract::Lib {
                     path: expanded_path,
                     env: None,
@@ -633,8 +621,9 @@ impl ToolProvider for GitHubToolProvider {
 
         if extract.is_empty() {
             // Legacy behavior: single binary inferred from archive.
-            let extracted = self.extract_binary(&data, asset, None, &cache_dir)?;
-            let final_path = if Self::file_looks_like_library(&extracted) {
+            let extracted =
+                archive::extract_binary(&data, asset, None, &cache_dir).map_err(archive_err)?;
+            let final_path = if archive::file_looks_like_library(&extracted) {
                 let file_name = extracted
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -652,8 +641,8 @@ impl ToolProvider for GitHubToolProvider {
                 }
                 std::fs::rename(&extracted, &final_path)?;
             }
-            if !Self::file_looks_like_library(&final_path) {
-                Self::ensure_executable(&final_path)?;
+            if !archive::file_looks_like_library(&final_path) {
+                ensure_executable_mapped(&final_path)?;
             }
 
             let sha256 = compute_file_sha256(&final_path).await?;
@@ -681,7 +670,8 @@ impl ToolProvider for GitHubToolProvider {
         for item in extract {
             let source_path = Self::extract_source_path(item);
             let extracted_path =
-                self.extract_binary(&data, asset, Some(source_path), &extract_dir)?;
+                archive::extract_binary(&data, asset, Some(source_path), &extract_dir)
+                    .map_err(archive_err)?;
             let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -691,7 +681,7 @@ impl ToolProvider for GitHubToolProvider {
             }
             std::fs::rename(&extracted_path, &final_path)?;
             if Self::is_executable_extract(item) {
-                Self::ensure_executable(&final_path)?;
+                ensure_executable_mapped(&final_path)?;
             }
             produced_paths.push(final_path);
         }
