@@ -592,6 +592,118 @@ pub struct LockedToolPlatform {
     pub dependencies: Vec<String>,
 }
 
+impl LockedToolPlatform {
+    /// Convert this lockfile entry into a [`ToolSource`](crate::tools::ToolSource).
+    ///
+    /// Returns `None` for unknown providers.
+    #[must_use]
+    pub fn to_tool_source(&self) -> Option<crate::tools::ToolSource> {
+        use crate::tools::ToolSource;
+
+        let str_field = |key: &str| {
+            self.source
+                .get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+
+        match self.provider.as_str() {
+            "oci" => Some(ToolSource::Oci {
+                image: str_field("image"),
+                path: str_field("path"),
+            }),
+            "github" => Some(ToolSource::GitHub {
+                repo: str_field("repo"),
+                tag: str_field("tag"),
+                asset: str_field("asset"),
+                extract: parse_extract_list(&self.source),
+            }),
+            "nix" => Some(ToolSource::Nix {
+                flake: str_field("flake"),
+                package: str_field("package"),
+                output: self
+                    .source
+                    .get("output")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+            }),
+            "rustup" => Some(ToolSource::Rustup {
+                toolchain: self
+                    .source
+                    .get("toolchain")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("stable")
+                    .to_string(),
+                profile: self
+                    .source
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                components: str_list_field(&self.source, "components"),
+                targets: str_list_field(&self.source, "targets"),
+            }),
+            "url" => Some(ToolSource::Url {
+                url: str_field("url"),
+                extract: parse_extract_list(&self.source),
+            }),
+            _ => None,
+        }
+    }
+}
+
+fn str_list_field(source: &serde_json::Value, key: &str) -> Vec<String> {
+    source
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parse the typed `extract` list from a lockfile source, falling back to a
+/// legacy single `path` entry classified as binary or library.
+fn parse_extract_list(source: &serde_json::Value) -> Vec<crate::tools::ToolExtract> {
+    use crate::tools::ToolExtract;
+
+    let mut extract = source
+        .get("extract")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<ToolExtract>>(value).ok())
+        .unwrap_or_default();
+
+    if extract.is_empty()
+        && let Some(path) = source.get("path").and_then(|v| v.as_str())
+    {
+        if lockfile_path_looks_like_library(path) {
+            extract.push(ToolExtract::Lib {
+                path: path.to_string(),
+                env: None,
+            });
+        } else {
+            extract.push(ToolExtract::Bin {
+                path: path.to_string(),
+                as_name: None,
+            });
+        }
+    }
+
+    extract
+}
+
+fn lockfile_path_looks_like_library(path: &str) -> bool {
+    let ext_is = |target: &str| {
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(target))
+    };
+    ext_is("dylib") || ext_is("so") || path.to_ascii_lowercase().contains(".so.") || ext_is("dll")
+}
+
 /// A locked cuenv-managed VCS dependency.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LockedVcsDependency {
