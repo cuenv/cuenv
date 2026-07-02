@@ -87,3 +87,20 @@ Remove the `#![allow(missing_docs)]` escape hatch from `cuenv-ci`; add missing c
 ## Status Tracking
 
 Progress is tracked by phase on the implementation branch; each phase updates this RFC's status notes upon landing.
+
+- Phase 0 (deletions and hygiene): landed — System A removed, orphaned
+  BDD tree and stale docs deleted, ADRs renumbered, 60+ dependency
+  re-pins centralized, RUSTSEC ignore list re-triaged (5 stale ignores
+  dropped, survivors annotated by root cause).
+- Phase 1 (duplication quick wins): landed — codeowners sync/check are
+  default trait methods, `cuenv-tool-archive` consolidates the
+  GitHub/URL extraction engines, lockfile-to-ToolSource conversion is
+  a single method on `LockedToolPlatform`.
+- Phase 2a-2d (`cuenv-manifest` leaf crate): landed — config,
+  environment values, Secret, manifest DTOs, owners, task types,
+  services/hook items, CI DTOs, Project, tool DTOs, and the lockfile
+  schema all live in `crates/manifest`; core re-exports at the old
+  paths and keeps resolution/execution behavior behind extension
+  traits (`SecretExt`, `EnvValueExt`, `TaskCommandExt`,
+  `Instance::to_project`).
+- Remaining: Phase 2e (error decomposition) and Phases 3-8.
