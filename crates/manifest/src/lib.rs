@@ -11,6 +11,8 @@
 //! `cuenv-core` (`config`, `environment`, `secrets`, `manifest`), which
 //! re-exports them during the migration.
 
+/// CI pipeline and contributor DTOs (schema/ci.cue).
+pub mod ci;
 pub mod config;
 pub mod environment;
 pub mod manifest;

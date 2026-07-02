@@ -4,13 +4,9 @@
 //! `cuenv-manifest` and are re-exported here; `Project`, services, and hook
 //! items stay in this crate until the task types migrate too (RFC-0006).
 
-mod project;
-
 // Re-export the manifest DTOs from the leaf crate so existing
 // `cuenv_core::manifest::*` imports keep working during the migration.
 pub use cuenv_manifest::manifest::*;
-
-pub use project::Project;
 
 #[cfg(test)]
 #[path = "manifest_tests.rs"]

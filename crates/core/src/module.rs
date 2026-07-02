@@ -249,6 +249,18 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Deserialize this instance into a [`Project`](crate::manifest::Project),
+    /// expanding shorthand cross-project references.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the instance JSON does not match the Project schema.
+    pub fn to_project(&self) -> crate::Result<crate::manifest::Project> {
+        let mut project: crate::manifest::Project = self.deserialize()?;
+        project.expand_cross_project_references();
+        Ok(project)
+    }
+
     /// Deserialize this instance's value into a typed struct
     ///
     /// This enables commands to extract strongly-typed configuration

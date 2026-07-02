@@ -13,10 +13,13 @@ use crate::tasks::TaskNode;
 pub enum AnnotationValue {
     /// Reference to a task capture (resolved after execution)
     CaptureRef {
+        /// Marker distinguishing capture references during deserialization
         #[serde(rename = "cuenvCaptureRef")]
         cuenv_capture_ref: bool,
+        /// Task path whose captures are referenced
         #[serde(rename = "cuenvTask")]
         cuenv_task: String,
+        /// Name of the referenced capture
         #[serde(rename = "cuenvCapture")]
         cuenv_capture: String,
     },
@@ -53,37 +56,44 @@ pub enum ManualTrigger {
 
 impl ManualTrigger {
     /// Check if manual trigger is enabled (either directly or via inputs)
+    #[must_use]
     pub fn is_enabled(&self) -> bool {
         match self {
-            ManualTrigger::Enabled(enabled) => *enabled,
-            ManualTrigger::WithInputs(inputs) => !inputs.is_empty(),
+            Self::Enabled(enabled) => *enabled,
+            Self::WithInputs(inputs) => !inputs.is_empty(),
         }
     }
 
     /// Get the inputs if configured
+    #[must_use]
     pub fn inputs(&self) -> Option<&HashMap<String, WorkflowDispatchInput>> {
         match self {
-            ManualTrigger::Enabled(_) => None,
-            ManualTrigger::WithInputs(inputs) => Some(inputs),
+            Self::Enabled(_) => None,
+            Self::WithInputs(inputs) => Some(inputs),
         }
     }
 }
 
+/// Trigger conditions controlling when a pipeline runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PipelineCondition {
+    /// Run on pull requests
     pub pull_request: Option<bool>,
+    /// Branch name(s) that trigger the pipeline
     #[serde(default)]
     pub branch: Option<StringOrVec>,
+    /// Tag pattern(s) that trigger the pipeline
     #[serde(default)]
     pub tag: Option<StringOrVec>,
+    /// Run on pushes to the default branch
     pub default_branch: Option<bool>,
     /// Cron expression(s) for scheduled runs
     #[serde(default)]
     pub scheduled: Option<StringOrVec>,
     /// Manual trigger configuration (bool or with inputs)
     pub manual: Option<ManualTrigger>,
-    /// Release event types (e.g., ["published"])
+    /// Release event types (e.g., `["published"]`)
     pub release: Option<Vec<String>>,
 }
 
@@ -189,7 +199,7 @@ pub struct MatrixTask {
     pub task_type: Option<String>,
     /// Task reference (CUE ref enriched with _name)
     pub task: TaskRef,
-    /// Matrix dimensions (e.g., arch: ["linux-x64", "darwin-arm64"])
+    /// Matrix dimensions (e.g., `arch: ["linux-x64", "darwin-arm64"]`)
     pub matrix: BTreeMap<String, Vec<String>>,
     /// Artifacts to download before running
     #[serde(default)]
@@ -220,11 +230,12 @@ impl PipelineTask {
     /// For `Node(TaskNode::Task)` and `Node(TaskNode::Group)`, this returns the first child task name.
     /// For `Node(TaskNode::Sequence)`, this returns the first task's name.
     /// This allows task group expansion to work with inline task definitions.
+    #[must_use]
     pub fn task_name(&self) -> &str {
         match self {
-            PipelineTask::Matrix(matrix) => matrix.task.task_name(),
-            PipelineTask::Simple(task_ref) => task_ref.task_name(),
-            PipelineTask::Node(node) => Self::extract_task_name_from_node(node),
+            Self::Matrix(matrix) => matrix.task.task_name(),
+            Self::Simple(task_ref) => task_ref.task_name(),
+            Self::Node(node) => Self::extract_task_name_from_node(node),
         }
     }
 
@@ -241,24 +252,23 @@ impl PipelineTask {
                     .children
                     .keys()
                     .next()
-                    .map(String::as_str)
-                    .unwrap_or("unnamed-group")
+                    .map_or("unnamed-group", String::as_str)
             }
             TaskNode::Sequence(sequence) => {
                 // For sequences, recursively get the first task's name
                 sequence
                     .first()
-                    .map(Self::extract_task_name_from_node)
-                    .unwrap_or("unnamed-sequence")
+                    .map_or("unnamed-sequence", Self::extract_task_name_from_node)
             }
         }
     }
 
     /// Get all child task names for groups, or empty vec for simple tasks
+    #[must_use]
     pub fn child_task_names(&self) -> Vec<&str> {
         match self {
-            PipelineTask::Matrix(_) | PipelineTask::Simple(_) => vec![],
-            PipelineTask::Node(node) => Self::extract_child_names_from_node(node),
+            Self::Matrix(_) | Self::Simple(_) => vec![],
+            Self::Node(node) => Self::extract_child_names_from_node(node),
         }
     }
 
@@ -275,45 +285,51 @@ impl PipelineTask {
     }
 
     /// Check if this is a matrix task (Matrix variant, regardless of dimensions)
+    #[must_use]
     pub fn is_matrix(&self) -> bool {
-        matches!(self, PipelineTask::Matrix(_))
+        matches!(self, Self::Matrix(_))
     }
 
     /// Check if this is a task node (inline definition)
+    #[must_use]
     pub fn is_node(&self) -> bool {
-        matches!(self, PipelineTask::Node(_))
+        matches!(self, Self::Node(_))
     }
 
     /// Check if this task has actual matrix dimensions that require expansion.
     ///
     /// Returns true only for Matrix tasks with non-empty matrix map.
     /// Aggregation tasks (empty matrix with artifacts) return false.
+    #[must_use]
     pub fn has_matrix_dimensions(&self) -> bool {
         match self {
-            PipelineTask::Simple(_) | PipelineTask::Node(_) => false,
-            PipelineTask::Matrix(m) => !m.matrix.is_empty(),
+            Self::Simple(_) | Self::Node(_) => false,
+            Self::Matrix(m) => !m.matrix.is_empty(),
         }
     }
 
     /// Get matrix dimensions if this is a matrix task
+    #[must_use]
     pub fn matrix(&self) -> Option<&BTreeMap<String, Vec<String>>> {
         match self {
-            PipelineTask::Simple(_) | PipelineTask::Node(_) => None,
-            PipelineTask::Matrix(m) => Some(&m.matrix),
+            Self::Simple(_) | Self::Node(_) => None,
+            Self::Matrix(m) => Some(&m.matrix),
         }
     }
 
     /// Get the TaskNode if this is a Node variant
+    #[must_use]
     pub fn as_node(&self) -> Option<&TaskNode> {
         match self {
-            PipelineTask::Node(node) => Some(node),
-            PipelineTask::Matrix(_) | PipelineTask::Simple(_) => None,
+            Self::Node(node) => Some(node),
+            Self::Matrix(_) | Self::Simple(_) => None,
         }
     }
 
     /// Check if this is a simple task reference
+    #[must_use]
     pub fn is_simple(&self) -> bool {
-        matches!(self, PipelineTask::Simple(_))
+        matches!(self, Self::Simple(_))
     }
 }
 
@@ -367,6 +383,7 @@ pub enum PipelineMode {
     Expanded,
 }
 
+/// A named CI pipeline: trigger conditions plus the tasks it runs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Pipeline {
@@ -379,6 +396,7 @@ pub struct Pipeline {
     pub providers: Vec<String>,
     /// Environment for secret resolution (e.g., "production")
     pub environment: Option<String>,
+    /// Trigger conditions for this pipeline
     pub when: Option<PipelineCondition>,
     /// Tasks to run - can be simple task names or matrix task objects
     #[serde(default)]
@@ -512,7 +530,7 @@ pub struct TaskProviderConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AutoAssociate {
-    /// Commands that trigger auto-association (e.g., ["bun", "bunx"])
+    /// Commands that trigger auto-association (e.g., `["bun", "bunx"]`)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub command: Vec<String>,
 
@@ -611,9 +629,11 @@ pub struct Contributor {
 
     /// Auto-association rules for user tasks
     #[serde(skip_serializing_if = "Option::is_none")]
+    /// Auto-association of contributor setup tasks
     pub auto_associate: Option<AutoAssociate>,
 }
 
+/// Root CI configuration: providers, pipelines, and contributors.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct CI {
     /// CI providers to emit workflows for (e.g., `["github", "buildkite"]`).
@@ -621,6 +641,7 @@ pub struct CI {
     /// Per-pipeline providers can override this global setting.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<String>,
+    /// Named pipelines keyed by pipeline id
     #[serde(default)]
     pub pipelines: BTreeMap<String, Pipeline>,
     /// Global provider configuration defaults
@@ -640,32 +661,36 @@ impl CI {
         self.pipelines
             .get(pipeline_name)
             .filter(|p| !p.providers.is_empty())
-            .map(|p| p.providers.as_slice())
-            .unwrap_or(&self.providers)
+            .map_or(&self.providers, |p| p.providers.as_slice())
     }
 }
 
+/// A value that may be a single string or a list of strings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum StringOrVec {
+    /// A single string value
     String(String),
+    /// A list of string values
     Vec(Vec<String>),
 }
 
 impl StringOrVec {
     /// Convert to a vector of strings
+    #[must_use]
     pub fn to_vec(&self) -> Vec<String> {
         match self {
-            StringOrVec::String(s) => vec![s.clone()],
-            StringOrVec::Vec(v) => v.clone(),
+            Self::String(s) => vec![s.clone()],
+            Self::Vec(v) => v.clone(),
         }
     }
 
     /// Get as a single string (first element if vec)
+    #[must_use]
     pub fn as_single(&self) -> Option<&str> {
         match self {
-            StringOrVec::String(s) => Some(s),
-            StringOrVec::Vec(v) => v.first().map(|s| s.as_str()),
+            Self::String(s) => Some(s),
+            Self::Vec(v) => v.first().map(|s| s.as_str()),
         }
     }
 }

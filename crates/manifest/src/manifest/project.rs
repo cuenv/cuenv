@@ -5,7 +5,6 @@ use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDepe
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
-use crate::module::Instance;
 use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskNode};
 use cuenv_hooks::{Hook, Hooks};
 
@@ -74,6 +73,7 @@ impl Project {
     }
 
     /// Get hooks to execute when entering environment as a map (name -> hook)
+    #[must_use]
     pub fn on_enter_hooks_map(&self) -> HashMap<String, Hook> {
         self.hooks
             .as_ref()
@@ -83,6 +83,7 @@ impl Project {
     }
 
     /// Get hooks to execute when entering environment, sorted by (order, name)
+    #[must_use]
     pub fn on_enter_hooks(&self) -> Vec<Hook> {
         let map = self.on_enter_hooks_map();
         let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
@@ -91,6 +92,7 @@ impl Project {
     }
 
     /// Get hooks to execute when exiting environment as a map (name -> hook)
+    #[must_use]
     pub fn on_exit_hooks_map(&self) -> HashMap<String, Hook> {
         self.hooks
             .as_ref()
@@ -100,6 +102,7 @@ impl Project {
     }
 
     /// Get hooks to execute when exiting environment, sorted by (order, name)
+    #[must_use]
     pub fn on_exit_hooks(&self) -> Vec<Hook> {
         let map = self.on_exit_hooks_map();
         let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
@@ -108,6 +111,7 @@ impl Project {
     }
 
     /// Get hooks to execute before git push as a map (name -> hook)
+    #[must_use]
     pub fn pre_push_hooks_map(&self) -> HashMap<String, Hook> {
         self.hooks
             .as_ref()
@@ -117,6 +121,7 @@ impl Project {
     }
 
     /// Get hooks to execute before git push, sorted by (order, name)
+    #[must_use]
     pub fn pre_push_hooks(&self) -> Vec<Hook> {
         let map = self.pre_push_hooks_map();
         let mut hooks: Vec<(String, Hook)> = map.into_iter().collect();
@@ -139,7 +144,7 @@ impl Project {
     /// Converts them to explicit ProjectReference inputs.
     /// Also adds implicit dependsOn entries for all project references.
     pub fn expand_cross_project_references(&mut self) {
-        for (_, task_node) in self.tasks.iter_mut() {
+        for task_node in self.tasks.values_mut() {
             Self::expand_task_node(task_node);
         }
     }
@@ -218,15 +223,5 @@ impl Project {
                     .push(crate::tasks::TaskDependency::from_name(dep));
             }
         }
-    }
-}
-
-impl TryFrom<&Instance> for Project {
-    type Error = crate::Error;
-
-    fn try_from(instance: &Instance) -> Result<Self, Self::Error> {
-        let mut project: Project = instance.deserialize()?;
-        project.expand_cross_project_references();
-        Ok(project)
     }
 }

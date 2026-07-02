@@ -1,11 +1,11 @@
 //! Manifest configuration DTOs shared across directories.
 //!
-//! Based on schema/core.cue. `Project` remains in `cuenv-core` until the CI
-//! DTOs migrate here too.
+//! Based on schema/core.cue.
 
 mod codegen;
 mod formatters;
 mod hooks;
+mod project;
 mod rules;
 mod runtime;
 mod services;
@@ -21,6 +21,7 @@ use cuenv_hooks::Hooks;
 pub use codegen::*;
 pub use formatters::*;
 pub use hooks::*;
+pub use project::Project;
 pub use rules::*;
 pub use runtime::*;
 pub use services::*;

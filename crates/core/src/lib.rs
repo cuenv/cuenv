@@ -37,7 +37,7 @@
 
 pub mod affected;
 pub mod base;
-pub mod ci;
+pub use cuenv_manifest::ci;
 pub use cuenv_manifest::config;
 pub mod contributors;
 pub mod cue;
