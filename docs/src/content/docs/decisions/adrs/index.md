@@ -12,6 +12,7 @@ This section captures binding decisions derived from proposals and implementatio
 - [ADR-0003: Task Graph Execution Strategy](/decisions/adrs/adr-0003-task-graph-execution-strategy/)
 - [ADR-0004: Environment Export Filtering Policy](/decisions/adrs/adr-0004-environment-export-filtering-policy/)
 - [ADR-0005: CLI Error Taxonomy and Exit Codes](/decisions/adrs/adr-0005-cli-error-taxonomy-and-exit-codes/)
+- [ADR-0006: Library-First Architecture with Unified Provider System](/decisions/adrs/adr-0006-library-first-provider-system/) — superseded by [RFC-0006](/decisions/rfcs/rfc-0006-workspace-refactoring-roadmap/)
 
 ## Notes
 

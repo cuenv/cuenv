@@ -12,6 +12,7 @@ This section enumerates open design proposals targeted for stabilization or adop
 - [RFC-0003: Shell Integration Workflow and Hook Lifecycle](/decisions/rfcs/rfc-0003-shell-integration-workflow-and-hook-lifecycle/)
 - [RFC-0004: Task Execution UX and Dependency Strategy](/decisions/rfcs/rfc-0004-task-execution-ux-and-dependency-strategy/)
 - [RFC-0005: Environment Export and Exec Invocation Contracts](/decisions/rfcs/rfc-0005-environment-export-and-exec-invocation-contracts/)
+- [RFC-0006: Workspace Refactoring Roadmap — Leaf Types Crate and God-Crate Decomposition](/decisions/rfcs/rfc-0006-workspace-refactoring-roadmap/)
 
 ## Notes
 
