@@ -17,9 +17,11 @@ pub struct Config {
     pub commands: Option<CommandsConfig>,
 
     /// Cache configuration
+    /// Cache mode override for task execution
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_mode: Option<CacheMode>,
 
+    /// Whether task caching is enabled
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_enabled: Option<bool>,
 
@@ -35,6 +37,7 @@ pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_environment: Option<String>,
 
+    /// Default capability set granted to tasks
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_capabilities: Option<Vec<String>>,
 
@@ -161,10 +164,15 @@ impl CuenvSource {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputFormat {
+    /// Full-screen terminal UI
     Tui,
+    /// Inline spinner progress
     Spinner,
+    /// Plain line-oriented output
     Simple,
+    /// Tree-structured output
     Tree,
+    /// Machine-readable JSON events
     Json,
 }
 
@@ -202,9 +210,13 @@ impl TaskListFormat {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum CacheMode {
+    /// Disable the task cache entirely
     Off,
+    /// Read cached results but do not write new entries
     Read,
+    /// Read and write cache entries (default)
     ReadWrite,
+    /// Write new entries but do not read existing ones
     Write,
 }
 

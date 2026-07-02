@@ -1412,6 +1412,7 @@ dependencies = [
  "cuenv-gcp",
  "cuenv-hooks",
  "cuenv-infisical",
+ "cuenv-manifest",
  "cuenv-secrets",
  "cuenv-task-graph",
  "cuenv-vcs",
@@ -1583,6 +1584,15 @@ dependencies = [
  "temp-env",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "cuenv-manifest"
+version = "0.54.0"
+dependencies = [
+ "cuenv-hooks",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

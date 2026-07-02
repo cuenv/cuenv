@@ -1,0 +1,19 @@
+[package]
+name = "cuenv-manifest"
+description = "Leaf DTO crate for cuenv configuration, environment, secret, and manifest types"
+version.workspace = true
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+cuenv-hooks = { workspace = true }
+
+[lints]
+workspace = true

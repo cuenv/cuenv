@@ -40,6 +40,7 @@ cuenv-infisical = { workspace = true, optional = true }
 cuenv-aws = { workspace = true, optional = true }
 cuenv-gcp = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
+cuenv-manifest = { workspace = true }
 cuenv-task-graph = { workspace = true }
 cuenv-cas = { workspace = true }
 cuenv-vcs = { workspace = true }

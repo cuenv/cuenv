@@ -37,7 +37,7 @@ pub struct RustFormatter {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Glob patterns for files to format (default: ["*.rs"])
+    /// Glob patterns for files to format (default: `["*.rs"]`)
     #[serde(default = "default_rs_includes")]
     pub includes: Vec<String>,
 
@@ -99,7 +99,7 @@ pub struct NixFormatter {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Glob patterns for files to format (default: ["*.nix"])
+    /// Glob patterns for files to format (default: `["*.nix"]`)
     #[serde(default = "default_nix_includes")]
     pub includes: Vec<String>,
 
@@ -130,7 +130,7 @@ pub struct GoFormatter {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Glob patterns for files to format (default: ["*.go"])
+    /// Glob patterns for files to format (default: `["*.go"]`)
     #[serde(default = "default_go_includes")]
     pub includes: Vec<String>,
 }
@@ -156,7 +156,7 @@ pub struct CueFormatter {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Glob patterns for files to format (default: ["*.cue"])
+    /// Glob patterns for files to format (default: `["*.cue"]`)
     #[serde(default = "default_cue_includes")]
     pub includes: Vec<String>,
 }

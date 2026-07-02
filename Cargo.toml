@@ -5,6 +5,7 @@ members = [
     "crates/secrets",
     "crates/core",
     "crates/hooks",
+    "crates/manifest",
     "crates/cas",
     "crates/vcs",
     "crates/task-graph",
@@ -57,6 +58,7 @@ cuenv-events = { path = "crates/events", version = "0.54.0" }
 cuenv-secrets = { path = "crates/secrets", version = "0.54.0" }
 cuenv-core = { path = "crates/core", version = "0.54.0" }
 cuenv-hooks = { path = "crates/hooks", version = "0.54.0" }
+cuenv-manifest = { path = "crates/manifest", version = "0.54.0" }
 cuenv-cas = { path = "crates/cas", version = "0.54.0" }
 cuenv-vcs = { path = "crates/vcs", version = "0.54.0" }
 cuenv-task-graph = { path = "crates/task-graph", version = "0.54.0" }

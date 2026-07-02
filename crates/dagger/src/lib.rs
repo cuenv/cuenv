@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::config::BackendConfig;
+use cuenv_core::secrets::SecretExt;
 use cuenv_core::tasks::{TaskBackend, TaskResult};
 use cuenv_core::{Error, Result};
 use dagger_sdk::{Config, ContainerId, connect_opts};
