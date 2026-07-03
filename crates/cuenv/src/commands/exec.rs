@@ -128,14 +128,13 @@ pub async fn execute_exec(request: ExecRequest<'_>, executor: &CommandExecutor) 
     );
 
     // Evaluate CUE to get environment using module-wide evaluation
-    let target_path =
-        Path::new(request.path)
-            .canonicalize()
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(Path::new(request.path).to_path_buf().into_boxed_path()),
-                operation: "canonicalize path".to_string(),
-            })?;
+    let target_path = Path::new(request.path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path(
+            "canonicalize path",
+            Path::new(request.path).to_path_buf(),
+            e,
+        )
+    })?;
 
     let manifest_kind = load_manifest_kind(&target_path, executor)?;
     let project_for_runtime = manifest_kind.project();

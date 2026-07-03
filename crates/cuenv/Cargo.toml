@@ -31,6 +31,10 @@ default = [
     "bitbucket",
     "buildkite",
     "homebrew",
+    "1password",
+    "infisical",
+    "aws",
+    "gcp",
 ]
 dagger-backend = ["dep:cuenv-dagger"]
 # Platform-specific providers
@@ -39,6 +43,11 @@ gitlab = ["dep:cuenv-gitlab"]
 bitbucket = ["dep:cuenv-bitbucket"]
 buildkite = ["dep:cuenv-buildkite"]
 homebrew = ["dep:cuenv-homebrew"]
+# Secret providers, registered at the composition root (RFC-0006 phase 3b)
+1password = ["dep:cuenv-1password"]
+infisical = ["dep:cuenv-infisical"]
+aws = ["dep:cuenv-aws"]
+gcp = ["dep:cuenv-gcp"]
 # Enable all platforms
 all-platforms = ["github", "gitlab", "bitbucket", "buildkite", "homebrew"]
 
@@ -51,6 +60,11 @@ cuenv-cas = { workspace = true }
 cuenv-vcs = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-secrets = { workspace = true }
+cuenv-1password = { workspace = true, optional = true }
+cuenv-infisical = { workspace = true, optional = true }
+cuenv-aws = { workspace = true, optional = true }
+cuenv-gcp = { workspace = true, optional = true }
 cuenv-hooks = { workspace = true }
 cuenv-workspaces = { workspace = true, features = [
     "detection",

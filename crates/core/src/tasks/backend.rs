@@ -95,11 +95,7 @@ impl TaskBackend for HostBackend {
                 .stderr(Stdio::piped())
                 .output()
                 .await
-                .map_err(|e| Error::Io {
-                    source: e,
-                    path: None,
-                    operation: format!("spawn task {}", ctx.name),
-                })?;
+                .map_err(|e| Error::io(format!("spawn task {}", ctx.name), e))?;
 
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -124,11 +120,7 @@ impl TaskBackend for HostBackend {
                 .stderr(Stdio::inherit())
                 .status()
                 .await
-                .map_err(|e| Error::Io {
-                    source: e,
-                    path: None,
-                    operation: format!("spawn task {}", ctx.name),
-                })?;
+                .map_err(|e| Error::io(format!("spawn task {}", ctx.name), e))?;
 
             let exit_code = status.code().unwrap_or(-1);
             let success = status.success();

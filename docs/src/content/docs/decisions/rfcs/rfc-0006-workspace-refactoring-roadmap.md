@@ -103,4 +103,29 @@ Progress is tracked by phase on the implementation branch; each phase updates th
   paths and keeps resolution/execution behavior behind extension
   traits (`SecretExt`, `EnvValueExt`, `TaskCommandExt`,
   `Instance::to_project`).
-- Remaining: Phase 2e (error decomposition) and Phases 3-8.
+- Phase 2e (error decomposition): landed — core's monolithic 13-variant
+  `Error` became six per-domain error types colocated with their domains
+  (`ConfigError`/`EvalError`/`IoError` in `core/src/error.rs`,
+  `TaskError` in `tasks/error.rs`, `ToolError` in `tools/error.rs`,
+  `SecretResolutionError` in `secrets/error.rs`); the top-level `Error`
+  is a thin `#[from]` composition with transparent Display/Diagnostic
+  forwarding, helper-constructor signatures are unchanged, and the CLI
+  exit-code matcher is a two-level exhaustive match. The overloaded
+  `Configuration` variant deliberately remains the catch-all; its ~80
+  construction sites re-domain incrementally as domains are extracted.
+  cuenv-ci's seven scattered error enums are colocated in
+  `crates/ci/src/error.rs` (no unified mega-enum, by design).
+- Phase 3 secret-backend decoupling (3b): landed — core has no features
+  anymore; the four provider crates (and the transitive extism WASM
+  runtime) moved to default-on optional CLI features. The CLI installs
+  a registry factory at startup (`cuenv_secrets::install_registry_factory`);
+  the process-wide registry is realized lazily on first resolution and
+  falls back to built-in env/exec for library consumers. A provider
+  whose initialization fails now degrades to a resolve-time error for
+  that provider only, instead of failing all secret resolution.
+- Also landed: `.pkg` cpio payload hardening in `cuenv-tool-archive`
+  (table-of-contents traversal validation before `cpio -idm`, canonical
+  containment check before binary copy), carried forward from the
+  phases 0-2d review.
+- Remaining: Phase 3a (task-exec extraction, unblocked by 2e), 3c (tool
+  runtime crate), 3d (transitional re-export removal), and Phases 4-8.

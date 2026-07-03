@@ -17,50 +17,7 @@ pub use orchestrator::{RunCiRequest, run_ci};
 pub use runner::TaskOutput;
 pub use secrets::{EnvSecretResolver, MockSecretResolver, SaltConfig, SecretResolver};
 
-use thiserror::Error;
-
-/// Error types for CI execution
-#[derive(Debug, Error)]
-pub enum ExecutorError {
-    /// Compilation error
-    #[error("Failed to compile project to IR: {0}")]
-    Compilation(String),
-
-    /// Secret resolution error
-    #[error(transparent)]
-    Secret(#[from] secrets::SecretError),
-
-    /// Task execution error
-    #[error(transparent)]
-    Runner(#[from] runner::RunnerError),
-
-    /// Task panicked during execution
-    #[error("Task panicked: {0}")]
-    TaskPanic(String),
-
-    /// Pipeline not found
-    #[error("Pipeline '{name}' not found. Available: {available}")]
-    PipelineNotFound { name: String, available: String },
-
-    /// No CI configuration
-    #[error("Project has no CI configuration")]
-    NoCIConfig,
-}
-
-impl From<ExecutorError> for cuenv_core::Error {
-    fn from(err: ExecutorError) -> Self {
-        match err {
-            ExecutorError::Compilation(msg) => Self::configuration(msg),
-            ExecutorError::Secret(e) => Self::secret_resolution(e.to_string()),
-            ExecutorError::Runner(e) => Self::execution(e.to_string()),
-            ExecutorError::TaskPanic(msg) => Self::execution(format!("Task panicked: {msg}")),
-            ExecutorError::PipelineNotFound { name, available } => Self::configuration(format!(
-                "Pipeline '{name}' not found. Available: {available}"
-            )),
-            ExecutorError::NoCIConfig => Self::configuration("Project has no CI configuration"),
-        }
-    }
-}
+pub use crate::error::ExecutorError;
 
 /// Result of pipeline execution
 #[derive(Debug)]

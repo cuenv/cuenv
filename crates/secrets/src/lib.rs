@@ -25,6 +25,7 @@
 
 mod batch;
 mod fingerprint;
+mod global;
 #[cfg(feature = "http")]
 pub mod http;
 mod registry;
@@ -35,6 +36,7 @@ mod types;
 
 pub use batch::{BatchConfig, BatchResolver, resolve_batch};
 pub use fingerprint::compute_secret_fingerprint;
+pub use global::{global_registry, install_registry_factory};
 pub use registry::SecretRegistry;
 pub use resolved::ResolvedSecrets;
 pub use salt::SaltConfig;
@@ -92,6 +94,11 @@ pub enum SecretError {
         /// The resolver type that was requested
         resolver: String,
     },
+
+    /// The process-wide registry factory was installed twice, or after the
+    /// registry had already been realized
+    #[error("secret registry factory already installed (or registry already in use)")]
+    RegistryAlreadyInstalled,
 }
 
 impl SecretError {

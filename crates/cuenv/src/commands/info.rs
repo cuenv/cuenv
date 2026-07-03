@@ -133,14 +133,13 @@ fn resolve_info_context(options: InfoOptions<'_>) -> Result<InfoContext> {
     let scan_all = options.path.is_none();
     let effective_path = options.path.unwrap_or(".");
 
-    let start_path =
-        Path::new(effective_path)
-            .canonicalize()
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(Path::new(effective_path).to_path_buf().into_boxed_path()),
-                operation: "canonicalize path".to_string(),
-            })?;
+    let start_path = Path::new(effective_path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path(
+            "canonicalize path",
+            Path::new(effective_path).to_path_buf(),
+            e,
+        )
+    })?;
 
     // Find the CUE module root
     let module_root = find_cue_module_root(&start_path).ok_or_else(|| {

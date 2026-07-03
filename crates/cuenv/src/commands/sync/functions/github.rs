@@ -76,12 +76,9 @@ fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Re
         for (filename, content) in workflows {
             let path = workflows_dir.join(filename);
             if path.exists() {
-                let existing =
-                    std::fs::read_to_string(&path).map_err(|e| cuenv_core::Error::Io {
-                        source: e,
-                        path: Some(path.clone().into_boxed_path()),
-                        operation: "read workflow file".to_string(),
-                    })?;
+                let existing = std::fs::read_to_string(&path).map_err(|e| {
+                    cuenv_core::Error::io_with_path("read workflow file", path.clone(), e)
+                })?;
                 if existing != *content {
                     out_of_sync.push(filename.clone());
                 }
@@ -121,17 +118,17 @@ fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Re
         } else {
             // Create directory if needed
             if !workflows_dir.exists() {
-                std::fs::create_dir_all(workflows_dir).map_err(|e| cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(workflows_dir.to_path_buf().into_boxed_path()),
-                    operation: "create directory".to_string(),
+                std::fs::create_dir_all(workflows_dir).map_err(|e| {
+                    cuenv_core::Error::io_with_path(
+                        "create directory",
+                        workflows_dir.to_path_buf(),
+                        e,
+                    )
                 })?;
             }
 
-            std::fs::write(&workflow_path, content).map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(workflow_path.clone().into_boxed_path()),
-                operation: "write workflow file".to_string(),
+            std::fs::write(&workflow_path, content).map_err(|e| {
+                cuenv_core::Error::io_with_path("write workflow file", workflow_path.clone(), e)
             })?;
 
             if exists {

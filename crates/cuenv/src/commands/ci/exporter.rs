@@ -247,17 +247,10 @@ fn emit_circleci(_ir: &IntermediateRepresentation) -> Result<String> {
 /// Output YAML to stdout or file based on args.
 fn output_yaml(args: &CiArgs, yaml: &str) -> Result<()> {
     if let Some(path) = &args.output {
-        let mut file = std::fs::File::create(path).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.clone().into_boxed_path()),
-            operation: "create".to_string(),
-        })?;
+        let mut file = std::fs::File::create(path)
+            .map_err(|e| cuenv_core::Error::io_with_path("create", path.clone(), e))?;
         file.write_all(yaml.as_bytes())
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(path.clone().into_boxed_path()),
-                operation: "write".to_string(),
-            })?;
+            .map_err(|e| cuenv_core::Error::io_with_path("write", path.clone(), e))?;
         tracing::info!(path = %path.display(), "Wrote pipeline YAML");
         Ok(())
     } else {

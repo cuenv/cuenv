@@ -404,17 +404,16 @@ fn test_cuenv_core_error_conversion() {
     assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
 
     // I/O errors should map to Other (exit code 3)
-    let io_err = cuenv_core::Error::Io {
-        source: std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
-        path: None,
-        operation: "read".to_string(),
-    };
+    let io_err = cuenv_core::Error::io(
+        "read",
+        std::io::Error::new(std::io::ErrorKind::NotFound, "file not found"),
+    );
     let cli_err: CliError = io_err.into();
     assert!(matches!(cli_err, CliError::Other { .. }));
     assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
 
     // Timeout errors should map to Other (exit code 3)
-    let timeout_err = cuenv_core::Error::Timeout { seconds: 30 };
+    let timeout_err = cuenv_core::Error::timeout(30);
     let cli_err: CliError = timeout_err.into();
     assert!(matches!(cli_err, CliError::Other { .. }));
     assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
@@ -428,6 +427,27 @@ fn test_cuenv_core_error_conversion() {
     let display = format!("{cli_err}");
     assert!(display.contains("Dagger execution failed"));
     assert!(!display.contains("Task execution failed: Task execution failed"));
+
+    // Task graph errors should map to Config (exit code 2)
+    let graph_err = cuenv_core::Error::task_graph("cycle detected");
+    let cli_err: CliError = graph_err.into();
+    assert!(matches!(cli_err, CliError::Config { .. }));
+    assert_eq!(exit_code_for(&cli_err), EXIT_CLI);
+
+    // Task failures should map to Eval (exit code 3)
+    let failed_err = cuenv_core::Error::task_failed("build", 1, "", "boom");
+    let cli_err: CliError = failed_err.into();
+    assert!(matches!(cli_err, CliError::Eval { .. }));
+    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
+    let display = format!("{cli_err}");
+    assert!(display.contains("Task 'build' failed with exit code 1"));
+    assert!(display.contains("boom"));
+
+    // Secret resolution errors should map to Eval (exit code 3)
+    let secret_err = cuenv_core::Error::secret_resolution("provider unavailable");
+    let cli_err: CliError = secret_err.into();
+    assert!(matches!(cli_err, CliError::Eval { .. }));
+    assert_eq!(exit_code_for(&cli_err), EXIT_EVAL);
 }
 
 #[test]
@@ -505,11 +525,11 @@ fn test_cli_error_other_with_help() {
 #[test]
 fn test_cuenv_core_io_error_with_path() {
     // Test I/O error with a path
-    let io_err = cuenv_core::Error::Io {
-        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
-        path: Some(std::path::Path::new("/etc/secrets").into()),
-        operation: "write".to_string(),
-    };
+    let io_err = cuenv_core::Error::io_with_path(
+        "write",
+        std::path::Path::new("/etc/secrets"),
+        std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied"),
+    );
     let cli_err: CliError = io_err.into();
     let display = format!("{cli_err}");
     assert!(display.contains("I/O write failed"));
@@ -518,10 +538,7 @@ fn test_cuenv_core_io_error_with_path() {
 
 #[test]
 fn test_cuenv_core_tool_resolution_error_without_help() {
-    let tool_err = cuenv_core::Error::ToolResolution {
-        message: "tool not found".to_string(),
-        help: None,
-    };
+    let tool_err = cuenv_core::Error::tool_resolution("tool not found");
     let cli_err: CliError = tool_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
     let display = format!("{cli_err}");
@@ -530,10 +547,8 @@ fn test_cuenv_core_tool_resolution_error_without_help() {
 
 #[test]
 fn test_cuenv_core_tool_resolution_error_with_help() {
-    let tool_err = cuenv_core::Error::ToolResolution {
-        message: "tool not found".to_string(),
-        help: Some("install via brew".to_string()),
-    };
+    let tool_err =
+        cuenv_core::Error::tool_resolution_with_help("tool not found", "install via brew");
     let cli_err: CliError = tool_err.into();
     if let CliError::Eval { message, help } = cli_err {
         assert_eq!(message, "tool not found");
@@ -545,9 +560,7 @@ fn test_cuenv_core_tool_resolution_error_with_help() {
 
 #[test]
 fn test_cuenv_core_platform_error() {
-    let platform_err = cuenv_core::Error::Platform {
-        message: "unsupported architecture".to_string(),
-    };
+    let platform_err = cuenv_core::Error::platform("unsupported architecture");
     let cli_err: CliError = platform_err.into();
     assert!(matches!(cli_err, CliError::Eval { .. }));
     let display = format!("{cli_err}");
@@ -559,10 +572,7 @@ fn test_cuenv_core_utf8_error() {
     let mut invalid_bytes = Vec::from("valid");
     invalid_bytes[0] = 0xff;
     let utf8_error = std::str::from_utf8(&invalid_bytes).unwrap_err();
-    let utf8_err = cuenv_core::Error::Utf8 {
-        source: utf8_error,
-        file: None,
-    };
+    let utf8_err = cuenv_core::Error::from(utf8_error);
     let cli_err: CliError = utf8_err.into();
     assert!(matches!(cli_err, CliError::Other { .. }));
 }

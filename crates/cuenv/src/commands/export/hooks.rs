@@ -348,9 +348,7 @@ async fn wait_for_background_hooks(
         // Check timeout
         if start_time.elapsed().as_secs() >= timeout_seconds {
             clear_hook_progress_line(is_tty);
-            return Err(Error::Timeout {
-                seconds: timeout_seconds,
-            });
+            return Err(Error::timeout(timeout_seconds));
         }
 
         tokio::time::sleep(poll_interval).await;
