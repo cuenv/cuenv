@@ -35,14 +35,14 @@ env: {
 
 #[test]
 fn test_format_task_results_variants() {
-    let r_ok = cuenv_core::tasks::TaskResult {
+    let r_ok = cuenv_task_exec::TaskResult {
         name: "t".into(),
         exit_code: Some(0),
         stdout: "hello".into(),
         stderr: String::new(),
         success: true,
     };
-    let r_fail = cuenv_core::tasks::TaskResult {
+    let r_fail = cuenv_task_exec::TaskResult {
         name: "t".into(),
         exit_code: Some(1),
         stdout: String::new(),
@@ -70,7 +70,7 @@ fn test_format_task_results_variants() {
 #[test]
 fn test_render_task_tree() {
     use super::rendering::render_task_tree;
-    use cuenv_core::tasks::IndexedTask;
+    use cuenv_task_exec::IndexedTask;
     // Helper to create a dummy task
     let make_task = |desc: Option<&str>| Task {
         command: "echo".into(),

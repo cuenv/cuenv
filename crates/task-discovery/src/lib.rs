@@ -9,7 +9,8 @@ use std::path::PathBuf;
 use regex::Regex;
 
 use cuenv_core::manifest::{ArgMatcher, Project, TaskMatcher, TaskRef};
-use cuenv_core::tasks::{Task, TaskIndex};
+use cuenv_core::tasks::Task;
+use cuenv_task_exec::TaskIndex;
 
 /// A discovered project in the workspace
 #[derive(Debug, Clone)]

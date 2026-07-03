@@ -60,6 +60,7 @@ cuenv-cas = { workspace = true }
 cuenv-vcs = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-task-exec = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-1password = { workspace = true, optional = true }
 cuenv-infisical = { workspace = true, optional = true }

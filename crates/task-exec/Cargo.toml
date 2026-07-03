@@ -1,0 +1,47 @@
+[package]
+name = "cuenv-task-exec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Task execution engine for the cuenv ecosystem"
+
+# No [lints] opt-in yet: this crate was extracted from cuenv-core, which
+# predates the workspace lint config; enabling it flags ~80 pre-existing
+# pedantic findings in the moved code. The per-crate lint ratchet is
+# RFC-0006 phase 6.
+
+[dependencies]
+cuenv-core = { workspace = true }
+cuenv-manifest = { workspace = true }
+cuenv-task-graph = { workspace = true }
+cuenv-cas = { workspace = true }
+cuenv-vcs = { workspace = true }
+cuenv-events = { workspace = true }
+cuenv-workspaces = { workspace = true, features = ["detection"] }
+
+tokio = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+async-recursion = "1.1"
+futures = { workspace = true }
+petgraph = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+regex = { workspace = true }
+globset = { workspace = true }
+walkdir = { workspace = true }
+chrono = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+async-trait = { workspace = true }

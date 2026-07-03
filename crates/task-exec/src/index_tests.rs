@@ -1,5 +1,5 @@
 use super::*;
-use crate::tasks::{Task, TaskDependency};
+use crate::{Task, TaskDependency};
 
 // ==========================================================================
 // TaskPath tests

@@ -18,3 +18,4 @@ regex = { workspace = true }
 
 # Core types - Task, Project, TaskIndex, TaskMatcher, ArgMatcher, TaskRef
 cuenv-core = { workspace = true }
+cuenv-task-exec = { workspace = true }

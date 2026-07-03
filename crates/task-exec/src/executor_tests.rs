@@ -1,6 +1,6 @@
 use super::*;
-use crate::tasks::cache::TaskCacheConfig;
-use crate::tasks::{RetryConfig, SourceLocation, TaskDependency};
+use crate::cache::TaskCacheConfig;
+use crate::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
 use cuenv_vcs::WalkHasher;

@@ -8,9 +8,9 @@
 
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_core::OutputCapture;
-use cuenv_core::tasks::cache::TaskCacheConfig;
-use cuenv_core::tasks::executor::{ExecutorConfig, TaskExecutor};
-use cuenv_core::tasks::{Input, Task, TaskCacheMode, TaskCachePolicy};
+use cuenv_task_exec::cache::TaskCacheConfig;
+use cuenv_task_exec::executor::{ExecutorConfig, TaskExecutor};
+use cuenv_task_exec::{Input, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_vcs::WalkHasher;
 use std::collections::BTreeMap;
 use std::fs;

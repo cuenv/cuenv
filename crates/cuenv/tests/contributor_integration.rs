@@ -11,7 +11,8 @@ use cuenv_core::contributors::{
     builtin_workspace_contributors,
 };
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{Task, TaskIndex, TaskNode};
+use cuenv_core::tasks::{Task, TaskNode};
+use cuenv_task_exec::TaskIndex;
 use std::path::{Path, PathBuf};
 
 type TestResult<T = ()> = Result<T, String>;

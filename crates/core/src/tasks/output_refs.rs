@@ -9,24 +9,21 @@
 //! 1. CUE evaluates `tasks.tmpdir.stdout` → `{ cuenvOutputRef: true, cuenvTask: "tmpdir", cuenvOutput: "stdout" }`
 //! 2. [`process_output_refs`] walks raw JSON, replaces ref objects with placeholder strings
 //! 3. Task deserialization sees plain strings in `args`/`env` (`Vec<String>`)
-//! 4. [`OutputRefResolver::resolve`] replaces placeholder strings with actual values before execution
+//! 4. `OutputRefResolver::resolve` (in `cuenv-task-exec`) replaces placeholder strings with actual values before execution
 
 mod extraction;
 mod model;
-mod resolver;
 
 #[cfg(test)]
 use extraction::try_extract_output_ref;
-pub(crate) use extraction::try_extract_passthrough;
-pub use extraction::{has_output_refs, parse_passthrough, process_output_refs};
+pub use extraction::{
+    has_output_refs, parse_passthrough, process_output_refs, try_extract_passthrough,
+};
 pub use model::{OutputRefDep, TaskOutputField, TaskOutputRef};
-pub use resolver::OutputRefResolver;
 
 #[cfg(test)]
 mod tests {
-    use super::super::TaskResult;
     use super::*;
-    use std::collections::HashMap;
 
     // =========================================================================
     // TaskOutputRef::parse tests
@@ -310,138 +307,5 @@ mod tests {
         let deps = process_output_refs(&mut value);
         // Both references should produce deps (deduplication is caller's concern)
         assert_eq!(deps.len(), 2);
-    }
-
-    // =========================================================================
-    // OutputRefResolver tests
-    // =========================================================================
-
-    fn make_result(name: &str, stdout: &str, stderr: &str, exit_code: i32) -> TaskResult {
-        TaskResult {
-            name: name.to_string(),
-            stdout: stdout.to_string(),
-            stderr: stderr.to_string(),
-            exit_code: Some(exit_code),
-            success: exit_code == 0,
-        }
-    }
-
-    fn resolver(results: &HashMap<String, TaskResult>) -> OutputRefResolver<'_> {
-        OutputRefResolver {
-            task_name: "work",
-            results,
-        }
-    }
-
-    #[test]
-    fn resolve_stdout_in_args() {
-        let mut args = vec!["cuenv:ref:tmpdir:stdout".to_string()];
-        let mut env = HashMap::new();
-        let mut results = HashMap::new();
-        results.insert(
-            "tmpdir".to_string(),
-            make_result("tmpdir", "/tmp/abc\n", "", 0),
-        );
-
-        resolver(&results).resolve(&mut args, &mut env).unwrap();
-        assert_eq!(args[0], "/tmp/abc"); // trimmed
-    }
-
-    #[test]
-    fn resolve_stderr_in_env() {
-        let mut args = Vec::new();
-        let mut env = HashMap::new();
-        env.insert(
-            "ERR".to_string(),
-            serde_json::Value::String("cuenv:ref:check:stderr".to_string()),
-        );
-        let mut results = HashMap::new();
-        results.insert(
-            "check".to_string(),
-            make_result("check", "", "  warning  \n", 0),
-        );
-
-        resolver(&results).resolve(&mut args, &mut env).unwrap();
-        assert_eq!(env["ERR"].as_str().unwrap(), "warning");
-    }
-
-    #[test]
-    fn resolve_non_ref_strings_unchanged() {
-        let mut args = vec!["hello".to_string(), "--flag".to_string()];
-        let mut env = HashMap::new();
-        env.insert(
-            "FOO".to_string(),
-            serde_json::Value::String("bar".to_string()),
-        );
-        let results = HashMap::new();
-
-        resolver(&results).resolve(&mut args, &mut env).unwrap();
-        assert_eq!(args, vec!["hello", "--flag"]);
-        assert_eq!(env["FOO"].as_str().unwrap(), "bar");
-    }
-
-    #[test]
-    fn resolve_missing_task_errors() {
-        let mut args = vec!["cuenv:ref:nonexistent:stdout".to_string()];
-        let mut env = HashMap::new();
-        let results = HashMap::new();
-
-        let err = resolver(&results).resolve(&mut args, &mut env).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("nonexistent"));
-        assert!(msg.contains("not completed"));
-    }
-
-    #[test]
-    fn resolve_failed_task_errors() {
-        let mut args = vec!["cuenv:ref:failing:stdout".to_string()];
-        let mut env = HashMap::new();
-        let mut results = HashMap::new();
-        results.insert(
-            "failing".to_string(),
-            make_result("failing", "", "error!", 1),
-        );
-
-        let err = resolver(&results).resolve(&mut args, &mut env).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("failing") || msg.contains("failed"));
-    }
-
-    #[test]
-    fn resolve_exit_code_in_args_errors() {
-        let mut args = vec!["cuenv:ref:check:exitCode".to_string()];
-        let mut env = HashMap::new();
-        let mut results = HashMap::new();
-        results.insert("check".to_string(), make_result("check", "", "", 0));
-
-        let err = resolver(&results).resolve(&mut args, &mut env).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("exitCode"));
-        assert!(msg.contains("integer"));
-    }
-
-    #[test]
-    fn resolve_empty_stdout() {
-        let mut args = vec!["cuenv:ref:quiet:stdout".to_string()];
-        let mut env = HashMap::new();
-        let mut results = HashMap::new();
-        results.insert("quiet".to_string(), make_result("quiet", "", "", 0));
-
-        resolver(&results).resolve(&mut args, &mut env).unwrap();
-        assert_eq!(args[0], ""); // empty after trim
-    }
-
-    #[test]
-    fn resolve_trimming_behavior() {
-        let mut args = vec!["cuenv:ref:padded:stdout".to_string()];
-        let mut env = HashMap::new();
-        let mut results = HashMap::new();
-        results.insert(
-            "padded".to_string(),
-            make_result("padded", "  hello world  \n\n", "", 0),
-        );
-
-        resolver(&results).resolve(&mut args, &mut env).unwrap();
-        assert_eq!(args[0], "hello world");
     }
 }
