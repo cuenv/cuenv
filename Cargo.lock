@@ -1213,6 +1213,7 @@ dependencies = [
  "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-infisical",
+ "cuenv-manifest",
  "cuenv-release",
  "cuenv-secrets",
  "cuenv-services",
@@ -1348,6 +1349,7 @@ dependencies = [
  "cuenv-core",
  "cuenv-events",
  "cuenv-hooks",
+ "cuenv-manifest",
  "cuenv-secrets",
  "cuenv-task-exec",
  "cuenv-task-graph",
@@ -1444,6 +1446,7 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-manifest",
  "cuenv-task-exec",
  "dagger-sdk",
  "tokio",

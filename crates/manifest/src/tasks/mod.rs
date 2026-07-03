@@ -468,18 +468,6 @@ pub enum TaskNode {
     Sequence(Vec<Self>),
 }
 
-// =============================================================================
-// Legacy Type Aliases (for backwards compatibility)
-// =============================================================================
-
-/// Legacy alias for TaskNode
-#[deprecated(since = "0.26.0", note = "Use TaskNode instead")]
-pub type TaskDefinition = TaskNode;
-
-/// Legacy alias for TaskList (now just Vec<TaskNode>)
-#[deprecated(since = "0.26.0", note = "Use Vec<TaskNode> directly")]
-pub type TaskList = Vec<TaskNode>;
-
 /// Root tasks structure from CUE
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Tasks {
@@ -578,34 +566,6 @@ impl TaskNode {
             Self::Group(group) => group.description.as_deref(),
             Self::Sequence(_) => None, // Sequences don't have descriptions
         }
-    }
-
-    /// Legacy compatibility method
-    #[deprecated(since = "0.26.0", note = "Use is_task() instead")]
-    #[must_use]
-    pub fn is_single(&self) -> bool {
-        self.is_task()
-    }
-
-    /// Legacy compatibility method
-    #[deprecated(since = "0.26.0", note = "Use as_task() instead")]
-    #[must_use]
-    pub fn as_single(&self) -> Option<&Task> {
-        self.as_task()
-    }
-
-    /// Legacy compatibility method
-    #[deprecated(since = "0.26.0", note = "Use is_sequence() instead")]
-    #[must_use]
-    pub fn is_list(&self) -> bool {
-        self.is_sequence()
-    }
-
-    /// Legacy compatibility method
-    #[deprecated(since = "0.26.0", note = "Use as_sequence() instead")]
-    #[must_use]
-    pub fn as_list(&self) -> Option<&Vec<Self>> {
-        self.as_sequence()
     }
 }
 

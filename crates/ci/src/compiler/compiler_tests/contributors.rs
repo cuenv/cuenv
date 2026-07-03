@@ -105,11 +105,11 @@ fn test_contributor_runtime_type_no_runtime_set() {
 #[test]
 fn test_contributor_cuenv_source_matches() {
     use cuenv_core::ci::CI;
-    use cuenv_core::config::{CIConfig, CuenvConfig, CuenvSource};
+    use cuenv_manifest::config::{CIConfig, CuenvConfig, CuenvSource};
     use std::collections::BTreeMap;
 
     let mut project = Project::new("test");
-    project.config = Some(cuenv_core::config::Config::default());
+    project.config = Some(cuenv_manifest::config::Config::default());
     project.ci = Some(CI {
         pipelines: BTreeMap::new(),
         ..Default::default()
@@ -138,7 +138,7 @@ fn test_contributor_cuenv_source_matches() {
 }
 
 fn cuenv_version_script_for_config(configured_version: Option<&str>) -> Vec<String> {
-    use cuenv_core::config::{CIConfig, Config, CuenvConfig};
+    use cuenv_manifest::config::{CIConfig, Config, CuenvConfig};
 
     let mut project = Project::new("test");
     if let Some(version) = configured_version {

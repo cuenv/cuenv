@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-manifest = { workspace = true }
 cuenv-tool-runtime = { workspace = true }
 cuenv-task-exec = { workspace = true }
 cuenv-secrets = { workspace = true }
