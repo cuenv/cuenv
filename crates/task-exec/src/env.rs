@@ -1,7 +1,7 @@
 //! Task-level environment variable handling.
 
-use crate::environment::{EnvValue, Environment};
-use crate::{Error, Result};
+use cuenv_core::environment::{EnvValue, Environment};
+use cuenv_core::{Error, Result};
 use serde_json::Value;
 use std::collections::HashMap;
 

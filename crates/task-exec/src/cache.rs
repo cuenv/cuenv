@@ -10,13 +10,13 @@
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
 use super::TaskCommandExt;
-use crate::Result;
-use crate::environment::Environment;
-use crate::tasks::{Task, TaskCachePolicy};
+use crate::{Task, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
     ExecutionMetadata, FileNode, OutputFile, Platform, digest_of,
 };
+use cuenv_core::Result;
+use cuenv_core::environment::Environment;
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
@@ -192,7 +192,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         working_directory: normalize_workdir(workdir, project_root, module_root),
     };
     let command_digest = digest_of(&command)
-        .map_err(|e| crate::Error::configuration(format!("command digest: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("command digest: {e}")))?;
 
     let mut platform_properties = BTreeMap::new();
     platform_properties.insert("os".to_string(), std::env::consts::OS.to_string());
@@ -210,7 +210,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         cuenv_version: cache.cuenv_version.clone(),
     };
     let action_digest = digest_of(&action)
-        .map_err(|e| crate::Error::configuration(format!("action digest: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("action digest: {e}")))?;
 
     Ok(CacheOutcome::Eligible(Box::new(action), action_digest))
 }
@@ -290,7 +290,7 @@ pub fn lookup(
     let Some(result) = cache
         .action_cache
         .lookup(action_digest)
-        .map_err(|e| crate::Error::configuration(format!("action cache lookup: {e}")))?
+        .map_err(|e| cuenv_core::Error::configuration(format!("action cache lookup: {e}")))?
     else {
         return Ok(None);
     };
@@ -334,7 +334,7 @@ pub fn materialize_hit(
         let destination = workdir.join(&output_file.path);
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                crate::Error::configuration(format!(
+                cuenv_core::Error::configuration(format!(
                     "create output parent {}: {e}",
                     parent.display()
                 ))
@@ -343,7 +343,7 @@ pub fn materialize_hit(
         cache
             .cas
             .get_to_file(&output_file.digest, &destination)
-            .map_err(|e| crate::Error::configuration(format!("cas get output: {e}")))?;
+            .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
         set_executable_if_needed(&destination, output_file.is_executable)?;
     }
 
@@ -351,7 +351,7 @@ pub fn materialize_hit(
         let bytes = cache
             .cas
             .get(digest)
-            .map_err(|e| crate::Error::configuration(format!("cas get stdout: {e}")))?;
+            .map_err(|e| cuenv_core::Error::configuration(format!("cas get stdout: {e}")))?;
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
         String::new()
@@ -361,7 +361,7 @@ pub fn materialize_hit(
         let bytes = cache
             .cas
             .get(digest)
-            .map_err(|e| crate::Error::configuration(format!("cas get stderr: {e}")))?;
+            .map_err(|e| cuenv_core::Error::configuration(format!("cas get stderr: {e}")))?;
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
         String::new()
@@ -402,7 +402,7 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
         let digest = cache
             .cas
             .put_file(&absolute_path)
-            .map_err(|e| crate::Error::configuration(format!("cas put output: {e}")))?;
+            .map_err(|e| cuenv_core::Error::configuration(format!("cas put output: {e}")))?;
         output_files.push(OutputFile {
             path: path_to_forward_slashes(&relative_path),
             digest,
@@ -415,11 +415,11 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
     let stdout_digest = cache
         .cas
         .put_bytes(redacted_stdout.as_bytes())
-        .map_err(|e| crate::Error::configuration(format!("cas put stdout: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("cas put stdout: {e}")))?;
     let stderr_digest = cache
         .cas
         .put_bytes(redacted_stderr.as_bytes())
-        .map_err(|e| crate::Error::configuration(format!("cas put stderr: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("cas put stderr: {e}")))?;
 
     let result = ActionResult {
         output_files,
@@ -436,7 +436,7 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
     cache
         .action_cache
         .update(action_digest, &result)
-        .map_err(|e| crate::Error::configuration(format!("action cache update: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("action cache update: {e}")))?;
     Ok(())
 }
 
@@ -457,14 +457,14 @@ fn is_expired(result: &ActionResult, max_age: Option<&str>) -> Result<bool> {
 
     let age = age
         .to_std()
-        .map_err(|e| crate::Error::configuration(format!("invalid cache age: {e}")))?;
+        .map_err(|e| cuenv_core::Error::configuration(format!("invalid cache age: {e}")))?;
     Ok(age > max_age_duration)
 }
 
 fn parse_max_age(spec: &str) -> Result<Option<Duration>> {
     let raw = spec.trim();
     if raw.is_empty() {
-        return Err(crate::Error::configuration(
+        return Err(cuenv_core::Error::configuration(
             "cache.maxAge must not be empty".to_string(),
         ));
     }
@@ -477,14 +477,14 @@ fn parse_max_age(spec: &str) -> Result<Option<Duration>> {
 
     let digits_len = raw.bytes().take_while(|byte| byte.is_ascii_digit()).count();
     if digits_len == 0 || digits_len == raw.len() {
-        return Err(crate::Error::configuration(format!(
+        return Err(cuenv_core::Error::configuration(format!(
             "invalid cache.maxAge '{raw}': expected <int><unit> (e.g. 30m, 1h)"
         )));
     }
 
-    let quantity: u64 = raw[..digits_len]
-        .parse()
-        .map_err(|e| crate::Error::configuration(format!("invalid cache.maxAge '{raw}': {e}")))?;
+    let quantity: u64 = raw[..digits_len].parse().map_err(|e| {
+        cuenv_core::Error::configuration(format!("invalid cache.maxAge '{raw}': {e}"))
+    })?;
     let unit = raw[digits_len..].trim().to_ascii_lowercase();
 
     let duration = match unit.as_str() {
@@ -494,7 +494,7 @@ fn parse_max_age(spec: &str) -> Result<Option<Duration>> {
         "h" => Duration::from_secs(multiply_checked(quantity, 60 * 60, raw)?),
         "d" => Duration::from_secs(multiply_checked(quantity, 24 * 60 * 60, raw)?),
         _ => {
-            return Err(crate::Error::configuration(format!(
+            return Err(cuenv_core::Error::configuration(format!(
                 "invalid cache.maxAge unit in '{raw}': use ms|s|m|h|d|infinite"
             )));
         }
@@ -505,7 +505,7 @@ fn parse_max_age(spec: &str) -> Result<Option<Duration>> {
 
 fn multiply_checked(quantity: u64, factor: u64, raw: &str) -> Result<u64> {
     quantity.checked_mul(factor).ok_or_else(|| {
-        crate::Error::configuration(format!("cache.maxAge '{raw}' is too large to represent"))
+        cuenv_core::Error::configuration(format!("cache.maxAge '{raw}' is too large to represent"))
     })
 }
 
@@ -522,7 +522,7 @@ impl InputDirectoryBuilder {
 
         while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
-                return Err(crate::Error::configuration(format!(
+                return Err(cuenv_core::Error::configuration(format!(
                     "invalid hashed input path '{}'",
                     relative_path.display()
                 )));
@@ -562,7 +562,7 @@ impl InputDirectoryBuilder {
             symlinks: Vec::new(),
         };
         let digest = digest_of(&directory)
-            .map_err(|e| crate::Error::configuration(format!("input root digest: {e}")))?;
+            .map_err(|e| cuenv_core::Error::configuration(format!("input root digest: {e}")))?;
         Ok((directory, digest))
     }
 }
@@ -586,7 +586,7 @@ fn prefix_patterns_for_hasher_root(
     hasher_root: &Path,
 ) -> Result<Vec<String>> {
     let prefix = project_root.strip_prefix(hasher_root).map_err(|e| {
-        crate::Error::configuration(format!(
+        cuenv_core::Error::configuration(format!(
             "project root '{}' is not under cache hasher root '{}': {e}",
             project_root.display(),
             hasher_root.display()
@@ -616,7 +616,7 @@ fn rebase_hashed_inputs_for_project_root(
     hasher_root: &Path,
 ) -> Result<Vec<HashedInput>> {
     let prefix = project_root.strip_prefix(hasher_root).map_err(|e| {
-        crate::Error::configuration(format!(
+        cuenv_core::Error::configuration(format!(
             "project root '{}' is not under cache hasher root '{}': {e}",
             project_root.display(),
             hasher_root.display()
@@ -631,7 +631,7 @@ fn rebase_hashed_inputs_for_project_root(
         .into_iter()
         .map(|input| {
             let relative_path = input.relative_path.strip_prefix(prefix).map_err(|e| {
-                crate::Error::configuration(format!(
+                cuenv_core::Error::configuration(format!(
                     "hashed input '{}' is not under task project root '{}': {e}",
                     input.relative_path.display(),
                     project_root.display()
@@ -680,7 +680,7 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
         }
 
         let glob = Glob::new(&glob_pattern).map_err(|e| {
-            crate::Error::configuration(format!("invalid output glob '{glob_pattern}': {e}"))
+            cuenv_core::Error::configuration(format!("invalid output glob '{glob_pattern}': {e}"))
         })?;
         builder.add(glob);
         has_patterns = true;
@@ -690,21 +690,21 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
         return Ok(Vec::new());
     }
 
-    let globset = builder
-        .build()
-        .map_err(|e| crate::Error::configuration(format!("failed to build output globset: {e}")))?;
+    let globset = builder.build().map_err(|e| {
+        cuenv_core::Error::configuration(format!("failed to build output globset: {e}"))
+    })?;
 
     let mut resolved = Vec::new();
     for entry in WalkDir::new(workdir) {
         let entry = entry.map_err(|e| {
-            crate::Error::configuration(format!("walk output tree {}: {e}", workdir.display()))
+            cuenv_core::Error::configuration(format!("walk output tree {}: {e}", workdir.display()))
         })?;
         if entry.file_type().is_dir() {
             continue;
         }
 
         let relative = entry.path().strip_prefix(workdir).map_err(|e| {
-            crate::Error::configuration(format!(
+            cuenv_core::Error::configuration(format!(
                 "output path '{}' not under workdir '{}': {e}",
                 entry.path().display(),
                 workdir.display()
@@ -727,8 +727,9 @@ fn path_to_forward_slashes(path: &Path) -> String {
 fn is_executable(path: &Path) -> Result<bool> {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| crate::Error::configuration(format!("metadata {}: {e}", path.display())))?;
+    let metadata = std::fs::metadata(path).map_err(|e| {
+        cuenv_core::Error::configuration(format!("metadata {}: {e}", path.display()))
+    })?;
     Ok(metadata.permissions().mode() & 0o111 != 0)
 }
 
@@ -746,11 +747,11 @@ fn set_executable_if_needed(path: &Path, is_executable: bool) -> Result<()> {
     }
 
     let mut permissions = std::fs::metadata(path)
-        .map_err(|e| crate::Error::configuration(format!("metadata {}: {e}", path.display())))?
+        .map_err(|e| cuenv_core::Error::configuration(format!("metadata {}: {e}", path.display())))?
         .permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     std::fs::set_permissions(path, permissions).map_err(|e| {
-        crate::Error::configuration(format!("set permissions {}: {e}", path.display()))
+        cuenv_core::Error::configuration(format!("set permissions {}: {e}", path.display()))
     })?;
     Ok(())
 }

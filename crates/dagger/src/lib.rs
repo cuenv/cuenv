@@ -6,8 +6,8 @@
 use async_trait::async_trait;
 use cuenv_core::config::BackendConfig;
 use cuenv_core::secrets::SecretExt;
-use cuenv_core::tasks::{TaskBackend, TaskResult};
 use cuenv_core::{Error, Result};
+use cuenv_task_exec::{TaskBackend, TaskResult};
 use dagger_sdk::{Config, ContainerId, connect_opts};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -40,7 +40,7 @@ impl DaggerBackend {
 impl TaskBackend for DaggerBackend {
     async fn execute(
         &self,
-        ctx: &cuenv_core::tasks::backend::TaskExecutionContext<'_>,
+        ctx: &cuenv_task_exec::backend::TaskExecutionContext<'_>,
     ) -> Result<TaskResult> {
         let name = ctx.name;
         let task = ctx.task;

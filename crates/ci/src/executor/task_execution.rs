@@ -11,9 +11,9 @@ use crate::compiler::Compiler;
 use crate::ir::CachePolicy;
 use crate::report::{PipelineStatus, TaskReport, TaskStatus};
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::captures::resolve_captures;
-use cuenv_core::tasks::graph_walk::{WalkPolicy, walk_parallel_graph};
-use cuenv_core::tasks::{TaskGraph, TaskIndex};
+use cuenv_task_exec::captures::resolve_captures;
+use cuenv_task_exec::graph_walk::{WalkPolicy, walk_parallel_graph};
+use cuenv_task_exec::{TaskGraph, TaskIndex};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -305,7 +305,7 @@ async fn execute_task_with_deps(
     let summary = walk_parallel_graph(
         graph.inner(),
         policy,
-        cuenv_core::tasks::graph_walk::passthrough_prepare::<_, _, ExecutorError>,
+        cuenv_task_exec::graph_walk::passthrough_prepare::<_, _, ExecutorError>,
         {
             let config = Arc::clone(&config);
             let project_root = Arc::clone(&project_root);

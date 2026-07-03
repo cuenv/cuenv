@@ -31,7 +31,7 @@ pub fn get_task_cli_help() -> String {
 }
 
 /// Format detailed information about a single task
-pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
+pub fn format_task_detail(task: &cuenv_task_exec::IndexedTask) -> String {
     let mut output = String::new();
     writeln!(output, "Task: {}", task.name).ok();
 
@@ -114,12 +114,12 @@ pub fn format_task_detail(task: &cuenv_core::tasks::IndexedTask) -> String {
 /// `cwd_relative`: Current working directory relative to cue.mod root (e.g., "projects/foo")
 /// Tasks from the current directory are shown first, then progressively further parent dirs
 pub fn render_task_tree(
-    tasks: Vec<&cuenv_core::tasks::IndexedTask>,
+    tasks: Vec<&cuenv_task_exec::IndexedTask>,
     cwd_relative: Option<&str>,
 ) -> String {
     // Group tasks by source file
     // Normalize root-level sources: both "" and "env.cue" are treated as root
-    let mut by_source: BTreeMap<String, Vec<&cuenv_core::tasks::IndexedTask>> = BTreeMap::new();
+    let mut by_source: BTreeMap<String, Vec<&cuenv_task_exec::IndexedTask>> = BTreeMap::new();
     for task in tasks {
         let source = task.source_file.clone().unwrap_or_default();
         // Normalize root sources to empty string so they group together
@@ -224,7 +224,7 @@ fn source_proximity(source: &str, cwd_relative: Option<&str>) -> usize {
 }
 
 /// Render tasks from a single source file as a tree
-fn render_source_tasks(tasks: &[&cuenv_core::tasks::IndexedTask], output: &mut String) {
+fn render_source_tasks(tasks: &[&cuenv_task_exec::IndexedTask], output: &mut String) {
     let mut roots: BTreeMap<String, TaskTreeNode> = BTreeMap::new();
 
     // Build the tree

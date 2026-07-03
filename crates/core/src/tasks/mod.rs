@@ -1,180 +1,26 @@
-//! Task execution and management module
+//! Task DTO surface and shared task logic.
 //!
 //! The task DTO types (`Task`, `TaskGroup`, `TaskNode`, `Tasks`, ...) live
-//! in `cuenv-manifest` and are re-exported here; this module owns the
-//! execution engine: graph building, scheduling, process management,
-//! caching, and command resolution.
+//! in `cuenv-manifest` and are re-exported here. The execution engine
+//! (graph building, scheduling, process management, caching, command
+//! resolution) lives in the `cuenv-task-exec` crate (RFC-0006 phase 3a).
+//! This module keeps what core itself needs: [`TaskError`] (composed into
+//! `cuenv_core::Error`), the pure output-reference parsing shared with
+//! module evaluation, and the `AffectedBy` impls for the task DTOs (which
+//! cannot move — the trait and the types are both foreign to the engine
+//! crate).
 
-pub mod backend;
-pub mod cache;
-pub mod captures;
-mod command;
-pub(crate) mod env;
 pub mod error;
-pub mod executor;
-pub mod graph;
-pub mod graph_walk;
-pub mod index;
 pub mod output_refs;
-mod process;
-pub mod process_registry;
-mod result;
-mod shell;
-mod workspace;
 
 // Re-export the task DTOs from the leaf manifest crate.
 pub use cuenv_manifest::tasks::*;
 
 pub use error::TaskError;
 
-// Re-export executor and graph modules
-pub use backend::{
-    BackendFactory, HostBackend, TaskBackend, TaskExecutionContext, create_backend,
-    create_backend_with_factory, should_use_dagger,
-};
-pub use executor::*;
-pub use graph::*;
-pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
-pub use output_refs::{
-    OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
-};
-pub use process_registry::global_registry;
-pub(crate) use shell::TaskCommandSpec;
+pub use output_refs::{TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs};
 
-use shell::EffectiveScriptShell;
 use std::path::Path;
-
-/// Execution-side extension methods for [`Task`].
-///
-/// The DTO lives in `cuenv-manifest`; building the concrete process
-/// invocation needs core's error type and shell resolution, so it is
-/// provided as an extension trait.
-pub(crate) trait TaskCommandExt {
-    /// Build the executable invocation for this task using the provided
-    /// command resolver.
-    fn command_spec<F>(&self, resolve_command: F) -> crate::Result<TaskCommandSpec>
-    where
-        F: FnMut(&str) -> String;
-}
-
-impl TaskCommandExt for Task {
-    fn command_spec<F>(&self, mut resolve_command: F) -> crate::Result<TaskCommandSpec>
-    where
-        F: FnMut(&str) -> String,
-    {
-        if let Some(script) = &self.script {
-            let shell = effective_script_shell(self);
-            let script = prepare_script(self, script, &shell)?;
-
-            return Ok(TaskCommandSpec {
-                program: resolve_command(&shell.command),
-                args: vec![shell.flag, script],
-            });
-        }
-
-        if let Some(shell) = &self.shell
-            && let (Some(shell_command), Some(shell_flag)) = (&shell.command, &shell.flag)
-        {
-            let full_command = if self.command.is_empty() {
-                self.args.join(" ")
-            } else if self.args.is_empty() {
-                resolve_command(&self.command)
-            } else {
-                let resolved_command = resolve_command(&self.command);
-                format!("{} {}", resolved_command, self.args.join(" "))
-            };
-
-            return Ok(TaskCommandSpec {
-                program: resolve_command(shell_command),
-                args: vec![shell_flag.clone(), full_command],
-            });
-        }
-
-        Ok(TaskCommandSpec {
-            program: resolve_command(&self.command),
-            args: self.args.clone(),
-        })
-    }
-}
-
-fn effective_script_shell(task: &Task) -> EffectiveScriptShell {
-    if let Some(script_shell) = task.script_shell {
-        let (command, flag) = script_shell.command_and_flag();
-
-        return EffectiveScriptShell {
-            command: command.to_string(),
-            flag: flag.to_string(),
-            display_name: command.to_string(),
-            supports_shell_options: script_shell.supports_shell_options(),
-            supports_pipefail: script_shell.supports_pipefail(),
-        };
-    }
-
-    if let Some(shell) = &task.shell {
-        let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
-        let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
-        let (supports_shell_options, supports_pipefail) = ScriptShell::from_command(&command)
-            .map(|script_shell| {
-                (
-                    script_shell.supports_shell_options(),
-                    script_shell.supports_pipefail(),
-                )
-            })
-            .unwrap_or((false, false));
-
-        return EffectiveScriptShell {
-            display_name: command.clone(),
-            command,
-            flag,
-            supports_shell_options,
-            supports_pipefail,
-        };
-    }
-
-    let default_shell = ScriptShell::default();
-    let (command, flag) = default_shell.command_and_flag();
-
-    EffectiveScriptShell {
-        command: command.to_string(),
-        flag: flag.to_string(),
-        display_name: command.to_string(),
-        supports_shell_options: default_shell.supports_shell_options(),
-        supports_pipefail: default_shell.supports_pipefail(),
-    }
-}
-
-fn prepare_script(
-    task: &Task,
-    script: &str,
-    shell: &EffectiveScriptShell,
-) -> crate::Result<String> {
-    let Some(shell_options) = task.shell_options else {
-        return Ok(script.to_string());
-    };
-
-    if !shell.supports_shell_options {
-        return Err(crate::Error::configuration(format!(
-            "Task uses shellOptions with unsupported script shell '{}'. \
-             Use scriptShell 'bash', 'sh', or 'zsh'.",
-            shell.display_name
-        )));
-    }
-
-    if shell_options.pipefail.is_enabled() && !shell.supports_pipefail {
-        return Err(crate::Error::configuration(format!(
-            "Task uses shellOptions.pipefail with unsupported script shell '{}'. \
-             Disable pipefail or use scriptShell 'bash' or 'zsh'.",
-            shell.display_name
-        )));
-    }
-
-    let set_commands = shell_options.to_set_commands();
-    if set_commands.is_empty() {
-        return Ok(script.to_string());
-    }
-
-    Ok(format!("{set_commands}{script}"))
-}
 
 impl crate::AffectedBy for Task {
     /// Returns true if this task is affected by the given file changes.

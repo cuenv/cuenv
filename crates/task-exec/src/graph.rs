@@ -9,7 +9,7 @@
 use super::Task;
 #[cfg(test)]
 use super::Tasks;
-use crate::Result;
+use cuenv_core::Result;
 use cuenv_task_graph::GraphNode;
 use petgraph::graph::NodeIndex;
 
@@ -49,7 +49,7 @@ impl TaskGraph {
     pub fn add_task(&mut self, name: &str, task: Task) -> Result<NodeIndex> {
         self.inner
             .add_task(name, task)
-            .map_err(|e| crate::Error::configuration(e.to_string()))
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))
     }
 
     /// Add dependency edges after all tasks have been added.
@@ -57,7 +57,7 @@ impl TaskGraph {
     pub fn add_dependency_edges(&mut self) -> Result<()> {
         self.inner
             .add_dependency_edges()
-            .map_err(|e| crate::Error::configuration(e.to_string()))
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))
     }
 
     /// Check if the graph has cycles.
@@ -70,14 +70,14 @@ impl TaskGraph {
     pub fn topological_sort(&self) -> Result<Vec<TaskGraphNode>> {
         self.inner
             .topological_sort()
-            .map_err(|e| crate::Error::configuration(e.to_string()))
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))
     }
 
     /// Get all tasks that can run in parallel (no dependencies between them).
     pub fn get_parallel_groups(&self) -> Result<Vec<Vec<TaskGraphNode>>> {
         self.inner
             .get_parallel_groups()
-            .map_err(|e| crate::Error::configuration(e.to_string()))
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))
     }
 
     /// Get the number of tasks in the graph.
@@ -106,8 +106,8 @@ mod graph_advanced_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tasks::{TaskGroup, TaskNode};
     use crate::test_utils::create_task;
+    use crate::{TaskGroup, TaskNode};
     use cuenv_task_graph::TaskNodeData;
     use std::collections::HashMap;
 

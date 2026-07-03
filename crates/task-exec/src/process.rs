@@ -2,7 +2,7 @@
 
 use super::TaskResult;
 use super::process_registry::global_registry;
-use crate::{Error, OutputCapture, Result};
+use cuenv_core::{Error, OutputCapture, Result};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;

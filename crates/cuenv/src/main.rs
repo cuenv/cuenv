@@ -216,7 +216,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
             .build()
         {
             rt.block_on(async {
-                let registry = cuenv_core::tasks::global_registry();
+                let registry = cuenv_task_exec::global_registry();
                 registry
                     .terminate_all(std::time::Duration::from_secs(3))
                     .await;
@@ -353,7 +353,7 @@ async fn run() -> i32 {
 
         _ = tokio::signal::ctrl_c() => {
             // Terminate all child processes gracefully before exiting
-            let registry = cuenv_core::tasks::global_registry();
+            let registry = cuenv_task_exec::global_registry();
             registry.terminate_all(std::time::Duration::from_secs(5)).await;
 
             // Clean up terminal state to prevent escape sequence garbage

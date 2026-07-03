@@ -1,6 +1,6 @@
 use super::TaskGraph;
-use crate::Result;
-use crate::tasks::{TaskGroup, TaskNode, Tasks};
+use crate::{TaskGroup, TaskNode, Tasks};
+use cuenv_core::Result;
 use cuenv_task_graph::MutableTaskNodeData;
 use petgraph::graph::NodeIndex;
 use tracing::debug;
@@ -51,7 +51,7 @@ impl TaskGraph {
 
         self.inner
             .build_for_task_with_resolver(task_name, all_tasks)
-            .map_err(|e| crate::Error::configuration(e.to_string()))
+            .map_err(|e| cuenv_core::Error::configuration(e.to_string()))
     }
 
     /// Build a sequential task list (steps run one after another).

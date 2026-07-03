@@ -84,12 +84,12 @@ The implementation uses a **two-phase placeholder approach** instead of extendin
 2. **`process_output_refs` (JSON pre-processing)**: Ref objects replaced with `"cuenv:ref:tmpdir:stdout"` placeholder strings; `stdout`/`stderr`/`exitCode` fields stripped from task objects; dependency pairs collected
 3. **Task deserialization**: Sees plain strings in `args`/`env` — no API change needed
 4. **FQDN rewriting (workspace layer)**: Bare names transformed to FQDNs for multi-project support
-5. **Graph building**: `add_output_ref_deps()` in `crates/core/src/tasks/graph/output_refs.rs` creates petgraph edges from collected dependency pairs
+5. **Graph building**: `add_output_ref_deps()` in `crates/task-exec/src/graph/output_refs.rs` creates petgraph edges from collected dependency pairs
 6. **Execution**: `OutputRefResolver` replaces placeholder strings with actual values before spawning
 
 ### Rust Types
 
-**File: `crates/core/src/tasks/output_refs.rs`**
+**File: `crates/core/src/tasks/output_refs.rs`** (parsing; the runtime resolver lives in `crates/task-exec/src/output_refs/resolver.rs`)
 
 ```rust
 pub struct TaskOutputRef {
@@ -113,7 +113,7 @@ pub struct OutputRefResolver<'a> {
 
 - `process_output_refs()` collects `(from_task, to_task)` pairs during JSON pre-processing
 - `build_global_tasks()` converts bare names to FQDNs
-- `add_output_ref_deps()` in `crates/core/src/tasks/graph/output_refs.rs` creates petgraph edges after `build_for_task()`
+- `add_output_ref_deps()` in `crates/task-exec/src/graph/output_refs.rs` creates petgraph edges after `build_for_task()`
 - No explicit `dependsOn` needed when using output refs
 
 ### Runtime Resolution
@@ -143,11 +143,12 @@ pub struct OutputRefResolver<'a> {
 |------|--------|
 | `schema/tasks.cue` | `#TaskOutputRef`, `stdout`/`stderr`/`exitCode` on `#Task`, widened `args`/`env` |
 | `crates/cuengine/bridge.go` | `injectTaskNames()` + recursive walker + helpers |
-| `crates/core/src/tasks/output_refs/{model,extraction,resolver}.rs` | `TaskOutputRef` model, raw JSON extraction, passthrough markers, and runtime `OutputRefResolver` |
-| `crates/core/src/tasks/mod.rs` | Module + re-exports |
+| `crates/core/src/tasks/output_refs/{model,extraction}.rs` | `TaskOutputRef` model, raw JSON extraction, and passthrough markers |
+| `crates/task-exec/src/output_refs/resolver.rs` | Runtime `OutputRefResolver` substituting completed task outputs |
+| `crates/core/src/tasks/mod.rs` and `crates/task-exec/src/lib.rs` | Module + re-exports |
 | `crates/core/src/module.rs` | `Instance.output_ref_deps`, `process_output_refs()` in `from_raw()` |
-| `crates/core/src/tasks/graph/output_refs.rs` | `add_output_ref_deps()` with petgraph edges |
-| `crates/core/src/tasks/executor.rs` | `results_map` in `execute_graph`, `seq_results` in `execute_sequential` |
+| `crates/task-exec/src/graph/output_refs.rs` | `add_output_ref_deps()` with petgraph edges |
+| `crates/task-exec/src/executor.rs` | `results_map` in `execute_graph`, `seq_results` in `execute_sequential` |
 | `crates/task-graph/src/graph.rs` | `get_task_mut()` |
 | `crates/cuenv/src/commands/task/workspace.rs` | `GlobalTasksResult`, `rewrite_output_ref_placeholders()` |
 | `crates/cuenv/src/commands/task/execution.rs` | Wiring: collect deps, pass to graph |

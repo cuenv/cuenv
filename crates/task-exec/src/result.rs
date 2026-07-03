@@ -3,10 +3,15 @@ use super::graph_walk::WalkOutcome;
 /// Task execution result
 #[derive(Debug, Clone)]
 pub struct TaskResult {
+    /// Fully qualified task name
     pub name: String,
+    /// Process exit code, if the task ran to completion
     pub exit_code: Option<i32>,
+    /// Captured standard output
     pub stdout: String,
+    /// Captured standard error
     pub stderr: String,
+    /// Whether the task completed successfully
     pub success: bool,
 }
 
