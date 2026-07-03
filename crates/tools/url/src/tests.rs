@@ -1,5 +1,5 @@
 use super::*;
-use cuenv_core::tools::{Arch, Os, Platform};
+use cuenv_tool_runtime::{Arch, Os, Platform};
 
 #[test]
 fn test_expand_template_version() {

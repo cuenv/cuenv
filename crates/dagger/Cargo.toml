@@ -13,6 +13,7 @@ description = "Dagger backend for cuenv task execution"
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-manifest = { workspace = true }
 cuenv-task-exec = { workspace = true }
 dagger-sdk = "0.20.8"
 async-trait = { workspace = true }

@@ -1,5 +1,5 @@
 use cuenv_core::lockfile::Lockfile;
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Platform, ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
     resolve_tool_activation,
 };
@@ -154,7 +154,7 @@ fn activation_operation_label(operation: &ToolActivationOperation) -> &'static s
 mod tests {
     use super::*;
     use cuenv_core::lockfile::{LockedTool, LockedToolPlatform};
-    use cuenv_core::tools::{ToolActivationSource, ToolActivationStep};
+    use cuenv_tool_runtime::{ToolActivationSource, ToolActivationStep};
     use std::collections::BTreeMap;
     use std::fs;
 

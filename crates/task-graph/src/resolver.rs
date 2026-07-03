@@ -47,8 +47,8 @@ pub enum TaskResolution<T: TaskNodeData> {
 ///     fn resolve(&self, name: &str) -> Option<TaskResolution<Task>> {
 ///         let definition = self.get(name)?;
 ///         match definition {
-///             TaskDefinition::Single(task) => Some(TaskResolution::Single(task.clone())),
-///             TaskDefinition::Group(TaskGroup::Sequential(tasks)) => {
+///             TaskNode::Task(task) => Some(TaskResolution::Single(task.clone())),
+///             TaskNode::Group(TaskGroup::Sequential(tasks)) => {
 ///                 let children = (0..tasks.len())
 ///                     .map(|i| format!("{}[{}]", name, i))
 ///                     .collect();

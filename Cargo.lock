@@ -1213,11 +1213,13 @@ dependencies = [
  "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-infisical",
+ "cuenv-manifest",
  "cuenv-release",
  "cuenv-secrets",
  "cuenv-services",
  "cuenv-task-exec",
  "cuenv-task-graph",
+ "cuenv-tool-runtime",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-oci",
@@ -1347,9 +1349,11 @@ dependencies = [
  "cuenv-core",
  "cuenv-events",
  "cuenv-hooks",
+ "cuenv-manifest",
  "cuenv-secrets",
  "cuenv-task-exec",
  "cuenv-task-graph",
+ "cuenv-tool-runtime",
  "cuenv-tools-github",
  "cuenv-tools-nix",
  "cuenv-tools-rustup",
@@ -1426,7 +1430,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
- "sha2",
  "temp-env",
  "tempfile",
  "thiserror 2.0.18",
@@ -1443,6 +1446,7 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-manifest",
  "cuenv-task-exec",
  "dagger-sdk",
  "tokio",
@@ -1734,12 +1738,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cuenv-tool-runtime"
+version = "0.54.0"
+dependencies = [
+ "async-trait",
+ "cuenv-core",
+ "cuenv-manifest",
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "cuenv-tools-github"
 version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
  "cuenv-tool-archive",
+ "cuenv-tool-runtime",
  "reqwest 0.13.3",
  "serde",
  "serde_json",
@@ -1756,6 +1777,7 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-tool-runtime",
  "serde",
  "serde_json",
  "sha2",
@@ -1770,6 +1792,7 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-tool-runtime",
  "dirs 6.0.0",
  "flate2",
  "oci-distribution",
@@ -1790,6 +1813,7 @@ version = "0.54.0"
 dependencies = [
  "async-trait",
  "cuenv-core",
+ "cuenv-tool-runtime",
  "dirs 6.0.0",
  "serde",
  "serde_json",
@@ -1805,6 +1829,7 @@ dependencies = [
  "async-trait",
  "cuenv-core",
  "cuenv-tool-archive",
+ "cuenv-tool-runtime",
  "reqwest 0.13.3",
  "serde",
  "serde_json",

@@ -38,7 +38,6 @@
 pub mod affected;
 pub mod base;
 pub use cuenv_manifest::ci;
-pub use cuenv_manifest::config;
 pub mod contributors;
 pub mod cue;
 pub mod environment;
@@ -47,7 +46,6 @@ pub mod http;
 pub use cuenv_manifest::lockfile;
 pub mod manifest;
 pub mod module;
-pub use cuenv_manifest::owners;
 pub mod paths;
 pub mod rules;
 pub mod runtime;

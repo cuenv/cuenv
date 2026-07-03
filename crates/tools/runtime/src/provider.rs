@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 pub use cuenv_manifest::tools::{Arch, Os, Platform, ToolExtract, ToolSource};
 use std::path::PathBuf;
 
-use crate::Result;
+use cuenv_core::Result;
 
 /// A resolved tool ready to be fetched.
 ///

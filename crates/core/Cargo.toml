@@ -32,7 +32,6 @@ cuenv-task-graph = { workspace = true }
 
 # Dependencies for task caching and graph
 dirs = { workspace = true }
-sha2 = { workspace = true }
 # For input resolution and hashing
 globset = { workspace = true }
 ignore = { workspace = true }

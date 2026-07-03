@@ -1,7 +1,7 @@
 use super::*;
 use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies};
 use cuenv_core::manifest::Project;
-use cuenv_core::secrets::Secret;
+use cuenv_manifest::secrets::Secret;
 
 use std::collections::HashMap;
 use std::path::Path;

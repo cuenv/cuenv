@@ -4,9 +4,9 @@
 //! inside containers using the Dagger SDK.
 
 use async_trait::async_trait;
-use cuenv_core::config::BackendConfig;
 use cuenv_core::secrets::SecretExt;
 use cuenv_core::{Error, Result};
+use cuenv_manifest::config::BackendConfig;
 use cuenv_task_exec::{TaskBackend, TaskResult};
 use dagger_sdk::{Config, ContainerId, connect_opts};
 use std::collections::HashMap;
@@ -298,7 +298,7 @@ pub fn create_dagger_backend(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::config::BackendOptions;
+    use cuenv_manifest::config::BackendOptions;
 
     #[test]
     fn test_dagger_backend_new() {

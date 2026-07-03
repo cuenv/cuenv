@@ -1,55 +1,10 @@
-//! Tool provider system for fetching development tools.
+//! Tool-domain error type.
 //!
-//! This module provides a pluggable system for fetching development tools from
-//! various sources (GitHub, OCI, Nix). Each source is implemented
-//! as a `ToolProvider` that can resolve and fetch tools.
-//!
-//! # Architecture
-//!
-//! The tool system consists of:
-//!
-//! - [`ToolProvider`] - Trait implemented by each source (GitHub, Nix, etc.)
-//! - [`ToolRegistry`] - Collection of registered providers
-//! - [`Platform`], [`Os`], [`Arch`] - Platform identification types
-//! - [`ToolSource`] - Source-specific resolution data
-//! - [`ResolvedTool`] - A fully resolved tool ready to fetch
-//! - [`FetchedTool`] - Result of fetching a tool
-//!
-//! # Example
-//!
-//! ```ignore
-//! use cuenv_core::tools::{ToolRegistry, Platform, ToolOptions};
-//!
-//! // Create registry with providers
-//! let mut registry = ToolRegistry::new();
-//! registry.register(GitHubToolProvider::new());
-//! registry.register(NixToolProvider::new());
-//!
-//! // Resolve and fetch a tool
-//! let provider = registry.get("github").unwrap();
-//! let resolved = provider.resolve(&ToolResolveRequest {
-//!     tool_name: "jq",
-//!     version: "1.7.1",
-//!     platform: &Platform::current(),
-//!     config: &config,
-//!     token: None,
-//! }).await?;
-//! let fetched = provider.fetch(&resolved, &ToolOptions::default()).await?;
-//! ```
+//! The tool provider runtime (provider trait, registry, activation
+//! resolution) lives in the `cuenv-tool-runtime` crate (RFC-0006 phase 3c).
+//! Core keeps only [`ToolError`], which `cuenv_core::Error` composes via
+//! `#[from]`.
 
-pub mod activation;
 pub mod error;
-mod provider;
-mod registry;
 
-pub use activation::{
-    ResolvedToolActivationStep, ToolActivationOperation, ToolActivationResolveOptions,
-    ToolActivationSource, ToolActivationStep, apply_resolved_tool_activation,
-    resolve_tool_activation, validate_tool_activation,
-};
 pub use error::ToolError;
-pub use provider::{
-    Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
-    ToolResolveRequest, ToolSource, default_cache_dir,
-};
-pub use registry::ToolRegistry;

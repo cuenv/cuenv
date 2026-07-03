@@ -4,7 +4,7 @@
 //! to handle dependencies and determine execution order.
 //!
 //! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
-//! types like `TaskNode`, `TaskGroup`, and `TaskList`.
+//! types like `TaskNode`, `TaskGroup`, and `Tasks`.
 
 use super::Task;
 #[cfg(test)]
@@ -22,7 +22,7 @@ pub type TaskGraphNode = GraphNode<Task>;
 /// Task graph for dependency resolution and execution ordering.
 ///
 /// This wraps `cuenv_task_graph::TaskGraph` with cuenv-core specific
-/// functionality for building graphs from `TaskDefinition`, `TaskGroup`, etc.
+/// functionality for building graphs from `TaskNode`, `TaskGroup`, etc.
 pub struct TaskGraph {
     /// The underlying generic task graph.
     inner: cuenv_task_graph::TaskGraph<Task>,

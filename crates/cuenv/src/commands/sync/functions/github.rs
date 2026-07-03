@@ -145,7 +145,7 @@ fn sync_github_workflow_files(request: GithubWorkflowFilesSyncRequest<'_>) -> Re
 /// Collected pipeline context from project discovery.
 struct PipelineContext {
     is_release: bool,
-    cuenv_source: cuenv_core::config::CuenvSource,
+    cuenv_source: cuenv_manifest::config::CuenvSource,
     /// Pipeline generation mode (thin vs expanded)
     mode: cuenv_core::ci::PipelineMode,
     github_config: cuenv_github::config::GitHubConfig,
@@ -259,7 +259,7 @@ fn build_project_pipeline_context(
         .as_ref()
         .and_then(|config| config.ci.as_ref())
         .and_then(|ci| ci.cuenv.as_ref())
-        .map_or(cuenv_core::config::CuenvSource::Release, |cuenv| {
+        .map_or(cuenv_manifest::config::CuenvSource::Release, |cuenv| {
             cuenv.source
         });
 
@@ -404,7 +404,7 @@ fn can_use_cuenv_bootstrap(
     emitter: &cuenv_github::workflow::GitHubActionsEmitter,
     ir: &cuenv_ci::ir::IntermediateRepresentation,
 ) -> bool {
-    ctx.cuenv_source == cuenv_core::config::CuenvSource::Nix
+    ctx.cuenv_source == cuenv_manifest::config::CuenvSource::Nix
         && emitter.build_cuenv
         && ir
             .sorted_phase_tasks(cuenv_ci::ir::BuildStage::Setup)
@@ -798,7 +798,7 @@ mod tests {
     }
 
     fn make_pipeline_context(
-        cuenv_source: cuenv_core::config::CuenvSource,
+        cuenv_source: cuenv_manifest::config::CuenvSource,
         tasks: Vec<Task>,
     ) -> PipelineContext {
         PipelineContext {
@@ -829,7 +829,7 @@ mod tests {
     fn nix_source_standard_workflow_emits_cuenv_bootstrap_artifact() -> cuenv_core::Result<()> {
         let mut tasks = make_bootstrap_ir().tasks;
         tasks.push(make_regular_task("build"));
-        let ctx = make_pipeline_context(cuenv_core::config::CuenvSource::Nix, tasks);
+        let ctx = make_pipeline_context(cuenv_manifest::config::CuenvSource::Nix, tasks);
 
         let workflows = emit_standard_workflow("ci", &ctx)?;
 

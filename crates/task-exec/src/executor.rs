@@ -20,9 +20,9 @@ use super::workspace::{find_workspace_root, normalize_join};
 use super::{Task, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks};
 use async_recursion::async_recursion;
 use cuenv_core::OutputCapture;
-use cuenv_core::config::BackendConfig;
 use cuenv_core::environment::Environment;
 use cuenv_core::{Error, Result};
+use cuenv_manifest::config::BackendConfig;
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::path::{Path, PathBuf};

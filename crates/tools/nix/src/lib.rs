@@ -9,7 +9,7 @@ pub mod profile;
 
 use async_trait::async_trait;
 use cuenv_core::Result;
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     FetchedTool, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest, ToolSource,
 };
 use std::path::PathBuf;
@@ -205,7 +205,7 @@ impl ToolProvider for NixToolProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tools::{Arch, Os, Platform};
+    use cuenv_tool_runtime::{Arch, Os, Platform};
 
     #[test]
     fn test_provider_name() {

@@ -114,6 +114,7 @@ If a change does not match one of the required full-flake triggers, keep the che
 | **cuenv-codeowners**              | CODEOWNERS file generation                                   |
 | **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                    |
 | **cuenv-tool-archive**            | Shared archive extraction for tool providers                 |
+| **cuenv-tool-runtime**            | Tool provider trait, registry, and activation resolution     |
 
 ### Key Data Flow
 

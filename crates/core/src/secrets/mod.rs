@@ -39,8 +39,9 @@ pub struct ExecResolver {
     pub args: Vec<String>,
 }
 
-// Re-export the Secret DTO from the leaf manifest crate.
-pub use cuenv_manifest::secrets::Secret;
+// The Secret DTO lives in cuenv-manifest; core only needs it internally
+// for the SecretExt impl and environment resolution.
+pub(crate) use cuenv_manifest::secrets::Secret;
 
 /// Resolution extension methods for [`Secret`].
 ///

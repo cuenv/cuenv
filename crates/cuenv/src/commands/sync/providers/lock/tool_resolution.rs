@@ -1,7 +1,7 @@
 use cuenv_core::Result;
 use cuenv_core::lockfile::{LockedTool, LockedToolPlatform, Lockfile};
 use cuenv_core::manifest::{GitHubExtract, SourceConfig, SourceOverride};
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Platform as ToolPlatform, ResolvedTool, ToolExtract, ToolRegistry, ToolResolveRequest,
     ToolSource,
 };
@@ -498,12 +498,12 @@ fn path_looks_like_library(path: &str) -> bool {
 
 fn expand_source_template(value: &str, version: &str, platform: &ToolPlatform) -> String {
     let os_str = match platform.os {
-        cuenv_core::tools::Os::Darwin => "darwin",
-        cuenv_core::tools::Os::Linux => "linux",
+        cuenv_tool_runtime::Os::Darwin => "darwin",
+        cuenv_tool_runtime::Os::Linux => "linux",
     };
     let arch_str = match platform.arch {
-        cuenv_core::tools::Arch::Arm64 => "aarch64",
-        cuenv_core::tools::Arch::X86_64 => "x86_64",
+        cuenv_tool_runtime::Arch::Arm64 => "aarch64",
+        cuenv_tool_runtime::Arch::X86_64 => "x86_64",
     };
 
     value

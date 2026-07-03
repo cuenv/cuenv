@@ -5,12 +5,12 @@
 
 use crate::cli::CliError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
-use cuenv_core::tools::{
+use cuenv_events::{eprintln_redacted, println_redacted};
+use cuenv_tool_runtime::{
     FetchedTool, Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions,
     ToolOptions, ToolRegistry, apply_resolved_tool_activation, resolve_tool_activation,
     validate_tool_activation,
 };
-use cuenv_events::{eprintln_redacted, println_redacted};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
@@ -510,7 +510,7 @@ fn find_runtime_lockfile(project_path: Option<&Path>) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use cuenv_core::lockfile::LockedToolPlatform;
-    use cuenv_core::tools::{ToolExtract, ToolSource};
+    use cuenv_tool_runtime::{ToolExtract, ToolSource};
     use std::fs;
 
     #[test]

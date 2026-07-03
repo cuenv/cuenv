@@ -6,8 +6,8 @@
 use crate::commands;
 use cuenv_core::lockfile::Lockfile;
 use cuenv_core::paths::cache_dir;
-use cuenv_core::tools::Platform;
 use cuenv_core::{Error, Result};
+use cuenv_tool_runtime::Platform;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-tool-runtime = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

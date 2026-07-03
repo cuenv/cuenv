@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn test_value_has_provider_interpolated_with_exec_secret() {
     use cuenv_core::environment::{EnvPart, EnvValue};
-    use cuenv_core::secrets::Secret;
+    use cuenv_manifest::secrets::Secret;
 
     let secret = Secret::new("echo".to_string(), vec!["test".to_string()]);
     let parts = vec![
@@ -22,7 +22,7 @@ fn test_value_has_provider_interpolated_with_exec_secret() {
 #[test]
 fn test_value_has_provider_interpolated_with_onepassword_secret() {
     use cuenv_core::environment::{EnvPart, EnvValue};
-    use cuenv_core::secrets::Secret;
+    use cuenv_manifest::secrets::Secret;
 
     let secret = Secret::onepassword("op://vault/item/field");
     let parts = vec![
@@ -41,7 +41,7 @@ fn test_value_has_provider_interpolated_with_onepassword_secret() {
 #[test]
 fn test_value_has_provider_with_infisical_secret() {
     use cuenv_core::environment::EnvValue;
-    use cuenv_core::secrets::Secret;
+    use cuenv_manifest::secrets::Secret;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -70,7 +70,7 @@ fn test_value_has_provider_with_infisical_secret() {
 #[test]
 fn test_value_has_provider_with_policies_infisical_secret() {
     use cuenv_core::environment::{EnvValue, EnvValueSimple, EnvVarWithPolicies};
-    use cuenv_core::secrets::Secret;
+    use cuenv_manifest::secrets::Secret;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -132,7 +132,7 @@ fn test_value_has_provider_interpolated_with_op_uri_in_literal() {
 #[test]
 fn test_value_has_provider_with_policies_interpolated() {
     use cuenv_core::environment::{EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies};
-    use cuenv_core::secrets::Secret;
+    use cuenv_manifest::secrets::Secret;
 
     let secret = Secret::onepassword("op://vault/item/field");
     let parts = vec![
