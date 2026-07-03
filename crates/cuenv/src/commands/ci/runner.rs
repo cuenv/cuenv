@@ -52,11 +52,8 @@ fn reject_unsupported_matrix_filter(args: &CiArgs) -> Result<()> {
 /// When the user specifies `--path .`, this should mean "the current directory"
 /// relative to the module root, not "no filter".
 fn resolve_path_filter(path: &str) -> Result<Option<String>> {
-    let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: None,
-        operation: "get current directory".to_string(),
-    })?;
+    let cwd =
+        std::env::current_dir().map_err(|e| cuenv_core::Error::io("get current directory", e))?;
 
     let Some(module_root) = find_cue_module_root(&cwd) else {
         // If we can't find the module root, let run_ci handle it (will fail with proper error)
@@ -64,19 +61,13 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
     };
 
     // Canonicalize both paths for reliable comparison
-    let cwd_canon = cwd.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(cwd.clone().into_boxed_path()),
-        operation: "canonicalize current directory".to_string(),
+    let cwd_canon = cwd.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize current directory", cwd.clone(), e)
     })?;
 
-    let module_root_canon = module_root
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(module_root.clone().into_boxed_path()),
-            operation: "canonicalize module root".to_string(),
-        })?;
+    let module_root_canon = module_root.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize module root", module_root.clone(), e)
+    })?;
 
     // If at the module root, "." means "all projects" (no filter)
     if cwd_canon == module_root_canon && path == "." {
@@ -109,13 +100,9 @@ fn resolve_path_filter(path: &str) -> Result<Option<String>> {
         )));
     }
 
-    let absolute_canon = absolute_path
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(absolute_path.clone().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let absolute_canon = absolute_path.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize path", absolute_path.clone(), e)
+    })?;
 
     let relative = absolute_canon
         .strip_prefix(&module_root_canon)

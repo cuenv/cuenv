@@ -62,7 +62,12 @@ fn main() {
         }
     }
 
-    // Handle shell completion requests first (before any other processing)
+    // Install the secret-registry factory before any path that could
+    // resolve secrets (dynamic completions below may evaluate CUE modules).
+    // Cheap: providers are initialized lazily on first resolution.
+    cuenv::secret_registry::install();
+
+    // Handle shell completion requests before command parsing
     if cli::try_complete() {
         std::process::exit(EXIT_OK);
     }

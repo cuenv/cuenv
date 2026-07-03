@@ -4,38 +4,8 @@
 
 use super::schema::{CachePolicy, IntermediateRepresentation, Task};
 use std::collections::{HashMap, HashSet};
-use thiserror::Error;
 
-/// Validation errors for IR documents
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ValidationError {
-    #[error("Task graph contains cycle: {0}")]
-    CyclicDependency(String),
-
-    #[error("Task '{task}' depends on non-existent task '{dependency}'")]
-    MissingDependency { task: String, dependency: String },
-
-    #[error("Task '{task}' references non-existent runtime '{runtime}'")]
-    MissingRuntime { task: String, runtime: String },
-
-    #[error("Deployment task '{deployment}' has non-deployment dependent '{dependent}'")]
-    InvalidDeploymentDependency {
-        deployment: String,
-        dependent: String,
-    },
-
-    #[error("Task '{task}' has shell=false with string command (must be array)")]
-    InvalidShellCommand { task: String },
-
-    #[error("Task '{task}' has empty command")]
-    EmptyCommand { task: String },
-
-    #[error("Deployment task '{task}' has cache_policy={policy:?} (must be disabled)")]
-    InvalidDeploymentCachePolicy { task: String, policy: CachePolicy },
-
-    #[error("Task '{task}' declares input '{input}' that does not exist at compile time")]
-    MissingInput { task: String, input: String },
-}
+pub use crate::error::ValidationError;
 
 /// Validator for IR documents
 pub struct IrValidator<'a> {

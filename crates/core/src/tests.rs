@@ -7,7 +7,7 @@ fn test_error_configuration() {
     let err = Error::configuration("test message");
     assert_eq!(err.to_string(), "Configuration error: test message");
 
-    if let Error::Configuration { message, .. } = err {
+    if let Error::Configuration(ConfigError { message, .. }) = err {
         assert_eq!(message, "test message");
     } else {
         panic!("Expected Configuration error");
@@ -20,11 +20,11 @@ fn test_error_configuration_with_source() {
     let span = SourceSpan::from(0..4);
     let err = Error::configuration_with_source("config error", src, Some(span));
 
-    if let Error::Configuration {
+    if let Error::Configuration(ConfigError {
         src: source,
         span: s,
         message,
-    } = err
+    }) = err
     {
         assert_eq!(source, "test source code");
         assert_eq!(s, Some(SourceSpan::from(0..4)));
@@ -42,11 +42,11 @@ fn test_error_ffi() {
         "FFI operation failed in test_function: FFI failed"
     );
 
-    if let Error::Ffi {
+    if let Error::Eval(EvalError::Ffi {
         function,
         message,
         help,
-    } = err
+    }) = err
     {
         assert_eq!(function, "test_function");
         assert_eq!(message, "FFI failed");
@@ -60,11 +60,11 @@ fn test_error_ffi() {
 fn test_error_ffi_with_help() {
     let err = Error::ffi_with_help("test_func", "error msg", "try this instead");
 
-    if let Error::Ffi {
+    if let Error::Eval(EvalError::Ffi {
         function,
         message,
         help,
-    } = err
+    }) = err
     {
         assert_eq!(function, "test_func");
         assert_eq!(message, "error msg");
@@ -80,9 +80,9 @@ fn test_error_cue_parse() {
     let err = Error::cue_parse(path, "parsing failed");
     assert_eq!(err.to_string(), "CUE parsing failed: parsing failed");
 
-    if let Error::CueParse {
+    if let Error::Eval(EvalError::CueParse {
         path: p, message, ..
-    } = err
+    }) = err
     {
         assert_eq!(p.as_ref(), Path::new("/test/path.cue"));
         assert_eq!(message, "parsing failed");
@@ -106,13 +106,13 @@ fn test_error_cue_parse_with_source() {
         Some(suggestions.clone()),
     );
 
-    if let Error::CueParse {
+    if let Error::Eval(EvalError::CueParse {
         path: p,
         src: source,
         span: s,
         message,
         suggestions: sugg,
-    } = err
+    }) = err
     {
         assert_eq!(p.as_ref(), Path::new("/test/file.cue"));
         assert_eq!(source, Some("package test".to_string()));
@@ -129,9 +129,9 @@ fn test_error_validation() {
     let err = Error::validation("validation failed");
     assert_eq!(err.to_string(), "Validation failed: validation failed");
 
-    if let Error::Validation {
+    if let Error::Eval(EvalError::Validation {
         message, related, ..
-    } = err
+    }) = err
     {
         assert_eq!(message, "validation failed");
         assert!(related.is_empty());
@@ -146,12 +146,12 @@ fn test_error_validation_with_source() {
     let span = SourceSpan::from(5..15);
     let err = Error::validation_with_source("validation error", src, Some(span));
 
-    if let Error::Validation {
+    if let Error::Eval(EvalError::Validation {
         src: source,
         span: s,
         message,
         ..
-    } = err
+    }) = err
     {
         assert_eq!(source, Some("test validation source".to_string()));
         assert_eq!(s, Some(SourceSpan::from(5..15)));
@@ -163,7 +163,7 @@ fn test_error_validation_with_source() {
 
 #[test]
 fn test_error_timeout() {
-    let err = Error::Timeout { seconds: 30 };
+    let err = Error::timeout(30);
     assert_eq!(err.to_string(), "Operation timed out after 30 seconds");
 }
 
@@ -172,7 +172,7 @@ fn test_error_from_io_error() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
     let err: Error = io_err.into();
 
-    if let Error::Io { operation, .. } = err {
+    if let Error::Io(IoError::Io { operation, .. }) = err {
         assert_eq!(operation, "unknown (unmapped error conversion)");
     } else {
         panic!("Expected Io error");
@@ -185,7 +185,7 @@ fn test_error_from_utf8_error() {
     let utf8_err = std::str::from_utf8(&bytes).unwrap_err();
     let err: Error = utf8_err.into();
 
-    assert!(matches!(err, Error::Utf8 { .. }));
+    assert!(matches!(err, Error::Io(IoError::Utf8 { .. })));
 }
 
 #[test]
@@ -221,10 +221,7 @@ fn test_error_display() {
             "CUE parsing failed: msg",
         ),
         (Error::validation("msg"), "Validation failed: msg"),
-        (
-            Error::Timeout { seconds: 10 },
-            "Operation timed out after 10 seconds",
-        ),
+        (Error::timeout(10), "Operation timed out after 10 seconds"),
     ];
 
     for (error, expected) in errors {
@@ -257,7 +254,7 @@ fn test_error_diagnostic_codes() {
         "cuenv::validation::failed"
     );
 
-    let timeout_err = Error::Timeout { seconds: 5 };
+    let timeout_err = Error::timeout(5);
     assert_eq!(timeout_err.code().unwrap().to_string(), "cuenv::timeout");
 }
 

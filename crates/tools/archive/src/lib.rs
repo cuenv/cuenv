@@ -21,6 +21,8 @@ use std::path::{Path, PathBuf};
 use tar::Archive;
 use xz2::read::XzDecoder;
 
+#[cfg(any(target_os = "macos", test))]
+mod entry_paths;
 #[cfg(target_os = "macos")]
 mod pkg;
 

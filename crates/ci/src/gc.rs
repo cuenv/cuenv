@@ -6,7 +6,6 @@ use cuenv_core::DryRun;
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
-use thiserror::Error;
 
 /// Default max cache size (10 GB)
 pub const DEFAULT_MAX_SIZE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
@@ -14,21 +13,7 @@ pub const DEFAULT_MAX_SIZE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 /// Default max age for cache entries (30 days)
 pub const DEFAULT_MAX_AGE_DAYS: u32 = 30;
 
-/// Errors for garbage collection
-#[derive(Debug, Error)]
-pub enum GCError {
-    /// IO error
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    /// Cache directory not found
-    #[error("Cache directory not found: {0}")]
-    CacheDirNotFound(PathBuf),
-
-    /// Nix garbage collection failed
-    #[error("Nix garbage collection failed: {0}")]
-    NixGCFailed(String),
-}
+pub use crate::error::GCError;
 
 /// Statistics from garbage collection run
 #[derive(Debug, Clone, Default)]

@@ -490,10 +490,8 @@ impl CommandExecutor {
     /// - No CUE module root (cue.mod/) is found starting from the given path
     /// - CUE evaluation fails for the target directory
     pub fn get_module(&self, path: &Path) -> Result<ModuleGuard<'_>> {
-        let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
+        let target_path = path.canonicalize().map_err(|e| {
+            cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
 
         let mut guard = self.local_modules.lock().map_err(|_| {
@@ -548,10 +546,8 @@ impl CommandExecutor {
     ///
     /// Returns an error if module discovery/evaluation fails.
     pub fn discover_all_modules(&self, path: &Path) -> Result<ModuleGuard<'_>> {
-        let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
+        let target_path = path.canonicalize().map_err(|e| {
+            cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
         })?;
 
         let module_root = env_file::find_cue_module_root(&target_path).ok_or_else(|| {

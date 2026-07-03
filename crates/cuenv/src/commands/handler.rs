@@ -479,11 +479,9 @@ async fn run_selected_sync_providers(request: SelectedSyncProvidersRequest<'_>) 
 }
 
 fn is_module_root(path: &std::path::Path) -> Result<bool> {
-    let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
+    let target_path = path
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e))?;
     Ok(find_cue_module_root(&target_path).is_some_and(|module_root| module_root == target_path))
 }
 
@@ -514,10 +512,8 @@ impl CommandHandler for SyncHandler {
         };
 
         if self.subcommand.is_none() && !sync_all {
-            let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(path.to_path_buf().into_boxed_path()),
-                operation: "canonicalize path".to_string(),
+            let target_path = path.canonicalize().map_err(|e| {
+                cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e)
             })?;
             let (is_project, is_root) = {
                 let module = executor.get_module(&target_path)?;

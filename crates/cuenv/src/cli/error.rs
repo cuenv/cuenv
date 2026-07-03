@@ -117,59 +117,67 @@ impl CliError {
 /// Convert `cuenv_core::Error` to appropriate `CliError` variant.
 ///
 /// Maps error types to their appropriate CLI categories:
-/// - Configuration errors (task not found, invalid config) -> Config (exit code 2)
-/// - FFI/CUE evaluation errors -> Eval (exit code 3)
+/// - Configuration and task-graph errors (task not found, invalid config) -> Config (exit code 2)
+/// - FFI/CUE evaluation, task, tool, and secret errors -> Eval (exit code 3)
 /// - I/O and other errors -> Other (exit code 3)
+///
+/// The match is exhaustive at both levels (no wildcards) so new domain
+/// variants force an explicit exit-code decision here.
 impl From<cuenv_core::Error> for CliError {
     fn from(err: cuenv_core::Error) -> Self {
         match err {
-            cuenv_core::Error::Configuration { message, .. } => Self::config(message),
-            cuenv_core::Error::Ffi { .. }
-            | cuenv_core::Error::CueParse { .. }
-            | cuenv_core::Error::Validation { .. } => Self::eval(err.to_string()),
-            cuenv_core::Error::Execution { message, .. } => {
-                Self::eval_with_help(message, "Check the task output above for details")
+            cuenv_core::Error::Configuration(cuenv_core::ConfigError { message, .. }) => {
+                Self::config(message)
             }
-            cuenv_core::Error::ToolResolution { message, help } => {
-                if let Some(h) = help {
-                    Self::eval_with_help(message, h)
-                } else {
-                    Self::eval(message)
-                }
-            }
-            cuenv_core::Error::Platform { message } => Self::eval(message),
-            cuenv_core::Error::TaskFailed {
-                task_name,
-                exit_code,
-                stderr,
-                help,
-                ..
-            } => {
-                let stderr_snippet = if stderr.trim().is_empty() {
-                    String::new()
-                } else {
-                    let lines: Vec<&str> = stderr.lines().collect();
-                    let start = lines.len().saturating_sub(10);
-                    format!("\n\nstderr:\n{}", lines[start..].join("\n"))
-                };
-                let message = format!(
-                    "Task '{}' failed with exit code {}{}",
-                    task_name, exit_code, stderr_snippet
-                );
-                if let Some(h) = help {
-                    Self::eval_with_help(message, h)
-                } else {
+            cuenv_core::Error::Eval(eval_err) => Self::eval(eval_err.to_string()),
+            cuenv_core::Error::Task(task_err) => match task_err {
+                cuenv_core::TaskError::Execution { message, .. } => {
                     Self::eval_with_help(message, "Check the task output above for details")
                 }
-            }
-            cuenv_core::Error::TaskGraph { message, help } => {
-                if let Some(h) = help {
-                    Self::config_with_help(message, h)
-                } else {
-                    Self::config(message)
+                cuenv_core::TaskError::TaskFailed {
+                    task_name,
+                    exit_code,
+                    stderr,
+                    help,
+                    ..
+                } => {
+                    let stderr_snippet = if stderr.trim().is_empty() {
+                        String::new()
+                    } else {
+                        let lines: Vec<&str> = stderr.lines().collect();
+                        let start = lines.len().saturating_sub(10);
+                        format!("\n\nstderr:\n{}", lines[start..].join("\n"))
+                    };
+                    let message = format!(
+                        "Task '{}' failed with exit code {}{}",
+                        task_name, exit_code, stderr_snippet
+                    );
+                    if let Some(h) = help {
+                        Self::eval_with_help(message, h)
+                    } else {
+                        Self::eval_with_help(message, "Check the task output above for details")
+                    }
                 }
-            }
-            cuenv_core::Error::SecretResolution { message, help } => {
+                cuenv_core::TaskError::TaskGraph { message, help } => {
+                    if let Some(h) = help {
+                        Self::config_with_help(message, h)
+                    } else {
+                        Self::config(message)
+                    }
+                }
+                timeout @ cuenv_core::TaskError::Timeout { .. } => Self::other(timeout.to_string()),
+            },
+            cuenv_core::Error::Tool(tool_err) => match tool_err {
+                cuenv_core::ToolError::Resolution { message, help } => {
+                    if let Some(h) = help {
+                        Self::eval_with_help(message, h)
+                    } else {
+                        Self::eval(message)
+                    }
+                }
+                cuenv_core::ToolError::Platform { message } => Self::eval(message),
+            },
+            cuenv_core::Error::Secret(cuenv_core::SecretResolutionError { message, help }) => {
                 if let Some(h) = help {
                     Self::eval_with_help(message, h)
                 } else {
@@ -179,22 +187,22 @@ impl From<cuenv_core::Error> for CliError {
                     )
                 }
             }
-            cuenv_core::Error::Io {
-                source,
-                path,
-                operation,
-            } => {
-                let path_str = path
-                    .as_ref()
-                    .map_or(String::new(), |p| format!(" on {}", p.display()));
-                Self::other_with_help(
-                    format!("I/O {operation} failed{path_str}: {source}"),
-                    "Check file permissions and ensure the path exists",
-                )
-            }
-            cuenv_core::Error::Utf8 { .. } | cuenv_core::Error::Timeout { .. } => {
-                Self::other(err.to_string())
-            }
+            cuenv_core::Error::Io(io_err) => match io_err {
+                cuenv_core::IoError::Io {
+                    source,
+                    path,
+                    operation,
+                } => {
+                    let path_str = path
+                        .as_ref()
+                        .map_or(String::new(), |p| format!(" on {}", p.display()));
+                    Self::other_with_help(
+                        format!("I/O {operation} failed{path_str}: {source}"),
+                        "Check file permissions and ensure the path exists",
+                    )
+                }
+                utf8 @ cuenv_core::IoError::Utf8 { .. } => Self::other(utf8.to_string()),
+            },
         }
     }
 }

@@ -10,6 +10,7 @@ pub mod cache;
 pub mod captures;
 mod command;
 pub(crate) mod env;
+pub mod error;
 pub mod executor;
 pub mod graph;
 pub mod graph_walk;
@@ -23,6 +24,8 @@ mod workspace;
 
 // Re-export the task DTOs from the leaf manifest crate.
 pub use cuenv_manifest::tasks::*;
+
+pub use error::TaskError;
 
 // Re-export executor and graph modules
 pub use backend::{

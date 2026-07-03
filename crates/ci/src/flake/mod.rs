@@ -7,9 +7,8 @@
 //! - Enforce purity modes (strict, warning, override)
 
 mod analyzer;
-mod error;
 mod lock;
 
+pub use crate::error::FlakeLockError;
 pub use analyzer::{FlakeLockAnalyzer, PurityAnalysis, UnlockReason, UnlockedInput};
-pub use error::FlakeLockError;
 pub use lock::{FlakeLock, FlakeNode, InputRef, LockedInfo, OriginalInfo};

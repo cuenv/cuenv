@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::path::Path;
-use std::sync::Arc;
 
 pub use cuenv_manifest::environment::{
     Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
@@ -49,10 +48,10 @@ impl EnvValueExt for EnvValue {
             return Ok((value, resolved));
         }
 
-        let registry = crate::secrets::create_default_registry()?;
+        let registry = cuenv_secrets::global_registry();
         let mut resolved_by_index = HashMap::new();
         for (part_idx, secret) in secrets {
-            let value = secret.resolve_with_registry(&registry).await?;
+            let value = secret.resolve_with_registry(registry).await?;
             resolved_by_index.insert(part_idx, value);
         }
 
@@ -465,7 +464,7 @@ impl Environment {
     /// Phase 1 (Collect): Non-secret vars go straight to output. Secrets are
     /// collected with their env key and part index for later reassembly.
     ///
-    /// Phase 2 (Resolve): One `SecretRegistry` is created and shared via `Arc`.
+    /// Phase 2 (Resolve): the process-wide `SecretRegistry` is shared by all tasks.
     /// All secrets are spawned into a `JoinSet` for concurrent resolution.
     ///
     /// Phase 3 (Reassemble): Resolved values are grouped by env key and passed
@@ -503,8 +502,9 @@ impl Environment {
             return Ok((resolved, all_secrets));
         }
 
-        // Phase 2: Resolve all secrets in parallel with a shared registry
-        let registry = Arc::new(crate::secrets::create_default_registry()?);
+        // Phase 2: Resolve all secrets in parallel against the process-wide
+        // registry (a &'static, so it moves freely into the spawned futures)
+        let registry = cuenv_secrets::global_registry();
         let mut join_set = tokio::task::JoinSet::new();
 
         for (key, _, secrets) in &secret_vars {
@@ -512,9 +512,8 @@ impl Environment {
                 let key = (*key).clone();
                 let part_idx = *part_idx;
                 let secret = secret.clone();
-                let registry = Arc::clone(&registry);
                 join_set.spawn(async move {
-                    let value = secret.resolve_with_registry(&registry).await?;
+                    let value = secret.resolve_with_registry(registry).await?;
                     Ok::<_, crate::Error>((key, part_idx, value))
                 });
             }

@@ -72,11 +72,9 @@ pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) 
     // Suppress unused parameter warning - package is kept for API compatibility
     let _ = package;
 
-    let target_path = dir.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(dir.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
+    let target_path = dir
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", dir.to_path_buf(), e))?;
 
     // Use executor's cached module (single CUE evaluation per process)
     tracing::debug!("Using cached module evaluation from executor");

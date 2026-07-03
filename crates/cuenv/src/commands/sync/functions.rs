@@ -154,10 +154,8 @@ pub async fn execute_sync_ci(
     // Get cached module from executor and discover projects before async work
     // (ModuleGuard contains MutexGuard which is not Send)
     let (projects, repo_root, target_path) = {
-        let target_path = dir_path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(dir_path.to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
+        let target_path = dir_path.canonicalize().map_err(|e| {
+            cuenv_core::Error::io_with_path("canonicalize path", dir_path.to_path_buf(), e)
         })?;
         let module = executor.get_module(&target_path)?;
         let projects = ProjectInfo::collect_from_module(&module)?;
@@ -409,18 +407,14 @@ steps:
 
     // Create directory if needed
     if !buildkite_dir.exists() {
-        std::fs::create_dir_all(&buildkite_dir).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(buildkite_dir.clone().into_boxed_path()),
-            operation: "create directory".to_string(),
+        std::fs::create_dir_all(&buildkite_dir).map_err(|e| {
+            cuenv_core::Error::io_with_path("create directory", buildkite_dir.clone(), e)
         })?;
     }
 
     // Write file
-    std::fs::write(&pipeline_path, pipeline_content).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(pipeline_path.clone().into_boxed_path()),
-        operation: "write pipeline file".to_string(),
+    std::fs::write(&pipeline_path, pipeline_content).map_err(|e| {
+        cuenv_core::Error::io_with_path("write pipeline file", pipeline_path.clone(), e)
     })?;
 
     if exists {

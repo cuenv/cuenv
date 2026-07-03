@@ -37,6 +37,21 @@ impl SecretRegistry {
         }
     }
 
+    /// Create a registry pre-populated with the dependency-free built-in
+    /// resolvers: `env` (environment variables) and `exec` (command
+    /// execution).
+    ///
+    /// Provider-backed resolvers (1Password, AWS, GCP, Infisical, ...) live
+    /// in their own crates and are registered by the application composition
+    /// root on top of this baseline.
+    #[must_use]
+    pub fn with_builtins() -> Self {
+        let mut registry = Self::new();
+        registry.register(Arc::new(crate::resolvers::EnvSecretResolver::new()));
+        registry.register(Arc::new(crate::resolvers::ExecSecretResolver::new()));
+        registry
+    }
+
     /// Register a resolver
     ///
     /// The resolver's `provider_name()` is used as the key. If a resolver
@@ -112,6 +127,14 @@ mod tests {
     fn test_registry_default() {
         let registry = SecretRegistry::default();
         assert!(registry.providers().is_empty());
+    }
+
+    #[test]
+    fn test_registry_with_builtins() {
+        let registry = SecretRegistry::with_builtins();
+        assert!(registry.has("env"));
+        assert!(registry.has("exec"));
+        assert_eq!(registry.providers().len(), 2);
     }
 
     #[test]

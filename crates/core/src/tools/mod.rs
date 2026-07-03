@@ -38,6 +38,7 @@
 //! ```
 
 pub mod activation;
+pub mod error;
 mod provider;
 mod registry;
 
@@ -46,6 +47,7 @@ pub use activation::{
     ToolActivationSource, ToolActivationStep, apply_resolved_tool_activation,
     resolve_tool_activation, validate_tool_activation,
 };
+pub use error::ToolError;
 pub use provider::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource, default_cache_dir,

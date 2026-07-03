@@ -50,14 +50,13 @@ pub async fn execute_up(options: &UpOptions, executor: &CommandExecutor) -> cuen
     // here instead of drifting to pid 1.
     install_process_supervisor();
 
-    let target_path =
-        Path::new(&options.path)
-            .canonicalize()
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(Path::new(&options.path).to_path_buf().into_boxed_path()),
-                operation: "canonicalize path".to_string(),
-            })?;
+    let target_path = Path::new(&options.path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path(
+            "canonicalize path",
+            Path::new(&options.path).to_path_buf(),
+            e,
+        )
+    })?;
 
     emit_stdout!(format!(
         "cuenv up: evaluating services in {} (package: {})",

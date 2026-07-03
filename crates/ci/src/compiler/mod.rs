@@ -24,27 +24,9 @@ use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 use uuid::Uuid;
 
-/// Compiler errors
-#[derive(Debug, Error)]
-pub enum CompilerError {
-    #[error("Task graph validation failed: {0}")]
-    ValidationFailed(String),
-
-    #[error("Task '{0}' not found")]
-    TaskNotFound(String),
-
-    #[error("Task '{0}' uses shell script but IR requires command array")]
-    ShellScriptNotSupported(String),
-
-    #[error("Invalid task structure: {0}")]
-    InvalidTaskStructure(String),
-
-    #[error("Flake lock error: {0}")]
-    FlakeLock(#[from] FlakeLockError),
-}
+pub use crate::error::CompilerError;
 
 /// Compiler for transforming cuenv tasks to IR
 pub struct Compiler {

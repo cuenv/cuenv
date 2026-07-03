@@ -3,8 +3,8 @@
 //! Analyzes flake.lock files to detect unlocked inputs and compute
 //! deterministic digests from locked content hashes.
 
-use super::error::FlakeLockError;
 use super::lock::{FlakeLock, FlakeNode, InputRef};
+use crate::error::FlakeLockError;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::path::Path;

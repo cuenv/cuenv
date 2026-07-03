@@ -453,3 +453,51 @@ fn test_extract_from_pkg_unsupported_off_macos() {
     let err = extract_from_pkg(b"pkg", None, temp.path()).unwrap_err();
     assert!(err.to_string().contains("only supported on macOS"));
 }
+
+// ==========================================================================
+// pkg payload entry-path validation (platform-neutral logic for the
+// macOS-only cpio flow)
+// ==========================================================================
+
+mod entry_paths {
+    use crate::entry_paths::is_safe_entry;
+
+    #[test]
+    fn safe_entries() {
+        for entry in [
+            ".",
+            "./",
+            "./usr/local/bin/tool",
+            "usr/local/bin/tool",
+            "deeply/nested/dir/file.txt",
+            "./name-with..dots/file",
+            "..leading-dots-name",
+        ] {
+            assert!(is_safe_entry(entry), "expected safe: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn unsafe_entries() {
+        for entry in [
+            "",
+            "../x",
+            "..",
+            "./../x",
+            "/absolute/path",
+            "/",
+            "a/../../b",
+            "usr/../../../etc/passwd",
+        ] {
+            assert!(!is_safe_entry(entry), "expected unsafe: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn whitespace_padded_entries_validate_after_trim() {
+        // The pkg listing scan trims each line before validation; verify the
+        // trimmed forms classify correctly.
+        assert!(is_safe_entry("  ./ok  ".trim()));
+        assert!(!is_safe_entry("\t../bad\n".trim()));
+    }
+}

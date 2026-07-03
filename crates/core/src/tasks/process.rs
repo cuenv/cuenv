@@ -50,11 +50,7 @@ async fn run_captured_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| Error::Io {
-            source: e,
-            path: None,
-            operation: format!("spawn task {}", name),
-        })?;
+        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
 
     let child_pid = child.id();
     if let Some(pid) = child_pid {
@@ -150,11 +146,7 @@ async fn run_inherited_process(
         .stderr(Stdio::inherit())
         .stdin(Stdio::inherit())
         .spawn()
-        .map_err(|e| Error::Io {
-            source: e,
-            path: None,
-            operation: format!("spawn task {}", name),
-        })?;
+        .map_err(|e| Error::io(format!("spawn task {}", name), e))?;
 
     let child_pid = child.id();
     if let Some(pid) = child_pid {
@@ -213,21 +205,16 @@ async fn wait_or_terminate(
     timeout: Option<Duration>,
 ) -> Result<WaitOutcome> {
     let Some(timeout) = timeout else {
-        let status = child.wait().await.map_err(|e| Error::Io {
-            source: e,
-            path: None,
-            operation: format!("wait for task {name}"),
-        })?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|e| Error::io(format!("wait for task {name}"), e))?;
         return Ok(WaitOutcome::Exited(status));
     };
 
     match tokio::time::timeout(timeout, child.wait()).await {
         Ok(status) => {
-            let status = status.map_err(|e| Error::Io {
-                source: e,
-                path: None,
-                operation: format!("wait for task {name}"),
-            })?;
+            let status = status.map_err(|e| Error::io(format!("wait for task {name}"), e))?;
             Ok(WaitOutcome::Exited(status))
         }
         Err(_) => {
@@ -305,11 +292,10 @@ async fn terminate_child(child: &mut tokio::process::Child, child_pid: Option<u3
         }
     }
 
-    child.kill().await.map_err(|e| Error::Io {
-        source: e,
-        path: None,
-        operation: "kill timed-out task".to_string(),
-    })
+    child
+        .kill()
+        .await
+        .map_err(|e| Error::io("kill timed-out task", e))
 }
 
 /// Set up process group on Unix so we can kill the entire process tree on Ctrl-C.

@@ -1,6 +1,6 @@
 //! Tests for error types
 
-use cuenv_core::Error;
+use cuenv_core::{Error, EvalError, TaskError};
 use std::path::Path;
 
 #[test]
@@ -57,10 +57,10 @@ fn test_validation_error() {
 
 #[test]
 fn test_timeout_error() {
-    let error = Error::Timeout { seconds: 30 };
+    let error = Error::timeout(30);
     assert_eq!(error.to_string(), "Operation timed out after 30 seconds");
 
-    let error = Error::Timeout { seconds: 5 };
+    let error = Error::timeout(5);
     assert_eq!(error.to_string(), "Operation timed out after 5 seconds");
 }
 
@@ -90,15 +90,15 @@ fn test_utf8_error_conversion() {
 fn test_error_variants_match() {
     let config_error = Error::configuration("test");
     match config_error {
-        Error::Configuration { .. } => {}
+        Error::Configuration(_) => {}
         _ => panic!("Expected Configuration variant"),
     }
 
     let ffi_error = Error::ffi("test", "message");
     match ffi_error {
-        Error::Ffi {
+        Error::Eval(EvalError::Ffi {
             function, message, ..
-        } => {
+        }) => {
             assert_eq!(function, "test");
             assert_eq!(message, "message");
         }
@@ -108,9 +108,9 @@ fn test_error_variants_match() {
     let path = Path::new("/test.cue");
     let cue_error = Error::cue_parse(path, "error");
     match cue_error {
-        Error::CueParse {
+        Error::Eval(EvalError::CueParse {
             path: p, message, ..
-        } => {
+        }) => {
             assert_eq!(p.display().to_string(), "/test.cue");
             assert_eq!(message, "error");
         }
@@ -119,13 +119,13 @@ fn test_error_variants_match() {
 
     let validation_error = Error::validation("test");
     match validation_error {
-        Error::Validation { .. } => {}
+        Error::Eval(EvalError::Validation { .. }) => {}
         _ => panic!("Expected Validation variant"),
     }
 
-    let timeout_error = Error::Timeout { seconds: 10 };
+    let timeout_error = Error::timeout(10);
     match timeout_error {
-        Error::Timeout { seconds } => {
+        Error::Task(TaskError::Timeout { seconds }) => {
             assert_eq!(seconds, 10);
         }
         _ => panic!("Expected Timeout variant"),

@@ -28,42 +28,35 @@ use cuenv_core::manifest::DirectoryRules;
 /// created, or the CUE engine fails to evaluate the patched content into a
 /// [`DirectoryRules`] value (including unknown-field rejection by serde).
 pub fn evaluate_rules_file(file_path: &Path) -> Result<DirectoryRules> {
-    let original = std::fs::read_to_string(file_path).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(file_path.to_path_buf().into_boxed_path()),
-        operation: "read .rules.cue".to_string(),
+    let original = std::fs::read_to_string(file_path).map_err(|e| {
+        cuenv_core::Error::io_with_path("read .rules.cue", file_path.to_path_buf(), e)
     })?;
 
     let patched = prepare_isolated_cue(&original);
 
-    let tempdir = tempfile::tempdir().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: None,
-        operation: "create tempdir for .rules.cue eval".to_string(),
-    })?;
+    let tempdir = tempfile::tempdir()
+        .map_err(|e| cuenv_core::Error::io("create tempdir for .rules.cue eval", e))?;
 
     // Create minimal cue.mod/module.cue required by the Go bridge
     let cue_mod_dir = tempdir.path().join("cue.mod");
-    std::fs::create_dir_all(&cue_mod_dir).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(cue_mod_dir.clone().into_boxed_path()),
-        operation: "create cue.mod dir".to_string(),
+    std::fs::create_dir_all(&cue_mod_dir).map_err(|e| {
+        cuenv_core::Error::io_with_path("create cue.mod dir", cue_mod_dir.clone(), e)
     })?;
     std::fs::write(
         cue_mod_dir.join("module.cue"),
         "module: \"cuenv.dev/rules-eval\"\nlanguage: version: \"v0.12.0\"\n",
     )
-    .map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(cue_mod_dir.join("module.cue").into_boxed_path()),
-        operation: "write cue.mod/module.cue".to_string(),
+    .map_err(|e| {
+        cuenv_core::Error::io_with_path(
+            "write cue.mod/module.cue",
+            cue_mod_dir.join("module.cue"),
+            e,
+        )
     })?;
 
     let temp_path = tempdir.path().join("rules_eval.cue");
-    std::fs::write(&temp_path, patched).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(temp_path.clone().into_boxed_path()),
-        operation: "write temp rules file".to_string(),
+    std::fs::write(&temp_path, patched).map_err(|e| {
+        cuenv_core::Error::io_with_path("write temp rules file", temp_path.clone(), e)
     })?;
 
     cuengine::evaluate_cue_package_typed(tempdir.path(), "rules").map_err(|e| {

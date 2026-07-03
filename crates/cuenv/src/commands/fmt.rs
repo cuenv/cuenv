@@ -125,13 +125,9 @@ fn discover_files(
 
 /// Load the Base configuration from the CUE module.
 fn load_base_config(path: &str, package: &str) -> Result<Base> {
-    let target_path = Path::new(path)
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let target_path = Path::new(path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize path", Path::new(path).to_path_buf(), e)
+    })?;
 
     let module_root = find_cue_module_root(&target_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
@@ -205,13 +201,9 @@ pub fn execute_fmt(
     })?;
 
     // Discover files
-    let project_root = Path::new(path)
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let project_root = Path::new(path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize path", Path::new(path).to_path_buf(), e)
+    })?;
 
     let files = discover_files(&project_root, &formatters, only);
 

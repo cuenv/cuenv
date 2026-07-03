@@ -183,36 +183,28 @@ fn sync_pre_push_hook(
 
     // Create hooks directory if needed
     if !hooks_dir.exists() {
-        fs::create_dir_all(&hooks_dir).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(hooks_dir.clone().into_boxed_path()),
-            operation: "create hooks directory".to_string(),
+        fs::create_dir_all(&hooks_dir).map_err(|e| {
+            cuenv_core::Error::io_with_path("create hooks directory", hooks_dir.clone(), e)
         })?;
     }
 
     // Write the hook script
     let existed = pre_push_path.exists();
-    fs::write(&pre_push_path, &hook_script).map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(pre_push_path.clone().into_boxed_path()),
-        operation: "write pre-push hook".to_string(),
+    fs::write(&pre_push_path, &hook_script).map_err(|e| {
+        cuenv_core::Error::io_with_path("write pre-push hook", pre_push_path.clone(), e)
     })?;
 
     // Make executable
     #[cfg(unix)]
     {
         let mut perms = fs::metadata(&pre_push_path)
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(pre_push_path.clone().into_boxed_path()),
-                operation: "get hook permissions".to_string(),
+            .map_err(|e| {
+                cuenv_core::Error::io_with_path("get hook permissions", pre_push_path.clone(), e)
             })?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&pre_push_path, perms).map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(pre_push_path.clone().into_boxed_path()),
-            operation: "set hook permissions".to_string(),
+        fs::set_permissions(&pre_push_path, perms).map_err(|e| {
+            cuenv_core::Error::io_with_path("set hook permissions", pre_push_path.clone(), e)
         })?;
     }
 

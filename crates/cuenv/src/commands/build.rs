@@ -33,14 +33,13 @@ pub struct BuildOptions {
 ///
 /// Returns an error if CUE evaluation or deserialization fails.
 pub fn execute_build(options: &BuildOptions, executor: &CommandExecutor) -> cuenv_core::Result<()> {
-    let target_path =
-        Path::new(&options.path)
-            .canonicalize()
-            .map_err(|e| cuenv_core::Error::Io {
-                source: e,
-                path: Some(Path::new(&options.path).to_path_buf().into_boxed_path()),
-                operation: "canonicalize path".to_string(),
-            })?;
+    let target_path = Path::new(&options.path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path(
+            "canonicalize path",
+            Path::new(&options.path).to_path_buf(),
+            e,
+        )
+    })?;
 
     let module = executor.get_module(&target_path)?;
     let relative_path = relative_path_from_root(&module.root, &target_path);
@@ -401,11 +400,7 @@ fn run_capture(dir: &Path, program: &str, args: &[String]) -> cuenv_core::Result
         .args(args)
         .current_dir(dir)
         .output()
-        .map_err(|source| cuenv_core::Error::Io {
-            source,
-            path: None,
-            operation: format!("run {program}"),
-        })?;
+        .map_err(|source| cuenv_core::Error::io(format!("run {program}"), source))?;
 
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -423,11 +418,7 @@ fn run_status(dir: &Path, program: &str, args: &[String]) -> cuenv_core::Result<
         .args(args)
         .current_dir(dir)
         .status()
-        .map_err(|source| cuenv_core::Error::Io {
-            source,
-            path: None,
-            operation: format!("run {program}"),
-        })?;
+        .map_err(|source| cuenv_core::Error::io(format!("run {program}"), source))?;
 
     if status.success() {
         Ok(())

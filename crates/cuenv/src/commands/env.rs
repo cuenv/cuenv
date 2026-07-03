@@ -13,13 +13,9 @@ use tracing::instrument;
 ///
 /// Uses the executor's cached module evaluation (single CUE eval per process).
 fn load_base_config(path: &str, executor: &CommandExecutor) -> Result<Base> {
-    let target_path = Path::new(path)
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(Path::new(path).to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let target_path = Path::new(path).canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize path", Path::new(path).to_path_buf(), e)
+    })?;
 
     tracing::debug!("Using cached module evaluation from executor");
     let module = executor.get_module(&target_path)?;

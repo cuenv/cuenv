@@ -23,11 +23,9 @@ pub fn cli_version() -> &'static str {
 /// Returns an error if the command path cannot be canonicalized.
 pub fn module_root_for_path(path: impl AsRef<Path>) -> Result<Option<PathBuf>> {
     let path = path.as_ref();
-    let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
+    let target_path = path
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e))?;
 
     Ok(find_cue_module_root(&target_path))
 }
