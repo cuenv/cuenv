@@ -2,8 +2,9 @@
 
 use crate::{ArchiveError, Result, ensure_executable, find_main_binary};
 use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use tempfile::Builder;
 use tracing::debug;
 
@@ -47,17 +48,12 @@ pub(crate) fn extract_from_pkg(
         // Validate the payload's table of contents before extracting:
         // `cpio -idm` does not itself reject `..` or absolute entry paths,
         // so a malicious payload could otherwise write outside payload_dir.
-        let listing = match list_payload_entries(payload_path) {
-            Ok(listing) => listing,
-            Err(error) => {
-                debug!(?payload_path, %error, "Skipping unlistable pkg payload");
+        match scan_payload_entries(payload_path)? {
+            EntryScan::Safe => {}
+            EntryScan::Unlistable(reason) => {
+                debug!(?payload_path, %reason, "Skipping unlistable pkg payload");
                 continue;
             }
-        };
-        if let Some(entry) = crate::entry_paths::find_unsafe_entry(listing.lines()) {
-            return Err(ArchiveError::extraction(format!(
-                "pkg payload contains unsafe path '{entry}'"
-            )));
         }
 
         let payload_file = File::open(payload_path)?;
@@ -109,24 +105,96 @@ fn copy_extracted_file(source: &Path, dest: &Path, fallback_name: &str) -> Resul
     Ok(dest_path)
 }
 
-/// List a cpio payload's table of contents (`cpio -it`).
-fn list_payload_entries(payload_path: &Path) -> Result<String> {
+/// Cap on the bytes read from a `cpio -it` listing; a table of contents
+/// larger than this is treated as hostile.
+const MAX_LISTING_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Outcome of scanning a payload's table of contents.
+enum EntryScan {
+    /// Every listed entry is traversal-safe.
+    Safe,
+    /// The payload could not be listed (skip it, matching the historical
+    /// behavior for unreadable payloads).
+    Unlistable(String),
+}
+
+/// Stream a cpio payload's table of contents (`cpio -it`) and validate each
+/// entry as it is read, without buffering the whole listing.
+///
+/// Returns a hard error for traversal attempts and oversized listings;
+/// returns [`EntryScan::Unlistable`] for payloads cpio cannot read.
+fn scan_payload_entries(payload_path: &Path) -> Result<EntryScan> {
     let payload_file = File::open(payload_path)?;
-    let output = Command::new("cpio")
+    let mut child = match Command::new("cpio")
         .args(["-it", "--quiet"])
         .stdin(Stdio::from(payload_file))
-        .output()
-        .map_err(|e| ArchiveError::extraction(format!("Failed to list pkg payload: {e}")))?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            return Ok(EntryScan::Unlistable(format!(
+                "failed to run cpio -it: {e}"
+            )));
+        }
+    };
 
-    if !output.status.success() {
-        return Err(ArchiveError::extraction(format!(
-            "Failed to list pkg payload: {}",
-            output.status
-        )));
+    let Some(stdout) = child.stdout.take() else {
+        reap(&mut child);
+        return Ok(EntryScan::Unlistable("cpio stdout unavailable".to_string()));
+    };
+
+    let mut read_bytes: u64 = 0;
+    for line in BufReader::new(stdout).split(b'\n') {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                reap(&mut child);
+                return Ok(EntryScan::Unlistable(format!(
+                    "failed to read listing: {e}"
+                )));
+            }
+        };
+
+        read_bytes += line.len() as u64 + 1;
+        if read_bytes > MAX_LISTING_BYTES {
+            reap(&mut child);
+            return Err(ArchiveError::extraction(
+                "pkg payload listing exceeds the size limit".to_string(),
+            ));
+        }
+
+        // Lossy conversion preserves the ASCII bytes traversal detection
+        // relies on (`.`, `/`), so non-UTF-8 names are still validated.
+        let entry = String::from_utf8_lossy(&line);
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        if !crate::entry_paths::is_safe_entry(entry) {
+            reap(&mut child);
+            return Err(ArchiveError::extraction(format!(
+                "pkg payload contains unsafe path '{entry}'"
+            )));
+        }
     }
 
-    String::from_utf8(output.stdout)
-        .map_err(|e| ArchiveError::extraction(format!("pkg payload listing is not UTF-8: {e}")))
+    match child.wait() {
+        Ok(status) if status.success() => Ok(EntryScan::Safe),
+        Ok(status) => Ok(EntryScan::Unlistable(format!(
+            "cpio -it exited with {status}"
+        ))),
+        Err(e) => Ok(EntryScan::Unlistable(format!(
+            "failed to wait for cpio -it: {e}"
+        ))),
+    }
+}
+
+/// Kill and reap a child process, ignoring errors (used on early abort).
+fn reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Require a located file to be canonically contained in the payload

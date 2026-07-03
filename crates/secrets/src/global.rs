@@ -26,16 +26,13 @@ static REGISTRY: OnceLock<SecretRegistry> = OnceLock::new();
 /// # Errors
 ///
 /// Returns [`SecretError::RegistryAlreadyInstalled`] if a factory was
-/// already installed or the registry has already been realized (e.g. a
-/// resolution already ran against the built-in fallback). Installation is
-/// not synchronized against concurrent first resolution — install before
-/// spawning work that resolves secrets.
+/// already installed — explicitly, or implicitly because a resolution
+/// already ran and locked in the built-in fallback. The factory `OnceLock`
+/// is the single decision point, so a success here means the installed
+/// factory is the one the registry will use (or already used).
 pub fn install_registry_factory(
     factory: impl Fn() -> SecretRegistry + Send + Sync + 'static,
 ) -> Result<(), SecretError> {
-    if REGISTRY.get().is_some() {
-        return Err(SecretError::RegistryAlreadyInstalled);
-    }
     FACTORY
         .set(Box::new(factory))
         .map_err(|_| SecretError::RegistryAlreadyInstalled)
@@ -43,12 +40,14 @@ pub fn install_registry_factory(
 
 /// Get the process-wide secret registry, realizing it on first use.
 ///
-/// Uses the installed factory when present, otherwise falls back to the
-/// dependency-free built-ins (`env` + `exec`).
+/// Uses the installed factory when present; otherwise locks in the
+/// dependency-free built-ins (`env` + `exec`) as the factory, so a later
+/// [`install_registry_factory`] reliably fails instead of silently being
+/// ignored.
 pub fn global_registry() -> &'static SecretRegistry {
     REGISTRY.get_or_init(|| {
-        FACTORY
-            .get()
-            .map_or_else(SecretRegistry::with_builtins, |factory| factory())
+        let factory =
+            FACTORY.get_or_init(|| Box::new(SecretRegistry::with_builtins) as RegistryFactory);
+        factory()
     })
 }

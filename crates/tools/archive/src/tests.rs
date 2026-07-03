@@ -460,7 +460,7 @@ fn test_extract_from_pkg_unsupported_off_macos() {
 // ==========================================================================
 
 mod entry_paths {
-    use crate::entry_paths::{find_unsafe_entry, is_safe_entry};
+    use crate::entry_paths::is_safe_entry;
 
     #[test]
     fn safe_entries() {
@@ -494,20 +494,10 @@ mod entry_paths {
     }
 
     #[test]
-    fn find_unsafe_entry_skips_blank_lines() {
-        let listing = ".\n./usr/bin/tool\n\n   \n./usr/share/doc\n";
-        assert_eq!(find_unsafe_entry(listing.lines()), None);
-    }
-
-    #[test]
-    fn find_unsafe_entry_reports_first_offender() {
-        let listing = "./usr/bin/tool\n../escape\n/abs/path\n";
-        assert_eq!(find_unsafe_entry(listing.lines()), Some("../escape"));
-    }
-
-    #[test]
-    fn find_unsafe_entry_trims_whitespace() {
-        let listing = "  ./ok  \n\t../bad\n";
-        assert_eq!(find_unsafe_entry(listing.lines()), Some("../bad"));
+    fn whitespace_padded_entries_validate_after_trim() {
+        // The pkg listing scan trims each line before validation; verify the
+        // trimmed forms classify correctly.
+        assert!(is_safe_entry("  ./ok  ".trim()));
+        assert!(!is_safe_entry("\t../bad\n".trim()));
     }
 }

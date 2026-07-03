@@ -19,12 +19,3 @@ pub fn is_safe_entry(entry: &str) -> bool {
         .components()
         .all(|component| matches!(component, Component::CurDir | Component::Normal(_)))
 }
-
-/// Scan listing lines (e.g. `cpio -it` output) and return the first unsafe
-/// entry, ignoring blank lines.
-pub fn find_unsafe_entry<'a>(lines: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    lines
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .find(|line| !is_safe_entry(line))
-}
