@@ -6,8 +6,6 @@
 //! - Path-based binary extraction from archives
 //! - Typed extraction rules (bin, lib, include, pkgconfig, file)
 
-mod extract;
-
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::http::ensure_rustls_crypto_provider;
@@ -15,10 +13,22 @@ use cuenv_core::tools::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource,
 };
+use cuenv_tool_archive as archive;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+
+/// Map archive extraction errors into core tool-resolution errors.
+fn archive_err(e: archive::ArchiveError) -> cuenv_core::Error {
+    cuenv_core::Error::tool_resolution(e.to_string())
+}
+
+/// Ensure a file is executable, mapping archive errors into core errors.
+fn ensure_executable_mapped(path: &Path) -> Result<()> {
+    archive::ensure_executable(path).map_err(archive_err)
+}
+
 use std::sync::OnceLock;
 use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
@@ -301,7 +311,7 @@ impl ToolProvider for UrlToolProvider {
             && let Some(path) = path.as_deref()
         {
             let expanded_path = Self::expand_template(path, version, platform);
-            if extract::path_looks_like_library(&expanded_path) {
+            if archive::path_looks_like_library(&expanded_path) {
                 expanded_extract.push(ToolExtract::Lib {
                     path: expanded_path,
                     env: None,
@@ -361,10 +371,12 @@ impl ToolProvider for UrlToolProvider {
 
         if extract.is_empty() {
             // Legacy behavior: single binary inferred from archive or raw file.
-            let extracted = extract::extract_binary(&data, url, None, &cache_dir)?;
-            if extract::looks_like_prefix_install(&cache_dir) {
+            let extracted =
+                archive::extract_binary(&data, url, None, &cache_dir).map_err(archive_err)?;
+            if archive::looks_like_prefix_install(&cache_dir) {
                 let primary_path =
-                    extract::find_primary_binary_in_prefix(&cache_dir, &resolved.name)?;
+                    archive::find_primary_binary_in_prefix(&cache_dir, &resolved.name)
+                        .map_err(archive_err)?;
                 let sha256 = compute_file_sha256(&primary_path).await?;
                 info!(
                     tool = %resolved.name,
@@ -378,7 +390,7 @@ impl ToolProvider for UrlToolProvider {
                     sha256,
                 });
             }
-            let final_path = if extract::file_looks_like_library(&extracted) {
+            let final_path = if archive::file_looks_like_library(&extracted) {
                 let file_name = extracted
                     .file_name()
                     .and_then(|n| n.to_str())
@@ -396,8 +408,8 @@ impl ToolProvider for UrlToolProvider {
                 }
                 std::fs::rename(&extracted, &final_path)?;
             }
-            if !extract::file_looks_like_library(&final_path) {
-                extract::ensure_executable(&final_path)?;
+            if !archive::file_looks_like_library(&final_path) {
+                ensure_executable_mapped(&final_path)?;
             }
 
             let sha256 = compute_file_sha256(&final_path).await?;
@@ -425,7 +437,8 @@ impl ToolProvider for UrlToolProvider {
         for item in extract {
             let source_path = Self::extract_source_path(item);
             let extracted_path =
-                extract::extract_binary(&data, url, Some(source_path), &extract_dir)?;
+                archive::extract_binary(&data, url, Some(source_path), &extract_dir)
+                    .map_err(archive_err)?;
             let final_path = self.cache_target_for_extract(&cache_dir, &resolved.name, item);
             if let Some(parent) = final_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -435,7 +448,7 @@ impl ToolProvider for UrlToolProvider {
             }
             std::fs::rename(&extracted_path, &final_path)?;
             if Self::is_executable_extract(item) {
-                extract::ensure_executable(&final_path)?;
+                ensure_executable_mapped(&final_path)?;
             }
             produced_paths.push(final_path);
         }

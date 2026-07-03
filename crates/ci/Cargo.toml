@@ -32,22 +32,22 @@ serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
-async-trait = "0.1"
+async-trait = { workspace = true }
 chrono = { workspace = true }
 cuenv-events = { workspace = true }
 dirs = { workspace = true }
-glob = "0.3"
-regex = "1.12"
+glob = { workspace = true }
+regex = { workspace = true }
 sha2 = { workspace = true }
-hex = "0.4"
+hex = { workspace = true }
 uuid = { workspace = true }
 petgraph = { workspace = true }
 
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = { workspace = true }
 temp-env = { workspace = true }
-proptest = "1.11"
+proptest = { workspace = true }
 
 # We'll stick to shelling out to git for now as per spec preference for "native reporting"
 # but we might need git2 later if we want tighter integration.

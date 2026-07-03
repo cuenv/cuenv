@@ -9,17 +9,13 @@
 //! at the repository root `CODEOWNERS`.
 
 use cuenv_codeowners::SectionStyle;
-use cuenv_codeowners::provider::{
-    CheckResult, CodeOwnersProvider, ProjectOwners, ProviderError, Result, SyncResult,
-    generate_aggregated_content, write_codeowners_file,
-};
-use std::fs;
-use std::path::Path;
+use cuenv_codeowners::provider::CodeOwnersProvider;
 
 /// Bitbucket CODEOWNERS provider.
 ///
 /// Writes a single aggregated CODEOWNERS file to the repository root.
-/// Uses comment-style `# Section` syntax for grouping rules.
+/// Uses comment-style `# Section` syntax for grouping rules. Sync and check
+/// behavior comes from the [`CodeOwnersProvider`] default methods.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BitbucketCodeOwnersProvider;
 
@@ -31,81 +27,14 @@ impl CodeOwnersProvider for BitbucketCodeOwnersProvider {
     fn section_style(&self) -> SectionStyle {
         SectionStyle::Comment
     }
-
-    fn sync(
-        &self,
-        repo_root: &Path,
-        projects: &[ProjectOwners],
-        dry_run: bool,
-    ) -> Result<SyncResult> {
-        if projects.is_empty() {
-            return Err(ProviderError::Configuration(
-                "No projects with ownership configuration provided".to_string(),
-            ));
-        }
-
-        // Generate aggregated content with Comment style
-        let content = generate_aggregated_content(self.section_style(), projects, None);
-
-        // Output path is at repo root for Bitbucket
-        let output_path = repo_root.join(self.output_path());
-
-        // Write the file
-        let status = write_codeowners_file(&output_path, &content, dry_run)?;
-
-        Ok(SyncResult {
-            path: output_path,
-            status,
-            content,
-        })
-    }
-
-    fn check(&self, repo_root: &Path, projects: &[ProjectOwners]) -> Result<CheckResult> {
-        if projects.is_empty() {
-            return Err(ProviderError::Configuration(
-                "No projects with ownership configuration provided".to_string(),
-            ));
-        }
-
-        // Generate expected content
-        let expected = generate_aggregated_content(self.section_style(), projects, None);
-
-        let output_path = repo_root.join(self.output_path());
-
-        // Read actual content if file exists
-        let actual = if output_path.exists() {
-            Some(fs::read_to_string(&output_path)?)
-        } else {
-            None
-        };
-
-        // Compare (normalize line endings)
-        let normalize = |s: &str| -> String {
-            s.replace("\r\n", "\n")
-                .lines()
-                .map(str::trim_end)
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-
-        let in_sync = actual
-            .as_ref()
-            .is_some_and(|a| normalize(a) == normalize(&expected));
-
-        Ok(CheckResult {
-            path: output_path,
-            in_sync,
-            expected,
-            actual,
-        })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use cuenv_codeowners::Rule;
-    use cuenv_codeowners::provider::SyncStatus;
+    use cuenv_codeowners::provider::{ProjectOwners, SyncStatus};
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]

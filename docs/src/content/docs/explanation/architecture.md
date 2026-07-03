@@ -312,11 +312,12 @@ The CLI library root keeps the public module/re-export wiring only; broad lint
 allowances have been removed so warning exceptions stay local to the module
 that needs them. Task and hook string renderers treat writes into `String` as
 infallible formatting paths without relying on crate-wide `expect()` allowance.
-The public provider registry is intentionally sync-only: `Provider` plus
-`SyncCapability` back generated-file sync command construction, while runtime
-and secret dispatch remain owned by their existing task and resolver paths until
-real registry-backed execution exists. Do not keep placeholder provider
-capabilities or downcast hooks for future extension points.
+Generated-file sync is owned by the `SyncProvider` implementations registered
+in the `SyncRegistry` under `crates/cuenv/src/commands/sync/`; the earlier
+parallel `Provider`/`SyncCapability` facade was removed (RFC-0006) because it
+never became the runtime dispatch path. Runtime and secret dispatch remain
+owned by their existing task and resolver paths. Do not keep placeholder
+provider capabilities or downcast hooks for future extension points.
 The async dispatcher owns direct async commands plus changeset/release output
 envelopes; the hook supervisor process runs through
 `crates/cuenv/src/hook_supervisor.rs` and OCI activation runs through

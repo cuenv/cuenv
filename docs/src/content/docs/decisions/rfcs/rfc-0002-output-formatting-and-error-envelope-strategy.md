@@ -6,8 +6,8 @@ decision_date: 2025-09-25
 approvers:
   - TBD
 related_features:
-  - features/cli/errors.feature:1
-  - features/cli/help.feature:1
+  - crates/cuenv/tests/bdd/features/errors.feature:1
+  - crates/cuenv/tests/bdd/features/help.feature:1
 ---
 
 ## Summary
@@ -20,7 +20,7 @@ The CLI presently emits three output modes (`simple`, `env`, `json`) while simul
 
 - Downstream tooling cannot rely on stable JSON schemas.
 - Users lack clarity on when secrets are redacted or how warnings are surfaced.
-- Tests and documentation risk drifting from the implemented behaviour, especially for empty files such as [features/cli/errors.feature](features/cli/errors.feature:1).
+- Tests and documentation risk drifting from the implemented behaviour, especially for empty files such as [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1).
 
 Documenting the strategy provides a single source of truth that feature files and ADRs can reference.
 
@@ -54,7 +54,7 @@ Documenting the strategy provides a single source of truth that feature files an
    - Document future additions to the error taxonomy through ADR updates.
 
 4. **Testing Strategy**
-   - Expand BDD coverage in [features/cli/errors.feature](features/cli/errors.feature:1) to assert envelope structure, redaction rules, and exit codes.
+   - Expand BDD coverage in [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) to assert envelope structure, redaction rules, and exit codes.
    - Introduce snapshot tests to detect schema regressions.
 
 5. **Documentation Alignment**
@@ -77,15 +77,15 @@ Documenting the strategy provides a single source of truth that feature files an
 ## Migration Plan
 
 - Publish this RFC for review alongside exemplar tests.
-- Populate [features/cli/errors.feature](features/cli/errors.feature:1) with scenarios referencing the exported schema.
+- Populate [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) with scenarios referencing the exported schema.
 - On acceptance, emit ADR-0005 to freeze the taxonomy (already drafted).
 
 ## Features Alignment
 
 | Feature Specification                                        | Coverage | Notes                                                         |
 | ------------------------------------------------------------ | -------- | ------------------------------------------------------------- |
-| [features/cli/errors.feature](features/cli/errors.feature:1) | Pending  | Will assert JSON envelopes, redaction, and exit codes.        |
-| [features/cli/help.feature](features/cli/help.feature:1)     | Pending  | Help output must describe formatting flags based on this RFC. |
+| [crates/cuenv/tests/bdd/features/errors.feature](crates/cuenv/tests/bdd/features/errors.feature:1) | Pending  | Will assert JSON envelopes, redaction, and exit codes.        |
+| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1)     | Pending  | Help output must describe formatting flags based on this RFC. |
 
 ## Open Questions
 

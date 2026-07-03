@@ -1,0 +1,28 @@
+[package]
+name = "cuenv-tool-archive"
+description = "Shared archive extraction for cuenv tool providers (zip, tar.gz, tar.xz, pkg)"
+version.workspace = true
+edition = "2024"
+rust-version = "1.85.0"
+license = "MIT"
+repository = "https://github.com/cuenv/cuenv"
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+xz2 = { workspace = true }
+zip = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tempfile = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,32 +1,11 @@
 //! cuenv - CUE-powered environment management library
 //!
-//! This crate provides a library-first architecture for cuenv, allowing external
-//! crates to extend functionality by registering custom providers.
-//!
-//! # Architecture
-//!
-//! cuenv uses a provider system where sync providers implement:
-//!
-//! - [`SyncCapability`] - Sync files from CUE configuration
-//!
-//! # Example: Custom CLI with Additional Providers
-//!
-//! ```ignore
-//! use cuenv::{Cuenv, SyncCapability};
-//!
-//! fn main() -> cuenv::Result<()> {
-//!     let cuenv = Cuenv::builder()
-//!         .with_defaults()
-//!         .with_sync_provider(my_provider::CustomProvider::new())
-//!         .build();
-//!
-//!     let sync_command = cuenv.build_sync_command();
-//!     // Wire sync_command into your own CLI dispatcher.
-//!     Ok(())
-//! }
-//! ```
-//!
-mod builder;
+//! This crate ships the `cuenv` binary. Command dispatch lives in
+//! [`commands`]; generated-file synchronization is handled by the
+//! [`SyncProvider`](commands::sync::SyncProvider) implementations registered
+//! in the [`SyncRegistry`](commands::sync::SyncRegistry) (see
+//! [`commands::sync::default_registry`]).
+
 /// CLI argument parsing and exit codes.
 pub mod cli;
 /// Command implementations (task, env, sync, etc.).
@@ -39,106 +18,14 @@ pub mod coordinator;
 pub mod events;
 /// Performance measurement utilities.
 pub mod performance;
-/// Provider trait definitions.
-pub mod provider;
-/// Built-in provider implementations.
+/// Provider detection and rules-file evaluation helpers.
 pub mod providers;
-/// Provider registration and lookup.
-pub mod registry;
 /// Tracing and logging configuration.
 pub mod tracing;
 /// Terminal UI components.
 pub mod tui;
 
-// Re-export public API
-pub use builder::CuenvBuilder;
 pub use cuenv_core::Result;
-pub use provider::{Provider, SyncCapability};
-pub use registry::ProviderRegistry;
-
-/// The main cuenv application.
-///
-/// Use [`Cuenv::builder()`] to create a new instance with custom providers,
-/// or [`Cuenv::with_defaults()`] for the standard configuration.
-pub struct Cuenv {
-    /// The provider registry containing all registered providers.
-    pub registry: ProviderRegistry,
-}
-
-impl Cuenv {
-    /// Create a new builder for configuring cuenv.
-    #[must_use]
-    pub fn builder() -> CuenvBuilder {
-        CuenvBuilder::new()
-    }
-
-    /// Create cuenv with default providers (ci, codegen, rules).
-    #[must_use]
-    pub fn with_defaults() -> Self {
-        Self::builder().with_defaults().build()
-    }
-
-    /// Build the `sync` subcommand dynamically from registered providers.
-    ///
-    /// Each sync provider contributes a subcommand via its `build_sync_command()` method.
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// let cuenv = Cuenv::with_defaults();
-    /// let sync_cmd = cuenv.build_sync_command();
-    /// // sync_cmd has subcommands: ci, codegen, rules
-    /// ```
-    #[must_use]
-    pub fn build_sync_command(&self) -> clap::Command {
-        use clap::{Arg, Command};
-
-        let mut sync_cmd = Command::new("sync")
-            .about("Sync generated files from CUE configuration")
-            .arg(
-                Arg::new("path")
-                    .long("path")
-                    .short('p')
-                    .help("Path to directory containing CUE files")
-                    .default_value("."),
-            )
-            .arg(
-                Arg::new("package")
-                    .long("package")
-                    .help("Name of the CUE package to evaluate")
-                    .default_value("cuenv"),
-            )
-            .arg(
-                Arg::new("dry-run")
-                    .long("dry-run")
-                    .help("Show what would be generated without writing files")
-                    .action(clap::ArgAction::SetTrue)
-                    .global(true),
-            )
-            .arg(
-                Arg::new("check")
-                    .long("check")
-                    .help("Check if files are in sync without making changes")
-                    .action(clap::ArgAction::SetTrue)
-                    .global(true),
-            )
-            .arg(
-                Arg::new("all")
-                    .long("all")
-                    .short('A')
-                    .help("Sync all projects in the workspace")
-                    .action(clap::ArgAction::SetTrue)
-                    .global(true),
-            );
-
-        // Add subcommands from registered sync providers
-        for provider in self.registry.sync_providers() {
-            sync_cmd = sync_cmd.subcommand(provider.build_sync_command());
-        }
-
-        sync_cmd
-    }
-}
 
 /// Exit code for SIGINT (128 + signal number 2)
 pub const EXIT_SIGINT: i32 = 130;
@@ -149,45 +36,6 @@ pub const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_cuenv_builder() {
-        let cuenv = Cuenv::builder().build();
-        // Registry should be empty when no providers are added
-        assert!(cuenv.registry.is_empty());
-    }
-
-    #[test]
-    fn test_cuenv_with_defaults() {
-        let cuenv = Cuenv::with_defaults();
-        // Should have default sync providers registered
-        assert_eq!(cuenv.registry.sync_provider_count(), 3);
-    }
-
-    #[test]
-    fn test_dynamic_sync_command() {
-        let cuenv = Cuenv::with_defaults();
-        let sync_cmd = cuenv.build_sync_command();
-
-        // Should have the expected subcommands from providers
-        let subcommands: Vec<_> = sync_cmd.get_subcommands().map(|c| c.get_name()).collect();
-        assert!(subcommands.contains(&"ci"), "Missing 'ci' subcommand");
-        assert!(
-            subcommands.contains(&"codegen"),
-            "Missing 'codegen' subcommand"
-        );
-        assert!(subcommands.contains(&"rules"), "Missing 'rules' subcommand");
-    }
-
-    #[test]
-    fn test_dynamic_sync_command_empty_registry() {
-        let cuenv = Cuenv::builder().build();
-        let sync_cmd = cuenv.build_sync_command();
-
-        // Should have no subcommands when registry is empty
-        let subcommand_count = sync_cmd.get_subcommands().count();
-        assert_eq!(subcommand_count, 0);
-    }
 
     #[test]
     fn test_exit_sigint_constant() {
@@ -201,21 +49,5 @@ mod tests {
             LLMS_CONTENT.contains("cuenv"),
             "generated LLM content should include project context"
         );
-    }
-
-    #[test]
-    fn test_sync_command_has_path_arg() {
-        let cuenv = Cuenv::with_defaults();
-        let sync_cmd = cuenv.build_sync_command();
-
-        let args: Vec<_> = sync_cmd
-            .get_arguments()
-            .map(|a| a.get_id().as_str())
-            .collect();
-        assert!(args.contains(&"path"));
-        assert!(args.contains(&"package"));
-        assert!(args.contains(&"dry-run"));
-        assert!(args.contains(&"check"));
-        assert!(args.contains(&"all"));
     }
 }

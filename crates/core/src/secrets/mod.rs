@@ -10,8 +10,6 @@
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 // Re-export core secret resolution types from cuenv-secrets
@@ -104,84 +102,36 @@ pub struct ExecResolver {
     pub args: Vec<String>,
 }
 
-/// Secret definition with resolver
+// Re-export the Secret DTO from the leaf manifest crate.
+pub use cuenv_manifest::secrets::Secret;
+
+/// Resolution extension methods for [`Secret`].
 ///
-/// This is the CUE-compatible secret type used for Dagger secrets and environment
-/// variable resolution. Supports multiple resolver types:
-/// - `exec`: Execute a command to get the secret
-/// - `onepassword`: Resolve from 1Password using `ref` field
-/// - `infisical`: Resolve from Infisical using explicit project/environment/secret fields
-/// - `aws`, `gcp`, `vault`: Cloud provider secrets
-///
-/// Resolution is delegated to the trait-based [`SecretResolver`] system.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Secret {
-    /// Resolver type: "exec", "onepassword", "infisical", "aws", "gcp", "vault"
-    pub resolver: String,
+/// The DTO lives in `cuenv-manifest`; resolution needs the registry wiring
+/// in this crate, so it is provided as an extension trait.
+#[async_trait::async_trait]
+pub trait SecretExt {
+    /// Convert to a `SecretSpec` for use with the trait-based resolver system
+    fn to_spec(&self) -> SecretSpec;
 
-    /// Command to execute (for exec resolver)
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub command: String,
+    /// Resolve the secret value using the trait-based resolver system
+    ///
+    /// Uses the default registry with all built-in resolvers.
+    ///
+    /// # Errors
+    /// Returns error if resolution fails
+    async fn resolve(&self) -> Result<String>;
 
-    /// Arguments to pass to the command (for exec resolver)
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub args: Vec<String>,
-
-    /// 1Password reference (for onepassword resolver), e.g., "op://vault/item/field"
-    #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
-    pub op_ref: Option<String>,
-
-    /// Additional fields for extensibility
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
+    /// Resolve the secret value using a custom registry
+    ///
+    /// # Errors
+    /// Returns error if resolution fails
+    async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String>;
 }
 
-impl Secret {
-    /// Create a new exec secret
-    #[must_use]
-    pub fn new(command: String, args: Vec<String>) -> Self {
-        Secret {
-            resolver: "exec".to_string(),
-            command,
-            args,
-            op_ref: None,
-            extra: HashMap::new(),
-        }
-    }
-
-    /// Create a 1Password secret
-    #[must_use]
-    pub fn onepassword(reference: impl Into<String>) -> Self {
-        Secret {
-            resolver: "onepassword".to_string(),
-            command: String::new(),
-            args: Vec::new(),
-            op_ref: Some(reference.into()),
-            extra: HashMap::new(),
-        }
-    }
-
-    /// Create a secret with additional fields
-    #[must_use]
-    pub fn with_extra(command: String, args: Vec<String>, extra: HashMap<String, Value>) -> Self {
-        Secret {
-            resolver: "exec".to_string(),
-            command,
-            args,
-            op_ref: None,
-            extra,
-        }
-    }
-
-    /// Get the resolver/provider name
-    #[must_use]
-    pub fn provider(&self) -> &str {
-        &self.resolver
-    }
-
-    /// Convert to a SecretSpec for use with the trait-based resolver system
-    #[must_use]
-    pub fn to_spec(&self) -> SecretSpec {
+#[async_trait::async_trait]
+impl SecretExt for Secret {
+    fn to_spec(&self) -> SecretSpec {
         let source = match self.resolver.as_str() {
             "onepassword" => self.op_ref.clone().unwrap_or_default(),
             "exec" => serde_json::json!({
@@ -195,23 +145,13 @@ impl Secret {
         SecretSpec::new(source)
     }
 
-    /// Resolve the secret value using the trait-based resolver system
-    ///
-    /// Uses the default registry with all built-in resolvers.
-    ///
-    /// # Errors
-    /// Returns error if resolution fails
-    pub async fn resolve(&self) -> Result<String> {
+    async fn resolve(&self) -> Result<String> {
         tracing::debug!(resolver = %self.resolver, op_ref = ?self.op_ref, "Secret::resolve() called");
         let registry = create_default_registry()?;
         self.resolve_with_registry(&registry).await
     }
 
-    /// Resolve the secret value using a custom registry
-    ///
-    /// # Errors
-    /// Returns error if resolution fails
-    pub async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String> {
+    async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String> {
         let spec = self.to_spec();
 
         registry
@@ -225,6 +165,7 @@ impl Secret {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
 
     // ==========================================================================
     // ExecResolver tests

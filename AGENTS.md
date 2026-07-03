@@ -96,7 +96,8 @@ If a change does not match one of the required full-flake triggers, keep the che
 | Crate                             | Purpose                                                      |
 | --------------------------------- | ------------------------------------------------------------ |
 | **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                        |
-| **cuenv-core**                    | Shared types, task execution, environment management         |
+| **cuenv-manifest**                | Leaf DTO crate: config, env, secret, task, CI, lockfile types |
+| **cuenv-core**                    | Task execution engine, environment resolution, shared logic  |
 | **cuenv-hooks**                   | Hook execution, state management, and approval system        |
 | **cuenv-cache**                   | Content-addressed task caching infrastructure                |
 | **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution          |
@@ -111,6 +112,7 @@ If a change does not match one of the required full-flake triggers, keep the che
 | **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |
 | **cuenv-codeowners**              | CODEOWNERS file generation                                   |
 | **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                    |
+| **cuenv-tool-archive**            | Shared archive extraction for tool providers                 |
 
 ### Key Data Flow
 

@@ -1,396 +1,67 @@
 //! Task execution and management module
 //!
-//! This module provides the core types for task execution, matching the CUE schema.
-//!
-//! # Task API v2
-//!
-//! Users annotate tasks with their type to unlock specific semantics:
-//! - [`Task`]: Single command or script
-//! - [`TaskGroup`]: Parallel execution (all children run concurrently)
-//! - [`TaskList`]: Sequential execution (steps run in order)
+//! The task DTO types (`Task`, `TaskGroup`, `TaskNode`, `Tasks`, ...) live
+//! in `cuenv-manifest` and are re-exported here; this module owns the
+//! execution engine: graph building, scheduling, process management,
+//! caching, and command resolution.
 
 pub mod backend;
 pub mod cache;
-mod cache_policy;
-mod capture_types;
 pub mod captures;
 mod command;
-mod dagger;
-mod dependency;
 pub(crate) mod env;
 pub mod executor;
 pub mod graph;
 pub mod graph_walk;
 pub mod index;
-mod inputs;
 pub mod output_refs;
-mod params;
 mod process;
 pub mod process_registry;
 mod result;
-mod retry;
 mod shell;
 mod workspace;
+
+// Re-export the task DTOs from the leaf manifest crate.
+pub use cuenv_manifest::tasks::*;
 
 // Re-export executor and graph modules
 pub use backend::{
     BackendFactory, HostBackend, TaskBackend, TaskExecutionContext, create_backend,
     create_backend_with_factory, should_use_dagger,
 };
-pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
-pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
-pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
-pub use dependency::TaskDependency;
 pub use executor::*;
 pub use graph::*;
 pub use index::{IndexedTask, TaskIndex, TaskPath, WorkspaceTask};
-pub use inputs::{
-    Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
-};
 pub use output_refs::{
     OutputRefResolver, TaskOutputField, TaskOutputRef, has_output_refs, process_output_refs,
 };
-pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use process_registry::global_registry;
-pub use retry::RetryConfig;
 pub(crate) use shell::TaskCommandSpec;
-pub use shell::{ScriptShell, Shell, ShellOptions};
 
-use serde::{Deserialize, Serialize};
 use shell::EffectiveScriptShell;
-use std::collections::HashMap;
 use std::path::Path;
 
-fn default_hermetic() -> bool {
-    true
-}
-
-// =============================================================================
-// Single Executable Task
-// =============================================================================
-
-/// A single executable task
+/// Execution-side extension methods for [`Task`].
 ///
-/// Note: Custom deserialization is used to ensure that a Task can only be
-/// deserialized when it has a `command` or `script` field. This is necessary
-/// because TaskNode uses untagged enum, and we need to distinguish
-/// between Task, TaskGroup, and TaskList during deserialization.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct Task {
-    /// Shell configuration for command execution (legacy, for backwards compatibility)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shell: Option<Shell>,
-
-    /// Command to execute. Required unless 'script' is provided.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub command: String,
-
-    /// Inline script to execute (alternative to command).
-    /// When script is provided, shell defaults to bash if not specified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub script: Option<String>,
-
-    /// Shell interpreter for script-based tasks (e.g., bash, python, node)
-    /// Only used when `script` is provided.
-    #[serde(
-        default,
-        rename = "scriptShell",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub script_shell: Option<ScriptShell>,
-
-    /// Shell options for bash-like shells (errexit, nounset, pipefail, xtrace)
-    /// Only used when `script` is provided with a POSIX-compatible shell.
-    #[serde(
-        default,
-        rename = "shellOptions",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub shell_options: Option<ShellOptions>,
-
-    /// Arguments for the command
-    #[serde(default)]
-    pub args: Vec<String>,
-
-    /// Environment variables for this task
-    #[serde(default)]
-    pub env: HashMap<String, serde_json::Value>,
-
-    /// Dagger-specific configuration for running this task in a container
-    /// DEPRECATED: Use runtime field with Dagger variant instead
-    #[serde(default)]
-    pub dagger: Option<DaggerTaskConfig>,
-
-    /// Runtime override for this task (inherits from project if not set)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<crate::manifest::Runtime>,
-
-    /// When true (default), task runs in isolated hermetic directory.
-    /// When false, task runs directly in workspace/project root.
-    #[serde(default = "default_hermetic")]
-    pub hermetic: bool,
-
-    /// Task dependencies - embedded task references with _name field
-    /// In CUE, users write `dependsOn: [build, test]` with direct references.
-    /// The Go bridge injects _name into each embedded task for identification.
-    #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<TaskDependency>,
-
-    /// Input files/resources
-    #[serde(default)]
-    pub inputs: Vec<Input>,
-
-    /// Output files/resources
-    #[serde(default)]
-    pub outputs: Vec<String>,
-
-    /// Task result cache policy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache: Option<TaskCachePolicy>,
-
-    /// Description of the task
-    #[serde(default)]
-    pub description: Option<String>,
-
-    /// Task parameter definitions for CLI arguments
-    #[serde(default)]
-    pub params: Option<TaskParams>,
-
-    /// Labels for task discovery via TaskMatcher
-    /// Example: labels: ["projen", "codegen"]
-    #[serde(default)]
-    pub labels: Vec<String>,
-
-    /// Execution timeout (e.g., "30m", "1h")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<String>,
-
-    /// Retry configuration for failed tasks
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub retry: Option<RetryConfig>,
-
-    /// Continue execution even if this task fails (default: false)
-    #[serde(default, rename = "continueOnError")]
-    pub continue_on_error: bool,
-
-    /// Named regex captures extracted from task stdout/stderr after execution
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    pub captures: HashMap<String, TaskCapture>,
-
-    /// If set, this task is a reference to another project's task
-    /// that should be resolved at runtime using TaskDiscovery.
-    /// Format: "#project-name:task-name"
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_ref: Option<String>,
-
-    /// If set, specifies the project root where this task should execute.
-    /// Used for TaskRef resolution to run tasks in their original project.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_root: Option<std::path::PathBuf>,
-
-    /// Source file location where this task was defined (from CUE metadata).
-    /// Used to determine default execution directory and for task listing grouping.
-    #[serde(default, rename = "_source", skip_serializing_if = "Option::is_none")]
-    pub source: Option<SourceLocation>,
-
-    /// Source file location where this task is bound in the current CUE instance.
-    /// Used by object-shaped `dir` values with `from: "caller"`.
-    #[serde(
-        default,
-        rename = "_callerSource",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub caller_source: Option<SourceLocation>,
-
-    /// Working directory override.
-    /// Resolves relative to the task definition, caller, or module root.
-    #[serde(default, rename = "dir", skip_serializing_if = "Option::is_none")]
-    pub directory: Option<TaskDirectory>,
-}
-
-// Custom deserialization for Task to ensure either command or script is present.
-// This is necessary for untagged enum deserialization in TaskNode to work correctly.
-impl<'de> serde::Deserialize<'de> for Task {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+/// The DTO lives in `cuenv-manifest`; building the concrete process
+/// invocation needs core's error type and shell resolution, so it is
+/// provided as an extension trait.
+pub(crate) trait TaskCommandExt {
+    /// Build the executable invocation for this task using the provided
+    /// command resolver.
+    fn command_spec<F>(&self, resolve_command: F) -> crate::Result<TaskCommandSpec>
     where
-        D: serde::Deserializer<'de>,
-    {
-        // Helper struct that mirrors Task but with all optional fields
-        #[derive(serde::Deserialize)]
-        struct TaskHelper {
-            #[serde(default)]
-            shell: Option<Shell>,
-            #[serde(default)]
-            command: Option<String>,
-            #[serde(default)]
-            script: Option<String>,
-            #[serde(default, rename = "scriptShell")]
-            script_shell: Option<ScriptShell>,
-            #[serde(default, rename = "shellOptions")]
-            shell_options: Option<ShellOptions>,
-            #[serde(default)]
-            args: Vec<String>,
-            #[serde(default)]
-            env: HashMap<String, serde_json::Value>,
-            #[serde(default)]
-            dagger: Option<DaggerTaskConfig>,
-            #[serde(default)]
-            runtime: Option<crate::manifest::Runtime>,
-            #[serde(default = "default_hermetic")]
-            hermetic: bool,
-            #[serde(default, rename = "dependsOn")]
-            depends_on: Vec<TaskDependency>,
-            #[serde(default)]
-            inputs: Vec<Input>,
-            #[serde(default)]
-            outputs: Vec<String>,
-            #[serde(default)]
-            cache: Option<TaskCachePolicy>,
-            #[serde(default)]
-            description: Option<String>,
-            #[serde(default)]
-            params: Option<TaskParams>,
-            #[serde(default)]
-            labels: Vec<String>,
-            #[serde(default)]
-            timeout: Option<String>,
-            #[serde(default)]
-            retry: Option<RetryConfig>,
-            #[serde(default, rename = "continueOnError")]
-            continue_on_error: bool,
-            #[serde(default)]
-            captures: HashMap<String, TaskCapture>,
-            #[serde(default)]
-            task_ref: Option<String>,
-            #[serde(default)]
-            project_root: Option<std::path::PathBuf>,
-            #[serde(default, rename = "_source")]
-            source: Option<SourceLocation>,
-            #[serde(default, rename = "_callerSource")]
-            caller_source: Option<SourceLocation>,
-            #[serde(default, rename = "dir")]
-            directory: Option<TaskDirectory>,
-        }
-
-        let helper = TaskHelper::deserialize(deserializer)?;
-
-        // Validate: either command, script, or task_ref must be present
-        let has_command = helper.command.as_ref().is_some_and(|c| !c.is_empty());
-        let has_script = helper.script.is_some();
-        let has_task_ref = helper.task_ref.is_some();
-
-        if !has_command && !has_script && !has_task_ref {
-            return Err(serde::de::Error::custom(
-                "Task must have either 'command', 'script', or 'task_ref' field",
-            ));
-        }
-
-        Ok(Task {
-            shell: helper.shell,
-            command: helper.command.unwrap_or_default(),
-            script: helper.script,
-            script_shell: helper.script_shell,
-            shell_options: helper.shell_options,
-            args: helper.args,
-            env: helper.env,
-            dagger: helper.dagger,
-            runtime: helper.runtime,
-            hermetic: helper.hermetic,
-            depends_on: helper.depends_on,
-            inputs: helper.inputs,
-            outputs: helper.outputs,
-            cache: helper.cache,
-            description: helper.description,
-            params: helper.params,
-            labels: helper.labels,
-            timeout: helper.timeout,
-            retry: helper.retry,
-            continue_on_error: helper.continue_on_error,
-            captures: helper.captures,
-            task_ref: helper.task_ref,
-            project_root: helper.project_root,
-            source: helper.source,
-            caller_source: helper.caller_source,
-            directory: helper.directory,
-        })
-    }
+        F: FnMut(&str) -> String;
 }
 
-impl Default for Task {
-    fn default() -> Self {
-        Self {
-            shell: None,
-            command: String::new(),
-            script: None,
-            script_shell: None,
-            shell_options: None,
-            args: vec![],
-            env: HashMap::new(),
-            dagger: None,
-            runtime: None,
-            hermetic: true, // Default to hermetic execution
-            depends_on: vec![],
-            inputs: vec![],
-            outputs: vec![],
-            cache: None,
-            description: None,
-            params: None,
-            labels: vec![],
-            timeout: None,
-            retry: None,
-            continue_on_error: false,
-            captures: HashMap::new(),
-            task_ref: None,
-            project_root: None,
-            source: None,
-            caller_source: None,
-            directory: None,
-        }
-    }
-}
-
-impl Task {
-    /// Creates a new TaskRef placeholder task.
-    /// This task will be resolved at runtime using TaskDiscovery.
-    pub fn from_task_ref(ref_str: &str) -> Self {
-        Self {
-            task_ref: Some(ref_str.to_string()),
-            description: Some(format!("Reference to {}", ref_str)),
-            ..Default::default()
-        }
-    }
-
-    /// Returns true if this task is a TaskRef placeholder that needs resolution.
-    pub fn is_task_ref(&self) -> bool {
-        self.task_ref.is_some()
-    }
-
-    /// Returns an iterator over dependency task names.
-    pub fn dependency_names(&self) -> impl Iterator<Item = &str> {
-        self.depends_on.iter().map(|d| d.task_name())
-    }
-
-    /// Returns the effective cache policy for this task.
-    #[must_use]
-    pub fn cache_policy(&self) -> TaskCachePolicy {
-        self.cache.clone().unwrap_or_default()
-    }
-
-    /// Returns the description, or a default if not set.
-    pub fn description(&self) -> &str {
-        self.description
-            .as_deref()
-            .unwrap_or("No description provided")
-    }
-
-    /// Build the executable invocation for this task using the provided command resolver.
-    pub(crate) fn command_spec<F>(&self, mut resolve_command: F) -> crate::Result<TaskCommandSpec>
+impl TaskCommandExt for Task {
+    fn command_spec<F>(&self, mut resolve_command: F) -> crate::Result<TaskCommandSpec>
     where
         F: FnMut(&str) -> String,
     {
         if let Some(script) = &self.script {
-            let shell = self.effective_script_shell();
-            let script = self.prepare_script(script, &shell)?;
+            let shell = effective_script_shell(self);
+            let script = prepare_script(self, script, &shell)?;
 
             return Ok(TaskCommandSpec {
                 program: resolve_command(&shell.command),
@@ -421,117 +92,85 @@ impl Task {
             args: self.args.clone(),
         })
     }
+}
 
-    /// Returns an iterator over local path/glob inputs.
-    pub fn iter_path_inputs(&self) -> impl Iterator<Item = &String> {
-        self.inputs.iter().filter_map(Input::as_path)
-    }
+fn effective_script_shell(task: &Task) -> EffectiveScriptShell {
+    if let Some(script_shell) = task.script_shell {
+        let (command, flag) = script_shell.command_and_flag();
 
-    /// Returns an iterator over project references.
-    pub fn iter_project_refs(&self) -> impl Iterator<Item = &ProjectReference> {
-        self.inputs.iter().filter_map(Input::as_project)
-    }
-
-    /// Returns an iterator over same-project task output references.
-    pub fn iter_task_outputs(&self) -> impl Iterator<Item = &TaskOutput> {
-        self.inputs.iter().filter_map(Input::as_task_output)
-    }
-
-    /// Collects path/glob inputs applying an optional prefix (for workspace roots).
-    pub fn collect_path_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        self.iter_path_inputs()
-            .map(|path| apply_prefix(prefix, path))
-            .collect()
-    }
-
-    /// Collects mapped destinations from project references, applying an optional prefix.
-    pub fn collect_project_destinations_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        self.iter_project_refs()
-            .flat_map(|reference| reference.map.iter().map(|m| apply_prefix(prefix, &m.to)))
-            .collect()
-    }
-
-    /// Collects all input patterns (local + project destinations) with an optional prefix.
-    pub fn collect_all_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {
-        let mut inputs = self.collect_path_inputs_with_prefix(prefix);
-        inputs.extend(self.collect_project_destinations_with_prefix(prefix));
-        inputs
-    }
-
-    fn effective_script_shell(&self) -> EffectiveScriptShell {
-        if let Some(script_shell) = self.script_shell {
-            let (command, flag) = script_shell.command_and_flag();
-
-            return EffectiveScriptShell {
-                command: command.to_string(),
-                flag: flag.to_string(),
-                display_name: command.to_string(),
-                supports_shell_options: script_shell.supports_shell_options(),
-                supports_pipefail: script_shell.supports_pipefail(),
-            };
-        }
-
-        if let Some(shell) = &self.shell {
-            let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
-            let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
-            let (supports_shell_options, supports_pipefail) = ScriptShell::from_command(&command)
-                .map(|script_shell| {
-                    (
-                        script_shell.supports_shell_options(),
-                        script_shell.supports_pipefail(),
-                    )
-                })
-                .unwrap_or((false, false));
-
-            return EffectiveScriptShell {
-                display_name: command.clone(),
-                command,
-                flag,
-                supports_shell_options,
-                supports_pipefail,
-            };
-        }
-
-        let default_shell = ScriptShell::default();
-        let (command, flag) = default_shell.command_and_flag();
-
-        EffectiveScriptShell {
+        return EffectiveScriptShell {
             command: command.to_string(),
             flag: flag.to_string(),
             display_name: command.to_string(),
-            supports_shell_options: default_shell.supports_shell_options(),
-            supports_pipefail: default_shell.supports_pipefail(),
-        }
-    }
-
-    fn prepare_script(&self, script: &str, shell: &EffectiveScriptShell) -> crate::Result<String> {
-        let Some(shell_options) = self.shell_options else {
-            return Ok(script.to_string());
+            supports_shell_options: script_shell.supports_shell_options(),
+            supports_pipefail: script_shell.supports_pipefail(),
         };
-
-        if !shell.supports_shell_options {
-            return Err(crate::Error::configuration(format!(
-                "Task uses shellOptions with unsupported script shell '{}'. \
-                 Use scriptShell 'bash', 'sh', or 'zsh'.",
-                shell.display_name
-            )));
-        }
-
-        if shell_options.pipefail && !shell.supports_pipefail {
-            return Err(crate::Error::configuration(format!(
-                "Task uses shellOptions.pipefail with unsupported script shell '{}'. \
-                 Disable pipefail or use scriptShell 'bash' or 'zsh'.",
-                shell.display_name
-            )));
-        }
-
-        let set_commands = shell_options.to_set_commands();
-        if set_commands.is_empty() {
-            return Ok(script.to_string());
-        }
-
-        Ok(format!("{set_commands}{script}"))
     }
+
+    if let Some(shell) = &task.shell {
+        let command = shell.command.clone().unwrap_or_else(|| "bash".to_string());
+        let flag = shell.flag.clone().unwrap_or_else(|| "-c".to_string());
+        let (supports_shell_options, supports_pipefail) = ScriptShell::from_command(&command)
+            .map(|script_shell| {
+                (
+                    script_shell.supports_shell_options(),
+                    script_shell.supports_pipefail(),
+                )
+            })
+            .unwrap_or((false, false));
+
+        return EffectiveScriptShell {
+            display_name: command.clone(),
+            command,
+            flag,
+            supports_shell_options,
+            supports_pipefail,
+        };
+    }
+
+    let default_shell = ScriptShell::default();
+    let (command, flag) = default_shell.command_and_flag();
+
+    EffectiveScriptShell {
+        command: command.to_string(),
+        flag: flag.to_string(),
+        display_name: command.to_string(),
+        supports_shell_options: default_shell.supports_shell_options(),
+        supports_pipefail: default_shell.supports_pipefail(),
+    }
+}
+
+fn prepare_script(
+    task: &Task,
+    script: &str,
+    shell: &EffectiveScriptShell,
+) -> crate::Result<String> {
+    let Some(shell_options) = task.shell_options else {
+        return Ok(script.to_string());
+    };
+
+    if !shell.supports_shell_options {
+        return Err(crate::Error::configuration(format!(
+            "Task uses shellOptions with unsupported script shell '{}'. \
+             Use scriptShell 'bash', 'sh', or 'zsh'.",
+            shell.display_name
+        )));
+    }
+
+    if shell_options.pipefail.is_enabled() && !shell.supports_pipefail {
+        return Err(crate::Error::configuration(format!(
+            "Task uses shellOptions.pipefail with unsupported script shell '{}'. \
+             Disable pipefail or use scriptShell 'bash' or 'zsh'.",
+            shell.display_name
+        )));
+    }
+
+    let set_commands = shell_options.to_set_commands();
+    if set_commands.is_empty() {
+        return Ok(script.to_string());
+    }
+
+    Ok(format!("{set_commands}{script}"))
 }
 
 impl crate::AffectedBy for Task {
@@ -560,207 +199,6 @@ impl crate::AffectedBy for Task {
     }
 }
 
-fn apply_prefix(prefix: Option<&Path>, value: &str) -> String {
-    if let Some(prefix) = prefix {
-        prefix.join(value).to_string_lossy().to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-// =============================================================================
-// Parallel Execution (Task Group)
-// =============================================================================
-
-/// A parallel task group - all children run concurrently
-///
-/// Discriminated by the required `type: "group"` field.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct TaskGroup {
-    /// Type discriminator - always "group"
-    #[serde(rename = "type")]
-    pub type_: String,
-
-    /// Dependencies on other tasks
-    #[serde(default, rename = "dependsOn")]
-    pub depends_on: Vec<TaskDependency>,
-
-    /// Limit concurrent executions (0 = unlimited)
-    #[serde(default, rename = "maxConcurrency")]
-    pub max_concurrency: Option<u32>,
-
-    /// Human-readable description
-    #[serde(default)]
-    pub description: Option<String>,
-
-    /// Named children - all run concurrently (flattened from remaining fields)
-    #[serde(flatten)]
-    pub children: HashMap<String, TaskNode>,
-}
-
-// =============================================================================
-// Sequential Execution (Task Sequence)
-// =============================================================================
-
-// TaskSequence is simply Vec<TaskNode> - no wrapper struct needed.
-// The sequence is discriminated by being a JSON array.
-
-// =============================================================================
-// Task Node (Union Type)
-// =============================================================================
-
-/// Union of all task types - explicit typing required in CUE
-///
-/// This is the recursive type that represents any task node in the tree.
-/// Discriminated by:
-/// - [`Task`]: Has `command` or `script` field
-/// - [`TaskGroup`]: Has `type: "group"` field
-/// - Sequence: Is a JSON array `[...]`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(untagged)]
-pub enum TaskNode {
-    /// A single executable task
-    Task(Box<Task>),
-    /// A parallel task group
-    Group(TaskGroup),
-    /// A sequential list of tasks (just an array)
-    Sequence(Vec<TaskNode>),
-}
-
-// =============================================================================
-// Legacy Type Aliases (for backwards compatibility)
-// =============================================================================
-
-/// Legacy alias for TaskNode
-#[deprecated(since = "0.26.0", note = "Use TaskNode instead")]
-pub type TaskDefinition = TaskNode;
-
-/// Legacy alias for TaskList (now just Vec<TaskNode>)
-#[deprecated(since = "0.26.0", note = "Use Vec<TaskNode> directly")]
-pub type TaskList = Vec<TaskNode>;
-
-/// Root tasks structure from CUE
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct Tasks {
-    /// Map of task names to their definitions
-    #[serde(flatten)]
-    pub tasks: HashMap<String, TaskNode>,
-}
-
-impl Tasks {
-    /// Create a new empty tasks collection
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Get a task node by name
-    pub fn get(&self, name: &str) -> Option<&TaskNode> {
-        self.tasks.get(name)
-    }
-
-    /// List all task names
-    pub fn list_tasks(&self) -> Vec<&str> {
-        self.tasks.keys().map(|s| s.as_str()).collect()
-    }
-
-    /// Check if a task exists
-    pub fn contains(&self, name: &str) -> bool {
-        self.tasks.contains_key(name)
-    }
-}
-
-impl TaskNode {
-    /// Check if this is a single task
-    pub fn is_task(&self) -> bool {
-        matches!(self, TaskNode::Task(_))
-    }
-
-    /// Check if this is a task group (parallel)
-    pub fn is_group(&self) -> bool {
-        matches!(self, TaskNode::Group(_))
-    }
-
-    /// Check if this is a sequence (sequential)
-    pub fn is_sequence(&self) -> bool {
-        matches!(self, TaskNode::Sequence(_))
-    }
-
-    /// Get as single task if it is one
-    pub fn as_task(&self) -> Option<&Task> {
-        match self {
-            TaskNode::Task(task) => Some(task.as_ref()),
-            _ => None,
-        }
-    }
-
-    /// Get as task group if it is one
-    pub fn as_group(&self) -> Option<&TaskGroup> {
-        match self {
-            TaskNode::Group(group) => Some(group),
-            _ => None,
-        }
-    }
-
-    /// Get as sequence if it is one
-    pub fn as_sequence(&self) -> Option<&Vec<TaskNode>> {
-        match self {
-            TaskNode::Sequence(seq) => Some(seq),
-            _ => None,
-        }
-    }
-
-    /// Get dependencies for this node
-    pub fn depends_on(&self) -> &[TaskDependency] {
-        match self {
-            TaskNode::Task(task) => &task.depends_on,
-            TaskNode::Group(group) => &group.depends_on,
-            TaskNode::Sequence(_) => &[], // Sequences don't have top-level deps
-        }
-    }
-
-    /// Get description for this node
-    pub fn description(&self) -> Option<&str> {
-        match self {
-            TaskNode::Task(task) => task.description.as_deref(),
-            TaskNode::Group(group) => group.description.as_deref(),
-            TaskNode::Sequence(_) => None, // Sequences don't have descriptions
-        }
-    }
-
-    // Legacy compatibility methods
-    #[deprecated(since = "0.26.0", note = "Use is_task() instead")]
-    pub fn is_single(&self) -> bool {
-        self.is_task()
-    }
-
-    #[deprecated(since = "0.26.0", note = "Use as_task() instead")]
-    pub fn as_single(&self) -> Option<&Task> {
-        self.as_task()
-    }
-
-    #[deprecated(since = "0.26.0", note = "Use is_sequence() instead")]
-    pub fn is_list(&self) -> bool {
-        self.is_sequence()
-    }
-
-    #[deprecated(since = "0.26.0", note = "Use as_sequence() instead")]
-    pub fn as_list(&self) -> Option<&Vec<TaskNode>> {
-        self.as_sequence()
-    }
-}
-
-impl TaskGroup {
-    /// Get the number of tasks in this group
-    pub fn len(&self) -> usize {
-        self.children.len()
-    }
-
-    /// Check if the group is empty
-    pub fn is_empty(&self) -> bool {
-        self.children.is_empty()
-    }
-}
-
 impl crate::AffectedBy for TaskGroup {
     /// A group is affected if ANY of its subtasks are affected.
     fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
@@ -772,7 +210,7 @@ impl crate::AffectedBy for TaskGroup {
     fn input_patterns(&self) -> Vec<&str> {
         self.children
             .values()
-            .flat_map(|node| node.input_patterns())
+            .flat_map(|node| crate::AffectedBy::input_patterns(node))
             .collect()
     }
 }
@@ -780,9 +218,9 @@ impl crate::AffectedBy for TaskGroup {
 impl crate::AffectedBy for TaskNode {
     fn is_affected_by(&self, changed_files: &[std::path::PathBuf], project_root: &Path) -> bool {
         match self {
-            TaskNode::Task(task) => task.is_affected_by(changed_files, project_root),
-            TaskNode::Group(group) => group.is_affected_by(changed_files, project_root),
-            TaskNode::Sequence(seq) => seq
+            Self::Task(task) => task.is_affected_by(changed_files, project_root),
+            Self::Group(group) => group.is_affected_by(changed_files, project_root),
+            Self::Sequence(seq) => seq
                 .iter()
                 .any(|node| node.is_affected_by(changed_files, project_root)),
         }
@@ -790,9 +228,12 @@ impl crate::AffectedBy for TaskNode {
 
     fn input_patterns(&self) -> Vec<&str> {
         match self {
-            TaskNode::Task(task) => task.input_patterns(),
-            TaskNode::Group(group) => group.input_patterns(),
-            TaskNode::Sequence(seq) => seq.iter().flat_map(|node| node.input_patterns()).collect(),
+            Self::Task(task) => crate::AffectedBy::input_patterns(task.as_ref()),
+            Self::Group(group) => crate::AffectedBy::input_patterns(group),
+            Self::Sequence(seq) => seq
+                .iter()
+                .flat_map(crate::AffectedBy::input_patterns)
+                .collect(),
         }
     }
 }

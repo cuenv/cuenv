@@ -1,13 +1,14 @@
 ---
 id: ADR-0006
 title: Library-First Architecture with Unified Provider System
-status: Accepted
+status: Superseded
 decision_date: 2025-12-27
 approvers:
   - Core Maintainers
 related_features: []
 supersedes: []
-superseded_by: []
+superseded_by:
+  - RFC-0006
 ---
 
 ## Context

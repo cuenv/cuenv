@@ -1,6 +1,8 @@
 use super::*;
 use crate::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
 use crate::test_utils::create_test_hook;
+use cuenv_hooks::Hooks;
+use std::collections::HashMap;
 
 #[test]
 fn test_vcs_dependency_deserializes_subdir() {

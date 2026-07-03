@@ -9,6 +9,7 @@
 //! 3. Materializing cached outputs back into the workspace on a hit.
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
+use super::TaskCommandExt;
 use crate::Result;
 use crate::environment::Environment;
 use crate::tasks::{Task, TaskCachePolicy};

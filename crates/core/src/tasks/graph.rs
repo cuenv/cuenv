@@ -6,31 +6,15 @@
 //! It wraps the generic `cuenv_task_graph` crate with cuenv-core specific
 //! types like `TaskNode`, `TaskGroup`, and `TaskList`.
 
+use super::Task;
 #[cfg(test)]
 use super::Tasks;
-use super::{Task, TaskDependency};
 use crate::Result;
-use cuenv_task_graph::{GraphNode, MutableTaskNodeData, TaskNodeData};
+use cuenv_task_graph::GraphNode;
 use petgraph::graph::NodeIndex;
 
 mod build;
 mod output_refs;
-mod resolver;
-
-// Implement the TaskNodeData trait for Task
-impl TaskNodeData for Task {
-    fn dependency_names(&self) -> impl Iterator<Item = &str> {
-        self.depends_on.iter().map(|d| d.task_name())
-    }
-}
-
-impl MutableTaskNodeData for Task {
-    fn add_dependency(&mut self, dep: String) {
-        if !self.has_dependency(&dep) {
-            self.depends_on.push(TaskDependency::from_name(dep));
-        }
-    }
-}
 
 /// A node in the task graph containing a task name and the task itself.
 pub type TaskGraphNode = GraphNode<Task>;
@@ -124,6 +108,7 @@ mod tests {
     use super::*;
     use crate::tasks::{TaskGroup, TaskNode};
     use crate::test_utils::create_task;
+    use cuenv_task_graph::TaskNodeData;
     use std::collections::HashMap;
 
     #[test]

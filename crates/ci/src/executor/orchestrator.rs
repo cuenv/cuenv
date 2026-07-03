@@ -114,7 +114,7 @@ fn load_ci_projects(path_filter: Option<&str>) -> Result<Option<DiscoveredCiProj
     // Collect projects with their configs
     let mut projects: Vec<(PathBuf, Project)> = Vec::new();
     for instance in module.projects() {
-        let config = Project::try_from(instance)?;
+        let config = instance.to_project()?;
         let project_path = module.root.join(&instance.path);
         projects.push((project_path, config));
     }

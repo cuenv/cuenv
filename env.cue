@@ -22,7 +22,7 @@ let _baseInputs = [
 let _checkInputs = list.Concat([
 	["flake.nix", "flake.lock"],
 	_baseInputs,
-	["_tests/**", "contrib/**", "features/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**", "deny.toml", "env.cue"],
+	["_tests/**", "contrib/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**", "deny.toml", "env.cue"],
 ])
 
 let _schemaDocsInputs = [
@@ -270,7 +270,7 @@ schema.#Project & {
 
 			unit: #cargo & {
 				args: ["nextest", "run", "--workspace", "--all-features"]
-				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**"]])
 			}
 
 			doc: #cargo & {
@@ -280,7 +280,7 @@ schema.#Project & {
 
 			bdd: #cargo & {
 				args: ["test", "--test", "bdd"]
-				inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "schema/**", "cue.mod/**"]])
+				inputs: list.Concat([_baseInputs, ["_tests/**", "schema/**", "cue.mod/**"]])
 				outputs: [".test"]
 			}
 		}
@@ -320,7 +320,7 @@ schema.#Project & {
 
 		coverage: #cargo & {
 			args: ["llvm-cov", "nextest", "--workspace", "--all-features", "--lcov", "--output-path", "lcov.info"]
-			inputs: list.Concat([_baseInputs, ["_tests/**", "features/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**"]])
+			inputs: list.Concat([_baseInputs, ["_tests/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**"]])
 			outputs: ["lcov.info"]
 			labels: ["coverage"]
 		}

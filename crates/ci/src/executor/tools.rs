@@ -1,10 +1,10 @@
 //! Tool activation support for CI task execution.
 
 use super::ExecutorError;
-use cuenv_core::lockfile::{LOCKFILE_NAME, LockedToolPlatform, Lockfile};
+use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::tools::{
-    Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolExtract,
-    ToolOptions, ToolRegistry, ToolSource, apply_resolved_tool_activation, resolve_tool_activation,
+    Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolOptions,
+    ToolRegistry, apply_resolved_tool_activation, resolve_tool_activation,
     validate_tool_activation,
 };
 use std::collections::{BTreeMap, HashSet};
@@ -39,161 +39,6 @@ fn create_tool_registry() -> ToolRegistry {
     registry.register(cuenv_tools_url::UrlToolProvider::new());
 
     registry
-}
-
-/// Convert a lockfile entry to a `ToolSource`.
-fn lockfile_entry_to_source(locked: &LockedToolPlatform) -> Option<ToolSource> {
-    match locked.provider.as_str() {
-        "oci" => {
-            let image = locked
-                .source
-                .get("image")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let path = locked
-                .source
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            Some(ToolSource::Oci {
-                image: image.to_string(),
-                path: path.to_string(),
-            })
-        }
-        "github" => {
-            let repo = locked
-                .source
-                .get("repo")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let tag = locked
-                .source
-                .get("tag")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let asset = locked
-                .source
-                .get("asset")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let extract = parse_github_extract_list(&locked.source);
-            Some(ToolSource::GitHub {
-                repo: repo.to_string(),
-                tag: tag.to_string(),
-                asset: asset.to_string(),
-                extract,
-            })
-        }
-        "nix" => {
-            let flake = locked
-                .source
-                .get("flake")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let package = locked
-                .source
-                .get("package")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let output = locked
-                .source
-                .get("output")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            Some(ToolSource::Nix {
-                flake: flake.to_string(),
-                package: package.to_string(),
-                output,
-            })
-        }
-        "rustup" => {
-            let toolchain = locked
-                .source
-                .get("toolchain")
-                .and_then(|v| v.as_str())
-                .unwrap_or("stable");
-            let profile = locked
-                .source
-                .get("profile")
-                .and_then(|v| v.as_str())
-                .map(String::from);
-            let components: Vec<String> = locked
-                .source
-                .get("components")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let targets: Vec<String> = locked
-                .source
-                .get("targets")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(ToolSource::Rustup {
-                toolchain: toolchain.to_string(),
-                profile,
-                components,
-                targets,
-            })
-        }
-        "url" => {
-            let url = locked
-                .source
-                .get("url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let extract = parse_github_extract_list(&locked.source);
-            Some(ToolSource::Url {
-                url: url.to_string(),
-                extract,
-            })
-        }
-        _ => None,
-    }
-}
-
-fn parse_github_extract_list(source: &serde_json::Value) -> Vec<ToolExtract> {
-    let mut extract = source
-        .get("extract")
-        .cloned()
-        .and_then(|value| serde_json::from_value::<Vec<ToolExtract>>(value).ok())
-        .unwrap_or_default();
-
-    if extract.is_empty()
-        && let Some(path) = source.get("path").and_then(|v| v.as_str())
-    {
-        if path_looks_like_library(path) {
-            extract.push(ToolExtract::Lib {
-                path: path.to_string(),
-                env: None,
-            });
-        } else {
-            extract.push(ToolExtract::Bin {
-                path: path.to_string(),
-                as_name: None,
-            });
-        }
-    }
-
-    extract
-}
-
-fn path_looks_like_library(path: &str) -> bool {
-    let ext_is = |target: &str| {
-        std::path::Path::new(path)
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case(target))
-    };
-    ext_is("dylib") || ext_is("so") || path.to_ascii_lowercase().contains(".so.") || ext_is("dll")
 }
 
 /// Resolve activation steps from lockfile for CI execution.
@@ -295,7 +140,7 @@ pub(super) async fn ensure_tools_downloaded(
             continue;
         };
 
-        let Some(source) = lockfile_entry_to_source(locked) else {
+        let Some(source) = locked.to_tool_source() else {
             tracing::debug!(
                 "Unknown provider '{}' for tool '{}' - skipping",
                 locked.provider,

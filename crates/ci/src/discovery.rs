@@ -44,7 +44,7 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 ///
 /// let module = evaluate_module_from_cwd()?;
 /// for instance in module.projects() {
-///     let project = Project::try_from(instance)?;
+///     let project = instance.to_project()?;
 ///     println!("Found project: {}", project.name);
 /// }
 /// ```
