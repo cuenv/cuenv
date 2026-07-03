@@ -6,11 +6,11 @@
 
 use super::TaskCommandExt;
 use super::{Task, TaskResult};
-use crate::OutputCapture;
-use crate::config::BackendConfig;
-use crate::environment::Environment;
-use crate::{Error, Result};
 use async_trait::async_trait;
+use cuenv_core::OutputCapture;
+use cuenv_core::config::BackendConfig;
+use cuenv_core::environment::Environment;
+use cuenv_core::{Error, Result};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -51,6 +51,7 @@ impl Default for HostBackend {
 }
 
 impl HostBackend {
+    /// Create a new host-process backend
     pub fn new() -> Self {
         Self
     }

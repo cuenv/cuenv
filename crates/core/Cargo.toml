@@ -21,35 +21,23 @@ serde_json = { workspace = true }
 serde_path_to_error = "0.1"
 toml = { workspace = true }
 miette = { workspace = true }
-petgraph = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-async-recursion = "1.1"
 async-trait = { workspace = true }
 futures = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-hooks = { workspace = true }
 cuenv-manifest = { workspace = true }
 cuenv-task-graph = { workspace = true }
-cuenv-cas = { workspace = true }
-cuenv-vcs = { workspace = true }
 
 # Dependencies for task caching and graph
 dirs = { workspace = true }
 sha2 = { workspace = true }
-chrono = { workspace = true }
 # For input resolution and hashing
 globset = { workspace = true }
-walkdir = { workspace = true }
 ignore = { workspace = true }
-hex = { workspace = true }
 cuenv-workspaces = { workspace = true, features = ["detection", "discovery-rust", "discovery-javascript", "parsers-rust", "parsers-javascript"] }
-cuenv-events = { workspace = true }
-regex = { workspace = true }
 rustls = { workspace = true }
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -14,9 +14,10 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
-use cuenv_core::tasks::cache::TaskCacheConfig;
-use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskNode, Tasks};
+use cuenv_core::tasks::{TaskNode, Tasks};
+use cuenv_task_exec::cache::TaskCacheConfig;
+use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
+use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -366,7 +367,7 @@ async fn execute_task_with_strategy(
     task_node: &TaskNode,
     task_graph: &TaskGraph,
     all_tasks: &Tasks,
-) -> Result<Vec<cuenv_core::tasks::TaskResult>> {
+) -> Result<Vec<cuenv_task_exec::TaskResult>> {
     match task_node {
         TaskNode::Group(_) | TaskNode::Sequence(_) => {
             // For groups (parallel) and lists (sequential), use the original execution
@@ -385,7 +386,7 @@ async fn execute_task_with_strategy(
 }
 
 fn format_task_results(
-    results: Vec<cuenv_core::tasks::TaskResult>,
+    results: Vec<cuenv_task_exec::TaskResult>,
     capture_output: cuenv_core::OutputCapture,
     task_name: &str,
 ) -> String {

@@ -2,7 +2,7 @@
 //!
 //! Exports the task dependency graph in JSON format for analysis and assertions.
 
-use cuenv_core::tasks::{TaskGraph, TaskGraphNode};
+use cuenv_task_exec::{TaskGraph, TaskGraphNode};
 use serde::Serialize;
 
 /// Represents an exported task dependency graph.

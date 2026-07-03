@@ -16,8 +16,8 @@ use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 use cuenv_core::runtime::resolve_runtime_environment;
-use cuenv_core::tasks::execute_command_with_redaction;
 use cuenv_core::tools::apply_resolved_tool_activation;
+use cuenv_task_exec::execute_command_with_redaction;
 use std::path::Path;
 
 use super::export::extract_static_env_vars;

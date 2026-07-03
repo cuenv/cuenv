@@ -1,7 +1,7 @@
 use super::*;
-use crate::environment::Environment;
-use crate::tasks::{Input, Task, TaskCacheMode, TaskCachePolicy};
+use crate::{Input, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{LocalActionCache, LocalCas};
+use cuenv_core::environment::Environment;
 use cuenv_vcs::{HashedInput, VcsHasher, WalkHasher};
 use std::fs;
 use tempfile::TempDir;

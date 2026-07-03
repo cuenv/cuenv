@@ -1,6 +1,6 @@
 use super::TaskGraph;
-use crate::Result;
-use crate::tasks::Tasks;
+use crate::Tasks;
+use cuenv_core::Result;
 use cuenv_task_graph::{MutableTaskNodeData, TaskNodeData};
 
 impl TaskGraph {
@@ -33,7 +33,7 @@ impl TaskGraph {
             if self.inner.get_node_index(to).is_none() {
                 self.inner
                     .build_for_task_with_resolver(to, all_tasks)
-                    .map_err(|e| crate::Error::configuration(e.to_string()))?;
+                    .map_err(|e| cuenv_core::Error::configuration(e.to_string()))?;
             }
 
             let from_idx = self.inner.get_node_index(from);

@@ -115,7 +115,7 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
     // Best-effort: if injection fails, fall back to basic index
     let task_index = prepare_task_index(&mut manifest, &target_path).or_else(|_| {
         // Fall back to basic index without workspace injection
-        cuenv_core::tasks::TaskIndex::build(&manifest.tasks)
+        cuenv_task_exec::TaskIndex::build(&manifest.tasks)
     });
 
     let Ok(task_index) = task_index else {

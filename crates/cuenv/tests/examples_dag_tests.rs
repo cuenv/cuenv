@@ -5,7 +5,8 @@
 
 use cuengine::evaluate_cue_package_typed;
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::{TaskGraph, Tasks};
+use cuenv_core::tasks::Tasks;
+use cuenv_task_exec::TaskGraph;
 use std::error::Error;
 use std::fs;
 use std::io;

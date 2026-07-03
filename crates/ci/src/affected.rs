@@ -1,6 +1,6 @@
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::TaskIndex;
 use cuenv_core::{AffectedBy, matches_pattern};
+use cuenv_task_exec::TaskIndex;
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};

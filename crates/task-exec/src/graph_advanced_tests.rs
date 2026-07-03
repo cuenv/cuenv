@@ -8,8 +8,8 @@
 //! - Task discovery and matcher integration
 
 use super::*;
-use crate::tasks::{TaskDependency, TaskNode};
 use crate::test_utils::{create_task, create_task_ref, create_task_with_project_ref};
+use crate::{TaskDependency, TaskNode};
 
 #[path = "graph_advanced_tests/complex_hooks.rs"]
 mod complex_hooks;

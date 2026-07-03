@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-task-exec = { workspace = true }
 cuenv-secrets = { workspace = true }
 cuenv-task-graph = { workspace = true }
 cuenv-workspaces = { workspace = true, features = ["discovery-rust"] }

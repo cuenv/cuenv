@@ -13,11 +13,12 @@ use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_st
 use cuenv_core::environment::Environment;
 use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::runtime::resolve_runtime_environment;
-use cuenv_core::tasks::cache::TaskCacheConfig;
-use cuenv_core::tasks::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
-use cuenv_core::tasks::{ExecutorConfig, TaskGraph, TaskIndex, TaskNode, Tasks};
+use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_core::tools::apply_resolved_tool_activation;
 use cuenv_core::{DryRun, OutputCapture, Result};
+use cuenv_task_exec::cache::TaskCacheConfig;
+use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
+use cuenv_task_exec::{ExecutorConfig, TaskGraph, TaskIndex};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

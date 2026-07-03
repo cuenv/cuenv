@@ -127,5 +127,20 @@ Progress is tracked by phase on the implementation branch; each phase updates th
   (table-of-contents traversal validation before `cpio -idm`, canonical
   containment check before binary copy), carried forward from the
   phases 0-2d review.
-- Remaining: Phase 3a (task-exec extraction, unblocked by 2e), 3c (tool
-  runtime crate), 3d (transitional re-export removal), and Phases 4-8.
+- Phase 3a (task-exec extraction): landed — the execution engine
+  (executor, graph wrapper + build, graph walk, backend, process +
+  process registry, cache, index, captures, command resolution,
+  runtime output-ref resolver, ~6k LOC + tests) moved to the new
+  `cuenv-task-exec` crate, which depends on core for `Error`/`TaskError`,
+  `Environment`, and `OutputCapture`. Core keeps the slim `tasks`
+  module: DTO re-exports, `TaskError`, the pure output-ref parsing
+  shared with module evaluation, and the `AffectedBy` impls (orphan
+  rules). Engine consumers (CLI, cuenv-ci, dagger, task-discovery)
+  import `cuenv_task_exec` directly — core cannot re-export the engine
+  without a dependency cycle. Core dropped ten engine-only
+  dependencies (petgraph, chrono, walkdir, regex, async-recursion,
+  libc, cuenv-cas, cuenv-vcs, cuenv-events, hex). The new crate does
+  not yet opt into the workspace lints (~80 pre-existing pedantic
+  findings in the moved code); that is Phase 6 ratchet work.
+- Remaining: Phase 3c (tool runtime crate), 3d (transitional re-export
+  removal), and Phases 4-8.

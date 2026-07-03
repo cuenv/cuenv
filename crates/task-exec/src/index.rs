@@ -1,5 +1,5 @@
 use super::{TaskGroup, TaskNode, Tasks};
-use crate::{Error, Result};
+use cuenv_core::{Error, Result};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 
@@ -67,13 +67,16 @@ fn validate_segment(segment: &str) -> Result<()> {
     Ok(())
 }
 
+/// A task resolved through the index, with display metadata
 #[derive(Debug, Clone, Serialize)]
 pub struct IndexedTask {
     /// Display name (with _ prefix stripped if present)
     pub name: String,
     /// Original name from CUE (may have _ prefix)
     pub original_name: String,
+    /// The task definition (task, group, or sequence)
     pub node: TaskNode,
+    /// Whether this entry is a task group
     pub is_group: bool,
     /// Source file where this task was defined (relative to cue.mod root)
     pub source_file: Option<String>,

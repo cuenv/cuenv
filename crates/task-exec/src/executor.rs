@@ -18,11 +18,11 @@ use super::workspace::{
 };
 use super::workspace::{find_workspace_root, normalize_join};
 use super::{Task, TaskDirectory, TaskDirectoryBase, TaskGraph, TaskGroup, TaskNode, Tasks};
-use crate::OutputCapture;
-use crate::config::BackendConfig;
-use crate::environment::Environment;
-use crate::{Error, Result};
 use async_recursion::async_recursion;
+use cuenv_core::OutputCapture;
+use cuenv_core::config::BackendConfig;
+use cuenv_core::environment::Environment;
+use cuenv_core::{Error, Result};
 #[cfg(test)]
 use cuenv_workspaces::PackageManager;
 use std::path::{Path, PathBuf};
@@ -721,6 +721,11 @@ impl TaskExecutor {
         Ok(all_results)
     }
 
+    /// Execute every task in the graph in dependency order.
+    ///
+    /// # Errors
+    /// Returns an error when graph traversal fails or a task errors and
+    /// `continue_on_error` is disabled.
     #[instrument(name = "execute_graph", skip(self, graph), fields(task_count = graph.task_count()))]
     pub async fn execute_graph(&self, graph: &TaskGraph) -> Result<Vec<TaskResult>> {
         use super::graph_walk::{WalkPolicy, walk_parallel_graph};

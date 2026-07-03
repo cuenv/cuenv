@@ -13,10 +13,11 @@ use tokio_util::sync::CancellationToken;
 use cuenv_core::OutputCapture;
 use cuenv_core::environment::{Env, EnvValue, Environment};
 use cuenv_core::manifest::{ContainerImage, Project, Service};
-use cuenv_core::tasks::{ExecutorConfig, TaskExecutor, TaskGraph, TaskNode, Tasks};
+use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_events::emit_stdout;
 use cuenv_services::controller::{ControllerConfig, ServiceController, build_service_graph};
 use cuenv_services::session::SessionManager;
+use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
 
 use super::env_file::find_cue_module_root;
 use super::{CommandExecutor, relative_path_from_root};

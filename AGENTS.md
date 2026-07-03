@@ -97,11 +97,12 @@ If a change does not match one of the required full-flake triggers, keep the che
 | --------------------------------- | ------------------------------------------------------------ |
 | **cuengine**                      | Go-Rust FFI bridge for CUE evaluation                        |
 | **cuenv-manifest**                | Leaf DTO crate: config, env, secret, task, CI, lockfile types |
-| **cuenv-core**                    | Task execution engine, environment resolution, shared logic  |
+| **cuenv-core**                    | Environment resolution, errors, contributors, shared logic   |
 | **cuenv-hooks**                   | Hook execution, state management, and approval system        |
 | **cuenv-cache**                   | Content-addressed task caching infrastructure                |
 | **cuenv-task-graph**              | Task graph DAG algorithms and dependency resolution          |
 | **cuenv-task-discovery**          | Workspace scanning and TaskRef resolution                    |
+| **cuenv-task-exec**               | Task execution engine: scheduling, processes, caching        |
 | **cuenv**                         | CLI binary with TUI (clap + ratatui)                         |
 | **cuenv-events**                  | Event system for UI frontends (CLI/JSON renderers)           |
 | **cuenv-workspaces**              | Package manager workspace detection (npm, Cargo, pnpm, etc.) |
@@ -120,7 +121,7 @@ If a change does not match one of the required full-flake triggers, keep the che
 2. CUE evaluated via Go FFI bridge (cuengine).
 3. Deserialized to Rust types (`Project`, `Env`, `Tasks`).
 4. Task graph built with cuenv-task-graph (petgraph-based dependency resolution).
-5. Tasks executed with hermetic isolation and caching.
+5. Tasks executed with hermetic isolation and caching (cuenv-task-exec).
 6. Events broadcast to UI renderers.
 
 ### Contributor Loop
@@ -234,7 +235,7 @@ nix flake check -L --accept-flake-config
 - `crates/cuengine/bridge.go` - Go FFI implementation
 - `crates/cuengine/src/lib.rs` - Rust FFI wrapper
 - `crates/core/src/manifest/` - Configuration types
-- `crates/core/src/tasks/` - Task graph and execution
+- `crates/task-exec/src/` - Task graph and execution engine
 - `examples/env-basic/env.cue` - Test configuration
 - `schema/` - CUE schema definitions
 - `docs/design/specs/schema-coverage-matrix.md` - schema implementation status matrix

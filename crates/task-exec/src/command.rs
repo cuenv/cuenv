@@ -1,5 +1,5 @@
-use crate::environment::Environment;
-use crate::{Error, Result};
+use cuenv_core::environment::Environment;
+use cuenv_core::{Error, Result};
 use std::process::Stdio;
 use tokio::process::Command;
 

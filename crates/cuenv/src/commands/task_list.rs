@@ -13,7 +13,8 @@ pub use formatters::{
 #[cfg(test)]
 pub(super) use formatters::{format_category_name, get_category_emoji, infer_category_from_name};
 
-use cuenv_core::tasks::{IndexedTask, TaskNode as CoreTaskNode};
+use cuenv_core::tasks::TaskNode as CoreTaskNode;
+use cuenv_task_exec::IndexedTask;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 

@@ -14,7 +14,7 @@ pub(super) fn maybe_render_task_help(
         cuenv_core::Error::configuration("task name required when no labels provided")
     })?;
     let prefix = format!("{requested_task}.");
-    let subtasks: Vec<&cuenv_core::tasks::IndexedTask> = context
+    let subtasks: Vec<&cuenv_task_exec::IndexedTask> = context
         .task_index
         .list()
         .iter()

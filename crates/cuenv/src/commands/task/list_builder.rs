@@ -11,7 +11,7 @@ use cuenv_core::contributors::{
     ContributorContext, ContributorEngine, builtin_workspace_contributors,
 };
 use cuenv_core::manifest::Project;
-use cuenv_core::tasks::TaskIndex;
+use cuenv_task_exec::TaskIndex;
 
 /// Apply workspace contributors to inject setup tasks for detected package managers.
 fn apply_workspace_contributors(manifest: &mut Project, project_root: &Path) {
