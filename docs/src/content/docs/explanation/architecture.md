@@ -93,14 +93,14 @@ and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
 live in `crates/core/src/module/deserialize.rs`. Deserialization error fixtures
 should name intentionally unread fields with an underscore rather than carrying
 local `dead_code` allowances.
-Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs`
+Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs` (DTO re-exports) and `crates/task-exec`
 keeps the executable task and task-tree model, while params, retry config,
 legacy task-level Dagger config, cache policy, capture metadata, shell
 configuration, input references, and dependency references live in sibling
-modules under `crates/core/src/tasks/`. The task executor keeps
-graph orchestration in `crates/core/src/tasks/executor.rs`; host process
+modules under `crates/task-exec/src/`. The task executor keeps
+graph orchestration in `crates/task-exec/src/executor.rs`; host process
 spawning, process-registry lifecycle, output streaming, and result assembly
-live in `crates/core/src/tasks/process.rs`. Unix process-group setup is kept in
+live in `crates/task-exec/src/process.rs`. Unix process-group setup is kept in
 that host-process boundary so `pre_exec` and signal-tree management do not leak
 into task orchestration. Command redaction helpers,
 failure-summary formatting, and workspace-root detection live in `command.rs`,
@@ -108,13 +108,13 @@ failure-summary formatting, and workspace-root detection live in `command.rs`,
 are copyable collections of borrowed execution state, and workspace path
 normalization borrows its base directory so task execution does not move
 directory state just to validate a relative `dir`.
-Core task graph wrapping stays in `crates/core/src/tasks/graph.rs`; task graph
-construction lives in `crates/core/src/tasks/graph/build.rs`, task output-ref
+Core task graph wrapping stays in `crates/task-exec/src/graph.rs`; task graph
+construction lives in `crates/task-exec/src/graph/build.rs`, task output-ref
 dependency edge materialization lives in
-`crates/core/src/tasks/graph/output_refs.rs`, and task path resolution for
-dotted/bracketed CUE task nodes lives in `crates/core/src/tasks/graph/resolver.rs`.
+`crates/task-exec/src/graph/output_refs.rs`, and task path resolution for
+dotted/bracketed CUE task nodes lives in `crates/manifest/src/tasks/resolver.rs`.
 Advanced graph regression coverage is grouped under
-`crates/core/src/tasks/graph_advanced_tests/` by cross-project references,
+`crates/task-exec/src/graph_advanced_tests/` by cross-project references,
 synthetic hooks, workspace setup, cross-project hooks, error/label/build-for-task
 coverage, and scale/edge cases. CLI task-graph stress tests in
 `crates/cuenv/tests/stress_tests.rs` keep ignored large-graph scenarios on
