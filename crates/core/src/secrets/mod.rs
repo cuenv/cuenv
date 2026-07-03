@@ -5,12 +5,16 @@
 //! This module provides:
 //! - `Secret`: CUE-compatible secret definition with resolver-based resolution
 //! - `SecretRegistry`: Dynamic resolver registration and lookup
-//! - `create_default_registry()`: Creates a registry with built-in resolvers
 //! - Re-exports from `cuenv_secrets`: Trait-based secret resolution system
+//!
+//! Provider-backed resolvers (1Password, AWS, GCP, Infisical) are no longer
+//! wired here: the CLI composition root installs them into the process-wide
+//! registry (`cuenv_secrets::install_registry_factory`), and resolution
+//! falls back to the dependency-free built-ins (`env` + `exec`) when no
+//! factory is installed (RFC-0006 phase 3b).
 
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub mod error;
 
@@ -19,82 +23,11 @@ pub use error::SecretResolutionError;
 // Re-export core secret resolution types from cuenv-secrets
 pub use cuenv_secrets::{
     BatchResolver, ResolvedSecrets, SaltConfig, SecretError, SecretRegistry, SecretResolver,
-    SecretSpec, compute_secret_fingerprint,
+    SecretSpec, compute_secret_fingerprint, global_registry, install_registry_factory,
 };
 
 // Re-export resolver implementations
 pub use cuenv_secrets::resolvers::{EnvSecretResolver, ExecSecretResolver};
-
-// Conditionally re-export 1Password resolver when feature is enabled
-#[cfg(feature = "1password")]
-pub use cuenv_1password::secrets::{OnePasswordConfig, OnePasswordResolver};
-
-// Conditionally re-export Infisical resolver when feature is enabled
-#[cfg(feature = "infisical")]
-pub use cuenv_infisical::secrets::{InfisicalConfig, InfisicalResolver};
-
-// Conditionally re-export AWS resolver when feature is enabled
-#[cfg(feature = "aws")]
-pub use cuenv_aws::secrets::{AwsSecretConfig, AwsSecretsManagerResolver};
-
-// Conditionally re-export GCP resolver when feature is enabled
-#[cfg(feature = "gcp")]
-pub use cuenv_gcp::secrets::{GcpSecretConfig, GcpSecretManagerResolver};
-
-/// Create a default secret registry with all built-in resolvers
-///
-/// This registers:
-/// - `env`: Environment variable resolver
-/// - `exec`: Command execution resolver
-/// - `onepassword`: 1Password resolver (when `1password` feature is enabled)
-/// - `infisical`: Infisical resolver (when `infisical` feature is enabled)
-/// - `aws`: AWS Secrets Manager resolver (when `aws` feature is enabled)
-/// - `gcp`: Google Cloud Secret Manager resolver (when `gcp` feature is enabled)
-///
-/// # Errors
-///
-/// Returns an error if a feature-gated resolver initialization fails.
-pub fn create_default_registry() -> Result<SecretRegistry> {
-    let mut registry = SecretRegistry::new();
-
-    // Register built-in resolvers
-    registry.register(Arc::new(EnvSecretResolver::new()));
-    registry.register(Arc::new(ExecSecretResolver::new()));
-
-    // Register 1Password resolver if feature is enabled
-    #[cfg(feature = "1password")]
-    {
-        let op_resolver = OnePasswordResolver::new().map_err(|e| {
-            Error::configuration(format!("Failed to initialize 1Password resolver: {e}"))
-        })?;
-        registry.register(Arc::new(op_resolver));
-    }
-
-    // Register Infisical resolver if feature is enabled
-    #[cfg(feature = "infisical")]
-    {
-        let infisical_resolver = InfisicalResolver::new().map_err(|e| {
-            Error::configuration(format!("Failed to initialize Infisical resolver: {e}"))
-        })?;
-        registry.register(Arc::new(infisical_resolver));
-    }
-
-    // Register AWS resolver if feature is enabled
-    #[cfg(feature = "aws")]
-    {
-        registry.register(Arc::new(AwsSecretsManagerResolver::new()));
-    }
-
-    // Register GCP resolver if feature is enabled
-    #[cfg(feature = "gcp")]
-    {
-        let gcp_resolver = GcpSecretManagerResolver::new()
-            .map_err(|e| Error::configuration(format!("Failed to initialize GCP resolver: {e}")))?;
-        registry.register(Arc::new(gcp_resolver));
-    }
-
-    Ok(registry)
-}
 
 /// Resolver for executing commands to retrieve secret values
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,7 +53,9 @@ pub trait SecretExt {
 
     /// Resolve the secret value using the trait-based resolver system
     ///
-    /// Uses the default registry with all built-in resolvers.
+    /// Uses the process-wide registry ([`global_registry`]): the resolvers
+    /// installed by the application composition root, or the built-in
+    /// `env`/`exec` fallback.
     ///
     /// # Errors
     /// Returns error if resolution fails
@@ -151,8 +86,7 @@ impl SecretExt for Secret {
 
     async fn resolve(&self) -> Result<String> {
         tracing::debug!(resolver = %self.resolver, op_ref = ?self.op_ref, "Secret::resolve() called");
-        let registry = create_default_registry()?;
-        self.resolve_with_registry(&registry).await
+        self.resolve_with_registry(global_registry()).await
     }
 
     async fn resolve_with_registry(&self, registry: &SecretRegistry) -> Result<String> {
@@ -316,25 +250,6 @@ mod tests {
         assert_eq!(secret.provider(), "vault");
     }
 
-    #[test]
-    fn test_default_registry_has_builtin_resolvers() -> Result<()> {
-        let registry = create_default_registry()?;
-
-        assert!(registry.has("env"));
-        assert!(registry.has("exec"));
-
-        #[cfg(feature = "1password")]
-        assert!(registry.has("onepassword"));
-
-        #[cfg(feature = "infisical")]
-        assert!(registry.has("infisical"));
-
-        #[cfg(feature = "gcp")]
-        assert!(registry.has("gcp"));
-
-        Ok(())
-    }
-
     // ==========================================================================
     // Secret::to_spec tests
     // ==========================================================================
@@ -390,13 +305,6 @@ mod tests {
         let source = &spec.source;
         assert!(source.contains("vault"));
         assert!(source.contains("path"));
-    }
-
-    #[cfg(feature = "aws")]
-    #[test]
-    fn test_default_registry_includes_aws() {
-        let registry = create_default_registry().unwrap();
-        assert!(registry.has("aws"));
     }
 
     #[test]

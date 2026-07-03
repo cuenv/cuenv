@@ -62,6 +62,10 @@ fn main() {
         }
     }
 
+    // Install the secret-registry factory (providers are initialized lazily
+    // on first resolution, so this is cheap).
+    cuenv::secret_registry::install();
+
     // Handle shell completion requests first (before any other processing)
     if cli::try_complete() {
         std::process::exit(EXIT_OK);

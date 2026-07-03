@@ -20,6 +20,8 @@ pub mod events;
 pub mod performance;
 /// Provider detection and rules-file evaluation helpers.
 pub mod providers;
+
+pub mod secret_registry;
 /// Tracing and logging configuration.
 pub mod tracing;
 /// Terminal UI components.
