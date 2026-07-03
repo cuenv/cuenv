@@ -93,11 +93,12 @@ and `crates/core/src/module/task_sources.rs`; instance deserialize diagnostics
 live in `crates/core/src/module/deserialize.rs`. Deserialization error fixtures
 should name intentionally unread fields with an underscore rather than carrying
 local `dead_code` allowances.
-Task schema support types follow the same pattern: `crates/core/src/tasks/mod.rs` (DTO re-exports) and `crates/task-exec`
+Task schema support types follow the same pattern: `crates/manifest/src/tasks/`
 keeps the executable task and task-tree model, while params, retry config,
 legacy task-level Dagger config, cache policy, capture metadata, shell
 configuration, input references, and dependency references live in sibling
-modules under `crates/task-exec/src/`. The task executor keeps
+modules there; `crates/core/src/tasks/mod.rs` re-exports the DTOs. The task
+executor (in `crates/task-exec`) keeps
 graph orchestration in `crates/task-exec/src/executor.rs`; host process
 spawning, process-registry lifecycle, output streaming, and result assembly
 live in `crates/task-exec/src/process.rs`. Unix process-group setup is kept in

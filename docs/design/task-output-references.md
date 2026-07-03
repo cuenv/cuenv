@@ -147,7 +147,7 @@ pub struct OutputRefResolver<'a> {
 | `crates/task-exec/src/output_refs/resolver.rs` | Runtime `OutputRefResolver` substituting completed task outputs |
 | `crates/core/src/tasks/mod.rs` and `crates/task-exec/src/lib.rs` | Module + re-exports |
 | `crates/core/src/module.rs` | `Instance.output_ref_deps`, `process_output_refs()` in `from_raw()` |
-| `crates/core/src/tasks/graph/output_refs.rs` | `add_output_ref_deps()` with petgraph edges |
+| `crates/task-exec/src/graph/output_refs.rs` | `add_output_ref_deps()` with petgraph edges |
 | `crates/task-exec/src/executor.rs` | `results_map` in `execute_graph`, `seq_results` in `execute_sequential` |
 | `crates/task-graph/src/graph.rs` | `get_task_mut()` |
 | `crates/cuenv/src/commands/task/workspace.rs` | `GlobalTasksResult`, `rewrite_output_ref_placeholders()` |

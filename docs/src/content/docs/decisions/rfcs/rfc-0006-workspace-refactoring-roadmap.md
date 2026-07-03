@@ -137,7 +137,7 @@ Progress is tracked by phase on the implementation branch; each phase updates th
   shared with module evaluation, and the `AffectedBy` impls (orphan
   rules). Engine consumers (CLI, cuenv-ci, dagger, task-discovery)
   import `cuenv_task_exec` directly — core cannot re-export the engine
-  without a dependency cycle. Core dropped eight engine-only
+  without a dependency cycle. Core dropped ten engine-only
   dependencies (petgraph, chrono, walkdir, regex, async-recursion,
   libc, cuenv-cas, cuenv-vcs, cuenv-events, hex). The new crate does
   not yet opt into the workspace lints (~80 pre-existing pedantic

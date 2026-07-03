@@ -41,6 +41,9 @@ chrono = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+sysinfo = "0.37"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio-test = { workspace = true }
