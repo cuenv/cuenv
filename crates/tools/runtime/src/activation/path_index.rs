@@ -111,6 +111,9 @@ impl ToolPathIndex {
                         platform_data,
                     )?;
                 }
+                "oci" => {
+                    collect_oci_tool_dirs(options, &mut index, name, platform_data);
+                }
                 provider_name => {
                     collect_default_provider_dirs(
                         options,
@@ -238,6 +241,44 @@ fn collect_extract_dirs(
     }
 
     Ok(())
+}
+
+/// OCI binaries are cached at `<cache>/oci/<sanitized_digest>/<binary>`, not
+/// the `<cache>/<provider>/<name>/<version>` layout the default arm assumes.
+/// The lockfile's `digest` field is a synthetic metadata hash, not the OCI
+/// manifest digest, so the exact directory cannot be recomputed here without
+/// a network round-trip. Mirror `OciToolProvider::is_cached`: probe each
+/// digest directory for the tool's binary.
+fn collect_oci_tool_dirs(
+    options: &ToolActivationResolveOptions<'_>,
+    index: &mut ToolPathIndex,
+    name: &str,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
+) {
+    let Some(path) = platform_data.source.get("path").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let binary_name = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("tool");
+
+    let root = options.cache_dir.join("oci");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut digest_dirs: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|dir| dir.join(binary_name).is_file())
+        .collect();
+    digest_dirs.sort();
+
+    let mut all_bin_seen: HashSet<PathBuf> = index.all_bin_dirs.iter().cloned().collect();
+    for dir in digest_dirs {
+        add_existing_dir(&mut index.all_bin_dirs, &mut all_bin_seen, dir.clone());
+        add_tool_existing_dir(&mut index.tool_bin_dirs, name, dir);
+    }
 }
 
 fn collect_default_provider_dirs(

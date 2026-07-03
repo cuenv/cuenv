@@ -389,6 +389,50 @@ mod tests {
     }
 
     #[test]
+    fn test_collect_discovers_oci_digest_dirs() {
+        let platform_key = current_platform_key();
+        let mut lockfile = Lockfile::new();
+        lockfile.tools.insert(
+            "dagger".to_string(),
+            LockedTool {
+                version: "0.18.0".to_string(),
+                platforms: BTreeMap::from([(
+                    platform_key,
+                    LockedToolPlatform {
+                        provider: "oci".to_string(),
+                        digest: "sha256:abc".to_string(),
+                        source: serde_json::json!({
+                            "type": "oci",
+                            "image": "registry.dagger.io/dagger/cli:0.18.0",
+                            "path": "/usr/local/bin/dagger",
+                        }),
+                        size: None,
+                        dependencies: vec![],
+                    },
+                )]),
+            },
+        );
+
+        let temp = tempfile::tempdir().unwrap();
+        let lockfile_path = temp.path().join("cuenv.lock");
+        let cache_dir = temp.path().join("cache");
+        // OCI provider layout: <cache>/oci/<sanitized_digest>/<binary>
+        let digest_dir = cache_dir.join("oci").join("sha256_0123abcd");
+        fs::create_dir_all(&digest_dir).unwrap();
+        fs::write(digest_dir.join("dagger"), b"#!/bin/sh\n").unwrap();
+        // A digest directory without the binary must not be picked up.
+        let empty_digest_dir = cache_dir.join("oci").join("sha256_ffff");
+        fs::create_dir_all(&empty_digest_dir).unwrap();
+
+        let options =
+            ToolActivationResolveOptions::new(&lockfile, &lockfile_path).with_cache_dir(cache_dir);
+        let index = ToolPathIndex::collect(&options).unwrap();
+
+        assert_eq!(index.all_bin_dirs, vec![digest_dir.clone()]);
+        assert_eq!(index.tool_bin_dirs.get("dagger"), Some(&vec![digest_dir]));
+    }
+
+    #[test]
     fn test_collect_with_failing_nix_profile_lookup_skips_nix_tools() {
         let platform_key = current_platform_key();
         let mut lockfile = Lockfile::new();
