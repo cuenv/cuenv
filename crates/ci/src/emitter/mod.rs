@@ -25,33 +25,8 @@ pub use registry::{EmitterInfo, EmitterRegistry, EmitterRegistryBuilder};
 
 use crate::ir::IntermediateRepresentation;
 use cuenv_core::ci::PipelineMode;
-use thiserror::Error;
 
-/// Error types for emitter operations
-#[derive(Debug, Error)]
-pub enum EmitterError {
-    /// YAML/JSON serialization failed
-    #[error("Serialization failed: {0}")]
-    Serialization(String),
-
-    /// Invalid IR structure for this emitter
-    #[error("Invalid IR: {0}")]
-    InvalidIR(String),
-
-    /// Unsupported feature in IR for this emitter
-    #[error("Unsupported feature '{feature}' for {emitter} emitter")]
-    UnsupportedFeature {
-        feature: String,
-        emitter: &'static str,
-    },
-
-    /// IO error during emission
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-}
-
-/// Result type for emitter operations
-pub type EmitterResult<T> = std::result::Result<T, EmitterError>;
+pub use crate::error::{EmitterError, EmitterResult};
 
 /// Trait for CI configuration emitters
 ///

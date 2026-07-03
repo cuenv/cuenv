@@ -9,39 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use thiserror::Error;
 
 mod format;
 
 pub use format::format_diff;
 
-/// Errors for diff operations
-#[derive(Debug, Error)]
-pub enum DiffError {
-    /// Report file not found
-    #[error("Report not found: {0}")]
-    ReportNotFound(PathBuf),
-
-    /// Failed to read report
-    #[error("Failed to read report '{path}': {source}")]
-    ReadError {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Failed to parse report
-    #[error("Failed to parse report '{path}': {source}")]
-    ParseError {
-        path: PathBuf,
-        #[source]
-        source: serde_json::Error,
-    },
-
-    /// Invalid run identifier
-    #[error("Invalid run identifier: {0}")]
-    InvalidRunId(String),
-}
+pub use crate::error::DiffError;
 
 /// Result of comparing two CI runs
 #[derive(Debug, Clone, Serialize, Deserialize)]

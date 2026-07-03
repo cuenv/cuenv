@@ -6,6 +6,7 @@ pub mod context;
 pub mod diff;
 pub mod discovery;
 pub mod emitter;
+pub mod error;
 pub mod executor;
 pub mod flake;
 pub mod gc;

@@ -7,33 +7,10 @@ use crate::ir::Task as IRTask;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
-use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
-/// Error types for task execution
-#[derive(Debug, Error)]
-pub enum RunnerError {
-    /// Task command is empty
-    #[error("Task '{task}' has empty command")]
-    EmptyCommand { task: String },
-
-    /// Process spawn failed
-    #[error("Failed to spawn task '{task}': {source}")]
-    SpawnFailed {
-        task: String,
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// Process execution failed
-    #[error("Task '{task}' execution failed: {source}")]
-    ExecutionFailed {
-        task: String,
-        #[source]
-        source: std::io::Error,
-    },
-}
+pub use crate::error::RunnerError;
 
 /// Output from task execution
 #[derive(Debug, Clone)]
