@@ -151,7 +151,7 @@ async fn test_execute_allow_no_directory() {
     // Just verify it's an error for a non-existent directory
     assert!(matches!(
         result.unwrap_err(),
-        cuenv_core::Error::Configuration { .. }
+        cuenv_core::Error::Configuration(_)
     ));
 }
 
@@ -170,7 +170,7 @@ async fn test_execute_allow_no_env_cue() {
     // The error type is Configuration error for missing env.cue file
     assert!(matches!(
         result.unwrap_err(),
-        cuenv_core::Error::Configuration { .. }
+        cuenv_core::Error::Configuration(_)
     ));
 }
 

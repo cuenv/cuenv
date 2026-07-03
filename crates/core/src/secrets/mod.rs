@@ -12,6 +12,10 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+pub mod error;
+
+pub use error::SecretResolutionError;
+
 // Re-export core secret resolution types from cuenv-secrets
 pub use cuenv_secrets::{
     BatchResolver, ResolvedSecrets, SaltConfig, SecretError, SecretRegistry, SecretResolver,
