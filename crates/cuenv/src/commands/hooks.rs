@@ -72,13 +72,9 @@ fn evaluate_config(
     package: &str,
     executor: Option<&CommandExecutor>,
 ) -> Result<Project> {
-    let target_path = directory
-        .canonicalize()
-        .map_err(|e| cuenv_core::Error::Io {
-            source: e,
-            path: Some(directory.to_path_buf().into_boxed_path()),
-            operation: "canonicalize path".to_string(),
-        })?;
+    let target_path = directory.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize path", directory.to_path_buf(), e)
+    })?;
 
     // Use executor's cached module if available
     if let Some(exec) = executor {

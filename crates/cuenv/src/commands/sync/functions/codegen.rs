@@ -78,11 +78,9 @@ fn load_instance_at_path(
     path: &Path,
     executor: &CommandExecutor,
 ) -> Result<(cuenv_core::module::Instance, PathBuf)> {
-    let target_path = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize path".to_string(),
-    })?;
+    let target_path = path
+        .canonicalize()
+        .map_err(|e| cuenv_core::Error::io_with_path("canonicalize path", path.to_path_buf(), e))?;
 
     tracing::debug!("Using cached module evaluation from executor");
     let module = executor.get_module(&target_path)?;
@@ -298,11 +296,11 @@ fn sync_managed_file(
     if options.should_check() {
         if request.output_path.exists() {
             let contents = std::fs::read_to_string(request.output_path).map_err(|e| {
-                cuenv_core::Error::Io {
-                    source: e,
-                    path: Some(request.output_path.to_path_buf().into_boxed_path()),
-                    operation: "read generated file".to_string(),
-                }
+                cuenv_core::Error::io_with_path(
+                    "read generated file",
+                    request.output_path.to_path_buf(),
+                    e,
+                )
             })?;
             if contents == request.content {
                 request
@@ -414,11 +412,11 @@ fn write_codegen_file(request: &CodegenWriteRequest<'_>) -> Result<()> {
                 error = %e,
                 "Failed to create parent directory"
             );
-            cuenv_core::Error::Io {
-                source: e,
-                path: Some(parent.to_path_buf().into_boxed_path()),
-                operation: format!("create parent directory for {mode} file: {file_path}"),
-            }
+            cuenv_core::Error::io_with_path(
+                format!("create parent directory for {mode} file: {file_path}"),
+                parent.to_path_buf(),
+                e,
+            )
         })?;
     }
     std::fs::write(output_path, content).map_err(|e| {
@@ -427,11 +425,11 @@ fn write_codegen_file(request: &CodegenWriteRequest<'_>) -> Result<()> {
             error = %e,
             "Failed to write {mode} file"
         );
-        cuenv_core::Error::Io {
-            source: e,
-            path: Some(output_path.to_path_buf().into_boxed_path()),
-            operation: format!("write {mode} file: {file_path}"),
-        }
+        cuenv_core::Error::io_with_path(
+            format!("write {mode} file: {file_path}"),
+            output_path.to_path_buf(),
+            e,
+        )
     })?;
     Ok(())
 }
@@ -545,11 +543,7 @@ fn gitignore_has_codegen_section(project_root: &Path) -> Result<bool> {
     match std::fs::read_to_string(&path) {
         Ok(content) => Ok(content.lines().any(|line| line == "# BEGIN cuenv codegen")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(cuenv_core::Error::Io {
-            source: e,
-            path: Some(path.into_boxed_path()),
-            operation: "read .gitignore".to_string(),
-        }),
+        Err(e) => Err(cuenv_core::Error::io_with_path("read .gitignore", path, e)),
     }
 }
 

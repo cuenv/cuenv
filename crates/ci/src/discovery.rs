@@ -51,11 +51,8 @@ pub fn find_cue_module_root(start: &Path) -> Option<PathBuf> {
 pub fn evaluate_module_from_cwd() -> Result<ModuleEvaluation> {
     const PACKAGE: &str = "cuenv";
 
-    let cwd = std::env::current_dir().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: None,
-        operation: "get current directory".to_string(),
-    })?;
+    let cwd =
+        std::env::current_dir().map_err(|e| cuenv_core::Error::io("get current directory", e))?;
 
     let module_root = find_cue_module_root(&cwd).ok_or_else(|| {
         cuenv_core::Error::configuration(

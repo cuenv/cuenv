@@ -408,16 +408,39 @@ impl Error {
             help: Some(help.into()),
         }
     }
+
+    #[must_use]
+    pub fn io(operation: impl Into<String>, source: std::io::Error) -> Self {
+        Error::Io {
+            source,
+            path: None,
+            operation: operation.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn io_with_path(
+        operation: impl Into<String>,
+        path: impl Into<Box<Path>>,
+        source: std::io::Error,
+    ) -> Self {
+        Error::Io {
+            source,
+            path: Some(path.into()),
+            operation: operation.into(),
+        }
+    }
+
+    #[must_use]
+    pub const fn timeout(seconds: u64) -> Self {
+        Error::Timeout { seconds }
+    }
 }
 
 // Implement conversions for common error types
 impl From<std::io::Error> for Error {
     fn from(source: std::io::Error) -> Self {
-        Error::Io {
-            source,
-            path: None,
-            operation: "unknown (unmapped error conversion)".to_string(),
-        }
+        Error::io("unknown (unmapped error conversion)", source)
     }
 }
 
