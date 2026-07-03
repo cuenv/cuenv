@@ -44,6 +44,22 @@ pub(crate) fn extract_from_pkg(
         let payload_dir = work_dir.path().join(format!("payload-{index}"));
         std::fs::create_dir_all(&payload_dir)?;
 
+        // Validate the payload's table of contents before extracting:
+        // `cpio -idm` does not itself reject `..` or absolute entry paths,
+        // so a malicious payload could otherwise write outside payload_dir.
+        let listing = match list_payload_entries(payload_path) {
+            Ok(listing) => listing,
+            Err(error) => {
+                debug!(?payload_path, %error, "Skipping unlistable pkg payload");
+                continue;
+            }
+        };
+        if let Some(entry) = crate::entry_paths::find_unsafe_entry(listing.lines()) {
+            return Err(ArchiveError::extraction(format!(
+                "pkg payload contains unsafe path '{entry}'"
+            )));
+        }
+
         let payload_file = File::open(payload_path)?;
         let payload_extract = run_command(
             Command::new("cpio")
@@ -60,9 +76,11 @@ pub(crate) fn extract_from_pkg(
 
         if let Some(path) = binary_path {
             if let Some(found) = find_path_in_tree(&payload_dir, path)? {
+                let found = ensure_contained(&found, &payload_dir)?;
                 return copy_extracted_file(&found, dest, path);
             }
         } else if let Ok(found) = find_main_binary(&payload_dir) {
+            let found = ensure_contained(&found, &payload_dir)?;
             return copy_extracted_file(&found, dest, "binary");
         }
     }
@@ -89,6 +107,41 @@ fn copy_extracted_file(source: &Path, dest: &Path, fallback_name: &str) -> Resul
     std::fs::copy(source, &dest_path)?;
     ensure_executable(&dest_path)?;
     Ok(dest_path)
+}
+
+/// List a cpio payload's table of contents (`cpio -it`).
+fn list_payload_entries(payload_path: &Path) -> Result<String> {
+    let payload_file = File::open(payload_path)?;
+    let output = Command::new("cpio")
+        .args(["-it", "--quiet"])
+        .stdin(Stdio::from(payload_file))
+        .output()
+        .map_err(|e| ArchiveError::extraction(format!("Failed to list pkg payload: {e}")))?;
+
+    if !output.status.success() {
+        return Err(ArchiveError::extraction(format!(
+            "Failed to list pkg payload: {}",
+            output.status
+        )));
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| ArchiveError::extraction(format!("pkg payload listing is not UTF-8: {e}")))
+}
+
+/// Require a located file to be canonically contained in the payload
+/// directory, guarding against symlinks that point outside it.
+fn ensure_contained(found: &Path, payload_dir: &Path) -> Result<PathBuf> {
+    let root = payload_dir.canonicalize()?;
+    let resolved = found.canonicalize()?;
+    if resolved.starts_with(&root) {
+        Ok(resolved)
+    } else {
+        Err(ArchiveError::extraction(format!(
+            "pkg payload entry '{}' escapes the extraction directory",
+            found.display()
+        )))
+    }
 }
 
 /// Run a process and map non-zero exits to extraction errors.

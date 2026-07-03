@@ -453,3 +453,61 @@ fn test_extract_from_pkg_unsupported_off_macos() {
     let err = extract_from_pkg(b"pkg", None, temp.path()).unwrap_err();
     assert!(err.to_string().contains("only supported on macOS"));
 }
+
+// ==========================================================================
+// pkg payload entry-path validation (platform-neutral logic for the
+// macOS-only cpio flow)
+// ==========================================================================
+
+mod entry_paths {
+    use crate::entry_paths::{find_unsafe_entry, is_safe_entry};
+
+    #[test]
+    fn safe_entries() {
+        for entry in [
+            ".",
+            "./",
+            "./usr/local/bin/tool",
+            "usr/local/bin/tool",
+            "deeply/nested/dir/file.txt",
+            "./name-with..dots/file",
+            "..leading-dots-name",
+        ] {
+            assert!(is_safe_entry(entry), "expected safe: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn unsafe_entries() {
+        for entry in [
+            "",
+            "../x",
+            "..",
+            "./../x",
+            "/absolute/path",
+            "/",
+            "a/../../b",
+            "usr/../../../etc/passwd",
+        ] {
+            assert!(!is_safe_entry(entry), "expected unsafe: {entry:?}");
+        }
+    }
+
+    #[test]
+    fn find_unsafe_entry_skips_blank_lines() {
+        let listing = ".\n./usr/bin/tool\n\n   \n./usr/share/doc\n";
+        assert_eq!(find_unsafe_entry(listing.lines()), None);
+    }
+
+    #[test]
+    fn find_unsafe_entry_reports_first_offender() {
+        let listing = "./usr/bin/tool\n../escape\n/abs/path\n";
+        assert_eq!(find_unsafe_entry(listing.lines()), Some("../escape"));
+    }
+
+    #[test]
+    fn find_unsafe_entry_trims_whitespace() {
+        let listing = "  ./ok  \n\t../bad\n";
+        assert_eq!(find_unsafe_entry(listing.lines()), Some("../bad"));
+    }
+}
