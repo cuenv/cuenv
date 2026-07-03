@@ -5,8 +5,8 @@
 //! mutations.
 
 use super::{Platform, default_cache_dir};
-use crate::lockfile::Lockfile;
-use crate::{Error, Result};
+use cuenv_core::{Error, Result};
+use cuenv_manifest::lockfile::Lockfile;
 pub use cuenv_manifest::tools::{
     ToolActivationOperation, ToolActivationSource, ToolActivationStep,
 };
@@ -252,7 +252,7 @@ fn join_paths(paths: &[PathBuf], separator: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lockfile::{LockedTool, LockedToolPlatform, Lockfile};
+    use cuenv_manifest::lockfile::{LockedTool, LockedToolPlatform, Lockfile};
     use std::collections::BTreeMap;
     use std::fs;
 

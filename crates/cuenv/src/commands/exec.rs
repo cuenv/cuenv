@@ -16,8 +16,8 @@ use cuenv_core::environment::Environment;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
 use cuenv_core::manifest::{Base, Project, Runtime, ToolSpec};
 use cuenv_core::runtime::resolve_runtime_environment;
-use cuenv_core::tools::apply_resolved_tool_activation;
 use cuenv_task_exec::execute_command_with_redaction;
+use cuenv_tool_runtime::apply_resolved_tool_activation;
 use std::path::Path;
 
 use super::export::extract_static_env_vars;
@@ -358,7 +358,7 @@ fn lockfile_needs_runtime_tool_sync(project_path: &Path, project: &Project) -> R
         return Ok(true);
     };
 
-    let platform_str = cuenv_core::tools::Platform::current().to_string();
+    let platform_str = cuenv_tool_runtime::Platform::current().to_string();
     for (tool_name, spec) in &tools_runtime.tools {
         let required_version = match spec {
             ToolSpec::Version(v) => v.as_str(),

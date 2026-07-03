@@ -1,6 +1,6 @@
 use super::ToolActivationResolveOptions;
-use crate::tools::{Arch, Os, Platform, ToolExtract};
-use crate::{Error, Result};
+use crate::{Arch, Os, Platform, ToolExtract};
+use cuenv_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -132,7 +132,7 @@ fn collect_github_tool_dirs(
     index: &mut ToolPathIndex,
     name: &str,
     version: &str,
-    platform_data: &crate::lockfile::LockedToolPlatform,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
 ) -> Result<()> {
     let tool_dir = options.cache_dir.join("github").join(name).join(version);
     let extract: Vec<ToolExtract> = platform_data
@@ -157,7 +157,7 @@ fn collect_github_tool_dirs(
 fn collect_legacy_github_dirs(
     index: &mut ToolPathIndex,
     name: &str,
-    platform_data: &crate::lockfile::LockedToolPlatform,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
     tool_dir: &Path,
 ) {
     let mut all_bin_seen = index.all_bin_dirs.iter().cloned().collect();
@@ -360,7 +360,7 @@ fn rustup_host_triple(platform: &Platform) -> String {
 }
 
 fn nix_profile_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    let cache = crate::paths::cache_dir()?;
+    let cache = cuenv_core::paths::cache_dir()?;
     let project_id = project_profile_id(project_root);
     Ok(cache.join("nix-profiles").join(project_id))
 }

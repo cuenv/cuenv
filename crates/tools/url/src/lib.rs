@@ -9,11 +9,11 @@
 use async_trait::async_trait;
 use cuenv_core::Result;
 use cuenv_core::http::ensure_rustls_crypto_provider;
-use cuenv_core::tools::{
+use cuenv_tool_archive as archive;
+use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolExtract, ToolOptions, ToolProvider,
     ToolResolveRequest, ToolSource,
 };
-use cuenv_tool_archive as archive;
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::panic::{AssertUnwindSafe, catch_unwind};

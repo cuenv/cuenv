@@ -35,6 +35,7 @@ members = [
     "crates/aws",
     # Tool provider crates
     "crates/tools/archive",
+    "crates/tools/runtime",
     "crates/tools/oci",
     "crates/tools/github",
     "crates/tools/nix",
@@ -88,6 +89,7 @@ cuenv-infisical = { path = "crates/infisical", version = "0.54.0" }
 cuenv-aws = { path = "crates/aws", version = "0.54.0" }
 # Tool provider crates
 cuenv-tool-archive = { path = "crates/tools/archive", version = "0.54.0" }
+cuenv-tool-runtime = { path = "crates/tools/runtime", version = "0.54.0" }
 cuenv-tools-oci = { path = "crates/tools/oci", version = "0.54.0" }
 cuenv-tools-github = { path = "crates/tools/github", version = "0.54.0" }
 cuenv-tools-nix = { path = "crates/tools/nix", version = "0.54.0" }
