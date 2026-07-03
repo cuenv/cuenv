@@ -39,6 +39,7 @@ dirs = { workspace = true }
 
 # Core types
 cuenv-core = { workspace = true }
+cuenv-tool-runtime = { workspace = true }
 
 # Async trait
 async-trait = { workspace = true }

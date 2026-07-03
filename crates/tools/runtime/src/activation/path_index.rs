@@ -1,6 +1,6 @@
 use super::ToolActivationResolveOptions;
-use crate::tools::{Arch, Os, Platform, ToolExtract};
-use crate::{Error, Result};
+use crate::{Arch, Os, Platform, ToolExtract};
+use cuenv_core::{Error, Result};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -111,6 +111,9 @@ impl ToolPathIndex {
                         platform_data,
                     )?;
                 }
+                "oci" => {
+                    collect_oci_tool_dirs(options, &mut index, name, platform_data);
+                }
                 provider_name => {
                     collect_default_provider_dirs(
                         options,
@@ -132,7 +135,7 @@ fn collect_github_tool_dirs(
     index: &mut ToolPathIndex,
     name: &str,
     version: &str,
-    platform_data: &crate::lockfile::LockedToolPlatform,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
 ) -> Result<()> {
     let tool_dir = options.cache_dir.join("github").join(name).join(version);
     let extract: Vec<ToolExtract> = platform_data
@@ -157,7 +160,7 @@ fn collect_github_tool_dirs(
 fn collect_legacy_github_dirs(
     index: &mut ToolPathIndex,
     name: &str,
-    platform_data: &crate::lockfile::LockedToolPlatform,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
     tool_dir: &Path,
 ) {
     let mut all_bin_seen = index.all_bin_dirs.iter().cloned().collect();
@@ -238,6 +241,44 @@ fn collect_extract_dirs(
     }
 
     Ok(())
+}
+
+/// OCI binaries are cached at `<cache>/oci/<sanitized_digest>/<binary>`, not
+/// the `<cache>/<provider>/<name>/<version>` layout the default arm assumes.
+/// The lockfile's `digest` field is a synthetic metadata hash, not the OCI
+/// manifest digest, so the exact directory cannot be recomputed here without
+/// a network round-trip. Mirror `OciToolProvider::is_cached`: probe each
+/// digest directory for the tool's binary.
+fn collect_oci_tool_dirs(
+    options: &ToolActivationResolveOptions<'_>,
+    index: &mut ToolPathIndex,
+    name: &str,
+    platform_data: &cuenv_manifest::lockfile::LockedToolPlatform,
+) {
+    let Some(path) = platform_data.source.get("path").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let binary_name = Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("tool");
+
+    let root = options.cache_dir.join("oci");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut digest_dirs: Vec<PathBuf> = entries
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path())
+        .filter(|dir| dir.join(binary_name).is_file())
+        .collect();
+    digest_dirs.sort();
+
+    let mut all_bin_seen: HashSet<PathBuf> = index.all_bin_dirs.iter().cloned().collect();
+    for dir in digest_dirs {
+        add_existing_dir(&mut index.all_bin_dirs, &mut all_bin_seen, dir.clone());
+        add_tool_existing_dir(&mut index.tool_bin_dirs, name, dir);
+    }
 }
 
 fn collect_default_provider_dirs(
@@ -360,7 +401,7 @@ fn rustup_host_triple(platform: &Platform) -> String {
 }
 
 fn nix_profile_path_for_project(project_root: &Path) -> Result<PathBuf> {
-    let cache = crate::paths::cache_dir()?;
+    let cache = cuenv_core::paths::cache_dir()?;
     let project_id = project_profile_id(project_root);
     Ok(cache.join("nix-profiles").join(project_id))
 }

@@ -2,7 +2,7 @@
 
 use super::ExecutorError;
 use cuenv_core::lockfile::{LOCKFILE_NAME, Lockfile};
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Platform, ResolvedTool, ResolvedToolActivationStep, ToolActivationResolveOptions, ToolOptions,
     ToolRegistry, apply_resolved_tool_activation, resolve_tool_activation,
     validate_tool_activation,

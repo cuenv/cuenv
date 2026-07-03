@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 cuenv-core = { workspace = true }
+cuenv-tool-runtime = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true }

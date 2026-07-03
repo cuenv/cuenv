@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Arch, FetchedTool, Os, Platform, ResolvedTool, ToolOptions, ToolProvider, ToolResolveRequest,
     ToolSource,
 };

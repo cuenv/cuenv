@@ -8,7 +8,7 @@
 
 use async_trait::async_trait;
 use cuenv_core::Result;
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Arch as CoreArch, FetchedTool, Os as CoreOs, Platform as CorePlatform, ResolvedTool,
     ToolOptions, ToolProvider, ToolResolveRequest, ToolSource,
 };
@@ -297,7 +297,7 @@ async fn compute_file_sha256(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cuenv_core::tools::{Arch, Os, Platform};
+    use cuenv_tool_runtime::{Arch, Os, Platform};
     use tempfile::TempDir;
 
     #[test]

@@ -5,7 +5,7 @@ use cuenv_core::lockfile::{
     LockedVcsDependency, Lockfile, PlatformData,
 };
 use cuenv_core::manifest::SourceConfig;
-use cuenv_core::tools::{
+use cuenv_tool_runtime::{
     Arch, Os, Platform as ToolPlatform, ToolActivationOperation, ToolActivationSource,
     ToolActivationStep, ToolExtract, ToolSource,
 };

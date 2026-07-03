@@ -13,6 +13,7 @@ categories.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 cuenv-core = { workspace = true }
+cuenv-tool-runtime = { workspace = true }
 cuenv-tool-archive = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 serde = { workspace = true, features = ["derive"] }

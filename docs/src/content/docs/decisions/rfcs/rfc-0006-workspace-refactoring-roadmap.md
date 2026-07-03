@@ -142,5 +142,20 @@ Progress is tracked by phase on the implementation branch; each phase updates th
   libc, cuenv-cas, cuenv-vcs, cuenv-events, hex). The new crate does
   not yet opt into the workspace lints (~80 pre-existing pedantic
   findings in the moved code); that is Phase 6 ratchet work.
-- Remaining: Phase 3c (tool runtime crate), 3d (transitional re-export
-  removal), and Phases 4-8.
+- Phase 3c (tool runtime extraction): landed — the ToolProvider trait,
+  ToolRegistry, and activation resolution (incl. the lockfile-driven
+  path index) moved to the new `cuenv-tool-runtime` crate, which
+  re-exports the former `cuenv_core::tools` surface. Core keeps only
+  `ToolError` (composed into `cuenv_core::Error`) and dropped `sha2`.
+  The five tool provider crates, cuenv-ci, and the CLI import
+  `cuenv_tool_runtime` directly.
+- Phase 3d (residue and re-export removal): landed — deprecated
+  `TaskDefinition`/`TaskList` aliases and the legacy `TaskNode`
+  `is_single`/`as_single`/`is_list`/`as_list` methods deleted (zero
+  consumers); core's `owners` and `config` re-exports removed
+  (consumers repointed to `cuenv-manifest`) and `secrets::Secret`
+  narrowed to crate-visible. Deliberately retained pending a
+  dedicated follow-up because removal fans out disproportionately:
+  `cuenv_core::ci` (~44 use sites), the `tasks` DTO glob (~39), and
+  `lockfile` (14 files). Phase 3 is complete.
+- Remaining: Phases 4-8.
