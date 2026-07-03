@@ -181,7 +181,6 @@
               isInExamplesDir = builtins.match ".*/examples/.*" path != null || baseName == "examples";
               isInCueModDir = builtins.match ".*/cue\\.mod/.*" path != null || baseName == "cue.mod";
               isInTestsDir = builtins.match ".*/_tests/.*" path != null || baseName == "_tests";
-              isInFeaturesDir = builtins.match ".*/features/.*" path != null || baseName == "features";
               isAgentsRootDir = baseName == ".agents";
               isAgentsSkillsRoot = builtins.match ".*/\\.agents/skills" path != null;
               isInAgentsSkillsDir = builtins.match ".*/\\.agents/skills/.*" path != null;
@@ -197,7 +196,6 @@
                   || isInExamplesDir
                   || isInCueModDir
                   || isInTestsDir
-                  || isInFeaturesDir
                   || isInContribDir
                   || isAgentsRootDir
                   || isAgentsSkillsRoot
@@ -214,7 +212,6 @@
             isDenyToml ||
             isAllowedDir ||
             isInTestsDir ||
-            isInFeaturesDir ||
             ((isInSchemaDir || isInExamplesDir || isInCueModDir) && isCueFile);
         };
 
@@ -345,16 +342,23 @@
           cargoArtifacts = null;
           cargoVendorDir = null;
           doInstallCargoArtifacts = false;
+          # Ignore triage (2026-07-02). Each entry is blocked by an upstream
+          # dependency chain; drop the group when the named root cause is fixed.
+          #
+          # rsa (Marvin timing sidechannel, no upstream fix released):
+          #   via octocrab -> jsonwebtoken -> rsa 0.9
+          #     RUSTSEC-2023-0071
+          # wasmtime 41.x (pinned by extism 1.21; patches only in 36.x/42.0.2+/43.0.1+):
+          #     RUSTSEC-2026-0085 0086 0087 0088 0089 0091 0092 0093 0094 0095 0096 0114
+          # reqwest 0.11 chain (pinned by dagger-sdk 0.20 / graphql_client 0.13;
+          # pulls rustls 0.21 -> rustls-webpki 0.101, rustls-pemfile 1.x):
+          #     RUSTSEC-2025-0134 (rustls-pemfile unmaintained)
+          #     RUSTSEC-2026-0098 0099 0104 (rustls-webpki 0.101)
           buildPhaseCargoCommand = ''
             cargo audit --db ${rustsec-advisory-db} --no-fetch --deny warnings \
               --ignore yanked \
               --ignore RUSTSEC-2023-0071 \
-              --ignore RUSTSEC-2025-0057 \
               --ignore RUSTSEC-2025-0134 \
-              --ignore RUSTSEC-2026-0006 \
-              --ignore RUSTSEC-2026-0020 \
-              --ignore RUSTSEC-2026-0021 \
-              --ignore RUSTSEC-2026-0037 \
               --ignore RUSTSEC-2026-0085 \
               --ignore RUSTSEC-2026-0086 \
               --ignore RUSTSEC-2026-0087 \

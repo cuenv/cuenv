@@ -27,7 +27,7 @@ clap = { workspace = true }
 tracing = { workspace = true }
 
 # File system operations
-walkdir = "2.5"
+walkdir = { workspace = true }
 glob = { workspace = true }
 
 # JSON formatting

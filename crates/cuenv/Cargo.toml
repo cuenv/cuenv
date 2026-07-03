@@ -67,8 +67,8 @@ cuenv-release = { workspace = true }
 cuenv-services = { workspace = true }
 cuengine = { workspace = true }
 gix = { workspace = true }
-glob = "0.3"
-ignore = "0.4"
+glob = { workspace = true }
+ignore = { workspace = true }
 # Platform-specific providers (optional)
 cuenv-github = { workspace = true, optional = true }
 cuenv-gitlab = { workspace = true, optional = true }
@@ -85,8 +85,8 @@ toml = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 rayon = { workspace = true }
-async-trait = "0.1"
-futures = "0.3"
+async-trait = { workspace = true }
+futures = { workspace = true }
 libc = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -98,21 +98,18 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 semver = { workspace = true }
-indexmap = { version = "2.14", features = ["serde"] }
+indexmap = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true }
 miette = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 sha2 = { workspace = true }
-walkdir = "2.5"
+walkdir = { workspace = true }
 dirs = { workspace = true }
 ctrlc = "3.5"
 similar = "2.7"
-reqwest = { version = "0.13.3", default-features = false, features = [
-    "blocking",
-    "rustls-no-provider",
-] }
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+reqwest = { workspace = true, features = ["blocking", "rustls-no-provider"] }
+rustls = { workspace = true, features = ["ring"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]

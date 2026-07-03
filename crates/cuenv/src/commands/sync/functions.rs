@@ -40,7 +40,7 @@ impl ProjectInfo {
     fn collect_from_module(module: &ModuleEvaluation) -> Result<Vec<Self>> {
         let mut projects = Vec::new();
         for instance in module.projects() {
-            let config = Project::try_from(instance)?;
+            let config = instance.to_project()?;
             // instance.path is the relative path to the project directory (not env.cue)
             let relative_path = instance.path.clone();
             let project_path = module.root.join(&relative_path);

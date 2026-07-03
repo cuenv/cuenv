@@ -6,13 +6,13 @@ decision_date: 2025-09-25
 approvers:
   - TBD
 related_features:
-  - features/cli/hooks.feature:1
-  - features/cli/env.feature:1
+  - crates/cuenv/tests/bdd/features/hooks.feature:1
+  - crates/cuenv/tests/bdd/features/env.feature:1
 ---
 
 ## Summary
 
-This RFC captures the intended behaviour for shell integration in cuenv: how hooks are scheduled, executed, monitored, and torn down across supported shells (Bash, Zsh, Fish). The implementation in [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69) already embodies a number of implicit decisions such as pre-approval requirements and background execution semantics. Documenting these expectations ensures parity with BDD scenarios like those in [features/cli/hooks.feature](features/cli/hooks.feature:1).
+This RFC captures the intended behaviour for shell integration in cuenv: how hooks are scheduled, executed, monitored, and torn down across supported shells (Bash, Zsh, Fish). The implementation in [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69) already embodies a number of implicit decisions such as pre-approval requirements and background execution semantics. Documenting these expectations ensures parity with BDD scenarios like those in [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:1).
 
 ## Problem Statement
 
@@ -40,7 +40,7 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 ## Proposed Approach
 
 1. **Approval First**
-   - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv-cli/src/commands/hooks.rs:191).
+   - Require `cuenv allow` to run before `env load` can initiate hooks, verifying configuration fingerprints using [ApprovalManager](crates/cuenv/src/commands/hooks.rs:191).
    - Document responses for `Approved`, `RequiresApproval`, and `NotApproved` states.
 
 2. **Background Execution Contract**
@@ -78,16 +78,16 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 ## Migration Plan
 
 - Publicise this RFC for review with shell-specific examples.
-- Expand [features/cli/hooks.feature](features/cli/hooks.feature:1) to include approval and failure scenarios referencing this document.
+- Expand [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:1) to include approval and failure scenarios referencing this document.
 - Once accepted, codify the behaviour in ADR-0001 and ADR-0002.
 
 ## Features Alignment
 
 | Feature Specification                                       | Coverage                                                               | Notes                                                                                      |
 | ----------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [features/cli/hooks.feature](features/cli/hooks.feature:9)  | Existing scenarios: background execution, sequential ordering, cleanup | Ensure scenario descriptions cite ADR IDs once ratified.                                   |
-| [features/cli/hooks.feature](features/cli/hooks.feature:59) | Failure mode ensures environment isn't applied                         | Links declaratively to ADR-0001 (approval gate).                                           |
-| [features/cli/env.feature](features/cli/env.feature:1)      | TBD                                                                    | Should include scenarios for `env load`, `status`, and `check` referencing this lifecycle. |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:9)  | Existing scenarios: background execution, sequential ordering, cleanup | Ensure scenario descriptions cite ADR IDs once ratified.                                   |
+| [crates/cuenv/tests/bdd/features/hooks.feature](crates/cuenv/tests/bdd/features/hooks.feature:59) | Failure mode ensures environment isn't applied                         | Links declaratively to ADR-0001 (approval gate).                                           |
+| [crates/cuenv/tests/bdd/features/env.feature](crates/cuenv/tests/bdd/features/env.feature:1)      | TBD                                                                    | Should include scenarios for `env load`, `status`, and `check` referencing this lifecycle. |
 
 ## Open Questions
 
@@ -99,7 +99,7 @@ Migrating behaviour into explicit documentation lowers the maintenance risk and 
 
 | Artifact                                                                                                                                | Purpose                                                            |
 | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| [crates/cuenv-cli/src/commands/hooks.rs](crates/cuenv-cli/src/commands/hooks.rs:69)                                                     | Primary implementation of lifecycle logic.                         |
+| [crates/cuenv/src/commands/hooks.rs](crates/cuenv/src/commands/hooks.rs:69)                                                     | Primary implementation of lifecycle logic.                         |
 | [adr-0001-hook-approval-gate-for-environment-loading](/decisions/adrs/adr-0001-hook-approval-gate-for-environment-loading/)             | Ratified decision covering approval guarantees.                    |
 | [adr-0002-background-hook-execution-with-shell-self-unload](/decisions/adrs/adr-0002-background-hook-execution-with-shell-self-unload/) | Ratified decision covering self-unload and background semantics.   |
 | [readme.md](readme.md:214)                                                                                                              | Shell integration section that must stay consistent with this RFC. |

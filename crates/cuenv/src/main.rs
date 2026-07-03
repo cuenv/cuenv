@@ -2,14 +2,6 @@
 //!
 //! Production-grade CUE environment toolchain providing command-line interface
 //! for CUE package evaluation, environment variable management, and task orchestration.
-//!
-//! ## Future Direction
-//!
-//! This binary is transitioning to a library-first architecture (ADR-0006).
-//! The eventual goal is to move CLI dispatch behind the library provider
-//! registry. Currently, command dispatch remains here while the library exposes
-//! provider registration and dynamic sync command construction through
-//! `cuenv::Cuenv`.
 
 // Import everything from the library
 use crossterm::ExecutableCommand;

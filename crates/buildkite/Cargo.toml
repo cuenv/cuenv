@@ -17,7 +17,7 @@ workspace = true
 [dependencies]
 cuenv-ci = { workspace = true }
 cuenv-core = { workspace = true }
-async-trait = "0.1"
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }

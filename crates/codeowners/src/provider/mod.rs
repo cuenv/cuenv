@@ -154,8 +154,10 @@ pub trait CodeOwnersProvider: Send + Sync {
 
     /// Sync CODEOWNERS from project configurations.
     ///
-    /// Aggregates ownership rules from all projects and writes the appropriate
-    /// CODEOWNERS file(s) for this platform.
+    /// Aggregates ownership rules from all projects and writes a single
+    /// CODEOWNERS file at [`output_path`](Self::output_path), formatted with
+    /// [`section_style`](Self::section_style). Providers only override this
+    /// when their platform needs different aggregation behavior.
     ///
     /// # Arguments
     ///
@@ -171,9 +173,28 @@ pub trait CodeOwnersProvider: Send + Sync {
         repo_root: &Path,
         projects: &[ProjectOwners],
         dry_run: bool,
-    ) -> Result<SyncResult>;
+    ) -> Result<SyncResult> {
+        if projects.is_empty() {
+            return Err(ProviderError::Configuration(
+                "No projects with ownership configuration provided".to_string(),
+            ));
+        }
+
+        let content = generate_aggregated_content(self.section_style(), projects, None);
+        let output_path = repo_root.join(self.output_path());
+        let status = write_codeowners_file(&output_path, &content, dry_run)?;
+
+        Ok(SyncResult {
+            path: output_path,
+            status,
+            content,
+        })
+    }
 
     /// Check if CODEOWNERS is in sync with configuration.
+    ///
+    /// Compares the file at [`output_path`](Self::output_path) against the
+    /// aggregated content, normalizing line endings and trailing whitespace.
     ///
     /// # Arguments
     ///
@@ -183,7 +204,43 @@ pub trait CodeOwnersProvider: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if file operations fail or configuration is invalid.
-    fn check(&self, repo_root: &Path, projects: &[ProjectOwners]) -> Result<CheckResult>;
+    fn check(&self, repo_root: &Path, projects: &[ProjectOwners]) -> Result<CheckResult> {
+        if projects.is_empty() {
+            return Err(ProviderError::Configuration(
+                "No projects with ownership configuration provided".to_string(),
+            ));
+        }
+
+        let expected = generate_aggregated_content(self.section_style(), projects, None);
+        let output_path = repo_root.join(self.output_path());
+
+        let actual = if output_path.exists() {
+            Some(fs::read_to_string(&output_path)?)
+        } else {
+            None
+        };
+
+        let in_sync = actual
+            .as_ref()
+            .is_some_and(|a| normalize_content(a) == normalize_content(&expected));
+
+        Ok(CheckResult {
+            path: output_path,
+            in_sync,
+            expected,
+            actual,
+        })
+    }
+}
+
+/// Normalize content for comparison: unify line endings and strip trailing
+/// whitespace per line.
+fn normalize_content(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Prefix a pattern with the project's relative path.
@@ -275,18 +332,9 @@ pub fn write_codeowners_file(path: &Path, content: &str, dry_run: bool) -> Resul
         None
     };
 
-    // Check if content matches (normalize line endings for comparison)
-    let normalize = |s: &str| -> String {
-        s.replace("\r\n", "\n")
-            .lines()
-            .map(str::trim_end)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
-
     let content_matches = current_content
         .as_ref()
-        .is_some_and(|current| normalize(current) == normalize(content));
+        .is_some_and(|current| normalize_content(current) == normalize_content(content));
 
     if content_matches {
         return Ok(SyncStatus::Unchanged);

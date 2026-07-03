@@ -7,57 +7,14 @@
 use super::{Platform, default_cache_dir};
 use crate::lockfile::Lockfile;
 use crate::{Error, Result};
-use serde::{Deserialize, Serialize};
+pub use cuenv_manifest::tools::{
+    ToolActivationOperation, ToolActivationSource, ToolActivationStep,
+};
 use std::path::{Path, PathBuf};
 
 mod path_index;
 
 use path_index::ToolPathIndex;
-
-/// A configured activation step from runtime/lockfile configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolActivationStep {
-    /// Environment variable to mutate (for example `PATH`).
-    pub var: String,
-    /// Mutation operation.
-    pub op: ToolActivationOperation,
-    /// Separator for joining values (defaults to `:`).
-    #[serde(default = "default_separator")]
-    pub separator: String,
-    /// Source reference that resolves to one or more paths.
-    pub from: ToolActivationSource,
-}
-
-fn default_separator() -> String {
-    ":".to_string()
-}
-
-/// Mutation operation for tool activation.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ToolActivationOperation {
-    /// Replace the variable with the resolved value.
-    Set,
-    /// Prepend the resolved value before the current value.
-    Prepend,
-    /// Append the resolved value after the current value.
-    Append,
-}
-
-/// Activation source selector.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ToolActivationSource {
-    /// All bin directories for tools available on the current platform.
-    AllBinDirs,
-    /// All lib directories for tools available on the current platform.
-    AllLibDirs,
-    /// Bin directory for a specific tool.
-    ToolBinDir { tool: String },
-    /// Lib directory for a specific tool.
-    ToolLibDir { tool: String },
-}
 
 /// A resolved activation step with a concrete value to apply.
 #[derive(Debug, Clone, PartialEq, Eq)]

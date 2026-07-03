@@ -6,8 +6,8 @@ decision_date: 2025-09-25
 approvers:
   - Core Maintainers
 related_features:
-  - features/cli/task.feature:1
-  - features/cli/help.feature:1
+  - crates/cuenv/tests/bdd/features/task.feature:1
+  - crates/cuenv/tests/bdd/features/help.feature:1
 supersedes: []
 superseded_by: []
 ---
@@ -46,8 +46,8 @@ superseded_by: []
 
 | Feature Scenario                                                   | Impact                                                                        |
 | ------------------------------------------------------------------ | ----------------------------------------------------------------------------- |
-| [features/cli/task.feature](features/cli/task.feature:1) — Pending | Scenarios will validate listing, success, and failure behaviour defined here. |
-| [features/cli/help.feature](features/cli/help.feature:1) — Pending | Help text must explain graph vs direct execution referencing this decision.   |
+| [crates/cuenv/tests/bdd/features/task.feature](crates/cuenv/tests/bdd/features/task.feature:1) — Pending | Scenarios will validate listing, success, and failure behaviour defined here. |
+| [crates/cuenv/tests/bdd/features/help.feature](crates/cuenv/tests/bdd/features/help.feature:1) — Pending | Help text must explain graph vs direct execution referencing this decision.   |
 
 ## Related Documents
 

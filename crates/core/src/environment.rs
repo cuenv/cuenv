@@ -9,9 +9,57 @@ use std::env;
 use std::path::Path;
 use std::sync::Arc;
 
-mod values;
+pub use cuenv_manifest::environment::{
+    Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
+};
 
-pub use values::{Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy};
+use crate::secrets::SecretExt;
+
+/// Secret-resolution extension methods for [`EnvValue`].
+///
+/// The DTO lives in `cuenv-manifest`; resolution requires the secret
+/// registry wiring in this crate, so it is provided as an extension trait.
+#[async_trait::async_trait]
+pub trait EnvValueExt {
+    /// Resolve the environment variable value, executing secrets if necessary.
+    ///
+    /// # Errors
+    /// Returns an error if secret resolution fails.
+    async fn resolve(&self) -> crate::Result<String>;
+
+    /// Resolve the environment variable, returning both the final value and
+    /// a list of resolved secret values (for redaction).
+    ///
+    /// # Errors
+    /// Returns an error if secret resolution fails.
+    async fn resolve_with_secrets(&self) -> crate::Result<(String, Vec<String>)>;
+}
+
+#[async_trait::async_trait]
+impl EnvValueExt for EnvValue {
+    async fn resolve(&self) -> crate::Result<String> {
+        let (resolved, _) = self.resolve_with_secrets().await?;
+        Ok(resolved)
+    }
+
+    async fn resolve_with_secrets(&self) -> crate::Result<(String, Vec<String>)> {
+        let secrets = self.collect_secrets();
+        if secrets.is_empty() {
+            let (value, resolved) = self.reassemble_with_resolved(&HashMap::new());
+            return Ok((value, resolved));
+        }
+
+        let registry = crate::secrets::create_default_registry()?;
+        let mut resolved_by_index = HashMap::new();
+        for (part_idx, secret) in secrets {
+            let value = secret.resolve_with_registry(&registry).await?;
+            resolved_by_index.insert(part_idx, value);
+        }
+
+        let (value, resolved) = self.reassemble_with_resolved(&resolved_by_index);
+        Ok((value, resolved))
+    }
+}
 
 /// Runtime environment variables for task execution
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

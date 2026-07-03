@@ -17,6 +17,7 @@ use cuenv_core::lockfile::{
     Lockfile, PlatformData,
 };
 use cuenv_core::manifest::{Base, GitHubProviderConfig, NixRuntime, Project, Runtime, ToolSpec};
+use cuenv_core::secrets::SecretExt;
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
