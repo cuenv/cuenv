@@ -20,7 +20,7 @@ Status guardrails:
 
 - Use `cuenv sync codegen` for codegen.
 - Use `cuenv fmt --fix` for formatting.
-- The public `crates/cuenv` provider registry is sync-only: `Provider` plus `SyncCapability` build generated-file sync commands. Do not describe runtime or secret provider registry support until those dispatch paths exist.
+- Built-in sync providers use the single crate-private registry under `crates/cuenv/src/commands/sync/`; the static CLI parses options and passes a normalized `SyncRequest`. Do not describe this as a third-party plugin API, or imply registry-backed runtime or secret dispatch.
 - Do not recommend `cuenv sync ignore` or `cuenv sync codeowners`; use default `cuenv sync` rules behavior and `.rules.cue` schemas.
 - Generated CODEOWNERS headers should point back to `.rules.cue` and `cuenv sync`, never to legacy `env.cue` owners config or removed subcommands.
 - Treat codegen `format`, `lint`, and `gitignore` fields as partial until validated by tests.

@@ -2,15 +2,11 @@
 //!
 //! Syncs codegen-generated files from CUE configuration.
 
-use async_trait::async_trait;
-use clap::{Command, arg};
-use cuenv_core::Result;
-use cuenv_core::manifest::{Base, Project};
-use std::path::Path;
-
-use crate::commands::CommandExecutor;
 use crate::commands::sync::functions;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{SyncMode, SyncProvider, SyncRequest, SyncResult, SyncScope};
+use async_trait::async_trait;
+use cuenv_core::Result;
+use cuenv_core::manifest::Project;
 
 /// Sync provider for codegen.
 pub struct CodegenSyncProvider;
@@ -21,120 +17,109 @@ impl SyncProvider for CodegenSyncProvider {
         "codegen"
     }
 
-    fn description(&self) -> &'static str {
-        "Sync files from CUE codegen configurations"
+    async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
+        match request.scope {
+            SyncScope::Path => sync_path(request).await,
+            SyncScope::Workspace => sync_workspace(request).await,
+        }
     }
+}
 
-    fn has_config(&self, _manifest: &Base) -> bool {
-        // Codegen configs are only in Projects, not Base
-        // We check if we can deserialize as Project with codegen config
-        // For the trait, we accept Base but codegen won't be present
-        false // Will be checked differently for projects
-    }
+async fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        package,
+        options,
+        executor,
+        ..
+    } = request;
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
 
-    fn build_command(&self) -> Command {
-        self.default_command()
-            .arg(arg!(--diff "Show diff for files that would change"))
-    }
+    let codegen_options = functions::CodegenSyncOptions {
+        dry_run: dry_run.into(),
+        check,
+        diff: options.show_diff,
+    };
+    let request = functions::CodegenSyncRequest {
+        path: path.to_str().unwrap_or("."),
+        package,
+        options: codegen_options,
+    };
+    let output = functions::execute_sync_codegen(request, executor).await?;
 
-    async fn sync_path(
-        &self,
-        path: &Path,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
+    Ok(SyncResult::success(output))
+}
 
+async fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        package,
+        options,
+        executor,
+        ..
+    } = request;
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
+
+    // Collect project info before any async operations
+    let project_paths: Vec<(std::path::PathBuf, String)> = {
+        let module = executor.discover_all_modules(path)?;
+        let mut paths = Vec::new();
+        for instance in module.projects() {
+            if let Ok(manifest) = instance.deserialize::<Project>()
+                && manifest.codegen.is_some()
+            {
+                paths.push((
+                    module.root.join(&instance.path),
+                    instance.path.display().to_string(),
+                ));
+            }
+        }
+        paths
+        // module guard is dropped here at the end of the block
+    };
+
+    let mut outputs = Vec::new();
+    let mut had_error = false;
+
+    // Iterate through projects with codegen config
+    for (full_path, display_path) in project_paths {
         let codegen_options = functions::CodegenSyncOptions {
             dry_run: dry_run.into(),
             check,
             diff: options.show_diff,
         };
         let request = functions::CodegenSyncRequest {
-            path: path.to_str().unwrap_or("."),
+            path: full_path.to_str().unwrap_or("."),
             package,
             options: codegen_options,
         };
-        let output = functions::execute_sync_codegen(request, executor).await?;
+        let result = functions::execute_sync_codegen(request, executor).await;
 
-        Ok(SyncResult::success(output))
+        match result {
+            Ok(output) if !output.is_empty() => {
+                let display = if display_path.is_empty() {
+                    "[root]".to_string()
+                } else {
+                    display_path
+                };
+                outputs.push(format!("{display}:\n{output}"));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                outputs.push(format!("{display_path}: Error: {e}"));
+                had_error = true;
+            }
+        }
     }
 
-    async fn sync_workspace(
-        &self,
-        _path: &Path,
-        package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        let cwd = std::env::current_dir().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-        })?;
-
-        // Collect project info before any async operations
-        let project_paths: Vec<(std::path::PathBuf, String)> = {
-            let module = executor.discover_all_modules(&cwd)?;
-            let mut paths = Vec::new();
-            for instance in module.projects() {
-                if let Ok(manifest) = instance.deserialize::<Project>()
-                    && manifest.codegen.is_some()
-                {
-                    paths.push((
-                        module.root.join(&instance.path),
-                        instance.path.display().to_string(),
-                    ));
-                }
-            }
-            paths
-            // module guard is dropped here at the end of the block
-        };
-
-        let mut outputs = Vec::new();
-        let mut had_error = false;
-
-        // Iterate through projects with codegen config
-        for (full_path, display_path) in project_paths {
-            let codegen_options = functions::CodegenSyncOptions {
-                dry_run: dry_run.into(),
-                check,
-                diff: options.show_diff,
-            };
-            let request = functions::CodegenSyncRequest {
-                path: full_path.to_str().unwrap_or("."),
-                package,
-                options: codegen_options,
-            };
-            let result = functions::execute_sync_codegen(request, executor).await;
-
-            match result {
-                Ok(output) if !output.is_empty() => {
-                    let display = if display_path.is_empty() {
-                        "[root]".to_string()
-                    } else {
-                        display_path
-                    };
-                    outputs.push(format!("{display}:\n{output}"));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    outputs.push(format!("{display_path}: Error: {e}"));
-                    had_error = true;
-                }
-            }
-        }
-
-        if outputs.is_empty() {
-            Ok(SyncResult::success("No codegen configurations found."))
-        } else {
-            Ok(SyncResult {
-                output: outputs.join("\n\n"),
-                had_error,
-            })
-        }
+    if outputs.is_empty() {
+        Ok(SyncResult::success("No codegen configurations found."))
+    } else {
+        Ok(SyncResult {
+            output: outputs.join("\n\n"),
+            had_error,
+        })
     }
 }

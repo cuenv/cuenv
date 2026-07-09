@@ -1,11 +1,9 @@
-//! cuenv - CUE-powered environment management library
+//! cuenv command-line application library.
 //!
-//! This crate ships the `cuenv` binary. Command dispatch lives in
-//! [`commands`]; generated-file synchronization is handled by the
-//! [`SyncProvider`](commands::sync::SyncProvider) implementations registered
-//! in the [`SyncRegistry`](commands::sync::SyncRegistry) (see
-//! [`commands::sync::default_registry`]).
-
+//! The binary entry points use this crate for CLI parsing, command dispatch,
+//! event rendering, and the built-in sync providers. Sync dispatch is an
+//! internal implementation detail so the public API does not promise an
+//! extension surface that the real CLI does not execute.
 /// CLI argument parsing and exit codes.
 pub mod cli;
 /// Command implementations (task, env, sync, etc.).
@@ -18,7 +16,7 @@ pub mod coordinator;
 pub mod events;
 /// Performance measurement utilities.
 pub mod performance;
-/// Provider detection and rules-file evaluation helpers.
+/// CI/CODEOWNERS detection and `.rules.cue` evaluation helpers.
 pub mod providers;
 
 pub mod secret_registry;

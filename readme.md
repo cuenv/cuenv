@@ -47,11 +47,12 @@ authoritative source.
 | Typed environment variables | Stable | Enums, bounds, regex, defaults, interpolation, per-environment overrides |
 | `cuenv exec` — run a command in the resolved environment | Stable | |
 | Secrets: env vars, custom CLI, 1Password, Infisical | Stable | Resolved at runtime, redacted from output |
-| Secrets: AWS, GCP, Vault | Preview | Defined in the schema; runtime resolvers not registered yet |
+| Secrets: AWS, GCP | Stable | Runtime resolvers are registered; values are redacted from output |
+| Secrets: Vault | Preview | Schema-only; no runtime resolver is registered |
 | Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
 | Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
 | Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
-| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Partial | Schema-visible; not fully enforced yet |
+| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Stable | Enforced by the task executor; global concurrency remains backend-defined |
 | Shell integration & directory hooks | Stable | Auto-load on `cd`, with an approval gate (`cuenv allow`) |
 | CI: GitHub Actions generation (`cuenv sync ci`) | Stable | |
 | CI: run pipelines locally (`cuenv ci`) | Stable | |
@@ -60,15 +61,15 @@ authoritative source.
 | CI: GitLab | Preview | `cuenv sync ci` rejects it until an emitter exists |
 | Formatting (`cuenv fmt`) | Stable | rust, nix, go, cue |
 | Code generation (`cuenv sync codegen`) | Partial | Generates files; not all file types fully enforced |
-| Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Partial | From `.rules.cue` via `cuenv sync` |
+| Rules → `.gitignore`, `.dockerignore`, `.editorconfig`, `CODEOWNERS` | Stable | From `.rules.cue` via `cuenv sync` |
 | Multi-source tools (`cuenv tools`) | Stable | Nix, GitHub releases, Rustup, URL, OCI |
 | Lockfile resolution (`cuenv sync lock`) | Stable | Pins OCI image digests into `cuenv.lock` |
 | VCS dependencies (`cuenv sync vcs`) | Stable | Sparse single-subdirectory checkout |
 | Runtimes: Nix, devenv | Stable | Provision tools for tasks and `exec` |
 | Runtimes: OCI binaries, Dagger | Partial | |
 | Runtime: container | Preview | |
-| Container image build (`cuenv build`) | Preview | Lists configured images; build backend not implemented |
-| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Session state works; task/image dependencies not yet |
+| Container image build (`cuenv build`) | Partial | Docker/buildx and Nix delivery work; other backend behavior remains incomplete |
+| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Task dependencies work; image dependencies fail fast until runtime wiring lands |
 | Changesets (`cuenv changeset`) | Stable | |
 | Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
 

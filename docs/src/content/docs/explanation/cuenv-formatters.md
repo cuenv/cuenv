@@ -240,5 +240,5 @@ pub fn matches_any_pattern(path: &str, patterns: &[String]) -> bool
 
 - [Formatters How-to Guide](/how-to/formatters/) - Practical usage
 - [CLI Reference](/reference/cli/#cuenv-fmt) - Command documentation
-- [Cubes](/how-to/cubes/) - Code generation
+- [Code generation](/how-to/codegen/) - Generated-file configuration and sync
 - [CUE Schema Reference](/reference/cue-schema/) - Complete schema documentation

@@ -51,7 +51,6 @@ pub mod rules;
 pub mod runtime;
 pub mod secrets;
 pub mod shell;
-pub mod sync;
 pub mod tasks;
 pub mod tools;
 

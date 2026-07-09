@@ -3,8 +3,7 @@ use super::{
     SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::commands::Command;
-use crate::commands::handler::SyncScope;
-use crate::commands::sync::SyncMode;
+use crate::commands::sync::{SyncMode, SyncScope};
 
 impl Commands {
     /// Convert CLI commands to internal Command representation.

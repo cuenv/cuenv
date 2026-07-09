@@ -6,6 +6,9 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 matrix="docs/design/specs/schema-coverage-matrix.md"
 fail=0
 
+grep_out="$(mktemp -t cuenv-schema-docs-grep.XXXXXX)"
+trap 'rm -f "$grep_out"' EXIT
+
 trim() {
 	local value="$1"
 	value="${value#"${value%%[![:space:]]*}"}"
@@ -133,14 +136,48 @@ stale_patterns=(
 	'cuenv sync codeowners'
 	'/how-to/cubes/'
 	'/explanation/cuenv-cubes/'
+	'Hermetic execution ensures reproducibility'
+	'Tasks run in isolated directories with only declared inputs'
+	'build backend not implemented'
+	'task/image dependencies not yet'
+	'Secrets: AWS, GCP, Vault'
 )
 
 for pattern in "${stale_patterns[@]}"; do
-	if grep -rn -- "$pattern" "${stale_scope[@]}" >/tmp/cuenv-schema-docs-rg.out 2>/dev/null; then
-		cat /tmp/cuenv-schema-docs-rg.out >&2
+	if grep -rn -- "$pattern" "${stale_scope[@]}" >"$grep_out" 2>/dev/null; then
+		cat "$grep_out" >&2
 		record_failure "stale schema or command pattern matched: $pattern"
 	fi
 done
+
+active_architecture_scope=(
+	.agents/skills
+	docs/src/content/docs/explanation
+	docs/src/content/docs/reference
+)
+
+removed_sync_api_patterns=(
+	'Cuenv::builder'
+	'SyncCapability'
+	'ProviderRegistry'
+	'cuenv_core::sync'
+)
+
+for pattern in "${removed_sync_api_patterns[@]}"; do
+	if grep -rn -- "$pattern" "${active_architecture_scope[@]}" >"$grep_out" 2>/dev/null; then
+		cat "$grep_out" >&2
+		record_failure "removed sync API matched in active guidance: $pattern"
+	fi
+done
+
+adr_0006="docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md"
+adr_0009="docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md"
+if ! grep -q '^status: Superseded$' "$adr_0006"; then
+	record_failure "$adr_0006 must remain marked Superseded"
+fi
+if [[ ! -f "$adr_0009" ]] || ! grep -q '^status: Accepted$' "$adr_0009"; then
+	record_failure "$adr_0009 must document the active sync architecture"
+fi
 
 if [[ "$fail" -ne 0 ]]; then
 	exit 1

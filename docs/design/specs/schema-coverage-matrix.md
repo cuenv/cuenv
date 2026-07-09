@@ -12,10 +12,11 @@ Status values:
 - `docs-misleading`: current docs or examples overclaim support and must be corrected before agents rely on them.
 - `needs-decision`: ownership or intended user surface is unclear.
 
-Provider dispatch note: the public `crates/cuenv` provider registry is sync-only.
-`Provider` plus `SyncCapability` back generated-file sync command construction.
-Runtime execution and secret resolution remain on their existing task and
-resolver paths until a real registry-backed dispatch path exists.
+Provider dispatch note: built-in sync operations use the single crate-private
+registry under `crates/cuenv/src/commands/sync/`. The statically typed CLI owns
+argument parsing and passes a normalized `SyncRequest` to that registry. cuenv
+does not expose a third-party sync-provider API. Runtime execution and secret
+resolution remain on their existing task and resolver paths.
 
 CLI-only note: `cuenv web` has no schema definition. It is reserved for a
 future event server and currently fails fast instead of starting a placeholder
