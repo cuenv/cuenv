@@ -87,16 +87,17 @@ fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         executor,
         ..
     } = request;
-    let workspace_root = path.canonicalize().map_err(|e| cuenv_core::Error::Io {
-        source: e,
-        path: Some(path.to_path_buf().into_boxed_path()),
-        operation: "canonicalize sync workspace path".to_string(),
+    let workspace_root = path.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize sync workspace path", path.to_path_buf(), e)
     })?;
 
     let dry_run = options.mode == SyncMode::DryRun;
     let check = options.mode == SyncMode::Check;
 
-    // Get repo root for determining which is the root .rules.cue
+    // The requested path selects the repository; discovery then walks the
+    // whole repo root rather than the path's subtree because CODEOWNERS is a
+    // single aggregated file at the repo root — regenerating it from a partial
+    // project set would drop every entry outside the subtree.
     let repo_root = find_repo_root(&workspace_root).unwrap_or(workspace_root);
 
     // Discover all .rules.cue files manually (avoiding closure lifetime issues)

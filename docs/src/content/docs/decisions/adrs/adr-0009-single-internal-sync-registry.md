@@ -42,6 +42,12 @@ cuenv has one sync dispatch path under
 - the default registry contains every built-in provider: rules, VCS, lock,
   codegen, CI, and git hooks.
 
+Workspace-scoped providers discover projects from the requested path instead
+of the process working directory. The rules provider is the one deliberate
+exception: after using the requested path to locate the repository, it walks
+the entire repo root, because the aggregated CODEOWNERS file is regenerated
+whole and a subtree-scoped walk would drop entries owned by other projects.
+
 The unused `cuenv-core` sync trait is removed, completing the cleanup that
 RFC-0006 started when it deleted the public builder, capability registry, and
 duplicate provider implementations. Detection and rules-evaluation

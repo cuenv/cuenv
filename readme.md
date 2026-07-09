@@ -52,7 +52,7 @@ authoritative source.
 | Tasks: parallel groups, ordered sequences, `dependsOn` | Stable | Dependencies are CUE references, checked at evaluation |
 | Task parameters & output references | Stable | Pass CLI args; wire one task's stdout into another |
 | Content-addressed task caching | Stable | Opt-in via `cache.mode` with `inputs`/`outputs` |
-| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Stable | Enforced by the task executor; global concurrency remains backend-defined |
+| `timeout`, `retry`, `continueOnError`, group `maxConcurrency` | Stable | Enforced by the task executor; the dagger backend rejects `timeout` explicitly; global concurrency remains backend-defined |
 | Shell integration & directory hooks | Stable | Auto-load on `cd`, with an approval gate (`cuenv allow`) |
 | CI: GitHub Actions generation (`cuenv sync ci`) | Stable | |
 | CI: run pipelines locally (`cuenv ci`) | Stable | |
@@ -69,7 +69,7 @@ authoritative source.
 | Runtimes: OCI binaries, Dagger | Partial | |
 | Runtime: container | Preview | |
 | Container image build (`cuenv build`) | Partial | Docker/buildx and Nix delivery work; other backend behavior remains incomplete |
-| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Task dependencies work; image dependencies fail fast until runtime wiring lands |
+| Long-running services (`cuenv up`/`ps`/`down`/`logs`/`restart`) | Partial | Task and image dependencies resolve through the task DAG; readiness, ports, and watch modes supported |
 | Changesets (`cuenv changeset`) | Stable | |
 | Release automation (`cuenv release`) | Partial | version/publish/binaries; config-driven parts incomplete |
 

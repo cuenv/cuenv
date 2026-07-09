@@ -625,6 +625,47 @@ fn sync_all_from_nested_generates_all_ci_in_repo_root() -> TestResult {
 }
 
 #[test]
+fn sync_ci_all_honors_requested_path_from_unrelated_cwd() -> TestResult {
+    let tmp = create_repo()?;
+    let root = tmp.path();
+
+    fs::write(root.join("env.cue"), base_env_cue("@root", false))?;
+
+    let nested = root.join("apps/service");
+    fs::create_dir_all(&nested)?;
+    fs::write(
+        nested.join("env.cue"),
+        project_env_cue("service", "test", "test", "@service"),
+    )?;
+
+    // Run from a directory with no cuenv module at all: workspace discovery
+    // must start from the requested --path, not the process working directory.
+    let unrelated = tempfile::Builder::new()
+        .prefix("cuenv_test_cwd_")
+        .tempdir()?;
+    let root_arg = root.to_str().ok_or("non-UTF-8 temp path")?;
+
+    let output = run_cuenv(unrelated.path(), &["sync", "ci", "-A", "-p", root_arg])?;
+    assert!(
+        output.success,
+        "sync ci -A -p failed: stdout={} stderr={}",
+        output.stdout, output.stderr
+    );
+
+    let workflows_dir = root.join(".github/workflows");
+    assert!(
+        workflows_dir.join("service-test.yml").exists(),
+        "workspace sync should generate workflows for the requested path"
+    );
+    assert!(
+        !unrelated.path().join(".github").exists(),
+        "workspace sync must not write into the process working directory"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn sync_ci_rejects_schema_only_gitlab_provider() -> TestResult {
     let tmp = create_repo()?;
     let root = tmp.path();
