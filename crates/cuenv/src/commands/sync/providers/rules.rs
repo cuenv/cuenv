@@ -17,7 +17,7 @@ use ignore::WalkBuilder;
 use std::path::Path;
 
 use crate::commands::CommandExecutor;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{SyncMode, SyncProvider, SyncRequest, SyncResult, SyncScope};
 use crate::providers::detect_code_owners_provider;
 
 /// Header added to all cuenv-generated files.
@@ -32,161 +32,165 @@ impl SyncProvider for RulesSyncProvider {
         "rules"
     }
 
-    fn description(&self) -> &'static str {
-        "Sync configuration from .rules.cue files (ignore, editorconfig, codeowners)"
-    }
-
-    fn has_config(&self, _manifest: &cuenv_core::manifest::Base) -> bool {
-        // This provider discovers .rules.cue files, not manifest config
-        true
-    }
-
-    async fn sync_path(
-        &self,
-        path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let rules_file = path.join(".rules.cue");
-
-        if !rules_file.exists() {
-            return Ok(SyncResult::success(
-                "No .rules.cue file found in this directory.",
-            ));
+    async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
+        match request.scope {
+            SyncScope::Path => sync_path(request),
+            SyncScope::Workspace => sync_workspace(request),
         }
+    }
+}
 
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
+fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        options,
+        executor,
+        ..
+    } = request;
+    let rules_file = path.join(".rules.cue");
+
+    if !rules_file.exists() {
+        return Ok(SyncResult::success(
+            "No .rules.cue file found in this directory.",
+        ));
+    }
+
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
+
+    // Evaluate the .rules.cue file
+    let config = evaluate_rules_file(&rules_file, executor)?;
+
+    // Get repo root for determining if this is the root .rules.cue
+    let repo_root = find_repo_root(path).unwrap_or_else(|| path.to_path_buf());
+    let is_root = path == repo_root;
+
+    let mut output = sync_directory_rules(path, &config, dry_run.into(), check, is_root)?;
+
+    if let Some(project) = build_project_owners(path, &repo_root, &config) {
+        let codeowners_output = sync_codeowners(&repo_root, &[project], dry_run.into(), check)?;
+        if !codeowners_output.is_empty() {
+            if !output.is_empty() {
+                output.push('\n');
+            }
+            output.push_str(&codeowners_output);
+        }
+    }
+
+    Ok(SyncResult::success(output))
+}
+
+fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        options,
+        executor,
+        ..
+    } = request;
+    let workspace_root = path.canonicalize().map_err(|e| {
+        cuenv_core::Error::io_with_path("canonicalize sync workspace path", path.to_path_buf(), e)
+    })?;
+
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
+
+    // The requested path selects the repository; discovery then walks the
+    // whole repo root rather than the path's subtree because CODEOWNERS is a
+    // single aggregated file at the repo root — regenerating it from a partial
+    // project set would drop every entry outside the subtree.
+    let repo_root = find_repo_root(&workspace_root).unwrap_or(workspace_root);
+
+    // Discover all .rules.cue files manually (avoiding closure lifetime issues)
+    let walker = WalkBuilder::new(&repo_root)
+        .follow_links(true)
+        .standard_filters(true)
+        .build();
+
+    let mut discovered_files = Vec::new();
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if path.file_name() == Some(".rules.cue".as_ref()) {
+            discovered_files.push(path.to_path_buf());
+        }
+    }
+
+    if discovered_files.is_empty() {
+        return Ok(SyncResult::success(
+            "No .rules.cue files found in the repository.",
+        ));
+    }
+
+    let mut outputs = Vec::new();
+    let mut had_error = false;
+    let mut owner_projects = Vec::new();
+
+    for rules_file in &discovered_files {
+        let directory = match rules_file.parent() {
+            Some(d) => d.to_path_buf(),
+            None => continue,
+        };
 
         // Evaluate the .rules.cue file
-        let config = evaluate_rules_file(&rules_file, executor)?;
+        let config = match evaluate_rules_file(rules_file, executor) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    path = %rules_file.display(),
+                    error = %e,
+                    "Failed to evaluate .rules.cue - skipping"
+                );
+                outputs.push(format!("[{}] Error: {}", directory.display(), e));
+                had_error = true;
+                continue;
+            }
+        };
 
-        // Get repo root for determining if this is the root .rules.cue
-        let repo_root = find_repo_root(path).unwrap_or_else(|| path.to_path_buf());
-        let is_root = path == repo_root;
+        let is_root = directory == repo_root;
 
-        let mut output = sync_directory_rules(path, &config, dry_run.into(), check, is_root)?;
+        // Sync per-directory config (ignore, editorconfig)
+        let result = sync_directory_rules(&directory, &config, dry_run.into(), check, is_root);
 
-        if let Some(project) = build_project_owners(path, &repo_root, &config) {
-            let codeowners_output = sync_codeowners(&repo_root, &[project], dry_run.into(), check)?;
-            if !codeowners_output.is_empty() {
-                if !output.is_empty() {
-                    output.push('\n');
-                }
-                output.push_str(&codeowners_output);
+        match result {
+            Ok(output) if !output.is_empty() => {
+                let display = directory
+                    .strip_prefix(&repo_root)
+                    .unwrap_or(&directory)
+                    .display();
+                outputs.push(format!("[{}]\n{}", display, output));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                outputs.push(format!("[{}] Error: {}", directory.display(), e));
+                had_error = true;
             }
         }
 
-        Ok(SyncResult::success(output))
+        if let Some(project) = build_project_owners(&directory, &repo_root, &config) {
+            owner_projects.push(project);
+        }
     }
 
-    async fn sync_workspace(
-        &self,
-        _path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let cwd = std::env::current_dir().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-        })?;
-
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        // Get repo root for determining which is the root .rules.cue
-        let repo_root = find_repo_root(&cwd).unwrap_or_else(|| cwd.clone());
-
-        // Discover all .rules.cue files manually (avoiding closure lifetime issues)
-        let walker = WalkBuilder::new(&cwd)
-            .follow_links(true)
-            .standard_filters(true)
-            .build();
-
-        let mut discovered_files = Vec::new();
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if path.file_name() == Some(".rules.cue".as_ref()) {
-                discovered_files.push(path.to_path_buf());
-            }
+    // Generate aggregated CODEOWNERS at repo root
+    if !owner_projects.is_empty() {
+        let output = sync_codeowners(&repo_root, &owner_projects, dry_run.into(), check)?;
+        if !output.is_empty() {
+            outputs.push(format!("[CODEOWNERS]\n{output}"));
         }
+    }
 
-        if discovered_files.is_empty() {
-            return Ok(SyncResult::success(
-                "No .rules.cue files found in the repository.",
-            ));
-        }
-
-        let mut outputs = Vec::new();
-        let mut had_error = false;
-        let mut owner_projects = Vec::new();
-
-        for rules_file in &discovered_files {
-            let directory = match rules_file.parent() {
-                Some(d) => d.to_path_buf(),
-                None => continue,
-            };
-
-            // Evaluate the .rules.cue file
-            let config = match evaluate_rules_file(rules_file, executor) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %rules_file.display(),
-                        error = %e,
-                        "Failed to evaluate .rules.cue - skipping"
-                    );
-                    outputs.push(format!("[{}] Error: {}", directory.display(), e));
-                    had_error = true;
-                    continue;
-                }
-            };
-
-            let is_root = directory == repo_root;
-
-            // Sync per-directory config (ignore, editorconfig)
-            let result = sync_directory_rules(&directory, &config, dry_run.into(), check, is_root);
-
-            match result {
-                Ok(output) if !output.is_empty() => {
-                    let display = directory.strip_prefix(&cwd).unwrap_or(&directory).display();
-                    outputs.push(format!("[{}]\n{}", display, output));
-                }
-                Ok(_) => {}
-                Err(e) => {
-                    outputs.push(format!("[{}] Error: {}", directory.display(), e));
-                    had_error = true;
-                }
-            }
-
-            if let Some(project) = build_project_owners(&directory, &repo_root, &config) {
-                owner_projects.push(project);
-            }
-        }
-
-        // Generate aggregated CODEOWNERS at repo root
-        if !owner_projects.is_empty() {
-            let output = sync_codeowners(&repo_root, &owner_projects, dry_run.into(), check)?;
-            if !output.is_empty() {
-                outputs.push(format!("[CODEOWNERS]\n{output}"));
-            }
-        }
-
-        if outputs.is_empty() {
-            Ok(SyncResult::success("No changes needed."))
-        } else {
-            Ok(SyncResult {
-                output: outputs.join("\n\n"),
-                had_error,
-            })
-        }
+    if outputs.is_empty() {
+        Ok(SyncResult::success("No changes needed."))
+    } else {
+        Ok(SyncResult {
+            output: outputs.join("\n\n"),
+            had_error,
+        })
     }
 }
 
 /// Evaluate a .rules.cue file and return the parsed configuration.
 fn evaluate_rules_file(file_path: &Path, _executor: &CommandExecutor) -> Result<DirectoryRules> {
-    crate::providers::rules_eval::evaluate_rules_file(file_path)
+    crate::providers::evaluate_rules_file(file_path)
 }
 
 /// Sync per-directory rules (ignore files, editorconfig).
