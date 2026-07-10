@@ -80,6 +80,8 @@ pub struct CiSyncRequest<'a> {
 /// Request for syncing CI across the workspace.
 #[derive(Debug)]
 pub struct CiWorkspaceSyncRequest<'a> {
+    /// Path from which to discover the CUE workspace.
+    pub path: &'a Path,
     /// CUE package name to evaluate.
     pub package: &'a str,
     /// Sync options.
@@ -293,10 +295,7 @@ pub async fn execute_sync_ci_workspace(
     // Get cached module from executor and discover projects before async work
     // (ModuleGuard contains MutexGuard which is not Send, must be dropped before await)
     let projects = {
-        let cwd = std::env::current_dir().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-        })?;
-        let module = executor.discover_all_modules(&cwd)?;
+        let module = executor.discover_all_modules(request.path)?;
         ProjectInfo::collect_from_module(&module)?
     };
 

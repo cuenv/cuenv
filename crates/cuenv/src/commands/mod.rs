@@ -345,7 +345,7 @@ pub enum Command {
         /// Operation mode (write, dry-run, check).
         mode: sync::SyncMode,
         /// Scope (single path or entire workspace).
-        scope: handler::SyncScope,
+        scope: sync::SyncScope,
         /// Show diff for codegen (codegen-specific).
         show_diff: bool,
         /// CI provider filter.

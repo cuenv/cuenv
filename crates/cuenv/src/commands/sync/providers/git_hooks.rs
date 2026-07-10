@@ -7,12 +7,10 @@
 use async_trait::async_trait;
 use cuenv_core::DryRun;
 use cuenv_core::Result;
-use cuenv_core::manifest::Base;
 use std::path::Path;
 
-use crate::commands::CommandExecutor;
 use crate::commands::git_hooks::find_git_root;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{SyncMode, SyncProvider, SyncRequest, SyncResult, SyncScope};
 
 /// Sync provider for git hooks.
 pub struct GitHooksSyncProvider;
@@ -23,104 +21,98 @@ impl SyncProvider for GitHooksSyncProvider {
         "git-hooks"
     }
 
-    fn description(&self) -> &'static str {
-        "Sync git hook scripts (pre-push, pre-commit)"
+    async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
+        match request.scope {
+            SyncScope::Path => sync_path(request),
+            SyncScope::Workspace => sync_workspace(request),
+        }
     }
+}
 
-    fn has_config(&self, _manifest: &Base) -> bool {
-        // Git hooks config is on Project, not Base
-        // For now return false and check during sync
-        false
-    }
+fn sync_path(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        options,
+        executor,
+        ..
+    } = request;
+    let Ok(git_root) = find_git_root(path) else {
+        return Ok(SyncResult::success(
+            "Not in a git repository. Skipping git hooks sync.",
+        ));
+    };
 
-    async fn sync_path(
-        &self,
-        path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let Ok(git_root) = find_git_root(path) else {
-            return Ok(SyncResult::success(
-                "Not in a git repository. Skipping git hooks sync.",
-            ));
-        };
+    // Get path-local module and collect pre-push hooks
+    let module = executor.get_module(path)?;
+    let mut all_pre_push_hooks = std::collections::HashMap::new();
 
-        // Get path-local module and collect pre-push hooks
-        let module = executor.get_module(path)?;
-        let mut all_pre_push_hooks = std::collections::HashMap::new();
-
-        for instance in module.projects() {
-            if let Ok(project) = instance.deserialize::<cuenv_core::manifest::Project>() {
-                let hooks = project.pre_push_hooks_map();
-                for (name, hook) in hooks {
-                    let hook_name = format_hook_name(&instance.path, &project.name, name);
-                    all_pre_push_hooks.insert(hook_name, hook);
-                }
+    for instance in module.projects() {
+        if let Ok(project) = instance.deserialize::<cuenv_core::manifest::Project>() {
+            let hooks = project.pre_push_hooks_map();
+            for (name, hook) in hooks {
+                let hook_name = format_hook_name(&instance.path, &project.name, name);
+                all_pre_push_hooks.insert(hook_name, hook);
             }
         }
-
-        if all_pre_push_hooks.is_empty() {
-            return Ok(SyncResult::success(
-                "No pre-push hooks configured in this project.",
-            ));
-        }
-
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
-
-        Ok(SyncResult::success(output))
     }
 
-    async fn sync_workspace(
-        &self,
-        _path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let cwd = std::env::current_dir().map_err(|e| {
-            cuenv_core::Error::configuration(format!("Failed to get current directory: {e}"))
-        })?;
+    if all_pre_push_hooks.is_empty() {
+        return Ok(SyncResult::success(
+            "No pre-push hooks configured in this project.",
+        ));
+    }
 
-        // For git hooks, we sync at the repo root level
-        // Find git root and sync there
-        let Ok(git_root) = find_git_root(&cwd) else {
-            return Ok(SyncResult::success(
-                "Not in a git repository. Skipping git hooks sync.",
-            ));
-        };
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
 
-        // Get all projects across the workspace and collect pre-push hooks
-        let module = executor.discover_all_modules(&cwd)?;
-        let mut all_pre_push_hooks = std::collections::HashMap::new();
+    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
 
-        for instance in module.projects() {
-            if let Ok(project) = instance.deserialize::<cuenv_core::manifest::Project>() {
-                let hooks = project.pre_push_hooks_map();
-                for (name, hook) in hooks {
-                    // Prefix with project name if not at root
-                    let hook_name = format_hook_name(&instance.path, &project.name, name);
-                    all_pre_push_hooks.insert(hook_name, hook);
-                }
+    Ok(SyncResult::success(output))
+}
+
+fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
+    let SyncRequest {
+        path,
+        options,
+        executor,
+        ..
+    } = request;
+
+    // For git hooks, we sync at the repo root level
+    // Find git root and sync there
+    let Ok(git_root) = find_git_root(path) else {
+        return Ok(SyncResult::success(
+            "Not in a git repository. Skipping git hooks sync.",
+        ));
+    };
+
+    // Get all projects across the workspace and collect pre-push hooks
+    let module = executor.discover_all_modules(path)?;
+    let mut all_pre_push_hooks = std::collections::HashMap::new();
+
+    for instance in module.projects() {
+        if let Ok(project) = instance.deserialize::<cuenv_core::manifest::Project>() {
+            let hooks = project.pre_push_hooks_map();
+            for (name, hook) in hooks {
+                // Prefix with project name if not at root
+                let hook_name = format_hook_name(&instance.path, &project.name, name);
+                all_pre_push_hooks.insert(hook_name, hook);
             }
         }
-
-        if all_pre_push_hooks.is_empty() {
-            return Ok(SyncResult::success(
-                "No pre-push hooks configured in any project.",
-            ));
-        }
-
-        let dry_run = options.mode == SyncMode::DryRun;
-        let check = options.mode == SyncMode::Check;
-
-        let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
-
-        Ok(SyncResult::success(output))
     }
+
+    if all_pre_push_hooks.is_empty() {
+        return Ok(SyncResult::success(
+            "No pre-push hooks configured in any project.",
+        ));
+    }
+
+    let dry_run = options.mode == SyncMode::DryRun;
+    let check = options.mode == SyncMode::Check;
+
+    let output = sync_pre_push_hook(&git_root, &all_pre_push_hooks, dry_run.into(), check)?;
+
+    Ok(SyncResult::success(output))
 }
 
 /// Format a hook name, prefixing with project name when the instance is not at the module root.

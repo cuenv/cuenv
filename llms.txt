@@ -31,7 +31,7 @@ cuenv task -e staging test
 - Tasks can run in parallel (object syntax) or sequentially (array syntax)
 - Automatic dependency resolution via `dependsOn`
 - Opt-in content-aware caching based on `cache.mode`, declared `inputs`, and `outputs`
-- Hermetic execution ensures reproducibility
+- Cache keys and staged declared inputs support reproducible task reuse; host execution is not a full filesystem sandbox
 
 ## Configuration
 
@@ -141,7 +141,7 @@ Secrets are resolved at runtime. Use `schema.#ExecSecret` for custom commands, `
 - **Parallel Execution**: Object keys in task groups run concurrently
 - **Sequential Execution**: Array elements in task groups run in order
 - **Caching**: Tasks with `cache.mode` and declared inputs/outputs can reuse results by content hash
-- **Hermetic Builds**: Tasks run in isolated directories with only declared inputs
+- **Execution isolation**: Cached tasks stage declared inputs, but host execution is not yet a complete filesystem sandbox
 
 ## CLI Reference
 

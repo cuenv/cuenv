@@ -5,7 +5,6 @@ mod materialization;
 mod paths;
 
 use async_trait::async_trait;
-use clap::{Arg, Command};
 use cuenv_core::lockfile::{LOCKFILE_NAME, LOCKFILE_VERSION, LockedVcsDependency, Lockfile};
 use cuenv_core::manifest::{Base, Project, VcsDependency};
 use cuenv_core::{Error, Result};
@@ -25,7 +24,9 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::CommandExecutor;
 use crate::commands::git_hooks::find_git_root;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{
+    SyncMode, SyncOptions, SyncProvider, SyncRequest, SyncResult, SyncScope,
+};
 
 #[cfg(test)]
 use git::run_git;
@@ -58,54 +59,12 @@ impl SyncProvider for VcsSyncProvider {
         "vcs"
     }
 
-    fn description(&self) -> &'static str {
-        "Sync cuenv-managed VCS dependencies"
-    }
-
-    fn has_config(&self, manifest: &Base) -> bool {
-        !manifest.vcs.is_empty()
-    }
-
-    fn build_command(&self) -> Command {
-        self.default_command().arg(
-            Arg::new("update")
-                .long("update")
-                .short('u')
-                .help("Force re-resolution of VCS refs. Use -u for all, or -u NAME for specific dependencies.")
-                .num_args(0..)
-                .value_name("NAMES")
-                .default_missing_value(""),
-        )
-    }
-
-    fn parse_args(&self, matches: &clap::ArgMatches) -> SyncOptions {
-        let mode = if matches.get_flag("dry-run") {
-            SyncMode::DryRun
-        } else if matches.get_flag("check") {
-            SyncMode::Check
-        } else {
-            SyncMode::Write
+    async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
+        let scope = match request.scope {
+            SyncScope::Path => VcsSyncScope::Path,
+            SyncScope::Workspace => VcsSyncScope::Workspace,
         };
-        let update_tools = matches
-            .get_many::<String>("update")
-            .map(|names| names.filter(|name| !name.is_empty()).cloned().collect());
-
-        SyncOptions {
-            mode,
-            show_diff: matches.get_flag("diff"),
-            ci_provider: matches.get_one::<String>("provider").cloned(),
-            update_tools,
-        }
-    }
-
-    async fn sync_path(
-        &self,
-        path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let collected = collect_vcs_sync_inputs(path, executor, VcsSyncScope::Path)?;
+        let collected = collect_vcs_sync_inputs(request.path, request.executor, scope)?;
         let VcsSyncInputs {
             module_root,
             dependencies,
@@ -114,30 +73,8 @@ impl SyncProvider for VcsSyncProvider {
             VcsSyncRequest {
                 module_root: &module_root,
                 dependencies,
-                options,
-                scope: VcsSyncScope::Path,
-            },
-        )?))
-    }
-
-    async fn sync_workspace(
-        &self,
-        path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let collected = collect_vcs_sync_inputs(path, executor, VcsSyncScope::Workspace)?;
-        let VcsSyncInputs {
-            module_root,
-            dependencies,
-        } = collected;
-        Ok(SyncResult::success(sync_vcs_dependencies(
-            VcsSyncRequest {
-                module_root: &module_root,
-                dependencies,
-                options,
-                scope: VcsSyncScope::Workspace,
+                options: request.options,
+                scope,
             },
         )?))
     }

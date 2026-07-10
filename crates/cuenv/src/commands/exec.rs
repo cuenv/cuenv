@@ -332,7 +332,16 @@ async fn ensure_lockfile_for_runtime_tools(
     };
     let registry = default_registry();
     registry
-        .sync_provider("lock", project_path, package, &options, false, executor)
+        .sync_provider(
+            "lock",
+            crate::commands::sync::SyncRequest {
+                path: project_path,
+                package,
+                options: &options,
+                scope: crate::commands::sync::SyncScope::Path,
+                executor,
+            },
+        )
         .await
         .map_err(|e| cuenv_core::Error::configuration(format!("Failed to sync lockfile: {e}")))?;
 

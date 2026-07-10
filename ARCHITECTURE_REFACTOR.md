@@ -1,5 +1,10 @@
 # cuenv-core Architecture Refactor
 
+> Historical implementation plan. The line counts, progress percentage, and
+> validation state below describe the original refactor snapshot; they are not
+> current project status. Use `docs/src/content/docs/explanation/architecture.md`
+> and the schema coverage matrix for the maintained architecture description.
+
 Split cuenv-core (22,237 LOC) into 6 focused crates, reducing core to ~8K LOC.
 
 **Progress:** 65% complete (106/163 tasks)

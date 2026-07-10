@@ -397,16 +397,6 @@ impl CommandHandler for CiHandler {
     }
 }
 
-/// Scope of sync operation.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum SyncScope {
-    /// Sync single path.
-    #[default]
-    Path,
-    /// Sync all projects in workspace.
-    Workspace,
-}
-
 /// Handler for `sync` command using provider registry.
 pub struct SyncHandler {
     /// Specific provider name (None = sync all providers).
@@ -418,64 +408,13 @@ pub struct SyncHandler {
     /// Operation mode (write, dry-run, check).
     pub mode: sync::SyncMode,
     /// Scope (single path or entire workspace).
-    pub scope: SyncScope,
+    pub scope: sync::SyncScope,
     /// Show diff for codegen (codegen-specific).
     pub show_diff: bool,
     /// CI provider filter (github, buildkite).
     pub ci_provider: Option<String>,
     /// Tools to force re-resolution for (lock-specific).
     pub update_tools: Option<Vec<String>>,
-}
-
-struct SelectedSyncProvidersRequest<'a> {
-    registry: &'a sync::SyncRegistry,
-    provider_names: &'a [&'a str],
-    path: &'a std::path::Path,
-    package: &'a str,
-    options: &'a sync::SyncOptions,
-    scope: &'a SyncScope,
-    executor: &'a CommandExecutor,
-}
-
-async fn run_selected_sync_providers(request: SelectedSyncProvidersRequest<'_>) -> Result<String> {
-    let mut outputs = Vec::new();
-    let mut had_error = false;
-    let sync_all = request.scope == &SyncScope::Workspace;
-    for name in request.provider_names {
-        let result = request
-            .registry
-            .sync_provider(
-                name,
-                request.path,
-                request.package,
-                request.options,
-                sync_all,
-                request.executor,
-            )
-            .await;
-
-        match result {
-            Ok(r) => {
-                if !r.output.is_empty() {
-                    outputs.push(format!("[{name}]\n{}", r.output));
-                }
-                had_error |= r.had_error;
-            }
-            Err(e) => {
-                outputs.push(format!("[{name}] Error: {e}"));
-                had_error = true;
-            }
-        }
-    }
-
-    let combined = outputs.join("\n\n");
-    if had_error {
-        Err(cuenv_core::Error::configuration(combined))
-    } else if combined.is_empty() {
-        Ok("No sync operations performed.".to_string())
-    } else {
-        Ok(combined)
-    }
 }
 
 fn is_module_root(path: &std::path::Path) -> Result<bool> {
@@ -503,7 +442,7 @@ impl CommandHandler for SyncHandler {
         };
 
         let path = std::path::Path::new(&self.path);
-        let sync_all = self.scope == SyncScope::Workspace;
+        let sync_all = self.scope == sync::SyncScope::Workspace;
         let project_error = |path: &std::path::Path| {
             cuenv_core::Error::configuration(format!(
                 "No cuenv project found at path: {}. Run 'cuenv info' to inspect project layout or use 'cuenv sync -A' to sync all projects.",
@@ -535,18 +474,29 @@ impl CommandHandler for SyncHandler {
                     return Err(project_error(path));
                 }
 
-                let rules_output = run_selected_sync_providers(SelectedSyncProvidersRequest {
-                    registry: &registry,
-                    provider_names: &["rules"],
-                    path,
-                    package: &self.package,
-                    options: &options,
-                    scope: &self.scope,
-                    executor,
-                })
-                .await?;
+                let rules_output = registry
+                    .sync_selected(
+                        &["rules"],
+                        sync::SyncRequest {
+                            path,
+                            package: &self.package,
+                            options: &options,
+                            scope: self.scope,
+                            executor,
+                        },
+                    )
+                    .await?;
                 let vcs_output = registry
-                    .sync_provider("vcs", path, &self.package, &options, false, executor)
+                    .sync_provider(
+                        "vcs",
+                        sync::SyncRequest {
+                            path,
+                            package: &self.package,
+                            options: &options,
+                            scope: sync::SyncScope::Path,
+                            executor,
+                        },
+                    )
                     .await?
                     .output;
                 return Ok([rules_output, vcs_output]
@@ -560,28 +510,42 @@ impl CommandHandler for SyncHandler {
         if let Some(name) = &self.subcommand {
             // Special-case root-scoped providers from the module root should behave
             // like `-A` to avoid requiring the root to be a Project.
-            let mut use_workspace = sync_all;
-            if !use_workspace && matches!(name.as_str(), "ci" | "vcs") && is_module_root(path)? {
+            let mut scope = self.scope;
+            if scope == sync::SyncScope::Path
+                && matches!(name.as_str(), "ci" | "vcs")
+                && is_module_root(path)?
+            {
                 tracing::info!("sync {name}: switching to workspace mode at module root");
-                use_workspace = true;
+                scope = sync::SyncScope::Workspace;
             }
 
             let result = registry
-                .sync_provider(name, path, &self.package, &options, use_workspace, executor)
+                .sync_provider(
+                    name,
+                    sync::SyncRequest {
+                        path,
+                        package: &self.package,
+                        options: &options,
+                        scope,
+                        executor,
+                    },
+                )
                 .await?;
             return Ok(result.output);
         }
 
-        let provider_output = run_selected_sync_providers(SelectedSyncProvidersRequest {
-            registry: &registry,
-            provider_names: &["rules", "vcs", "lock", "codegen", "ci", "git-hooks"],
-            path,
-            package: &self.package,
-            options: &options,
-            scope: &self.scope,
-            executor,
-        })
-        .await?;
+        let provider_output = registry
+            .sync_selected(
+                &["rules", "vcs", "lock", "codegen", "ci", "git-hooks"],
+                sync::SyncRequest {
+                    path,
+                    package: &self.package,
+                    options: &options,
+                    scope: self.scope,
+                    executor,
+                },
+            )
+            .await?;
 
         Ok(provider_output)
     }

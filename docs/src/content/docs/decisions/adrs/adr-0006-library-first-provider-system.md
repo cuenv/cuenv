@@ -9,7 +9,14 @@ related_features: []
 supersedes: []
 superseded_by:
   - RFC-0006
+  - ADR-0009
 ---
+
+:::caution[Superseded]
+RFC-0006 removed this design and ADR-0009 records the replacement. The public
+provider builder described here was never connected to the CLI dispatcher and
+has been removed. This document is retained as historical context only.
+:::
 
 ## Context
 
@@ -190,10 +197,9 @@ static _: &dyn Provider = &CiProvider;
 
 ## Status
 
-Accepted — partially implemented in PR #234. The library target, sync provider
-trait, registry, builder, and dynamic sync command construction are implemented.
-Full CLI dispatch still lives in `crates/cuenv/src/main.rs`; a library-level
-`run_cli` entrypoint should be added only when it dispatches real commands.
+Superseded by ADR-0009. The experiment proved that exposing registration and
+dynamic command construction without routing real CLI execution through them
+created a second, misleading architecture rather than an extension point.
 
 ## Implementation Order
 

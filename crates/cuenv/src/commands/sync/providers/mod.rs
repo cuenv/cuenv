@@ -7,12 +7,12 @@ mod lock;
 mod rules;
 mod vcs;
 
-pub use ci::CiSyncProvider;
-pub use codegen::CodegenSyncProvider;
-pub use git_hooks::GitHooksSyncProvider;
-pub use lock::LockSyncProvider;
-pub use rules::RulesSyncProvider;
-pub use vcs::VcsSyncProvider;
+use ci::CiSyncProvider;
+use codegen::CodegenSyncProvider;
+use git_hooks::GitHooksSyncProvider;
+use lock::LockSyncProvider;
+use rules::RulesSyncProvider;
+use vcs::VcsSyncProvider;
 
 use super::registry::SyncRegistry;
 

@@ -9,14 +9,13 @@
 mod tool_resolution;
 
 use async_trait::async_trait;
-use clap::{Arg, Command};
 use cuenv_ci::flake::FlakeLockAnalyzer;
 use cuenv_core::Result;
 use cuenv_core::lockfile::{
     ArtifactKind, LOCKFILE_NAME, LockedArtifact, LockedNixRuntime, LockedOciExtract, LockedRuntime,
     Lockfile, PlatformData,
 };
-use cuenv_core::manifest::{Base, GitHubProviderConfig, NixRuntime, Project, Runtime, ToolSpec};
+use cuenv_core::manifest::{GitHubProviderConfig, NixRuntime, Project, Runtime, ToolSpec};
 use cuenv_core::secrets::SecretExt;
 use cuenv_tools_oci::{OciClient, Platform};
 use std::collections::{BTreeMap, HashMap};
@@ -24,7 +23,9 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 use crate::commands::CommandExecutor;
-use crate::commands::sync::provider::{SyncMode, SyncOptions, SyncProvider, SyncResult};
+use crate::commands::sync::provider::{
+    SyncMode, SyncOptions, SyncProvider, SyncRequest, SyncResult, SyncScope,
+};
 use tool_resolution::{
     CollectedTool, ToolIdentityKey, ToolLockResolutionRequest, has_nix_tools, resolve_tool_locks,
     tool_identity_key,
@@ -39,88 +40,16 @@ impl SyncProvider for LockSyncProvider {
         "lock"
     }
 
-    fn description(&self) -> &'static str {
-        "Resolve OCI images and update lockfile"
-    }
-
-    fn has_config(&self, _manifest: &Base) -> bool {
-        // OCI runtime config is on Project, not Base
-        // We'll check during sync
-        false
-    }
-
-    fn build_command(&self) -> Command {
-        self.default_command().arg(
-            Arg::new("update")
-                .short('u')
-                .long("update")
-                .help("Force re-resolution of tools, ignoring cached lockfile resolutions. Optionally specify tool names to update only those tools.")
-                .num_args(0..)
-                .value_name("TOOLS")
-                .action(clap::ArgAction::Append),
-        )
-    }
-
-    fn parse_args(&self, matches: &clap::ArgMatches) -> SyncOptions {
-        let mode = if matches.get_flag("dry-run") {
-            SyncMode::DryRun
-        } else if matches.get_flag("check") {
-            SyncMode::Check
-        } else {
-            SyncMode::Write
+    async fn sync(&self, request: SyncRequest<'_>) -> Result<SyncResult> {
+        let scope = match request.scope {
+            SyncScope::Path => LockSyncScope::Path,
+            SyncScope::Workspace => LockSyncScope::Workspace,
         };
-
-        // Parse -u/--update flag
-        // - Not present: None (use cache)
-        // - Present with no args: Some(vec![]) (update all)
-        // - Present with args: Some(vec!["tool1", "tool2"]) (update specific tools)
-        let update_tools = if matches.contains_id("update") {
-            let tools: Vec<String> = matches
-                .get_many::<String>("update")
-                .map(|vals| vals.cloned().collect())
-                .unwrap_or_default();
-            Some(tools)
-        } else {
-            None
-        };
-
-        SyncOptions {
-            mode,
-            show_diff: matches.get_flag("diff"),
-            ci_provider: matches.get_one::<String>("provider").cloned(),
-            update_tools,
-        }
-    }
-
-    async fn sync_path(
-        &self,
-        path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
         let output = execute_lock_sync(LockSyncRequest {
-            path,
-            options,
-            executor,
-            scope: LockSyncScope::Path,
-        })
-        .await?;
-        Ok(SyncResult::success(output))
-    }
-
-    async fn sync_workspace(
-        &self,
-        _path: &Path,
-        _package: &str,
-        options: &SyncOptions,
-        executor: &CommandExecutor,
-    ) -> Result<SyncResult> {
-        let output = execute_lock_sync(LockSyncRequest {
-            path: Path::new("."),
-            options,
-            executor,
-            scope: LockSyncScope::Workspace,
+            path: request.path,
+            options: request.options,
+            executor: request.executor,
+            scope,
         })
         .await?;
         Ok(SyncResult::success(output))
