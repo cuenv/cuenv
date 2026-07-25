@@ -3,17 +3,14 @@
 //! Displays information about a CUE module including
 //! the number of Base and Project instances.
 //!
-//! Uses discovery-based evaluation when showing all projects: finds all env.cue files
-//! and evaluates each directory individually with `recursive: false`, avoiding CUE's
-//! `./...:package` pattern which can hang when directories contain mixed packages.
+//! Without an explicit path, evaluates the selected package recursively across
+//! the module in one CUE evaluation. With a path, evaluates only that directory.
 
 use crate::commands::convert_engine_error;
-use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
+use crate::commands::env_file::find_cue_module_root;
 use cuengine::ModuleEvalOptions;
-use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path};
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
-use std::collections::HashMap;
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
@@ -58,50 +55,6 @@ struct InfoContext {
     scan_all: bool,
     start_path: PathBuf,
     module_root: PathBuf,
-}
-
-#[derive(Default)]
-struct DiscoveredModuleResults {
-    instances: HashMap<String, serde_json::Value>,
-    projects: Vec<String>,
-    meta: HashMap<String, cuengine::FieldMeta>,
-}
-
-impl DiscoveredModuleResults {
-    fn merge(&mut self, raw: cuengine::ModuleResult, dir_rel_path: &str) {
-        for (path_str, value) in raw.instances {
-            let rel_path = if path_str == "." {
-                dir_rel_path.to_string()
-            } else {
-                path_str
-            };
-            self.instances.insert(rel_path, value);
-        }
-
-        for project_path in raw.projects {
-            let rel_project_path = if project_path == "." {
-                dir_rel_path.to_string()
-            } else {
-                project_path
-            };
-            if !self.projects.contains(&rel_project_path) {
-                self.projects.push(rel_project_path);
-            }
-        }
-
-        for (meta_key, meta_value) in raw.meta {
-            let adjusted_key = adjust_meta_key_path(&meta_key, dir_rel_path);
-            self.meta.insert(adjusted_key, meta_value);
-        }
-    }
-
-    fn into_module_result(self) -> cuengine::ModuleResult {
-        cuengine::ModuleResult {
-            instances: self.instances,
-            projects: self.projects,
-            meta: self.meta,
-        }
-    }
 }
 
 /// Execute the info command.
@@ -161,54 +114,24 @@ fn evaluate_info_module(
     options: InfoOptions<'_>,
 ) -> Result<cuengine::ModuleResult> {
     if context.scan_all {
-        evaluate_discovered_env_cue_directories(context, options)
+        evaluate_recursive_info_module(context, options)
     } else {
         evaluate_specific_info_path(context, options)
     }
 }
 
-fn evaluate_discovered_env_cue_directories(
+fn evaluate_recursive_info_module(
     context: &InfoContext,
     options: InfoOptions<'_>,
 ) -> Result<cuengine::ModuleResult> {
-    let env_cue_dirs = discover_env_cue_directories(&context.module_root, options.package);
+    let eval_options = ModuleEvalOptions {
+        recursive: true,
+        with_meta: options.with_meta,
+        ..Default::default()
+    };
 
-    if env_cue_dirs.is_empty() {
-        return Err(cuenv_core::Error::configuration(format!(
-            "No env.cue files with package '{}' found in module: {}",
-            options.package,
-            context.module_root.display()
-        )));
-    }
-
-    let mut discovered = DiscoveredModuleResults::default();
-
-    for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &context.module_root);
-        let eval_options = ModuleEvalOptions {
-            recursive: false,
-            with_meta: options.with_meta,
-            target_dir: Some(dir.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-
-        let Ok(raw) =
-            cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
-                .map_err(convert_engine_error)
-        else {
-            continue;
-        };
-
-        discovered.merge(raw, &dir_rel_path);
-    }
-
-    if discovered.instances.is_empty() {
-        return Err(cuenv_core::Error::configuration(
-            "No instances could be evaluated. All directories failed.",
-        ));
-    }
-
-    Ok(discovered.into_module_result())
+    cuengine::evaluate_module(&context.module_root, options.package, Some(&eval_options))
+        .map_err(convert_engine_error)
 }
 
 fn evaluate_specific_info_path(
@@ -305,6 +228,26 @@ fn render_module_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
+    use std::fs;
+    use tempfile::TempDir;
+
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
+
+    fn temp_module() -> TestResult<TempDir> {
+        Ok(tempfile::Builder::new()
+            .prefix("cuenv-info-recursive-")
+            .tempdir()?)
+    }
+
+    fn write_module(root: &Path) -> TestResult {
+        fs::create_dir_all(root.join("cue.mod"))?;
+        fs::write(
+            root.join("cue.mod/module.cue"),
+            "module: \"example.com/info-recursive-test\"\nlanguage: {version: \"v0.9.0\"}\n",
+        )?;
+        Ok(())
+    }
 
     #[test]
     fn test_project_info_serialization() {
@@ -442,5 +385,74 @@ mod tests {
         });
         // Should fail with "No CUE module found"
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn unscoped_info_discovers_an_arbitrarily_named_cue_file() -> TestResult {
+        let temp = temp_module()?;
+        write_module(temp.path())?;
+        fs::write(
+            temp.path().join("project.cue"),
+            "package cuenv\nname: \"arbitrary-filename\"\n",
+        )?;
+        let context = InfoContext {
+            scan_all: true,
+            start_path: temp.path().to_path_buf(),
+            module_root: temp.path().to_path_buf(),
+        };
+        let result = evaluate_info_module(
+            &context,
+            InfoOptions {
+                path: None,
+                package: "cuenv",
+                json_output: true,
+                with_meta: false,
+            },
+        )?;
+
+        assert_eq!(result.projects, ["."]);
+        assert_eq!(result.instances["."]["name"], "arbitrary-filename");
+
+        Ok(())
+    }
+
+    #[test]
+    fn unscoped_info_propagates_a_selected_package_failure() -> TestResult {
+        let temp = temp_module()?;
+        write_module(temp.path())?;
+        fs::write(
+            temp.path().join("defaults.cue"),
+            "package cuenv\nenv: {ROOT: \"yes\"}\n",
+        )?;
+        fs::create_dir_all(temp.path().join("valid"))?;
+        fs::write(
+            temp.path().join("valid/project.cue"),
+            "package cuenv\nname: \"valid\"\n",
+        )?;
+        fs::create_dir_all(temp.path().join("broken"))?;
+        fs::write(
+            temp.path().join("broken/configuration.cue"),
+            "package cuenv\nname: \"broken\"\nimpossible: 1 & 2\n",
+        )?;
+        let context = InfoContext {
+            scan_all: true,
+            start_path: temp.path().to_path_buf(),
+            module_root: temp.path().to_path_buf(),
+        };
+
+        let error = evaluate_info_module(
+            &context,
+            InfoOptions {
+                path: None,
+                package: "cuenv",
+                json_output: true,
+                with_meta: false,
+            },
+        )
+        .expect_err("a broken selected-package instance must fail unscoped info");
+
+        assert!(error.to_string().contains("broken"), "{error}");
+
+        Ok(())
     }
 }

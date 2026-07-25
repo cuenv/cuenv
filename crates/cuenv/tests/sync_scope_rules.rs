@@ -491,7 +491,7 @@ fn sync_nested_project_normalizes_parent_trigger_paths() -> TestResult {
         workflow.contains("infrastructure/waddle.cloud/gitops/waddle-server/**"),
         "{workflow}"
     );
-    assert!(workflow.contains("server/env.cue"), "{workflow}");
+    assert!(workflow.contains("'**/*.cue'"), "{workflow}");
     assert!(!workflow.contains("server/../"), "{workflow}");
     assert!(!workflow.contains("../"), "{workflow}");
 

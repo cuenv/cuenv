@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"cuelang.org/go/cue"
 )
@@ -9,7 +10,13 @@ import (
 // buildJSONClean builds a JSON representation without any _meta injection.
 // This returns clean JSON that can be correlated with the separate meta map.
 func buildJSONClean(v cue.Value) ([]byte, error) {
-	result := buildValueClean(v)
+	if err := v.Validate(cue.Concrete(true)); err != nil {
+		return nil, err
+	}
+	result, err := buildValueClean(v)
+	if err != nil {
+		return nil, err
+	}
 	return json.Marshal(result)
 }
 
@@ -25,31 +32,47 @@ func unquoteSelector(s string) string {
 }
 
 // buildValueClean recursively builds a clean value without metadata
-func buildValueClean(v cue.Value) interface{} {
+func buildValueClean(v cue.Value) (interface{}, error) {
 	switch v.Kind() {
 	case cue.StructKind:
 		result := make(map[string]interface{})
-		iter, _ := v.Fields(cue.Definitions(false))
+		iter, err := v.Fields(cue.Definitions(false))
+		if err != nil {
+			return nil, err
+		}
 		for iter.Next() {
 			sel := iter.Selector()
 			fieldName := unquoteSelector(sel.String())
-			result[fieldName] = buildValueClean(iter.Value())
+			fieldValue, err := buildValueClean(iter.Value())
+			if err != nil {
+				return nil, fmt.Errorf("field %s: %w", fieldName, err)
+			}
+			result[fieldName] = fieldValue
 		}
-		return result
+		return result, nil
 
 	case cue.ListKind:
 		// Use a non-nil slice so empty CUE lists serialize to [] (not null).
 		items := make([]interface{}, 0)
-		iter, _ := v.List()
-		for iter.Next() {
-			items = append(items, buildValueClean(iter.Value()))
+		iter, err := v.List()
+		if err != nil {
+			return nil, err
 		}
-		return items
+		for iter.Next() {
+			item, err := buildValueClean(iter.Value())
+			if err != nil {
+				return nil, fmt.Errorf("list item %d: %w", len(items), err)
+			}
+			items = append(items, item)
+		}
+		return items, nil
 
 	default:
 		// Concrete value (string, number, bool, null)
 		var val interface{}
-		v.Decode(&val)
-		return val
+		if err := v.Decode(&val); err != nil {
+			return nil, err
+		}
+		return val, nil
 	}
 }

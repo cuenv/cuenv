@@ -1,7 +1,9 @@
-//! Base schema discovery across monorepo workspaces
+//! Legacy `env.cue`-specific Base inventory.
 //!
-//! This module provides functionality to discover Base configurations (owners, ignore)
-//! across a monorepo without requiring full Project schemas with name fields.
+//! This compatibility helper inventories conventionally named files and
+//! evaluates them independently. It is not used for module-wide evaluation:
+//! workspace operations must recursively evaluate the selected CUE package so
+//! arbitrary filenames participate and failures remain atomic.
 
 use std::path::{Path, PathBuf};
 
@@ -25,12 +27,11 @@ pub struct DiscoveredBase {
 /// Function type for evaluating env.cue files as Base schema
 pub type BaseEvalFn = Box<dyn Fn(&Path) -> Result<Base, crate::Error> + Send + Sync>;
 
-/// Discovers Base configurations across a monorepo workspace
+/// Inventories Base configurations stored in conventionally named `env.cue` files.
 ///
-/// Unlike `TaskDiscovery`, this discovers all env.cue files that can be parsed
-/// as `schema.#Base`, regardless of whether they have a `name` field. This enables
-/// discovering owners and ignore configurations in nested directories that don't
-/// define full projects.
+/// This legacy helper is filename-specific and fail-open. Do not use it to
+/// implement module-wide or reconciliation operations; use one recursive
+/// selected-package evaluation instead.
 pub struct BaseDiscovery {
     /// Root directory of the workspace
     workspace_root: PathBuf,

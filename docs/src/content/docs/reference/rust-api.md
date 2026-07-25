@@ -11,26 +11,38 @@ The CUE evaluation engine crate provides the interface to evaluate CUE configura
 
 ### `evaluate_module` (Recommended)
 
-The recommended entry point for CUE evaluation. Evaluates an entire CUE module at once, returning all instances (projects and bases) in a single call. This is more efficient than per-directory evaluation when working with monorepos.
+The recommended entry point for CUE evaluation. With recursive evaluation
+enabled, it evaluates every instance of the selected package across the module
+in one call; CUE source filenames are irrelevant. Unrelated packages are
+ignored, while a load, build, or serialization failure in the selected package
+rejects the complete result rather than returning a partial workspace.
 
 ```rust
-use cuengine::{evaluate_module, ModuleEvaluation};
-use cuenv_core::module::find_cue_module_root;
-use cuenv_core::manifest::Project;
+use cuengine::{ModuleEvalOptions, evaluate_module};
+use cuenv_core::cue::discovery::find_cue_module_root;
+use cuenv_core::{ModuleEvaluation, manifest::Project};
 use std::path::Path;
 
 // Find the module root (directory containing cue.mod/)
 let project_path = Path::new("./my-project");
-let module_root = find_cue_module_root(project_path)?;
+let module_root =
+    find_cue_module_root(project_path).ok_or("not inside a CUE module")?;
 
-// Evaluate the entire module with a specific package
-let raw_json = evaluate_module(&module_root, "cuenv", None)?;
+// Evaluate the selected package recursively across the entire module
+let options = ModuleEvalOptions {
+    recursive: true,
+    ..Default::default()
+};
+let raw = evaluate_module(&module_root, "cuenv", Some(&options))?;
 
 // Parse into ModuleEvaluation for easy access
-let module = ModuleEvaluation::from_raw(&module_root, &raw_json)?;
+let module =
+    ModuleEvaluation::from_raw(module_root, raw.instances, raw.projects, None);
 
 // Access specific project by relative path
-let instance = module.get(Path::new("my-project"))?;
+let instance = module
+    .get(Path::new("my-project"))
+    .ok_or("project instance not found")?;
 let project: Project = instance.deserialize()?;
 
 // Iterate all projects in the module

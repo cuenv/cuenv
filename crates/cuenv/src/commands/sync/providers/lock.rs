@@ -132,13 +132,7 @@ fn collect_lock_sync_inputs(
     for instance in module.projects() {
         scoped_project_paths.push(display_project_path(&instance.path));
 
-        let project: Project = match instance.deserialize() {
-            Ok(p) => p,
-            Err(e) => {
-                warn!(error = %e, "Failed to deserialize project, skipping");
-                continue;
-            }
-        };
+        let project: Project = instance.deserialize()?;
 
         match &project.runtime {
             Some(Runtime::Nix(nix_runtime)) => {

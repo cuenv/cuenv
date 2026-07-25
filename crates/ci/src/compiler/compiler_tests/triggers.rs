@@ -63,8 +63,9 @@ fn test_derive_trigger_paths_with_project_path() {
             .contains(&"projects/api/Cargo.toml".to_string())
     );
 
-    // CUE implicit paths should also be prefixed
-    assert!(trigger.paths.contains(&"projects/api/env.cue".to_string()));
+    // Recursive CUE evaluation can consume arbitrary filenames and imports
+    // from anywhere in the module.
+    assert!(trigger.paths.contains(&"**/*.cue".to_string()));
     assert!(
         trigger
             .paths
@@ -182,8 +183,13 @@ fn test_derive_trigger_paths_root_project() {
 
     // Paths should NOT be prefixed for root projects
     assert!(trigger.paths.contains(&"src/**".to_string()));
-    assert!(trigger.paths.contains(&"env.cue".to_string()));
+    assert!(trigger.paths.contains(&"**/*.cue".to_string()));
     assert!(trigger.paths.contains(&"schema/**".to_string()));
+    assert!(
+        !trigger.paths.iter().any(|path| path.ends_with("env.cue")),
+        "CUE triggers must not depend on the env.cue convention: {:?}",
+        trigger.paths
+    );
 }
 
 #[test]

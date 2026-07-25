@@ -440,6 +440,44 @@ tasks: {
 	}
 }
 
+func TestHasConcreteProjectName(t *testing.T) {
+	tests := []struct {
+		name     string
+		document string
+		expected bool
+	}{
+		{
+			name:     "project",
+			document: `{"name":"chat","runtime":{"type":"nix"}}`,
+			expected: true,
+		},
+		{
+			name:     "base",
+			document: `{"runtime":{"type":"nix"}}`,
+			expected: false,
+		},
+		{
+			name:     "null name",
+			document: `{"name":null}`,
+			expected: false,
+		},
+		{
+			name:     "non-string name",
+			document: `{"name":{"value":"chat"}}`,
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := hasConcreteProjectName([]byte(test.document))
+			if actual != test.expected {
+				t.Fatalf("hasConcreteProjectName() = %v, want %v", actual, test.expected)
+			}
+		})
+	}
+}
+
 func TestConsistentOrdering(t *testing.T) {
 	cueContent := `
 tasks: {

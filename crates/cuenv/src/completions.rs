@@ -3,18 +3,16 @@
 //! Uses `clap_complete`'s dynamic completion feature where the binary itself
 //! handles completion requests - all logic in Rust, no shell scripts needed.
 //!
-//! Note: Completions use discovery-based evaluation (find env.cue files, evaluate each
-//! directory individually with `recursive: false`) since they're invoked from the shell
-//! without access to a `CommandExecutor`.
+//! Completions evaluate the selected package recursively across the module in
+//! one CUE evaluation, then select the instance for the current directory.
 
 use clap_complete::engine::{ArgValueCandidates, CompletionCandidate};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
+use crate::commands::env_file::find_cue_module_root;
 use crate::commands::task::list_builder::prepare_task_index;
 
 /// Complete task names by querying the CUE configuration in the current directory
@@ -34,11 +32,7 @@ fn complete_tasks() -> Vec<CompletionCandidate> {
         .collect()
 }
 
-/// Get available tasks from a CUE configuration using discovery-based evaluation.
-///
-/// Uses filesystem discovery to find env.cue files and evaluates each directory
-/// individually with `recursive: false`, avoiding CUE's `./...:package` pattern
-/// which can hang when directories contain mixed packages.
+/// Get available tasks from one recursive evaluation of the selected package.
 fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>)> {
     let dir_path = Path::new(path);
 
@@ -47,55 +41,15 @@ fn get_available_tasks(path: &str, package: &str) -> Vec<(String, Option<String>
         return Vec::new();
     };
 
-    // Discover all directories with env.cue files matching our package
-    let env_cue_dirs = discover_env_cue_directories(&module_root, package);
-    if env_cue_dirs.is_empty() {
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
         return Vec::new();
-    }
+    };
 
-    // Evaluate each directory individually (non-recursive)
-    let mut all_instances = HashMap::new();
-    let mut all_projects = Vec::new();
-
-    for dir in env_cue_dirs {
-        let dir_rel_path = compute_relative_path(&dir, &module_root);
-        let options = ModuleEvalOptions {
-            recursive: false,
-            target_dir: Some(dir.to_string_lossy().to_string()),
-            ..Default::default()
-        };
-
-        let Ok(raw) = cuengine::evaluate_module(&module_root, package, Some(&options)) else {
-            continue;
-        };
-
-        // Merge instances (key by relative path from module_root)
-        for (path_str, value) in raw.instances {
-            let rel_path = if path_str == "." {
-                dir_rel_path.clone()
-            } else {
-                path_str
-            };
-            all_instances.insert(rel_path.clone(), value);
-        }
-
-        for project_path in raw.projects {
-            let rel_project_path = if project_path == "." {
-                dir_rel_path.clone()
-            } else {
-                project_path
-            };
-            if !all_projects.contains(&rel_project_path) {
-                all_projects.push(rel_project_path);
-            }
-        }
-    }
-
-    if all_instances.is_empty() {
-        return Vec::new();
-    }
-
-    let module = ModuleEvaluation::from_raw(module_root.clone(), all_instances, all_projects, None);
+    let module = ModuleEvaluation::from_raw(module_root.clone(), raw.instances, raw.projects, None);
 
     // Calculate relative path from module root to target
     let Ok(target_path) = dir_path.canonicalize() else {
@@ -145,7 +99,10 @@ pub fn task_completer() -> ArgValueCandidates {
 mod tests {
     use super::*;
     use std::env;
+    use std::error::Error;
     use std::fs;
+
+    type TestResult = Result<(), Box<dyn Error>>;
 
     #[test]
     fn test_complete_tasks() {
@@ -217,6 +174,40 @@ mod tests {
     fn test_get_available_tasks_invalid_package() {
         let tasks = get_available_tasks(".", "nonexistent_package_name");
         assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn task_completion_discovers_an_arbitrarily_named_cue_file() -> TestResult {
+        let temp = tempfile::Builder::new()
+            .prefix("cuenv-completion-test-")
+            .tempdir()?;
+        fs::create_dir_all(temp.path().join("cue.mod"))?;
+        fs::write(
+            temp.path().join("cue.mod/module.cue"),
+            "module: \"example.com/completion-test\"\nlanguage: {version: \"v0.9.0\"}\n",
+        )?;
+        fs::write(
+            temp.path().join("project.cue"),
+            r#"package cuenv
+
+name: "completion-test"
+tasks: hello: command: "echo hello"
+"#,
+        )?;
+
+        let tasks = get_available_tasks(
+            temp.path()
+                .to_str()
+                .ok_or_else(|| std::io::Error::other("temporary path is not UTF-8"))?,
+            "cuenv",
+        );
+
+        assert!(
+            tasks.iter().any(|(name, _)| name == "hello"),
+            "arbitrarily named CUE file was not evaluated: {tasks:?}"
+        );
+
+        Ok(())
     }
 
     #[test]

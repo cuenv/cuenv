@@ -243,7 +243,7 @@ fn execute_info_command(
         }
         Err(e) => Err(CliError::eval_with_help(
             format!("Info command failed: {e}"),
-            "Check that you are in a CUE module with valid env.cue files",
+            "Check that you are in a CUE module with valid CUE files declaring the selected package",
         )),
     }
 }

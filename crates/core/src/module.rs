@@ -43,8 +43,8 @@ pub struct ModuleEvaluationInput {
 
 /// Result of evaluating an entire CUE module
 ///
-/// Contains all evaluated instances (directories with env.cue files)
-/// from a CUE module, enabling cross-instance analysis.
+/// Contains all evaluated instances of the selected package from a CUE module,
+/// independent of the source filenames, enabling cross-instance analysis.
 #[derive(Debug, Clone)]
 pub struct ModuleEvaluation {
     /// Path to the CUE module root (directory containing cue.mod/)
@@ -60,7 +60,7 @@ impl ModuleEvaluation {
     /// # Arguments
     /// * `root` - Path to the CUE module root
     /// * `raw_instances` - Map of relative paths to evaluated JSON values
-    /// * `project_paths` - Paths verified to conform to `schema.#Project` via CUE unification
+    /// * `project_paths` - Paths whose evaluated value contains the concrete `name` required by `schema.#Project`
     /// * `references` - Optional reference map for dependsOn resolution (extracted from CUE metadata)
     pub fn from_raw(
         root: PathBuf,
@@ -100,7 +100,8 @@ impl ModuleEvaluation {
             .into_iter()
             .map(|(path, mut value)| {
                 let path_buf = PathBuf::from(&path);
-                // Use CUE's schema verification instead of heuristic name check
+                // The bridge classifies projects from the concrete serialized
+                // `name` field required by schema.#Project.
                 let kind = if project_set.contains(path.as_str()) {
                     InstanceKind::Project
                 } else {
@@ -230,7 +231,7 @@ impl ModuleEvaluation {
     }
 }
 
-/// A single evaluated CUE instance (directory with env.cue)
+/// A single evaluated CUE package instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Instance {
     /// Relative path from module root to this instance
@@ -370,7 +371,7 @@ mod tests {
             }),
         );
 
-        // Specify which paths are projects (simulating CUE schema verification)
+        // Specify which paths are projects (simulating bridge classification)
         let project_paths = vec!["projects/api".to_string(), "projects/web".to_string()];
 
         ModuleEvaluation::from_raw(PathBuf::from("/test/repo"), raw, project_paths, None)

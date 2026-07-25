@@ -556,6 +556,12 @@ cuenv sync [OPTIONS] [SUBCOMMAND]
 github.com/cuenv/cuenv@<version>` when you want to change the schema dependency
 recorded in `cue.mod/module.cue`.
 
+Workspace sync evaluates the selected CUE package recursively across the module;
+configuration files do not need to be named `env.cue`. Evaluation is atomic:
+if any instance in that package fails to load, build, or serialize, sync exits
+without accepting partial state. This prevents a transient evaluator failure
+from removing a valid runtime, workflow, or other generated entry.
+
 **Options:**
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
