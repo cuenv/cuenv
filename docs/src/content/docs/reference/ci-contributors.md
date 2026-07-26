@@ -160,7 +160,7 @@ The default set is the concatenation of three groups:
 | --- | --- |
 | `#WorkspaceContributors` | `#BunWorkspace`, `#NpmWorkspace` |
 | `#CoreContributors` | `#Nix`, `#Cuenv`, `#OnePassword`, `#Infisical` |
-| `#GitHubContributors` | `#Cachix`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing` |
+| `#GitHubContributors` | `#Cachix`, `#Hestia`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing` |
 | `#DefaultContributors` | all of the above |
 
 Even when you include a contributor, it stays dormant until its `when` condition
@@ -281,6 +281,53 @@ The action receives `name` and `authToken` inputs; `authToken` defaults to the
 `${CACHIX_AUTH_TOKEN}` secret. Example:
 [`examples/ci-cachix`](https://github.com/cuenv/cuenv/tree/main/examples/ci-cachix).
 
+### `#Hestia` — GitHub Actions-backed Nix binary cache
+
+- **CUE id:** `hestia` (task `hestia.setup`)
+- **Stage:** Bootstrap (priority **4**)
+- **Activates when:** `ci.provider.github.hestia` is configured
+- **Dependencies:** `nix.install`
+- **GitHub Action:** `Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527`
+- **Hestia binary:** `v2.0.0`
+
+Configure both the contributor and provider:
+
+```cue
+import c "github.com/cuenv/cuenv/contrib/contributors"
+
+ci: {
+	providers: ["github"]
+	contributors: [c.#Nix, c.#Hestia]
+	provider: github: hestia: {}
+	pipelines: build: {
+		tasks: [_t.build]
+		when: branch: "main"
+	}
+}
+```
+
+cuenv pins the action implementation by commit and tells it to download Hestia
+v2.0.0. The generated setup enables `upstream-cache-filter`, so paths signed by
+the configured upstream cache, `cache.nixos.org` by default, do not consume the
+repository's GitHub Actions cache quota. It also raises `drain-timeout` to 900
+seconds so the post-job step has up to 15 minutes to finish chunking, uploading
+packs, and committing the manifest.
+
+Ordinary build workflows do not need `actions: write`. Hestia uploads through
+the runner-injected Actions cache token, which is independent of the workflow
+`permissions` block. Concurrent jobs from the same workflow run merge their
+closures into one root by union, regardless of finish order.
+
+When any generated GitHub pipeline enables Hestia, `cuenv sync ci` also emits
+`.github/workflows/cuenv-hestia-cache-gc.yml`. That repository-wide workflow
+runs daily, can be dispatched manually with a `dry-run` input, serializes GC
+runs, and operates only on the default branch. The maintenance workflow needs
+`actions: write` to delete and repack GitHub cache entries; it keeps ordinary
+build workflow permissions unchanged.
+
+Example:
+[`examples/ci-hestia`](https://github.com/cuenv/cuenv/tree/main/examples/ci-hestia).
+
 ### `#NamespaceCache` — Namespace nscloud Nix cache (GitHub)
 
 - **CUE id:** `namespaceCache` (tasks `namespaceCache.setup`, `namespaceCache.prepareDeterminateReceipt`, `namespaceCache.cleanupDeterminateReceipt`)
@@ -291,6 +338,12 @@ The action receives `name` and `authToken` inputs; `authToken` defaults to the
 Use this on Namespace Linux runner profiles with cache volumes instead of
 `#Cachix`. It does not install Nix; it manages the Determinate Nix receipt
 around the install step and skips the `/nix` cache action on macOS runners.
+Namespace gives concurrent jobs private forks of the latest committed volume
+and publishes successful updates with last-write-wins semantics. It may also
+serve a stale committed generation. Parallel jobs sharing one cache volume
+therefore do not merge their Nix closures, so a mounted volume is not proof that
+every path built by a sibling job is present. Prefer Hestia when the cache must
+union outputs from a parallel GitHub Actions run.
 Example: [`examples/ci-namespace-cache`](https://github.com/cuenv/cuenv/tree/main/examples/ci-namespace-cache).
 
 ### `#OnePassword` — 1Password secret resolution

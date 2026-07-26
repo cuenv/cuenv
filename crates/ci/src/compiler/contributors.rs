@@ -236,43 +236,36 @@ impl Compiler {
 
     /// Check if any of the specified provider config paths are set.
     fn has_provider_config(&self, paths: &[String]) -> bool {
-        let Some(ref ci) = self.project.ci else {
+        let global_provider = self.project.ci.as_ref().and_then(|ci| ci.provider.as_ref());
+        let pipeline_provider = self
+            .options
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.provider.as_ref());
+
+        paths.iter().any(|path| {
+            pipeline_provider.is_some_and(|provider| Self::provider_has_path(provider, path))
+                || global_provider.is_some_and(|provider| Self::provider_has_path(provider, path))
+        })
+    }
+
+    fn provider_has_path(provider: &cuenv_core::ci::ProviderConfig, path: &str) -> bool {
+        let mut parts = path.split('.');
+        let Some(provider_name) = parts.next() else {
             return false;
         };
-        let Some(ref provider) = ci.provider else {
+        let Some(mut current) = provider.get(provider_name) else {
             return false;
         };
 
-        for path in paths {
-            let parts: Vec<&str> = path.split('.').collect();
-            if parts.is_empty() {
-                continue;
-            }
-
-            let Some(config) = provider.get(parts[0]) else {
-                continue;
+        for part in parts {
+            let Some(value) = current.get(part).filter(|value| !value.is_null()) else {
+                return false;
             };
-
-            let mut current = config;
-            let mut found = true;
-            for part in &parts[1..] {
-                match current.get(*part) {
-                    Some(value) if !value.is_null() => {
-                        current = value;
-                    }
-                    _ => {
-                        found = false;
-                        break;
-                    }
-                }
-            }
-
-            if found {
-                return true;
-            }
+            current = value;
         }
 
-        false
+        true
     }
 
     /// Check if any pipeline task uses the specified command.

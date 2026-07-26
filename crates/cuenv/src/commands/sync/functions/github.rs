@@ -40,14 +40,32 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
     // Generate workflows per-project, per-pipeline
     // Each project with CI config gets its own workflow files
     let mut all_workflows: Vec<(String, String)> = Vec::new();
+    let mut hestia_enabled = false;
     for project in projects {
         let Some(ci) = &project.config.ci else {
             continue;
         };
         for (pipeline_name, pipeline) in &ci.pipelines {
+            hestia_enabled |= ci
+                .github_config_for_pipeline(pipeline_name)
+                .hestia
+                .is_some();
             let workflows = generate_github_workflow_for_project(project, pipeline_name, pipeline)?;
             all_workflows.extend(workflows);
         }
+    }
+
+    if hestia_enabled {
+        let workflow = cuenv_github::workflow::build_hestia_gc_workflow();
+        let yaml = workflow.to_yaml().map_err(|error| {
+            cuenv_core::Error::configuration(format!(
+                "Failed to serialize Hestia cache GC workflow: {error}"
+            ))
+        })?;
+        all_workflows.push((
+            cuenv_github::workflow::HESTIA_GC_WORKFLOW_FILENAME.to_string(),
+            yaml,
+        ));
     }
 
     if all_workflows.is_empty() {

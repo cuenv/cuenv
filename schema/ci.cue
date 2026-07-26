@@ -34,6 +34,9 @@ package schema
 		authToken?:  string
 		pushFilter?: string
 	})
+	// Hestia Nix binary cache backed by the GitHub Actions cache API.
+	// cuenv emits a pinned setup step and a repository-wide daily GC workflow.
+	hestia?: close({})
 	namespaceCache?: close({})
 	artifacts?: close({
 		paths?:          [...string]
