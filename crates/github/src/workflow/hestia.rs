@@ -25,7 +25,10 @@ pub fn build_hestia_gc_workflow() -> Workflow {
         WorkflowInput {
             description: "Plan only; do not repack, touch, or delete anything.".to_string(),
             required: None,
-            default: Some("false".to_string()),
+            // GitHub defaults an omitted boolean input to false. WorkflowInput
+            // currently stores defaults as strings, so omitting it preserves
+            // the boolean type instead of serializing `false` as a YAML string.
+            default: None,
             input_type: Some("boolean".to_string()),
             options: None,
         },
@@ -94,9 +97,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hestia_gc_workflow_is_default_branch_only_and_non_overlapping() {
+    fn hestia_gc_workflow_is_default_branch_only_and_non_overlapping()
+    -> Result<(), serde_yaml::Error> {
         let workflow = build_hestia_gc_workflow();
-        let yaml = workflow.to_yaml().expect("GC workflow should serialize");
+        let yaml = workflow.to_yaml()?;
 
         assert!(yaml.contains("cron: 23 3 * * *"));
         assert!(yaml.contains("group: hestia-gc"));
@@ -105,6 +109,9 @@ mod tests {
         assert!(yaml.contains("github.event.repository.default_branch"));
         assert!(yaml.contains(HESTIA_ACTION));
         assert!(yaml.contains("version: v2.0.0"));
+        assert!(yaml.contains("type: boolean"));
+        assert!(!yaml.contains("default: 'false'"));
         assert!(!yaml.contains("nscloud-cache-action"));
+        Ok(())
     }
 }

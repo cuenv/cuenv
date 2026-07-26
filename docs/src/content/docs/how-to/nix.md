@@ -363,7 +363,8 @@ Nix evaluation can be slow on first run. Tips:
    signed by `cache.nixos.org`, waits up to 900 seconds for the final upload, and
    generates a repository-wide daily GC workflow. Build jobs use the
    runner-provided cache token without `actions: write`; only the generated GC
-   workflow receives `actions: write`.
+   workflow receives `actions: write`. Disabling Hestia in every generated
+   GitHub pipeline makes `cuenv sync ci` remove the now-unneeded GC workflow.
 
    See
    [`examples/ci-hestia`](https://github.com/cuenv/cuenv/tree/main/examples/ci-hestia).

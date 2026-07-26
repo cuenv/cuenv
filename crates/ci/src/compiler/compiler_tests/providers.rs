@@ -1,4 +1,103 @@
 use super::*;
+use serde_json::{Value, json};
+
+fn github_provider_config(config: Value) -> cuenv_core::ci::ProviderConfig {
+    HashMap::from([("github".to_string(), config)])
+}
+
+fn compiler_with_github_provider(global: Value, pipeline: Option<Value>) -> Compiler {
+    let mut project = Project::new("test");
+    project.ci = Some(CI {
+        provider: Some(github_provider_config(global)),
+        ..Default::default()
+    });
+
+    let options = CompilerOptions {
+        pipeline: pipeline.map(|config| Pipeline {
+            provider: Some(github_provider_config(config)),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    Compiler::with_options(project, options)
+}
+
+fn trusted_publishing_contributor() -> Contributor {
+    test_contributor(
+        "trusted-publishing",
+        Some(ActivationCondition {
+            provider_config: vec!["github.trustedPublishing.cratesIo".to_string()],
+            ..Default::default()
+        }),
+    )
+}
+
+#[test]
+fn test_provider_config_false_does_not_activate_contributor() {
+    let compiler = compiler_with_github_provider(
+        json!({
+            "trustedPublishing": { "cratesIo": false },
+        }),
+        None,
+    );
+
+    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+}
+
+#[test]
+fn test_provider_config_true_activates_contributor() {
+    let compiler = compiler_with_github_provider(
+        json!({
+            "trustedPublishing": { "cratesIo": true },
+        }),
+        None,
+    );
+
+    assert!(compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+}
+
+#[test]
+fn test_pipeline_provider_config_false_overrides_global_true() {
+    let compiler = compiler_with_github_provider(
+        json!({
+            "trustedPublishing": { "cratesIo": true },
+        }),
+        Some(json!({
+            "trustedPublishing": { "cratesIo": false },
+        })),
+    );
+
+    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+}
+
+#[test]
+fn test_pipeline_provider_config_field_owns_missing_nested_value() {
+    let compiler = compiler_with_github_provider(
+        json!({
+            "trustedPublishing": { "cratesIo": true },
+        }),
+        Some(json!({
+            "trustedPublishing": {},
+        })),
+    );
+
+    assert!(!compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+}
+
+#[test]
+fn test_pipeline_provider_config_inherits_unowned_global_field() {
+    let compiler = compiler_with_github_provider(
+        json!({
+            "trustedPublishing": { "cratesIo": true },
+        }),
+        Some(json!({
+            "runner": "ubuntu-latest",
+        })),
+    );
+
+    assert!(compiler.cue_contributor_is_active(&trusted_publishing_contributor(), &test_ir()));
+}
 
 #[test]
 fn test_value_has_provider_interpolated_with_exec_secret() {

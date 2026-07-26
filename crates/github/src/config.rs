@@ -227,13 +227,14 @@ mod tests {
     }
 
     #[test]
-    fn test_hestia_config_serde() {
+    fn test_hestia_config_serde() -> serde_json::Result<()> {
         let config = HestiaConfig {};
-        let json = serde_json::to_string(&config).unwrap();
+        let json = serde_json::to_string(&config)?;
         assert_eq!(json, "{}");
 
-        let parsed: HestiaConfig = serde_json::from_str(&json).unwrap();
+        let parsed: HestiaConfig = serde_json::from_str(&json)?;
         assert_eq!(parsed, HestiaConfig {});
+        Ok(())
     }
 
     #[test]

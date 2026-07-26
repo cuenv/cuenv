@@ -7,7 +7,6 @@ on:
     inputs:
       dry-run:
         description: Plan only; do not repack, touch, or delete anything.
-        default: 'false'
         type: boolean
   schedule:
   - cron: 23 3 * * *

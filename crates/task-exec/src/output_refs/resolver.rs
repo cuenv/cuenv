@@ -36,7 +36,7 @@ impl<'a> OutputRefResolver<'a> {
         }
 
         // Resolve env values
-        for (_env_key, env_val) in env.iter_mut() {
+        for env_val in env.values_mut() {
             if let Some(s) = env_val.as_str()
                 && let Some(resolved) = resolve_single_ref(self.task_name, s, self.results)?
             {

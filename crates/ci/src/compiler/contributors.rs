@@ -244,28 +244,50 @@ impl Compiler {
             .and_then(|pipeline| pipeline.provider.as_ref());
 
         paths.iter().any(|path| {
-            pipeline_provider.is_some_and(|provider| Self::provider_has_path(provider, path))
-                || global_provider.is_some_and(|provider| Self::provider_has_path(provider, path))
+            pipeline_provider
+                .and_then(|provider| Self::provider_path_enabled(provider, path))
+                .or_else(|| {
+                    global_provider.and_then(|provider| Self::provider_path_enabled(provider, path))
+                })
+                .unwrap_or(false)
         })
     }
 
-    fn provider_has_path(provider: &cuenv_core::ci::ProviderConfig, path: &str) -> bool {
+    /// Resolve whether a provider config path enables its contributor.
+    ///
+    /// `None` means the provider does not own the first config field, so a
+    /// pipeline lookup may fall back to the global provider config. Once that
+    /// field is present, missing nested values and disabled terminal values
+    /// resolve to `Some(false)` and must not inherit global configuration.
+    fn provider_path_enabled(
+        provider: &cuenv_core::ci::ProviderConfig,
+        path: &str,
+    ) -> Option<bool> {
         let mut parts = path.split('.');
-        let Some(provider_name) = parts.next() else {
-            return false;
+        let provider_name = parts.next()?;
+        let mut current = provider.get(provider_name)?;
+
+        let Some(config_field) = parts.next() else {
+            return Some(Self::provider_value_enabled(current));
         };
-        let Some(mut current) = provider.get(provider_name) else {
-            return false;
-        };
+        current = current.get(config_field)?;
 
         for part in parts {
-            let Some(value) = current.get(part).filter(|value| !value.is_null()) else {
-                return false;
+            let Some(value) = current.get(part) else {
+                return Some(false);
             };
             current = value;
         }
 
-        true
+        Some(Self::provider_value_enabled(current))
+    }
+
+    fn provider_value_enabled(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Bool(enabled) => *enabled,
+            serde_json::Value::Null => false,
+            _ => true,
+        }
     }
 
     /// Check if any pipeline task uses the specified command.

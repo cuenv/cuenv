@@ -323,7 +323,8 @@ When any generated GitHub pipeline enables Hestia, `cuenv sync ci` also emits
 runs daily, can be dispatched manually with a `dry-run` input, serializes GC
 runs, and operates only on the default branch. The maintenance workflow needs
 `actions: write` to delete and repack GitHub cache entries; it keeps ordinary
-build workflow permissions unchanged.
+build workflow permissions unchanged. When no generated GitHub pipeline enables
+Hestia, normal sync removes the GC workflow and check mode reports it as stale.
 
 Example:
 [`examples/ci-hestia`](https://github.com/cuenv/cuenv/tree/main/examples/ci-hestia).

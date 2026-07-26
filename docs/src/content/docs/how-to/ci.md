@@ -492,7 +492,9 @@ workflow permission.
 `cuenv sync ci` also emits one repository-wide
 `cuenv-hestia-cache-gc.yml` workflow. It runs daily and uses `actions: write`
 only in that maintenance workflow because GC must delete and repack GitHub
-cache entries.
+cache entries. When no generated GitHub pipeline enables Hestia, `cuenv sync
+ci` removes that workflow; `cuenv sync ci --check` reports a leftover copy as
+stale.
 
 </TabItem>
 <TabItem label="Namespace cache">
