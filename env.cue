@@ -95,8 +95,8 @@ schema.#Project & {
 		providers: ["github"]
 
 		contributors: [
-			xContributors.#NamespaceCache,
 			xContributors.#Nix,
+			xContributors.#Hestia,
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
@@ -111,7 +111,7 @@ schema.#Project & {
 				"darwin-arm64": "namespace-profile-cuenv-macos-arm64"
 			}
 
-			namespaceCache: {}
+			hestia: {}
 
 			artifacts: {
 				paths: [".cuenv/reports/"]

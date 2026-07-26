@@ -252,8 +252,10 @@ of rebuilding cuenv in every job. Keeping the downloaded binary outside the
 checkout preserves a clean VCS state for release steps such as
 `cue mod publish`.
 Release, Homebrew, native, git, and artifact sources render their setup task
-inside each job. Linux jobs still restore the Namespace `/nix` cache before Nix
-setup, while macOS jobs skip that cache and use normal Nix installation.
+inside each job. Configured bootstrap contributors render in dependency order:
+`namespaceCache` restores the Namespace `/nix` cache on Linux when explicitly
+enabled, while `hestia` configures the Hestia binary cache after Nix setup
+without using Namespace volume snapshots.
 :::
 
 ## 5. Prepare a release in one shot

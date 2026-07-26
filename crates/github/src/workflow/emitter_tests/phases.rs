@@ -23,8 +23,8 @@ fn test_render_phase_steps() {
         emitter.render_phase_steps(&ir, TaskExecution::Orchestrated, &CuenvSetup::BuildInJob);
 
     assert_eq!(steps.len(), 2);
-    assert!(steps[0].name.as_deref() == Some("Install Nix"));
-    assert!(steps[1].name.as_deref() == Some("Setup cuenv"));
+    assert_eq!(steps[0].name.as_deref(), Some("Install Nix"));
+    assert_eq!(steps[1].name.as_deref(), Some("Setup cuenv"));
 
     // Secret env vars should be collected
     assert_eq!(

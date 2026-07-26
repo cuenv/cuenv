@@ -347,14 +347,43 @@ Nix evaluation can be slow on first run. Tips:
 
 2. **Enable the nix-daemon** for better caching
 
-3. **Use a project binary cache** for custom builds. In GitHub Actions, cuenv can generate setup for Namespace cache volumes or Cachix:
+3. **Use a project binary cache** for custom builds. In GitHub Actions, Hestia
+   gives parallel Nix jobs one content-addressed cache whose per-run roots are
+   merged by union:
 
    ```cue
    ci: {
+     providers: ["github"]
+     contributors: [contributors.#Nix, contributors.#Hestia]
+     provider: github: hestia: {}
+   }
+   ```
+
+   cuenv pins the Hestia action revision and v2.0.0 binary, filters paths already
+   signed by `cache.nixos.org`, waits up to 900 seconds for the final upload, and
+   generates a repository-wide daily GC workflow. Build jobs use the
+   runner-provided cache token without `actions: write`; only the generated GC
+   workflow receives `actions: write`. Disabling Hestia in every generated
+   GitHub pipeline makes `cuenv sync ci` remove the now-unneeded GC workflow.
+
+   See
+   [`examples/ci-hestia`](https://github.com/cuenv/cuenv/tree/main/examples/ci-hestia).
+
+   Namespace cache volumes remain available on Namespace Linux runners:
+
+   ```cue
+   ci: {
+     providers: ["github"]
      contributors: [contributors.#NamespaceCache]
      provider: github: namespaceCache: {}
    }
    ```
+
+   Namespace creates a private cache-volume fork for each concurrent job,
+   commits updates with last-write-wins semantics, and may serve stale
+   generations. Parallel jobs sharing a volume do not merge their Nix closures,
+   so use it as an opportunistic local store rather than proof that every
+   derivation from another job is present.
 
    Cachix remains supported for projects that use it:
 

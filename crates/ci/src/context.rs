@@ -38,7 +38,7 @@ impl fmt::Display for CIContext {
             self.provider,
             self.event,
             self.ref_name,
-            &self.sha.get(..7).unwrap_or(&self.sha)
+            self.sha.get(..7).unwrap_or(&self.sha)
         )
     }
 }

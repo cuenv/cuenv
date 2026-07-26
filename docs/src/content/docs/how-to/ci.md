@@ -463,15 +463,50 @@ tasks: evalPrompts: schema.#Task & {
 ```
 
 </TabItem>
-<TabItem label="Namespace cache">
+<TabItem label="Hestia cache">
 
-[`examples/ci-namespace-cache`](https://github.com/cuenv/cuenv/tree/main/examples/ci-namespace-cache)
-— Namespace nscloud Nix cache instead of Cachix (Linux runners).
+[`examples/ci-hestia`](https://github.com/cuenv/cuenv/tree/main/examples/ci-hestia)
+uses Hestia as a content-addressed Nix binary cache backed by the GitHub Actions
+cache API.
 
 ```cue
 import c "github.com/cuenv/cuenv/contrib/contributors"
 
 ci: {
+	providers: ["github"]
+	contributors: [c.#Nix, c.#Hestia]
+	provider: github: hestia: {}
+	pipelines: build: {
+		tasks: [_t.build]
+		when: branch: "main"
+	}
+}
+```
+
+cuenv pins both the Hestia action revision and its v2.0.0 binary, skips
+upstream-signed paths, and allows 900 seconds for the final upload. Jobs in the
+same workflow run union their closures into one root even when they finish
+concurrently. Build jobs use the runner cache token and need no additional
+workflow permission.
+
+`cuenv sync ci` also emits one repository-wide
+`cuenv-hestia-cache-gc.yml` workflow. It runs daily and uses `actions: write`
+only in that maintenance workflow because GC must delete and repack GitHub
+cache entries. When no generated GitHub pipeline enables Hestia, `cuenv sync
+ci` removes that workflow; `cuenv sync ci --check` reports a leftover copy as
+stale.
+
+</TabItem>
+<TabItem label="Namespace cache">
+
+[`examples/ci-namespace-cache`](https://github.com/cuenv/cuenv/tree/main/examples/ci-namespace-cache)
+uses a Namespace nscloud Nix cache volume on Linux runners.
+
+```cue
+import c "github.com/cuenv/cuenv/contrib/contributors"
+
+ci: {
+	providers: ["github"]
 	contributors: [c.#NamespaceCache]
 	provider: github: namespaceCache: {}
 	pipelines: build: {
@@ -480,6 +515,12 @@ ci: {
 	}
 }
 ```
+
+Namespace cache volumes use private forks and last-write-wins commits. Parallel
+jobs sharing one volume can therefore restore different or stale generations,
+and their Nix closures are not merged. A successful mount is not the same as a
+derivation-level cache hit. Use Hestia when parallel jobs need a coherent union
+of their outputs.
 
 </TabItem>
 <TabItem label="cuenv install">
