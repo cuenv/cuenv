@@ -9,11 +9,7 @@ use tempfile::Builder;
 use tracing::debug;
 
 /// Extract from a macOS `.pkg` archive.
-pub(crate) fn extract_from_pkg(
-    data: &[u8],
-    binary_path: Option<&str>,
-    dest: &Path,
-) -> Result<PathBuf> {
+pub fn extract_from_pkg(data: &[u8], binary_path: Option<&str>, dest: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(dest)?;
 
     let work_dir = Builder::new().prefix("cuenv-pkg-").tempdir().map_err(|e| {

@@ -118,7 +118,7 @@ impl ProcessRegistry {
         while !pids.is_empty() && std::time::Instant::now() < deadline {
             // Check which processes have exited
             let mut exited = Vec::new();
-            for (pid, _) in pids.iter() {
+            for pid in pids.keys() {
                 if !Self::is_process_alive(*pid) {
                     exited.push(*pid);
                 }

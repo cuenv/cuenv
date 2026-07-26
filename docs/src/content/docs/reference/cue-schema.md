@@ -1467,6 +1467,7 @@ ci: {
     // Provider-specific configuration
     provider: github: {
         runner: "ubuntu-latest"
+        hestia: {}
         namespaceCache: {}
         cachix: name: "my-cache"
     }

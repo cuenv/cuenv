@@ -156,20 +156,11 @@ impl ReleaseWorkflowBuilder {
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
 
-        let has_install_nix = ir
-            .sorted_phase_tasks(BuildStage::Bootstrap)
-            .iter()
-            .any(|t| t.id == "install-nix");
-        if has_install_nix {
-            steps.push(
-                Step::uses("DeterminateSystems/determinate-nix-action@v3")
-                    .with_name("Install Determinate Nix")
-                    .with_input(
-                        "extra-conf",
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    ),
-            );
-        }
+        steps.extend(
+            self.emitter
+                .stage_renderer()
+                .render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap)),
+        );
 
         if let Some(cuenv_task) = ir
             .sorted_phase_tasks(BuildStage::Setup)
@@ -241,20 +232,11 @@ impl ReleaseWorkflowBuilder {
                 .with_input("fetch-depth", serde_yaml::Value::Number(0.into())),
         );
 
-        let has_install_nix = ir
-            .sorted_phase_tasks(BuildStage::Bootstrap)
-            .iter()
-            .any(|t| t.id == "install-nix");
-        if has_install_nix {
-            steps.push(
-                Step::uses("DeterminateSystems/determinate-nix-action@v3")
-                    .with_name("Install Determinate Nix")
-                    .with_input(
-                        "extra-conf",
-                        serde_yaml::Value::String("accept-flake-config = true".to_string()),
-                    ),
-            );
-        }
+        steps.extend(
+            self.emitter
+                .stage_renderer()
+                .render_tasks(&ir.sorted_phase_tasks(BuildStage::Bootstrap)),
+        );
 
         if let Some(cuenv_task) = ir
             .sorted_phase_tasks(BuildStage::Setup)
@@ -322,5 +304,134 @@ impl ReleaseWorkflowBuilder {
             timeout_minutes: Some(30),
             steps,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workflow::hestia::HESTIA_ACTION;
+    use cuenv_ci::ir::{CachePolicy, PipelineMetadata, Task};
+    use cuenv_core::ci::PipelineMode;
+    use std::collections::BTreeMap;
+
+    struct ActionTaskFixture<'a> {
+        id: &'a str,
+        label: &'a str,
+        priority: i32,
+        uses: &'a str,
+    }
+
+    fn action_task(fixture: &ActionTaskFixture<'_>) -> Task {
+        Task {
+            id: fixture.id.to_string(),
+            runtime: None,
+            command: Vec::new(),
+            shell: false,
+            env: BTreeMap::new(),
+            secrets: BTreeMap::new(),
+            resources: None,
+            concurrency_group: None,
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            depends_on: Vec::new(),
+            cache_policy: CachePolicy::Disabled,
+            deployment: false,
+            manual_approval: false,
+            matrix: None,
+            artifact_downloads: Vec::new(),
+            params: BTreeMap::new(),
+            phase: Some(BuildStage::Bootstrap),
+            label: Some(fixture.label.to_string()),
+            priority: Some(fixture.priority),
+            contributor: Some("test".to_string()),
+            condition: None,
+            provider_hints: Some(serde_json::json!({
+                "github_action": {
+                    "uses": fixture.uses,
+                    "inputs": {}
+                }
+            })),
+        }
+    }
+
+    fn release_ir() -> IntermediateRepresentation {
+        IntermediateRepresentation {
+            version: "1.5".to_string(),
+            pipeline: PipelineMetadata {
+                name: "release".to_string(),
+                mode: PipelineMode::Expanded,
+                environment: Some("production".to_string()),
+                requires_onepassword: false,
+                project_name: Some("example".to_string()),
+                project_path: None,
+                trigger: None,
+                pipeline_tasks: Vec::new(),
+                pipeline_task_defs: Vec::new(),
+            },
+            runtimes: Vec::new(),
+            tasks: vec![
+                action_task(&ActionTaskFixture {
+                    id: "install-nix",
+                    label: "Install Determinate Nix",
+                    priority: 2,
+                    uses: "DeterminateSystems/determinate-nix-action@v3",
+                }),
+                action_task(&ActionTaskFixture {
+                    id: "hestia.setup",
+                    label: "Setup Hestia Nix Cache",
+                    priority: 4,
+                    uses: HESTIA_ACTION,
+                }),
+            ],
+        }
+    }
+
+    fn assert_hestia_after_nix(job: &Job) -> Result<(), String> {
+        let nix_index = job
+            .steps
+            .iter()
+            .position(|step| {
+                step.uses.as_deref() == Some("DeterminateSystems/determinate-nix-action@v3")
+            })
+            .ok_or_else(|| {
+                format!(
+                    "{} should install Nix",
+                    job.name.as_deref().unwrap_or("job")
+                )
+            })?;
+        let hestia_index = job
+            .steps
+            .iter()
+            .position(|step| step.uses.as_deref() == Some(HESTIA_ACTION))
+            .ok_or_else(|| {
+                format!(
+                    "{} should install Hestia",
+                    job.name.as_deref().unwrap_or("job")
+                )
+            })?;
+
+        assert!(
+            hestia_index > nix_index,
+            "Hestia must be configured after Nix is installed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn release_jobs_render_bootstrap_cache_contributors() -> Result<(), String> {
+        let workflow =
+            ReleaseWorkflowBuilder::new(GitHubActionsEmitter::new()).build(&release_ir());
+        let build = workflow
+            .jobs
+            .get("build")
+            .ok_or_else(|| "release workflow should contain build job".to_string())?;
+        let publish = workflow
+            .jobs
+            .get("publish")
+            .ok_or_else(|| "release workflow should contain publish job".to_string())?;
+
+        assert_hestia_after_nix(build)?;
+        assert_hestia_after_nix(publish)
     }
 }

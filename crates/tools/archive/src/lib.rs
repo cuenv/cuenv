@@ -530,9 +530,7 @@ fn executable_files(dir: &Path) -> Result<Vec<PathBuf>> {
         Ok(files
             .into_iter()
             .filter(|path| {
-                std::fs::metadata(path)
-                    .map(|meta| meta.permissions().mode() & 0o111 != 0)
-                    .unwrap_or(false)
+                std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
             })
             .collect())
     }

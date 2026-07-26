@@ -19,6 +19,8 @@ pub struct GitHubConfig {
     pub runners: Option<RunnerMapping>,
     /// Cachix configuration for Nix caching
     pub cachix: Option<CachixConfig>,
+    /// Hestia configuration for GitHub Actions-backed Nix caching
+    pub hestia: Option<HestiaConfig>,
     /// Namespace nscloud-cache configuration for Nix store caching
     pub namespace_cache: Option<NamespaceCacheConfig>,
     /// Artifact upload configuration
@@ -54,6 +56,11 @@ pub struct CachixConfig {
     /// Push filter pattern
     pub push_filter: Option<String>,
 }
+
+/// Hestia GitHub Actions cache configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HestiaConfig {}
 
 /// Namespace nscloud-cache configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -103,6 +110,7 @@ impl GitHubConfigExt for CI {
                 runner: pipeline.runner.clone().or(global.runner),
                 runners: pipeline.runners.clone().or(global.runners),
                 cachix: pipeline.cachix.clone().or(global.cachix),
+                hestia: pipeline.hestia.clone().or(global.hestia),
                 namespace_cache: pipeline.namespace_cache.clone().or(global.namespace_cache),
                 artifacts: pipeline.artifacts.clone().or(global.artifacts),
                 trusted_publishing: pipeline
@@ -132,7 +140,8 @@ mod tests {
                         "runner": "ubuntu-latest",
                         "cachix": {
                             "name": "my-cache"
-                        }
+                        },
+                        "hestia": {}
                     }
                 }))
                 .unwrap(),
@@ -171,6 +180,7 @@ mod tests {
             Some(StringOrVec::String("self-hosted".to_string()))
         );
         assert!(ci_config.cachix.is_some()); // Inherited from global
+        assert!(ci_config.hestia.is_some()); // Inherited from global
 
         // Pipeline without override
         let release_config = ci.github_config_for_pipeline("release");
@@ -186,6 +196,7 @@ mod tests {
         assert!(config.runner.is_none());
         assert!(config.runners.is_none());
         assert!(config.cachix.is_none());
+        assert!(config.hestia.is_none());
         assert!(config.namespace_cache.is_none());
         assert!(config.artifacts.is_none());
         assert!(config.trusted_publishing.is_none());
@@ -216,6 +227,17 @@ mod tests {
     }
 
     #[test]
+    fn test_hestia_config_serde() -> serde_json::Result<()> {
+        let config = HestiaConfig {};
+        let json = serde_json::to_string(&config)?;
+        assert_eq!(json, "{}");
+
+        let parsed: HestiaConfig = serde_json::from_str(&json)?;
+        assert_eq!(parsed, HestiaConfig {});
+        Ok(())
+    }
+
+    #[test]
     fn test_cachix_config_serde() {
         let config = CachixConfig {
             name: "my-cache".to_string(),
@@ -236,7 +258,8 @@ mod tests {
             "runner": "ubuntu-latest",
             "cachix": {
                 "name": "test-cache"
-            }
+            },
+            "hestia": {}
         });
         let config: GitHubConfig = serde_json::from_value(json).unwrap();
         assert_eq!(
@@ -244,6 +267,7 @@ mod tests {
             Some(StringOrVec::String("ubuntu-latest".to_string()))
         );
         assert!(config.cachix.is_some());
+        assert!(config.hestia.is_some());
     }
 
     #[test]

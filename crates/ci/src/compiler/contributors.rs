@@ -236,43 +236,58 @@ impl Compiler {
 
     /// Check if any of the specified provider config paths are set.
     fn has_provider_config(&self, paths: &[String]) -> bool {
-        let Some(ref ci) = self.project.ci else {
-            return false;
-        };
-        let Some(ref provider) = ci.provider else {
-            return false;
-        };
+        let global_provider = self.project.ci.as_ref().and_then(|ci| ci.provider.as_ref());
+        let pipeline_provider = self
+            .options
+            .pipeline
+            .as_ref()
+            .and_then(|pipeline| pipeline.provider.as_ref());
 
-        for path in paths {
-            let parts: Vec<&str> = path.split('.').collect();
-            if parts.is_empty() {
-                continue;
-            }
+        paths.iter().any(|path| {
+            pipeline_provider
+                .and_then(|provider| Self::provider_path_enabled(provider, path))
+                .or_else(|| {
+                    global_provider.and_then(|provider| Self::provider_path_enabled(provider, path))
+                })
+                .unwrap_or(false)
+        })
+    }
 
-            let Some(config) = provider.get(parts[0]) else {
-                continue;
+    /// Resolve whether a provider config path enables its contributor.
+    ///
+    /// `None` means the provider does not own the first config field, so a
+    /// pipeline lookup may fall back to the global provider config. Once that
+    /// field is present, missing nested values and disabled terminal values
+    /// resolve to `Some(false)` and must not inherit global configuration.
+    fn provider_path_enabled(
+        provider: &cuenv_core::ci::ProviderConfig,
+        path: &str,
+    ) -> Option<bool> {
+        let mut parts = path.split('.');
+        let provider_name = parts.next()?;
+        let mut current = provider.get(provider_name)?;
+
+        let Some(config_field) = parts.next() else {
+            return Some(Self::provider_value_enabled(current));
+        };
+        current = current.get(config_field)?;
+
+        for part in parts {
+            let Some(value) = current.get(part) else {
+                return Some(false);
             };
-
-            let mut current = config;
-            let mut found = true;
-            for part in &parts[1..] {
-                match current.get(*part) {
-                    Some(value) if !value.is_null() => {
-                        current = value;
-                    }
-                    _ => {
-                        found = false;
-                        break;
-                    }
-                }
-            }
-
-            if found {
-                return true;
-            }
+            current = value;
         }
 
-        false
+        Some(Self::provider_value_enabled(current))
+    }
+
+    fn provider_value_enabled(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Bool(enabled) => *enabled,
+            serde_json::Value::Null => false,
+            _ => true,
+        }
     }
 
     /// Check if any pipeline task uses the specified command.

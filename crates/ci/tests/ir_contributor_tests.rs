@@ -353,6 +353,53 @@ fn test_namespace_cache_contributor_active_with_config() -> Result<(), String> {
     Ok(())
 }
 
+#[test]
+fn test_hestia_contributor_active_with_config() -> Result<(), String> {
+    skip_if_ffi_unavailable!();
+
+    let ir = compile_example("ci-hestia", "build")?;
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+    let setup_hestia = phase_task(&bootstrap_tasks, "hestia.setup")?;
+    let inputs = github_action_inputs(setup_hestia)?;
+
+    assert_eq!(
+        github_action_uses(setup_hestia)?,
+        "Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527"
+    );
+    assert_eq!(setup_hestia.priority, Some(4));
+    assert!(
+        setup_hestia.depends_on.contains(&"install-nix".to_string()),
+        "Hestia must run after Nix is installed"
+    );
+    assert_eq!(
+        inputs.get("version").and_then(Value::as_str),
+        Some("v2.0.0")
+    );
+    assert_eq!(
+        inputs.get("upstream-cache-filter").and_then(Value::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        inputs.get("drain-timeout").and_then(Value::as_str),
+        Some("900")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_hestia_contributor_inactive_without_config() -> Result<(), String> {
+    skip_if_ffi_unavailable!();
+
+    let ir = compile_example("ci-pipeline", "default")?;
+    let bootstrap_tasks = ir.sorted_phase_tasks(BuildStage::Bootstrap);
+
+    assert!(
+        bootstrap_tasks.iter().all(|task| task.id != "hestia.setup"),
+        "Hestia should not be injected without github.hestia configuration"
+    );
+    Ok(())
+}
+
 // ============================================================================
 // GH Models Contributor Tests
 // ============================================================================

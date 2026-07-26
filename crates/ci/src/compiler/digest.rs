@@ -40,7 +40,7 @@ impl DigestBuilder {
 
         for (key, value) in sorted {
             self.hasher.update(key.as_bytes());
-            self.hasher.update([b'=']);
+            self.hasher.update(*b"=");
             self.hasher.update(value.as_bytes());
             self.hasher.update([0u8]); // separator
         }
