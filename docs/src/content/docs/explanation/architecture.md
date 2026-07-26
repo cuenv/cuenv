@@ -59,10 +59,15 @@ additional Go files beside the exported C archive entrypoints, while
 `bridge_test.go` cannot be part of the c-archive build.
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::{ModuleEvalOptions, evaluate_module};
 use std::path::Path;
 
-let raw = evaluate_module(Path::new("./project"), "cuenv", None)?;
+let options = ModuleEvalOptions {
+    recursive: true,
+    ..Default::default()
+};
+let raw =
+    evaluate_module(Path::new("./project"), "cuenv", Some(&options))?;
 // Access raw.instances and raw.projects
 ```
 

@@ -1,9 +1,8 @@
 use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::ModuleEvalOptions;
-use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
+use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path};
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};
-use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -67,30 +66,9 @@ impl CommandExecutor {
     }
 
     pub(super) fn evaluate_workspace_module(&self, module_root: &Path) -> Result<ModuleEvaluation> {
-        // Fast path: evaluate the entire module in a single recursive CUE
-        // evaluation (equivalent to `cue eval ./...`). This loads the module
-        // and compiles imported schema packages once instead of once per
-        // directory, which is significantly faster for monorepos.
-        match self.evaluate_workspace_module_recursive(module_root) {
-            Ok(module) => Ok(module),
-            Err(e) => {
-                tracing::warn!(
-                    module_root = %module_root.display(),
-                    error = %e,
-                    "Recursive workspace evaluation failed - falling back to per-directory evaluation"
-                );
-                self.evaluate_workspace_module_fan_out(module_root)
-            }
-        }
-    }
-
-    /// Evaluate the whole workspace with one recursive CUE evaluation.
-    ///
-    /// The Go bridge loads the module once and builds every package instance
-    /// in a shared CUE context, skipping directories whose package does not
-    /// match or that fail to build (matching the per-directory fan-out
-    /// semantics).
-    fn evaluate_workspace_module_recursive(&self, module_root: &Path) -> Result<ModuleEvaluation> {
+        // Workspace operations evaluate the selected CUE package exactly once
+        // across the whole module. Discovery belongs to CUE, so it must not
+        // depend on a conventional filename or retry directories independently.
         let options = ModuleEvalOptions {
             recursive: true,
             with_meta: true,
@@ -114,101 +92,93 @@ impl CommandExecutor {
             metadata: metadata.finish(),
         }))
     }
+}
 
-    fn evaluate_workspace_module_fan_out(&self, module_root: &Path) -> Result<ModuleEvaluation> {
-        let env_cue_dirs =
-            cuenv_core::cue::discovery::discover_env_cue_directories(module_root, &self.package);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::sync::mpsc;
 
-        if env_cue_dirs.is_empty() {
-            return Err(cuenv_core::Error::configuration(format!(
-                "No env.cue files declaring package '{}' found in module: {}",
-                self.package,
-                module_root.display(),
-            )));
-        }
+    type TestResult<T = ()> = std::result::Result<T, Box<dyn Error>>;
 
-        let package = &self.package;
-        tracing::info!(
-            env_cue_dirs = env_cue_dirs.len(),
-            rayon_threads = rayon::current_num_threads(),
-            "evaluate_workspace_module fan-out"
-        );
-        let results: Vec<_> = env_cue_dirs
-            .par_iter()
-            .map(|dir| {
-                tracing::debug!(dir = %dir.display(), "cuengine::evaluate_module begin");
-                let options = ModuleEvalOptions {
-                    recursive: false,
-                    with_meta: true,
-                    with_references: true,
-                    target_dir: Some(dir.to_string_lossy().to_string()),
-                    ..Default::default()
-                };
-                let dir_rel_path = compute_relative_path(dir, module_root);
+    fn temp_module() -> TestResult<TempDir> {
+        Ok(tempfile::Builder::new()
+            .prefix("cuenv-recursive-consumer-")
+            .tempdir()?)
+    }
 
-                match cuengine::evaluate_module(module_root, package, Some(&options)) {
-                    Ok(raw) => Ok((dir_rel_path, raw)),
-                    Err(e) => {
-                        tracing::warn!(
-                            dir = %dir.display(),
-                            error = %e,
-                            "Failed to evaluate env.cue - skipping directory"
-                        );
-                        Err((dir.clone(), e))
-                    }
-                }
-            })
-            .collect();
+    fn write_module(root: &Path) -> TestResult {
+        fs::create_dir_all(root.join("cue.mod"))?;
+        fs::write(
+            root.join("cue.mod/module.cue"),
+            "module: \"example.com/recursive-consumer-test\"\nlanguage: {version: \"v0.9.0\"}\n",
+        )?;
+        Ok(())
+    }
 
-        let mut all_instances = HashMap::new();
-        let mut all_projects = Vec::new();
-        let mut metadata = EvaluationMetadataBuilder::default();
-        let mut eval_errors = Vec::new();
+    fn executor() -> CommandExecutor {
+        let (sender, _receiver) = mpsc::unbounded_channel();
+        CommandExecutor::new(sender, "cuenv".to_string())
+    }
 
-        for result in results {
-            match result {
-                Ok((dir_rel_path, raw)) => {
-                    for (path_str, value) in raw.instances {
-                        let rel_path = if path_str == "." {
-                            dir_rel_path.clone()
-                        } else {
-                            path_str
-                        };
-                        all_instances.insert(rel_path, value);
-                    }
+    #[test]
+    fn workspace_evaluation_discovers_arbitrary_cue_filenames() -> TestResult {
+        let temp = temp_module()?;
+        write_module(temp.path())?;
+        fs::write(
+            temp.path().join("defaults.cue"),
+            "package cuenv\nenv: {ROOT: \"yes\"}\n",
+        )?;
+        fs::create_dir_all(temp.path().join("nested"))?;
+        fs::write(
+            temp.path().join("nested/service.cue"),
+            "package cuenv\nname: \"nested\"\n",
+        )?;
+        fs::create_dir_all(temp.path().join("worker"))?;
+        fs::write(
+            temp.path().join("worker/configuration.cue"),
+            "package cuenv\nname: \"worker\"\n",
+        )?;
 
-                    for project_path in raw.projects {
-                        let rel_project_path = if project_path == "." {
-                            dir_rel_path.clone()
-                        } else {
-                            project_path
-                        };
-                        if !all_projects.contains(&rel_project_path) {
-                            all_projects.push(rel_project_path);
-                        }
-                    }
+        let module = executor().evaluate_workspace_module(temp.path())?;
+        let mut names = module
+            .projects()
+            .filter_map(|instance| instance.project_name().map(ToOwned::to_owned))
+            .collect::<Vec<_>>();
+        names.sort();
 
-                    for (meta_key, meta_value) in raw.meta {
-                        let adjusted_key = adjust_meta_key_path(&meta_key, &dir_rel_path);
-                        metadata.insert(adjusted_key, meta_value);
-                    }
-                }
-                Err((dir, e)) => eval_errors.push((dir, e)),
-            }
-        }
+        assert_eq!(names, ["nested", "worker"]);
 
-        if all_instances.is_empty() {
-            let error_summary = format_eval_errors(&eval_errors);
-            return Err(cuenv_core::Error::configuration(format!(
-                "No instances could be evaluated. All directories failed:\n{error_summary}"
-            )));
-        }
+        Ok(())
+    }
 
-        Ok(ModuleEvaluation::from_raw_parts(ModuleEvaluationInput {
-            root: module_root.to_path_buf(),
-            raw_instances: all_instances,
-            project_paths: all_projects,
-            metadata: metadata.finish(),
-        }))
+    #[test]
+    fn workspace_evaluation_propagates_a_selected_package_failure() -> TestResult {
+        let temp = temp_module()?;
+        write_module(temp.path())?;
+        fs::write(
+            temp.path().join("defaults.cue"),
+            "package cuenv\nenv: {ROOT: \"yes\"}\n",
+        )?;
+        fs::create_dir_all(temp.path().join("valid"))?;
+        fs::write(
+            temp.path().join("valid/project.cue"),
+            "package cuenv\nname: \"valid\"\n",
+        )?;
+        fs::create_dir_all(temp.path().join("broken"))?;
+        fs::write(
+            temp.path().join("broken/config.cue"),
+            "package cuenv\nname: \"broken\"\nimpossible: 1 & 2\n",
+        )?;
+
+        let error = executor()
+            .evaluate_workspace_module(temp.path())
+            .expect_err("a broken selected-package instance must fail the workspace evaluation");
+        assert!(error.to_string().contains("broken"), "{error}");
+
+        Ok(())
     }
 }

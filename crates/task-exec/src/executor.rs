@@ -80,7 +80,7 @@ pub struct ExecutorConfig {
     pub environment: Environment,
     /// Optional working directory override (reserved for future backends)
     pub working_dir: Option<PathBuf>,
-    /// Project root for resolving inputs/outputs (env.cue root)
+    /// Project root for resolving inputs and outputs
     pub project_root: PathBuf,
     /// Path to cue.mod root for resolving relative source paths
     pub cue_module_root: Option<PathBuf>,
@@ -451,9 +451,9 @@ impl TaskExecutor {
             return Err(Error::configuration(format!(
                 "Task '{}' references another project's task ({}) but the reference could not be resolved.\n\
                  This usually means:\n\
-                 - The referenced project doesn't exist or has no 'name' field in env.cue\n\
+                 - The referenced project doesn't exist or has no concrete 'name' field in its CUE package\n\
                  - The referenced task '{}' doesn't exist in that project\n\
-                 - There was an error loading the referenced project's env.cue\n\
+                 - There was an error evaluating the referenced project's CUE package\n\
                  Run with RUST_LOG=debug for more details.",
                 name,
                 task.task_ref.as_deref().unwrap_or("unknown"),

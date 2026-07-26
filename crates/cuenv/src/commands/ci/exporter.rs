@@ -46,7 +46,7 @@ pub async fn execute_export(args: &CiArgs, format: ExportFormat) -> Result<()> {
     let project_count = module.project_count();
     if project_count == 0 {
         return Err(cuenv_core::Error::configuration(
-            "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+            "No cuenv projects found. Ensure the module contains CUE files declaring 'package cuenv'",
         ));
     }
 

@@ -39,6 +39,14 @@ fn count_evaluate_module_calls_in_repo(args: &[&str]) -> TestResult<usize> {
 
     let output = cmd.output()?;
     let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "cuenv {} failed with {}:\n{stderr}",
+            args.join(" "),
+            output.status
+        ))
+        .into());
+    }
 
     // Count occurrences of the module evaluation log message
     // This message is logged at INFO level in cuengine::evaluate_module
@@ -50,7 +58,7 @@ fn count_evaluate_module_calls_in_repo(args: &[&str]) -> TestResult<usize> {
 /// Test that workspace sync (`-A`) uses one recursive workspace evaluation in this repo.
 #[test]
 fn test_sync_all_uses_single_workspace_evaluation() -> TestResult {
-    let eval_count = count_evaluate_module_calls_in_repo(&["sync", "-A"])?;
+    let eval_count = count_evaluate_module_calls_in_repo(&["sync", "ci", "-A", "--dry-run"])?;
     assert!(
         eval_count == 1,
         "sync -A should evaluate workspace scope with one recursive module evaluation in this repository, but evaluated {eval_count}"
@@ -61,7 +69,7 @@ fn test_sync_all_uses_single_workspace_evaluation() -> TestResult {
 /// Test that path sync stays path-local.
 #[test]
 fn test_sync_path_evaluates_local_scope() -> TestResult {
-    let eval_count = count_evaluate_module_calls_in_repo(&["sync"])?;
+    let eval_count = count_evaluate_module_calls_in_repo(&["sync", "ci", "--dry-run"])?;
     assert!(
         eval_count <= 2,
         "sync (without -A) should stay path-local and avoid workspace fan-out, but evaluated {eval_count} modules"

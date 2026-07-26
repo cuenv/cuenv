@@ -34,7 +34,7 @@ pub(super) async fn execute_sync_github(request: GithubSyncRequest<'_>) -> Resul
     } = request;
     if projects.is_empty() {
         return Err(cuenv_core::Error::configuration(
-            "No cuenv projects found. Ensure env.cue files declare 'package cuenv'",
+            "No cuenv projects found. Ensure the module contains CUE files declaring 'package cuenv'",
         ));
     }
 

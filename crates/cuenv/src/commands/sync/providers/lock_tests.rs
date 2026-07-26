@@ -10,6 +10,53 @@ use cuenv_tool_runtime::{
     ToolActivationStep, ToolExtract, ToolSource,
 };
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fs;
+use tempfile::Builder;
+use tokio::sync::mpsc;
+
+type TestResult = std::result::Result<(), Box<dyn Error>>;
+
+#[test]
+fn workspace_lock_collection_rejects_a_serde_invalid_project() -> TestResult {
+    let temp = Builder::new()
+        .prefix("cuenv-lock-atomic-projects-")
+        .tempdir()?;
+    fs::create_dir_all(temp.path().join("cue.mod"))?;
+    fs::write(
+        temp.path().join("cue.mod/module.cue"),
+        "module: \"example.com/lock-atomic-projects\"\nlanguage: {version: \"v0.9.0\"}\n",
+    )?;
+
+    fs::create_dir_all(temp.path().join("api"))?;
+    fs::write(
+        temp.path().join("api/project.cue"),
+        "package cuenv\nname: \"api\"\n",
+    )?;
+    fs::create_dir_all(temp.path().join("broken"))?;
+    fs::write(
+        temp.path().join("broken/configuration.cue"),
+        "package cuenv\nname: \"broken\"\ntasks: \"not a task map\"\n",
+    )?;
+
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let executor = CommandExecutor::new(sender, "cuenv".to_string());
+    let Err(error) = collect_lock_sync_inputs(temp.path(), &executor, LockSyncScope::Workspace)
+    else {
+        return Err("workspace lock collection accepted an invalid project".into());
+    };
+
+    assert!(
+        error.to_string().contains("broken"),
+        "error did not identify the invalid project: {error}"
+    );
+    assert!(
+        !temp.path().join(LOCKFILE_NAME).exists(),
+        "lockfile must not be written after partial project collection"
+    );
+
+    Ok(())
+}
 
 #[test]
 fn test_seed_lockfile_preserves_tools_activation_and_resets_generated_sections() {

@@ -76,26 +76,36 @@ unwrap/expect allowances.
 
 ### Module Evaluation (Recommended)
 
-`evaluate_module` is the primary API for evaluating CUE modules. It evaluates an entire module at once, returning all instances for efficient cross-project operations:
+`evaluate_module` is the primary API for evaluating CUE modules. With recursive
+evaluation enabled, it evaluates the selected package across the entire module
+and returns the result atomically for efficient cross-project operations:
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::{ModuleEvalOptions, evaluate_module};
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
-// Evaluate the entire module
-let raw = evaluate_module(Path::new("./my-module"), "cuenv", None)?;
+// Evaluate the selected package recursively across the entire module
+let options = ModuleEvalOptions {
+    recursive: true,
+    ..Default::default()
+};
+let raw =
+    evaluate_module(Path::new("./my-module"), "cuenv", Some(&options))?;
 
 // Parse into ModuleEvaluation for structured access
 let module = ModuleEvaluation::from_raw(
     Path::new("./my-module").to_path_buf(),
     raw.instances,
     raw.projects,
+    None,
 );
 
 // Access a specific project
-let instance = module.get(Path::new("my-project"))?;
+let instance = module
+    .get(Path::new("my-project"))
+    .ok_or("project instance not found")?;
 let project: Project = instance.deserialize()?;
 
 // Iterate all projects
@@ -244,24 +254,29 @@ fn validate_app_config(dir: &Path) -> Result<()> {
 ### Module-Wide Processing
 
 ```rust
-use cuengine::evaluate_module;
+use cuengine::{ModuleEvalOptions, evaluate_module};
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::manifest::Project;
 use std::path::Path;
 
-fn process_all_projects(module_root: &Path) -> cuengine::Result<Vec<Project>> {
-    let raw = evaluate_module(module_root, "cuenv", None)?;
+fn process_all_projects(
+    module_root: &Path,
+) -> Result<Vec<Project>, Box<dyn std::error::Error>> {
+    let options = ModuleEvalOptions {
+        recursive: true,
+        ..Default::default()
+    };
+    let raw = evaluate_module(module_root, "cuenv", Some(&options))?;
     let module = ModuleEvaluation::from_raw(
         module_root.to_path_buf(),
         raw.instances,
         raw.projects,
+        None,
     );
 
     let mut projects = Vec::new();
     for instance in module.projects() {
-        if let Ok(project) = instance.deserialize::<Project>() {
-            projects.push(project);
-        }
+        projects.push(instance.deserialize::<Project>()?);
     }
 
     Ok(projects)

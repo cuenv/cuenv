@@ -67,9 +67,8 @@ async fn sync_workspace(request: SyncRequest<'_>) -> Result<SyncResult> {
         let module = executor.discover_all_modules(path)?;
         let mut paths = Vec::new();
         for instance in module.projects() {
-            if let Ok(manifest) = instance.deserialize::<Project>()
-                && manifest.codegen.is_some()
-            {
+            let manifest = instance.deserialize::<Project>()?;
+            if manifest.codegen.is_some() {
                 paths.push((
                     module.root.join(&instance.path),
                     instance.path.display().to_string(),

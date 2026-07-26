@@ -223,7 +223,7 @@ pub struct ModuleEvalOptions {
     pub with_references: bool,
     /// true: cue eval ./... (recursive), false: cue eval . (current directory)
     pub recursive: bool,
-    /// Filter to specific package name, None = all packages
+    /// Override the legacy `package_name` argument when set
     pub package_name: Option<String>,
     /// Directory to evaluate (for non-recursive), None = module root.
     /// Use this to evaluate a specific subdirectory without loading the entire module.
@@ -262,7 +262,10 @@ pub struct FieldMeta {
 pub struct ModuleResult {
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
-    /// Paths that conform to schema.#Project (verified via CUE unification)
+    /// Paths whose serialized JSON contains a concrete string `name`.
+    ///
+    /// This distinguishes project-shaped values from module base values; it is
+    /// not a second schema validation pass.
     #[serde(default)]
     pub projects: Vec<String>,
     /// Map of "path/field" to source location (only populated when `with_meta`: true)
@@ -309,7 +312,9 @@ struct ModuleEvalWorker {
 /// Returns an error if:
 /// - The module root path is invalid
 /// - The CUE module cannot be loaded
-/// - All CUE instances fail evaluation
+/// - Any selected-package instance fails to load, build, or serialize
+/// - Recursive loading reports an error whose package CUE cannot identify;
+///   evaluation fails closed rather than risking partial selected-package state
 #[tracing::instrument(
     name = "evaluate_module",
     fields(

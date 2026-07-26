@@ -223,19 +223,22 @@ fn collect_ancestor_env_files(
     Ok(ancestors)
 }
 
-/// Discover all directories containing env.cue files with matching package.
+/// Discover directories containing conventionally named `env.cue` files.
 ///
 /// Uses the `ignore` crate to walk the filesystem while respecting `.gitignore`.
 /// Returns directories (not file paths) that contain env.cue files with the
 /// expected package declaration.
+///
+/// This is a filename-specific utility, not a CUE module evaluator. Module-wide
+/// operations must recursively evaluate the selected package so arbitrarily
+/// named `.cue` files participate.
 ///
 /// # Arguments
 /// * `module_root` - The CUE module root directory (must contain cue.mod/)
 /// * `expected_package` - The CUE package name to filter for
 ///
 /// # Returns
-/// A vector of directory paths (relative to module_root) containing matching env.cue files.
-/// The paths are suitable for use with `cuengine::evaluate_module` with `TargetDir` option.
+/// A vector of canonical directory paths containing matching `env.cue` files.
 #[must_use]
 pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) -> Vec<PathBuf> {
     let mut directories = Vec::new();
@@ -269,11 +272,12 @@ pub fn discover_env_cue_directories(module_root: &Path, expected_package: &str) 
     directories
 }
 
-/// Discover all directories containing an env.cue file, regardless of package.
+/// Discover directories containing a conventionally named `env.cue` file.
 ///
 /// This scans the workspace for any `env.cue` files and returns their
-/// canonical parent directories. Use when a command intends to operate over the
-/// entire workspace scope (e.g., `sync -A`), independent of CUE package names.
+/// canonical parent directories. It is a filename inventory utility, not a
+/// package evaluation mechanism; workspace operations must use recursive CUE
+/// evaluation instead.
 #[must_use]
 pub fn discover_all_env_cue_directories(module_root: &Path) -> Vec<PathBuf> {
     let mut directories = Vec::new();

@@ -1536,6 +1536,11 @@ When `derivePaths` is enabled, or left at its default for branch and pull reques
 
 Task inputs without glob metacharacters (no `*`, `?`, or `[`) are also expanded into a `path/**` companion entry, since GitHub Actions path filters are glob-only and would otherwise only match the literal path. This keeps derived CI triggers consistent with cuenv's own affected-task detection, which treats non-glob inputs as prefixes. Inputs that resolve outside the repository root are skipped and logged at `warn` level.
 
+Generated GitHub filters also include `**/*.cue` and `cue.mod/**`. The
+module-wide CUE glob is deliberately conservative: recursive evaluation can
+consume arbitrarily named files and imported packages outside the project
+directory, so any CUE source change must be able to trigger the pipeline.
+
 ### #PipelineCondition
 
 Trigger conditions for pipeline execution.

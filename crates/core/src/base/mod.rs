@@ -1,7 +1,7 @@
-//! Base schema discovery across monorepo workspaces
+//! Legacy `env.cue`-specific Base inventory.
 //!
-//! This module provides functionality to discover Base configurations across a monorepo,
-//! supporting owners and ignore discovery without requiring full Project schemas.
+//! Module-wide operations use recursive selected-package evaluation instead;
+//! this module remains only for compatibility with filename-specific callers.
 
 pub mod discovery;
 

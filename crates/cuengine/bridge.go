@@ -19,7 +19,9 @@ import (
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
+	cueerrors "cuelang.org/go/cue/errors"
 	"cuelang.org/go/cue/load"
+	cueparser "cuelang.org/go/cue/parser"
 	"cuelang.org/go/mod/modconfig"
 	"cuelang.org/go/mod/modfile"
 )
@@ -195,10 +197,11 @@ type ModuleInstance struct {
 	Value json.RawMessage `json:"value"`
 }
 
-// ModuleResult contains all evaluated instances in a module
+// ModuleResult contains every successfully evaluated selected-package instance.
+// The bridge returns no ModuleResult if any selected instance fails.
 type ModuleResult struct {
 	Instances map[string]json.RawMessage `json:"instances"`
-	Projects  []string                   `json:"projects"`       // paths that conform to schema.#Project
+	Projects  []string                   `json:"projects"`       // paths whose serialized JSON contains a concrete string name
 	Meta      map[string]ValueMeta       `json:"meta,omitempty"` // "path/field" -> source location
 }
 
@@ -207,7 +210,7 @@ type ModuleEvalOptions struct {
 	WithMeta       bool    `json:"withMeta"`       // Extract source positions into separate Meta map
 	WithReferences bool    `json:"withReferences"` // Extract reference paths (requires WithMeta)
 	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
-	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
+	PackageName    *string `json:"packageName"`    // Overrides the legacy package argument when non-nil
 	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
 }
 
@@ -282,14 +285,9 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		evalDir = *options.TargetDir
 	}
 
-	// Recursive workspace loading must discover directories without letting a
-	// second package in the same directory poison the selected package. The "*"
-	// package asks CUE to split packages during discovery; post-processing below
-	// keeps only effectivePackageName before any instance is built.
+	// Select the requested package during recursive discovery so unrelated
+	// packages and their imports are never loaded as workspace instances.
 	loaderPackage := effectivePackageName
-	if options.Recursive && effectivePackageName != "" {
-		loaderPackage = "*"
-	}
 
 	cfg := &load.Config{
 		Dir:        evalDir,
@@ -305,38 +303,49 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		loadPattern = "."
 	}
 
-	// NOTE: We intentionally do NOT append ":packageName" to the load pattern.
-	// Using "./...:cuenv" causes CUE to create instances for EVERY directory
-	// by unifying ancestor package files, not just directories with .cue files.
-	// Instead, we filter by package name in post-processing below.
-
 	// Load CUE instances using native CUE loader
 	loadedInstances := load.Instances([]string{loadPattern}, cfg)
+	if overlay, ok := attributedUnrelatedInvalidFileOverlay(loadedInstances, effectivePackageName); ok {
+		cfg.Overlay = overlay
+		loadedInstances = load.Instances([]string{loadPattern}, cfg)
+	}
 	if len(loadedInstances) == 0 {
 		hint := "No CUE files found matching the load pattern"
 		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
 		return result
 	}
 
-	// NOTE: We don't load the schema package separately anymore.
-	// The schema is already imported by each CUE file (import "github.com/cuenv/cuenv/schema")
-	// and validated during BuildInstance. We detect Projects by checking for the required
-	// "name" field (Projects have name!, Bases don't) instead of expensive schema unification.
+	// The bridge does not require or load the cuenv schema separately. Instances
+	// that import a schema are validated naturally during BuildInstance. Project
+	// classification itself uses the concrete serialized "name" field rather
+	// than performing an additional schema unification.
 
-	// Pre-filter valid instances (cheap filtering before parallelization)
+	// Keep only the selected package. Recursive evaluation is atomic for that
+	// package: an error in any selected instance must fail the whole request
+	// instead of returning a partial workspace.
 	var validInstances []*build.Instance
 	var loadErrors []string
 	var packageMismatches []string
 	for _, inst := range loadedInstances {
+		if inst.Err != nil {
+			if effectivePackageName == "" || inst.PkgName == effectivePackageName || inst.PkgName == "" || inst.PkgName == "_" {
+				loadErrors = append(loadErrors, fmt.Sprintf("%s (package %q): %v", inst.Dir, inst.PkgName, inst.Err))
+			} else {
+				packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
+			}
+			continue
+		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
 			packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
 			continue
 		}
-		if inst.Err != nil {
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
-			continue
-		}
 		validInstances = append(validInstances, inst)
+	}
+	if len(loadErrors) > 0 {
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, errors=%v",
+			evalDir, goModuleRoot, loadPattern, effectivePackageName, loadErrors)
+		result = createErrorResponse(ErrorCodeLoadInstance, "Failed to load selected CUE package or unattributed CUE input", &hint)
+		return result
 	}
 
 	// Prepare result containers
@@ -349,10 +358,9 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
 	// so concurrent BuildInstance calls on different instances can race.
 	type builtInstance struct {
-		relPath   string
-		value     cue.Value
-		isProject bool
-		inst      *build.Instance // Needed for meta extraction
+		relPath string
+		value   cue.Value
+		inst    *build.Instance // Needed for meta extraction
 	}
 	var builtInstances []builtInstance
 
@@ -370,7 +378,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		// Build the CUE value (must be sequential)
 		v := ctx.BuildInstance(inst)
 		if v.Err() != nil {
-			// Collect build errors so they can be reported if no instances succeed
 			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, v.Err()))
 			continue
 		}
@@ -379,36 +386,61 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
 		v = injectTaskNames(v)
 
-		// Check if this is a Project (has required "name" field) vs Base (no name)
-		isProject := false
-		nameField := v.LookupPath(cue.ParsePath("name"))
-		if nameField.Exists() && nameField.Err() == nil {
-			isProject = true
-		}
-
 		builtInstances = append(builtInstances, builtInstance{
-			relPath:   relPath,
-			value:     v,
-			isProject: isProject,
-			inst:      inst,
+			relPath: relPath,
+			value:   v,
+			inst:    inst,
 		})
+	}
+	if len(buildErrors) > 0 {
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, errors=%v",
+			evalDir, goModuleRoot, loadPattern, effectivePackageName, buildErrors)
+		result = createErrorResponse(ErrorCodeBuildValue, "Failed to build selected CUE package", &hint)
+		return result
 	}
 
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 	withReferences := options.WithReferences
 
-	// Walk built CUE values sequentially. Values from one cue.Context share
-	// evaluator caches; read-looking APIs such as Fields, Decode, and
-	// ReferencePath can mutate that state and must not run concurrently.
+	// Serialize every selected instance before producing any response data.
+	// Values from one cue.Context share evaluator caches, so this remains
+	// sequential.
+	type serializedInstance struct {
+		builtInstance
+		jsonBytes []byte
+	}
+	serializedInstances := make([]serializedInstance, 0, len(builtInstances))
+	var serializationErrors []string
 	for _, built := range builtInstances {
 		jsonBytes, err := buildJSONClean(built.value)
 		if err != nil {
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", built.relPath, err))
-			continue // Skip failed instances
+			serializationErrors = append(serializationErrors, fmt.Sprintf("%s: %v", built.relPath, err))
+			continue
 		}
+		serializedInstances = append(serializedInstances, serializedInstance{
+			builtInstance: built,
+			jsonBytes:     jsonBytes,
+		})
+	}
+	if len(serializationErrors) > 0 {
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, errors=%v",
+			evalDir, goModuleRoot, loadPattern, effectivePackageName, serializationErrors)
+		result = createErrorResponse(ErrorCodeOrderedJSON, "Failed to serialize selected CUE package", &hint)
+		return result
+	}
+
+	// Extract response data only after every selected instance has built and
+	// serialized successfully.
+	for _, serialized := range serializedInstances {
+		built := serialized.builtInstance
+		jsonBytes := serialized.jsonBytes
 		instances[built.relPath] = json.RawMessage(jsonBytes)
-		if built.isProject {
+		// Classify from the serialized value rather than issuing another CUE
+		// lookup against the shared evaluator context. Workspace sync consumes
+		// the serialized value, so project membership must be derived from that
+		// same stable snapshot.
+		if hasConcreteProjectName(jsonBytes) {
 			projects = append(projects, built.relPath)
 		}
 
@@ -454,9 +486,8 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}
 
 	if len(instances) == 0 {
-		allErrors := append(loadErrors, buildErrors...)
-		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v, packageMismatches=%v",
-			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), len(builtInstances), allErrors, packageMismatches)
+		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, selectedInstances=%d, packageMismatches=%v",
+			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), packageMismatches)
 		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
 		return result
 	}
@@ -478,6 +509,84 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 
 	result = createSuccessResponse(string(resultBytes))
 	return result
+}
+
+// attributedUnrelatedInvalidFileOverlay returns minimal replacements for
+// syntax-invalid files whose package clauses are all recoverable and do not
+// match selectedPackage. The caller reruns the same recursive selected-package
+// load with this in-memory overlay and only evaluates that clean result. Any
+// missing, selected, dependency, or mixed attribution remains fail-closed.
+func attributedUnrelatedInvalidFileOverlay(instances []*build.Instance, selectedPackage string) (map[string]load.Source, bool) {
+	if selectedPackage == "" {
+		return nil, false
+	}
+
+	overlay := make(map[string]load.Source)
+	foundError := false
+	for _, inst := range instances {
+		if inst.Err == nil {
+			continue
+		}
+		foundError = true
+		if len(inst.InvalidFiles) == 0 || len(inst.DepsErrors) > 0 || inst.ResolutionErr != nil {
+			return nil, false
+		}
+
+		invalidPaths := make(map[string]struct{}, len(inst.InvalidFiles))
+		for _, file := range inst.InvalidFiles {
+			parsed, err := cueparser.ParseFile(file.Filename, file.Source, cueparser.PackageClauseOnly)
+			if err != nil || parsed == nil {
+				return nil, false
+			}
+
+			packageName := parsed.PackageName()
+			if packageName == "" || packageName == selectedPackage {
+				return nil, false
+			}
+			filename := filepath.Clean(file.Filename)
+			invalidPaths[filename] = struct{}{}
+			overlay[filename] = load.FromString(fmt.Sprintf("package %s\n", packageName))
+		}
+
+		for _, loadErr := range cueerrors.Errors(inst.Err) {
+			positions := cueerrors.Positions(loadErr)
+			if len(positions) == 0 {
+				return nil, false
+			}
+
+			attributed := false
+			for _, position := range positions {
+				filename := position.Filename()
+				if filename == "" {
+					continue
+				}
+				if _, exists := invalidPaths[filepath.Clean(filename)]; !exists {
+					return nil, false
+				}
+				attributed = true
+			}
+			if !attributed {
+				return nil, false
+			}
+		}
+	}
+
+	return overlay, foundError && len(overlay) > 0
+}
+
+func hasConcreteProjectName(jsonBytes []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(jsonBytes, &fields); err != nil {
+		return false
+	}
+
+	rawName, exists := fields["name"]
+	if !exists {
+		return false
+	}
+
+	var name string
+	return json.Unmarshal(rawName, &name) == nil
 }
 
 // injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden

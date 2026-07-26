@@ -123,11 +123,11 @@ impl Compiler {
     }
 
     fn add_implicit_cue_trigger_paths(&self, paths: &mut HashSet<String>) {
-        if let Some(path) =
-            repo_relative_trigger_path(self.options.project_path.as_deref(), "env.cue")
-        {
-            paths.insert(path);
-        }
+        // Recursive evaluation can import CUE packages from anywhere in the
+        // module, including sibling directories. Until import dependencies are
+        // derived exactly, every CUE source file is an implicit trigger input.
+        paths.insert("**/*.cue".to_string());
+
         if let Some(path) =
             repo_relative_trigger_path(self.options.project_path.as_deref(), "schema/**")
         {

@@ -158,8 +158,8 @@ fn test_derive_paths_root_project_no_dot_prefix() {
         trigger.paths
     );
     assert!(
-        trigger.paths.contains(&"env.cue".to_string()),
-        "Should contain env.cue without ./ prefix. Paths: {:?}",
+        trigger.paths.contains(&"**/*.cue".to_string()),
+        "Should contain the module-wide CUE glob without ./ prefix. Paths: {:?}",
         trigger.paths
     );
 }
@@ -218,8 +218,13 @@ fn test_derive_paths_subproject_has_prefix() {
         trigger.paths
     );
     assert!(
-        trigger.paths.contains(&"projects/api/env.cue".to_string()),
-        "Should contain prefixed env.cue. Paths: {:?}",
+        trigger.paths.contains(&"**/*.cue".to_string()),
+        "Should contain the module-wide CUE glob. Paths: {:?}",
+        trigger.paths
+    );
+    assert!(
+        !trigger.paths.iter().any(|path| path.ends_with("env.cue")),
+        "CUE triggers must not hardcode env.cue. Paths: {:?}",
         trigger.paths
     );
 }
@@ -244,10 +249,7 @@ fn test_derive_paths_nested_project_normalizes_parent_inputs() {
         paths.contains(&"server/src/**".to_string()),
         "Paths: {paths:?}"
     );
-    assert!(
-        paths.contains(&"server/env.cue".to_string()),
-        "Paths: {paths:?}"
-    );
+    assert!(paths.contains(&"**/*.cue".to_string()), "Paths: {paths:?}");
     assert!(
         paths.contains(&"server/schema/**".to_string()),
         "Paths: {paths:?}"
@@ -268,8 +270,12 @@ fn test_derive_paths_deep_nested_project_normalizes_parent_inputs() {
         "Paths: {paths:?}"
     );
     assert!(
-        paths.contains(&"apps/server/env.cue".to_string()),
-        "Paths: {paths:?}"
+        paths.contains(&"**/*.cue".to_string()),
+        "missing module-wide CUE glob. Paths: {paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|path| path.ends_with("env.cue")),
+        "CUE triggers must not hardcode env.cue: {paths:?}"
     );
     assert!(
         paths.iter().all(|path| !path.contains("../")),

@@ -514,11 +514,10 @@ impl CommandExecutor {
 
     /// Derive a path-local module evaluation from a cached workspace evaluation.
     ///
-    /// Workspace evaluations (built by `discover_all_modules`) already contain
-    /// the per-directory instance for every `env.cue` in the module, evaluated
-    /// with the same options as a path-local evaluation. Reusing that cached
-    /// instance avoids a redundant CUE evaluation per project during
-    /// workspace-wide operations such as `cuenv sync -A`.
+    /// Workspace evaluations (built by `discover_all_modules`) contain every
+    /// instance of the selected package from one recursive module evaluation.
+    /// Reusing the matching instance avoids a redundant path-local evaluation
+    /// during workspace-wide operations such as `cuenv sync -A`.
     ///
     /// Returns `None` when no cached workspace evaluation covers `target_path`,
     /// in which case the caller falls back to a fresh path-local evaluation.
@@ -537,8 +536,8 @@ impl CommandExecutor {
 
     /// Discover and load all modules in the current workspace (cached by module root).
     ///
-    /// This scans all matching `env.cue` files in the module and evaluates each
-    /// directory individually with `recursive: false`, then merges the results.
+    /// This recursively evaluates the selected package once across the module.
+    /// CUE source filenames do not participate in discovery.
     ///
     /// Use this only for explicitly workspace-wide commands (for example `sync -A`).
     ///
@@ -607,10 +606,10 @@ impl CommandExecutor {
         Ok(relative_path_from_root(&root, target))
     }
 
-    /// Check if a path is a Project (vs Base) using schema unification.
+    /// Check if a path is a Project (vs Base).
     ///
-    /// This uses the CUE schema verification performed during module evaluation
-    /// to determine if an instance conforms to `schema.#Project`.
+    /// The bridge classifies projects from the concrete serialized `name`
+    /// required by `schema.#Project`.
     #[must_use]
     pub fn is_project(&self, path: &Path) -> bool {
         let Ok(target_path) = path.canonicalize() else {
