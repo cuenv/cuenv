@@ -1,5 +1,10 @@
 # cuetty — Graphite Redesign
 
+> **Superseded historical design.** This document describes the pre-Rio
+> Ghostty-era Cuetty scaffold and is retained only for design history. The
+> current implementation and feature boundary are documented in
+> [Cuetty](../../src/content/docs/explanation/cuetty.md).
+
 **Date:** 2026-05-12
 **Scope:** `apps/cuetty/` UI shell — replace horizontal top tab bar with a vertical sidebar; refresh palette, typography, and chrome to a calmer industrial aesthetic ("Graphite"). No changes to terminal substrate, PTY plumbing, or split-tree logic.
 
