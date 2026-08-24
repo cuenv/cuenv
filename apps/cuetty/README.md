@@ -1,45 +1,119 @@
 # Cuetty
 
-Cuetty is a small Cuenv terminal app scaffolded from Termy's GPUI shape, but with a Ghostty-backed terminal core instead of `alacritty_terminal`.
+Cuetty is a deliberately narrow, usable GPUI terminal host for Cuenv. It is
+built around the pinned Rio engine revision `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`.
 
-## Current Scope
+The pin is intentional: it is the historical Rio frontend revision whose
+public surface snapshot Cuetty adapts. Upgrade it only with a terminal
+correctness and live-interaction validation pass.
 
-- GPUI desktop window.
-- PTY-backed login shells.
-- Ghostty VT parsing and rendering through the pinned `gpui_ghostty_terminal` stack.
-- Tabs with one or more terminal panes per tab.
-- Right and down splits backed by independent terminal sessions.
-- Active-pane focus cycling and per-pane resize calculations.
-- Immediate terminal capability query responses for shells such as fish.
-- Native Cuetty app menu, window title, and keyboard shortcuts.
-- App-local Nix flake for reproducible tools, checks, and builds.
-
-The nested `termy/` checkout is intentionally ignored and kept only as a reference while Cuetty develops its own app shape.
-
-## Development
-
-```bash
-nix develop --accept-flake-config
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --all -- --check
+```text
+Rio PTY + VT state
+  -> RioTerminalSession (object-safe TerminalSession boundary)
+  -> EventBridge (coalesced damage, lossless ordered controls)
+  -> GPUI entity + batched fixed-layout terminal grid
 ```
 
-Run the app:
+Rio is the only PTY and ANSI/VT authority. The host snapshots semantic styled
+cells on the GPUI UI thread and resolves them through a replaceable
+`TerminalTheme`/`TerminalRenderer` pair. The session trait keeps the frontend replaceable without
+leaking `librio` types. GPUI key events become host-owned `TerminalKeyEvent`
+values first; only the concrete Rio adapter maps them to Rio's exact
+SHIFT/CTRL/ALT/SUPER bit layout. Rio callbacks only touch thread-safe bridge
+state.
 
-```bash
-nix run .#cuetty --accept-flake-config
+## Run
+
+On macOS with Rust and Apple's Metal Toolchain installed:
+
+```sh
+cargo run --release --locked
 ```
 
-Build and check with Nix:
+The window starts the default login shell. Click the terminal (mouse-down
+focuses it), type a command,
+and resize the window. `Command-V` pastes through GPUI's clipboard. OSC 52
+clipboard writes are applied on the GPUI thread. Closing the window drops the
+surface exactly once and closes the child shell.
 
-```bash
-nix build .#cuetty -L --accept-flake-config
-nix flake check -L --accept-flake-config
+## Verification
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo test --locked
+cargo clippy --all-targets --all-features -- -D warnings
+cargo run --release --locked
 ```
 
-## Architecture
+Manual acceptance is: a visible shell prompt; command typing and output redraw;
+Unicode paste; `stty size` matching the resized grid; an OSC 52 clipboard
+write; and clean shell/window close.
 
-`src/pty.rs` owns process setup, PTY I/O threads, shell environment, and resize-safe grid dimensions. `src/terminal_responses.rs` handles small PTY query responses that need to be sent before rendering, such as Device Attributes. `src/ui.rs` owns the GPUI root view, tab model, split tree, Ghostty terminal sessions, input bridge, output pumps, active-pane tracking, and resize observer.
+## Visual contract
 
-The current UI shell deliberately keeps tabs and splits app-owned while terminal parsing, rendering, keyboard input, selection, and clipboard operations still flow through `gpui_ghostty_terminal`. Native embedded Ghostty remains the next architecture decision, but the app now has the session boundary needed to swap the terminal substrate without redesigning the product shell.
+The shell follows the pinned Cuetty presentation patterns: a quiet title
+strip, warm near-black host and surface colours, readable fixed-pitch text, a
+16px viewport inset, and an explicit focused cursor. The title strip is
+decorative and never owns focus; clicking the terminal viewport requests focus.
+Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
+Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
+and directory glyphs do not depend on GPUI's default fallback selection.
+Terminal text is deliberately 16px with a 1.2 line-height multiplier; that
+raw 19.2px line height is snapped once to the shared 20px device-pixel cell
+used by both GPUI painting and Rio resizing.
+The focused label and cursor follow GPUI's current focus handle, including blur.
+Rio
+colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
+in `TerminalFrame` until the renderer resolves them through the theme.
+The pinned Rio public snapshot exposes cursor position but not cursor shape or
+visibility, so the renderer applies an explicit focused host-default block
+policy only when the adapter reports `Known::Unknown`; it clips positions at
+render time. Underlines are host approximations: single and double use distinct
+thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
+underline.
+
+Before calling the POC visually usable, check that native window controls and
+the title strip remain visible, the prompt is comfortably inset, the cursor
+changes with focus, ANSI colour and Unicode remain correct, and resizing
+changes the shell's `stty size` without reflowing chrome-only changes.
+
+## Deliberate limitations
+
+This POC exposes one GPUI terminal surface per tab, with an independent live
+Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
+active tab/session and closes the window when it is the final tab. Cmd-D and
+Cmd-Shift-D report that split panes are unavailable; they never create a fake
+terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse selection
+and the current literal visible-frame search hit are painted directly over the
+terminal grid; Cmd-C copy and paste are live too. It does not yet have live workspace restore,
+plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
+composition. Workspace persistence has a bounded versioned codec and atomic
+file store, but live restore and Rio session reconnect are not wired into the
+product shell.
+The renderer uses one custom GPUI element, merges compatible background spans,
+and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
+width is measured from the selected font, while line height follows the explicit
+16px/1.2 presentation contract; both are snapped once to shared device-pixel
+cell dimensions used by painting and Rio resizing. The current Rio public
+snapshot adapter still exposes one `char` per visible cell. Wide-cell occupancy
+and wrapped placeholders are preserved, but complete combining-mark/ZWJ
+cluster, hyperlink, cursor-mode, and emoji presentation correctness is
+deliberately not claimed.
+
+The terminal element measures its own post-layout GPUI canvas bounds, not the
+outer window, and notifies the entity when those bounds change so the next
+render applies the resize to Rio. This preserves one-cell clamping and resize
+deduplication. Startup,
+input, resize, paste, and close failures remain visible in the view rather than
+being dropped.
+
+On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
+compiler that GPUI needs. Runtime is only verified when
+`cargo run --release --locked` successfully opens Cuetty.
+
+## Nix
+
+The app-local flake provides `packages.cuetty`, `apps.cuetty`, and the focused
+`cuetty-test`, `cuetty-clippy`, and `cuetty-fmt` checks. Its only inputs are
+Nixpkgs, flake-utils, and the Rust overlay.

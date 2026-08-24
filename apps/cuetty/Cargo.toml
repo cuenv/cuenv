@@ -5,35 +5,15 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 publish = false
 
+# Cuetty is intentionally an app-local workspace, not a Cuenv root member.
 [workspace]
-members = [".", "crates/gpui_ghostty_terminal"]
-default-members = [".", "crates/gpui_ghostty_terminal"]
 resolver = "2"
 
-[lints.rust]
-unsafe_code = "warn"
-
-[lints.clippy]
-dbg_macro = "warn"
-todo = "warn"
-unimplemented = "warn"
-print_stdout = "warn"
-print_stderr = "warn"
-
 [dependencies]
-anyhow = "1.0"
-libc = "0.2"
-# pinned: Zed does not publish gpui to crates.io; tracking main is intentional.
-# Bump cadence: roughly monthly, paired with the gpui_ghostty_terminal rev below.
-gpui = { git = "https://github.com/zed-industries/zed", package = "gpui", features = [
-  "runtime_shaders",
-] }
-# patched: gpui_ghostty_terminal is pre-1.0 and currently needs a local
-# coordinate-space fix for text selection inside Cuetty's app chrome. Keep the
-# Ghostty VT rev in the patched crate and the `gpui-ghostty-src` flake input in
-# lockstep.
-gpui_ghostty_terminal = { path = "crates/gpui_ghostty_terminal" }
-portable-pty = "0.9"
-flume = "0.11"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+async-channel = "2.5.0"
+gpui = "0.2.2"
+gpui-component = "0.5.1"
+# Pinned to the Rio frontend revision this terminal is validated against.
+librio = { git = "https://github.com/raphamorim/rio", rev = "b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1" }
+
+[dev-dependencies]

@@ -3,67 +3,87 @@ title: Cuetty
 description: Cuetty terminal app architecture and development workflow
 ---
 
-Cuetty is the experimental cuenv terminal app in `apps/cuetty`. It is scaffolded as a standalone Rust desktop application with a local Nix flake so the app can move quickly without changing the root cuenv release pipeline.
+Cuetty is the experimental cuenv terminal app in `apps/cuetty`. It is a
+standalone Rust desktop application using GPUI for the product shell and the
+pinned Rio terminal engine for terminal state, parsing, PTY integration, and
+semantic render frames.
+
+The active Rio revision is:
+
+`b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`
+
+That pin is intentional. Cuetty uses the public APIs available at this
+revision rather than depending on private renderer or embedding APIs.
 
 ## Architecture
 
-Cuetty uses GPUI for the desktop shell and the Ghostty VT stack for terminal parsing and rendering. Unlike Termy, it does not depend on `alacritty_terminal`.
+The boundary is deliberately replaceable:
 
-The first milestone was deliberately small:
+- Rio owns terminal parsing, PTY-backed session state, terminal actions,
+  semantic colours and styles, cursor state, cell occupancy, wrapping, and
+  resize semantics.
+- Cuetty's terminal model translates Rio state into a renderer-neutral frame
+  protocol. GPUI does not receive Rio types directly.
+- GPUI owns the window, title bar, fixed-grid cell renderer, focus, input
+  routing, selection and copy overlay, visible-frame search overlay, and
+  workspace shell.
+- Rust traits define terminal sessions, frame snapshots, configuration,
+  workspace persistence, session backends, and capability checks so those
+  pieces can be replaced or extended independently.
 
-- Open one GPUI window.
-- Spawn the user's login shell through a PTY.
-- Set `TERM=xterm-256color`, `COLORTERM=truecolor`, and `TERM_PROGRAM=cuetty`.
-- Stream PTY output into a Ghostty-backed terminal view.
-- Forward terminal input back to the PTY.
-- Reply to terminal capability queries, including Device Attributes, without waiting for a render pass.
-- Install a Cuetty app menu and `cmd-q` quit action instead of inheriting dependency metadata.
-- Resize the terminal state and PTY from GPUI window bounds.
+The current usable slice includes:
 
-The current shell milestone adds the first product boundary:
+- A login shell attached to a Rio-backed terminal session.
+- Fixed-width, fixed-row-height GPUI rendering with semantic colours and
+  explicit wide-cell and soft-wrap occupancy.
+- Keyboard input, paste, resize, title updates, clipboard copy, mouse
+  selection, and visible-frame literal search.
+- Independent live Rio sessions for each tab with a replaceable workspace
+  model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
+  split shortcuts are rejected with a visible notice until pane/session
+  allocation is implemented, and the UI never presents a fake terminal pane.
+- Versioned, metadata-only workspace persistence and capability/session seams
+  for later product integrations.
 
-- A tab model with independent terminal sessions per tab.
-- A split tree per tab for right and down splits.
-- One PTY, Ghostty terminal session, input bridge, and output pump per pane.
-- Active-pane tracking and focus cycling.
-- Per-pane grid resizing based on the active tab's split geometry.
-- App actions and keybindings for new tab, close tab, split right, split down,
-  and focus next pane.
+Termy and Okena remain reference projects for renderer and product-shell
+patterns. They are not vendored dependencies and their runtime models are not
+silently substituted for Rio.
 
-The ignored `apps/cuetty/termy` checkout is a reference only. Cuetty should keep its own module boundaries and use Termy as a guide, not as a long-term dependency.
+## Current limits
 
-## Integration notes
+The following are deliberately documented as staged work rather than implied
+support:
 
-Cuetty leans on three pre-1.0 building blocks: GPUI from Zed (git pin), `gpui_ghostty_terminal` from `Xuanwo/gpui-ghostty` (git pin, vendors Ghostty's VT core via Zig), and `portable-pty` for shell I/O. This shape is currently the shortest path to a Ghostty-backed terminal on GPUI; `libghostty` itself is still working toward a stable embedding surface, and rolling our own bindings would duplicate the glue Xuanwo's crate already provides.
+- Full scrollback navigation and full-history search; current search is over
+  the visible frame and supports literal matching only.
+- Complete Unicode behaviour, including combining marks, ZWJ sequences,
+  emoji presentation, and IME correctness.
+- Kitty graphics and other image protocols.
+- tmux, remote, attach, and reconnect backends.
+- Wasm plugins and a plugin/component-tree runtime.
+- Split-pane session allocation, plus live workspace restore/reconnect.
 
-Two consequences worth knowing:
-
-- **Lockstep pinning.** The `ghostty_vt` rev in `crates/gpui_ghostty_terminal/Cargo.toml` and the `gpui-ghostty-src` flake input must always point at the same commit. The Nix build symlinks the vendored Ghostty source from that flake input into the Cargo build tree, so a mismatch yields a build that links the wrong Zig artefacts. Bump both together.
-- **`terminal_responses.rs` is a temporary patch.** Upstream answers DSR and OSC color queries but not Primary or Secondary Device Attributes. Cuetty scans the PTY output stream itself to reply, so shells like fish do not stall on `CSI c` at startup. Delete the module once upstream gains DA support.
-- **`crates/gpui_ghostty_terminal` is a local patch.** Cuetty carries a small app-local copy of the upstream terminal view so native text selection converts GPUI window mouse coordinates into terminal-local coordinates before calculating rows and columns. The local view keeps GPUI entity-input/IME handling in `view/input_handler.rs`, text shaping/prepaint/paint work in `view/element.rs`, coordinate helpers in `view/geometry.rs`, link detection in `view/links.rs`, and pointer/scroll event forwarding in `view/mouse.rs` so composition, rendering, and mouse state stay separate from viewport refresh orchestration. The app shell keeps tab and pane layout-tree operations in `ui/layout.rs`, and PTY spawn/output-pump/resize mechanics in `ui/terminal.rs`, away from root rendering. Drop this copy once upstream includes the coordinate fix.
-
-Output is event-driven: each PTY reader thread pushes byte chunks through a
-`flume` channel that its GPUI task awaits asynchronously, then batches anything
-else already buffered before handing the batch to that pane's terminal view.
-There is no fixed-interval polling loop.
-The login-shell lookup is the only app-shell libc boundary; its unsafe-code
-lint expectation stays on the small passwd helper instead of the PTY module.
-
-Tabs and splits are intentionally app-owned. Each leaf in the split tree points
-at a terminal pane, and each pane owns its own PTY plus Ghostty-backed terminal
-view. Cuetty still uses `gpui_ghostty_terminal` for the terminal substrate; the
-tab and split model is the boundary that lets Cuetty later prototype a native
-embedded-Ghostty adapter without rewriting the product shell.
+The implementation has focused Rust validation and signed macOS bundle
+verification. Human visual and input acceptance remains a separate caveat:
+the terminal must still be exercised interactively for font metrics, line
+spacing, selection, search focus, clipboard behaviour, resize, and shell
+lifecycle before a release claim. macOS with Apple's Metal toolchain is the
+only runtime-verified platform at present; Linux and Windows are unverified.
 
 ## Development
 
-Use the app-local flake from `apps/cuetty`:
+Use the app-local workflow from `apps/cuetty`. The app remains standalone and
+does not participate in the root cuenv release pipeline until it is ready:
 
 ```bash
-nix develop --accept-flake-config
-nix run .#cuetty --accept-flake-config
-nix build .#cuetty -L --accept-flake-config
-nix flake check -L --accept-flake-config
+cargo fmt -- --check
+cargo check --locked
+cargo test --locked
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release --locked
+./script/build_and_run.sh --verify
 ```
 
-The app flake owns Cuetty's GPUI, Ghostty, Zig, and Rust tool acquisition. Root cuenv checks still need to pass before committing changes to the repository.
+`build_and_run.sh --verify` uses the installed macOS Metal toolchain to build,
+sign, and validate the application bundle. The exact commands and resulting
+platform boundary should be reported with every Cuetty implementation change.
