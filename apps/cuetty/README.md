@@ -124,6 +124,27 @@ stale frame from clipping long output. Startup,
 input, resize, paste, and close failures remain visible in the view rather than
 being dropped.
 
+## Cuenv presentation
+
+Cuetty reads the `cuetty` CUE package from the active shell's exact current
+directory. Any `.cue` file in that directory may declare the package; no
+specific filename is required. A directory without that package is neutral.
+Standalone packages can evaluate without a module; imports that require a
+module context fail through the normal CUE error path.
+
+```cue
+package cuetty
+
+banner: "Welcome to Cuetty"
+border: "#ff0000"
+```
+
+`banner` is a bounded single line and `border` must be a quoted `#RRGGBB`
+colour. Rio reports shell CWD changes through its public working-directory API;
+Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
+Malformed matching configuration retains the last valid presentation and shows
+an integration notice. CUE evaluation never runs on the GPUI thread.
+
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when
 `cargo run --release --locked` successfully opens Cuetty.

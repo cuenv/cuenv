@@ -5,6 +5,7 @@
 
 pub mod backends;
 pub mod capabilities;
+pub mod cuenv;
 
 pub use backends::{
     BackendCapabilities, BackendError, BackendKind, EnvironmentPolicy, InMemorySessionBackend,

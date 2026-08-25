@@ -225,7 +225,9 @@ pub struct ModuleEvalOptions {
     pub recursive: bool,
     /// Filter to specific package name, None = all packages
     pub package_name: Option<String>,
-    /// Directory to evaluate (for non-recursive), None = module root.
+    /// Directory to evaluate (for non-recursive), None = module root. With a
+    /// package filter, this may also be a standalone directory without
+    /// `cue.mod/module.cue`; imports that require a module then fail normally.
     /// Use this to evaluate a specific subdirectory without loading the entire module.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_dir: Option<String>,
@@ -292,7 +294,9 @@ struct ModuleEvalWorker {
 /// - `recursive: false` → equivalent to `cue eval .`
 ///
 /// # Arguments
-/// * `module_root` - Path to the CUE module root (directory containing cue.mod/)
+/// * `module_root` - Path to the CUE module root (directory containing
+///   `cue.mod/`), or the exact standalone directory when a package-filtered
+///   `target_dir` evaluation is requested
 /// * `package_name` - Name of the CUE package to evaluate (legacy parameter, prefer using `options.package_name`)
 /// * `options` - Evaluation options:
 ///   - `with_meta`: Extract source positions into separate `meta` map
@@ -310,6 +314,10 @@ struct ModuleEvalWorker {
 /// - The module root path is invalid
 /// - The CUE module cannot be loaded
 /// - All CUE instances fail evaluation
+///
+/// A package-filtered evaluation returns an empty `instances` map when the
+/// exact target directory has no matching package. Syntax and build errors
+/// remain errors even when the requested package is absent.
 #[tracing::instrument(
     name = "evaluate_module",
     fields(

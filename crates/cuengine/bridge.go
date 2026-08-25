@@ -20,6 +20,7 @@ import (
 	"cuelang.org/go/cue/build"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/load"
+	"cuelang.org/go/cue/parser"
 	"cuelang.org/go/mod/modconfig"
 	"cuelang.org/go/mod/modfile"
 )
@@ -77,6 +78,72 @@ func cue_bridge_version() *C.char {
 }
 
 // Helper function to create error response
+// packageFilterOverlay blanks files from an exact target directory whose
+// syntax-aware package clause does not match the requested package. CUE's
+// package-specific loader otherwise reports malformed unrelated files as
+// errors before it can select the requested package.
+func packageFilterOverlay(evalDir, packageName string, recursive bool) (map[string]load.Source, bool, error) {
+	if packageName == "" || recursive {
+		return nil, false, nil
+	}
+	overlayDir, err := filepath.Abs(evalDir)
+	if err != nil {
+		return nil, false, err
+	}
+	entries, err := os.ReadDir(overlayDir)
+	if err != nil {
+		return nil, false, err
+	}
+	overlay := make(map[string]load.Source)
+	matched := false
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".cue" {
+			continue
+		}
+		filename := filepath.Join(overlayDir, entry.Name())
+		source, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, false, err
+		}
+		syntax, parseErr := parser.ParseFile(filename, source)
+		if syntax != nil && syntax.PackageName() == packageName {
+			matched = true
+			continue
+		}
+		if parseErr != nil && syntax == nil {
+			// Without a partial AST the package cannot be identified safely;
+			// leave the original source in place so the evaluator reports an
+			// explicit failure rather than silently treating it as absent.
+			matched = true
+			continue
+		}
+		overlay[filename] = load.FromBytes([]byte("package _\n"))
+	}
+	return overlay, matched, nil
+}
+
+// invalidInstanceDeclaresPackage recovers the package clause from files that
+// failed CUE parsing. The loader deliberately sets PkgName to "_" for those
+// instances, so filtering only on build.Instance.PkgName would turn a broken
+// matching package into neutral absence. ParseFile returns a partial AST on
+// syntax errors, making this a syntax-aware check rather than a second source
+// text parser.
+func invalidInstanceDeclaresPackage(inst *build.Instance, packageName string) bool {
+	if packageName == "" {
+		return true
+	}
+	for _, file := range inst.InvalidFiles {
+		if file.Encoding != build.CUE {
+			continue
+		}
+		syntax, _ := parser.ParseFile(file.Filename, file.Source)
+		if syntax != nil && syntax.PackageName() == packageName {
+			return true
+		}
+	}
+	return false
+}
+
 func createErrorResponse(code, message string, hint *string) *C.char {
 	error := &BridgeError{
 		Code:    code,
@@ -250,12 +317,22 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		result = createErrorResponse(ErrorCodeInvalidInput, "Module root path cannot be empty", nil)
 		return result
 	}
+	absoluteModuleRoot, err := filepath.Abs(goModuleRoot)
+	if err != nil {
+		hint := "Ensure the CUE root path is valid"
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Cannot resolve CUE root path: %v", err), &hint)
+		return result
+	}
+	goModuleRoot = absoluteModuleRoot
 
-	// Verify module root exists
+	// A module root is preferred for imports and dependency resolution, but a
+	// package-filtered evaluation may intentionally target a standalone CUE
+	// directory. The loader can still evaluate that exact directory with the
+	// supplied root; imported module paths will report a normal CUE error.
 	moduleFile := filepath.Join(goModuleRoot, "cue.mod", "module.cue")
-	if _, err := os.Stat(moduleFile); os.IsNotExist(err) {
-		hint := "Ensure path contains a cue.mod/module.cue file"
-		result = createErrorResponse(ErrorCodeInvalidInput, "Not a valid CUE module root", &hint)
+	if _, err := os.Stat(moduleFile); err != nil && !os.IsNotExist(err) {
+		hint := "Ensure the CUE root is readable"
+		result = createErrorResponse(ErrorCodeInvalidInput, "Cannot inspect CUE root", &hint)
 		return result
 	}
 
@@ -280,15 +357,34 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	evalDir := goModuleRoot
 	if options.TargetDir != nil && *options.TargetDir != "" {
 		evalDir = *options.TargetDir
+		if !filepath.IsAbs(evalDir) {
+			evalDir, err = filepath.Abs(evalDir)
+			if err != nil {
+				hint := "Ensure the exact CUE target directory is valid"
+				result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Cannot resolve CUE target path: %v", err), &hint)
+				return result
+			}
+		}
 	}
 
-	// Recursive workspace loading must discover directories without letting a
-	// second package in the same directory poison the selected package. The "*"
-	// package asks CUE to split packages during discovery; post-processing below
-	// keeps only effectivePackageName before any instance is built.
+	// Recursive package queries need all package instances so the result can be
+	// filtered below. Exact package queries use the loader's package selector,
+	// with an overlay that blanks unrelated files in the target directory. This
+	// keeps a malformed unrelated file from poisoning a valid requested package
+	// while preserving syntax/build errors in matching files.
 	loaderPackage := effectivePackageName
-	if options.Recursive && effectivePackageName != "" {
+	if effectivePackageName != "" && options.Recursive {
 		loaderPackage = "*"
+	}
+	packageOverlay, packageMatched, err := packageFilterOverlay(evalDir, effectivePackageName, options.Recursive)
+	if err != nil {
+		hint := "Ensure the exact CUE target directory is readable"
+		result = createErrorResponse(ErrorCodeLoadInstance, fmt.Sprintf("Cannot inspect CUE target: %v", err), &hint)
+		return result
+	}
+	if effectivePackageName != "" && !options.Recursive && !packageMatched {
+		result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+		return result
 	}
 
 	cfg := &load.Config{
@@ -296,6 +392,7 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		ModuleRoot: goModuleRoot,
 		Registry:   registry,
 		Package:    loaderPackage,
+		Overlay:    packageOverlay,
 	}
 
 	var loadPattern string
@@ -306,13 +403,22 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}
 
 	// NOTE: We intentionally do NOT append ":packageName" to the load pattern.
-	// Using "./...:cuenv" causes CUE to create instances for EVERY directory
-	// by unifying ancestor package files, not just directories with .cue files.
-	// Instead, we filter by package name in post-processing below.
+	// Recursive queries load Package:"*" and filter by package name below; exact
+	// queries use Config.Package plus the package-filter overlay above. Using
+	// "./...:cuenv" causes CUE to create instances for EVERY directory by
+	// unifying ancestor package files, not just directories with .cue files.
 
 	// Load CUE instances using native CUE loader
 	loadedInstances := load.Instances([]string{loadPattern}, cfg)
 	if len(loadedInstances) == 0 {
+		// A package-filtered query is also a presence query for callers such as
+		// Cuetty. No files in the exact target directory means the requested
+		// package is absent, not that CUE evaluation itself failed. Returning an
+		// empty result keeps absence distinct from syntax/build errors below.
+		if effectivePackageName != "" {
+			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			return result
+		}
 		hint := "No CUE files found matching the load pattern"
 		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
 		return result
@@ -328,12 +434,24 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	var loadErrors []string
 	var packageMismatches []string
 	for _, inst := range loadedInstances {
-		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
-			packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
+		if inst.Err != nil {
+			// CUE represents an exact directory with no package as an error
+			// instance whose message says it "matched no packages". For a
+			// package-filtered presence query that is neutral absence, not a
+			// syntax/build failure. Other loader errors must remain explicit.
+			if effectivePackageName != "" && strings.Contains(inst.Err.Error(), "matched no packages") {
+				packageMismatches = append(packageMismatches, fmt.Sprintf("%s has no package", inst.Dir))
+				continue
+			}
+			if effectivePackageName != "" && inst.PkgName != effectivePackageName && !invalidInstanceDeclaresPackage(inst, effectivePackageName) {
+				packageMismatches = append(packageMismatches, fmt.Sprintf("%s has no package '%s'", inst.Dir, effectivePackageName))
+				continue
+			}
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
 			continue
 		}
-		if inst.Err != nil {
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
+		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
+			packageMismatches = append(packageMismatches, fmt.Sprintf("%s has package '%s'", inst.Dir, inst.PkgName))
 			continue
 		}
 		validInstances = append(validInstances, inst)
@@ -454,6 +572,13 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 	}
 
 	if len(instances) == 0 {
+		// A package filter can legitimately match no instance when the target
+		// directory contains only another package (or no package declaration).
+		// Preserve that as an empty success; load/build errors remain failures.
+		if effectivePackageName != "" && len(loadErrors) == 0 && len(buildErrors) == 0 {
+			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			return result
+		}
 		allErrors := append(loadErrors, buildErrors...)
 		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v, packageMismatches=%v",
 			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), len(builtInstances), allErrors, packageMismatches)

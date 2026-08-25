@@ -43,6 +43,8 @@ pub trait TerminalSession: Send {
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn frame(&mut self) -> TerminalFrame;
+    /// Current shell directory reported by Rio (OSC 7, with Rio's OS fallback).
+    fn working_directory(&self) -> Option<String>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
     fn close(&mut self) -> Result<(), String>;
 }
@@ -210,6 +212,9 @@ impl TerminalSession for RioTerminalSession {
         let sampling_token = next_sampling_token(&mut self.next_sampling_token);
         snapshot(&self.render_state, sampling_token)
     }
+    fn working_directory(&self) -> Option<String> {
+        self.surface.as_ref().and_then(Surface::working_dir)
+    }
     fn drain_effects(&self) -> Vec<ControlEvent> {
         self.bridge.drain()
     }
@@ -286,6 +291,16 @@ mod tests {
 
     #[test]
     fn rio_resize_refreshes_the_sampled_grid_dimensions() {
+        // Rio intentionally uses macOS's /usr/bin/login for the default shell.
+        // Minimal Nix build sandboxes do not expose that host path, so keep
+        // the live PTY assertion for macOS environments that can actually
+        // spawn the production shell and leave the pure sizing coverage to
+        // the renderer/terminal-size tests below it.
+        if std::env::var_os("CUETTY_SKIP_PTY_TEST").is_some()
+            || (cfg!(target_os = "macos") && !std::path::Path::new("/usr/bin/login").exists())
+        {
+            return;
+        }
         let cell = CellSize {
             width: 8,
             height: 16,
