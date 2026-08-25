@@ -11,15 +11,19 @@ use super::presentation::{TerminalMetrics, TerminalTheme, gpui_rgb};
 use super::settings::SettingsDraft;
 use super::sizing::CellSize;
 use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
+use crate::integrations::cuenv::{
+    BorderColor, ConfigSource, CuenvPaneState, CuenvProvider, CuenvWatcher, Evaluation,
+    NativeCuenvProvider,
+};
 use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
 use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement, Pixels, Render, SharedString, Size, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, SystemMenuType, TextRun, UnderlineStyle as GpuiUnderlineStyle,
-    Window, WindowBounds, WindowControlArea, WindowOptions, actions, canvas, div, point,
-    prelude::FluentBuilder, px, quad, size,
+    StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
+    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
+    actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
 };
 use gpui_component::resizable::{h_resizable, resizable_panel};
 use gpui_component::tooltip::Tooltip;
@@ -476,6 +480,13 @@ type ViewportBounds = (f32, f32, f32, f32);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SessionGeneration(u64);
 
+#[derive(Clone, Copy)]
+struct CuenvUpdateTarget {
+    pane: crate::workspace::PaneId,
+    session_generation: SessionGeneration,
+    config_generation: u64,
+}
+
 struct PaneState {
     generation: SessionGeneration,
     session: Box<dyn TerminalSession>,
@@ -485,6 +496,10 @@ struct PaneState {
     measured_bounds: Arc<Mutex<(u32, u32)>>,
     viewport_bounds: Arc<Mutex<ViewportBounds>>,
     error: Option<String>,
+    cuenv: CuenvPaneState,
+    cuenv_source: Option<ConfigSource>,
+    cuenv_watcher: Option<Box<dyn CuenvWatcher>>,
+    cuenv_watch_retry_at: Option<std::time::Instant>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -565,6 +580,10 @@ impl SessionRegistry {
                 measured_bounds: Arc::new(Mutex::new((width, height))),
                 viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
                 error: None,
+                cuenv: CuenvPaneState::default(),
+                cuenv_source: None,
+                cuenv_watcher: None,
+                cuenv_watch_retry_at: None,
             },
         );
         Ok((
@@ -625,6 +644,10 @@ impl SessionRegistry {
                 measured_bounds: Arc::new(Mutex::new((width, height))),
                 viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
                 error: None,
+                cuenv: CuenvPaneState::default(),
+                cuenv_source: None,
+                cuenv_watcher: None,
+                cuenv_watch_retry_at: None,
             },
         );
         self.notice = None;
@@ -699,6 +722,7 @@ impl SessionRegistry {
 
 struct TerminalView {
     registry: SessionRegistry,
+    cuenv: Arc<dyn CuenvProvider>,
     config: TerminalConfig,
     metrics: TerminalMetrics,
     theme: TerminalTheme,
@@ -792,6 +816,18 @@ impl TerminalView {
         }
     }
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::new_with_provider(window, cx, Arc::new(NativeCuenvProvider))
+    }
+
+    /// Construct the host with an explicit Cuenv provider. The production
+    /// entry point uses the native provider, while tests and alternate hosts
+    /// can inject a deterministic evaluator/watcher without touching GPUI or
+    /// the Rio session implementation.
+    fn new_with_provider(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        cuenv: Arc<dyn CuenvProvider>,
+    ) -> Self {
         cx.observe_window_bounds(window, move |_, _, cx| cx.notify())
             .detach();
         let config = TerminalConfig::default();
@@ -807,6 +843,7 @@ impl TerminalView {
                     .expect("initial workspace tab");
                 let mut view = Self {
                     registry,
+                    cuenv,
                     config,
                     metrics,
                     theme,
@@ -822,6 +859,8 @@ impl TerminalView {
                     settings_error: None,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
+                view.spawn_cwd_poll(cx);
+                view.refresh_cuenv_integration(cx);
                 view
             }
             Err(error) => {
@@ -829,6 +868,7 @@ impl TerminalView {
                 registry.notice = Some(format!("Cuetty could not start Rio: {error}"));
                 Self {
                     registry,
+                    cuenv,
                     config,
                     metrics,
                     theme,
@@ -845,6 +885,185 @@ impl TerminalView {
                 }
             }
         }
+    }
+    fn refresh_cuenv_integration(&mut self, cx: &mut Context<Self>) {
+        let panes: Vec<_> = self.registry.sessions.keys().copied().collect();
+        for pane in panes {
+            self.refresh_cuenv_pane(pane, cx);
+        }
+    }
+
+    fn refresh_cuenv_pane(&mut self, pane: crate::workspace::PaneId, cx: &mut Context<Self>) {
+        let (session_generation, cwd) = self
+            .registry
+            .sessions
+            .get(&pane)
+            .map(|state| (state.generation, state.session.working_directory()))
+            .expect("active pane registry invariant");
+        let Some(cwd) = cwd else {
+            return;
+        };
+        let cwd = std::path::PathBuf::from(cwd);
+        let canonical_cwd = cwd.canonicalize().unwrap_or(cwd);
+        let cwd_changed = self
+            .registry
+            .sessions
+            .get(&pane)
+            .is_some_and(|state| state.cuenv.cwd.as_ref() != Some(&canonical_cwd));
+        if cwd_changed {
+            let state = self
+                .registry
+                .sessions
+                .get_mut(&pane)
+                .expect("active pane registry invariant");
+            state.cuenv.observe_cwd(canonical_cwd.clone());
+            state.cuenv_source = None;
+            state.cuenv_watcher = None;
+            state.cuenv_watch_retry_at = None;
+        }
+        let source = match ConfigSource::from_cwd(&canonical_cwd) {
+            Ok(source) => source,
+            Err(error) => {
+                if let Some(state) = self.registry.sessions.get_mut(&pane) {
+                    state.cuenv.notice = Some(error);
+                }
+                return;
+            }
+        };
+        let now = std::time::Instant::now();
+        let Some(state) = self.registry.sessions.get_mut(&pane) else {
+            return;
+        };
+        let watcher_error = state
+            .cuenv_watcher
+            .as_ref()
+            .and_then(|watcher| watcher.take_error());
+        if let Some(error) = watcher_error {
+            state.cuenv_watcher = None;
+            state.cuenv_watch_retry_at = Some(now + std::time::Duration::from_secs(1));
+            state.cuenv.notice = Some(format!("Cuetty CUE watcher failed: {error}"));
+        }
+        let same_source = state.cuenv_source.as_ref() == Some(&source);
+        let retry_watcher = same_source
+            && state.cuenv_watcher.is_none()
+            && state
+                .cuenv_watch_retry_at
+                .is_none_or(|retry_at| now >= retry_at);
+        if same_source && !retry_watcher {
+            return;
+        }
+        let config_generation = state.cuenv.begin_source();
+        state.cuenv_source = Some(source.clone());
+        state.cuenv_watcher = None;
+        let (wake_tx, wake_rx) = async_channel::bounded(1);
+        let cuenv = Arc::clone(&self.cuenv);
+        match cuenv.watch(&source, wake_tx) {
+            Ok(watcher) => {
+                state.cuenv_watcher = Some(watcher);
+                state.cuenv_watch_retry_at = None;
+                if retry_watcher {
+                    state.cuenv.notice = None;
+                }
+            }
+            Err(error) => {
+                state.cuenv_watch_retry_at = Some(now + std::time::Duration::from_secs(1));
+                state.cuenv.notice = Some(error);
+            }
+        }
+        let (updates_tx, updates_rx) = async_channel::unbounded();
+        cx.spawn(async move |weak, cx| {
+            while let Ok(update) = updates_rx.recv().await {
+                if weak
+                    .update(cx, |view, cx| {
+                        view.apply_cuenv_update(
+                            CuenvUpdateTarget {
+                                pane,
+                                session_generation,
+                                config_generation,
+                            },
+                            update,
+                            cx,
+                        )
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let evaluator = Arc::clone(&cuenv);
+        cx.spawn(async move |_weak, _cx| {
+            let (result_tx, result_rx) = async_channel::bounded(1);
+            let initial_source = source.clone();
+            let initial_evaluator = Arc::clone(&evaluator);
+            std::thread::spawn(move || {
+                let _ = result_tx.send_blocking(initial_evaluator.evaluate(&initial_source));
+            });
+            let Ok(update) = result_rx.recv().await else {
+                return;
+            };
+            if updates_tx.send(update).await.is_err() {
+                return;
+            }
+            while wake_rx.recv().await.is_ok() {
+                // Coalesce rapid atomic-save events before starting one
+                // blocking evaluation. The bounded watcher channel plus this
+                // serialized worker prevent an editor save storm from
+                // creating an unbounded thread queue.
+                while wake_rx.try_recv().is_ok() {}
+                Timer::after(std::time::Duration::from_millis(120)).await;
+                while wake_rx.try_recv().is_ok() {}
+                let (result_tx, result_rx) = async_channel::bounded(1);
+                let source = source.clone();
+                let evaluator = Arc::clone(&evaluator);
+                std::thread::spawn(move || {
+                    let _ = result_tx.send_blocking(evaluator.evaluate(&source));
+                });
+                let Ok(update) = result_rx.recv().await else {
+                    break;
+                };
+                if updates_tx.send(update).await.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn apply_cuenv_update(
+        &mut self,
+        target: CuenvUpdateTarget,
+        update: Evaluation,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(state) = self.registry.sessions.get_mut(&target.pane) else {
+            return;
+        };
+        if state.generation != target.session_generation {
+            return;
+        }
+        if !state.cuenv.apply(target.config_generation, update) {
+            return;
+        }
+        cx.notify();
+    }
+    fn spawn_cwd_poll(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |weak, cx| {
+            loop {
+                Timer::after(std::time::Duration::from_millis(500)).await;
+                if weak
+                    .update(cx, |view, cx| {
+                        view.refresh_cuenv_integration(cx);
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
     fn active_pane(&self) -> Option<crate::workspace::PaneId> {
         self.registry.active_pane()
@@ -867,6 +1086,7 @@ impl TerminalView {
                 self.settings_draft = None;
                 self.settings_error = None;
                 self.focus.focus(window);
+                self.refresh_cuenv_integration(cx);
             }
             Err(error) => self.registry.notice = Some(shell_notice(error)),
         }
@@ -989,6 +1209,7 @@ impl TerminalView {
         if !outcome.accepted {
             return;
         }
+        self.refresh_cuenv_pane(pane, cx);
         for text in outcome.clipboard {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
@@ -1021,6 +1242,7 @@ impl TerminalView {
         {
             Ok((pane, generation, wake_rx)) => {
                 self.spawn_wake(cx, pane, generation, wake_rx);
+                self.refresh_cuenv_integration(cx);
                 if let Some(tab) = self.active_tab() {
                     self.destination = Destination::Terminal(tab);
                     self.settings_draft = None;
@@ -1276,7 +1498,25 @@ impl TerminalView {
                 .get(&tab.focused)
                 .map(|state| state.title.clone())
                 .unwrap_or_else(|| tab.title.clone());
-            let display_label = sidebar_tab_label(&label);
+            let display_label = self
+                .registry
+                .sessions
+                .get(&tab.focused)
+                .and_then(|state| state.cuenv.presentation.banner.clone())
+                .unwrap_or_else(|| sidebar_tab_label(&label));
+            let tab_border = self
+                .registry
+                .sessions
+                .get(&tab.focused)
+                .and_then(|state| state.cuenv.presentation.border)
+                .map(|BorderColor(red, green, blue)| gpui::rgb(gpui_rgb(Rgb(red, green, blue))))
+                .unwrap_or_else(|| {
+                    gpui::rgb(gpui_rgb(if selected {
+                        theme.cursor
+                    } else {
+                        theme.title_surface
+                    }))
+                });
             let number = format!("{:02}", index + 1);
             let tooltip_label = label.clone();
             let mut tab_button = div()
@@ -1289,11 +1529,7 @@ impl TerminalView {
                 .gap(px(if compact { 0.0 } else { 8.0 }))
                 .px(px(if compact { 2.0 } else { 8.0 }))
                 .border_l_2()
-                .border_color(gpui::rgb(gpui_rgb(if selected {
-                    theme.cursor
-                } else {
-                    theme.title_surface
-                })))
+                .border_color(tab_border)
                 .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
                 .rounded(px(5.0))
                 .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
@@ -1332,7 +1568,18 @@ impl TerminalView {
             }
             tabs = tabs.child(tab_button);
         }
-        let notice = shell_notice_text(self.registry.notice.as_deref());
+        let integration_notice = active_tab
+            .and_then(|tab_id| {
+                self.registry
+                    .workspace
+                    .workspace()
+                    .tabs()
+                    .iter()
+                    .find(|tab| tab.id == tab_id)
+            })
+            .and_then(|tab| self.registry.sessions.get(&tab.focused))
+            .and_then(|state| state.cuenv.notice.as_deref());
+        let notice = shell_notice_text(self.registry.notice.as_deref().or(integration_notice));
         let mut rail = div()
             .relative()
             .size_full()
@@ -1821,6 +2068,7 @@ impl Render for TerminalView {
         let frame = state.frame.clone();
         let interaction = state.interaction.clone();
         let pane_error = state.error.clone();
+        let pane_presentation = state.cuenv.presentation.clone();
         let measured = Arc::clone(&state.measured_bounds);
         let viewport_bounds = Arc::clone(&state.viewport_bounds);
         let entity = cx.weak_entity();
@@ -2001,6 +2249,17 @@ impl Render for TerminalView {
                 terminal_surface = terminal_surface.child(viewport);
             }
         }
+        if let Some(BorderColor(red, green, blue)) = pane_presentation.border {
+            // Absolute decoration intentionally consumes no terminal layout space.
+            terminal_surface = terminal_surface.child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .border_1()
+                    .border_color(gpui::rgb(gpui_rgb(Rgb(red, green, blue))))
+                    .into_any_element(),
+            );
+        }
         let surface = div()
             .relative()
             .flex_1()
@@ -2096,6 +2355,10 @@ mod tests {
 
         fn frame(&mut self) -> TerminalFrame {
             self.frame.clone()
+        }
+
+        fn working_directory(&self) -> Option<String> {
+            None
         }
 
         fn drain_effects(&self) -> Vec<ControlEvent> {

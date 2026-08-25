@@ -66,6 +66,22 @@ Termy and Okena remain reference projects for renderer and product-shell
 patterns. They are not vendored dependencies and their runtime models are not
 silently substituted for Rio.
 
+## Per-directory Cuenv presentation
+
+For the active Rio tab, Cuetty asks Rio for the shell's current working
+directory and evaluates package `cuetty` in that exact directory. The nearest
+`cue.mod/module.cue` establishes the module root only; configuration is not
+inherited from parent directories and any `.cue` filename may provide the
+package. A directory without package `cuetty` is neutral. Standalone packages
+are evaluated in the exact directory; imports that require a module context
+fail through normal CUE evaluation. A matching package may provide a
+single-line `banner` and a quoted `border: "#RRGGBB"`; for
+example `border: "#ff0000"` draws a thin selected-pane and tab accent.
+
+Directory and module-metadata changes are watched natively. Evaluation and
+validation occur off the GPUI thread. Invalid matching CUE keeps the last
+valid presentation for that directory and exposes an integration notice.
+
 ## Current limits
 
 The following are deliberately documented as staged work rather than implied
