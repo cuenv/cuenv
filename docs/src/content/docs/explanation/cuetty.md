@@ -36,6 +36,8 @@ The current usable slice includes:
 - A login shell attached to a Rio-backed terminal session.
 - Fixed-width, fixed-row-height GPUI rendering with semantic colours and
   explicit wide-cell and soft-wrap occupancy.
+- Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
+  semantic resolver and the GPUI chrome.
 - Keyboard input, paste, resize, title updates, clipboard copy, mouse
   selection, and visible-frame literal search.
 - Independent live Rio sessions for each tab with a replaceable workspace
