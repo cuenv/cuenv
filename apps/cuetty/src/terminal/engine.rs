@@ -15,8 +15,8 @@ use gpui::{
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render,
     SharedString, Size, StatefulInteractiveElement, StrikethroughStyle, Styled, TextRun,
-    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowOptions, canvas, div, font,
-    point, px, quad, size,
+    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
+    canvas, div, point, px, quad, size,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -1043,20 +1043,7 @@ impl Render for TerminalView {
                 .size_full()
                 .flex()
                 .flex_col()
-                .bg(gpui::rgb(gpui_rgb(theme.host_background)))
-                .child(
-                    div()
-                        .h(px(metrics.title_height as f32))
-                        .w_full()
-                        .px(px(16.0))
-                        .flex()
-                        .items_center()
-                        .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
-                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                        .font(font(".ZedMono"))
-                        .text_size(px(12.0))
-                        .child("Cuetty"),
-                )
+                .bg(gpui::rgb(gpui_rgb(theme.surface)))
                 .child(
                     div()
                         .flex()
@@ -1085,7 +1072,6 @@ impl Render for TerminalView {
             .expect("active pane registry invariant");
         let frame = state.frame.clone();
         let interaction = state.interaction.clone();
-        let title_name = state.title.clone();
         let pane_error = state.error.clone();
         let measured = Arc::clone(&state.measured_bounds);
         let viewport_bounds = Arc::clone(&state.viewport_bounds);
@@ -1095,54 +1081,7 @@ impl Render for TerminalView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(gpui::rgb(gpui_rgb(theme.host_background)));
-        let mut title_text = match interaction.search() {
-            Some(search) => format!(
-                "{}  •  find: {}  •  {} visible matches{}",
-                title_name,
-                search.query(),
-                search.matches().len(),
-                if interaction.current_match().is_some() {
-                    "  •  current match selected"
-                } else {
-                    ""
-                }
-            ),
-            None if interaction.selection().is_some() => {
-                format!("{}  •  selection ready to copy", title_name)
-            }
-            None if terminal_focused => format!("{}  •  focused", title_name),
-            None => format!("{}  •  ready", title_name),
-        };
-        if let Some(notice) = &self.registry.notice {
-            title_text.push_str("  •  ");
-            title_text.push_str(notice);
-        }
-        let title = div()
-            .h(px(metrics.title_height as f32))
-            .w_full()
-            .px(px(16.0))
-            .flex()
-            .items_center()
-            .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .font(font(".ZedMono"))
-            .text_size(px(12.0))
-            .child(title_text);
-        if let Some(error) = &pane_error {
-            return root
-                .child(title)
-                .child(
-                    div()
-                        .flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_center()
-                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                        .child(format!("Cuetty terminal error: {error}")),
-                )
-                .into_any_element();
-        }
+            .bg(gpui::rgb(gpui_rgb(theme.surface)));
         let active_tab = self
             .registry
             .workspace
@@ -1150,12 +1089,15 @@ impl Render for TerminalView {
             .active_tab()
             .map(|tab| tab.id);
         let mut tabs = div()
-            .h(px(30.0))
+            .h(px(metrics.tab_height as f32))
             .w_full()
             .flex()
             .items_center()
             .gap(px(4.0))
-            .px(px(8.0))
+            // The tab bar is also the draggable content under the transparent
+            // native titlebar, so leave room for macOS traffic lights.
+            .pl(px(80.0))
+            .pr(px(8.0))
             .bg(gpui::rgb(gpui_rgb(theme.title_surface)));
         for tab in self.registry.workspace.workspace().tabs() {
             let tab_id = tab.id;
@@ -1186,6 +1128,28 @@ impl Render for TerminalView {
                         cx.notify();
                     })),
             );
+        }
+        // Keep an empty stretch of the tab bar available for native window
+        // dragging without turning the clickable tab labels into a drag area.
+        tabs = tabs.child(
+            div()
+                .flex_1()
+                .h_full()
+                .window_control_area(WindowControlArea::Drag),
+        );
+        if let Some(error) = &pane_error {
+            return root
+                .child(tabs)
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                        .child(format!("Cuetty terminal error: {error}")),
+                )
+                .into_any_element();
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
         let workspace_entity = cx.weak_entity();
@@ -1220,9 +1184,8 @@ impl Render for TerminalView {
         let mut surface = div()
             .relative()
             .flex_1()
-            .m(px(metrics.viewport_inset as f32))
             .overflow_hidden()
-            .bg(gpui::rgb(gpui_rgb(theme.host_background)))
+            .bg(gpui::rgb(gpui_rgb(theme.surface)))
             .child(
                 canvas(
                     move |bounds, _, app| {
@@ -1252,11 +1215,6 @@ impl Render for TerminalView {
             );
         for pane in layouts {
             let bounds = pane.bounds;
-            let border = if pane.focused {
-                theme.cursor
-            } else {
-                theme.title_surface
-            };
             let pane_id = pane.pane_id;
             let pane_shell = div()
                 .id(("cuetty-pane", pane_id.get()))
@@ -1265,8 +1223,6 @@ impl Render for TerminalView {
                 .top(px(bounds.y))
                 .w(px(bounds.width.max(1.0)))
                 .h(px(bounds.height.max(1.0)))
-                .border_1()
-                .border_color(gpui::rgb(gpui_rgb(border)))
                 .overflow_hidden();
             if pane_id == active_pane {
                 let pane_measured = Arc::clone(&measured);
@@ -1328,10 +1284,7 @@ impl Render for TerminalView {
                 surface = surface.child(viewport);
             }
         }
-        root.child(title)
-            .child(tabs)
-            .child(surface)
-            .into_any_element()
+        root.child(tabs).child(surface).into_any_element()
     }
 }
 
@@ -1354,6 +1307,11 @@ pub fn run() {
                     cx,
                 ))),
                 window_min_size: Some(window_min_size),
+                titlebar: Some(gpui::TitlebarOptions {
+                    title: Some("Cuetty".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(12.0), px(9.0))),
+                }),
                 ..WindowOptions::default()
             },
             |window, cx| {
