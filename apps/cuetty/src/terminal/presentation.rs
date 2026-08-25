@@ -20,24 +20,8 @@ const TERMINAL_FALLBACKS: &[&str] = &[
     "Apple Symbols",
 ];
 
-const ANSI_PALETTE: [Rgb; 16] = [
-    Rgb(0, 0, 0),
-    Rgb(205, 49, 49),
-    Rgb(13, 188, 121),
-    Rgb(229, 229, 16),
-    Rgb(36, 114, 200),
-    Rgb(188, 63, 188),
-    Rgb(17, 168, 205),
-    Rgb(229, 229, 229),
-    Rgb(102, 102, 102),
-    Rgb(241, 76, 76),
-    Rgb(35, 209, 139),
-    Rgb(245, 245, 67),
-    Rgb(59, 142, 234),
-    Rgb(214, 112, 214),
-    Rgb(41, 184, 219),
-    Rgb(255, 255, 255),
-];
+const CATPPUCCIN_SELECTION: Rgb = Rgb(69, 71, 90);
+const CATPPUCCIN_CURRENT_SEARCH_MATCH: Rgb = Rgb(249, 226, 175);
 
 #[cfg(test)]
 fn terminal_font() -> Font {
@@ -72,18 +56,7 @@ pub struct TerminalTheme {
 
 impl Default for TerminalTheme {
     fn default() -> Self {
-        Self {
-            host_background: Rgb(20, 19, 23),
-            surface: Rgb(27, 26, 31),
-            title_surface: Rgb(37, 35, 42),
-            title_text: Rgb(207, 201, 214),
-            text: Rgb(226, 222, 231),
-            cursor: Rgb(226, 222, 231),
-            cursor_text: Rgb(27, 26, 31),
-            selection: Rgb(64, 91, 135),
-            current_search_match: Rgb(156, 108, 44),
-            ansi: ANSI_PALETTE,
-        }
+        Self::from_config(&TerminalConfig::default())
     }
 }
 
@@ -110,8 +83,8 @@ impl TerminalTheme {
                 theme.cursor_text.1,
                 theme.cursor_text.2,
             ),
-            selection: Self::default().selection,
-            current_search_match: Self::default().current_search_match,
+            selection: CATPPUCCIN_SELECTION,
+            current_search_match: CATPPUCCIN_CURRENT_SEARCH_MATCH,
             ansi: theme.ansi.map(|color| Rgb(color.0, color.1, color.2)),
         }
     }
@@ -250,5 +223,17 @@ mod tests {
         let theme = TerminalTheme::from_config(&config);
         assert_eq!(theme.resolve(Color::DefaultForeground, true), Rgb(1, 2, 3));
         assert_eq!(theme.resolve(Color::DefaultBackground, false), Rgb(4, 5, 6));
+    }
+
+    #[test]
+    fn default_theme_is_catppuccin_mocha() {
+        let theme = TerminalTheme::default();
+        assert_eq!(theme.host_background, Rgb(17, 17, 27));
+        assert_eq!(theme.surface, Rgb(30, 30, 46));
+        assert_eq!(theme.title_surface, Rgb(24, 24, 37));
+        assert_eq!(theme.text, Rgb(205, 214, 244));
+        assert_eq!(theme.cursor, Rgb(245, 224, 230));
+        assert_eq!(theme.ansi[2], Rgb(166, 227, 161));
+        assert_eq!(theme.ansi[12], Rgb(137, 180, 250));
     }
 }
