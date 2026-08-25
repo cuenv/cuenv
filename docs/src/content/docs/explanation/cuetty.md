@@ -50,6 +50,7 @@ The current usable slice includes:
   dimensions as well as the rendered bounds.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
+  every newly-created session starts in `$HOME`,
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
 - A vertical GPUI Component tab rail that resizes from 50px to 280px. The

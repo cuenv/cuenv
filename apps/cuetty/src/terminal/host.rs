@@ -18,6 +18,12 @@ pub trait TerminalSessionFactory: Send + Sync {
     fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String>;
 }
 
+fn default_working_directory() -> Option<String> {
+    std::env::var("HOME")
+        .ok()
+        .filter(|directory| !directory.is_empty())
+}
+
 pub struct RioTerminalFactory;
 impl TerminalSessionFactory for RioTerminalFactory {
     fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String> {
@@ -149,6 +155,7 @@ impl RioTerminalSession {
             rows: size.rows,
             pixel_width: size.pixels_width.min(u16::MAX as u32) as u16,
             pixel_height: size.pixels_height.min(u16::MAX as u32) as u16,
+            working_dir: default_working_directory(),
             ..SurfaceDesc::default()
         };
         let surface = engine.create_surface(&desc)?;
@@ -269,6 +276,12 @@ mod tests {
         assert!(second > first);
         assert_eq!(first, SamplingToken(1));
         assert_eq!(second, SamplingToken(2));
+    }
+
+    #[test]
+    fn new_sessions_use_home_as_the_working_directory() {
+        let home = std::env::var("HOME").expect("tests run with HOME configured");
+        assert_eq!(default_working_directory(), Some(home));
     }
 
     #[test]
