@@ -2005,7 +2005,10 @@ impl Render for TerminalView {
             .relative()
             .flex_1()
             .overflow_hidden()
-            .bg(gpui::rgb(gpui_rgb(theme.host_background)))
+            // Keep the inset in the terminal's surface colour. The host
+            // chrome still owns the title strip and rail; the terminal area
+            // should read as one continuous canvas rather than a framed box.
+            .bg(gpui::rgb(gpui_rgb(theme.surface)))
             .child(
                 terminal_surface
                     .absolute()

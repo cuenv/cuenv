@@ -45,8 +45,9 @@ The current usable slice includes:
 - Window and rail geometry are mapped to the active pane before each Rio
   resize, so changing either boundary recalculates terminal rows and columns
   instead of leaving a stale frame clipped in the viewport.
-- The terminal surface keeps an 8px inset from the host chrome; that inset is
-  subtracted from the Rio grid dimensions as well as the rendered bounds.
+- The terminal surface keeps an 8px inset from the host chrome; the inset uses
+  the same terminal surface colour and is subtracted from the Rio grid
+  dimensions as well as the rendered bounds.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
   split shortcuts are rejected with a visible notice until pane/session

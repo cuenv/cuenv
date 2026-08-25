@@ -59,7 +59,9 @@ choose a width, or collapse it to a 50px number-only mode and restore the last
 expanded width. Expanded tab labels stay single-line and show a stable final
 path component; the complete title remains available as a tooltip. The Rio
 surface sits in an intentional 8px inset below the title strip beside the
-rail, and clicking the terminal viewport requests focus.
+rail. The inset uses the same surface colour, so it reads as breathing room
+inside one continuous terminal canvas rather than a contrasting frame. Clicking
+the terminal viewport requests focus.
 Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
