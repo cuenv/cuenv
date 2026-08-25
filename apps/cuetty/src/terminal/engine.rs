@@ -47,6 +47,10 @@ impl TerminalRenderer for GridRenderer {
     }
 }
 
+fn tab_bar_notice(notice: Option<&str>) -> Option<String> {
+    notice.map(|notice| format!("• {notice}"))
+}
+
 /// Fixed-layout terminal surface informed by Termy/Okena design patterns; no
 /// source was copied. This deliberately avoids a GPUI element per cell:
 /// background spans and compatible glyphs are painted in row batches.
@@ -1129,6 +1133,16 @@ impl Render for TerminalView {
                     })),
             );
         }
+        if let Some(notice) = tab_bar_notice(self.registry.notice.as_deref()) {
+            tabs = tabs.child(
+                div()
+                    .flex_shrink_0()
+                    .px(px(8.0))
+                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                    .text_size(px(11.0))
+                    .child(notice),
+            );
+        }
         // Keep an empty stretch of the tab bar available for native window
         // dragging without turning the clickable tab labels into a drag area.
         tabs = tabs.child(
@@ -1417,6 +1431,17 @@ mod tests {
             width: 8,
             height: 16,
         }
+    }
+
+    #[test]
+    fn tab_bar_notice_keeps_live_action_failures_visible() {
+        assert_eq!(
+            tab_bar_notice(Some(
+                "workspace action unavailable: split panes are unavailable"
+            )),
+            Some("• workspace action unavailable: split panes are unavailable".into())
+        );
+        assert_eq!(tab_bar_notice(None), None);
     }
 
     #[test]
