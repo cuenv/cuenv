@@ -52,10 +52,10 @@ write; and clean shell/window close.
 
 ## Visual contract
 
-The shell follows the pinned Cuetty presentation patterns: a quiet title
-strip, warm near-black host and surface colours, readable fixed-pitch text, a
-16px viewport inset, and an explicit focused cursor. The title strip is
-decorative and never owns focus; clicking the terminal viewport requests focus.
+The shell follows the pinned Cuetty presentation patterns: a compact tab bar,
+warm near-black terminal surface, readable fixed-pitch text, and an explicit
+focused cursor. The tab bar is the only host-owned chrome; the Rio surface is
+full-bleed beneath it, and clicking the terminal viewport requests focus.
 Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
@@ -74,9 +74,10 @@ thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
 underline.
 
 Before calling the POC visually usable, check that native window controls and
-the title strip remain visible, the prompt is comfortably inset, the cursor
-changes with focus, ANSI colour and Unicode remain correct, and resizing
-changes the shell's `stty size` without reflowing chrome-only changes.
+the tab bar remain visible, the prompt fills the terminal surface without a
+second frame, the cursor changes with focus, ANSI colour and Unicode remain
+correct, and resizing changes the shell's `stty size` without reflowing the
+tab bar.
 
 ## Deliberate limitations
 

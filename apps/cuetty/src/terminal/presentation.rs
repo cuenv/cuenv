@@ -110,8 +110,7 @@ pub struct TerminalMetrics {
     /// Raw font-derived geometry. `render_cell` snaps this once so rendering
     /// and Rio's resize boundary share exactly the same terminal grid.
     pub cell: Size<Pixels>,
-    pub viewport_inset: u32,
-    pub title_height: u32,
+    pub tab_height: u32,
 }
 
 impl TerminalMetrics {
@@ -132,8 +131,7 @@ impl TerminalMetrics {
             font,
             font_size,
             cell: Size { width, height },
-            viewport_inset: 16,
-            title_height: 32,
+            tab_height: 32,
         }
     }
 
