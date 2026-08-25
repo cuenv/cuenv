@@ -59,12 +59,20 @@ xattr -rc "$APP_BUNDLE" 2>/dev/null || true
 /usr/bin/codesign --verify --deep --strict "$APP_BUNDLE"
 
 open_app() {
-  # LaunchServices can add Finder/FileProvider metadata to this checkout's
-  # package and report a false missing-executable error. The signed bundle is
-  # verified above; run the same release executable directly for deterministic
-  # local interaction and verification.
-  "$APP_BINARY" &
-  APP_PID=$!
+  # LaunchServices owns the app process outside the invoking terminal. A
+  # direct background child is reaped by some terminal hosts when this script
+  # exits, which looks like a Cuetty crash even though the binary is healthy.
+  open -na "$APP_BUNDLE"
+  APP_PID=""
+  for _ in {1..50}; do
+    APP_PID="$(pgrep -x "$PROCESS_NAME" | tail -n 1 || true)"
+    [[ -n "$APP_PID" ]] && break
+    sleep 0.1
+  done
+  if [[ -z "$APP_PID" ]]; then
+    echo "Cuetty did not appear after LaunchServices launch" >&2
+    return 1
+  fi
 }
 
 case "$MODE" in
