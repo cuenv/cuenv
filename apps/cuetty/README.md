@@ -52,13 +52,14 @@ write; and clean shell/window close.
 
 ## Visual contract
 
-The shell follows the pinned Cuetty presentation patterns: a compact vertical
-tab rail, warm near-black terminal surface, readable fixed-pitch text, and an
-explicit focused cursor. The rail is a real resizable panel: drag its edge to
+The shell follows Ghostty's restrained presentation: native traffic lights,
+one dark title strip, a compact vertical tab rail, and a full-bleed Catppuccin
+Mocha terminal surface. The rail is a real resizable panel: drag its edge to
 choose a width, or collapse it to a 50px number-only mode and restore the last
-expanded width. Tab titles become tooltips in compact mode, so navigation stays
-usable without sacrificing context. The Rio surface is full-bleed beside the
-rail, and clicking the terminal viewport requests focus.
+expanded width. Expanded tab labels stay single-line and show a stable final
+path component; the complete title remains available as a tooltip. The Rio
+surface is full-bleed below the title strip beside the rail, and clicking the
+terminal viewport requests focus.
 Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
@@ -113,10 +114,11 @@ The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
 frames the rail, Base fills the terminal, and the complete ANSI palette follows
 Catppuccin's Mocha mapping.
 
-The terminal element measures its own post-layout GPUI canvas bounds, not the
-outer window, and notifies the entity when those bounds change so the next
-render applies the resize to Rio. This preserves one-cell clamping and resize
-deduplication. Startup,
+The terminal render derives the current workspace from the GPUI window viewport
+and rail width before applying a resize to Rio; its post-layout canvas then
+confirms the exact pane bounds. This keeps window and sidebar changes on the
+same grid, preserves one-cell clamping and resize deduplication, and prevents a
+stale frame from clipping long output. Startup,
 input, resize, paste, and close failures remain visible in the view rather than
 being dropped.
 

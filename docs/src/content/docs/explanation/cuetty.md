@@ -38,8 +38,13 @@ The current usable slice includes:
   explicit wide-cell and soft-wrap occupancy.
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
+- Ghostty is the visual reference for restrained native chrome: traffic lights,
+  one title strip, stable single-line tab labels, and a full-bleed terminal.
 - Keyboard input, paste, resize, title updates, clipboard copy, mouse
   selection, and visible-frame literal search.
+- Window and rail geometry are mapped to the active pane before each Rio
+  resize, so changing either boundary recalculates terminal rows and columns
+  instead of leaving a stale frame clipped in the viewport.
 - Independent live Rio sessions for each tab with a replaceable workspace
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
   split shortcuts are rejected with a visible notice until pane/session
