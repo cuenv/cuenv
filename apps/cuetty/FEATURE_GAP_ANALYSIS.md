@@ -17,6 +17,8 @@ Cuetty currently has:
   backgrounds, cursor layering, and a shared 16px/1.2 line-height contract.
 - Resize, keyboard input, paste, OSC 52 clipboard writes, close handling, and
   focused live shell behavior.
+- A resizable vertical tab rail (50px compact to 280px expanded), session-only
+  Settings with Apply/Cancel/Reset, and a native Quit/Cmd-Q action.
 - Static validation plus a signed macOS bundle check and a local process-launch
   check; direct interactive input still needs a human visual pass.
 
@@ -43,7 +45,7 @@ behind replaceable traits.
 | Scrollback and selection | Live selection; scrollback remains a pure model | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
 | Fonts, themes, configuration | Initial explicit stack/theme | Configurable themes, keybindings, fonts | Settings, themes, zoom, shell choice | P1 |
-| Tabs, splits, focus navigation | Independent local Rio tabs; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
+| Tabs, splits, focus navigation | Independent local Rio tabs; resizable 50px compact rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
 | Workspace persistence | Versioned codec and atomic file store; no live restore | Reusable layouts | Workspace/session restore | P2 |
 | Session persistence | Child shell only | Optional tmux control mode | dtach/tmux/screen backends | P3 |
 | Remote/API/plugin surface | Missing | FFI/native SDK and plugin/runtime crates | Remote HTTP/WebSocket and hooks | P3 |
