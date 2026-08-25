@@ -52,10 +52,13 @@ write; and clean shell/window close.
 
 ## Visual contract
 
-The shell follows the pinned Cuetty presentation patterns: a compact tab bar,
-warm near-black terminal surface, readable fixed-pitch text, and an explicit
-focused cursor. The tab bar is the only host-owned chrome; the Rio surface is
-full-bleed beneath it, and clicking the terminal viewport requests focus.
+The shell follows the pinned Cuetty presentation patterns: a compact vertical
+tab rail, warm near-black terminal surface, readable fixed-pitch text, and an
+explicit focused cursor. The rail is a real resizable panel: drag its edge to
+choose a width, or collapse it to a 50px number-only mode and restore the last
+expanded width. Tab titles become tooltips in compact mode, so navigation stays
+usable without sacrificing context. The Rio surface is full-bleed beside the
+rail, and clicking the terminal viewport requests focus.
 Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
 Color Emoji`, `Monaspace Neon`, and macOS symbol/monospace fallbacks so prompt
 and directory glyphs do not depend on GPUI's default fallback selection.
@@ -73,11 +76,15 @@ render time. Underlines are host approximations: single and double use distinct
 thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
 underline.
 
-Before calling the POC visually usable, check that native window controls and
-the tab bar remain visible, the prompt fills the terminal surface without a
-second frame, the cursor changes with focus, ANSI colour and Unicode remain
-correct, and resizing changes the shell's `stty size` without reflowing the
-tab bar.
+The rail footer provides new-tab and Settings entry points. Settings is a
+session-only destination with transactional Apply/Cancel/Reset controls for
+font size and line height; it never mounts terminal key or mouse handlers. The
+native Cuetty menu contains Quit Cuetty and Cmd-Q uses the same application
+action. Before calling the POC visually usable, check that native window
+controls and the rail remain visible, the prompt fills the terminal surface
+without a second frame, the cursor changes with focus, ANSI colour and Unicode
+remain correct, and resizing changes the shell's `stty size` without stealing
+tab clicks.
 
 ## Deliberate limitations
 

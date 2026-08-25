@@ -1,10 +1,15 @@
+use super::config::TerminalConfig;
 use super::model::{Color, Rgb};
 use super::sizing::CellSize;
 use gpui::{Font, FontFallbacks, Pixels, Size, TextSystem, font, px};
 
+#[cfg(test)]
 const TERMINAL_FONT_FAMILY: &str = "MonaspiceNe Nerd Font";
+#[cfg(test)]
 const TERMINAL_FONT_SIZE: f32 = 16.0;
+#[cfg(test)]
 const TERMINAL_LINE_HEIGHT_MULTIPLIER: f32 = 1.2;
+#[cfg(test)]
 const TERMINAL_FALLBACKS: &[&str] = &[
     // Prefer the configured terminal family, then use stable platform fallbacks.
     "Noto Color Emoji",
@@ -34,11 +39,14 @@ const ANSI_PALETTE: [Rgb; 16] = [
     Rgb(255, 255, 255),
 ];
 
+#[cfg(test)]
 fn terminal_font() -> Font {
-    let mut font = font(TERMINAL_FONT_FAMILY);
-    font.fallbacks = Some(FontFallbacks::from_fonts(
-        TERMINAL_FALLBACKS.iter().map(ToString::to_string).collect(),
-    ));
+    font_from_config(&TerminalConfig::default())
+}
+
+fn font_from_config(config: &TerminalConfig) -> Font {
+    let mut font = font(config.font.family.clone());
+    font.fallbacks = Some(FontFallbacks::from_fonts(config.font.fallbacks.clone()));
     font
 }
 
@@ -80,6 +88,33 @@ impl Default for TerminalTheme {
 }
 
 impl TerminalTheme {
+    pub fn from_config(config: &TerminalConfig) -> Self {
+        let theme = &config.theme;
+        Self {
+            host_background: Rgb(
+                theme.host_background.0,
+                theme.host_background.1,
+                theme.host_background.2,
+            ),
+            surface: Rgb(theme.surface.0, theme.surface.1, theme.surface.2),
+            title_surface: Rgb(
+                theme.title_surface.0,
+                theme.title_surface.1,
+                theme.title_surface.2,
+            ),
+            title_text: Rgb(theme.title_text.0, theme.title_text.1, theme.title_text.2),
+            text: Rgb(theme.text.0, theme.text.1, theme.text.2),
+            cursor: Rgb(theme.cursor.0, theme.cursor.1, theme.cursor.2),
+            cursor_text: Rgb(
+                theme.cursor_text.0,
+                theme.cursor_text.1,
+                theme.cursor_text.2,
+            ),
+            selection: Self::default().selection,
+            current_search_match: Self::default().current_search_match,
+            ansi: theme.ansi.map(|color| Rgb(color.0, color.1, color.2)),
+        }
+    }
     pub fn resolve(&self, color: Color, _foreground: bool) -> Rgb {
         match color {
             Color::DefaultForeground => self.text,
@@ -110,28 +145,26 @@ pub struct TerminalMetrics {
     /// Raw font-derived geometry. `render_cell` snaps this once so rendering
     /// and Rio's resize boundary share exactly the same terminal grid.
     pub cell: Size<Pixels>,
-    pub tab_height: u32,
 }
 
 impl TerminalMetrics {
-    pub fn resolve(text_system: &TextSystem) -> Self {
+    pub fn from_config(text_system: &TextSystem, config: &TerminalConfig) -> Self {
         // Match the user's terminal stack explicitly. If the primary family is
         // unavailable, GPUI still resolves its robust platform fallback stack.
-        let font = terminal_font();
+        let font = font_from_config(config);
         let font_id = text_system.resolve_font(&font);
-        let font_size = px(TERMINAL_FONT_SIZE);
+        let font_size = px(config.font.size_px);
         let width = text_system
             .ch_advance(font_id, font_size)
             .unwrap_or(px(9.0));
         // Terminal line geometry is a presentation contract, not an accident
         // of a selected font's ascent/descent metrics. It must remain stable
         // across fallback glyphs and match the PTY grid after snapping.
-        let height = terminal_line_height(font_size);
+        let height = terminal_line_height(font_size, config.font.line_height_multiplier);
         Self {
             font,
             font_size,
             cell: Size { width, height },
-            tab_height: 32,
         }
     }
 
@@ -148,8 +181,8 @@ impl TerminalMetrics {
     }
 }
 
-fn terminal_line_height(font_size: Pixels) -> Pixels {
-    px((f32::from(font_size) * TERMINAL_LINE_HEIGHT_MULTIPLIER).max(1.0))
+fn terminal_line_height(font_size: Pixels, multiplier: f32) -> Pixels {
+    px((f32::from(font_size) * multiplier).max(1.0))
 }
 
 fn snapped_cell(cell: Size<Pixels>) -> Size<Pixels> {
@@ -196,7 +229,8 @@ mod tests {
 
     #[test]
     fn line_height_contract_is_16px_times_1_point_2_then_shared_snap() {
-        let raw_height = terminal_line_height(px(TERMINAL_FONT_SIZE));
+        let raw_height =
+            terminal_line_height(px(TERMINAL_FONT_SIZE), TERMINAL_LINE_HEIGHT_MULTIPLIER);
         assert_eq!(raw_height, px(19.2));
         assert_eq!(
             snapped_cell(Size {
@@ -206,5 +240,15 @@ mod tests {
             .height,
             px(20.0)
         );
+    }
+
+    #[test]
+    fn configured_theme_preserves_semantic_colour_resolution() {
+        let mut config = TerminalConfig::default();
+        config.theme.text = crate::terminal::config::Rgb(1, 2, 3);
+        config.theme.surface = crate::terminal::config::Rgb(4, 5, 6);
+        let theme = TerminalTheme::from_config(&config);
+        assert_eq!(theme.resolve(Color::DefaultForeground, true), Rgb(1, 2, 3));
+        assert_eq!(theme.resolve(Color::DefaultBackground, false), Rgb(4, 5, 6));
     }
 }

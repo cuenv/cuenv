@@ -8,6 +8,7 @@ pub mod overlay;
 pub mod scrollback;
 pub mod search;
 pub mod selection;
+pub mod settings;
 // P0 interchange surface; adapters will adopt it incrementally.
 #[allow(dead_code)]
 pub mod model;

@@ -42,6 +42,12 @@ The current usable slice includes:
   model. Cmd-T creates a session-backed tab and Cmd-W closes the active one;
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
+- A vertical GPUI Component tab rail that resizes from 50px to 280px. The
+  50px compact mode shows tab ordinals with title tooltips, and the collapse
+  control restores the last expanded width.
+- A session-only Settings destination with transactional Apply, Cancel, and
+  Reset controls for font size and line height. The native Cuetty menu exposes
+  Quit Cuetty and Cmd-Q uses the same application-level action.
 - Versioned, metadata-only workspace persistence and capability/session seams
   for later product integrations.
 
