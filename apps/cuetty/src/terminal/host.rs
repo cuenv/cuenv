@@ -270,4 +270,25 @@ mod tests {
         assert_eq!(first, SamplingToken(1));
         assert_eq!(second, SamplingToken(2));
     }
+
+    #[test]
+    fn rio_resize_refreshes_the_sampled_grid_dimensions() {
+        let cell = CellSize {
+            width: 8,
+            height: 16,
+        };
+        let (mut session, _wake_rx) = RioTerminalSession::new(800, 320, cell)
+            .expect("Rio should create a test terminal session");
+
+        let initial = session.frame();
+        assert_eq!(initial.dimensions.columns, 100);
+        assert_eq!(initial.dimensions.rows, 20);
+
+        session
+            .resize(400, 320, cell)
+            .expect("Rio should accept a smaller viewport");
+        let resized = session.frame();
+        assert_eq!(resized.dimensions.columns, 50);
+        assert_eq!(resized.dimensions.rows, 20);
+    }
 }
