@@ -11,8 +11,12 @@ resolver = "2"
 
 [dependencies]
 async-channel = "2.5.0"
+cuengine = { path = "../../crates/cuengine" }
 gpui = "0.2.2"
 gpui-component = "0.5.1"
+notify = "8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # Pinned to the Rio frontend revision this terminal is validated against.
 librio = { git = "https://github.com/raphamorim/rio", rev = "b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1" }
 
