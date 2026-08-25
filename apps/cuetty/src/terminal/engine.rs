@@ -720,6 +720,7 @@ const SIDEBAR_MAX_WIDTH: f32 = 280.0;
 const SIDEBAR_COMPACT_THRESHOLD: f32 = 84.0;
 const SIDEBAR_FOOTER_HEIGHT: f32 = 42.0;
 const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
+const TERMINAL_PADDING: f32 = 8.0;
 const MAIN_MIN_WIDTH: f32 = 400.0;
 
 fn rail_is_compact(width: f32) -> bool {
@@ -740,9 +741,10 @@ fn terminal_workspace_size(
     } else {
         normalized_rail_width(rail_width)
     };
+    let padding = TERMINAL_PADDING * 2.0;
     (
-        (f32::from(viewport.width) - rail).max(1.0),
-        (f32::from(viewport.height) - SHELL_TITLEBAR_HEIGHT).max(1.0),
+        (f32::from(viewport.width) - rail - padding).max(1.0),
+        (f32::from(viewport.height) - SHELL_TITLEBAR_HEIGHT - padding).max(1.0),
     )
 }
 
@@ -1896,9 +1898,9 @@ impl Render for TerminalView {
             focused: terminal_focused,
             overlays,
         }));
-        let mut surface = div()
+        let mut terminal_surface = div()
             .relative()
-            .flex_1()
+            .size_full()
             .overflow_hidden()
             .bg(gpui::rgb(gpui_rgb(theme.surface)))
             .child(
@@ -1996,9 +1998,22 @@ impl Render for TerminalView {
                         )
                         .child(live_content),
                 );
-                surface = surface.child(viewport);
+                terminal_surface = terminal_surface.child(viewport);
             }
         }
+        let surface = div()
+            .relative()
+            .flex_1()
+            .overflow_hidden()
+            .bg(gpui::rgb(gpui_rgb(theme.host_background)))
+            .child(
+                terminal_surface
+                    .absolute()
+                    .top(px(TERMINAL_PADDING))
+                    .right(px(TERMINAL_PADDING))
+                    .bottom(px(TERMINAL_PADDING))
+                    .left(px(TERMINAL_PADDING)),
+            );
         self.render_shell_layout(sidebar, surface.into_any_element(), &theme, cx)
     }
 }
@@ -2175,11 +2190,11 @@ mod tests {
     fn terminal_workspace_tracks_window_and_rail_geometry() {
         assert_eq!(
             terminal_workspace_size(size(px(960.0), px(640.0)), 156.0, false),
-            (804.0, 606.0)
+            (788.0, 590.0)
         );
         assert_eq!(
             terminal_workspace_size(size(px(960.0), px(640.0)), 156.0, true),
-            (910.0, 606.0)
+            (894.0, 590.0)
         );
     }
 
