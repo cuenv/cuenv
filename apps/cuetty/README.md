@@ -109,6 +109,10 @@ and wrapped placeholders are preserved, but complete combining-mark/ZWJ
 cluster, hyperlink, cursor-mode, and emoji presentation correctness is
 deliberately not claimed.
 
+The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
+frames the rail, Base fills the terminal, and the complete ANSI palette follows
+Catppuccin's Mocha mapping.
+
 The terminal element measures its own post-layout GPUI canvas bounds, not the
 outer window, and notifies the entity when those bounds change so the next
 render applies the resize to Rio. This preserves one-cell clamping and resize

@@ -150,31 +150,44 @@ impl Default for TerminalConfig {
 
 impl Default for ThemeColors {
     fn default() -> Self {
+        Self::catppuccin_mocha()
+    }
+}
+
+impl ThemeColors {
+    /// Catppuccin Mocha is Cuetty's built-in semantic terminal palette.
+    ///
+    /// The first eight entries are the standard ANSI colours and the final
+    /// eight are their bright variants. Keeping the palette here, next to the
+    /// renderer-independent config, means Rio and every host renderer resolve
+    /// the same defaults.
+    pub fn catppuccin_mocha() -> Self {
         Self {
-            host_background: Rgb(20, 19, 23),
-            surface: Rgb(27, 26, 31),
-            title_surface: Rgb(37, 35, 42),
-            title_text: Rgb(207, 201, 214),
-            text: Rgb(226, 222, 231),
-            cursor: Rgb(226, 222, 231),
-            cursor_text: Rgb(27, 26, 31),
+            // Crust and mantle frame the app chrome; base fills the terminal.
+            host_background: Rgb(17, 17, 27),
+            surface: Rgb(30, 30, 46),
+            title_surface: Rgb(24, 24, 37),
+            title_text: Rgb(186, 194, 222),
+            text: Rgb(205, 214, 244),
+            cursor: Rgb(245, 224, 230),
+            cursor_text: Rgb(30, 30, 46),
             ansi: [
-                Rgb(0, 0, 0),
-                Rgb(205, 49, 49),
-                Rgb(13, 188, 121),
-                Rgb(229, 229, 16),
-                Rgb(36, 114, 200),
-                Rgb(188, 63, 188),
-                Rgb(17, 168, 205),
-                Rgb(229, 229, 229),
-                Rgb(102, 102, 102),
-                Rgb(241, 76, 76),
-                Rgb(35, 209, 139),
-                Rgb(245, 245, 67),
-                Rgb(59, 142, 234),
-                Rgb(214, 112, 214),
-                Rgb(41, 184, 219),
-                Rgb(255, 255, 255),
+                Rgb(69, 71, 90),
+                Rgb(243, 139, 168),
+                Rgb(166, 227, 161),
+                Rgb(249, 226, 175),
+                Rgb(137, 180, 250),
+                Rgb(245, 194, 231),
+                Rgb(148, 226, 213),
+                Rgb(186, 194, 222),
+                Rgb(88, 91, 112),
+                Rgb(243, 139, 168),
+                Rgb(166, 227, 161),
+                Rgb(249, 226, 175),
+                Rgb(137, 180, 250),
+                Rgb(245, 194, 231),
+                Rgb(148, 226, 213),
+                Rgb(166, 173, 200),
             ],
         }
     }
@@ -264,6 +277,13 @@ mod tests {
         );
         assert_eq!(config.font.size_px, 16.0);
         assert_eq!(config.font.line_height_multiplier, 1.2);
+        assert_eq!(config.theme.host_background, Rgb(17, 17, 27));
+        assert_eq!(config.theme.surface, Rgb(30, 30, 46));
+        assert_eq!(config.theme.title_surface, Rgb(24, 24, 37));
+        assert_eq!(config.theme.text, Rgb(205, 214, 244));
+        assert_eq!(config.theme.ansi[1], Rgb(243, 139, 168));
+        assert_eq!(config.theme.ansi[4], Rgb(137, 180, 250));
+        assert_eq!(config.theme.ansi[5], Rgb(245, 194, 231));
         assert!(config.validate().is_ok());
     }
 
