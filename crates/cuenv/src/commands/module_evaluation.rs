@@ -29,6 +29,19 @@ impl CommandExecutor {
         let raw = cuengine::evaluate_module(&module_root, &self.package, Some(&options))
             .map_err(convert_engine_error)?;
 
+        // The engine deliberately represents an absent package as an empty
+        // successful result so presentation-only integrations (such as
+        // Cuetty) can distinguish absence from a malformed CUE file. The
+        // cuenv CLI, however, requires its selected package to exist before
+        // any command can operate on the module.
+        if raw.instances.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No env.cue files declaring package '{}' found in module: {}",
+                self.package,
+                module_root.display(),
+            )));
+        }
+
         let mut instances = HashMap::new();
         let mut projects = Vec::new();
         let mut metadata = EvaluationMetadataBuilder::default();
@@ -101,6 +114,18 @@ impl CommandExecutor {
         tracing::info!("evaluate_workspace_module single recursive evaluation");
         let raw = cuengine::evaluate_module(module_root, &self.package, Some(&options))
             .map_err(convert_engine_error)?;
+
+        // Keep the CLI contract consistent with path-local evaluation: an
+        // explicitly selected package must have at least one instance. The
+        // engine's empty-success result is reserved for integrations that use
+        // package presence as an optional lookup.
+        if raw.instances.is_empty() {
+            return Err(cuenv_core::Error::configuration(format!(
+                "No env.cue files declaring package '{}' found in module: {}",
+                self.package,
+                module_root.display(),
+            )));
+        }
 
         let mut metadata = EvaluationMetadataBuilder::default();
         for (meta_key, meta_value) in raw.meta {
