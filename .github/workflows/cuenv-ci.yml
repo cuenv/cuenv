@@ -65,7 +65,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -91,7 +91,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -117,7 +117,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -143,7 +143,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -169,7 +169,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -195,7 +195,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
@@ -221,7 +221,7 @@ jobs:
     runs-on: namespace-profile-cuenv-linux-x86
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7
       with:
         fetch-depth: 2
     - name: Install Determinate Nix
