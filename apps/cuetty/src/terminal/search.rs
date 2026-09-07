@@ -125,7 +125,7 @@ impl LiteralSearch {
         let mut line = first_line;
         loop {
             for (column, cell) in source.line_cells(line).iter().enumerate() {
-                let Some(character) = cell.codepoint else {
+                let Some(text) = &cell.text else {
                     continue;
                 };
                 if !matches!(cell.occupancy, CellOccupancy::Narrow | CellOccupancy::Wide) {
@@ -146,7 +146,7 @@ impl LiteralSearch {
                 // Case folding occurs per Unicode scalar value. A fold may expand to
                 // multiple scalars; each maps to the whole originating cell, because
                 // terminal selection addresses cells rather than grapheme fragments.
-                for folded_character in self.fold(character) {
+                for folded_character in text.chars().flat_map(|character| self.fold(character)) {
                     hay.push(folded_character);
                     hay_sources.push(span);
                 }
@@ -313,6 +313,35 @@ mod tests {
         let mut trailing = LiteralSearch::new("b", SearchOptions::default());
         trailing.rebuild(&s).unwrap();
         assert_eq!(trailing.matches()[0].start.column, 3);
+    }
+
+    #[test]
+    fn combining_cluster_search_and_copy_keep_physical_cell_coordinates() {
+        let cluster = TerminalCell {
+            text: Some("e\u{301}".into()),
+            ..TerminalCell::narrow('e')
+        };
+        let source = S(vec![vec![cluster, TerminalCell::narrow('x')]]);
+        let mut search = LiteralSearch::new("e\u{301}x", SearchOptions::default());
+        search.rebuild(&source).unwrap();
+        assert_eq!(search.matches().len(), 1);
+        let matched = search.matches()[0];
+        assert_eq!(matched.start, LogicalPosition { line: 0, column: 0 });
+        assert_eq!(matched.end, LogicalPosition { line: 0, column: 2 });
+        assert_eq!(
+            Selection::new(matched.start, matched.end).copy(&source),
+            "e\u{301}x"
+        );
+
+        // A match within a cluster selects the complete originating cell.
+        search.set_query("\u{301}");
+        search.rebuild(&source).unwrap();
+        let matched = search.matches()[0];
+        assert_eq!(matched.end.column, 1);
+        assert_eq!(
+            Selection::new(matched.start, matched.end).copy(&source),
+            "e\u{301}"
+        );
     }
 
     #[test]

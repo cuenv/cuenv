@@ -17,7 +17,7 @@ gpui-component = "0.5.1"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Pinned to the Rio frontend revision this terminal is validated against.
-librio = { git = "https://github.com/raphamorim/rio", rev = "b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1" }
+# Public Rust terminal core, pinned to the ADR-0010 qualification baseline.
+rio-vt = { git = "https://github.com/raphamorim/rio", rev = "7ae087500bcde5c0c9f09cb9c50382e9220b3360" }
 
 [dev-dependencies]
