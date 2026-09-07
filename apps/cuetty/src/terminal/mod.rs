@@ -14,6 +14,7 @@ pub mod settings;
 pub mod model;
 mod presentation;
 mod rio_adapter;
+mod rio_input;
 mod sizing;
 pub mod workspace_shell;
 
