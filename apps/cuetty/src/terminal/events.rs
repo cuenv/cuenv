@@ -8,6 +8,8 @@ pub enum ControlEvent {
     ClipboardWrite(String),
     Title(String),
     Bell,
+    /// Raw platform wait status, when Rio's PTY driver can provide it.
+    ChildExited(Option<i32>),
     Close,
 }
 

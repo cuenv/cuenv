@@ -337,7 +337,7 @@ impl Element for TerminalGrid {
                 let cell = &cells[start];
                 // Spacers carry background and occupancy only.  In particular,
                 // they are never shaped as a space glyph.
-                if cell.codepoint.is_none() {
+                if cell.text.is_none() {
                     start += 1;
                     continue;
                 }
@@ -351,7 +351,7 @@ impl Element for TerminalGrid {
                 let mut end = start + 1;
                 while end < cells.len() {
                     let next = &cells[end];
-                    if next.codepoint.is_none() {
+                    if next.text.is_none() {
                         break;
                     }
                     let next_cursor_block = cursor_style_at(&self.frame, self.focused, row, end)
@@ -370,7 +370,7 @@ impl Element for TerminalGrid {
                 }
                 let text: SharedString = cells[start..end]
                     .iter()
-                    .filter_map(|cell| cell.codepoint)
+                    .filter_map(|cell| cell.text.as_deref())
                     .collect::<String>()
                     .into();
                 let underline = cell.style.underline.map(|style| GpuiUnderlineStyle {
@@ -661,7 +661,15 @@ impl SessionRegistry {
         active_pane: Option<crate::workspace::PaneId>,
     ) -> WakeOutcome {
         let effects = match self.sessions.get_mut(&pane) {
-            Some(state) if state.generation == generation => state.session.drain_effects(),
+            Some(state) if state.generation == generation => {
+                let effects = state.session.drain_effects();
+                // Rio publishes Close after its final PTY drain. Sample that
+                // state before the caller removes the pane. This preserves
+                // the final frame for consumers, not a visible exited tab:
+                // handle_wake still closes the pane after this returns.
+                state.frame = state.session.frame();
+                effects
+            }
             _ => {
                 return WakeOutcome {
                     accepted: false,
@@ -686,14 +694,9 @@ impl SessionRegistry {
                     }
                 }
                 ControlEvent::Bell => {}
+                ControlEvent::ChildExited(_) => {}
                 ControlEvent::Close => should_close = true,
             }
-        }
-        if !should_close
-            && let Some(state) = self.sessions.get_mut(&pane)
-            && state.generation == generation
-        {
-            state.frame = state.session.frame();
         }
         WakeOutcome {
             accepted: true,
@@ -2543,9 +2546,12 @@ mod tests {
             TerminalCell::trailing_spacer(),
             TerminalCell::narrow('x'),
         ];
-        let shaped: String = cells.iter().filter_map(|cell| cell.codepoint).collect();
+        let shaped: String = cells
+            .iter()
+            .filter_map(|cell| cell.text.as_deref())
+            .collect();
         assert_eq!(shaped, "界x");
-        assert!(cells.iter().any(|cell| cell.codepoint.is_none()));
+        assert!(cells.iter().any(|cell| cell.text.is_none()));
     }
 
     #[test]
@@ -2640,6 +2646,29 @@ mod tests {
     }
 
     #[test]
+    fn close_wake_samples_the_final_frame_before_requesting_pane_removal() {
+        let (initial, _) = fake_start('z', vec![ControlEvent::Close], None);
+        let factory = fake_factory(vec![Ok(initial)]);
+        let (mut registry, _) = SessionRegistry::start(factory, 80, 40, test_cell()).unwrap();
+        let pane = registry.active_pane().unwrap();
+        let state = registry.sessions.get_mut(&pane).unwrap();
+        let generation = state.generation;
+        state.frame = frame_with('a');
+
+        let outcome = registry.apply_wake(pane, generation, Some(pane));
+        assert!(outcome.accepted);
+        assert!(outcome.should_close);
+        assert_eq!(
+            registry.sessions[&pane].frame.rows[0].cells[0]
+                .text
+                .as_deref(),
+            Some("z")
+        );
+        // The UI may now remove the pane; this is an ordering guarantee,
+        // not a promise to retain exited output on screen.
+    }
+
+    #[test]
     fn interaction_state_is_owned_by_the_tab_that_owns_the_session() {
         let (initial, _) = fake_start('a', Vec::new(), None);
         let (second, _) = fake_start('b', Vec::new(), None);
@@ -2691,12 +2720,16 @@ mod tests {
                 .is_some()
         );
         assert_eq!(
-            registry.sessions[&first_pane].frame.rows[0].cells[0].codepoint,
-            Some('a')
+            registry.sessions[&first_pane].frame.rows[0].cells[0]
+                .text
+                .as_deref(),
+            Some("a")
         );
         assert_eq!(
-            registry.sessions[&second_pane].frame.rows[0].cells[0].codepoint,
-            Some('b')
+            registry.sessions[&second_pane].frame.rows[0].cells[0]
+                .text
+                .as_deref(),
+            Some("b")
         );
     }
 }

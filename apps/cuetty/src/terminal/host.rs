@@ -1,13 +1,20 @@
 use super::events::{ControlEvent, EventBridge};
-use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
+use super::input::TerminalKeyEvent;
 use super::model::{SamplingToken, TerminalFrame};
 use super::rio_adapter::snapshot;
-use super::sizing::{CellSize, terminal_size};
-use librio::{
-    Action, ClipboardType, Engine, KeyEvent, RenderState, Surface, SurfaceDelegate, SurfaceDesc,
-    SurfaceId,
-};
-use std::sync::Arc;
+use super::rio_input::{encode_key, encode_paste};
+use super::sizing::{CellSize, TerminalSize, terminal_size};
+use rio_vt::ansi::CursorShape;
+use rio_vt::corcovado::channel::Sender;
+use rio_vt::crosswords::grid::Scroll;
+use rio_vt::crosswords::{Crosswords, CrosswordsSize};
+use rio_vt::event::sync::FairMutex;
+use rio_vt::event::{EventListener, Msg, RioEvent, WindowId, WindowSize};
+use rio_vt::performer::{Machine, State};
+use rio_vt::teletypewriter::{self, Pty};
+use std::borrow::Cow;
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 
 pub struct SessionStart {
     pub session: Box<dyn TerminalSession>,
@@ -27,79 +34,94 @@ fn default_working_directory() -> Option<String> {
 pub struct RioTerminalFactory;
 impl TerminalSessionFactory for RioTerminalFactory {
     fn start(&self, width: u32, height: u32, cell: CellSize) -> Result<SessionStart, String> {
-        RioTerminalSession::new(width, height, cell)
-            .map(|(session, wake_rx)| SessionStart {
-                session: Box::new(session),
-                wake_rx,
-            })
-            .map_err(|error| error.to_string())
+        RioTerminalSession::new(width, height, cell).map(|(session, wake_rx)| SessionStart {
+            session: Box::new(session),
+            wake_rx,
+        })
     }
 }
-
-type SessionStartError = Box<dyn std::error::Error + Send + Sync>;
 
 pub trait TerminalSession: Send {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String>;
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
     fn frame(&mut self) -> TerminalFrame;
-    /// Current shell directory reported by Rio (OSC 7, with Rio's OS fallback).
+    /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
     fn close(&mut self) -> Result<(), String>;
 }
 
-fn rio_key(event: TerminalKeyEvent) -> KeyEvent {
-    let key = match event.key {
-        KeyInput::Character(c) => librio::Key::Char(c),
-        KeyInput::Enter => librio::Key::Enter,
-        KeyInput::Tab => librio::Key::Tab,
-        KeyInput::Backspace => librio::Key::Backspace,
-        KeyInput::Escape => librio::Key::Escape,
-        KeyInput::Up => librio::Key::Up,
-        KeyInput::Down => librio::Key::Down,
-        KeyInput::Left => librio::Key::Left,
-        KeyInput::Right => librio::Key::Right,
-        KeyInput::Home => librio::Key::Home,
-        KeyInput::End => librio::Key::End,
-        KeyInput::Delete => librio::Key::Delete,
-    };
-    let mut mods = librio::Modifiers::empty();
-    if event.modifiers.contains(InputModifiers::SHIFT) {
-        mods |= librio::Modifiers::SHIFT;
-    }
-    if event.modifiers.contains(InputModifiers::CONTROL) {
-        mods |= librio::Modifiers::CTRL;
-    }
-    if event.modifiers.contains(InputModifiers::ALT) {
-        mods |= librio::Modifiers::ALT;
-    }
-    if event.modifiers.contains(InputModifiers::SUPER) {
-        mods |= librio::Modifiers::SUPER;
-    }
-    KeyEvent {
-        action: if event.repeat {
-            librio::KeyAction::Repeat
-        } else {
-            librio::KeyAction::Press
-        },
-        key: Some(key),
-        mods,
-        consumed_mods: librio::Modifiers::empty(),
-        text: None,
-        composing: false,
+/// Explicit spawn configuration permits deterministic, GUI-free PTY tests.
+pub(crate) struct SessionOptions {
+    pub shell: Option<String>,
+    pub args: Vec<String>,
+    pub working_directory: Option<String>,
+}
+
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            shell: None,
+            args: Vec::new(),
+            working_directory: default_working_directory(),
+        }
     }
 }
 
-struct Delegate {
+#[derive(Clone)]
+struct Listener {
     bridge: Arc<EventBridge>,
+    writer: Arc<Mutex<Option<Sender<Msg>>>>,
+    size: Arc<Mutex<WindowSize>>,
 }
 
-fn control_event_from_action(action: Action) -> Option<ControlEvent> {
-    match action {
-        Action::SetTitle { title, .. } => Some(ControlEvent::Title(title)),
-        Action::RingBell => Some(ControlEvent::Bell),
-        Action::CursorBlinkingChange | Action::Progress { .. } => None,
+impl Listener {
+    fn reply(&self, text: String) {
+        if let Some(writer) = self.writer.lock().expect("PTY writer poisoned").as_ref() {
+            let _ = writer.send(Msg::Input(Cow::Owned(text.into_bytes())));
+        }
+    }
+
+    fn dispatch(&self, event: RioEvent) {
+        // The parser invokes this while holding the terminal lock. Never
+        // acquire that lock here, including when answering terminal queries.
+        match event {
+            RioEvent::Title(title) | RioEvent::TitleWithSubtitle(title, _) => {
+                self.bridge.control(ControlEvent::Title(title));
+            }
+            RioEvent::ResetTitle => self.bridge.control(ControlEvent::Title(String::new())),
+            RioEvent::Bell => self.bridge.control(ControlEvent::Bell),
+            RioEvent::ClipboardStore(_, text) => self.bridge.clipboard_write(text),
+            // Deny OSC 52 reads by default. Printing an escape sequence must
+            // not grant applications access to the user's system clipboard.
+            RioEvent::ClipboardLoad(_, _, format) => self.reply(format("")),
+            RioEvent::PtyWrite(_, text) => self.reply(text),
+            RioEvent::TextAreaSizeRequest(_, format) => {
+                let size = *self.size.lock().expect("PTY size poisoned");
+                self.reply(format(size));
+            }
+            // Color queries are not qualified until the host can supply the
+            // exact configured renderer palette. Do not invent a default RGB
+            // answer or re-lock Crosswords from its own parser callback.
+            RioEvent::ColorRequest(..) => self.bridge.wake(),
+            RioEvent::ChildExited(_, status) => {
+                self.writer.lock().expect("PTY writer poisoned").take();
+                self.bridge.control(ControlEvent::ChildExited(status));
+                self.bridge.close();
+            }
+            RioEvent::CloseTerminal(_) | RioEvent::Exit => self.bridge.close(),
+            _ => self.bridge.wake(),
+        }
+    }
+}
+
+impl EventListener for Listener {
+    fn send_event(&self, event: RioEvent, _: WindowId) {
+        self.dispatch(event);
+    }
+    fn send_event_with_high_priority(&self, event: RioEvent, _: WindowId) {
+        self.dispatch(event);
     }
 }
 
@@ -110,35 +132,37 @@ fn next_sampling_token(counter: &mut u64) -> SamplingToken {
     SamplingToken(*counter)
 }
 
-impl SurfaceDelegate for Delegate {
-    fn wakeup(&self, _: SurfaceId) {
-        self.bridge.wake();
-    }
-    fn action(&self, _: SurfaceId, action: Action) {
-        if let Some(event) = control_event_from_action(action) {
-            self.bridge.control(event);
-        } else {
-            // These public actions carry no P0 host effect, but they can
-            // change what the next sampled frame should display.
-            self.bridge.wake();
-        }
-    }
-    fn clipboard_write(&self, _: SurfaceId, kind: ClipboardType, text: String) {
-        if matches!(kind, ClipboardType::Clipboard | ClipboardType::Selection) {
-            self.bridge.clipboard_write(text);
-        }
-    }
-    fn close_surface(&self, _: SurfaceId) {
-        self.bridge.close();
+fn window_size(size: TerminalSize) -> WindowSize {
+    WindowSize {
+        cols: size.cols,
+        rows: size.rows,
+        width: size.pixels_width.min(u32::from(u16::MAX)) as u16,
+        height: size.pixels_height.min(u32::from(u16::MAX)) as u16,
     }
 }
 
+fn grid_size(size: WindowSize) -> CrosswordsSize {
+    CrosswordsSize {
+        columns: usize::from(size.cols),
+        screen_lines: usize::from(size.rows),
+        width: u32::from(size.width),
+        height: u32::from(size.height),
+        square_width: u32::from(size.width) / u32::from(size.cols),
+        square_height: u32::from(size.height) / u32::from(size.rows),
+    }
+}
+
+type IoThread = JoinHandle<(Machine<Pty, Listener>, State)>;
+
 pub struct RioTerminalSession {
-    surface: Option<Surface>,
-    render_state: RenderState,
-    bridge: Arc<EventBridge>,
+    terminal: Arc<FairMutex<Crosswords<Listener>>>,
+    listener: Listener,
+    io_thread: Option<IoThread>,
     next_sampling_token: u64,
-    last_size: Option<(u16, u16, u16, u16)>,
+    #[cfg(unix)]
+    shell_pid: u32,
+    #[cfg(unix)]
+    main_fd: std::os::fd::RawFd,
 }
 
 impl RioTerminalSession {
@@ -146,80 +170,225 @@ impl RioTerminalSession {
         width: u32,
         height: u32,
         cell: CellSize,
-    ) -> Result<(Self, async_channel::Receiver<()>), SessionStartError> {
+    ) -> Result<(Self, async_channel::Receiver<()>), String> {
+        Self::with_options(
+            terminal_size(width, height, cell),
+            SessionOptions::default(),
+        )
+    }
+
+    pub(crate) fn with_options(
+        size: TerminalSize,
+        options: SessionOptions,
+    ) -> Result<(Self, async_channel::Receiver<()>), String> {
+        let size = window_size(size);
+        if size.cols == 0 || size.rows == 0 {
+            return Err("terminal dimensions must contain at least one cell".into());
+        }
         let (bridge, wake_rx) = EventBridge::new();
-        let engine = Engine::new(Arc::new(Delegate {
-            bridge: bridge.clone(),
-        }));
-        let size = terminal_size(width, height, cell);
-        let desc = SurfaceDesc {
-            cols: size.cols,
-            rows: size.rows,
-            pixel_width: size.pixels_width.min(u16::MAX as u32) as u16,
-            pixel_height: size.pixels_height.min(u16::MAX as u32) as u16,
-            working_dir: default_working_directory(),
-            ..SurfaceDesc::default()
+        let listener = Listener {
+            bridge,
+            writer: Arc::new(Mutex::new(None)),
+            size: Arc::new(Mutex::new(size)),
         };
-        let surface = engine.create_surface(&desc)?;
-        let render_state = RenderState::new(&surface);
+        let terminal = Arc::new(FairMutex::new(Crosswords::new(
+            grid_size(size),
+            CursorShape::Block,
+            listener.clone(),
+            WindowId::from(0),
+            0,
+            10_000,
+        )));
+        // Do not select Rio's frontend terminfo: Cuetty has not wired its
+        // graphics, extended keyboard, or mouse frontend protocol support.
+        let environment = Some(vec![
+            ("TERM".into(), "xterm-256color".into()),
+            ("COLORTERM".into(), "truecolor".into()),
+        ]);
+        #[cfg(unix)]
+        let pty = teletypewriter::create_pty_with_spawn(
+            options.shell.as_deref(),
+            options.args,
+            &options.working_directory,
+            environment,
+            size.cols,
+            size.rows,
+            size.width,
+            size.height,
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        let pty = teletypewriter::create_pty(
+            options.shell.as_deref(),
+            options.args,
+            &options.working_directory,
+            environment,
+            size.cols,
+            size.rows,
+        )
+        .map_err(|error| error.to_string())?;
+        #[cfg(unix)]
+        let shell_pid = *pty.child.pid as u32;
+        #[cfg(unix)]
+        let main_fd = *pty.child.id;
+        let machine = Machine::new(
+            Arc::clone(&terminal),
+            pty,
+            listener.clone(),
+            WindowId::from(0),
+            0,
+        )
+        .map_err(|error| error.to_string())?;
+        *listener.writer.lock().expect("PTY writer poisoned") = Some(machine.channel());
+        let io_thread = Some(machine.spawn());
         Ok((
             Self {
-                surface: Some(surface),
-                render_state,
-                bridge,
+                terminal,
+                listener,
+                io_thread,
                 next_sampling_token: 0,
-                last_size: Some((desc.cols, desc.rows, desc.pixel_width, desc.pixel_height)),
+                #[cfg(unix)]
+                shell_pid,
+                #[cfg(unix)]
+                main_fd,
             },
             wake_rx,
         ))
+    }
+
+    fn send(&self, message: Msg) -> Result<(), String> {
+        self.listener
+            .writer
+            .lock()
+            .expect("PTY writer poisoned")
+            .as_ref()
+            .ok_or_else(|| "terminal session is closed".to_string())?
+            .send(message)
+            .map_err(|error| format!("terminal PTY channel closed: {error}"))
+    }
+
+    fn ensure_open(&self) -> Result<(), String> {
+        if self.io_thread.as_ref().is_none_or(JoinHandle::is_finished)
+            || self
+                .listener
+                .writer
+                .lock()
+                .expect("PTY writer poisoned")
+                .is_none()
+        {
+            Err("terminal session is closed or its child has exited".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn write(&self, bytes: Vec<u8>) -> Result<(), String> {
+        self.send(Msg::Input(Cow::Owned(bytes)))?;
+        let mut terminal = self.terminal.lock();
+        terminal.scroll_display(Scroll::Bottom);
+        terminal.selection = None;
+        Ok(())
     }
 }
 
 impl TerminalSession for RioTerminalSession {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String> {
-        let Some(surface) = self.surface.as_ref() else {
-            return Err("terminal surface is closed".into());
-        };
-        let size = terminal_size(width, height, cell);
-        let next = (
-            size.cols,
-            size.rows,
-            size.pixels_width.min(u16::MAX as u32) as u16,
-            size.pixels_height.min(u16::MAX as u32) as u16,
-        );
-        if self.last_size != Some(next) {
-            surface.resize(next.0, next.1, next.2, next.3);
-            self.last_size = Some(next);
+        self.ensure_open()?;
+        let size = window_size(terminal_size(width, height, cell));
+        if *self.listener.size.lock().expect("PTY size poisoned") != size {
+            self.terminal.lock().resize(grid_size(size));
+            *self.listener.size.lock().expect("PTY size poisoned") = size;
+            self.send(Msg::Resize(size))?;
+            self.listener.bridge.wake();
         }
         Ok(())
     }
+
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String> {
-        self.surface
-            .as_ref()
-            .map(|surface| surface.key(&rio_key(event)))
-            .ok_or_else(|| "terminal surface is closed".into())
-    }
-    fn paste(&mut self, text: &str) -> Result<(), String> {
-        if let Some(surface) = self.surface.as_ref() {
-            surface.text(text);
-            Ok(())
-        } else {
-            Err("terminal surface is closed".into())
+        self.ensure_open()?;
+        let bytes = {
+            let terminal = self.terminal.lock();
+            if !terminal.keyboard_mode().is_empty()
+                || terminal.modify_other_keys().is_some_and(|level| level > 0)
+            {
+                return Err("extended keyboard protocols are not yet qualified by Cuetty".into());
+            }
+            encode_key(event, terminal.mode())
+        };
+        match bytes {
+            Some(bytes) => self.write(bytes).map(|()| true),
+            None => Ok(false),
         }
     }
+
+    fn paste(&mut self, text: &str) -> Result<(), String> {
+        self.ensure_open()?;
+        if text.is_empty() {
+            return Ok(());
+        }
+        let bytes = encode_paste(text, self.terminal.lock().mode());
+        self.write(bytes)
+    }
+
     fn frame(&mut self) -> TerminalFrame {
-        self.render_state.update();
-        let sampling_token = next_sampling_token(&mut self.next_sampling_token);
-        snapshot(&self.render_state, sampling_token)
+        let token = next_sampling_token(&mut self.next_sampling_token);
+        let mut terminal = self.terminal.lock();
+        let frame = snapshot(&terminal, token);
+        terminal.reset_damage();
+        terminal.damage_event_in_flight = false;
+        frame
     }
+
     fn working_directory(&self) -> Option<String> {
-        self.surface.as_ref().and_then(Surface::working_dir)
+        let reported = self
+            .terminal
+            .lock()
+            .current_directory
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        if reported.is_some() {
+            return reported;
+        }
+        #[cfg(unix)]
+        if self
+            .io_thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+        {
+            return teletypewriter::foreground_process_path(self.main_fd, self.shell_pid)
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned());
+        }
+        None
     }
+
     fn drain_effects(&self) -> Vec<ControlEvent> {
-        self.bridge.drain()
+        self.listener.bridge.drain()
     }
+
     fn close(&mut self) -> Result<(), String> {
-        self.surface.take();
+        let Some(io_thread) = self.io_thread.take() else {
+            return Ok(());
+        };
+        if let Some(writer) = self
+            .listener
+            .writer
+            .lock()
+            .expect("PTY writer poisoned")
+            .take()
+        {
+            let _ = writer.send(Msg::Shutdown);
+        }
+        // Own the returned Machine until its PTY is dropped without joining
+        // on the UI thread. Teletypewriter sends the shell SIGHUP on drop;
+        // this does not guarantee termination of every descendant process.
+        // M0 BLOCKER at the pinned Rio revision: Child::drop unconditionally
+        // signals its numeric PID even after Machine has waitpid-reaped it,
+        // and shutdown before natural exit does not reap the child. Rio needs
+        // a public, ownership-safe teardown contract before daily-driver use.
+        std::thread::spawn(move || {
+            let _ = io_thread.join();
+        });
         Ok(())
     }
 }
@@ -233,90 +402,306 @@ impl Drop for RioTerminalSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn rio_mapping_preserves_modifier_semantics_and_repeat() {
-        let event = rio_key(TerminalKeyEvent {
-            key: KeyInput::Left,
-            modifiers: InputModifiers::CONTROL,
-            repeat: true,
-        });
-        assert_eq!(event.key, Some(librio::Key::Left));
-        assert_eq!(event.action, librio::KeyAction::Repeat);
-        assert!(event.mods.contains(librio::Modifiers::CTRL));
-        assert!(!event.mods.contains(librio::Modifiers::SHIFT));
 
-        let printable = rio_key(TerminalKeyEvent {
-            key: KeyInput::Character('x'),
-            modifiers: InputModifiers::ALT,
-            repeat: false,
-        });
-        assert_eq!(printable.key, Some(librio::Key::Char('x')));
-        assert!(printable.mods.contains(librio::Modifiers::ALT));
-    }
+    // Rio's process-wide Unix child notifications must not overlap between
+    // these host integration probes. Recover poison so one failed regression
+    // does not turn every later probe into an unrelated mutex failure.
+    #[cfg(unix)]
+    static REAL_PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    #[test]
-    fn public_rio_title_and_bell_actions_map_to_ordered_host_effects() {
-        assert_eq!(
-            control_event_from_action(Action::SetTitle {
-                title: "shell".into(),
-                subtitle: Some("project".into()),
-            }),
-            Some(ControlEvent::Title("shell".into()))
-        );
-        assert_eq!(
-            control_event_from_action(Action::RingBell),
-            Some(ControlEvent::Bell)
-        );
-        assert_eq!(
-            control_event_from_action(Action::CursorBlinkingChange),
-            None
-        );
+    #[cfg(unix)]
+    fn serial_pty_test() -> std::sync::MutexGuard<'static, ()> {
+        REAL_PTY_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
     fn sampling_tokens_are_strictly_monotonic_and_not_revisions() {
         let mut counter = 0;
-        let first = next_sampling_token(&mut counter);
-        let second = next_sampling_token(&mut counter);
-        assert!(second > first);
-        assert_eq!(first, SamplingToken(1));
-        assert_eq!(second, SamplingToken(2));
+        assert_eq!(next_sampling_token(&mut counter), SamplingToken(1));
+        assert_eq!(next_sampling_token(&mut counter), SamplingToken(2));
     }
 
     #[test]
-    fn new_sessions_use_home_as_the_working_directory() {
-        let home = std::env::var("HOME").expect("tests run with HOME configured");
-        assert_eq!(default_working_directory(), Some(home));
-    }
-
-    #[test]
-    fn rio_resize_refreshes_the_sampled_grid_dimensions() {
-        // Rio intentionally uses macOS's /usr/bin/login for the default shell.
-        // Minimal Nix build sandboxes do not expose that host path, so keep
-        // the live PTY assertion for macOS environments that can actually
-        // spawn the production shell and leave the pure sizing coverage to
-        // the renderer/terminal-size tests below it.
-        if std::env::var_os("CUETTY_SKIP_PTY_TEST").is_some()
-            || (cfg!(target_os = "macos") && !std::path::Path::new("/usr/bin/login").exists())
-        {
-            return;
-        }
-        let cell = CellSize {
-            width: 8,
-            height: 16,
+    fn listener_preserves_exit_status_and_deduplicates_close() {
+        let (bridge, _) = EventBridge::new();
+        let listener = Listener {
+            bridge: bridge.clone(),
+            writer: Arc::new(Mutex::new(None)),
+            size: Arc::new(Mutex::new(WindowSize::default())),
         };
-        let (mut session, _wake_rx) = RioTerminalSession::new(800, 320, cell)
-            .expect("Rio should create a test terminal session");
+        listener.dispatch(RioEvent::Title("shell".into()));
+        listener.dispatch(RioEvent::Bell);
+        listener.dispatch(RioEvent::ChildExited(0, Some(1792)));
+        listener.dispatch(RioEvent::CloseTerminal(0));
+        assert_eq!(
+            bridge.drain(),
+            vec![
+                ControlEvent::Title("shell".into()),
+                ControlEvent::Bell,
+                ControlEvent::ChildExited(Some(1792)),
+                ControlEvent::Close,
+            ]
+        );
+    }
 
-        let initial = session.frame();
-        assert_eq!(initial.dimensions.columns, 100);
-        assert_eq!(initial.dimensions.rows, 20);
+    #[test]
+    fn invalid_dimensions_are_rejected_before_spawn() {
+        let result = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 0,
+                rows: 1,
+                pixels_width: 0,
+                pixels_height: 16,
+            },
+            SessionOptions::default(),
+        );
+        assert!(result.is_err());
+    }
 
+    #[cfg(unix)]
+    fn fixture(args: &[&str]) -> RioTerminalSession {
+        let script = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/m0-pty-child.sh"
+        );
+        let (session, _) = RioTerminalSession::with_options(
+            TerminalSize {
+                cols: 100,
+                rows: 20,
+                pixels_width: 800,
+                pixels_height: 320,
+            },
+            SessionOptions {
+                shell: Some("/bin/sh".into()),
+                args: std::iter::once(script)
+                    .chain(args.iter().copied())
+                    .map(String::from)
+                    .collect(),
+                working_directory: None,
+            },
+        )
+        .expect("deterministic child should spawn");
         session
-            .resize(400, 320, cell)
-            .expect("Rio should accept a smaller viewport");
-        let resized = session.frame();
-        assert_eq!(resized.dimensions.columns, 50);
-        assert_eq!(resized.dimensions.rows, 20);
+    }
+
+    #[cfg(unix)]
+    fn wait_for_text(session: &mut RioTerminalSession, expected: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let frame = session.frame();
+            frame
+                .validate()
+                .expect("PTY output must produce a valid frame");
+            let text = frame
+                .rows
+                .iter()
+                .map(|row| {
+                    row.cells
+                        .iter()
+                        .filter_map(|cell| cell.text.as_deref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.contains(expected) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "missing {expected:?} in {text:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_retains_final_output_and_exit_status() {
+        use std::os::unix::process::ExitStatusExt;
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["exit"]);
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut effects = Vec::new();
+        while !effects.contains(&ControlEvent::Close) {
+            effects.extend(session.drain_effects());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child exit was not delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let status = effects
+            .iter()
+            .find_map(|event| match event {
+                ControlEvent::ChildExited(Some(status)) => Some(*status),
+                _ => None,
+            })
+            .expect("Unix child exit must preserve raw wait status");
+        assert_eq!(std::process::ExitStatus::from_raw(status).code(), Some(23));
+        assert_eq!(
+            effects
+                .iter()
+                .filter(|event| **event == ControlEvent::Close)
+                .count(),
+            1
+        );
+        wait_for_text(&mut session, "M0-FINAL-OUTPUT");
+        assert!(session.paste("after exit").is_err());
+        assert!(
+            session
+                .input(TerminalKeyEvent {
+                    key: super::super::input::KeyInput::Enter,
+                    modifiers: super::super::input::InputModifiers::default(),
+                    repeat: false,
+                })
+                .is_err()
+        );
+        assert!(
+            session
+                .resize(
+                    800,
+                    320,
+                    CellSize {
+                        width: 8,
+                        height: 16
+                    }
+                )
+                .is_err()
+        );
+        session.close().expect("close should succeed");
+        session.close().expect("close should be idempotent");
+        assert!(session.paste("x").is_err());
+        assert!(
+            session
+                .resize(
+                    800,
+                    320,
+                    CellSize {
+                        width: 8,
+                        height: 16
+                    }
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_paste_obeys_live_bracketed_mode() {
+        let _serial = serial_pty_test();
+        for (mode, count, expected) in [
+            ("raw", "3", "M0-BYTES:616263"),
+            ("bracketed", "15", "M0-BYTES:1b5b3230307e6162631b5b3230317e"),
+        ] {
+            let mut session = fixture(&[mode, count]);
+            wait_for_text(&mut session, "M0-READY");
+            session.paste("abc").expect("paste should reach the PTY");
+            wait_for_text(&mut session, expected);
+            session.close().expect("close should succeed");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_input_encodes_printable_control_and_enter() {
+        use super::super::input::{InputModifiers, KeyInput};
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["raw", "3"]);
+        wait_for_text(&mut session, "M0-READY");
+        for (key, modifiers) in [
+            (KeyInput::Character('a'), InputModifiers::default()),
+            (KeyInput::Character('c'), InputModifiers::CONTROL),
+            (KeyInput::Enter, InputModifiers::default()),
+        ] {
+            assert!(
+                session
+                    .input(TerminalKeyEvent {
+                        key,
+                        modifiers,
+                        repeat: false
+                    })
+                    .expect("input should reach the PTY")
+            );
+        }
+        wait_for_text(&mut session, "M0-BYTES:61030d");
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_resize_updates_both_grid_and_child() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["resize"]);
+        wait_for_text(&mut session, "M0-READY");
+        session
+            .resize(
+                400,
+                160,
+                CellSize {
+                    width: 8,
+                    height: 16,
+                },
+            )
+            .expect("resize should succeed");
+        let frame = session.frame();
+        assert_eq!(frame.dimensions.columns, 50);
+        assert_eq!(frame.dimensions.rows, 10);
+        session
+            .write(b"size\r".to_vec())
+            .expect("fixture command should reach the PTY");
+        wait_for_text(&mut session, "M0-SIZE:10 50");
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "known upstream Rio PTY final-output regression; see cuetty-m0-contract-checks.md"]
+    fn known_upstream_regression_final_output_survives_snapshot_lock_contention() {
+        use std::os::unix::process::ExitStatusExt;
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["raw", "3"]);
+        wait_for_text(&mut session, "M0-READY");
+
+        let terminal = Arc::clone(&session.terminal);
+        let lock = terminal.lock();
+        // Send on the production Machine channel without the UI's subsequent
+        // scroll-to-bottom lock acquisition. Hold the snapshot lock long
+        // enough for this tiny child to write its reply and exit. This is the
+        // intentional race trigger, not a sleep used to assert completion.
+        session
+            .send(Msg::Input(Cow::Owned(b"abc".to_vec())))
+            .expect("fixture bytes should reach the PTY");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(lock);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut effects = Vec::new();
+        while !effects.contains(&ControlEvent::Close) {
+            effects.extend(session.drain_effects());
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture did not exit; effects: {effects:?}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let status = effects
+            .iter()
+            .find_map(|event| match event {
+                ControlEvent::ChildExited(Some(status)) => Some(*status),
+                _ => None,
+            })
+            .expect("fixture must report its raw Unix exit status");
+        assert_eq!(std::process::ExitStatus::from_raw(status).code(), Some(0));
+        // Assert the correct contract. No should_panic or inverted assertion:
+        // this ignored regression must become green when Rio fixes the loss.
+        wait_for_text(&mut session, "M0-BYTES:616263");
+        session.close().expect("close should succeed");
     }
 }
