@@ -85,6 +85,8 @@ export default defineConfig({
 						{ label: 'Why cuenv', slug: 'explanation/why-cuenv' },
 						{ label: 'Architecture', slug: 'explanation/architecture' },
 						{ label: 'Cuetty', slug: 'explanation/cuetty' },
+						{ label: 'Cuetty daily-driver roadmap', slug: 'explanation/cuetty-daily-driver-roadmap' },
+						{ label: 'Cuetty M0 capability evidence', slug: 'explanation/cuetty-m0-capability-report' },
 						{ label: 'Cuetty gap analysis', slug: 'explanation/cuetty-gap-analysis' },
 						{ label: 'cuengine', slug: 'explanation/cuengine' },
 						{ label: 'cuenv-codeowners', slug: 'explanation/cuenv-codeowners' },
