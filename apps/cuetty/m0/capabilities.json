@@ -6,11 +6,14 @@
         "app_contract_target",
         "app_real_pty_target",
         "headless_actual_modules",
-        "app_go_enabled_retry"
+        "app_go_enabled_retry",
+        "app_cargo_check",
+        "app_all_target_clippy",
+        "app_fmt_check"
       ],
       "gap_owner": "validation",
       "id": "public_api_build",
-      "notes": "Direct terminal modules compile in the reduced Linux harness. Initial full-app attempts stopped at missing Go; a later task-scoped Go retry compiled cuengine and Cuetty but failed test linking due to missing xcb/xkbcommon/xkbcommon-x11 libraries. Nix/cuenv unavailable. Full-app test execution and target macOS build remain unproven.",
+      "notes": "Full-app Rust typechecking and all-target Clippy passed with verified Rust 1.98.1 and task-scoped Go, including GPUI/cuengine. Full-app test execution is still blocked by missing native xcb/xkbcommon/xkbcommon-x11 link libraries. Initial missing-Go attempts are historical. Cargo reports an upstream proc-macro-error2 2.0.1 future-incompatibility notice. Nix gates and target macOS build/runtime remain unproven.",
       "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
@@ -566,6 +569,45 @@
       "exit_code": 101,
       "result": "blocked",
       "scope": "Retry after checksum-verified task-scoped Go installation: cuengine and Cuetty compiled without reported Rust source/type errors, but test linking failed before execution because xcb, xkbcommon and xkbcommon-x11 native libraries are missing. Not a full-app test pass.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_cargo_check",
+      "command": "cargo check --manifest-path apps/cuetty/Cargo.toml --locked",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "Full-app Rust typechecking, including GPUI and cuengine, passed. Does not prove native linking, runtime tests or macOS acceptance.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_all_target_clippy",
+      "command": "cargo clippy --manifest-path apps/cuetty/Cargo.toml --locked --all-targets -- -D warnings",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "All-target Cuetty Clippy passed with warnings denied. Cargo separately reported existing transitive proc-macro-error2 2.0.1 future incompatibility; no Cuetty Clippy lint failed.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_fmt_check",
+      "command": "cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --check",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "App formatting check passed with no output after source-owner rustfmt.",
       "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
     }
   ],

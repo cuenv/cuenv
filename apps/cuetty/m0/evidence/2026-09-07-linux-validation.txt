@@ -161,3 +161,40 @@ but app/test linking failed before tests could execute:
 Missing Go was successfully resolved for this retry. The current full-app
 execution blocker is missing native development link libraries, not Go.
 This remains a blocked test attempt, not a full-app pass.
+
+9. Final full-app check, Clippy, and formatting
+
+Using the verified Rust/Go and task-scoped caches from section 8:
+
+cargo check --manifest-path apps/cuetty/Cargo.toml --locked
+Exit 0:
+  Checking cuengine v0.55.0
+  Checking cuetty v0.1.0
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 58s
+
+cargo clippy --manifest-path apps/cuetty/Cargo.toml --locked --all-targets -- -D warnings
+Exit 0:
+  Checking cuetty v0.1.0
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.55s
+
+cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --check
+Exit 0, no output, after the source owner applied rustfmt.
+
+This provides full-app Rust typechecking and all-target Clippy coverage,
+including GPUI engine/presentation. It does not prove native linking, test
+execution of the full app, GUI runtime, or macOS acceptance.
+
+Both successful check and Clippy emit a Cargo future-incompatibility notice
+for the existing transitive dependency proc-macro-error2 v2.0.1. This is not a
+Cuetty Clippy lint failure. The detailed read-only report command exited 0:
+  cargo report future-incompatibilities --id 1 --package proc-macro-error2@2.0.1
+Relevant warning:
+  warning[E0365]: extern crate `proc_macro` is private and cannot be re-exported
+  proc-macro-error2-2.0.1/src/lib.rs:494:13: pub use proc_macro;
+  help: consider making the extern crate item publicly accessible
+  This was previously accepted; it will become a hard error in a future release.
+  Upstream Rust issue: https://github.com/rust-lang/rust/issues/127909
+
+Final status: check PASS; Clippy -D warnings PASS; fmt PASS; full app tests
+BLOCKED by native linker dependencies; actual-module unit/contracts PASS;
+known final-output regression FAIL; Nix and macOS gates NOT RUN. M0 NOT PASSED.
