@@ -15,6 +15,7 @@ This section captures binding decisions derived from proposals and implementatio
 - [ADR-0007: Cross-Project Task Dependencies](/decisions/adrs/adr-0007-cross-project-task-dependencies/)
 - [ADR-0008: Hermetic, Input-Addressed Task Execution with Persistent Cache](/decisions/adrs/adr-0008-hermetic-task-execution-cache/)
 - [ADR-0009: Single Internal Sync Registry](/decisions/adrs/adr-0009-single-internal-sync-registry/)
+- [ADR-0010: Direct rio-vt Integration for Cuetty](/decisions/adrs/adr-0010-cuetty-direct-rio-vt-integration/)
 
 ## Superseded ADRs
 
