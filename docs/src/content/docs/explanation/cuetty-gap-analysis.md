@@ -8,6 +8,9 @@ They are learning references, not vendored code. Cuetty's terminal engine is
 the pinned Rio revision `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`, hosted in a
 Rust/GPUI application.
 
+For the deliberately narrower macOS path from a vanilla terminal workflow to
+Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cuetty-daily-driver-roadmap/).
+
 ## Snapshot
 
 | Area | Termy/Okena reference pattern | Cuetty today | Remaining gap |
