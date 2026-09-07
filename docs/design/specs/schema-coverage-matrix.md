@@ -26,6 +26,11 @@ CLI-only note: cuenv reads `cue.mod/module.cue` only to warn when a module's
 `github.com/cuenv/cuenv` schema dependency version differs from the running CLI.
 `cuenv sync` never writes `cue.mod/module.cue`.
 
+Build-only note: the root and Cuetty app-local Nix flakes pin Rust `1.98.1`
+with matching `rust-overlay` locks. This compiler update changes no schema,
+CLI support status, or declared workspace MSRV; build and Clippy validation
+must still pass before review or release.
+
 | Schema file | Definition | Feature | Audience | Implementation owner | CLI surface | Docs page | Example | Test/eval | Skill | Status | Drift/UX note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | app-local `cuetty` package | `banner`, `border` | terminal presentation accent | Cuetty users | `apps/cuetty/src/integrations/cuenv.rs` | active shell CWD | `docs/explanation/cuetty` | `banner: "Welcome to Cuetty"`, `border: "#ff0000"` | Cuetty evaluator tests | — | experimental | exact-CWD only; invalid matching CUE retains per-tab last-good presentation |
