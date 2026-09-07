@@ -1,0 +1,591 @@
+{
+  "capabilities": [
+    {
+      "execution_ids": [
+        "app_no_default_features",
+        "app_contract_target",
+        "app_real_pty_target",
+        "headless_actual_modules",
+        "app_go_enabled_retry"
+      ],
+      "gap_owner": "validation",
+      "id": "public_api_build",
+      "notes": "Direct terminal modules compile in the reduced Linux harness. Initial full-app attempts stopped at missing Go; a later task-scoped Go retry compiled cuengine and Cuetty but failed test linking due to missing xcb/xkbcommon/xkbcommon-x11 libraries. Nix/cuenv unavailable. Full-app test execution and target macOS build remain unproven.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "impl TerminalSession for RioTerminalSession"
+        }
+      ],
+      "status": "blocked_by_environment"
+    },
+    {
+      "execution_ids": [
+        "headless_actual_modules",
+        "headless_real_pty_parallel",
+        "headless_real_pty_serial"
+      ],
+      "gap_owner": "validation",
+      "id": "pty_output_resize",
+      "notes": "Real-session fixtures cover output and grid/child resize. Ignored PTY tests must be explicitly executed. Supplemental actual-module Linux unit/contract checks passed; this is not full requirement or macOS qualification. Real-PTY resize passed in the mixed failing test runs; final-output delivery fails separately.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "real_session_resize_updates_both_grid_and_child"
+        },
+        {
+          "path": "apps/cuetty/tests/rio_vt_contract.rs",
+          "symbol": "public_core_preserves_output_when_resized"
+        },
+        {
+          "path": "apps/cuetty/tests/fixtures/m0-pty-child.sh"
+        }
+      ],
+      "status": "implemented_partially_validated"
+    },
+    {
+      "execution_ids": [
+        "headless_real_pty_parallel",
+        "headless_real_pty_serial",
+        "headless_pair_repetition",
+        "headless_forced_contention",
+        "repository_contention_regression"
+      ],
+      "gap_owner": "rio_pty_integration_cause_inferred",
+      "id": "final_output_child_status",
+      "notes": "Observed on Linux: repeated bracketed session and first raw forced-contention session exited status 0 with Close, but final M0-BYTES output was absent from snapshots. Other natural-exit fixtures passed; delivery is not reliable. Source-backed inference, not instrumented branch proof: Machine::pty_read may discard locally buffered bytes when terminal try_lock fails and a subsequent read returns Linux EIO. This failure does not require previous-session teardown or PID reuse. The repository-owned ignored regression also executed through the harness and failed after its child-exit-code-zero assertion passed, reproducing missing final output.",
+      "outcome": "fail",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "real_session_retains_final_output_and_exit_status"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "known_upstream_regression_final_output_survives_snapshot_lock_contention"
+        }
+      ],
+      "status": "blocked_by_observed_failure",
+      "upstream_evidence": [
+        {
+          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs",
+          "symbols": [
+            "Machine::pty_read",
+            "try_lock_unfair"
+          ]
+        }
+      ]
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "rio_teletypewriter_lifecycle",
+      "id": "bounded_teardown",
+      "notes": "Known source-level blocker in the pinned Rio teletypewriter dependency, not the VT parser: Pty::next_child_event reaps with waitpid, while Child::drop later unconditionally sends SIGHUP to the stored PID. A recycled PID could theoretically receive that signal. Shutdown also drops the child without a guaranteed reap. Public ownership APIs provide no disarm path; a leaking workaround was rejected. No executable race reproduction has run, so outcome remains unobservable rather than fail. Safe teardown requires an upstream ownership fix or a reviewed ownership adapter before promotion.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "fn close(&mut self)"
+        }
+      ],
+      "status": "blocked_by_rio_core",
+      "upstream_evidence": [
+        {
+          "symbols": [
+            "Child::waitpid",
+            "Child::drop",
+            "Pty::next_child_event"
+          ],
+          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/teletypewriter/src/unix/mod.rs"
+        },
+        {
+          "symbols": [
+            "Msg::Shutdown"
+          ],
+          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs"
+        }
+      ]
+    },
+    {
+      "execution_ids": [
+        "headless_actual_modules"
+      ],
+      "gap_owner": "validation",
+      "id": "graphemes_wide_cells",
+      "notes": "Adapter copies full cluster text and Rio-declared spacers. Combining/CJK and boundary fixtures exist; emoji ZWJ, split chunks and rendered macOS coverage remain incomplete. Supplemental actual-module Linux unit/contract checks passed; this is not full requirement or macOS qualification.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_adapter.rs",
+          "symbol": "public_parser_snapshot_preserves_clusters_and_wide_occupancy"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/rio_adapter.rs",
+          "symbol": "wrapped_wide_boundary_fixture_preserves_rio_end_of_row_placeholder"
+        },
+        {
+          "path": "apps/cuetty/tests/rio_vt_contract.rs",
+          "symbol": "public_cell_text_preserves_combining_text_and_wide_spacers"
+        }
+      ],
+      "status": "implemented_partially_validated"
+    },
+    {
+      "execution_ids": [
+        "headless_actual_modules"
+      ],
+      "gap_owner": "validation",
+      "id": "styles_cursor_alt_screen",
+      "notes": "Row-aware styles and cursor snapshots have parser fixtures. Full renderer correctness is not asserted. Supplemental actual-module Linux unit/contract checks passed; this is not full requirement or macOS qualification.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_adapter.rs",
+          "symbol": "styles_and_text_are_owned_across_grid_swaps"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/rio_adapter.rs",
+          "symbol": "public_parser_snapshot_observes_cursor_shape_and_visibility"
+        },
+        {
+          "path": "apps/cuetty/tests/rio_vt_contract.rs",
+          "symbol": "public_cursor_and_alternate_screen_state_are_observable"
+        }
+      ],
+      "status": "implemented_partially_validated"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "native_history_selection_search",
+      "notes": "Snapshot exposes viewport offset, but native history navigation, eviction/reflow coordinates, selection and search are not qualified through TerminalSession. Visible-frame local search is not native history search.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_adapter.rs",
+          "symbol": "scrolled_viewport_hides_cursor_and_keeps_offset"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "pub trait TerminalSession"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [
+        "headless_actual_modules"
+      ],
+      "gap_owner": "validation",
+      "id": "legacy_application_keys",
+      "notes": "Legacy text, controls, navigation, application cursor and modifiers have encoder assertions. Actual PTY navigation-byte checks and full function-key coverage remain outstanding. Supplemental actual-module Linux unit/contract checks passed; this is not full requirement or macOS qualification.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_input.rs",
+          "symbol": "navigation_respects_application_cursor_mode"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/rio_input.rs",
+          "symbol": "modified_navigation_always_uses_parameterized_csi"
+        }
+      ],
+      "status": "implemented_partially_validated"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "application_keypad_identity",
+      "notes": "Host event cannot identify keypad keys separately. Ordinary digits must not be reinterpreted as keypad keys.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_input.rs",
+          "symbol": "repeat_matches_press_and_keypad_mode_does_not_reinterpret_digits"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [
+        "headless_actual_modules",
+        "headless_real_pty_parallel",
+        "headless_real_pty_serial",
+        "headless_pair_repetition",
+        "headless_forced_contention"
+      ],
+      "gap_owner": "rio_pty_integration_cause_inferred",
+      "id": "bracketed_paste",
+      "notes": "Encoder unit tests passed, and diagnostics observed active BRACKETED_PASTE with the exact 15-byte framed abc payload. End-to-end fixture failed to retain its final output despite child exit status 0. Marked fail for observable round-trip delivery, not evidence of wrong encoding. Suspected lock/EIO loss is described under final_output_child_status.",
+      "outcome": "fail",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/rio_input.rs",
+          "symbol": "bracketed_paste_preserves_text_and_cannot_inject_a_terminator"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "real_session_paste_obeys_live_bracketed_mode"
+        }
+      ],
+      "status": "blocked_by_observed_failure"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "mouse_wheel_reporting",
+      "notes": "No qualified mouse/wheel encoding and routing API exists at the current session seam.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "pub trait TerminalSession"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "focus_reporting",
+      "notes": "Focus events are not exposed through TerminalSession or encoded into PTY focus sequences.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "pub trait TerminalSession"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "hyperlink_destinations",
+      "notes": "OSC 8 destinations are not represented in TerminalCell; link activation and destination-safety policy are unqualified.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/model.rs",
+          "symbol": "pub struct TerminalCell"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "validation",
+      "id": "title_bell_osc7",
+      "notes": "Listener handles title/reset/bell; working_directory reads Rio OSC 7 state with a process fallback. Protocol fixtures still needed.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "fn dispatch"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "fn working_directory"
+        }
+      ],
+      "status": "implemented_unvalidated"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "validation",
+      "id": "osc52_policy",
+      "notes": "Clipboard reads are denied using an empty response; writes are sent to the existing event bridge. End-to-end read/write policy fixtures remain required.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "RioEvent::ClipboardLoad"
+        }
+      ],
+      "status": "implemented_unvalidated"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "validation",
+      "id": "geometry_queries",
+      "notes": "Text-area queries receive cached dimensions without taking the terminal lock. Actual PTY response-byte assertions remain needed.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "RioEvent::TextAreaSizeRequest"
+        }
+      ],
+      "status": "implemented_unvalidated"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "color_queries",
+      "notes": "ColorRequest is not resolved against the host theme. Add explicit default/indexed/RGB reply policy and byte fixtures.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "fn dispatch"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "ime_dead_keys_option",
+      "notes": "Current host event is not committed IME text. Dead keys, one IME and macOS Option policy need native input integration and target-Mac checks.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/input.rs",
+          "symbol": "pub struct TerminalKeyEvent"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "cuetty_host",
+      "id": "advanced_keyboard",
+      "notes": "Kitty and modifyOtherKeys encoding is unqualified; current session rejects input while extended modes are active. This must not be mistaken for negotiated support.",
+      "outcome": "unobservable",
+      "required_for_m0": false,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "extended keyboard protocols are not yet qualified"
+        },
+        {
+          "path": "apps/cuetty/src/terminal/rio_input.rs",
+          "symbol": "pub fn encode_key"
+        }
+      ],
+      "status": "unsupported"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "validation",
+      "id": "librio_control_regression",
+      "notes": "Original revision is recorded, but equivalent PTY/frame/input/resize/close tests have not run against both implementations.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [],
+      "status": "deferred"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "target_platform",
+      "id": "apple_silicon_workload",
+      "notes": "No Apple Silicon execution evidence. Required corpus: login shell, SSH, full-screen editor, fzf, Kubernetes or coding-agent TUI; tmux when used. Attribute every failure to Rio or host/renderer.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [],
+      "status": "deferred"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "target_platform",
+      "id": "performance_history_budget",
+      "notes": "Measure latency, resize, render cost and memory at 10,000 and 100,000 history lines on target Mac; compare vanilla Ghostty qualitatively.",
+      "outcome": "unobservable",
+      "required_for_m0": true,
+      "source_evidence": [],
+      "status": "deferred"
+    },
+    {
+      "execution_ids": [],
+      "gap_owner": "out_of_scope",
+      "id": "kitty_graphics",
+      "notes": "Not part of M0 or advertised as supported.",
+      "outcome": "unobservable",
+      "required_for_m0": false,
+      "source_evidence": [],
+      "status": "deferred"
+    }
+  ],
+  "control": {
+    "comparison_run": false,
+    "package": "librio",
+    "revision": "b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1"
+  },
+  "engine": {
+    "package": "rio-vt",
+    "repository": "https://github.com/raphamorim/rio",
+    "revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+    "rust_toolchain": "1.98.1"
+  },
+  "executions": [
+    {
+      "id": "app_no_default_features",
+      "command": "cargo test --manifest-path apps/cuetty/Cargo.toml --locked --no-default-features",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "blocked",
+      "scope": "Build stopped in cuengine: Go executable unavailable. No Cuetty compilation or tests completed.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_contract_target",
+      "command": "cargo test --manifest-path apps/cuetty/Cargo.toml --locked --test rio_vt_contract",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "blocked",
+      "scope": "Build stopped in cuengine because Go was unavailable.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_real_pty_target",
+      "command": "cargo test --manifest-path apps/cuetty/Cargo.toml --locked real_session -- --ignored --nocapture",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "blocked",
+      "scope": "Build stopped in cuengine because Go was unavailable.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "headless_actual_modules",
+      "command": "CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --offline",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "Supplemental harness imports actual terminal source; 59 unit tests passed, 4 real-PTY tests ignored; 4 rio_vt_contract tests passed. GPUI engine/presentation, cuengine, macOS and librio control excluded.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "headless_real_pty_parallel",
+      "command": "CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline real_session -- --ignored --nocapture",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "failed",
+      "scope": "2 passed (resize, final-output/exit-status), 2 failed (input, paste). Mixed run is not a blanket capability pass.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "headless_real_pty_serial",
+      "command": "CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline real_session -- --ignored --nocapture --test-threads=1",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "failed",
+      "scope": "3 passed, 1 failed (paste). Bracketed output marker missing within five seconds.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "headless_pair_repetition",
+      "command": "CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline diagnostic_bracketed_mode -- --ignored --nocapture --test-threads=1",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "failed",
+      "scope": "Scratch-only diagnostic: 17 sessions completed, session 18 failed with correct bracketed mode and 15 bytes, child status 0, missing final output. Stopped run is not a measured failure rate.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "headless_forced_contention",
+      "command": "CUETTY_DIAGNOSTIC_HOLD_LOCK=1 CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline diagnostic_bracketed_mode -- --ignored --nocapture --test-threads=1",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "failed",
+      "scope": "Scratch-only diagnostic held terminal mutex for 100 ms while sending raw abc. First child exited status 0 but final marker was missing. One forced run observed; no repeated determinism claim.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "repository_contention_regression",
+      "command": "CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline known_upstream_regression_final_output_survives_snapshot_lock_contention -- --ignored --nocapture --test-threads=1",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "failed",
+      "scope": "Repository-source ignored regression compiled through actual-module harness: 0 passed, 1 failed, 64 filtered out. Child exit-code-zero assertion passed; M0-BYTES:616263 missing from final frame. Desired contract is asserted normally, not inverted.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "app_go_enabled_retry",
+      "command": "cargo test --manifest-path apps/cuetty/Cargo.toml --locked --no-default-features",
+      "working_directory": "/workspace/scratch/05001217590d/cuenv",
+      "platform": "Linux x86_64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+      "executed_at": "2026-09-07 (exact start time not captured)",
+      "exit_code": 101,
+      "result": "blocked",
+      "scope": "Retry after checksum-verified task-scoped Go installation: cuengine and Cuetty compiled without reported Rust source/type errors, but test linking failed before execution because xcb, xkbcommon and xkbcommon-x11 native libraries are missing. Not a full-app test pass.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    }
+  ],
+  "format_version": 1,
+  "milestone": "M0",
+  "outcome_definitions": {
+    "fail": "Recorded execution demonstrates a failure with attributed ownership.",
+    "pass": "Recorded execution proves the stated scope.",
+    "unobservable": "No qualifying execution result is recorded; source inspection alone is insufficient."
+  },
+  "promotion_policy": "All required capabilities must have outcome pass and status verified. No Cuetty host/renderer gap alone disqualifies Rio. The report validator checks evidence structure and source references, not terminal behaviour.",
+  "qualification": "not_passed",
+  "status_definitions": {
+    "blocked_by_rio_core": "A source-inspected defect in the pinned Rio integration dependency blocks safe use; no executable reproduction is implied.",
+    "deferred": "No implementation or qualification evidence is supplied in this checkpoint; still blocks M0 when required.",
+    "implemented_unvalidated": "Source implements a stated subset, but no qualifying executable check for the complete requirement has been recorded.",
+    "unsupported": "The current Cuetty integration cannot supply the stated requirement. This is not a claim that Rio lacks it.",
+    "verified": "The exact stated scope passed recorded executable checks on the stated platform, not implied full protocol support.",
+    "implemented_partially_validated": "Recorded supplemental checks passed for a subset; the complete required capability is not qualified.",
+    "blocked_by_environment": "Execution stopped at missing build prerequisites, without proving a terminal capability failure.",
+    "blocked_by_observed_failure": "An executable test observed a capability failure; root-cause attribution may remain an explicitly labelled inference."
+  }
+}
