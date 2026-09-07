@@ -27,6 +27,12 @@ but test linking failed on missing Linux xcb/xkbcommon/xkbcommon-x11 libraries.
 No full-app tests ran in that retry. These results do not establish a macOS app
 build or smoke pass.
 
+The subsequent full-app `cargo check --locked`, all-target Clippy with
+`-D warnings`, and formatting check passed. This includes Rust typechecking of
+GPUI and cuengine, but not native linking or full-app test execution. Cargo
+reported an existing transitive `proc-macro-error2` future-incompatibility
+notice; it was not a Cuetty Clippy failure. Nix and macOS gates remain unrun.
+
 Repeated sessions and a controlled terminal-lock contention probe observed a
 child exiting successfully while its final output was missing from the frame.
 Bracketed mode and encoded bytes were correct. The report marks final-output
