@@ -92,6 +92,59 @@ parallel process-notification interference. Final-output delivery remains an
 M0 blocker, and passing pure encoders or an isolated paste probe does not
 qualify the corresponding end-to-end PTY behavior.
 
+### Repair boundary and next engineering action
+
+The following API-boundary review is against the exact qualification revision
+above. It is source inspection, not a new executed regression result.
+
+| Boundary | Source evidence | Consequence for Cuetty |
+| --- | --- | --- |
+| Child ownership | `teletypewriter/src/unix/mod.rs`: `Child::waitpid(&self)` (line 875) reaps without recording completion; `Child::drop` (line 905) always signals the stored PID. Its `process` field is private. | Joining the reader, checking a PID, or waiting longer does not disarm destruction. Another wait after reaping cannot establish ownership of a recycled PID. |
+| Machine ownership | `rio-vt/src/performer/mod.rs`: `Machine.pty` (line 108) and `State.parser` are private. The public machine operations are `new`, `channel`, and `spawn`. | The joined `(Machine, State)` does not expose an owned PTY teardown or a way to recover and parse discarded bytes. `Msg::Shutdown` exits the event loop, not a child-termination-and-reap protocol. |
+| Buffered output | `Machine::pty_read` keeps `unprocessed` locally (line 224), reads again when the terminal lock is unavailable, and returns a non-retryable read error (line 245) before `parser.advance` (line 263). | Bytes already consumed from the kernel can be lost on EIO; a later frame sample or final read cannot recover them. Shorter snapshot locks reduce probability, not the failure condition. |
+| Exit drain | The child-exit branch calls `pty_read` once, then emits `ChildExited` and leaves the event loop. A read call can stop at `MAX_LOCKED_READ`; Unix HUP readiness is skipped in the ordinary I/O branch. | A repair must distinguish a fairness yield from a fully drained PTY and cover residual output at EOF/HUP, not only the observed small-marker case. This is an additional source-review requirement, not a separately reproduced failure. |
+
+There is no small, ownership-safe host workaround while retaining the pinned
+`Machine<Pty, Listener>`. A custom public `EventedPty` reader could translate
+Linux EIO to EOF to avoid that particular early return, but it would leave the
+upstream child destructor and complete-drain contract unresolved. Mutating the
+public numeric PID to a sentinel, duplicating the master descriptor, or leaking
+the child is not an ownership fix. Replacing PTY spawning, child ownership, and
+the event loop with a separately qualified implementation is technically
+possible through public core APIs, but is a new backend project rather than a
+safe local repair of this integration.
+
+The preferred next action is a focused upstream patch (or an explicitly
+approved, pinned fork) for both layers:
+
+1. Give the child a single synchronized ownership state. Record successful
+   reaping before any destructor can signal it, preserve its exit status, and
+   make termination plus reaping explicit and idempotent. Run potentially
+   blocking cleanup off the UI thread. Specify behavior for a child that
+   ignores SIGHUP and for errors during machine setup or reader execution.
+   A prior numeric-PID existence check is insufficient because it introduces
+   another check/use race.
+2. Preserve or parse every buffered byte before handling EOF or a terminal
+   read error. Keep bounded parsing for ordinary fairness, but make final
+   draining continue through those yields until the defined completion
+   condition. Publish exit only after final buffered output and pending
+   synchronized-update state are committed. Define a bounded policy when a
+   descendant keeps the slave open rather than blocking indefinitely.
+3. Add a deterministic synthetic `EventedPty` test that handshakes with the
+   snapshot lock: return marker bytes, then EIO, and assert the marker is
+   committed before exit. Also cover zero-byte EOF, HUP with residual output,
+   output exceeding one parsing budget, and pending synchronized updates.
+   The synthetic transport should own no real process, isolating parser-drain
+   correctness from the unsafe lifecycle. Test real natural exit, close/hold,
+   repeated close, reap completion, and no signaling after reaping separately.
+4. Repin only after reviewing and validating the ownership fix. Explicitly run
+   the existing ignored host regressions on Linux and macOS, capture the new
+   evidence, and update capability outcomes only for the scopes those tests
+   establish. Production dependency changes also require the root flake gate.
+
+No lifecycle race was executed during this API review, and no production
+workaround or engine-pin change is implied by these repair requirements.
+
 ## Remaining host protocol gaps
 
 The session uses live legacy application-cursor and bracketed-paste modes.
