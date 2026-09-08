@@ -418,7 +418,8 @@ not force or suppress default hashing. The affected-task walk builds a canonical
 projects, and splits cross-project references at the first `:` so nested task
 paths remain intact during recursive dependency checks. Core task indexing
 preserves the `#project:` separator and canonicalizes only the referenced task
-path.
+path. Direct affected-task checks use `Result::is_ok_and`: successful lookups
+evaluate the task's inputs, while unresolved task names remain unaffected.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. GC default-policy tests assert the
