@@ -463,8 +463,7 @@ impl CommandHandler for SyncHandler {
                         .root
                         .join(&instance.path)
                         .canonicalize()
-                        .ok()
-                        .is_some_and(|path| path == target_path)
+                        .is_ok_and(|path| path == target_path)
                 });
                 (is_project, is_root)
             };

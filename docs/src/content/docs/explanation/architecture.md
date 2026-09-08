@@ -238,6 +238,11 @@ pub enum Error {
 
 The command-line interface built with `clap`.
 
+CLI sync project matching checks canonicalization results directly with
+`Result::is_ok_and`; unresolved project paths remain non-matches. CLI output
+avoids redundant formatting and borrows, and equality tests use `assert_eq!`
+to retain useful failure diagnostics without lint suppressions.
+
 **Commands:**
 
 - `cuenv task [name]` - Execute or list tasks
