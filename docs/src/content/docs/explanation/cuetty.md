@@ -10,10 +10,13 @@ semantic render frames.
 
 The direct-`rio-vt` qualification revision is:
 
-`7ae087500bcde5c0c9f09cb9c50382e9220b3360`
+`b0694c0707a90dc93fdf01cbf8a658424be285ee`
 
-That pin is intentional. Cuetty uses the public APIs available at this
-revision rather than depending on private renderer or embedding APIs.
+That pin is intentional. It is the head of
+[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927), which preserves
+final PTY output under terminal-lock contention and gives Unix child teardown
+an ownership-safe shutdown/reap contract. Cuetty uses public APIs available at
+this revision rather than private renderer or embedding APIs.
 
 The original proof of concept used `librio` at
 `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`. The M0 implementation migrates to
@@ -52,7 +55,7 @@ The current usable slice includes:
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
   one title strip, stable single-line tab labels, and a full-bleed terminal.
 - Keyboard input, paste, resize, title updates, clipboard copy, mouse
-  selection, and visible-frame literal search.
+  selection, Rio-owned history navigation, and visible-frame literal search.
 - Window and rail geometry are mapped to the active pane before each Rio
   resize, so changing either boundary recalculates terminal rows and columns
   instead of leaving a stale frame clipped in the viewport.
@@ -98,8 +101,9 @@ valid presentation for that directory and exposes an integration notice.
 The following are deliberately documented as staged work rather than implied
 support:
 
-- Full scrollback navigation and full-history search; current search is over
-  the visible frame and supports literal matching only.
+- Full-history selection and search; history navigation is live, but current
+  selection/search coordinates cover one visible viewport and search is
+  literal-only.
 - Complete Unicode behaviour, including combining marks, ZWJ sequences,
   emoji presentation, and IME correctness.
 - Kitty graphics and other image protocols.

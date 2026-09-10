@@ -37,8 +37,19 @@ case "${1:-}" in
         IFS= read -r command
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
+    history)
+        stty -echo
+        line=1
+        while test "$line" -le 40; do
+            printf 'M0-HISTORY-%02d\r\n' "$line"
+            line=$((line + 1))
+        done
+        printf 'M0-READY\r\n'
+        IFS= read -r command
+        printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
+        ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|resize|raw COUNT|bracketed COUNT|hold\n' >&2
+        printf 'usage: m0-pty-child.sh exit|resize|raw COUNT|bracketed COUNT|hold|history\n' >&2
         exit 64
         ;;
 esac

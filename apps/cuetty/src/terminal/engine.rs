@@ -1,6 +1,6 @@
 use super::config::TerminalConfig;
 use super::events::ControlEvent;
-use super::host::{RioTerminalFactory, TerminalSession, TerminalSessionFactory};
+use super::host::{RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory};
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
 use super::interaction::{CellHitTest, InteractionState, SearchKey};
 use super::model::{CursorShape, Known, Rgb, TerminalCell, TerminalFrame, UnderlineStyle};
@@ -20,8 +20,8 @@ use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, SharedString, Size, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
+    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
     UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
     actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
 };
@@ -492,6 +492,7 @@ struct PaneState {
     session: Box<dyn TerminalSession>,
     frame: TerminalFrame,
     interaction: InteractionState,
+    scroll_remainder: f32,
     title: String,
     measured_bounds: Arc<Mutex<(u32, u32)>>,
     viewport_bounds: Arc<Mutex<ViewportBounds>>,
@@ -576,6 +577,7 @@ impl SessionRegistry {
                 session: start.session,
                 frame,
                 interaction: InteractionState::default(),
+                scroll_remainder: 0.0,
                 title: "Cuetty".into(),
                 measured_bounds: Arc::new(Mutex::new((width, height))),
                 viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
@@ -640,6 +642,7 @@ impl SessionRegistry {
                 session: start.session,
                 frame,
                 interaction: InteractionState::default(),
+                scroll_remainder: 0.0,
                 title: "Cuetty".into(),
                 measured_bounds: Arc::new(Mutex::new((width, height))),
                 viewport_bounds: Arc::new(Mutex::new((0.0, 0.0, width as f32, height as f32))),
@@ -756,6 +759,19 @@ fn rail_is_compact(width: f32) -> bool {
 
 fn normalized_rail_width(width: f32) -> f32 {
     width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+}
+
+fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
+    let vertical_lines = match delta {
+        ScrollDelta::Pixels(delta) => f32::from(delta.y) / line_height.max(1.0),
+        ScrollDelta::Lines(delta) => delta.y,
+    };
+    // GPUI reports negative vertical deltas while the user moves toward the
+    // top of content; Rio uses positive offsets for older history.
+    let total = *remainder - vertical_lines;
+    let lines = total.trunc().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
+    *remainder = total - lines as f32;
+    lines
 }
 
 fn terminal_workspace_size(
@@ -1302,6 +1318,37 @@ impl TerminalView {
         }
     }
 
+    fn scroll_active(&mut self, action: TerminalScroll) {
+        if let Some(state) = self.active_state_mut() {
+            match state.session.scroll(action) {
+                Ok(()) => {
+                    state.interaction.viewport_changed();
+                    state.frame = state.session.frame();
+                }
+                Err(error) => state.error = Some(error),
+            }
+        }
+    }
+
+    fn scroll_wheel(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let line_height = f32::from(self.metrics.render_cell().height);
+        let action = self.active_state_mut().and_then(|state| {
+            // Retain sub-line trackpad motion per pane.
+            let lines = wheel_scroll_lines(event.delta, line_height, &mut state.scroll_remainder);
+            (lines != 0).then_some(TerminalScroll::Lines(lines))
+        });
+        if let Some(action) = action {
+            self.scroll_active(action);
+            cx.notify();
+        }
+        cx.stop_propagation();
+    }
+
     fn workspace_shortcut(key: &str, modifiers: gpui::Modifiers) -> Option<WorkspaceShortcut> {
         if !modifiers.secondary() {
             return None;
@@ -1344,6 +1391,20 @@ impl TerminalView {
         // input, search, copy, and paste routed through that registry entry.
         if self.active_state().is_none() {
             return;
+        }
+        if modifiers.shift {
+            let scroll = match key {
+                "pageup" => Some(TerminalScroll::PageUp),
+                "pagedown" => Some(TerminalScroll::PageDown),
+                "home" => Some(TerminalScroll::Top),
+                "end" => Some(TerminalScroll::Bottom),
+                _ => None,
+            };
+            if let Some(scroll) = scroll {
+                self.scroll_active(scroll);
+                cx.notify();
+                return;
+            }
         }
         if modifiers.secondary() && key.eq_ignore_ascii_case("f") {
             if let Some(state) = self.active_state_mut() {
@@ -2213,6 +2274,7 @@ impl Render for TerminalView {
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
                         .on_mouse_move(cx.listener(Self::mouse_move))
                         .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                        .on_scroll_wheel(cx.listener(Self::scroll_wheel))
                         .child(
                             canvas(
                                 move |bounds, _, app| {
@@ -2356,6 +2418,10 @@ mod tests {
             Ok(())
         }
 
+        fn scroll(&mut self, _: TerminalScroll) -> Result<(), String> {
+            Ok(())
+        }
+
         fn frame(&mut self) -> TerminalFrame {
             self.frame.clone()
         }
@@ -2446,6 +2512,32 @@ mod tests {
         assert!(!rail_is_compact(SIDEBAR_COMPACT_THRESHOLD));
         assert_eq!(normalized_rail_width(12.0), SIDEBAR_MIN_WIDTH);
         assert_eq!(normalized_rail_width(320.0), SIDEBAR_MAX_WIDTH);
+    }
+
+    #[test]
+    fn wheel_scrolling_accumulates_pixels_and_matches_history_direction() {
+        let mut remainder = 0.0;
+        assert_eq!(
+            wheel_scroll_lines(
+                ScrollDelta::Pixels(point(px(0.0), px(-9.0))),
+                20.0,
+                &mut remainder
+            ),
+            0
+        );
+        assert_eq!(
+            wheel_scroll_lines(
+                ScrollDelta::Pixels(point(px(0.0), px(-12.0))),
+                20.0,
+                &mut remainder
+            ),
+            1
+        );
+        assert!(remainder > 0.0);
+        assert_eq!(
+            wheel_scroll_lines(ScrollDelta::Lines(point(0.0, 2.0)), 20.0, &mut remainder),
+            -1
+        );
     }
 
     #[test]

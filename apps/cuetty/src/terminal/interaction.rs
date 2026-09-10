@@ -98,6 +98,16 @@ impl InteractionState {
         self.current_match
     }
 
+    /// Visible-frame coordinates cannot be carried across a history viewport
+    /// change without pointing at different content.
+    pub fn viewport_changed(&mut self) {
+        self.selection = None;
+        self.pointer_origin = None;
+        self.dragging = false;
+        self.search = None;
+        self.current_match = None;
+    }
+
     pub fn begin_selection(&mut self, _hit: CellHitTest, position: LogicalPosition) {
         self.selection = Some(Selection::new(position, position));
         self.pointer_origin = Some(position);
@@ -329,6 +339,27 @@ mod tests {
         state.begin_selection(hit, LogicalPosition { line: 1, column: 1 });
         state.extend_selection(hit, LogicalPosition { line: 0, column: 0 });
         assert_eq!(state.copy(&sampled).as_deref(), Some("abcd"));
+    }
+
+    #[test]
+    fn viewport_change_clears_visible_frame_coordinates() {
+        let sampled = frame(vec![("abcd", false)]);
+        let hit = CellHitTest {
+            cell_width: 1.0,
+            cell_height: 1.0,
+            rows: 1,
+            columns: 4,
+        };
+        let mut state = InteractionState::default();
+        state.begin_selection(hit, LogicalPosition { line: 0, column: 0 });
+        state.extend_selection(hit, LogicalPosition { line: 0, column: 2 });
+        state.enter_search(&sampled);
+
+        state.viewport_changed();
+
+        assert_eq!(state.copy(&sampled), None);
+        assert!(state.search().is_none());
+        assert!(state.current_match().is_none());
     }
 
     #[test]
