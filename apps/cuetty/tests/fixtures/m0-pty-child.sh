@@ -18,7 +18,7 @@ case "${1:-}" in
         dimensions=$(stty size)
         printf 'M0-SIZE:%s\r\n' "$dimensions"
         ;;
-    raw|bracketed)
+    raw|bracketed|kitty|modify-other-keys)
         count=${2:?expected input byte count}
         case "$count" in
             ''|*[!0-9]*) exit 64 ;;
@@ -26,10 +26,14 @@ case "${1:-}" in
         stty raw -echo
         if test "$1" = bracketed; then
             printf '\033[?2004h'
+        elif test "$1" = kitty; then
+            printf '\033[>1u'
+        elif test "$1" = modify-other-keys; then
+            printf '\033[>4;2m'
         fi
         printf 'M0-READY\r\n'
         bytes=$(dd bs=1 count="$count" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-        printf '\033[?2004lM0-BYTES:%s\r\n' "$bytes"
+        printf '\033[?2004l\033[<u\033[>4;0mM0-BYTES:%s\r\n' "$bytes"
         ;;
     hold)
         stty -echo
@@ -49,7 +53,7 @@ case "${1:-}" in
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|resize|raw COUNT|bracketed COUNT|hold|history\n' >&2
+        printf 'usage: m0-pty-child.sh exit|resize|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|hold|history\n' >&2
         exit 64
         ;;
 esac

@@ -185,6 +185,13 @@ the live viewport, and subsequent input still rendered. This is a synthetic UI
 smoke check, not evidence for SSH, a full-screen editor, `fzf`, or a Kubernetes
 or coding-agent TUI.
 
+A follow-up launch exposed a host failure when the interactive shell negotiated
+an extended keyboard mode: the next keypress replaced the terminal with a fatal
+error. Cuetty now reads Rio's live Kitty and `modifyOtherKeys` state and encodes
+the representable keypress/modifier/named-key/repeat subset. Deterministic unit
+and real-PTY fixtures cover that negotiation path. Key releases, keypad
+identity, alternate-key reporting, and IME commits remain open.
+
 **Exit gate:** the project has a pinned engine whose public surface can support
 the M1 contract, plus a migration test that proves the existing PTY, frame, and
 close semantics still work.

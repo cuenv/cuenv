@@ -1,0 +1,36 @@
+Cuetty negotiated extended-keyboard regression
+Date: 2026-09-11
+Platform: Darwin 27.0.0 arm64
+Rust: rustc 1.97.0 (2d8144b78 2026-07-07)
+Rio revision: b0694c0707a90dc93fdf01cbf8a658424be285ee
+
+Focused real-PTY command:
+  cargo test --locked terminal::host::tests::real_session_input_obeys_negotiated_extended_keyboard_modes -- --ignored --exact --test-threads=1
+
+Result:
+  1 passed; 0 failed. The disposable child negotiated Kitty disambiguation and
+  xterm modifyOtherKeys level 2 through Rio before reading input. Cuetty sent
+  the expected plain, modified, and Enter bytes without returning a session
+  error.
+
+Supporting checks:
+  cargo test --locked
+    165 passed; 0 failed; 7 explicitly ignored; 4 rio-vt contracts passed.
+  cargo clippy --locked --all-targets --all-features -- -D warnings
+    Passed with no Cuetty warnings. Cargo retained the existing transitive
+    future-incompatibility notices for block and proc-macro-error2.
+  cuenv task ci.schema-docs-check
+    Passed.
+
+Live application observation:
+  The release bundle rebuilt, was ad-hoc signed, and launched into a visible
+  focused Cuetty window. Sending input no longer replaced the terminal with the
+  former extended-keyboard fatal error. Automated custom-terminal text entry
+  did not provide a reliable shell-output assertion, so it is not recorded as
+  proof that a real workload passed.
+
+Qualification boundary:
+  This evidence covers only the keypress, modifier, named-key, and repeat
+  subset representable by the current GPUI host event. It does not qualify key
+  releases, keypad identity, alternate-key reporting, committed IME text, or
+  the broader daily-driver workload corpus.

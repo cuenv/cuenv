@@ -23,6 +23,13 @@ values first; only the concrete Rio adapter maps them to Rio's exact
 SHIFT/CTRL/ALT/SUPER bit layout. Rio callbacks only touch thread-safe bridge
 state.
 
+Rio's negotiated Kitty keyboard flags and xterm `modifyOtherKeys` level are
+read from the live session for every keypress. Cuetty encodes the characters,
+modifiers, named keys, and repeat events its GPUI event can represent; it no
+longer turns a shell's protocol negotiation into a terminal-wide error. Key
+release, keypad identity, alternate-key reporting, and IME commit events remain
+explicit qualification gaps.
+
 ## Run
 
 On macOS with Rust and Apple's Metal Toolchain installed:
