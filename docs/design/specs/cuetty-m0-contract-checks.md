@@ -37,32 +37,37 @@ by the ordinary test suite. Run them with
 `cargo test real_session -- --ignored` in the app-local development environment.
 They cover final output and raw exit status, post-exit operation rejection,
 actual key ingress, plain/bracketed paste, and grid/child resize agreement.
-They do not yet prove the close/hold cleanup scenario below.
+The current suite also includes a bounded close/hold reap assertion and an
+authoritative-history navigation fixture.
 
-## Lifecycle qualification: blocked
+## Lifecycle and final-output qualification
 
-At the ADR qualification revision
+At the original ADR qualification revision
 `7ae087500bcde5c0c9f09cb9c50382e9220b3360`, source inspection found a Rio-core
 lifecycle defect: [`Pty::next_child_event`](https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/teletypewriter/src/unix/mod.rs)
 reaps an exited child with `waitpid`, while the same file's `Child::drop`
 unconditionally sends `SIGHUP` to its saved numeric PID later. If that PID has
 been recycled before destruction, the signal could target a different process.
-This is a source-level race finding, not an observed recycled-PID incident.
+This was a source-level race finding, not an observed recycled-PID incident.
 
 Additionally, shutting down the reader before natural child exit leaves no
 reader event loop to reap the child after `Child::drop` sends `SIGHUP`.
 [`Machine`](https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs)
 keeps its PTY private and exposes no public disarm or owned-child teardown
 operation. A workaround that intentionally leaked child allocations was
-rejected. Cuetty requests reader shutdown and joins off the UI thread, but
-does not claim safe bounded child cleanup. M0 lifecycle qualification is
-**blocked**, not merely unvalidated, until the Rio ownership contract is fixed
-and the hold/exit/reap regression tests pass. This checkout is not ready to
-replace the user's default terminal.
+rejected.
+
+Cuetty now pins `b0694c0707a90dc93fdf01cbf8a658424be285ee` from
+[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927). That revision gives
+the PTY owner an idempotent shutdown operation, retires reaped PIDs before any
+signal, escalates from SIGHUP after a bounded grace period, and waits to reap.
+Cuetty requests shutdown and joins the returned machine off the GPUI thread.
+The `real_session_close_eventually_reaps_the_child` fixture observes that the
+owned child disappears within its five-second test bound.
 
 ### Final-output delivery regression
 
-Supplemental Linux PTY validation also observed a child exit successfully
+Supplemental Linux PTY validation on the original revision also observed a child exit successfully
 while its final output was absent from the terminal grid. The controlled
 reproducer uses a first session, so prior-session cleanup or PID recycling
 is not necessary to trigger it:
@@ -73,7 +78,7 @@ is not necessary to trigger it:
 3. Release the lock and observe `ChildExited` with exit code 0 and `Close`.
 4. Require the final grid to contain `M0-BYTES:616263`.
 
-The expected text was missing in the controlled validation run. Inspection of
+The expected text was missing in that controlled validation run. Inspection of
 [`Machine::pty_read`](https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs)
 shows a compatible failure mechanism: bytes buffered while the terminal lock
 is unavailable can be discarded if the next read returns an error such as
@@ -81,12 +86,11 @@ Linux PTY `EIO`, before those buffered bytes reach the parser. The missing
 output is observed; that source-level mechanism is the current diagnosis,
 not a PID-reuse claim.
 
-The ignored host test
-`known_upstream_regression_final_output_survives_snapshot_lock_contention`
-preserves this regression. Run it explicitly with
-`cargo test known_upstream_regression_final_output_survives_snapshot_lock_contention -- --ignored`.
-It asserts the correct output contract and is expected to fail on the affected
-revision; it does not use `should_panic` or count reproduction as a pass.
+The ordinary host test
+`final_output_survives_snapshot_lock_contention` preserves this regression.
+It passes at the pinned PR revision on Apple Silicon macOS and remains in the
+default suite so a future dependency update cannot silently reintroduce the
+loss. It does not use `should_panic` or count reproduction as a pass.
 All host PTY tests share a test-only serialization guard to avoid unrelated
 parallel process-notification interference. Final-output delivery remains an
 M0 blocker, and passing pure encoders or an isolated paste probe does not

@@ -32,10 +32,10 @@ persistence contracts are also more mature than the live product shell.
 
 | Area | Current state | What blocks daily use |
 | --- | --- | --- |
-| Shell, resize, ANSI colour, tabs | Working proof of concept | Needs macOS acceptance and regression coverage. |
+| Shell, resize, ANSI colour, tabs | Working proof of concept with an interactive macOS shell/history smoke pass | Needs the real-workload acceptance corpus and broader regression coverage. |
 | Text model | Complete backend cluster text, wide-cell placeholders, and observed cursor state | New direct-Rio path needs executable and macOS validation; full Unicode and IME acceptance remain open. |
 | Input protocol | Direct-host input and mode-aware bracketed-paste encoding in source; local selection | Executable compatibility checks remain; mouse, keypad, focus and advanced keyboard integration are not qualified. |
-| Scrollback and search | A pure buffer exists; the live UI searches only the visible frame | No full-history scrolling or search. |
+| Scrollback and search | Rio-owned wheel/keyboard history navigation is live; the UI searches only the visible frame | No selection/search across history or scrollbar. |
 | Tabs and splits | Each tab owns a live session; the pure layout model supports splits | Split shortcuts are intentionally rejected because session allocation is not wired. |
 | Settings | Font size and line-height controls are session-only | No durable configuration, font validation, theme selection, or stable working-directory policy. |
 | Distribution | Development bundle with ad-hoc signing and a local launch check | No signed/notarized release, installer, update path, or release-quality macOS CI. |
@@ -158,6 +158,33 @@ destinations remain open qualification items. The existing `librio` baseline
 is a comparison requirement, not evidence that a dual-backend regression
 run has happened. No daily-driver or full Unicode acceptance is claimed.
 
+#### Implementation checkpoint: 10 September 2026
+
+Cuetty is pinned to `b0694c0707a90dc93fdf01cbf8a658424be285ee`, the
+head of [Rio PR #1927](https://github.com/raphamorim/rio/pull/1927). The change
+fixes the two Rio-owned blockers found at the earlier qualification revision:
+buffered final output now survives terminal-lock contention, and Unix PTY
+shutdown retires/reaps the owned child without signalling a recycled PID.
+
+On Apple Silicon macOS, the formerly failing contention regression and the
+serial real-PTY input, paste, resize, final-output/exit-status, and bounded-reap
+fixtures pass. This is focused capability evidence, not the complete M0 gate:
+the real-workload corpus, mouse/focus/keypad protocols, hyperlinks, IME, and the
+retained librio control comparison remain open.
+
+Rio-owned history navigation is now wired through `TerminalSession` to
+wheel/trackpad scrolling and Shift-Page Up/Down or Shift-Home/End. A real-PTY
+fixture proves navigation to retained history and back to the live viewport.
+Selection and literal search still address only one sampled viewport, so a
+viewport move clears their coordinates rather than silently copying or
+highlighting different text.
+
+The ad-hoc-signed app bundle also launched into a visible shell. Direct command
+input produced output, Shift-Page Up reached older output, Shift-End returned to
+the live viewport, and subsequent input still rendered. This is a synthetic UI
+smoke check, not evidence for SSH, a full-screen editor, `fzf`, or a Kubernetes
+or coding-agent TUI.
+
 **Exit gate:** the project has a pinned engine whose public surface can support
 the M1 contract, plus a migration test that proves the existing PTY, frame, and
 close semantics still work.
@@ -174,7 +201,7 @@ contracts before product-shell work depends on them.
   Source now preserves cell width, continuation state, styles, wrapping, and
   cursor position without leaking Rio types into GPUI; hyperlink destinations
   and executable/macOS acceptance are still outstanding.
-- [ ] Give scrollback one authoritative owner. The renderer should receive a
+- [x] Give scrollback one authoritative owner. The renderer should receive a
   viewport over terminal history, not reconstruct a second transcript from
   painted frames. This is essential for alternate screens, reflow, selection,
   and search.

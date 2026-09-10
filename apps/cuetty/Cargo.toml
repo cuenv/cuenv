@@ -17,7 +17,9 @@ gpui-component = "0.5.1"
 notify = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Public Rust terminal core, pinned to the ADR-0010 qualification baseline.
-rio-vt = { git = "https://github.com/raphamorim/rio", rev = "7ae087500bcde5c0c9f09cb9c50382e9220b3360" }
+# Public Rust terminal core, pinned to the reviewed PTY lifecycle fix from
+# https://github.com/raphamorim/rio/pull/1927.
+rio-vt = { git = "https://github.com/rawkode/rio", rev = "b0694c0707a90dc93fdf01cbf8a658424be285ee" }
 
 [dev-dependencies]
+libc = "0.2.189"

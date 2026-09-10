@@ -1,11 +1,12 @@
 # Cuetty
 
 Cuetty is a deliberately narrow, usable GPUI terminal host for Cuenv. It is
-built around the pinned Rio engine revision `b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`.
+built around Rio revision `b0694c0707a90dc93fdf01cbf8a658424be285ee`, pinned
+from [Rio PR #1927](https://github.com/raphamorim/rio/pull/1927) for lossless
+final-output draining and ownership-safe Unix PTY teardown.
 
-The pin is intentional: it is the historical Rio frontend revision whose
-public surface snapshot Cuetty adapts. Upgrade it only with a terminal
-correctness and live-interaction validation pass.
+The pin is intentional. Upgrade it only with a terminal correctness and
+live-interaction validation pass.
 
 ```text
 Rio PTY + VT state
@@ -34,7 +35,9 @@ The window starts the default login shell. Click the terminal (mouse-down
 focuses it), type a command,
 and resize the window. `Command-V` pastes through GPUI's clipboard. OSC 52
 clipboard writes are applied on the GPUI thread. Closing the window drops the
-surface exactly once and closes the child shell.
+surface exactly once and closes the child shell. Wheel or trackpad scrolling
+moves through Rio's authoritative history; Shift-Page Up/Down and
+Shift-Home/End provide keyboard navigation.
 
 ## Verification
 
@@ -72,10 +75,10 @@ The focused label and cursor follow GPUI's current focus handle, including blur.
 Rio
 colour semantics (default, indexed, RGB, bold, dim, inverse, and hidden) stay
 in `TerminalFrame` until the renderer resolves them through the theme.
-The pinned Rio public snapshot exposes cursor position but not cursor shape or
-visibility, so the renderer applies an explicit focused host-default block
-policy only when the adapter reports `Known::Unknown`; it clips positions at
-render time. Underlines are host approximations: single and double use distinct
+The pinned Rio public snapshot exposes cursor position, shape, and visibility.
+The renderer retains an explicit focused host-default block policy only when
+the adapter reports `Known::Unknown`; it clips positions at render time.
+Underlines are host approximations: single and double use distinct
 thicknesses, curly is wavy, and dotted/dashed currently collapse to a solid
 underline.
 
@@ -95,9 +98,11 @@ This POC exposes one GPUI terminal surface per tab, with an independent live
 Rio session behind each tab. Cmd-T creates a new session; Cmd-W closes only the
 active tab/session and closes the window when it is the final tab. Cmd-D and
 Cmd-Shift-D report that split panes are unavailable; they never create a fake
-terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse selection
-and the current literal visible-frame search hit are painted directly over the
-terminal grid; Cmd-C copy and paste are live too. It does not yet have live workspace restore,
+terminal pane. Cmd-[ / Cmd-] remain reserved for future pane traversal. Mouse
+selection and the current literal visible-frame search hit are painted directly
+over the terminal grid; Cmd-C copy and paste are live too. Rio-owned scrollback
+is live, but selection and search are cleared when the viewport moves because
+their coordinates are still visible-frame-only. It does not yet have live workspace restore,
 plugin runtime, Kitty graphics, ligatures, or complete IME/non-Latin
 composition. Workspace persistence has a bounded versioned codec and atomic
 file store, but live restore and Rio session reconnect are not wired into the
@@ -107,10 +112,9 @@ and shapes adjacent compatible cells as fixed-width text batches. Renderer cell
 width is measured from the selected font, while line height follows the explicit
 16px/1.2 presentation contract; both are snapped once to shared device-pixel
 cell dimensions used by painting and Rio resizing. The current Rio public
-snapshot adapter still exposes one `char` per visible cell. Wide-cell occupancy
-and wrapped placeholders are preserved, but complete combining-mark/ZWJ
-cluster, hyperlink, cursor-mode, and emoji presentation correctness is
-deliberately not claimed.
+snapshot adapter preserves backend-declared cluster text, wide-cell occupancy,
+and wrapped placeholders. Complete IME, ZWJ shaping, hyperlink, and emoji
+presentation correctness is deliberately not claimed.
 
 The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
 frames the rail, Base fills the terminal, and the complete ANSI palette follows

@@ -1,0 +1,48 @@
+Cuetty M0 focused validation on Apple Silicon macOS
+Date: 2026-09-10
+Platform: Darwin 27.0.0 arm64
+Rio revision: b0694c0707a90dc93fdf01cbf8a658424be285ee
+
+Command: cargo test --locked
+Rust: rustc 1.97.0 (2d8144b78 2026-07-07)
+Exit: 0
+Result: 162 unit tests passed, 6 explicitly ignored real-PTY tests; 4 rio_vt_contract tests passed.
+The formerly ignored final_output_survives_snapshot_lock_contention regression passed in the ordinary suite.
+
+Command: cargo test --locked -- --ignored --test-threads=1
+Rust: rustc 1.97.0 (2d8144b78 2026-07-07)
+Exit: 0
+Result: 6 real-PTY tests passed serially. The suite covered bounded child reaping, input,
+bracketed paste, resize, final output plus exit status, and Rio-owned history navigation.
+
+Command: cargo clippy --locked --all-targets --all-features -- -D warnings
+Rust: rustc 1.97.0 (2d8144b78 2026-07-07)
+Exit: 0
+Result: no Cuetty Clippy diagnostics. Cargo reported future-incompatibility notices for
+the transitive block 0.1.6 and proc-macro-error2 2.0.1 packages.
+
+Command: nix build .#checks.aarch64-darwin.cuetty-test -L --accept-flake-config
+Rust: repository-pinned rustc 1.98.1
+Exit: 0
+Result: the Nix-packaged app test gate passed with 162 ordinary unit tests and 4 public
+rio-vt contract tests; the 6 real-PTY tests remained explicitly ignored by this gate.
+
+Command: nix build .#checks.aarch64-darwin.cuetty-clippy -L --accept-flake-config
+Rust: repository-pinned rustc 1.98.1
+Exit: 0
+Result: the Nix-packaged all-target, all-feature Clippy gate passed with warnings denied.
+
+Command: nix build .#checks.aarch64-darwin.cuetty-fmt -L --accept-flake-config
+Rust: repository-pinned rustfmt 1.98.1
+Exit: 0
+Result: the Nix-packaged formatting gate passed.
+
+Command: TOOLCHAINS=com.apple.dt.toolchain.Metal.32023.917.2 apps/cuetty/script/build_and_run.sh --verify
+Exit: 0
+Result: the release binary built, the app bundle was ad-hoc signed and verified, and LaunchServices
+kept the process alive through the scripted launch check before the script terminated it.
+
+Manual UI smoke: launched the same bundle, entered harmless printf/echo commands, produced a long
+transcript, navigated to older output with Shift-Page Up, returned with Shift-End, and entered another
+command. The Cuetty window visibly rendered the shell output. This did not exercise SSH, editors,
+fzf, Kubernetes/coding-agent TUIs, OSC 52, resize correctness, or IME composition.
