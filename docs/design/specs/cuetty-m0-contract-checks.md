@@ -96,6 +96,13 @@ parallel process-notification interference. Final-output delivery remains an
 M0 blocker, and passing pure encoders or an isolated paste probe does not
 qualify the corresponding end-to-end PTY behavior.
 
+The host also has deterministic coverage for a shell negotiating Kitty
+disambiguation and xterm `modifyOtherKeys`: live Rio mode state drives the
+bytes sent back through the PTY, and negotiation no longer becomes a fatal pane
+error. This validates only the GPUI-representable keypress/modifier/named-key/
+repeat subset; release events, keypad identity, alternate keys, and IME remain
+outside that claim.
+
 ### Repair boundary and next engineering action
 
 The following API-boundary review is against the exact qualification revision

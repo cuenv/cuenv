@@ -83,9 +83,11 @@ an ignored test ran. Failed executions use `fail` with an attributed `gap_owner`
 Promotion requires all M0-required scopes to be verified, including the retained
 `librio` comparison and real Apple Silicon corpus. Current host gaps include
 colour queries, focus/mouse routing, keypad identity, hyperlink destinations,
-selection/search across history, and IME. Extended keyboard and Kitty graphics remain
-explicitly unqualified and cannot be advertised as implemented. Unsupported
-Cuetty host or renderer work alone does not disqualify Rio.
+selection/search across history, and IME. The representable Kitty and
+`modifyOtherKeys` subset is implemented and fixture-tested, while key releases
+and alternate-key reporting remain unqualified. Kitty graphics remains
+unsupported. Unsupported Cuetty host or renderer work alone does not disqualify
+Rio.
 
 See the [daily-driver roadmap](/explanation/cuetty-daily-driver-roadmap/) and
 [ADR-0010](/decisions/adrs/adr-0010-cuetty-direct-rio-vt-integration/) for the goal,

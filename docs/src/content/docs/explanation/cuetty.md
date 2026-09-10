@@ -114,8 +114,10 @@ support:
 Earlier implementation work recorded focused Rust validation and macOS bundle
 verification. Those results do not validate the new direct-`rio-vt` migration:
 app compilation, the real PTY lifecycle suite, and an Apple Silicon smoke run
-are still required for this change. IME, focus reporting, application keypad,
-advanced keyboard behaviour, and hyperlinks remain qualification items.
+are still required for this change. The GPUI-representable Kitty and
+`modifyOtherKeys` subset now has deterministic coverage; IME, focus reporting,
+application keypad identity, key releases, alternate-key reporting, and
+hyperlinks remain qualification items.
 Human visual and input acceptance remains a separate caveat:
 the terminal must still be exercised interactively for font metrics, line
 spacing, selection, search focus, clipboard behaviour, resize, and shell
