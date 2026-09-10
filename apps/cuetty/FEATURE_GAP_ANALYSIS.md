@@ -19,12 +19,14 @@ Cuetty currently has:
   focused live shell behavior.
 - A resizable vertical tab rail (50px compact to 280px expanded), session-only
   Settings with Apply/Cancel/Reset, and a native Quit/Cmd-Q action.
-- Static validation plus a signed macOS bundle check and a local process-launch
-  check; direct interactive input still needs a human visual pass.
+- Static validation plus a signed macOS bundle check, local process launch, and
+  a direct interactive shell/history smoke pass. The real daily-workload corpus
+  still needs human acceptance.
 
-The known live-UI limits are one codepoint per snapshot cell, no complete
-combining/emoji model and no live scrollback history UI. Mouse selection/Cmd-C
-copy and literal visible-frame search are live,
+The known live-UI limits are incomplete IME/emoji presentation and
+visible-frame-only selection/search coordinates. Rio-owned scrollback is live
+through wheel/trackpad and keyboard navigation. Mouse selection/Cmd-C copy and
+literal visible-frame search are live,
 including grid-painted selection and current-match overlays;
 the GPUI shell creates independent local Rio sessions for tabs. Split actions
 remain rejected; the product never renders a fake pane. Pure persistence,
@@ -38,11 +40,11 @@ behind replaceable traits.
 | PTY + ANSI/VT engine | Rio adapter; working | Alacritty-based runtime | Alacritty-based runtime | Keep Rio |
 | Fixed-grid rendering | Custom GPUI element; live verified | Custom element, batches, damage cache | Custom element, batches, cache | Done; add regressions |
 | Cell width/line metrics | Explicit font/line contract; snapped once | Configurable multiplier and measured advance | Configurable multiplier and measured advance | P0 |
-| Unicode width/combining | Not complete; one `char` per cell | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
-| Cursor and terminal modes | Host block cursor; basic keys | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
+| Unicode width/combining | Backend cluster text and wide occupancy preserved; IME/emoji rendering incomplete | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
+| Cursor and terminal modes | Cursor shape/visibility and application cursor keys observed; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
 | Damage and render cache | Coalesced wakeups; full-frame paint | Dirty spans and shaped-line cache | Damage-aware batched rendering | P0 |
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
-| Scrollback and selection | Live selection; scrollback remains a pure model | Present | Present | P1 |
+| Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
 | Fonts, themes, configuration | Initial explicit stack/theme | Configurable themes, keybindings, fonts | Settings, themes, zoom, shell choice | P1 |
 | Tabs, splits, focus navigation | Independent local Rio tabs; resizable 50px compact rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
@@ -75,8 +77,8 @@ Linux, and a live resize plus Unicode probe has visual evidence.
 
 ### P1 — usable daily terminal
 
-1. Wire the pure scrollback state and selection model into GPUI without
-   duplicating Rio VT history.
+1. Extend selection and search across Rio's authoritative history without
+   duplicating terminal state.
 2. Wire copy, paste, selection export, and literal search into the live surface
    (regex remains a later capability).
 3. Move font, theme, line height, cursor, and keybindings into a serializable

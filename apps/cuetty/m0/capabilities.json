@@ -9,12 +9,17 @@
         "app_go_enabled_retry",
         "app_cargo_check",
         "app_all_target_clippy",
-        "app_fmt_check"
+        "app_fmt_check",
+        "macos_app_tests",
+        "macos_app_clippy",
+        "macos_nix_app_tests",
+        "macos_nix_app_clippy",
+        "macos_nix_app_fmt"
       ],
       "gap_owner": "validation",
       "id": "public_api_build",
-      "notes": "Full-app Rust typechecking and all-target Clippy passed with verified Rust 1.98.1 and task-scoped Go, including GPUI/cuengine. Full-app test execution is still blocked by missing native xcb/xkbcommon/xkbcommon-x11 link libraries. Initial missing-Go attempts are historical. Cargo reports an upstream proc-macro-error2 2.0.1 future-incompatibility notice. Nix gates and target macOS build/runtime remain unproven.",
-      "outcome": "unobservable",
+      "notes": "The complete app compiled, linked, and ran 162 unit tests plus 4 public rio-vt contract tests on Apple Silicon macOS at the current Rio revision. All-target, all-feature Clippy passed with warnings denied. Earlier Linux build blockers are retained as historical runs against the old revision. Cargo reports transitive future-incompatibility notices for block and proc-macro-error2.",
+      "outcome": "pass",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -22,18 +27,19 @@
           "symbol": "impl TerminalSession for RioTerminalSession"
         }
       ],
-      "status": "blocked_by_environment"
+      "status": "verified"
     },
     {
       "execution_ids": [
         "headless_actual_modules",
         "headless_real_pty_parallel",
-        "headless_real_pty_serial"
+        "headless_real_pty_serial",
+        "macos_real_pty_serial"
       ],
       "gap_owner": "validation",
       "id": "pty_output_resize",
-      "notes": "Real-session fixtures cover output and grid/child resize. Ignored PTY tests must be explicitly executed. Supplemental actual-module Linux unit/contract checks passed; this is not full requirement or macOS qualification. Real-PTY resize passed in the mixed failing test runs; final-output delivery fails separately.",
-      "outcome": "unobservable",
+      "notes": "The explicit serial real-PTY suite passed on Apple Silicon macOS at the current Rio revision, including output and grid/child resize. Historical Linux executions against the old pin are retained separately.",
+      "outcome": "pass",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -48,7 +54,7 @@
           "path": "apps/cuetty/tests/fixtures/m0-pty-child.sh"
         }
       ],
-      "status": "implemented_partially_validated"
+      "status": "verified"
     },
     {
       "execution_ids": [
@@ -56,12 +62,14 @@
         "headless_real_pty_serial",
         "headless_pair_repetition",
         "headless_forced_contention",
-        "repository_contention_regression"
+        "repository_contention_regression",
+        "macos_app_tests",
+        "macos_real_pty_serial"
       ],
-      "gap_owner": "rio_pty_integration_cause_inferred",
+      "gap_owner": "validation",
       "id": "final_output_child_status",
-      "notes": "Observed on Linux: repeated bracketed session and first raw forced-contention session exited status 0 with Close, but final M0-BYTES output was absent from snapshots. Other natural-exit fixtures passed; delivery is not reliable. Source-backed inference, not instrumented branch proof: Machine::pty_read may discard locally buffered bytes when terminal try_lock fails and a subsequent read returns Linux EIO. This failure does not require previous-session teardown or PID reuse. The repository-owned ignored regression also executed through the harness and failed after its child-exit-code-zero assertion passed, reproducing missing final output.",
-      "outcome": "fail",
+      "notes": "Rio PR #1927 preserves buffered PTY bytes through terminal-lock contention and drains them before publishing Close. The formerly failing contention regression now passes in the ordinary macOS suite, and the explicit real-PTY test preserves final output plus exit status. Old-pin Linux failures remain as historical executions.",
+      "outcome": "pass",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -70,26 +78,19 @@
         },
         {
           "path": "apps/cuetty/src/terminal/host.rs",
-          "symbol": "known_upstream_regression_final_output_survives_snapshot_lock_contention"
+          "symbol": "final_output_survives_snapshot_lock_contention"
         }
       ],
-      "status": "blocked_by_observed_failure",
-      "upstream_evidence": [
-        {
-          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs",
-          "symbols": [
-            "Machine::pty_read",
-            "try_lock_unfair"
-          ]
-        }
-      ]
+      "status": "verified"
     },
     {
-      "execution_ids": [],
-      "gap_owner": "rio_teletypewriter_lifecycle",
+      "execution_ids": [
+        "macos_real_pty_serial"
+      ],
+      "gap_owner": "validation",
       "id": "bounded_teardown",
-      "notes": "Known source-level blocker in the pinned Rio teletypewriter dependency, not the VT parser: Pty::next_child_event reaps with waitpid, while Child::drop later unconditionally sends SIGHUP to the stored PID. A recycled PID could theoretically receive that signal. Shutdown also drops the child without a guaranteed reap. Public ownership APIs provide no disarm path; a leaking workaround was rejected. No executable race reproduction has run, so outcome remains unobservable rather than fail. Safe teardown requires an upstream ownership fix or a reviewed ownership adapter before promotion.",
-      "outcome": "unobservable",
+      "notes": "Rio PR #1927 provides an ownership-safe, idempotent bounded shutdown and reap path. Cuetty's explicit real-PTY test closes twice and observes the child PID become unavailable within five seconds on Apple Silicon macOS.",
+      "outcome": "pass",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -97,23 +98,7 @@
           "symbol": "fn close(&mut self)"
         }
       ],
-      "status": "blocked_by_rio_core",
-      "upstream_evidence": [
-        {
-          "symbols": [
-            "Child::waitpid",
-            "Child::drop",
-            "Pty::next_child_event"
-          ],
-          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/teletypewriter/src/unix/mod.rs"
-        },
-        {
-          "symbols": [
-            "Msg::Shutdown"
-          ],
-          "url": "https://github.com/raphamorim/rio/blob/7ae087500bcde5c0c9f09cb9c50382e9220b3360/rio-vt/src/performer/mod.rs"
-        }
-      ]
+      "status": "verified"
     },
     {
       "execution_ids": [
@@ -166,10 +151,13 @@
       "status": "implemented_partially_validated"
     },
     {
-      "execution_ids": [],
+      "execution_ids": [
+        "macos_app_tests",
+        "macos_real_pty_serial"
+      ],
       "gap_owner": "cuetty_host",
       "id": "native_history_selection_search",
-      "notes": "Snapshot exposes viewport offset, but native history navigation, eviction/reflow coordinates, selection and search are not qualified through TerminalSession. Visible-frame local search is not native history search.",
+      "notes": "TerminalSession now scrolls Rio's authoritative history by lines, pages, or endpoints; mouse-wheel and Shift-PageUp/PageDown/Home/End are wired, and an explicit real-PTY fixture verifies top/bottom navigation. Selection and search remain visible-frame-only and are cleared when the viewport changes; full-history selection/search are not qualified.",
       "outcome": "unobservable",
       "required_for_m0": true,
       "source_evidence": [
@@ -182,7 +170,7 @@
           "symbol": "pub trait TerminalSession"
         }
       ],
-      "status": "unsupported"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [
@@ -226,12 +214,13 @@
         "headless_real_pty_parallel",
         "headless_real_pty_serial",
         "headless_pair_repetition",
-        "headless_forced_contention"
+        "headless_forced_contention",
+        "macos_real_pty_serial"
       ],
-      "gap_owner": "rio_pty_integration_cause_inferred",
+      "gap_owner": "validation",
       "id": "bracketed_paste",
-      "notes": "Encoder unit tests passed, and diagnostics observed active BRACKETED_PASTE with the exact 15-byte framed abc payload. End-to-end fixture failed to retain its final output despite child exit status 0. Marked fail for observable round-trip delivery, not evidence of wrong encoding. Suspected lock/EIO loss is described under final_output_child_status.",
-      "outcome": "fail",
+      "notes": "The explicit serial real-PTY suite passed the bracketed-paste round trip on Apple Silicon macOS at the current Rio revision. Encoder unit tests also preserve text and prevent terminator injection. Old-pin Linux delivery failures remain as historical executions.",
+      "outcome": "pass",
       "required_for_m0": true,
       "source_evidence": [
         {
@@ -243,7 +232,7 @@
           "symbol": "real_session_paste_obeys_live_bracketed_mode"
         }
       ],
-      "status": "blocked_by_observed_failure"
+      "status": "verified"
     },
     {
       "execution_ids": [],
@@ -436,8 +425,8 @@
   },
   "engine": {
     "package": "rio-vt",
-    "repository": "https://github.com/raphamorim/rio",
-    "revision": "7ae087500bcde5c0c9f09cb9c50382e9220b3360",
+    "repository": "https://github.com/rawkode/rio",
+    "revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
     "rust_toolchain": "1.98.1"
   },
   "executions": [
@@ -609,6 +598,84 @@
       "result": "passed",
       "scope": "App formatting check passed with no output after source-owner rustfmt.",
       "log_path": "apps/cuetty/m0/evidence/2026-09-07-linux-validation.txt"
+    },
+    {
+      "id": "macos_app_tests",
+      "command": "cargo test --locked",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.97.0",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "162 ordinary unit tests and 4 public rio-vt contract tests passed; 6 explicitly ignored real-PTY tests did not run in this command.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_real_pty_serial",
+      "command": "cargo test --locked -- --ignored --test-threads=1",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.97.0",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "6 real-PTY tests passed serially: child reaping, input, bracketed paste, resize, final output plus status, and authoritative Rio history navigation.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_app_clippy",
+      "command": "cargo clippy --locked --all-targets --all-features -- -D warnings",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.97.0",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "All-target, all-feature Cuetty Clippy passed with warnings denied; transitive future-incompatibility notices remain recorded separately.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_nix_app_tests",
+      "command": "nix build .#checks.aarch64-darwin.cuetty-test -L --accept-flake-config",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "Nix-packaged Cuetty test gate passed 162 ordinary unit tests and 4 public rio-vt contract tests; real-PTY tests remained explicitly ignored.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_nix_app_clippy",
+      "command": "nix build .#checks.aarch64-darwin.cuetty-clippy -L --accept-flake-config",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "Nix-packaged all-target, all-feature Cuetty Clippy passed with warnings denied.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_nix_app_fmt",
+      "command": "nix build .#checks.aarch64-darwin.cuetty-fmt -L --accept-flake-config",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.98.1",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-10",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "Nix-packaged Cuetty formatting gate passed.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
     }
   ],
   "format_version": 1,

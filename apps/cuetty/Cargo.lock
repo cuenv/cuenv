@@ -1037,7 +1037,7 @@ checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 [[package]]
 name = "corcovado"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 dependencies = [
  "libc",
  "miow 0.5.0",
@@ -1329,6 +1329,7 @@ dependencies = [
  "cuengine",
  "gpui",
  "gpui-component",
+ "libc",
  "notify 8.2.0",
  "rio-vt",
  "serde",
@@ -4902,7 +4903,7 @@ dependencies = [
 [[package]]
 name = "rio-grapheme-width"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 dependencies = [
  "phf 0.13.1",
  "ucd-trie",
@@ -4911,7 +4912,7 @@ dependencies = [
 [[package]]
 name = "rio-graphics"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 dependencies = [
  "rustc-hash 2.1.3",
  "tracing",
@@ -4921,12 +4922,12 @@ dependencies = [
 [[package]]
 name = "rio-unicode"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 
 [[package]]
 name = "rio-vt"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 dependencies = [
  "base64 0.23.1",
  "bitflags 2.13.1",
@@ -6016,7 +6017,7 @@ dependencies = [
 [[package]]
 name = "teletypewriter"
 version = "0.5.27"
-source = "git+https://github.com/raphamorim/rio?rev=7ae087500bcde5c0c9f09cb9c50382e9220b3360#7ae087500bcde5c0c9f09cb9c50382e9220b3360"
+source = "git+https://github.com/rawkode/rio?rev=b0694c0707a90dc93fdf01cbf8a658424be285ee#b0694c0707a90dc93fdf01cbf8a658424be285ee"
 dependencies = [
  "corcovado",
  "dirs 6.0.0",

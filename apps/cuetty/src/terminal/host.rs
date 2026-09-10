@@ -45,11 +45,23 @@ pub trait TerminalSession: Send {
     fn resize(&mut self, width: u32, height: u32, cell: CellSize) -> Result<(), String>;
     fn input(&mut self, event: TerminalKeyEvent) -> Result<bool, String>;
     fn paste(&mut self, text: &str) -> Result<(), String>;
+    fn scroll(&mut self, action: TerminalScroll) -> Result<(), String>;
     fn frame(&mut self) -> TerminalFrame;
     /// OSC 7 directory, with a foreground-process fallback while the PTY is open.
     fn working_directory(&self) -> Option<String>;
     fn drain_effects(&self) -> Vec<ControlEvent>;
     fn close(&mut self) -> Result<(), String>;
+}
+
+/// Backend-neutral movement through the terminal engine's authoritative
+/// history. Positive line deltas move toward older output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalScroll {
+    Lines(i32),
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
 }
 
 /// Explicit spawn configuration permits deterministic, GUI-free PTY tests.
@@ -330,6 +342,20 @@ impl TerminalSession for RioTerminalSession {
         self.write(bytes)
     }
 
+    fn scroll(&mut self, action: TerminalScroll) -> Result<(), String> {
+        self.ensure_open()?;
+        let action = match action {
+            TerminalScroll::Lines(lines) => Scroll::Delta(lines),
+            TerminalScroll::PageUp => Scroll::PageUp,
+            TerminalScroll::PageDown => Scroll::PageDown,
+            TerminalScroll::Top => Scroll::Top,
+            TerminalScroll::Bottom => Scroll::Bottom,
+        };
+        self.terminal.lock().scroll_display(action);
+        self.listener.bridge.wake();
+        Ok(())
+    }
+
     fn frame(&mut self) -> TerminalFrame {
         let token = next_sampling_token(&mut self.next_sampling_token);
         let mut terminal = self.terminal.lock();
@@ -379,13 +405,12 @@ impl TerminalSession for RioTerminalSession {
         {
             let _ = writer.send(Msg::Shutdown);
         }
-        // Own the returned Machine until its PTY is dropped without joining
-        // on the UI thread. Teletypewriter sends the shell SIGHUP on drop;
-        // this does not guarantee termination of every descendant process.
-        // M0 BLOCKER at the pinned Rio revision: Child::drop unconditionally
-        // signals its numeric PID even after Machine has waitpid-reaped it,
-        // and shutdown before natural exit does not reap the child. Rio needs
-        // a public, ownership-safe teardown contract before daily-driver use.
+        // Own the returned Machine until its PTY has completed Rio's bounded
+        // shutdown and reap path, without joining on the GPUI thread. The
+        // pinned PR #1927 lifecycle fix retires reaped PIDs before signalling
+        // and escalates a running child from SIGHUP to SIGKILL after its grace
+        // period. This does not guarantee termination of every descendant
+        // process which independently detached from the PTY session.
         std::thread::spawn(move || {
             let _ = io_thread.join();
         });
@@ -494,17 +519,7 @@ mod tests {
             frame
                 .validate()
                 .expect("PTY output must produce a valid frame");
-            let text = frame
-                .rows
-                .iter()
-                .map(|row| {
-                    row.cells
-                        .iter()
-                        .filter_map(|cell| cell.text.as_deref())
-                        .collect::<String>()
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            let text = frame_text(&frame);
             if text.contains(expected) {
                 return;
             }
@@ -514,6 +529,20 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    fn frame_text(frame: &TerminalFrame) -> String {
+        frame
+            .rows
+            .iter()
+            .map(|row| {
+                row.cells
+                    .iter()
+                    .filter_map(|cell| cell.text.as_deref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -662,8 +691,31 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[ignore = "known upstream Rio PTY final-output regression; see cuetty-m0-contract-checks.md"]
-    fn known_upstream_regression_final_output_survives_snapshot_lock_contention() {
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_scrolls_authoritative_history_and_returns_to_bottom() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["history"]);
+        wait_for_text(&mut session, "M0-READY");
+
+        session
+            .scroll(TerminalScroll::Top)
+            .expect("history should scroll to the oldest retained row");
+        let top = session.frame();
+        assert!(frame_text(&top).contains("M0-HISTORY-01"));
+        assert!(top.viewport_offset.is_some_and(|offset| offset > 0));
+
+        session
+            .scroll(TerminalScroll::Bottom)
+            .expect("history should return to the live viewport");
+        let bottom = session.frame();
+        assert!(frame_text(&bottom).contains("M0-READY"));
+        assert_eq!(bottom.viewport_offset, Some(0));
+        session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn final_output_survives_snapshot_lock_contention() {
         use std::os::unix::process::ExitStatusExt;
         let _serial = serial_pty_test();
         let mut session = fixture(&["raw", "3"]);
@@ -703,5 +755,35 @@ mod tests {
         // this ignored regression must become green when Rio fixes the loss.
         wait_for_text(&mut session, "M0-BYTES:616263");
         session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_close_eventually_reaps_the_child() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["hold"]);
+        wait_for_text(&mut session, "M0-READY");
+        let pid = session.shell_pid as libc::pid_t;
+
+        session
+            .close()
+            .expect("close should begin bounded teardown");
+        session
+            .close()
+            .expect("repeated close should remain idempotent");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let result = unsafe { libc::kill(pid, 0) };
+            if result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "PTY child {pid} was not reaped after close"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 }

@@ -340,15 +340,15 @@ impl TerminalCapabilities {
     }
 
     /// Capabilities of Cuetty's pinned direct-Rio session adapter, not of all
-    /// Rio core APIs. History exists in Rio, but the session trait does not
-    /// yet expose scrolling or history access to the host.
+    /// Rio core APIs. Scrolling is owned by Rio's authoritative history; the
+    /// frame exposes only the currently selected viewport.
     pub const fn rio_pinned() -> Self {
         Self {
             wide_cell_occupancy: Capability::Supported,
             soft_wrap: Capability::Supported,
             row_dirtiness: Capability::Supported,
             viewport_offset: Capability::Supported,
-            scrollback: Capability::Unsupported,
+            scrollback: Capability::Supported,
             title_actions: Capability::Supported,
             bell_actions: Capability::Supported,
             combining_clusters: Capability::Supported,
@@ -583,7 +583,7 @@ mod tests {
     fn direct_session_declares_only_exposed_mode_support() {
         let capabilities = TerminalCapabilities::rio_pinned();
         let mut modes = TerminalModes::default();
-        assert_eq!(capabilities.scrollback, Capability::Unsupported);
+        assert_eq!(capabilities.scrollback, Capability::Supported);
         assert_eq!(capabilities.hyperlink_destinations, Capability::Unsupported);
         assert_eq!(
             modes.declare(&capabilities, TerminalMode::BracketedPaste, true),
