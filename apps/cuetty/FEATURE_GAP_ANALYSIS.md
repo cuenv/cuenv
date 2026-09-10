@@ -17,6 +17,8 @@ Cuetty currently has:
   backgrounds, cursor layering, and a shared 16px/1.2 line-height contract.
 - Resize, keyboard input, paste, OSC 52 clipboard writes, close handling, and
   focused live shell behavior.
+- Negotiated Kitty and `modifyOtherKeys` input for the keypress, modifier,
+  named-key, and repeat information exposed by the current GPUI host event.
 - A resizable vertical tab rail (50px compact to 280px expanded), session-only
   Settings with Apply/Cancel/Reset, and a native Quit/Cmd-Q action.
 - Static validation plus a signed macOS bundle check, local process launch, and
@@ -41,7 +43,7 @@ behind replaceable traits.
 | Fixed-grid rendering | Custom GPUI element; live verified | Custom element, batches, damage cache | Custom element, batches, cache | Done; add regressions |
 | Cell width/line metrics | Explicit font/line contract; snapped once | Configurable multiplier and measured advance | Configurable multiplier and measured advance | P0 |
 | Unicode width/combining | Backend cluster text and wide occupancy preserved; IME/emoji rendering incomplete | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
-| Cursor and terminal modes | Cursor shape/visibility and application cursor keys observed; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
+| Cursor and terminal modes | Cursor shape/visibility, application cursor keys, and a tested negotiated extended-keyboard subset; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
 | Damage and render cache | Coalesced wakeups; full-frame paint | Dirty spans and shaped-line cache | Damage-aware batched rendering | P0 |
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
 | Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
@@ -64,9 +66,9 @@ behind replaceable traits.
 2. Add Rio adapter tests for combining marks, wide CJK, emoji, soft wraps,
    cursor positions, and explicit background/foreground semantics. Keep Rio
    types behind the adapter.
-3. Add mouse reporting, bracketed paste, application cursor/key modes, and
-   cursor shape/visibility where the pinned Rio API permits it. Keep unsupported
-   Rio capabilities explicit rather than inventing state.
+3. Complete mouse reporting, keypad identity, key-release/alternate-key
+   reporting, and IME input where the pinned Rio API and GPUI events permit it.
+   Keep unsupported host capabilities explicit rather than inventing state.
 4. Introduce damage spans and shaped-line/background caches behind traits so the
    renderer can repaint only changed rows without coupling cache policy to Rio.
 5. Add a golden terminal fixture suite: shell startup, ANSI colors, resize,

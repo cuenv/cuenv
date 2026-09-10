@@ -320,12 +320,7 @@ impl TerminalSession for RioTerminalSession {
         self.ensure_open()?;
         let bytes = {
             let terminal = self.terminal.lock();
-            if !terminal.keyboard_mode().is_empty()
-                || terminal.modify_other_keys().is_some_and(|level| level > 0)
-            {
-                return Err("extended keyboard protocols are not yet qualified by Cuetty".into());
-            }
-            encode_key(event, terminal.mode())
+            encode_key(event, terminal.mode(), terminal.modify_other_keys())
         };
         match bytes {
             Some(bytes) => self.write(bytes).map(|()| true),
@@ -660,6 +655,48 @@ mod tests {
         }
         wait_for_text(&mut session, "M0-BYTES:61030d");
         session.close().expect("close should succeed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_input_obeys_negotiated_extended_keyboard_modes() {
+        use super::super::input::{InputModifiers, KeyInput};
+        let _serial = serial_pty_test();
+        for (mode, count, expected) in [
+            ("kitty", "13", "M0-BYTES:611b5b39393b35751b5b313375"),
+            ("modify-other-keys", "11", "M0-BYTES:611b5b32373b353b39397e"),
+        ] {
+            let mut session = fixture(&[mode, count]);
+            wait_for_text(&mut session, "M0-READY");
+            for (key, modifiers) in [
+                (KeyInput::Character('a'), InputModifiers::default()),
+                (KeyInput::Character('c'), InputModifiers::CONTROL),
+            ] {
+                assert!(
+                    session
+                        .input(TerminalKeyEvent {
+                            key,
+                            modifiers,
+                            repeat: false,
+                        })
+                        .expect("negotiated keyboard input should reach the PTY")
+                );
+            }
+            if mode == "kitty" {
+                assert!(
+                    session
+                        .input(TerminalKeyEvent {
+                            key: KeyInput::Enter,
+                            modifiers: InputModifiers::default(),
+                            repeat: false,
+                        })
+                        .expect("Kitty enter should reach the PTY")
+                );
+            }
+            wait_for_text(&mut session, expected);
+            session.close().expect("close should succeed");
+        }
     }
 
     #[test]

@@ -18,7 +18,7 @@ Cuetty as a daily driver, see the [Cuetty daily-driver roadmap](/explanation/cue
 | --- | --- | --- | --- |
 | Terminal core | Mature terminal runtime and renderer with broader protocol coverage. | Rio-backed session, semantic frame adapter, fixed-grid GPUI renderer. | More protocol, Unicode, scrollback, and lifecycle coverage. |
 | Rendering | Fixed cell geometry, shaping, cursor and selection behaviour tuned for daily use. | Fixed-grid rows and cells with wide-cell, soft-wrap, semantic-style, and cursor policies. | Human visual acceptance and broader glyph/IME coverage. |
-| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, selection/copy, Rio-owned history navigation, and visible-frame literal search are live. | Selection/search across history, regex, keyboard modes, and IME. |
+| Interaction | Selection, clipboard, search, scrolling, and keyboard modes integrated into the terminal surface. | Input, resize, selection/copy, Rio-owned history navigation, visible-frame literal search, and a negotiated Kitty/modifyOtherKeys subset are live. | Selection/search across history, regex, keypad/key-release/alternate-key reporting, and IME. |
 | Product shell | Mature tabs, panes, commands, settings, persistence, and notifications. | Real GPUI tabs with one independent Rio session per tab; split actions remain rejected until pane/session allocation exists. | Wire splits and the remaining daily-use shell. |
 | Persistence | Saved layouts and richer app state. | Versioned metadata-only workspace codec/storage traits. | Live restore/reconnect and durable file integration. |
 | Extensibility | Project-specific command and integration surfaces. | Capability and session-backend traits with deny-by-default scopes. | Remote, tmux, Wasm, and plugin runtimes. |
@@ -33,8 +33,8 @@ should cover:
 
 - Selection/search over complete Rio history and a scrollbar affordance; Rio
   already owns viewport offsets and live wheel/keyboard navigation.
-- Application cursor/keypad modes, extended keyboard behaviour, mouse
-  reporting, alternate-screen handling, bracketed paste, and protocol replies.
+- Application keypad identity, extended key-release/alternate-key reporting,
+  mouse reporting, alternate-screen handling, and remaining protocol replies.
 - Complete Unicode width and shaping behaviour, including combining marks,
   ZWJ sequences, emoji presentation, and IME composition.
 - Child lifecycle, exit UI, title/bell/notification events, and resize

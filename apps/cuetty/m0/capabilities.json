@@ -359,23 +359,25 @@
       "status": "unsupported"
     },
     {
-      "execution_ids": [],
+      "execution_ids": [
+        "macos_extended_keyboard_regression"
+      ],
       "gap_owner": "cuetty_host",
       "id": "advanced_keyboard",
-      "notes": "Kitty and modifyOtherKeys encoding is unqualified; current session rejects input while extended modes are active. This must not be mistaken for negotiated support.",
+      "notes": "Cuetty encodes the negotiated Kitty and modifyOtherKeys subset representable by its GPUI host event: keypresses, modifiers, named keys, and repeats. Deterministic unit and real-PTY fixtures cover negotiation and byte output. Key release, keypad identity, alternate-key reporting, and committed IME text remain unqualified.",
       "outcome": "unobservable",
       "required_for_m0": false,
       "source_evidence": [
         {
           "path": "apps/cuetty/src/terminal/host.rs",
-          "symbol": "extended keyboard protocols are not yet qualified"
+          "symbol": "real_session_input_obeys_negotiated_extended_keyboard_modes"
         },
         {
           "path": "apps/cuetty/src/terminal/rio_input.rs",
           "symbol": "pub fn encode_key"
         }
       ],
-      "status": "unsupported"
+      "status": "implemented_partially_validated"
     },
     {
       "execution_ids": [],
@@ -624,6 +626,19 @@
       "result": "passed",
       "scope": "6 real-PTY tests passed serially: child reaping, input, bracketed paste, resize, final output plus status, and authoritative Rio history navigation.",
       "log_path": "apps/cuetty/m0/evidence/2026-09-10-macos-rio-pr-1927.txt"
+    },
+    {
+      "id": "macos_extended_keyboard_regression",
+      "command": "cargo test --locked terminal::host::tests::real_session_input_obeys_negotiated_extended_keyboard_modes -- --ignored --exact --test-threads=1",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.97.0",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-11",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "The real-PTY regression negotiated Kitty disambiguation and xterm modifyOtherKeys through Rio, then verified Cuetty's plain and modified input bytes. This does not cover key releases, keypad identity, alternate-key reporting, or IME.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-11-macos-extended-keyboard.txt"
     },
     {
       "id": "macos_app_clippy",
