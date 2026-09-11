@@ -25,7 +25,6 @@ use gpui::{
     UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
     actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
 };
-use gpui_component::resizable::{h_resizable, resizable_panel};
 use gpui_component::tooltip::Tooltip;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -735,31 +734,15 @@ struct TerminalView {
     focus: FocusHandle,
     renderer: Box<dyn TerminalRenderer>,
     workspace_bounds: Arc<Mutex<(f32, f32)>>,
-    rail_width: Arc<Mutex<f32>>,
-    expanded_rail_width: Arc<Mutex<f32>>,
-    rail_collapsed: bool,
-    rail_layout_generation: u64,
     destination: Destination,
     settings_draft: Option<SettingsDraft>,
     settings_error: Option<String>,
 }
 
-const SIDEBAR_DEFAULT_WIDTH: f32 = 172.0;
-const SIDEBAR_MIN_WIDTH: f32 = 56.0;
-const SIDEBAR_MAX_WIDTH: f32 = 280.0;
-const SIDEBAR_COMPACT_THRESHOLD: f32 = 84.0;
-const SIDEBAR_FOOTER_HEIGHT: f32 = 42.0;
+const TAB_RAIL_WIDTH: f32 = 56.0;
+const TAB_RAIL_FOOTER_HEIGHT: f32 = 78.0;
 const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
 const TERMINAL_PADDING: f32 = 8.0;
-const MAIN_MIN_WIDTH: f32 = 400.0;
-
-fn rail_is_compact(width: f32) -> bool {
-    width < SIDEBAR_COMPACT_THRESHOLD
-}
-
-fn normalized_rail_width(width: f32) -> f32 {
-    width.clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
-}
 
 fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
     let vertical_lines = match delta {
@@ -772,10 +755,6 @@ fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32)
     let lines = total.trunc().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     *remainder = total - lines as f32;
     lines
-}
-
-fn rail_collapsed_after_toggle(collapsed: bool, width: f32) -> bool {
-    !collapsed && !rail_is_compact(width)
 }
 
 fn sidebar_tab_label(label: &str) -> String {
@@ -857,10 +836,6 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    expanded_rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    rail_collapsed: true,
-                    rail_layout_generation: 0,
                     destination: Destination::Terminal(tab),
                     settings_draft: None,
                     settings_error: None,
@@ -882,10 +857,6 @@ impl TerminalView {
                     focus: cx.focus_handle(),
                     renderer: Box::new(GridRenderer),
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
-                    rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    expanded_rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    rail_collapsed: true,
-                    rail_layout_generation: 0,
                     destination: Destination::Settings,
                     settings_draft: None,
                     settings_error: None,
@@ -1167,20 +1138,6 @@ impl TerminalView {
                 self.settings_error = None;
             }
         }
-        cx.notify();
-    }
-    fn toggle_rail(&mut self, cx: &mut Context<Self>) {
-        let width = *self.rail_width.lock().expect("rail width mutex poisoned");
-        if !rail_collapsed_after_toggle(self.rail_collapsed, width) {
-            self.rail_collapsed = false;
-        } else {
-            *self
-                .expanded_rail_width
-                .lock()
-                .expect("expanded rail width mutex poisoned") = width;
-            self.rail_collapsed = true;
-        }
-        self.rail_layout_generation = self.rail_layout_generation.wrapping_add(1);
         cx.notify();
     }
     fn spawn_wake(
@@ -1524,14 +1481,12 @@ impl TerminalView {
         theme: &TerminalTheme,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let rail_width = *self.rail_width.lock().expect("rail width mutex poisoned");
-        let compact = self.rail_collapsed || rail_is_compact(rail_width);
         let mut tabs = div()
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(if compact { 6.0 } else { 5.0 }))
-            .p(px(if compact { 8.0 } else { 10.0 }))
+            .gap(px(6.0))
+            .p(px(8.0))
             .overflow_hidden();
         for (index, tab) in self
             .registry
@@ -1550,7 +1505,7 @@ impl TerminalView {
                 .get(&tab.focused)
                 .map(|state| state.title.clone())
                 .unwrap_or_else(|| tab.title.clone());
-            let display_label = self
+            let tooltip_label = self
                 .registry
                 .sessions
                 .get(&tab.focused)
@@ -1570,19 +1525,14 @@ impl TerminalView {
                     }))
                 });
             let number = format!("{:02}", index + 1);
-            let tooltip_label = label.clone();
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
                 .w_full()
-                .min_h(px(if compact { 40.0 } else { 42.0 }))
+                .min_h(px(40.0))
                 .flex()
                 .items_center()
                 .justify_center()
-                .gap(px(if compact { 0.0 } else { 8.0 }))
-                .px(px(if compact { 2.0 } else { 8.0 }))
-                .when(selected && !compact, |this| {
-                    this.bg(gpui::rgb(gpui_rgb(theme.surface)))
-                })
+                .px(px(2.0))
                 .rounded(px(7.0))
                 .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
                 .cursor_pointer()
@@ -1592,15 +1542,15 @@ impl TerminalView {
                 .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
             tab_button = tab_button.child(
                 div()
-                    .w(px(if compact { 30.0 } else { 24.0 }))
-                    .h(px(if compact { 30.0 } else { 24.0 }))
+                    .w(px(30.0))
+                    .h(px(30.0))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(if compact { 8.0 } else { 6.0 }))
+                    .rounded(px(8.0))
                     .when(selected, |this| this.bg(tab_border))
                     .text_center()
-                    .text_size(px(if compact { 12.0 } else { 11.0 }))
+                    .text_size(px(12.0))
                     .font_weight(if selected {
                         FontWeight::SEMIBOLD
                     } else {
@@ -1613,22 +1563,6 @@ impl TerminalView {
                     })))
                     .child(number),
             );
-            if !compact {
-                tab_button = tab_button.child(
-                    div()
-                        .flex_1()
-                        .min_w(px(0.0))
-                        .overflow_hidden()
-                        .text_ellipsis()
-                        .whitespace_nowrap()
-                        .text_color(gpui::rgb(gpui_rgb(if selected {
-                            theme.text
-                        } else {
-                            theme.title_text
-                        })))
-                        .child(display_label),
-                );
-            }
             tabs = tabs.child(tab_button);
         }
         let integration_notice = active_tab
@@ -1663,18 +1597,13 @@ impl TerminalView {
                     .child(notice),
             );
         }
-        let footer_height = if compact {
-            SIDEBAR_FOOTER_HEIGHT + 64.0
-        } else {
-            SIDEBAR_FOOTER_HEIGHT
-        };
         let mut footer = div()
-            .h(px(footer_height))
+            .h(px(TAB_RAIL_FOOTER_HEIGHT))
             .w_full()
             .flex()
             .items_center()
             .gap(px(6.0))
-            .px(px(if compact { 6.0 } else { 8.0 }))
+            .px(px(6.0))
             .border_t_1()
             .border_color(gpui::rgb(gpui_rgb(theme.host_background)));
         let new_tab = div()
@@ -1685,9 +1614,6 @@ impl TerminalView {
             .items_center()
             .justify_center()
             .rounded(px(7.0))
-            .when(!compact, |this| {
-                this.bg(gpui::rgb(gpui_rgb(theme.host_background)))
-            })
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
             .text_size(px(12.0))
             .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
@@ -1696,7 +1622,7 @@ impl TerminalView {
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
-            .child(if compact { "+" } else { "New tab" });
+            .child("+");
         let settings = div()
             .id("cuetty-settings")
             .w(px(34.0))
@@ -1714,80 +1640,8 @@ impl TerminalView {
                 view.open_settings(window, cx);
             }))
             .child("⚙︎");
-        let collapse = div()
-            .id("cuetty-rail-collapse")
-            .w(px(30.0))
-            .h(px(30.0))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(7.0))
-            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
-            .cursor_pointer()
-            .tooltip(|window, cx| Tooltip::new("Collapse sidebar").build(window, cx))
-            .on_click(cx.listener(|view, _event, _window, cx| view.toggle_rail(cx)))
-            .child("›");
-        if compact {
-            footer = footer.flex_col().child(new_tab).child(settings).child(
-                div()
-                    .id("cuetty-rail-expand")
-                    .w_full()
-                    .h(px(30.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(px(7.0))
-                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-                    .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
-                    .cursor_pointer()
-                    .tooltip(|window, cx| Tooltip::new("Expand sidebar").build(window, cx))
-                    .on_click(cx.listener(|view, _event, _window, cx| view.toggle_rail(cx)))
-                    .child("‹"),
-            );
-        } else {
-            footer = footer
-                .flex_row()
-                .child(new_tab)
-                .child(settings)
-                .child(collapse);
-        }
-        let rail_width = Arc::clone(&self.rail_width);
-        let expanded_rail_width = Arc::clone(&self.expanded_rail_width);
-        let entity = cx.weak_entity();
-        let rail_was_collapsed = self.rail_collapsed;
-        rail.child(footer)
-            .child(
-                canvas(
-                    move |bounds, _, app| {
-                        let next = f32::from(bounds.size.width).max(SIDEBAR_MIN_WIDTH);
-                        let mut changed = false;
-                        {
-                            let mut current = rail_width.lock().expect("rail width mutex poisoned");
-                            if (*current - next).abs() > f32::EPSILON {
-                                *current = next;
-                                changed = true;
-                            }
-                        }
-                        if !rail_was_collapsed && next >= SIDEBAR_COMPACT_THRESHOLD {
-                            let mut expanded = expanded_rail_width
-                                .lock()
-                                .expect("expanded rail width mutex poisoned");
-                            if (*expanded - next).abs() > f32::EPSILON {
-                                *expanded = next;
-                                changed = true;
-                            }
-                        }
-                        if changed {
-                            let _ = entity.update(app, |_view, cx| cx.notify());
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .into_any_element()
+        footer = footer.flex_col().child(new_tab).child(settings);
+        rail.child(footer).into_any_element()
     }
 
     fn render_settings(&self, theme: &TerminalTheme, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2021,38 +1875,13 @@ impl TerminalView {
         sidebar: gpui::AnyElement,
         content: gpui::AnyElement,
         theme: &TerminalTheme,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let expanded_width = normalized_rail_width(
-            *self
-                .expanded_rail_width
-                .lock()
-                .expect("expanded rail width mutex poisoned"),
-        );
-        let rail_size = if self.rail_collapsed {
-            SIDEBAR_MIN_WIDTH
-        } else {
-            expanded_width
-        };
-        let layout_id = ("cuetty-main-layout", self.rail_layout_generation);
-        let entity = cx.weak_entity();
-        let workspace = div().flex_1().child(
-            h_resizable(layout_id)
-                .on_resize(move |_, _, app| {
-                    let _ = entity.update(app, |_view, cx| cx.notify());
-                })
-                .child(
-                    resizable_panel()
-                        .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
-                        .child(content),
-                )
-                .child(
-                    resizable_panel()
-                        .size(px(rail_size))
-                        .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
-                        .child(sidebar),
-                ),
-        );
+        let workspace = div()
+            .flex_1()
+            .flex()
+            .child(div().flex_1().min_w(px(0.0)).child(content))
+            .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
         let titlebar = div()
             .h(px(SHELL_TITLEBAR_HEIGHT))
             .w_full()
@@ -2494,15 +2323,6 @@ mod tests {
     }
 
     #[test]
-    fn rail_width_supports_a_compact_number_only_mode() {
-        assert!(rail_is_compact(SIDEBAR_MIN_WIDTH));
-        assert!(rail_is_compact(SIDEBAR_COMPACT_THRESHOLD - 0.1));
-        assert!(!rail_is_compact(SIDEBAR_COMPACT_THRESHOLD));
-        assert_eq!(normalized_rail_width(12.0), SIDEBAR_MIN_WIDTH);
-        assert_eq!(normalized_rail_width(320.0), SIDEBAR_MAX_WIDTH);
-    }
-
-    #[test]
     fn wheel_scrolling_accumulates_pixels_and_matches_history_direction() {
         let mut remainder = 0.0;
         assert_eq!(
@@ -2526,13 +2346,6 @@ mod tests {
             wheel_scroll_lines(ScrollDelta::Lines(point(0.0, 2.0)), 20.0, &mut remainder),
             -1
         );
-    }
-
-    #[test]
-    fn rail_toggle_restores_after_manual_drag_to_compact_width() {
-        assert!(!rail_collapsed_after_toggle(false, SIDEBAR_MIN_WIDTH));
-        assert!(!rail_collapsed_after_toggle(true, SIDEBAR_MIN_WIDTH));
-        assert!(rail_collapsed_after_toggle(false, SIDEBAR_DEFAULT_WIDTH));
     }
 
     #[test]

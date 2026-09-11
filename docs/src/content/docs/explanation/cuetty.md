@@ -60,7 +60,7 @@ The current usable slice includes:
   selection, Rio-owned history navigation, and visible-frame literal search.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
-  inset, divider, and current rail width instead of leaving a stale frame
+  inset, divider, and fixed rail width instead of leaving a stale frame
   clipped in the viewport.
 - The terminal surface keeps an 8px inset from the host chrome; the inset uses
   the same terminal surface colour and is subtracted from the Rio grid
@@ -70,10 +70,8 @@ The current usable slice includes:
   every newly-created session starts in `$HOME`,
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
-- A right-side vertical GPUI Component tab rail that resizes from 56px to
-  280px. Its narrow 56px default shows tab ordinals with title tooltips, while
-  expanded labels use stable path names instead of transient command titles.
-  The collapse control restores the last expanded width.
+- A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
+  path-name tooltips and deliberately has no resize or expand mode.
 - A session-only Settings destination with transactional Apply, Cancel, and
   Reset controls for font size and line height. The native Cuetty menu exposes
   Quit Cuetty and Cmd-Q uses the same application-level action.
