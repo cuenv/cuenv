@@ -749,9 +749,11 @@ fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32)
         ScrollDelta::Pixels(delta) => f32::from(delta.y) / line_height.max(1.0),
         ScrollDelta::Lines(delta) => delta.y,
     };
-    // GPUI reports negative vertical deltas while the user moves toward the
-    // top of content; Rio uses positive offsets for older history.
-    let total = *remainder - vertical_lines;
+    // AppKit has already adjusted NSEvent's scrolling delta for the user's
+    // Natural Scrolling preference, and GPUI forwards that value unchanged.
+    // Preserve its sign when translating pixels to Rio history lines; another
+    // inversion here would make Cuetty behave opposite to native macOS views.
+    let total = *remainder + vertical_lines;
     let lines = total.trunc().clamp(i32::MIN as f32, i32::MAX as f32) as i32;
     *remainder = total - lines as f32;
     lines
@@ -2345,11 +2347,11 @@ mod tests {
     }
 
     #[test]
-    fn wheel_scrolling_accumulates_pixels_and_matches_history_direction() {
+    fn wheel_scrolling_preserves_system_direction_and_accumulates_pixels() {
         let mut remainder = 0.0;
         assert_eq!(
             wheel_scroll_lines(
-                ScrollDelta::Pixels(point(px(0.0), px(-9.0))),
+                ScrollDelta::Pixels(point(px(0.0), px(9.0))),
                 20.0,
                 &mut remainder
             ),
@@ -2357,7 +2359,7 @@ mod tests {
         );
         assert_eq!(
             wheel_scroll_lines(
-                ScrollDelta::Pixels(point(px(0.0), px(-12.0))),
+                ScrollDelta::Pixels(point(px(0.0), px(12.0))),
                 20.0,
                 &mut remainder
             ),
@@ -2365,7 +2367,7 @@ mod tests {
         );
         assert!(remainder > 0.0);
         assert_eq!(
-            wheel_scroll_lines(ScrollDelta::Lines(point(0.0, 2.0)), 20.0, &mut remainder),
+            wheel_scroll_lines(ScrollDelta::Lines(point(0.0, -2.0)), 20.0, &mut remainder),
             -1
         );
     }
