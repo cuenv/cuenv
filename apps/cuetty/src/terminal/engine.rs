@@ -1891,7 +1891,18 @@ impl TerminalView {
         let workspace = div()
             .flex_1()
             .flex()
-            .child(div().flex_1().min_w(px(0.0)).child(content))
+            // The content panel must establish a flex formatting context.
+            // Otherwise a child's `flex_1` has no parent flex layout during
+            // the first window pass and AppKit's white backing surface leaks
+            // through until a later resize happens to trigger a relayout.
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .flex()
+                    .child(content),
+            )
             .child(div().w(px(TAB_RAIL_WIDTH)).flex_shrink_0().child(sidebar));
         let titlebar = div()
             .h(px(SHELL_TITLEBAR_HEIGHT))
@@ -2155,7 +2166,7 @@ impl Render for TerminalView {
         }
         let surface = div()
             .relative()
-            .flex_1()
+            .size_full()
             .overflow_hidden()
             // Keep the inset in the terminal's surface colour. The host
             // chrome still owns the title strip and rail; the terminal area

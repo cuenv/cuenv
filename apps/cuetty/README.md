@@ -165,6 +165,10 @@ On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when
 `cargo run --release --locked` successfully opens Cuetty.
 
+The terminal content panel establishes its own full-size flex layout so the
+dark terminal surface is present on the first window frame; launch must not
+depend on a later resize to replace AppKit's default backing colour.
+
 ## Nix
 
 The app-local flake provides `packages.cuetty`, `apps.cuetty`, and the focused
