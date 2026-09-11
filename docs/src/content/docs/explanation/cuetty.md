@@ -56,7 +56,7 @@ The current usable slice includes:
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
   one title strip, stable single-line tab labels, and a full-bleed terminal.
-- Keyboard input, paste, resize, title updates, clipboard copy, mouse
+- Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
   selection, Rio-owned history navigation, and visible-frame literal search.
 - The active pane's post-layout GPUI canvas is the source of truth for each Rio
   resize, so the measured width already excludes the title strip, terminal
