@@ -98,14 +98,16 @@ change font/line-height, restart, and retain the intended settings.
    boundaries only after the layout tree is tested without GPUI.
 3. Persist layouts and terminal metadata through a versioned store; do not put
    persistence in `TerminalSession`.
-4. Add a command palette/settings surface after actions have stable trait-backed
-   identifiers.
+4. Extend the initial Command-K Cuenv task palette into a general action
+   catalogue only after non-task actions have stable trait-backed identifiers.
 
 **Current state:** every live tab owns an independent local Rio session. Session
 creation is transactional and callbacks are generation-scoped; close first
 removes the exact session then commits the preflighted tab removal. Split actions
 remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
+Exact-CWD `package cuenv` tasks are now searchable from Command-K and a floating
+sidebar; selection delegates execution to the canonical CLI in a fresh tab.
 
 **Exit gate:** split/tab/layout operations are deterministic in unit tests and
 restore correctly after a clean restart.
