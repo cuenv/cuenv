@@ -102,8 +102,8 @@ Cuetty separately evaluates `package cuenv` in the same exact directory and
 surfaces its task, group, and sequence names in a floating sidebar and a
 Command-K palette. These overlays do not participate in terminal layout, so
 opening them does not change the PTY's reported rows or columns. Launching a
-task creates a terminal tab and delegates to `cuenv task`; required task
-parameters leave an editable command at the prompt. The app does not duplicate
+task delegates to `cuenv task` in the same pane that supplied the catalogue;
+required task parameters leave an editable command at the prompt. The app does not duplicate
 the task graph, cache, hooks, or secret resolution.
 
 ## Current limits
