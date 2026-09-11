@@ -12,8 +12,8 @@ use super::settings::SettingsDraft;
 use super::sizing::CellSize;
 use super::workspace_shell::{ShellAction, ShellError, WorkspaceShell, WorkspaceShortcut};
 use crate::integrations::cuenv::{
-    BorderColor, ConfigSource, CuenvPaneState, CuenvProvider, CuenvWatcher, Evaluation,
-    NativeCuenvProvider,
+    BorderColor, ConfigSource, CuenvPaneState, CuenvProvider, CuenvTask, CuenvWatcher, Evaluation,
+    NativeCuenvProvider, TaskEvaluation,
 };
 use crate::workspace::{LayoutRect, MinSizePolicy, TabId};
 use gpui::{
@@ -770,11 +770,59 @@ struct TerminalView {
     settings_draft: Option<SettingsDraft>,
     settings_error: Option<String>,
     transparency_slider: gpui::Entity<SliderState>,
+    task_palette_open: bool,
+    task_sidebar_open: bool,
+    task_query: String,
+    task_selection: usize,
 }
 
 const TAB_RAIL_WIDTH: f32 = 56.0;
-const TAB_RAIL_FOOTER_HEIGHT: f32 = 78.0;
+const TAB_RAIL_FOOTER_HEIGHT: f32 = 112.0;
 const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
+const TASK_SIDEBAR_WIDTH: f32 = 280.0;
+
+struct CuenvIntegrationUpdate {
+    presentation: Evaluation,
+    tasks: TaskEvaluation,
+}
+
+#[derive(Clone, Copy)]
+enum TaskLaunch {
+    Run,
+    EditRequiredArguments,
+}
+
+fn filtered_tasks<'a>(tasks: &'a [CuenvTask], query: &str) -> Vec<&'a CuenvTask> {
+    let query = query.trim().to_ascii_lowercase();
+    tasks
+        .iter()
+        .filter(|task| {
+            query.is_empty()
+                || task.name.to_ascii_lowercase().contains(&query)
+                || task
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.to_ascii_lowercase().contains(&query))
+        })
+        .collect()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn task_command(cwd: &std::path::Path, task: &CuenvTask, launch: TaskLaunch) -> String {
+    let mut command = format!(
+        "cuenv task --path {} --package cuenv {}",
+        shell_quote(&cwd.to_string_lossy()),
+        shell_quote(&task.name)
+    );
+    match launch {
+        TaskLaunch::Run => command.push('\n'),
+        TaskLaunch::EditRequiredArguments => command.push(' '),
+    }
+    command
+}
 
 #[derive(Clone, Copy)]
 enum PaddingEdge {
@@ -932,6 +980,10 @@ impl TerminalView {
                     settings_draft: None,
                     settings_error: None,
                     transparency_slider,
+                    task_palette_open: false,
+                    task_sidebar_open: false,
+                    task_query: String::new(),
+                    task_selection: 0,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -954,6 +1006,10 @@ impl TerminalView {
                     settings_draft: None,
                     settings_error: None,
                     transparency_slider,
+                    task_palette_open: false,
+                    task_sidebar_open: false,
+                    task_query: String::new(),
+                    task_selection: 0,
                 }
             }
         }
@@ -1070,7 +1126,10 @@ impl TerminalView {
             let initial_source = source.clone();
             let initial_evaluator = Arc::clone(&evaluator);
             std::thread::spawn(move || {
-                let _ = result_tx.send_blocking(initial_evaluator.evaluate(&initial_source));
+                let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
+                    presentation: initial_evaluator.evaluate(&initial_source),
+                    tasks: initial_evaluator.evaluate_tasks(&initial_source),
+                });
             });
             let Ok(update) = result_rx.recv().await else {
                 return;
@@ -1090,7 +1149,10 @@ impl TerminalView {
                 let source = source.clone();
                 let evaluator = Arc::clone(&evaluator);
                 std::thread::spawn(move || {
-                    let _ = result_tx.send_blocking(evaluator.evaluate(&source));
+                    let _ = result_tx.send_blocking(CuenvIntegrationUpdate {
+                        presentation: evaluator.evaluate(&source),
+                        tasks: evaluator.evaluate_tasks(&source),
+                    });
                 });
                 let Ok(update) = result_rx.recv().await else {
                     break;
@@ -1106,7 +1168,7 @@ impl TerminalView {
     fn apply_cuenv_update(
         &mut self,
         target: CuenvUpdateTarget,
-        update: Evaluation,
+        update: CuenvIntegrationUpdate,
         cx: &mut Context<Self>,
     ) {
         let Some(state) = self.registry.sessions.get_mut(&target.pane) else {
@@ -1115,9 +1177,22 @@ impl TerminalView {
         if state.generation != target.session_generation {
             return;
         }
-        if !state.cuenv.apply(target.config_generation, update) {
+        if !state
+            .cuenv
+            .apply(target.config_generation, update.presentation)
+        {
             return;
         }
+        state
+            .cuenv
+            .apply_tasks(target.config_generation, update.tasks);
+        if state.cuenv.tasks.is_empty() {
+            self.task_palette_open = false;
+            self.task_sidebar_open = false;
+        }
+        self.task_selection = self
+            .task_selection
+            .min(state.cuenv.tasks.len().saturating_sub(1));
         cx.notify();
     }
     fn spawn_cwd_poll(&mut self, cx: &mut Context<Self>) {
@@ -1440,9 +1515,116 @@ impl TerminalView {
         }
     }
 
+    fn toggle_task_palette(&mut self) {
+        if self
+            .active_state()
+            .is_none_or(|state| state.cuenv.tasks.is_empty())
+        {
+            return;
+        }
+        self.task_palette_open = !self.task_palette_open;
+        self.task_query.clear();
+        self.task_selection = 0;
+    }
+
+    fn launch_task(&mut self, task: CuenvTask, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cwd) = self
+            .active_state()
+            .and_then(|state| state.cuenv.cwd.clone())
+        else {
+            return;
+        };
+        let previous_pane = self.active_pane();
+        self.new_tab(window, cx);
+        let Some(active_pane) = self.active_pane() else {
+            return;
+        };
+        if Some(active_pane) == previous_pane {
+            return;
+        }
+        let launch = if task.requires_parameters {
+            TaskLaunch::EditRequiredArguments
+        } else {
+            TaskLaunch::Run
+        };
+        let command = task_command(&cwd, &task, launch);
+        if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
+            if let Err(error) = state.session.paste(&command) {
+                state.error = Some(error);
+            } else if task.requires_parameters {
+                self.registry.notice =
+                    Some(format!("Add arguments for '{}' and press Enter", task.name));
+            }
+        }
+        self.task_palette_open = false;
+        self.task_query.clear();
+        self.task_selection = 0;
+        cx.notify();
+    }
+
+    fn handle_task_palette_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.task_palette_open {
+            return false;
+        }
+        let key = event.keystroke.key.as_str();
+        match key {
+            "escape" => self.task_palette_open = false,
+            "backspace" => {
+                self.task_query.pop();
+                self.task_selection = 0;
+            }
+            "up" => self.task_selection = self.task_selection.saturating_sub(1),
+            "down" => {
+                let count = self
+                    .active_state()
+                    .map(|state| filtered_tasks(&state.cuenv.tasks, &self.task_query).len())
+                    .unwrap_or_default()
+                    .min(9);
+                self.task_selection = (self.task_selection + 1).min(count.saturating_sub(1));
+            }
+            "enter" => {
+                let selected = self.active_state().and_then(|state| {
+                    filtered_tasks(&state.cuenv.tasks, &self.task_query)
+                        .get(self.task_selection)
+                        .cloned()
+                        .cloned()
+                });
+                if let Some(task) = selected {
+                    self.launch_task(task, window, cx);
+                    return true;
+                }
+            }
+            _ if !event.keystroke.modifiers.control
+                && !event.keystroke.modifiers.alt
+                && !event.keystroke.modifiers.platform =>
+            {
+                if let Some(text) = event.keystroke.key_char.as_deref() {
+                    self.task_query.push_str(text);
+                    self.task_selection = 0;
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+        true
+    }
+
     fn key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
+        if modifiers.secondary() && key.eq_ignore_ascii_case("k") {
+            self.toggle_task_palette();
+            cx.notify();
+            return;
+        }
+        if self.handle_task_palette_key(event, _window, cx) {
+            return;
+        }
         if let Some(shortcut) = Self::workspace_shortcut(key, modifiers) {
             match shortcut {
                 WorkspaceShortcut::NewTab => self.new_tab(_window, cx),
@@ -1680,8 +1862,17 @@ impl TerminalView {
                     .find(|tab| tab.id == tab_id)
             })
             .and_then(|tab| self.registry.sessions.get(&tab.focused))
-            .and_then(|state| state.cuenv.notice.as_deref());
+            .and_then(|state| {
+                state
+                    .cuenv
+                    .notice
+                    .as_deref()
+                    .or(state.cuenv.task_notice.as_deref())
+            });
         let notice = shell_notice_text(self.registry.notice.as_deref().or(integration_notice));
+        let has_tasks = self
+            .active_state()
+            .is_some_and(|state| !state.cuenv.tasks.is_empty());
         let mut rail = div()
             .relative()
             .size_full()
@@ -1745,8 +1936,260 @@ impl TerminalView {
                 view.open_settings(window, cx);
             }))
             .child("⚙︎");
-        footer = footer.flex_col().child(new_tab).child(settings);
+        let tasks = div()
+            .id("cuetty-tasks")
+            .w(px(34.0))
+            .h(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(7.0))
+            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+            .text_size(px(13.0))
+            .when(self.task_sidebar_open, |this| {
+                this.bg(chrome_glass_color(theme.surface))
+            })
+            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+            .cursor_pointer()
+            .tooltip(|window, cx| Tooltip::new("Cuenv tasks · ⌘K to search").build(window, cx))
+            .on_click(cx.listener(|view, _event, _window, cx| {
+                view.task_sidebar_open = !view.task_sidebar_open;
+                cx.notify();
+            }))
+            .child("▤");
+        footer = footer
+            .flex_col()
+            .child(new_tab)
+            .when(has_tasks, |this| this.child(tasks))
+            .child(settings);
         rail.child(footer).into_any_element()
+    }
+
+    fn render_task_sidebar(
+        &self,
+        theme: &TerminalTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.task_sidebar_open {
+            return None;
+        }
+        let state = self.active_state()?;
+        if state.cuenv.tasks.is_empty() {
+            return None;
+        }
+        let mut list = div().flex().flex_col().gap(px(4.0));
+        for (index, task) in state.cuenv.tasks.iter().take(12).enumerate() {
+            let task_to_run = task.clone();
+            let detail = task
+                .description
+                .clone()
+                .unwrap_or_else(|| task.kind.label().to_ascii_lowercase());
+            list = list.child(
+                div()
+                    .id(("cuetty-task-sidebar-row", index))
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(7.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .rounded(px(7.0))
+                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |view, _event, window, cx| {
+                        view.launch_task(task_to_run.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                            .child(task.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .child(detail),
+                    ),
+            );
+        }
+        let hidden = state.cuenv.tasks.len().saturating_sub(12);
+        let cwd = state
+            .cuenv
+            .cwd
+            .as_deref()
+            .and_then(std::path::Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("cuenv");
+        Some(
+            div()
+                .absolute()
+                .top(px(12.0))
+                .right(px(12.0))
+                .bottom(px(12.0))
+                .w(px(TASK_SIDEBAR_WIDTH))
+                .p(px(12.0))
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
+                .bg(chrome_glass_color(theme.title_surface))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(px(2.0))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                        .child("Cuenv tasks"),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                        .child(cwd.to_string()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.0))
+                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                .child("⌘K"),
+                        ),
+                )
+                .child(div().flex_1().overflow_hidden().child(list))
+                .when(hidden > 0, |this| {
+                    this.child(
+                        div()
+                            .text_size(px(10.0))
+                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .child(format!("{hidden} more · use ⌘K")),
+                    )
+                })
+                .into_any_element(),
+        )
+    }
+
+    fn render_task_palette(
+        &self,
+        theme: &TerminalTheme,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::AnyElement> {
+        if !self.task_palette_open {
+            return None;
+        }
+        let state = self.active_state()?;
+        let tasks = filtered_tasks(&state.cuenv.tasks, &self.task_query);
+        let mut results = div().flex().flex_col().gap(px(3.0));
+        for (index, task) in tasks.iter().take(9).enumerate() {
+            let selected = index == self.task_selection;
+            let task_to_run = (*task).clone();
+            results = results.child(
+                div()
+                    .id(("cuetty-task-palette-row", index))
+                    .w_full()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .rounded(px(7.0))
+                    .when(selected, |this| this.bg(chrome_glass_color(theme.surface)))
+                    .hover(|this| this.bg(chrome_glass_color(theme.surface)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |view, _event, window, cx| {
+                        view.launch_task(task_to_run.clone(), window, cx);
+                    }))
+                    .child(
+                        div()
+                            .w(px(64.0))
+                            .text_size(px(9.0))
+                            .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                            .child(if task.requires_parameters {
+                                "ARGS"
+                            } else {
+                                task.kind.label()
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.0))
+                            .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                            .child(task.name.clone()),
+                    ),
+            );
+        }
+        if tasks.is_empty() {
+            results = results.child(
+                div()
+                    .px(px(10.0))
+                    .py(px(18.0))
+                    .text_size(px(12.0))
+                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                    .child("No matching tasks"),
+            );
+        }
+        let query = if self.task_query.is_empty() {
+            "Type to filter tasks…".into()
+        } else {
+            self.task_query.clone()
+        };
+        Some(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .pt(px(54.0))
+                .child(
+                    div()
+                        .w(px(520.0))
+                        .max_h(px(430.0))
+                        .p(px(12.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .rounded(px(12.0))
+                        .border_1()
+                        .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
+                        .bg(chrome_glass_color(theme.title_surface))
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(38.0))
+                                .px(px(12.0))
+                                .flex()
+                                .items_center()
+                                .rounded(px(8.0))
+                                .bg(chrome_glass_color(theme.surface))
+                                .text_size(px(13.0))
+                                .text_color(gpui::rgb(gpui_rgb(if self.task_query.is_empty() {
+                                    theme.title_text
+                                } else {
+                                    theme.text
+                                })))
+                                .child(query),
+                        )
+                        .child(results)
+                        .child(
+                            div()
+                                .text_size(px(9.0))
+                                .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                .child("↑↓ select · return run · esc close"),
+                        ),
+                )
+                .into_any_element(),
+        )
     }
 
     fn render_settings(&self, theme: &TerminalTheme, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -2399,6 +2842,12 @@ impl Render for TerminalView {
                     .into_any_element(),
             );
         }
+        if let Some(task_sidebar) = self.render_task_sidebar(&theme, cx) {
+            terminal_surface = terminal_surface.child(task_sidebar);
+        }
+        if let Some(task_palette) = self.render_task_palette(&theme, cx) {
+            terminal_surface = terminal_surface.child(task_palette);
+        }
         let surface = div()
             .relative()
             .size_full()
@@ -2535,6 +2984,48 @@ mod tests {
         let mut frame = TerminalView::empty_frame();
         frame.rows[0].cells[0] = TerminalCell::narrow(character);
         frame
+    }
+
+    #[test]
+    fn task_filter_matches_names_and_descriptions() {
+        let tasks = vec![
+            CuenvTask {
+                name: "docs.build".into(),
+                description: Some("Build the website".into()),
+                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+                requires_parameters: false,
+            },
+            CuenvTask {
+                name: "lint".into(),
+                description: None,
+                kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+                requires_parameters: false,
+            },
+        ];
+        assert_eq!(filtered_tasks(&tasks, "DOC").len(), 1);
+        assert_eq!(filtered_tasks(&tasks, "website")[0].name, "docs.build");
+        assert!(filtered_tasks(&tasks, "release").is_empty());
+    }
+
+    #[test]
+    fn task_command_quotes_paths_and_stages_required_arguments() {
+        let task = CuenvTask {
+            name: "release's build".into(),
+            description: None,
+            kind: crate::integrations::cuenv::CuenvTaskKind::Task,
+            requires_parameters: true,
+        };
+        assert_eq!(
+            task_command(
+                std::path::Path::new("/tmp/project's dir"),
+                &task,
+                TaskLaunch::EditRequiredArguments,
+            ),
+            "cuenv task --path '/tmp/project'\\''s dir' --package cuenv 'release'\\''s build' "
+        );
+        assert!(
+            task_command(std::path::Path::new("/tmp/x"), &task, TaskLaunch::Run).ends_with('\n')
+        );
     }
 
     fn fake_start(

@@ -98,6 +98,14 @@ Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice.
 
+Cuetty separately evaluates `package cuenv` in the same exact directory and
+surfaces its task, group, and sequence names in a floating sidebar and a
+Command-K palette. These overlays do not participate in terminal layout, so
+opening them does not change the PTY's reported rows or columns. Launching a
+task creates a terminal tab and delegates to `cuenv task`; required task
+parameters leave an editable command at the prompt. The app does not duplicate
+the task graph, cache, hooks, or secret resolution.
+
 ## Current limits
 
 The following are deliberately documented as staged work rather than implied
@@ -110,6 +118,8 @@ support:
   emoji presentation, and IME correctness.
 - Kitty graphics and other image protocols.
 - tmux, remote, attach, and reconnect backends.
+- Rich task progress, cancellation controls, and source-linked diagnostics;
+  the current task surface launches the canonical CLI in a terminal tab.
 - Wasm plugins and a plugin/component-tree runtime.
 - Split-pane session allocation, plus live workspace restore/reconnect.
 

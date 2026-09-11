@@ -169,6 +169,15 @@ Cuetty re-evaluates and rebinds its native directory watcher after `cd`.
 Malformed matching configuration retains the last valid presentation and shows
 an integration notice. CUE evaluation never runs on the GPUI thread.
 
+When the same directory contains an evaluable `package cuenv`, Cuetty also
+discovers its `tasks` map. The task button in the fixed right rail opens a
+floating, non-resizing task sidebar; Command-K opens a searchable command
+palette. Selecting a task starts a fresh terminal tab and invokes the existing
+`cuenv task --path … --package cuenv …` CLI path, preserving its graph, cache,
+hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
+parameters are staged at the prompt for editing instead of running
+incompletely. Directories without a task catalogue remain ordinary terminals.
+
 On macOS, `xcodebuild -downloadComponent MetalToolchain` installs the Metal
 compiler that GPUI needs. Runtime is only verified when
 `cargo run --release --locked` successfully opens Cuetty.
