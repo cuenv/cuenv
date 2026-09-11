@@ -95,7 +95,12 @@ underline.
 
 The rail footer provides new-tab and Settings entry points. Settings is a
 session-only destination with transactional Apply/Cancel/Reset controls for
-font size and line height; it never mounts terminal key or mouse handlers. The
+font size, line height, and terminal transparency. The transparency slider spans
+0% (opaque) through 100% (fully transparent) and changes only the terminal
+canvas. The title strip and right-side tab rail retain a fixed dark translucent
+layer over native macOS blur, while terminal text, the cursor, tab pills,
+selection, and controls remain opaque. Settings never mounts terminal key or
+mouse handlers. The
 native Cuetty menu contains Quit Cuetty and Cmd-Q uses the same application
 action. Before calling the POC visually usable, check that native window
 controls and the rail remain visible, the prompt fills the terminal surface

@@ -44,6 +44,10 @@ impl SettingsDraft {
         self.update(|config| config.font.line_height_multiplier = multiplier)
     }
 
+    pub fn set_terminal_transparency(&mut self, percent: u8) -> Result<(), ConfigError> {
+        self.update(|config| config.terminal_transparency_percent = percent)
+    }
+
     pub fn apply(self) -> Result<TerminalConfig, ConfigError> {
         self.draft.validate()?;
         Ok(self.draft)
@@ -100,6 +104,18 @@ mod tests {
         settings.set_line_height_multiplier(1.5).unwrap();
         let applied = settings.apply().unwrap();
         assert_eq!(applied.font.line_height_multiplier, 1.5);
+    }
+
+    #[test]
+    fn transparency_edit_is_bounded_and_transactional() {
+        let mut settings = SettingsDraft::new(TerminalConfig::default());
+        settings.set_terminal_transparency(72).unwrap();
+        assert_eq!(settings.draft().terminal_transparency_percent, 72);
+        assert!(matches!(
+            settings.set_terminal_transparency(101),
+            Err(ConfigError::InvalidTerminalTransparency(101))
+        ));
+        assert_eq!(settings.draft().terminal_transparency_percent, 72);
     }
 
     #[test]

@@ -76,6 +76,9 @@ pub struct KeybindingConfig {
 pub struct TerminalConfig {
     pub version: ConfigVersion,
     pub font: FontConfig,
+    /// Percentage of the terminal canvas background that remains transparent.
+    /// Zero is fully opaque and 100 is fully transparent.
+    pub terminal_transparency_percent: u8,
     pub cursor: CursorPreference,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
@@ -88,6 +91,7 @@ pub enum ConfigError {
     EmptyFontFamily,
     InvalidFontSize(f32),
     InvalidLineHeight(f32),
+    InvalidTerminalTransparency(u8),
     InvalidScrollback,
     EmptyKeybindingAction,
     EmptyKeybinding,
@@ -106,6 +110,10 @@ impl fmt::Display for ConfigError {
             Self::InvalidLineHeight(value) => write!(
                 f,
                 "line-height multiplier must be between 0.5 and 3, got {value}"
+            ),
+            Self::InvalidTerminalTransparency(value) => write!(
+                f,
+                "terminal transparency must be between 0 and 100%, got {value}%"
             ),
             Self::InvalidScrollback => f.write_str("scrollback limit must be non-zero"),
             Self::EmptyKeybindingAction => f.write_str("keybinding action cannot be empty"),
@@ -136,6 +144,7 @@ impl Default for TerminalConfig {
                 size_px: 16.0,
                 line_height_multiplier: 1.2,
             },
+            terminal_transparency_percent: 0,
             cursor: CursorPreference::Block,
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
@@ -220,6 +229,11 @@ impl TerminalConfig {
                 self.font.line_height_multiplier,
             ));
         }
+        if self.terminal_transparency_percent > 100 {
+            return Err(ConfigError::InvalidTerminalTransparency(
+                self.terminal_transparency_percent,
+            ));
+        }
         if self.interaction.scrollback_limit == 0 {
             return Err(ConfigError::InvalidScrollback);
         }
@@ -277,6 +291,7 @@ mod tests {
         );
         assert_eq!(config.font.size_px, 16.0);
         assert_eq!(config.font.line_height_multiplier, 1.2);
+        assert_eq!(config.terminal_transparency_percent, 0);
         assert_eq!(config.theme.host_background, Rgb(17, 17, 27));
         assert_eq!(config.theme.surface, Rgb(30, 30, 46));
         assert_eq!(config.theme.title_surface, Rgb(24, 24, 37));
@@ -300,6 +315,14 @@ mod tests {
         assert!(matches!(
             config.validate(),
             Err(ConfigError::InvalidLineHeight(_))
+        ));
+        let config = TerminalConfig {
+            terminal_transparency_percent: 101,
+            ..TerminalConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidTerminalTransparency(101))
         ));
     }
 
