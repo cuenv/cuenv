@@ -744,8 +744,8 @@ struct TerminalView {
     settings_error: Option<String>,
 }
 
-const SIDEBAR_DEFAULT_WIDTH: f32 = 156.0;
-const SIDEBAR_MIN_WIDTH: f32 = 50.0;
+const SIDEBAR_DEFAULT_WIDTH: f32 = 172.0;
+const SIDEBAR_MIN_WIDTH: f32 = 56.0;
 const SIDEBAR_MAX_WIDTH: f32 = 280.0;
 const SIDEBAR_COMPACT_THRESHOLD: f32 = 84.0;
 const SIDEBAR_FOOTER_HEIGHT: f32 = 42.0;
@@ -774,29 +774,17 @@ fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32)
     lines
 }
 
-fn terminal_workspace_size(
-    viewport: Size<Pixels>,
-    rail_width: f32,
-    rail_collapsed: bool,
-) -> (f32, f32) {
-    let rail = if rail_collapsed {
-        SIDEBAR_MIN_WIDTH
-    } else {
-        normalized_rail_width(rail_width)
-    };
-    let padding = TERMINAL_PADDING * 2.0;
-    (
-        (f32::from(viewport.width) - rail - padding).max(1.0),
-        (f32::from(viewport.height) - SHELL_TITLEBAR_HEIGHT - padding).max(1.0),
-    )
-}
-
 fn rail_collapsed_after_toggle(collapsed: bool, width: f32) -> bool {
     !collapsed && !rail_is_compact(width)
 }
 
 fn sidebar_tab_label(label: &str) -> String {
-    let trimmed = label.trim_end_matches('/');
+    let path = label
+        .split_whitespace()
+        .rev()
+        .find(|part| part.starts_with('/') || part.starts_with('~'))
+        .unwrap_or(label);
+    let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() {
         return "/".into();
     }
@@ -871,7 +859,7 @@ impl TerminalView {
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
                     rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
                     expanded_rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    rail_collapsed: false,
+                    rail_collapsed: true,
                     rail_layout_generation: 0,
                     destination: Destination::Terminal(tab),
                     settings_draft: None,
@@ -896,7 +884,7 @@ impl TerminalView {
                     workspace_bounds: Arc::new(Mutex::new((720.0, 432.0))),
                     rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
                     expanded_rail_width: Arc::new(Mutex::new(SIDEBAR_DEFAULT_WIDTH)),
-                    rail_collapsed: false,
+                    rail_collapsed: true,
                     rail_layout_generation: 0,
                     destination: Destination::Settings,
                     settings_draft: None,
@@ -1542,8 +1530,8 @@ impl TerminalView {
             .flex_1()
             .flex()
             .flex_col()
-            .gap(px(if compact { 2.0 } else { 4.0 }))
-            .p(px(if compact { 5.0 } else { 8.0 }))
+            .gap(px(if compact { 6.0 } else { 5.0 }))
+            .p(px(if compact { 8.0 } else { 10.0 }))
             .overflow_hidden();
         for (index, tab) in self
             .registry
@@ -1586,16 +1574,16 @@ impl TerminalView {
             let mut tab_button = div()
                 .id(("cuetty-rail-tab", tab_id.get()))
                 .w_full()
-                .min_h(px(if compact { 34.0 } else { 40.0 }))
+                .min_h(px(if compact { 40.0 } else { 42.0 }))
                 .flex()
                 .items_center()
                 .justify_center()
                 .gap(px(if compact { 0.0 } else { 8.0 }))
                 .px(px(if compact { 2.0 } else { 8.0 }))
-                .border_l_2()
-                .border_color(tab_border)
-                .when(selected, |this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
-                .rounded(px(5.0))
+                .when(selected && !compact, |this| {
+                    this.bg(gpui::rgb(gpui_rgb(theme.surface)))
+                })
+                .rounded(px(7.0))
                 .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
                 .cursor_pointer()
                 .on_click(cx.listener(move |view, _event, window, cx| {
@@ -1604,11 +1592,22 @@ impl TerminalView {
                 .tooltip(move |window, cx| Tooltip::new(tooltip_label.clone()).build(window, cx));
             tab_button = tab_button.child(
                 div()
-                    .w(px(if compact { 40.0 } else { 24.0 }))
+                    .w(px(if compact { 30.0 } else { 24.0 }))
+                    .h(px(if compact { 30.0 } else { 24.0 }))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(if compact { 8.0 } else { 6.0 }))
+                    .when(selected, |this| this.bg(tab_border))
                     .text_center()
                     .text_size(px(if compact { 12.0 } else { 11.0 }))
+                    .font_weight(if selected {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
                     .text_color(gpui::rgb(gpui_rgb(if selected {
-                        theme.cursor
+                        theme.cursor_text
                     } else {
                         theme.title_text
                     })))
@@ -1651,7 +1650,7 @@ impl TerminalView {
             .flex_col()
             .flex_shrink_0()
             .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
-            .border_r_1()
+            .border_l_1()
             .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
             .child(tabs);
         if let Some(notice) = notice {
@@ -1685,7 +1684,10 @@ impl TerminalView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(5.0))
+            .rounded(px(7.0))
+            .when(!compact, |this| {
+                this.bg(gpui::rgb(gpui_rgb(theme.host_background)))
+            })
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
             .text_size(px(12.0))
             .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
@@ -1694,7 +1696,7 @@ impl TerminalView {
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.new_tab(window, cx);
             }))
-            .child(if compact { "+" } else { "+ New tab" });
+            .child(if compact { "+" } else { "New tab" });
         let settings = div()
             .id("cuetty-settings")
             .w(px(34.0))
@@ -1702,16 +1704,16 @@ impl TerminalView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(5.0))
+            .rounded(px(7.0))
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
-            .text_size(px(15.0))
+            .text_size(px(12.0))
             .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
             .on_click(cx.listener(|view, _event, window, cx| {
                 view.open_settings(window, cx);
             }))
-            .child("⚙");
+            .child("⚙︎");
         let collapse = div()
             .id("cuetty-rail-collapse")
             .w(px(30.0))
@@ -1719,13 +1721,13 @@ impl TerminalView {
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(5.0))
+            .rounded(px(7.0))
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
             .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("Collapse sidebar").build(window, cx))
             .on_click(cx.listener(|view, _event, _window, cx| view.toggle_rail(cx)))
-            .child("‹");
+            .child("›");
         if compact {
             footer = footer.flex_col().child(new_tab).child(settings).child(
                 div()
@@ -1735,13 +1737,13 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(5.0))
+                    .rounded(px(7.0))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
                     .cursor_pointer()
                     .tooltip(|window, cx| Tooltip::new("Expand sidebar").build(window, cx))
                     .on_click(cx.listener(|view, _event, _window, cx| view.toggle_rail(cx)))
-                    .child("›"),
+                    .child("‹"),
             );
         } else {
             footer = footer
@@ -2041,14 +2043,14 @@ impl TerminalView {
                 })
                 .child(
                     resizable_panel()
-                        .size(px(rail_size))
-                        .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
-                        .child(sidebar),
+                        .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
+                        .child(content),
                 )
                 .child(
                     resizable_panel()
-                        .size_range(px(MAIN_MIN_WIDTH)..Pixels::MAX)
-                        .child(content),
+                        .size(px(rail_size))
+                        .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
+                        .child(sidebar),
                 ),
         );
         let titlebar = div()
@@ -2155,16 +2157,6 @@ impl Render for TerminalView {
         }
         let workspace_bounds = Arc::clone(&self.workspace_bounds);
         let workspace_entity = cx.weak_entity();
-        let rail_width = *self.rail_width.lock().expect("rail width mutex poisoned");
-        let next_workspace =
-            terminal_workspace_size(window.viewport_size(), rail_width, self.rail_collapsed);
-        {
-            let mut current = self
-                .workspace_bounds
-                .lock()
-                .expect("workspace bounds mutex poisoned");
-            *current = next_workspace;
-        }
         let (workspace_width, workspace_height) = *self
             .workspace_bounds
             .lock()
@@ -2182,15 +2174,11 @@ impl Render for TerminalView {
                 MinSizePolicy::new(1.0, 1.0),
             )
             .unwrap_or_default();
-        let active_bounds = layouts
-            .iter()
-            .find(|pane| pane.pane_id == active_pane)
-            .map(|pane| pane.bounds);
         if let Some(state) = self.registry.sessions.get_mut(&active_pane) {
-            let bounds = active_bounds
-                .map(|bounds| (bounds.width.max(1.0) as u32, bounds.height.max(1.0) as u32))
-                .unwrap_or_else(|| *state.measured_bounds.lock().expect("bounds mutex poisoned"));
-            *state.measured_bounds.lock().expect("bounds mutex poisoned") = bounds;
+            // The canvas is inside the actual content panel, so this includes
+            // the title strip, terminal inset, divider, and the current rail
+            // width without trying to reconstruct GPUI's layout arithmetic.
+            let bounds = *state.measured_bounds.lock().expect("bounds mutex poisoned");
             if let Err(error) = state
                 .session
                 .resize(bounds.0, bounds.1, self.metrics.rio_cell())
@@ -2548,18 +2536,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_workspace_tracks_window_and_rail_geometry() {
-        assert_eq!(
-            terminal_workspace_size(size(px(960.0), px(640.0)), 156.0, false),
-            (788.0, 590.0)
-        );
-        assert_eq!(
-            terminal_workspace_size(size(px(960.0), px(640.0)), 156.0, true),
-            (894.0, 590.0)
-        );
-    }
-
-    #[test]
     fn sidebar_labels_use_a_stable_single_line_name() {
         assert_eq!(
             sidebar_tab_label("~/Code/src/github.com/cuenv/cuenv"),
@@ -2567,6 +2543,7 @@ mod tests {
         );
         assert_eq!(sidebar_tab_label("/"), "/");
         assert_eq!(sidebar_tab_label("build"), "build");
+        assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
     }
 
     #[test]
