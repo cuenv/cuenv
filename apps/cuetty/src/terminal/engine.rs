@@ -20,11 +20,13 @@ use gpui::{
     App, AppContext, Application, BorderStyle, Bounds, ClipboardItem, Context, Edges, Element,
     FocusHandle, Font, FontFeatures, FontStyle, FontWeight, Hsla, InteractiveElement, IntoElement,
     KeyBinding, Menu, MenuItem, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    ParentElement, Pixels, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, Size,
     StatefulInteractiveElement, StrikethroughStyle, Styled, SystemMenuType, TextRun, Timer,
-    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBounds, WindowControlArea, WindowOptions,
-    actions, canvas, div, point, prelude::FluentBuilder, px, quad, size,
+    UnderlineStyle as GpuiUnderlineStyle, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowControlArea, WindowOptions, actions, canvas, div, point, prelude::FluentBuilder, px,
+    quad, size,
 };
+use gpui_component::slider::{Slider, SliderEvent, SliderState};
 use gpui_component::tooltip::Tooltip;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -59,6 +61,26 @@ impl TerminalRenderer for GridRenderer {
 
 fn shell_notice_text(notice: Option<&str>) -> Option<String> {
     notice.map(|notice| format!("• {notice}"))
+}
+
+const CHROME_GLASS_OPACITY: f32 = 0.72;
+
+fn color_with_opacity(color: Rgb, opacity: f32) -> Rgba {
+    let mut color = gpui::rgb(gpui_rgb(color));
+    color.a = opacity.clamp(0.0, 1.0);
+    color
+}
+
+fn terminal_background_color(theme: &TerminalTheme, color: Rgb) -> Rgba {
+    color_with_opacity(color, theme.background_opacity)
+}
+
+fn chrome_glass_color(color: Rgb) -> Rgba {
+    color_with_opacity(color, CHROME_GLASS_OPACITY)
+}
+
+fn uses_terminal_surface_background(cell: &TerminalCell) -> bool {
+    !cell.style.inverse && matches!(cell.background, super::model::Color::DefaultBackground)
 }
 
 /// Fixed-layout terminal surface informed by Termy/Okena design patterns; no
@@ -310,18 +332,28 @@ impl Element for TerminalGrid {
             let mut start = 0;
             while start < cells.len() {
                 let (_, background) = colors(&cells[start], &self.theme, false);
+                let uses_default_background = uses_terminal_surface_background(&cells[start]);
                 let mut end = start + 1;
-                while end < cells.len() && colors(&cells[end], &self.theme, false).1 == background {
+                while end < cells.len()
+                    && colors(&cells[end], &self.theme, false).1 == background
+                    && uses_default_background == uses_terminal_surface_background(&cells[end])
+                {
                     end += 1;
                 }
-                window.paint_quad(quad(
-                    self.cell_bounds(bounds.origin, row, start, end - start),
-                    px(0.0),
-                    gpui::rgb(gpui_rgb(background)),
-                    Edges::default(),
-                    Hsla::transparent_black(),
-                    BorderStyle::default(),
-                ));
+                // The terminal surface owns the single translucent default
+                // background layer. Painting it again for every default cell
+                // compounds alpha until wallpaper passthrough disappears.
+                // Explicit TUI backgrounds stay opaque for contrast.
+                if !uses_default_background {
+                    window.paint_quad(quad(
+                        self.cell_bounds(bounds.origin, row, start, end - start),
+                        px(0.0),
+                        gpui::rgb(gpui_rgb(background)),
+                        Edges::default(),
+                        Hsla::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
                 start = end;
             }
             // Overlays are painted after semantic cell backgrounds but before
@@ -737,6 +769,7 @@ struct TerminalView {
     destination: Destination,
     settings_draft: Option<SettingsDraft>,
     settings_error: Option<String>,
+    transparency_slider: gpui::Entity<SliderState>,
 }
 
 const TAB_RAIL_WIDTH: f32 = 56.0;
@@ -849,6 +882,26 @@ impl TerminalView {
         cx.observe_window_bounds(window, move |_, _, cx| cx.notify())
             .detach();
         let config = TerminalConfig::default();
+        let transparency_slider = cx.new(|_| {
+            SliderState::new()
+                .min(0.0)
+                .max(100.0)
+                .step(1.0)
+                .default_value(f32::from(config.terminal_transparency_percent))
+        });
+        cx.subscribe(&transparency_slider, |view, _, event: &SliderEvent, cx| {
+            let SliderEvent::Change(value) = event;
+            let percent = value.end().round().clamp(0.0, 100.0) as u8;
+            if let Some(draft) = view.settings_draft.as_mut() {
+                if let Err(error) = draft.set_terminal_transparency(percent) {
+                    view.settings_error = Some(error.to_string());
+                } else {
+                    view.settings_error = None;
+                }
+            }
+            cx.notify();
+        })
+        .detach();
         let metrics = TerminalMetrics::from_config(cx.text_system(), &config);
         let theme = TerminalTheme::from_config(&config);
         let factory: Arc<dyn TerminalSessionFactory> = Arc::new(RioTerminalFactory);
@@ -871,6 +924,7 @@ impl TerminalView {
                     destination: Destination::Terminal(tab),
                     settings_draft: None,
                     settings_error: None,
+                    transparency_slider,
                 };
                 view.spawn_wake(cx, pane, SessionGeneration(1), wake_rx);
                 view.spawn_cwd_poll(cx);
@@ -892,6 +946,7 @@ impl TerminalView {
                     destination: Destination::Settings,
                     settings_draft: None,
                     settings_error: None,
+                    transparency_slider,
                 }
             }
         }
@@ -1105,6 +1160,10 @@ impl TerminalView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !matches!(self.destination, Destination::Settings) {
             self.settings_draft = Some(SettingsDraft::new(self.config.clone()));
+            let transparency = self.config.terminal_transparency_percent;
+            self.transparency_slider.update(cx, |slider, cx| {
+                slider.set_value(f32::from(transparency), window, cx);
+            });
             self.settings_error = None;
             self.destination = Destination::Settings;
         }
@@ -1127,6 +1186,7 @@ impl TerminalView {
         };
         match draft.apply() {
             Ok(config) => {
+                window.set_background_appearance(WindowBackgroundAppearance::Blurred);
                 self.metrics = TerminalMetrics::from_config(cx.text_system(), &config);
                 self.theme = TerminalTheme::from_config(&config);
                 self.config = config;
@@ -1143,9 +1203,16 @@ impl TerminalView {
         }
         cx.notify();
     }
-    fn reset_settings(&mut self, cx: &mut Context<Self>) {
+    fn reset_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(draft) = self.settings_draft.as_mut() {
             draft.reset_defaults();
+            self.transparency_slider.update(cx, |slider, cx| {
+                slider.set_value(
+                    f32::from(TerminalConfig::default().terminal_transparency_percent),
+                    window,
+                    cx,
+                );
+            });
             self.settings_error = None;
         }
         cx.notify();
@@ -1547,7 +1614,7 @@ impl TerminalView {
                 .justify_center()
                 .px(px(2.0))
                 .rounded(px(7.0))
-                .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
+                .hover(|this| this.bg(chrome_glass_color(theme.surface)))
                 .cursor_pointer()
                 .on_click(cx.listener(move |view, _event, window, cx| {
                     view.select_terminal_tab(tab_id, window, cx);
@@ -1596,7 +1663,7 @@ impl TerminalView {
             .flex()
             .flex_col()
             .flex_shrink_0()
-            .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
+            .bg(chrome_glass_color(theme.title_surface))
             .border_l_1()
             .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
             .child(tabs);
@@ -1629,7 +1696,7 @@ impl TerminalView {
             .rounded(px(7.0))
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
             .text_size(px(12.0))
-            .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
+            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("New tab").build(window, cx))
             .on_click(cx.listener(|view, _event, window, cx| {
@@ -1646,7 +1713,7 @@ impl TerminalView {
             .rounded(px(7.0))
             .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
             .text_size(px(12.0))
-            .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.surface))))
+            .hover(|this| this.bg(chrome_glass_color(theme.surface)))
             .cursor_pointer()
             .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
             .on_click(cx.listener(|view, _event, window, cx| {
@@ -1669,6 +1736,7 @@ impl TerminalView {
             .is_some_and(SettingsDraft::is_dirty);
         let font_size = values.font.size_px;
         let line_height = values.font.line_height_multiplier;
+        let transparency = values.terminal_transparency_percent;
         let button = |id: &'static str, label: String| {
             div()
                 .id(id)
@@ -1830,6 +1898,50 @@ impl TerminalView {
             )
             .child(
                 div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(
+                                div()
+                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                    .child("Terminal transparency"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                    .child("0% opaque · 100% transparent"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(260.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(
+                                Slider::new(&self.transparency_slider)
+                                    .w(px(200.0))
+                                    .bg(gpui::rgb(gpui_rgb(theme.cursor)))
+                                    .text_color(gpui::rgb(gpui_rgb(theme.cursor))),
+                            )
+                            .child(
+                                div()
+                                    .w(px(48.0))
+                                    .text_right()
+                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                    .child(format!("{transparency}%")),
+                            ),
+                    ),
+            )
+            .child(
+                div()
                     .flex_1()
                     .w_full()
                     .text_size(px(12.0))
@@ -1866,7 +1978,9 @@ impl TerminalView {
                             .flex()
                             .gap(px(8.0))
                             .child(button("settings-reset", "Reset defaults".into()).on_click(
-                                cx.listener(|view, _event, _window, cx| view.reset_settings(cx)),
+                                cx.listener(|view, _event, window, cx| {
+                                    view.reset_settings(window, cx)
+                                }),
                             ))
                             .child(button("settings-cancel", "Cancel".into()).on_click(
                                 cx.listener(|view, _event, window, cx| {
@@ -1911,7 +2025,7 @@ impl TerminalView {
             .w_full()
             .flex()
             .items_center()
-            .bg(gpui::rgb(gpui_rgb(theme.title_surface)))
+            .bg(chrome_glass_color(theme.title_surface))
             .border_b_1()
             .border_color(gpui::rgb(gpui_rgb(theme.host_background)))
             .child(
@@ -1971,7 +2085,7 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::rgb(gpui_rgb(theme.surface)))
+                    .bg(terminal_background_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(message)
                     .into_any_element(),
@@ -2000,7 +2114,7 @@ impl Render for TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::rgb(gpui_rgb(theme.surface)))
+                    .bg(terminal_background_color(&theme, theme.surface))
                     .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
                     .child(format!("Cuetty terminal error: {error}"))
                     .into_any_element(),
@@ -2051,38 +2165,33 @@ impl Render for TerminalView {
             focused: terminal_focused,
             overlays,
         }));
-        let mut terminal_surface = div()
-            .relative()
-            .size_full()
-            .overflow_hidden()
-            .bg(gpui::rgb(gpui_rgb(theme.surface)))
-            .child(
-                canvas(
-                    move |bounds, _, app| {
-                        let next = (
-                            f32::from(bounds.size.width).max(1.0),
-                            f32::from(bounds.size.height).max(1.0),
-                        );
-                        let changed = {
-                            let mut current = workspace_bounds
-                                .lock()
-                                .expect("workspace bounds mutex poisoned");
-                            if *current != next {
-                                *current = next;
-                                true
-                            } else {
-                                false
-                            }
-                        };
-                        if changed {
-                            let _ = workspace_entity.update(app, |_view, cx| cx.notify());
+        let mut terminal_surface = div().relative().size_full().overflow_hidden().child(
+            canvas(
+                move |bounds, _, app| {
+                    let next = (
+                        f32::from(bounds.size.width).max(1.0),
+                        f32::from(bounds.size.height).max(1.0),
+                    );
+                    let changed = {
+                        let mut current = workspace_bounds
+                            .lock()
+                            .expect("workspace bounds mutex poisoned");
+                        if *current != next {
+                            *current = next;
+                            true
+                        } else {
+                            false
                         }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            );
+                    };
+                    if changed {
+                        let _ = workspace_entity.update(app, |_view, cx| cx.notify());
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        );
         for pane in layouts {
             let bounds = pane.bounds;
             let pane_id = pane.pane_id;
@@ -2109,7 +2218,6 @@ impl Render for TerminalView {
                     div()
                         .relative()
                         .size_full()
-                        .bg(gpui::rgb(gpui_rgb(theme.surface)))
                         .track_focus(&self.focus)
                         .on_key_down(cx.listener(Self::key))
                         .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
@@ -2173,7 +2281,7 @@ impl Render for TerminalView {
             // Keep the inset in the terminal's surface colour. The host
             // chrome still owns the title strip and rail; the terminal area
             // should read as one continuous canvas rather than a framed box.
-            .bg(gpui::rgb(gpui_rgb(theme.surface)))
+            .bg(terminal_background_color(&theme, theme.surface))
             .child(
                 terminal_surface
                     .absolute()
@@ -2220,11 +2328,15 @@ pub fn run() {
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(12.0), px(9.0))),
                 }),
+                window_background: WindowBackgroundAppearance::Blurred,
                 ..WindowOptions::default()
             },
             |window, cx| {
-                let view = cx.new(|cx| TerminalView::new(window, cx));
-                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+                // Cuetty owns its entire window surface. gpui-component's
+                // generic Root paints an opaque theme background behind its
+                // child, which prevents the terminal alpha from ever reaching
+                // the macOS compositor.
+                cx.new(|cx| TerminalView::new(window, cx))
             },
         )
         .expect("open Cuetty window");
@@ -2410,6 +2522,20 @@ mod tests {
             colors(&cell, &TerminalTheme::default(), false),
             (Rgb(4, 5, 6), Rgb(1, 2, 3))
         );
+    }
+
+    #[test]
+    fn only_default_non_inverse_cells_share_the_transparent_surface() {
+        let default = TerminalCell::narrow(' ');
+        assert!(uses_terminal_surface_background(&default));
+
+        let mut explicit = default.clone();
+        explicit.background = Color::Rgb(Rgb(4, 5, 6));
+        assert!(!uses_terminal_surface_background(&explicit));
+
+        let mut inverse = default;
+        inverse.style.inverse = true;
+        assert!(!uses_terminal_surface_background(&inverse));
     }
 
     #[test]
