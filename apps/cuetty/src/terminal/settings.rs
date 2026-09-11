@@ -3,7 +3,7 @@
 //! A draft is deliberately pure: applying it changes the caller-visible
 //! session configuration only. Persistence remains a separate host concern.
 
-use super::config::{ConfigError, TerminalConfig};
+use super::config::{ConfigError, TerminalConfig, TerminalPadding};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SettingsDraft {
@@ -46,6 +46,10 @@ impl SettingsDraft {
 
     pub fn set_terminal_transparency(&mut self, percent: u8) -> Result<(), ConfigError> {
         self.update(|config| config.terminal_transparency_percent = percent)
+    }
+
+    pub fn set_terminal_padding(&mut self, padding: TerminalPadding) -> Result<(), ConfigError> {
+        self.update(|config| config.terminal_padding = padding)
     }
 
     pub fn apply(self) -> Result<TerminalConfig, ConfigError> {
@@ -116,6 +120,29 @@ mod tests {
             Err(ConfigError::InvalidTerminalTransparency(101))
         ));
         assert_eq!(settings.draft().terminal_transparency_percent, 72);
+    }
+
+    #[test]
+    fn padding_edit_is_bounded_and_transactional() {
+        let mut settings = SettingsDraft::new(TerminalConfig::default());
+        let padding = TerminalPadding {
+            top: 4,
+            right: 8,
+            bottom: 12,
+            left: 16,
+        };
+        settings.set_terminal_padding(padding).unwrap();
+        assert_eq!(settings.draft().terminal_padding, padding);
+
+        let invalid = TerminalPadding {
+            left: 129,
+            ..padding
+        };
+        assert_eq!(
+            settings.set_terminal_padding(invalid),
+            Err(ConfigError::InvalidTerminalPadding(129))
+        );
+        assert_eq!(settings.draft().terminal_padding, padding);
     }
 
     #[test]
