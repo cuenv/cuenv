@@ -169,6 +169,10 @@ The terminal content panel establishes its own full-size flex layout so the
 dark terminal surface is present on the first window frame; launch must not
 depend on a later resize to replace AppKit's default backing colour.
 
+Wheel and trackpad deltas retain AppKit's system-adjusted direction, including
+the macOS Natural Scrolling preference, while sub-line motion is accumulated
+per terminal pane before Rio history is moved.
+
 ## Nix
 
 The app-local flake provides `packages.cuetty`, `apps.cuetty`, and the focused
