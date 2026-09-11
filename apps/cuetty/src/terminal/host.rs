@@ -216,6 +216,10 @@ impl RioTerminalSession {
         let environment = Some(vec![
             ("TERM".into(), "xterm-256color".into()),
             ("COLORTERM".into(), "truecolor".into()),
+            // A terminal window is a new top-level shell session, regardless
+            // of the shell depth of the process which launched Cuetty. Shells
+            // increment this inherited value as they initialize.
+            ("SHLVL".into(), "0".into()),
         ]);
         #[cfg(unix)]
         let pty = teletypewriter::create_pty_with_spawn(
@@ -697,6 +701,16 @@ mod tests {
             wait_for_text(&mut session, expected);
             session.close().expect("close should succeed");
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[ignore = "requires a real host PTY; run real_session tests with --ignored"]
+    fn real_session_normalizes_inherited_shell_level() {
+        let _serial = serial_pty_test();
+        let mut session = fixture(&["shell-level"]);
+        wait_for_text(&mut session, "M0-SHLVL:1");
+        session.close().expect("close should succeed");
     }
 
     #[test]

@@ -46,6 +46,10 @@ surface exactly once and closes the child shell. Wheel or trackpad scrolling
 moves through Rio's authoritative history; Shift-Page Up/Down and
 Shift-Home/End provide keyboard navigation.
 
+Cuetty normalizes inherited `SHLVL` before spawning the login shell, so a new
+window starts as shell level 1 even when the app was launched from a nested
+development shell. Subshells increment normally from there.
+
 ## Verification
 
 ```sh

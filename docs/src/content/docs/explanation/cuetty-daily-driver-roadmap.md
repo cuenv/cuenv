@@ -192,6 +192,10 @@ the representable keypress/modifier/named-key/repeat subset. Deterministic unit
 and real-PTY fixtures cover that negotiation path. Key releases, keypad
 identity, alternate-key reporting, and IME commits remain open.
 
+The same follow-up normalizes inherited `SHLVL` at the PTY boundary. A Cuetty
+window is a new top-level shell session and now starts at level 1 even when its
+development launcher was itself nested; a real-PTY fixture covers that contract.
+
 **Exit gate:** the project has a pinned engine whose public surface can support
 the M1 contract, plus a migration test that proves the existing PTY, frame, and
 close semantics still work.

@@ -22,6 +22,13 @@ Supporting checks:
   cuenv task ci.schema-docs-check
     Passed.
 
+Shell-level command:
+  cargo test --locked terminal::host::tests::real_session_normalizes_inherited_shell_level -- --ignored --exact --test-threads=1
+
+Result:
+  1 passed; 0 failed. The PTY child observed SHLVL=1 after Cuetty supplied a
+  clean base value, independently of the development launcher's shell depth.
+
 Live application observation:
   The release bundle rebuilt, was ad-hoc signed, and launched into a visible
   focused Cuetty window. Sending input no longer replaced the terminal with the
