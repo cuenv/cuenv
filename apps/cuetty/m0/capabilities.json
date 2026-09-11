@@ -380,6 +380,23 @@
       "status": "implemented_partially_validated"
     },
     {
+      "execution_ids": [
+        "macos_shell_level_regression"
+      ],
+      "gap_owner": "cuetty_host",
+      "id": "top_level_shell_environment",
+      "notes": "Cuetty supplies SHLVL=0 at the PTY boundary so the spawned login shell initializes at level 1 rather than inheriting the development launcher's nesting. Subshells increment from that clean base.",
+      "outcome": "pass",
+      "required_for_m0": false,
+      "source_evidence": [
+        {
+          "path": "apps/cuetty/src/terminal/host.rs",
+          "symbol": "real_session_normalizes_inherited_shell_level"
+        }
+      ],
+      "status": "verified"
+    },
+    {
       "execution_ids": [],
       "gap_owner": "validation",
       "id": "librio_control_regression",
@@ -638,6 +655,19 @@
       "exit_code": 0,
       "result": "passed",
       "scope": "The real-PTY regression negotiated Kitty disambiguation and xterm modifyOtherKeys through Rio, then verified Cuetty's plain and modified input bytes. This does not cover key releases, keypad identity, alternate-key reporting, or IME.",
+      "log_path": "apps/cuetty/m0/evidence/2026-09-11-macos-extended-keyboard.txt"
+    },
+    {
+      "id": "macos_shell_level_regression",
+      "command": "cargo test --locked terminal::host::tests::real_session_normalizes_inherited_shell_level -- --ignored --exact --test-threads=1",
+      "working_directory": "apps/cuetty",
+      "platform": "Darwin 27.0.0 arm64",
+      "rust_toolchain": "1.97.0",
+      "engine_revision": "b0694c0707a90dc93fdf01cbf8a658424be285ee",
+      "executed_at": "2026-09-11",
+      "exit_code": 0,
+      "result": "passed",
+      "scope": "The real-PTY child observed SHLVL=1 after Cuetty established a clean shell-level base. This does not assert behavior for user startup code that deliberately rewrites SHLVL.",
       "log_path": "apps/cuetty/m0/evidence/2026-09-11-macos-extended-keyboard.txt"
     },
     {

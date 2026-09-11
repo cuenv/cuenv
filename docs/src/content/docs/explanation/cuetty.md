@@ -47,7 +47,9 @@ The boundary is deliberately replaceable:
 
 The current usable slice includes:
 
-- A login shell attached to a Rio-backed terminal session.
+- A login shell attached to a Rio-backed terminal session. Cuetty resets the
+  inherited `SHLVL` base so a new window starts at shell level 1 rather than
+  leaking the launcher's nesting into the prompt.
 - Fixed-width, fixed-row-height GPUI rendering with semantic colours and
   explicit wide-cell and soft-wrap occupancy.
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's

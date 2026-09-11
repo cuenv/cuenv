@@ -18,6 +18,9 @@ case "${1:-}" in
         dimensions=$(stty size)
         printf 'M0-SIZE:%s\r\n' "$dimensions"
         ;;
+    shell-level)
+        printf 'M0-SHLVL:%s\r\n' "${SHLVL:-missing}"
+        ;;
     raw|bracketed|kitty|modify-other-keys)
         count=${2:?expected input byte count}
         case "$count" in
@@ -53,7 +56,7 @@ case "${1:-}" in
         printf 'M0-UNEXPECTED-INPUT:%s\r\n' "$command"
         ;;
     *)
-        printf 'usage: m0-pty-child.sh exit|resize|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|hold|history\n' >&2
+        printf 'usage: m0-pty-child.sh exit|resize|shell-level|raw COUNT|bracketed COUNT|kitty COUNT|modify-other-keys COUNT|hold|history\n' >&2
         exit 64
         ;;
 esac
