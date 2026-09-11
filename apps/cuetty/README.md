@@ -68,12 +68,10 @@ write; a new tab opening in `$HOME`; and clean shell/window close.
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
 one dark title strip, a compact right-side vertical tab rail, and a full-bleed
-Catppuccin Mocha terminal surface. The rail is a real resizable panel: drag its
-edge to choose a width, or leave it at its narrow 56px number-only default. Expanded
-tab labels stay single-line and show a stable final path component; the complete
-title remains available as a tooltip. Restrained active-tab treatment and
-compact footer controls keep the rail readable without competing with terminal
-content. The Rio surface sits in an intentional 8px inset below the title strip
+Catppuccin Mocha terminal surface. The rail is fixed at a narrow 56px and shows
+only tab ordinals; stable path names remain available as tooltips. Restrained
+active-tab treatment and two compact footer controls keep the rail readable
+without competing with terminal content. The Rio surface sits in an intentional 8px inset below the title strip
 beside the rail. The inset uses the same surface colour, so it reads as breathing room
 inside one continuous terminal canvas rather than a contrasting frame. Clicking
 the terminal viewport requests focus.
@@ -134,7 +132,7 @@ Catppuccin's Mocha mapping.
 
 The terminal render resizes Rio from the pane canvas measured inside GPUI's
 actual content panel. The measurement therefore already excludes the title
-strip, terminal inset, divider, and current rail width instead of trying to
+strip, terminal inset, divider, and fixed rail width instead of trying to
 reconstruct those dimensions from the outer window. This keeps window and rail
 changes on the same grid, preserves one-cell clamping and resize deduplication,
 and prevents a stale wider frame from clipping long output. Startup,
