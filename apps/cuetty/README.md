@@ -62,7 +62,8 @@ cargo run --release --locked
 
 Manual acceptance is: a visible shell prompt; command typing and output redraw;
 Unicode paste; `stty size` matching the resized grid; an OSC 52 clipboard
-write; a new tab opening in `$HOME`; and clean shell/window close.
+write; shell control chords such as Ctrl-C and Ctrl-U; a new tab opening in
+`$HOME`; and clean shell/window close.
 
 ## Visual contract
 
