@@ -172,8 +172,9 @@ an integration notice. CUE evaluation never runs on the GPUI thread.
 When the same directory contains an evaluable `package cuenv`, Cuetty also
 discovers its `tasks` map. The task button in the fixed right rail opens a
 floating, non-resizing task sidebar; Command-K opens a searchable command
-palette. Selecting a task starts a fresh terminal tab and invokes the existing
-`cuenv task --path … --package cuenv …` CLI path, preserving its graph, cache,
+palette. Selecting a task invokes the existing CLI in the same terminal pane
+whose working directory supplied the catalogue. The
+`cuenv task --path … --package cuenv …` CLI path preserves its graph, cache,
 hook, secret-redaction, cancellation, and exit behaviour. Tasks with required
 parameters are staged at the prompt for editing instead of running
 incompletely. Directories without a task catalogue remain ordinary terminals.
