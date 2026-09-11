@@ -67,13 +67,14 @@ write; a new tab opening in `$HOME`; and clean shell/window close.
 ## Visual contract
 
 The shell follows Ghostty's restrained presentation: native traffic lights,
-one dark title strip, a compact vertical tab rail, and a full-bleed Catppuccin
-Mocha terminal surface. The rail is a real resizable panel: drag its edge to
-choose a width, or collapse it to a 50px number-only mode and restore the last
-expanded width. Expanded tab labels stay single-line and show a stable final
-path component; the complete title remains available as a tooltip. The Rio
-surface sits in an intentional 8px inset below the title strip beside the
-rail. The inset uses the same surface colour, so it reads as breathing room
+one dark title strip, a compact right-side vertical tab rail, and a full-bleed
+Catppuccin Mocha terminal surface. The rail is a real resizable panel: drag its
+edge to choose a width, or leave it at its narrow 56px number-only default. Expanded
+tab labels stay single-line and show a stable final path component; the complete
+title remains available as a tooltip. Restrained active-tab treatment and
+compact footer controls keep the rail readable without competing with terminal
+content. The Rio surface sits in an intentional 8px inset below the title strip
+beside the rail. The inset uses the same surface colour, so it reads as breathing room
 inside one continuous terminal canvas rather than a contrasting frame. Clicking
 the terminal viewport requests focus.
 Text uses the configured `MonaspiceNe Nerd Font` family with explicit `Noto
@@ -131,11 +132,12 @@ The built-in colour scheme is Catppuccin Mocha: Crust frames the host, Mantle
 frames the rail, Base fills the terminal, and the complete ANSI palette follows
 Catppuccin's Mocha mapping.
 
-The terminal render derives the current workspace from the GPUI window viewport
-and rail width before applying a resize to Rio; its post-layout canvas then
-confirms the exact pane bounds. This keeps window and sidebar changes on the
-same grid, preserves one-cell clamping and resize deduplication, and prevents a
-stale frame from clipping long output. Startup,
+The terminal render resizes Rio from the pane canvas measured inside GPUI's
+actual content panel. The measurement therefore already excludes the title
+strip, terminal inset, divider, and current rail width instead of trying to
+reconstruct those dimensions from the outer window. This keeps window and rail
+changes on the same grid, preserves one-cell clamping and resize deduplication,
+and prevents a stale wider frame from clipping long output. Startup,
 input, resize, paste, and close failures remain visible in the view rather than
 being dropped.
 
