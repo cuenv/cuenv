@@ -640,11 +640,12 @@ mod tests {
     fn real_session_input_encodes_printable_control_and_enter() {
         use super::super::input::{InputModifiers, KeyInput};
         let _serial = serial_pty_test();
-        let mut session = fixture(&["raw", "3"]);
+        let mut session = fixture(&["raw", "4"]);
         wait_for_text(&mut session, "M0-READY");
         for (key, modifiers) in [
             (KeyInput::Character('a'), InputModifiers::default()),
             (KeyInput::Character('c'), InputModifiers::CONTROL),
+            (KeyInput::Character('u'), InputModifiers::CONTROL),
             (KeyInput::Enter, InputModifiers::default()),
         ] {
             assert!(
@@ -657,7 +658,7 @@ mod tests {
                     .expect("input should reach the PTY")
             );
         }
-        wait_for_text(&mut session, "M0-BYTES:61030d");
+        wait_for_text(&mut session, "M0-BYTES:6103150d");
         session.close().expect("close should succeed");
     }
 

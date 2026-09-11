@@ -775,6 +775,36 @@ fn sidebar_tab_label(label: &str) -> String {
         .to_string()
 }
 
+fn terminal_key_input(key: &str, key_char: Option<&str>) -> Option<KeyInput> {
+    match key {
+        "enter" => Some(KeyInput::Enter),
+        "tab" => Some(KeyInput::Tab),
+        "backspace" => Some(KeyInput::Backspace),
+        "escape" => Some(KeyInput::Escape),
+        "up" => Some(KeyInput::Up),
+        "down" => Some(KeyInput::Down),
+        "left" => Some(KeyInput::Left),
+        "right" => Some(KeyInput::Right),
+        "home" => Some(KeyInput::Home),
+        "end" => Some(KeyInput::End),
+        "delete" => Some(KeyInput::Delete),
+        "space" => Some(KeyInput::Character(' ')),
+        _ => key_char
+            .and_then(single_character)
+            // GPUI intentionally omits key_char for macOS Control chords.
+            // Its layout-aware key remains available and is the correct
+            // source for the control-byte mapping.
+            .or_else(|| single_character(key))
+            .map(KeyInput::Character),
+    }
+}
+
+fn single_character(text: &str) -> Option<char> {
+    let mut characters = text.chars();
+    let character = characters.next()?;
+    characters.next().is_none().then_some(character)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Destination {
     Terminal(TabId),
@@ -1400,27 +1430,8 @@ impl TerminalView {
             }
             return;
         }
-        let input = match key {
-            "enter" => KeyInput::Enter,
-            "tab" => KeyInput::Tab,
-            "backspace" => KeyInput::Backspace,
-            "escape" => KeyInput::Escape,
-            "up" => KeyInput::Up,
-            "down" => KeyInput::Down,
-            "left" => KeyInput::Left,
-            "right" => KeyInput::Right,
-            "home" => KeyInput::Home,
-            "end" => KeyInput::End,
-            "delete" => KeyInput::Delete,
-            _ => match event
-                .keystroke
-                .key_char
-                .as_ref()
-                .and_then(|s| s.chars().next())
-            {
-                Some(c) => KeyInput::Character(c),
-                None => return,
-            },
+        let Some(input) = terminal_key_input(key, event.keystroke.key_char.as_deref()) else {
+            return;
         };
         let mut bits = 0;
         if modifiers.control {
@@ -2357,6 +2368,23 @@ mod tests {
         assert_eq!(sidebar_tab_label("/"), "/");
         assert_eq!(sidebar_tab_label("build"), "build");
         assert_eq!(sidebar_tab_label("sleep 5 ~/Code/cuenv"), "cuenv");
+    }
+
+    #[test]
+    fn macos_control_chords_fall_back_to_the_layout_aware_key() {
+        assert_eq!(
+            terminal_key_input("c", None),
+            Some(KeyInput::Character('c'))
+        );
+        assert_eq!(
+            terminal_key_input("u", None),
+            Some(KeyInput::Character('u'))
+        );
+        assert_eq!(
+            terminal_key_input("space", None),
+            Some(KeyInput::Character(' '))
+        );
+        assert_eq!(terminal_key_input("pageup", None), None);
     }
 
     #[test]
