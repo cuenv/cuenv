@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub const PACKAGE: &str = "cuetty";
+pub const PROJECT_PACKAGE: &str = "cuenv";
 const MAX_BANNER_BYTES: usize = 120;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -26,6 +27,38 @@ impl BorderColor {
     pub fn hex(self) -> String {
         format!("#{:02x}{:02x}{:02x}", self.0, self.1, self.2)
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CuenvTaskKind {
+    Task,
+    Group,
+    Sequence,
+}
+
+impl CuenvTaskKind {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Task => "TASK",
+            Self::Group => "GROUP",
+            Self::Sequence => "SEQUENCE",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CuenvTask {
+    pub name: String,
+    pub description: Option<String>,
+    pub kind: CuenvTaskKind,
+    pub requires_parameters: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TaskEvaluation {
+    Absent,
+    Valid(Vec<CuenvTask>),
+    Invalid(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,7 +85,9 @@ pub struct CuenvPaneState {
     pub cwd: Option<PathBuf>,
     pub generation: u64,
     pub presentation: CuettyPresentation,
+    pub tasks: Vec<CuenvTask>,
     pub notice: Option<String>,
+    pub task_notice: Option<String>,
 }
 
 impl CuenvPaneState {
@@ -63,7 +98,9 @@ impl CuenvPaneState {
         self.cwd = Some(cwd);
         self.generation = self.generation.wrapping_add(1);
         self.presentation = CuettyPresentation::default();
+        self.tasks.clear();
         self.notice = None;
+        self.task_notice = None;
         true
     }
 
@@ -86,6 +123,24 @@ impl CuenvPaneState {
                 self.notice = None;
             }
             Evaluation::Invalid(error) => self.notice = Some(error),
+        }
+        true
+    }
+
+    pub fn apply_tasks(&mut self, generation: u64, update: TaskEvaluation) -> bool {
+        if self.generation != generation {
+            return false;
+        }
+        match update {
+            TaskEvaluation::Valid(tasks) => {
+                self.tasks = tasks;
+                self.task_notice = None;
+            }
+            TaskEvaluation::Absent => {
+                self.tasks.clear();
+                self.task_notice = None;
+            }
+            TaskEvaluation::Invalid(error) => self.task_notice = Some(error),
         }
         true
     }
@@ -143,6 +198,30 @@ impl ConfigSource {
         };
         parse_value(value.clone())
     }
+
+    pub fn evaluate_tasks(&self) -> TaskEvaluation {
+        let module_root = self.module_root.as_deref().unwrap_or(&self.target_dir);
+        let options = ModuleEvalOptions {
+            recursive: false,
+            package_name: Some(PROJECT_PACKAGE.into()),
+            target_dir: Some(self.target_dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let module = match cuengine::evaluate_module(module_root, PROJECT_PACKAGE, Some(&options)) {
+            Ok(module) => module,
+            Err(error) => {
+                return TaskEvaluation::Invalid(format!("Cuetty task evaluation failed: {error}"));
+            }
+        };
+        let Some(value) = module
+            .instances
+            .get(".")
+            .or_else(|| module.instances.values().next())
+        else {
+            return TaskEvaluation::Absent;
+        };
+        parse_tasks(value)
+    }
 }
 
 fn nearest_module_root(start: &Path) -> Option<PathBuf> {
@@ -195,6 +274,102 @@ fn parse_color(value: &str) -> Result<BorderColor, String> {
     Ok(BorderColor(channel(1)?, channel(3)?, channel(5)?))
 }
 
+fn parse_tasks(value: &serde_json::Value) -> TaskEvaluation {
+    let Some(tasks) = value.get("tasks") else {
+        return TaskEvaluation::Valid(Vec::new());
+    };
+    let Some(tasks) = tasks.as_object() else {
+        return TaskEvaluation::Invalid("Cuenv tasks must evaluate to an object".into());
+    };
+    let mut catalog = Vec::new();
+    for (name, node) in tasks {
+        if let Err(error) = collect_task(name, node, &mut catalog) {
+            return TaskEvaluation::Invalid(error);
+        }
+    }
+    catalog.sort_by(|left, right| left.name.cmp(&right.name));
+    TaskEvaluation::Valid(catalog)
+}
+
+fn collect_task(
+    name: &str,
+    node: &serde_json::Value,
+    catalog: &mut Vec<CuenvTask>,
+) -> Result<(), String> {
+    if node.is_array() {
+        catalog.push(CuenvTask {
+            name: name.into(),
+            description: None,
+            kind: CuenvTaskKind::Sequence,
+            requires_parameters: false,
+        });
+        return Ok(());
+    }
+    let Some(object) = node.as_object() else {
+        return Err(format!(
+            "Cuenv task '{name}' must evaluate to an object or sequence"
+        ));
+    };
+    let description = object
+        .get("description")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from);
+    if object.get("type").and_then(serde_json::Value::as_str) == Some("group") {
+        catalog.push(CuenvTask {
+            name: name.into(),
+            description,
+            kind: CuenvTaskKind::Group,
+            requires_parameters: false,
+        });
+        for (child_name, child) in object {
+            if matches!(
+                child_name.as_str(),
+                "type" | "dependsOn" | "maxConcurrency" | "description"
+            ) || child_name.starts_with('_')
+            {
+                continue;
+            }
+            collect_task(&format!("{name}.{child_name}"), child, catalog)?;
+        }
+        return Ok(());
+    }
+    if !object.contains_key("command") && !object.contains_key("script") {
+        return Err(format!(
+            "Cuenv task '{name}' has no command, script, group, or sequence"
+        ));
+    }
+    catalog.push(CuenvTask {
+        name: name.into(),
+        description,
+        kind: CuenvTaskKind::Task,
+        requires_parameters: has_required_parameters(object.get("params")),
+    });
+    Ok(())
+}
+
+fn has_required_parameters(params: Option<&serde_json::Value>) -> bool {
+    let Some(params) = params.and_then(serde_json::Value::as_object) else {
+        return false;
+    };
+    params.iter().any(|(name, value)| {
+        if name == "positional" {
+            value.as_array().is_some_and(|values| {
+                values.iter().any(|value| {
+                    value
+                        .get("required")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false)
+                })
+            })
+        } else {
+            value
+                .get("required")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        }
+    })
+}
+
 pub fn relevant_change(event: &Event) -> bool {
     if matches!(event.kind, EventKind::Access(_)) {
         return false;
@@ -222,6 +397,10 @@ pub trait CuenvWatcher: Send {
 /// watcher or invoking the CUE bridge.
 pub trait CuenvProvider: Send + Sync {
     fn evaluate(&self, source: &ConfigSource) -> Evaluation;
+    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
+        let _ = source;
+        TaskEvaluation::Absent
+    }
     fn watch(
         &self,
         source: &ConfigSource,
@@ -282,6 +461,10 @@ impl CuenvWatcher for ConfigWatcher {
 impl CuenvProvider for NativeCuenvProvider {
     fn evaluate(&self, source: &ConfigSource) -> Evaluation {
         source.evaluate()
+    }
+
+    fn evaluate_tasks(&self, source: &ConfigSource) -> TaskEvaluation {
+        source.evaluate_tasks()
     }
 
     fn watch(
@@ -368,6 +551,57 @@ mod tests {
     }
 
     #[test]
+    fn task_catalog_flattens_groups_and_marks_required_arguments() {
+        let evaluation = parse_tasks(&serde_json::json!({
+            "tasks": {
+                "build": {
+                    "command": "cargo",
+                    "description": "Build the workspace",
+                    "params": {"profile": {"required": true}}
+                },
+                "checks": {
+                    "type": "group",
+                    "description": "Quality gates",
+                    "lint": {"command": "cargo"}
+                },
+                "release": ["build", "checks.lint"]
+            }
+        }));
+        let TaskEvaluation::Valid(tasks) = evaluation else {
+            panic!("expected a valid task catalog");
+        };
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| task.name.as_str())
+                .collect::<Vec<_>>(),
+            ["build", "checks", "checks.lint", "release"]
+        );
+        assert!(tasks[0].requires_parameters);
+        assert_eq!(tasks[1].kind, CuenvTaskKind::Group);
+        assert_eq!(tasks[2].kind, CuenvTaskKind::Task);
+        assert_eq!(tasks[3].kind, CuenvTaskKind::Sequence);
+    }
+
+    #[test]
+    fn pane_state_clears_tasks_on_cwd_change_and_rejects_stale_results() {
+        let mut state = CuenvPaneState::default();
+        state.observe_cwd(PathBuf::from("/a"));
+        let generation = state.begin_source();
+        let tasks = vec![CuenvTask {
+            name: "build".into(),
+            description: None,
+            kind: CuenvTaskKind::Task,
+            requires_parameters: false,
+        }];
+        assert!(state.apply_tasks(generation, TaskEvaluation::Valid(tasks)));
+        assert_eq!(state.tasks.len(), 1);
+        state.observe_cwd(PathBuf::from("/b"));
+        assert!(state.tasks.is_empty());
+        assert!(!state.apply_tasks(generation, TaskEvaluation::Valid(Vec::new())));
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_non_hex_colours() {
         assert!(matches!(
             parse_value(serde_json::json!({"wat": true})),
@@ -436,6 +670,7 @@ mod tests {
         let source = ConfigSource::from_cwd(&root).unwrap();
         let evaluation = source.evaluate();
         assert!(matches!(evaluation, Evaluation::Absent));
+        assert!(matches!(source.evaluate_tasks(), TaskEvaluation::Absent));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -574,5 +809,20 @@ mod tests {
         let source = ConfigSource::from_cwd(&root).unwrap();
         assert!(matches!(source.evaluate(), Evaluation::Invalid(_)));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn discovers_the_repository_cuenv_task_catalog() {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let root = manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .expect("cuetty lives below the repository root");
+        let source = ConfigSource::from_cwd(root).expect("repository CUE source");
+        let TaskEvaluation::Valid(tasks) = source.evaluate_tasks() else {
+            panic!("repository package cuenv should evaluate into a task catalog");
+        };
+        assert!(tasks.iter().any(|task| task.name == "checks.clippy"));
+        assert!(tasks.iter().any(|task| task.name == "docs.build"));
     }
 }
