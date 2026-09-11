@@ -17,14 +17,18 @@ Cuetty currently has:
   backgrounds, cursor layering, and a shared 16px/1.2 line-height contract.
 - Resize, keyboard input, paste, OSC 52 clipboard writes, close handling, and
   focused live shell behavior.
+- Negotiated Kitty and `modifyOtherKeys` input for the keypress, modifier,
+  named-key, and repeat information exposed by the current GPUI host event.
 - A resizable vertical tab rail (50px compact to 280px expanded), session-only
   Settings with Apply/Cancel/Reset, and a native Quit/Cmd-Q action.
-- Static validation plus a signed macOS bundle check and a local process-launch
-  check; direct interactive input still needs a human visual pass.
+- Static validation plus a signed macOS bundle check, local process launch, and
+  a direct interactive shell/history smoke pass. The real daily-workload corpus
+  still needs human acceptance.
 
-The known live-UI limits are one codepoint per snapshot cell, no complete
-combining/emoji model and no live scrollback history UI. Mouse selection/Cmd-C
-copy and literal visible-frame search are live,
+The known live-UI limits are incomplete IME/emoji presentation and
+visible-frame-only selection/search coordinates. Rio-owned scrollback is live
+through wheel/trackpad and keyboard navigation. Mouse selection/Cmd-C copy and
+literal visible-frame search are live,
 including grid-painted selection and current-match overlays;
 the GPUI shell creates independent local Rio sessions for tabs. Split actions
 remain rejected; the product never renders a fake pane. Pure persistence,
@@ -38,11 +42,11 @@ behind replaceable traits.
 | PTY + ANSI/VT engine | Rio adapter; working | Alacritty-based runtime | Alacritty-based runtime | Keep Rio |
 | Fixed-grid rendering | Custom GPUI element; live verified | Custom element, batches, damage cache | Custom element, batches, cache | Done; add regressions |
 | Cell width/line metrics | Explicit font/line contract; snapped once | Configurable multiplier and measured advance | Configurable multiplier and measured advance | P0 |
-| Unicode width/combining | Not complete; one `char` per cell | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
-| Cursor and terminal modes | Host block cursor; basic keys | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
+| Unicode width/combining | Backend cluster text and wide occupancy preserved; IME/emoji rendering incomplete | Rich render-cell text/width model | Rich render-cell text/width model | P0 |
+| Cursor and terminal modes | Cursor shape/visibility, application cursor keys, and a tested negotiated extended-keyboard subset; mouse/keypad/focus modes incomplete | Cursor styles, keyboard/mouse modes | Cursor/mouse modes and richer metadata | P0 |
 | Damage and render cache | Coalesced wakeups; full-frame paint | Dirty spans and shaped-line cache | Damage-aware batched rendering | P0 |
 | Clipboard and paste | Cmd-V, OSC 52, mouse selection and Cmd-C copy | Broader clipboard/selection workflows | Clipboard, image paste, selection | P1 |
-| Scrollback and selection | Live selection; scrollback remains a pure model | Present | Present | P1 |
+| Scrollback and selection | Rio-owned history navigation live; selection remains visible-viewport-only | Present | Present | P1 |
 | Search | Literal visible-frame search live; regex/full history staged | Present | Inline/regex search | P1 |
 | Fonts, themes, configuration | Initial explicit stack/theme | Configurable themes, keybindings, fonts | Settings, themes, zoom, shell choice | P1 |
 | Tabs, splits, focus navigation | Independent local Rio tabs; resizable 50px compact rail; split actions explicitly unavailable | Tabs, splits, layouts | Tabs, splits, detachable panes | P2 |
@@ -62,9 +66,9 @@ behind replaceable traits.
 2. Add Rio adapter tests for combining marks, wide CJK, emoji, soft wraps,
    cursor positions, and explicit background/foreground semantics. Keep Rio
    types behind the adapter.
-3. Add mouse reporting, bracketed paste, application cursor/key modes, and
-   cursor shape/visibility where the pinned Rio API permits it. Keep unsupported
-   Rio capabilities explicit rather than inventing state.
+3. Complete mouse reporting, keypad identity, key-release/alternate-key
+   reporting, and IME input where the pinned Rio API and GPUI events permit it.
+   Keep unsupported host capabilities explicit rather than inventing state.
 4. Introduce damage spans and shaped-line/background caches behind traits so the
    renderer can repaint only changed rows without coupling cache policy to Rio.
 5. Add a golden terminal fixture suite: shell startup, ANSI colors, resize,
@@ -75,8 +79,8 @@ Linux, and a live resize plus Unicode probe has visual evidence.
 
 ### P1 — usable daily terminal
 
-1. Wire the pure scrollback state and selection model into GPUI without
-   duplicating Rio VT history.
+1. Extend selection and search across Rio's authoritative history without
+   duplicating terminal state.
 2. Wire copy, paste, selection export, and literal search into the live surface
    (regex remains a later capability).
 3. Move font, theme, line height, cursor, and keybindings into a serializable
@@ -94,14 +98,17 @@ change font/line-height, restart, and retain the intended settings.
    boundaries only after the layout tree is tested without GPUI.
 3. Persist layouts and terminal metadata through a versioned store; do not put
    persistence in `TerminalSession`.
-4. Add a command palette/settings surface after actions have stable trait-backed
-   identifiers.
+4. Extend the initial Command-K Cuenv task palette into a general action
+   catalogue only after non-task actions have stable trait-backed identifiers.
 
 **Current state:** every live tab owns an independent local Rio session. Session
 creation is transactional and callbacks are generation-scoped; close first
 removes the exact session then commits the preflighted tab removal. Split actions
 remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
+Exact-CWD `package cuenv` tasks are now searchable from Command-K and a floating
+sidebar; selection delegates execution to the canonical CLI in the same pane
+whose working directory supplied the catalogue.
 
 **Exit gate:** split/tab/layout operations are deterministic in unit tests and
 restore correctly after a clean restart.

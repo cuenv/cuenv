@@ -38,6 +38,9 @@ fn font_from_config(config: &TerminalConfig) -> Font {
 /// by another host renderer without changing the terminal session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TerminalTheme {
+    /// Alpha applied only to terminal background fills. Window chrome uses a
+    /// separate fixed glass material, while glyphs and overlays remain opaque.
+    pub background_opacity: f32,
     pub host_background: Rgb,
     pub surface: Rgb,
     pub title_surface: Rgb,
@@ -64,6 +67,7 @@ impl TerminalTheme {
     pub fn from_config(config: &TerminalConfig) -> Self {
         let theme = &config.theme;
         Self {
+            background_opacity: 1.0 - f32::from(config.terminal_transparency_percent) / 100.0,
             host_background: Rgb(
                 theme.host_background.0,
                 theme.host_background.1,
@@ -228,6 +232,7 @@ mod tests {
     #[test]
     fn default_theme_is_catppuccin_mocha() {
         let theme = TerminalTheme::default();
+        assert_eq!(theme.background_opacity, 1.0);
         assert_eq!(theme.host_background, Rgb(17, 17, 27));
         assert_eq!(theme.surface, Rgb(30, 30, 46));
         assert_eq!(theme.title_surface, Rgb(24, 24, 37));
@@ -235,5 +240,17 @@ mod tests {
         assert_eq!(theme.cursor, Rgb(245, 224, 230));
         assert_eq!(theme.ansi[2], Rgb(166, 227, 161));
         assert_eq!(theme.ansi[12], Rgb(137, 180, 250));
+    }
+
+    #[test]
+    fn transparency_only_changes_terminal_background_opacity() {
+        let config = TerminalConfig {
+            terminal_transparency_percent: 65,
+            ..TerminalConfig::default()
+        };
+        let theme = TerminalTheme::from_config(&config);
+        assert!((theme.background_opacity - 0.35).abs() < f32::EPSILON);
+        assert_eq!(theme.text, Rgb(205, 214, 244));
+        assert_eq!(theme.cursor, Rgb(245, 224, 230));
     }
 }

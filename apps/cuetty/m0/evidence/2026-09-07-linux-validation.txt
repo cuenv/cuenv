@@ -1,0 +1,200 @@
+Cuetty M0 supplemental Linux validation evidence
+Captured: 2026-09-07T21:01:34Z (UTC)
+Platform: Linux x86_64
+Compiler: rustc 1.98.1 (48a229cea 2026-09-01)
+Cargo: cargo 1.98.1 (797e8a9bc 2026-08-05)
+Rio revision: 7ae087500bcde5c0c9f09cb9c50382e9220b3360
+
+This is a sanitized summary and exact relevant excerpts from executed commands,
+not a complete raw build log. No product source or lockfiles were edited by the
+validation agent. This evidence does not qualify M0 or macOS daily-driver use.
+
+Environment used for Cargo commands:
+PATH=/workspace/scratch/05001217590d/rust-1.98.1-verified/bin:$PATH
+CARGO_HOME=/workspace/scratch/05001217590d/cuetty-cargo-cache
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-cargo-target
+Working directory: /workspace/scratch/05001217590d/cuenv
+
+1. Full app attempts
+
+cargo test --manifest-path apps/cuetty/Cargo.toml --locked --no-default-features
+cargo test --manifest-path apps/cuetty/Cargo.toml --locked --test rio_vt_contract
+cargo test --manifest-path apps/cuetty/Cargo.toml --locked real_session -- --ignored --nocapture
+
+Each exited 101 before Cuetty compilation, at the cuengine build script:
+  Go not available: No such file or directory (os error 2)
+  Error: Custom { kind: NotFound, error: "Failed to execute Go command. Make sure Go is installed: No such file or directory (os error 2)" }
+
+The app has no dependency feature gating; --no-default-features still builds
+GPUI and cuengine. Nix and cuenv are also unavailable. None of these attempts is
+a full-app pass. macOS build, signing, launch, and workload smoke were not run.
+
+2. Supplemental actual-module harness
+
+Harness: /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml
+Build output: /workspace/scratch/05001217590d/cuetty-terminal-validation-target
+The harness imports actual repository source by absolute path: host, events,
+input, rio_input, rio_adapter, model, sizing, interaction, search, selection,
+scrollback. It does not copy or reimplement the product modules. It excludes
+GPUI engine/presentation and cuengine. Its initial lock was copied from the app
+lock and Cargo only adjusted the scratch lock for this reduced package graph.
+The product tests directory is symlinked into the scratch harness so the PTY
+fixture's CARGO_MANIFEST_DIR-relative path resolves unchanged.
+
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target \
+  cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --offline
+
+Exit 0. Relevant results:
+  unit tests: 59 passed; 0 failed; 4 ignored
+  rio_vt_contract: 4 passed; 0 failed; 0 ignored
+These are supplemental core/adapter tests, not full-app validation.
+
+3. Real PTY tests through the same actual-module harness
+
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target \
+  cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline real_session -- --ignored --nocapture
+
+Exit 101: 2 passed (resize, final-output/exit-status), 2 failed (input, paste).
+After adding --test-threads=1: exit 101, 3 passed, 1 failed (paste).
+The bracketed iteration reaches M0-READY but does not retain the expected
+M0-BYTES:1b5b3230307e6162631b5b3230317e marker within five seconds.
+An initial harness-only fixture-path mistake was corrected before these runs.
+
+4. Independent fixture probe
+
+A Python pty.fork/os.execl probe ran the unchanged m0-pty-child.sh bracketed 15
+fixture, waited for M0-READY, and wrote the exact 15-byte payload.
+Exit 0. Output:
+  TX 1b5b3230307e6162631b5b3230317e length 15
+  RX b'\x1b[?2004hM0-READY\r\n\x1b[?2004lM0-BYTES:1b5b3230307e6162631b5b3230317e\r\n'
+  CHILD_WAIT status 0
+This establishes that this fixture and host OS can complete the exchange.
+
+5. Raw/close/bracketed repetition with scratch-only instrumentation
+
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target \
+  cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline diagnostic_bracketed_mode -- --ignored --nocapture --test-threads=1
+
+The diagnostic is defined only in the scratch harness, within an include of
+the actual host module, to observe private terminal mode, PID, and IO handle.
+It requests ten raw/bracketed pairs and stops at the first failure.
+An isolated bracketed session and an isolated raw/bracketed pair passed.
+The ten-pair repetition exited 101 at pair index 8 (17 sessions succeeded,
+18th session failed; this stopped run is not a measured failure probability).
+
+Exact relevant recorded observations:
+  round=8 at=264.366746ms spawn=raw pid=802 fd=3
+  at=270.846617ms fixture=raw pid=802 mode=Mode(SHOW_CURSOR | LINE_WRAP | ALTERNATE_SCROLL | URGENCY_HINTS | GRAPHEME_CLUSTER) bytes=[61, 62, 63]
+  at=277.789079ms fixture=raw pid=802 done=true io_finished=true effects=[ChildExited(Some(0)), Close]
+  round=8 at=281.308487ms spawn=bracketed pid=810 fd=3
+  at=288.689648ms fixture=bracketed pid=810 mode=Mode(SHOW_CURSOR | BRACKETED_PASTE | LINE_WRAP | ALTERNATE_SCROLL | URGENCY_HINTS | GRAPHEME_CLUSTER) bytes=[1b, 5b, 32, 30, 30, 7e, 61, 62, 63, 1b, 5b, 32, 30, 31, 7e]
+  at=5.291719638s fixture=bracketed pid=810 done=false io_finished=true effects=[ChildExited(Some(0)), Close]
+  missing "M0-BYTES:1b5b3230307e6162631b5b3230317e", frame="M0-READY"
+
+Mode and encoded bytes are correct. Child status is zero, not signal death.
+PIDs are distinct. These observations do not support attributing this failure
+to stale-PID signalling. They show successful child exit with lost final output.
+
+6. Controlled lock-contention reproducer
+
+CUETTY_DIAGNOSTIC_HOLD_LOCK=1 \
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target \
+  cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline diagnostic_bracketed_mode -- --ignored --nocapture --test-threads=1
+
+This scratch-only diagnostic holds the terminal mutex for 100 ms while sending
+raw abc through the same Machine input channel. It does not change Rio or the
+product source. It intentionally stresses the public shared-state boundary.
+Exit 101 on the first raw session. Observed 1 failure in 1 forced-contention run:
+  round=0 at=1.441479ms spawn=raw pid=675 fd=3
+  at=8.056282ms fixture=raw pid=675 mode=Mode(SHOW_CURSOR | LINE_WRAP | ALTERNATE_SCROLL | URGENCY_HINTS | GRAPHEME_CLUSTER) bytes=[61, 62, 63]
+  at=5.006818808s fixture=raw pid=675 done=false io_finished=true effects=[ChildExited(Some(0)), Close]
+  missing "M0-BYTES:616263", frame="M0-READY"
+
+This first-session reproducer means previous-session teardown/PID reuse is not
+required to trigger the observed final-output loss. It is not yet a statistical
+claim of deterministic failure across repeated independent executions.
+
+Source-backed likely cause, not an instrumented branch trace:
+Pinned rio-vt/src/performer/mod.rs, pty_read, buffers bytes in local unprocessed.
+If try_lock_unfair fails, it continues to read. If the next read returns Linux
+EIO after child hangup, the error branch returns before parsing already-buffered
+bytes, discarding them. The child-exit branch calls pty_read again but cannot
+recover bytes already consumed. The contention probe and zero child exit status
+are consistent with this defect. An upstream focused regression test/fix and
+requalification remain necessary.
+
+7. Repository-owned regression test
+
+CARGO_TARGET_DIR=/workspace/scratch/05001217590d/cuetty-terminal-validation-target \
+  cargo test --manifest-path /workspace/scratch/05001217590d/cuetty-terminal-validation/Cargo.toml --locked --offline known_upstream_regression_final_output_survives_snapshot_lock_contention -- --ignored --nocapture --test-threads=1
+
+The newly added repository-source regression test (not the scratch diagnostic)
+was compiled through the same actual-module harness. Exit 101:
+  test terminal::host::tests::known_upstream_regression_final_output_survives_snapshot_lock_contention ... FAILED
+  missing "M0-BYTES:616263" in "M0-READY" plus blank grid rows
+  test result: FAILED. 0 passed; 1 failed; 0 ignored; 64 filtered out; finished in 5.13s
+The failure occurs after that test successfully checks raw Unix child exit code
+zero. This is an ordinary ignored regression asserting the desired contract,
+not should_panic or an inverted assertion that would hide the defect.
+
+8. Full-app retry with task-scoped Go
+
+Additional environment:
+PATH=/workspace/scratch/05001217590d/go-validation.lp9yjp/go/bin:/workspace/scratch/05001217590d/rust-1.98.1-verified/bin:$PATH
+GOCACHE=/workspace/scratch/05001217590d/cuetty-go-build-cache
+GOMODCACHE=/workspace/scratch/05001217590d/cuetty-go-module-cache
+GOPATH=/workspace/scratch/05001217590d/cuetty-go-path
+CARGO_BUILD_JOBS=2
+Go: go1.27.1 linux/amd64 (official checksum-verified task-scoped installation)
+
+cargo test --manifest-path apps/cuetty/Cargo.toml --locked --no-default-features
+
+Exit 101. cuengine and Cuetty compiled, with no reported Rust source/type errors,
+but app/test linking failed before tests could execute:
+  error: linking with `cc` failed: exit status: 1
+  rust-lld: error: unable to find library -lxcb
+  rust-lld: error: unable to find library -lxkbcommon
+  rust-lld: error: unable to find library -lxkbcommon-x11
+  collect2: error: ld returned 1 exit status
+  error: could not compile `cuetty` (bin "cuetty" test) due to 1 previous error
+
+Missing Go was successfully resolved for this retry. The current full-app
+execution blocker is missing native development link libraries, not Go.
+This remains a blocked test attempt, not a full-app pass.
+
+9. Final full-app check, Clippy, and formatting
+
+Using the verified Rust/Go and task-scoped caches from section 8:
+
+cargo check --manifest-path apps/cuetty/Cargo.toml --locked
+Exit 0:
+  Checking cuengine v0.55.0
+  Checking cuetty v0.1.0
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 4m 58s
+
+cargo clippy --manifest-path apps/cuetty/Cargo.toml --locked --all-targets -- -D warnings
+Exit 0:
+  Checking cuetty v0.1.0
+  Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.55s
+
+cargo fmt --manifest-path apps/cuetty/Cargo.toml --all -- --check
+Exit 0, no output, after the source owner applied rustfmt.
+
+This provides full-app Rust typechecking and all-target Clippy coverage,
+including GPUI engine/presentation. It does not prove native linking, test
+execution of the full app, GUI runtime, or macOS acceptance.
+
+Both successful check and Clippy emit a Cargo future-incompatibility notice
+for the existing transitive dependency proc-macro-error2 v2.0.1. This is not a
+Cuetty Clippy lint failure. The detailed read-only report command exited 0:
+  cargo report future-incompatibilities --id 1 --package proc-macro-error2@2.0.1
+Relevant warning:
+  warning[E0365]: extern crate `proc_macro` is private and cannot be re-exported
+  proc-macro-error2-2.0.1/src/lib.rs:494:13: pub use proc_macro;
+  help: consider making the extern crate item publicly accessible
+  This was previously accepted; it will become a hard error in a future release.
+  Upstream Rust issue: https://github.com/rust-lang/rust/issues/127909
+
+Final status: check PASS; Clippy -D warnings PASS; fmt PASS; full app tests
+BLOCKED by native linker dependencies; actual-module unit/contracts PASS;
+known final-output regression FAIL; Nix and macOS gates NOT RUN. M0 NOT PASSED.

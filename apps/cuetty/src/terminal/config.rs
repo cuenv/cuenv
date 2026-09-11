@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 pub const CURRENT_CONFIG_VERSION: u16 = 1;
+pub const MAX_TERMINAL_PADDING: u16 = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ConfigVersion(pub u16);
@@ -29,6 +30,25 @@ pub struct FontConfig {
     pub fallbacks: Vec<String>,
     pub size_px: f32,
     pub line_height_multiplier: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalPadding {
+    pub top: u16,
+    pub right: u16,
+    pub bottom: u16,
+    pub left: u16,
+}
+
+impl Default for TerminalPadding {
+    fn default() -> Self {
+        Self {
+            top: 8,
+            right: 8,
+            bottom: 8,
+            left: 8,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +96,10 @@ pub struct KeybindingConfig {
 pub struct TerminalConfig {
     pub version: ConfigVersion,
     pub font: FontConfig,
+    /// Percentage of the terminal canvas background that remains transparent.
+    /// Zero is fully opaque and 100 is fully transparent.
+    pub terminal_transparency_percent: u8,
+    pub terminal_padding: TerminalPadding,
     pub cursor: CursorPreference,
     pub theme: ThemeColors,
     pub interaction: InteractionConfig,
@@ -88,6 +112,8 @@ pub enum ConfigError {
     EmptyFontFamily,
     InvalidFontSize(f32),
     InvalidLineHeight(f32),
+    InvalidTerminalTransparency(u8),
+    InvalidTerminalPadding(u16),
     InvalidScrollback,
     EmptyKeybindingAction,
     EmptyKeybinding,
@@ -107,6 +133,16 @@ impl fmt::Display for ConfigError {
                 f,
                 "line-height multiplier must be between 0.5 and 3, got {value}"
             ),
+            Self::InvalidTerminalTransparency(value) => write!(
+                f,
+                "terminal transparency must be between 0 and 100%, got {value}%"
+            ),
+            Self::InvalidTerminalPadding(value) => {
+                write!(
+                    f,
+                    "terminal padding must be between 0 and 128px, got {value}px"
+                )
+            }
             Self::InvalidScrollback => f.write_str("scrollback limit must be non-zero"),
             Self::EmptyKeybindingAction => f.write_str("keybinding action cannot be empty"),
             Self::EmptyKeybinding => f.write_str("keybinding cannot be empty"),
@@ -136,6 +172,8 @@ impl Default for TerminalConfig {
                 size_px: 16.0,
                 line_height_multiplier: 1.2,
             },
+            terminal_transparency_percent: 0,
+            terminal_padding: TerminalPadding::default(),
             cursor: CursorPreference::Block,
             theme: ThemeColors::default(),
             interaction: InteractionConfig {
@@ -220,6 +258,31 @@ impl TerminalConfig {
                 self.font.line_height_multiplier,
             ));
         }
+        if self.terminal_transparency_percent > 100 {
+            return Err(ConfigError::InvalidTerminalTransparency(
+                self.terminal_transparency_percent,
+            ));
+        }
+        if [
+            self.terminal_padding.top,
+            self.terminal_padding.right,
+            self.terminal_padding.bottom,
+            self.terminal_padding.left,
+        ]
+        .into_iter()
+        .any(|value| value > MAX_TERMINAL_PADDING)
+        {
+            let value = [
+                self.terminal_padding.top,
+                self.terminal_padding.right,
+                self.terminal_padding.bottom,
+                self.terminal_padding.left,
+            ]
+            .into_iter()
+            .max()
+            .expect("terminal padding always has four edges");
+            return Err(ConfigError::InvalidTerminalPadding(value));
+        }
         if self.interaction.scrollback_limit == 0 {
             return Err(ConfigError::InvalidScrollback);
         }
@@ -277,6 +340,8 @@ mod tests {
         );
         assert_eq!(config.font.size_px, 16.0);
         assert_eq!(config.font.line_height_multiplier, 1.2);
+        assert_eq!(config.terminal_transparency_percent, 0);
+        assert_eq!(config.terminal_padding, TerminalPadding::default());
         assert_eq!(config.theme.host_background, Rgb(17, 17, 27));
         assert_eq!(config.theme.surface, Rgb(30, 30, 46));
         assert_eq!(config.theme.title_surface, Rgb(24, 24, 37));
@@ -301,6 +366,25 @@ mod tests {
             config.validate(),
             Err(ConfigError::InvalidLineHeight(_))
         ));
+        let config = TerminalConfig {
+            terminal_transparency_percent: 101,
+            ..TerminalConfig::default()
+        };
+        assert!(matches!(
+            config.validate(),
+            Err(ConfigError::InvalidTerminalTransparency(101))
+        ));
+        let config = TerminalConfig {
+            terminal_padding: TerminalPadding {
+                right: 129,
+                ..TerminalPadding::default()
+            },
+            ..TerminalConfig::default()
+        };
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::InvalidTerminalPadding(129))
+        );
     }
 
     #[test]

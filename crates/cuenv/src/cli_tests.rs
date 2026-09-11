@@ -121,7 +121,7 @@ fn test_help_flag() {
     // Help flag should cause an error with help message
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.kind() == clap::error::ErrorKind::DisplayHelp);
+    assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
 }
 
 #[test]

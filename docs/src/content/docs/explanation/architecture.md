@@ -238,6 +238,11 @@ pub enum Error {
 
 The command-line interface built with `clap`.
 
+CLI sync project matching checks canonicalization results directly with
+`Result::is_ok_and`; unresolved project paths remain non-matches. CLI output
+avoids redundant formatting and borrows, and equality tests use `assert_eq!`
+to retain useful failure diagnostics without lint suppressions.
+
 **Commands:**
 
 - `cuenv task [name]` - Execute or list tasks
@@ -418,7 +423,8 @@ not force or suppress default hashing. The affected-task walk builds a canonical
 projects, and splits cross-project references at the first `:` so nested task
 paths remain intact during recursive dependency checks. Core task indexing
 preserves the `#project:` separator and canonicalizes only the referenced task
-path.
+path. Direct affected-task checks use `Result::is_ok_and`: successful lookups
+evaluate the task's inputs, while unresolved task names remain unaffected.
 CI execution and garbage collection are decomposed into explicit planning,
 execution, reporting, cache-scan, sweep, and finalization helpers instead of
 depending on broad complexity suppressions. GC default-policy tests assert the

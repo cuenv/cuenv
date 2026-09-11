@@ -1,8 +1,7 @@
 //! Renderer- and backend-neutral terminal interchange types.
 //!
-//! This is deliberately a *cell* protocol. A content cell carries one Unicode
-//! scalar value, not a grapheme cluster; combining clusters and hyperlink
-//! destinations therefore remain explicitly unsupported by this P0 contract.
+//! This is a physical-cell protocol. A content cell carries its complete text
+//! cluster; display width comes from the backend, never from scalar counting.
 
 use super::input::TerminalKeyEvent;
 use std::collections::BTreeMap;
@@ -40,7 +39,7 @@ pub enum UnderlineStyle {
     Dashed,
 }
 
-/// The display width of the scalar held by a content cell. It is not Unicode
+/// The display width of the cluster held by a content cell. It is not Unicode
 /// width inference: the backend declares it and the renderer preserves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellWidth {
@@ -50,9 +49,9 @@ pub enum CellWidth {
 
 /// How this physical grid slot participates in a row.
 ///
-/// `Wide` starts a two-column scalar and must be followed by a
+/// `Wide` starts a two-column cluster and must be followed by a
 /// `TrailingSpacer`. `LeadingSpacer` is an end-of-row placeholder for a wide
-/// scalar which Rio moved onto the next physical row; it is valid only in the
+/// cluster which Rio moved onto the next physical row; it is valid only in the
 /// final column of a soft-wrapped row and has no following `TrailingSpacer`.
 /// Spacers never carry text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,8 +64,8 @@ pub enum CellOccupancy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalCell {
-    /// One Unicode scalar value. `None` is reserved for spacer cells.
-    pub codepoint: Option<char>,
+    /// Complete backend-declared cluster text. `None` is reserved for spacers.
+    pub text: Option<String>,
     pub width: CellWidth,
     pub occupancy: CellOccupancy,
     pub foreground: Color,
@@ -78,7 +77,7 @@ pub struct TerminalCell {
 impl TerminalCell {
     pub fn narrow(codepoint: char) -> Self {
         Self {
-            codepoint: Some(codepoint),
+            text: Some(codepoint.to_string()),
             width: CellWidth::Narrow,
             occupancy: CellOccupancy::Narrow,
             foreground: Color::DefaultForeground,
@@ -98,7 +97,7 @@ impl TerminalCell {
 
     pub fn trailing_spacer() -> Self {
         Self {
-            codepoint: None,
+            text: None,
             width: CellWidth::Narrow,
             occupancy: CellOccupancy::TrailingSpacer,
             ..Self::narrow(' ')
@@ -107,7 +106,7 @@ impl TerminalCell {
 
     pub fn leading_spacer() -> Self {
         Self {
-            codepoint: None,
+            text: None,
             width: CellWidth::Narrow,
             occupancy: CellOccupancy::LeadingSpacer,
             ..Self::narrow(' ')
@@ -217,25 +216,27 @@ impl TerminalFrame {
             for (column, cell) in row.cells.iter().enumerate() {
                 match cell.occupancy {
                     CellOccupancy::Narrow
-                        if cell.codepoint.is_none() || cell.width != CellWidth::Narrow =>
+                        if cell.text.as_ref().is_none_or(String::is_empty)
+                            || cell.width != CellWidth::Narrow =>
                     {
                         return Err(FrameError::InvalidCell {
                             row: row_index,
                             column,
-                            reason: "narrow cells require one narrow codepoint",
+                            reason: "narrow cells require nonempty cluster text and narrow width",
                         });
                     }
                     CellOccupancy::Wide
-                        if cell.codepoint.is_none() || cell.width != CellWidth::Wide =>
+                        if cell.text.as_ref().is_none_or(String::is_empty)
+                            || cell.width != CellWidth::Wide =>
                     {
                         return Err(FrameError::InvalidCell {
                             row: row_index,
                             column,
-                            reason: "wide cells require one wide codepoint",
+                            reason: "wide cells require nonempty cluster text and wide width",
                         });
                     }
                     CellOccupancy::LeadingSpacer | CellOccupancy::TrailingSpacer
-                        if cell.codepoint.is_some() || cell.width != CellWidth::Narrow =>
+                        if cell.text.is_some() || cell.width != CellWidth::Narrow =>
                     {
                         return Err(FrameError::InvalidCell {
                             row: row_index,
@@ -315,7 +316,7 @@ pub struct TerminalCapabilities {
 }
 
 impl TerminalCapabilities {
-    /// Capabilities supplied by a single sampled `RenderState` frame.
+    /// Capabilities supplied by a single public `rio-vt` grid snapshot.
     ///
     /// A frame contains viewport metadata and dirty rows, but it cannot
     /// perform scrolling or emit session-level effects by itself.
@@ -328,17 +329,19 @@ impl TerminalCapabilities {
             scrollback: Capability::Unsupported,
             title_actions: Capability::Unsupported,
             bell_actions: Capability::Unsupported,
-            combining_clusters: Capability::Unsupported,
+            combining_clusters: Capability::Supported,
             hyperlink_destinations: Capability::Unsupported,
-            cursor_shape: Capability::Unsupported,
-            cursor_visibility: Capability::Unsupported,
+            cursor_shape: Capability::Supported,
+            cursor_visibility: Capability::Supported,
             bracketed_paste_mode: Capability::Unsupported,
             mouse_reporting_mode: Capability::Unsupported,
             stable_content_revision: Capability::Unsupported,
         }
     }
 
-    /// Capabilities of the complete pinned Rio session adapter.
+    /// Capabilities of Cuetty's pinned direct-Rio session adapter, not of all
+    /// Rio core APIs. Scrolling is owned by Rio's authoritative history; the
+    /// frame exposes only the currently selected viewport.
     pub const fn rio_pinned() -> Self {
         Self {
             wide_cell_occupancy: Capability::Supported,
@@ -348,11 +351,11 @@ impl TerminalCapabilities {
             scrollback: Capability::Supported,
             title_actions: Capability::Supported,
             bell_actions: Capability::Supported,
-            combining_clusters: Capability::Unsupported,
+            combining_clusters: Capability::Supported,
             hyperlink_destinations: Capability::Unsupported,
-            cursor_shape: Capability::Unsupported,
-            cursor_visibility: Capability::Unsupported,
-            bracketed_paste_mode: Capability::Unsupported,
+            cursor_shape: Capability::Supported,
+            cursor_visibility: Capability::Supported,
+            bracketed_paste_mode: Capability::Supported,
             mouse_reporting_mode: Capability::Unsupported,
             stable_content_revision: Capability::Unsupported,
         }
@@ -483,6 +486,20 @@ mod tests {
     }
 
     #[test]
+    fn content_cells_preserve_clusters_but_reject_empty_text() {
+        let mut cell = TerminalCell {
+            text: Some("e\u{301}".into()),
+            ..TerminalCell::narrow('e')
+        };
+        assert!(frame(vec![cell.clone()]).validate().is_ok());
+        cell.text = Some(String::new());
+        assert!(matches!(
+            frame(vec![cell]).validate(),
+            Err(FrameError::InvalidCell { .. })
+        ));
+    }
+
+    #[test]
     fn wide_occupancy_cannot_run_past_the_row() {
         let candidate = frame(vec![TerminalCell::wide('界')]);
         assert!(matches!(
@@ -554,12 +571,25 @@ mod tests {
         assert_eq!(
             modes.declare(
                 &TerminalCapabilities::rio_pinned(),
-                TerminalMode::BracketedPaste,
+                TerminalMode::MouseReporting,
                 true
             ),
-            Err(ModeError::NotObservable(TerminalMode::BracketedPaste))
+            Err(ModeError::NotObservable(TerminalMode::MouseReporting))
         );
-        assert_eq!(modes.get(TerminalMode::BracketedPaste), None);
+        assert_eq!(modes.get(TerminalMode::MouseReporting), None);
+    }
+
+    #[test]
+    fn direct_session_declares_only_exposed_mode_support() {
+        let capabilities = TerminalCapabilities::rio_pinned();
+        let mut modes = TerminalModes::default();
+        assert_eq!(capabilities.scrollback, Capability::Supported);
+        assert_eq!(capabilities.hyperlink_destinations, Capability::Unsupported);
+        assert_eq!(
+            modes.declare(&capabilities, TerminalMode::BracketedPaste, true),
+            Ok(())
+        );
+        assert_eq!(modes.get(TerminalMode::BracketedPaste), Some(true));
     }
 
     #[test]
