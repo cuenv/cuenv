@@ -1,4 +1,4 @@
-use super::config::TerminalConfig;
+use super::config::{MAX_TERMINAL_PADDING, TerminalConfig};
 use super::events::ControlEvent;
 use super::host::{RioTerminalFactory, TerminalScroll, TerminalSession, TerminalSessionFactory};
 use super::input::{InputModifiers, KeyInput, TerminalKeyEvent};
@@ -775,7 +775,14 @@ struct TerminalView {
 const TAB_RAIL_WIDTH: f32 = 56.0;
 const TAB_RAIL_FOOTER_HEIGHT: f32 = 78.0;
 const SHELL_TITLEBAR_HEIGHT: f32 = 34.0;
-const TERMINAL_PADDING: f32 = 8.0;
+
+#[derive(Clone, Copy)]
+enum PaddingEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
 
 fn wheel_scroll_lines(delta: ScrollDelta, line_height: f32, remainder: &mut f32) -> i32 {
     let vertical_lines = match delta {
@@ -1232,6 +1239,24 @@ impl TerminalView {
         if let Some(draft) = self.settings_draft.as_mut() {
             let next = draft.config().font.line_height_multiplier + delta;
             if let Err(error) = draft.set_line_height_multiplier(next) {
+                self.settings_error = Some(error.to_string());
+            } else {
+                self.settings_error = None;
+            }
+        }
+        cx.notify();
+    }
+    fn adjust_terminal_padding(&mut self, edge: PaddingEdge, delta: i16, cx: &mut Context<Self>) {
+        if let Some(draft) = self.settings_draft.as_mut() {
+            let mut padding = draft.config().terminal_padding;
+            let value = match edge {
+                PaddingEdge::Top => &mut padding.top,
+                PaddingEdge::Right => &mut padding.right,
+                PaddingEdge::Bottom => &mut padding.bottom,
+                PaddingEdge::Left => &mut padding.left,
+            };
+            *value = value.saturating_add_signed(delta).min(MAX_TERMINAL_PADDING);
+            if let Err(error) = draft.set_terminal_padding(padding) {
                 self.settings_error = Some(error.to_string());
             } else {
                 self.settings_error = None;
@@ -1737,6 +1762,7 @@ impl TerminalView {
         let font_size = values.font.size_px;
         let line_height = values.font.line_height_multiplier;
         let transparency = values.terminal_transparency_percent;
+        let padding = values.terminal_padding;
         let button = |id: &'static str, label: String| {
             div()
                 .id(id)
@@ -1753,6 +1779,46 @@ impl TerminalView {
                 .hover(|this| this.bg(gpui::rgb(gpui_rgb(theme.host_background))))
                 .cursor_pointer()
                 .child(label)
+        };
+        let padding_control = |label: &'static str,
+                               minus_id: &'static str,
+                               plus_id: &'static str,
+                               edge: PaddingEdge,
+                               value: u16| {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(3.0))
+                .child(
+                    div()
+                        .text_size(px(10.0))
+                        .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(3.0))
+                        .child(button(minus_id, "−".into()).on_click(cx.listener(
+                            move |view, _event, _window, cx| {
+                                view.adjust_terminal_padding(edge, -1, cx)
+                            },
+                        )))
+                        .child(
+                            div()
+                                .w(px(42.0))
+                                .text_center()
+                                .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                .child(format!("{value}px")),
+                        )
+                        .child(button(plus_id, "+".into()).on_click(cx.listener(
+                            move |view, _event, _window, cx| {
+                                view.adjust_terminal_padding(edge, 1, cx)
+                            },
+                        ))),
+                )
         };
         let mut content = div()
             .size_full()
@@ -1788,6 +1854,64 @@ impl TerminalView {
                     .child(button("settings-close", "×".into()).on_click(
                         cx.listener(|view, _event, window, cx| view.close_settings(window, cx)),
                     )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0))
+                            .child(
+                                div()
+                                    .text_color(gpui::rgb(gpui_rgb(theme.text)))
+                                    .child("Terminal padding"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(gpui::rgb(gpui_rgb(theme.title_text)))
+                                    .child("Top · right · bottom · left"),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(padding_control(
+                                "Top",
+                                "settings-padding-top-minus",
+                                "settings-padding-top-plus",
+                                PaddingEdge::Top,
+                                padding.top,
+                            ))
+                            .child(padding_control(
+                                "Right",
+                                "settings-padding-right-minus",
+                                "settings-padding-right-plus",
+                                PaddingEdge::Right,
+                                padding.right,
+                            ))
+                            .child(padding_control(
+                                "Bottom",
+                                "settings-padding-bottom-minus",
+                                "settings-padding-bottom-plus",
+                                PaddingEdge::Bottom,
+                                padding.bottom,
+                            ))
+                            .child(padding_control(
+                                "Left",
+                                "settings-padding-left-minus",
+                                "settings-padding-left-plus",
+                                PaddingEdge::Left,
+                                padding.left,
+                            )),
+                    ),
             )
             .child(
                 div()
@@ -2067,6 +2191,7 @@ impl Render for TerminalView {
         }
         let theme = self.theme.clone();
         let metrics = self.metrics.clone();
+        let padding = self.config.terminal_padding;
         let active_tab = self.active_tab();
         let sidebar = self.render_sidebar(active_tab, &theme, cx);
         if matches!(self.destination, Destination::Settings) {
@@ -2285,10 +2410,10 @@ impl Render for TerminalView {
             .child(
                 terminal_surface
                     .absolute()
-                    .top(px(TERMINAL_PADDING))
-                    .right(px(TERMINAL_PADDING))
-                    .bottom(px(TERMINAL_PADDING))
-                    .left(px(TERMINAL_PADDING)),
+                    .top(px(f32::from(padding.top)))
+                    .right(px(f32::from(padding.right)))
+                    .bottom(px(f32::from(padding.bottom)))
+                    .left(px(f32::from(padding.left))),
             );
         self.render_shell_layout(sidebar, surface.into_any_element(), &theme, cx)
     }
