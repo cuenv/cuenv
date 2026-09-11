@@ -107,7 +107,8 @@ removes the exact session then commits the preflighted tab removal. Split action
 remain rejected with a visible notice. Pane resizing, reopen, detachable
 windows, live restore, and multi-session split allocation remain staged.
 Exact-CWD `package cuenv` tasks are now searchable from Command-K and a floating
-sidebar; selection delegates execution to the canonical CLI in a fresh tab.
+sidebar; selection delegates execution to the canonical CLI in the same pane
+whose working directory supplied the catalogue.
 
 **Exit gate:** split/tab/layout operations are deterministic in unit tests and
 restore correctly after a clean restart.

@@ -1527,21 +1527,16 @@ impl TerminalView {
         self.task_selection = 0;
     }
 
-    fn launch_task(&mut self, task: CuenvTask, window: &mut Window, cx: &mut Context<Self>) {
+    fn launch_task(&mut self, task: CuenvTask, cx: &mut Context<Self>) {
         let Some(cwd) = self
             .active_state()
             .and_then(|state| state.cuenv.cwd.clone())
         else {
             return;
         };
-        let previous_pane = self.active_pane();
-        self.new_tab(window, cx);
         let Some(active_pane) = self.active_pane() else {
             return;
         };
-        if Some(active_pane) == previous_pane {
-            return;
-        }
         let launch = if task.requires_parameters {
             TaskLaunch::EditRequiredArguments
         } else {
@@ -1565,7 +1560,6 @@ impl TerminalView {
     fn handle_task_palette_key(
         &mut self,
         event: &gpui::KeyDownEvent,
-        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         if !self.task_palette_open {
@@ -1595,7 +1589,7 @@ impl TerminalView {
                         .cloned()
                 });
                 if let Some(task) = selected {
-                    self.launch_task(task, window, cx);
+                    self.launch_task(task, cx);
                     return true;
                 }
             }
@@ -1622,7 +1616,7 @@ impl TerminalView {
             cx.notify();
             return;
         }
-        if self.handle_task_palette_key(event, _window, cx) {
+        if self.handle_task_palette_key(event, cx) {
             return;
         }
         if let Some(shortcut) = Self::workspace_shortcut(key, modifiers) {
@@ -1996,8 +1990,8 @@ impl TerminalView {
                     .rounded(px(7.0))
                     .hover(|this| this.bg(chrome_glass_color(theme.surface)))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, window, cx| {
-                        view.launch_task(task_to_run.clone(), window, cx);
+                    .on_click(cx.listener(move |view, _event, _window, cx| {
+                        view.launch_task(task_to_run.clone(), cx);
                     }))
                     .child(
                         div()
@@ -2106,8 +2100,8 @@ impl TerminalView {
                     .when(selected, |this| this.bg(chrome_glass_color(theme.surface)))
                     .hover(|this| this.bg(chrome_glass_color(theme.surface)))
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _event, window, cx| {
-                        view.launch_task(task_to_run.clone(), window, cx);
+                    .on_click(cx.listener(move |view, _event, _window, cx| {
+                        view.launch_task(task_to_run.clone(), cx);
                     }))
                     .child(
                         div()

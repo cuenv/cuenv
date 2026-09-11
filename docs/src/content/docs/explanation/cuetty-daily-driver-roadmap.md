@@ -331,8 +331,8 @@ terminal useful everywhere else.
   environment, task status, and safe diagnostics. Never render resolved secrets
   or make configuration evaluation block input or painting.
 - [x] Add exact-CWD Cuenv task discovery to a Command-K palette and floating
-  sidebar. Launch through the canonical `cuenv task` CLI in a fresh tab so
-  terminal cancellation and exit semantics stay visible; stage tasks with
+  sidebar. Launch through the canonical `cuenv task` CLI in the detecting pane
+  so terminal cancellation and exit semantics stay visible; stage tasks with
   required parameters for editing.
 - [ ] Link errors and task output to source locations when they are available,
   but do not couple the core terminal to a specific editor.
