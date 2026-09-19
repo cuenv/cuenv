@@ -24,8 +24,10 @@ until the matrix promotes this to implemented.
 
 The intended Dagger v1 path — documented CUE actually runs, one engine session per
 graph, DagQL-owned cache, Dockerfile images through Dagger — is
-[RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/). Do not treat the
-legacy `config.backend` + `task.dagger` example as the target shape.
+[RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/). Local/host remains
+the default. Dagger is an explicit opt-in: `#DaggerRuntime` with `image` or `from`.
+cuenv never guesses a base image. Do not treat the legacy `config.backend` +
+`task.dagger` example as the target shape.
 :::
 
 ## The supported surface: `runtime: schema.#DaggerRuntime`
