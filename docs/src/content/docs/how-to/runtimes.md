@@ -80,7 +80,7 @@ cuenv is honest about what works. The matrix in [`docs/design/specs/schema-cover
 | `#DevenvRuntime`    | **Stable**      | Yes, if your project already uses devenv. See [below](#devenv-runtime).                  |
 | `#ToolsRuntime`     | **Stable**      | Yes. Best for pinning individual CLI tools. See [Tools](/how-to/tools/).                  |
 | `#OCIRuntime`       | **Partial**     | Yes, with caveats — `sync lock` + the `#OCIActivate` hook. See [below](#oci-runtime).    |
-| `#DaggerRuntime`    | **Partial**     | Usable; task-level `dagger:` is deprecated — prefer the runtime form. See [below](#dagger-runtime). |
+| `#DaggerRuntime`    | **Partial**     | Usable; task-level `dagger:` is deprecated — prefer the runtime form. See [below](#dagger-runtime). The intended Dagger v1 path is [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/). |
 | `#ContainerRuntime` | **schema-only** | No. Returns no container environment today. Do not rely on it. See [below](#container-runtime). |
 
 How each variant supplies an environment differs under the hood. Nix and devenv runtimes are resolved by `cuenv` itself (it runs `nix print-dev-env` / `devenv print-dev-env` and sources the result, per `crates/core/src/runtime.rs`). OCI binaries are extracted by the `#OCIActivate` hook. Dagger runs tasks inside the Dagger engine.
@@ -197,7 +197,7 @@ build: schema.#Task & {
 }
 ```
 
-`#DaggerRuntime` supports `image` (base image), `from` (continue from another task's container), `secrets`, and `cache` volumes.
+`#DaggerRuntime` supports `image` (base image), `from` (continue from another task's container), `secrets`, and `cache` volumes. The intended Dagger v1 execution model is [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/).
 
 :::caution[Task-level `dagger:` is deprecated]
 Older configurations attach a `dagger:` block directly to a `#Task` (as in `examples/dagger-task/env.cue`). That task-level form still works but is **deprecated** — prefer the `runtime: schema.#DaggerRuntime` form going forward. For the full picture of how the Dagger backend executes, see the [Dagger backend explanation](/explanation/dagger-backend/).
@@ -212,7 +212,7 @@ Older configurations attach a `dagger:` block directly to a `#Task` (as in `exam
 runtime: schema.#ContainerRuntime & {image: "node:20"}
 ```
 
-Do not recommend or depend on `#ContainerRuntime`. If you need containerized execution today, use [`#DaggerRuntime`](#dagger-runtime) instead.
+Do not recommend or depend on `#ContainerRuntime`. If you need containerized execution today, use [`#DaggerRuntime`](#dagger-runtime) instead. [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/) will compile this variant to Dagger as image-only sugar; that does not change today's schema-only status.
 
 ## Where to go next
 

@@ -21,6 +21,11 @@ output-reference resolution remain incomplete. Treat this page as a description 
 **intended, supported configuration shape** — validate behaviour against your installed
 build before depending on it in production, and prefer the host backend for critical paths
 until the matrix promotes this to implemented.
+
+The intended Dagger v1 path — documented CUE actually runs, one engine session per
+graph, DagQL-owned cache, Dockerfile images through Dagger — is
+[RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/). Do not treat the
+legacy `config.backend` + `task.dagger` example as the target shape.
 :::
 
 ## The supported surface: `runtime: schema.#DaggerRuntime`

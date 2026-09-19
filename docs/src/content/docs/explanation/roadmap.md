@@ -14,10 +14,11 @@ This roadmap focuses on making cuenv excellent for day‑to‑day development an
 ## Next
 
 - **Hermetic execution**: run tasks with declared inputs/outputs only (sandboxing).
-- **Caching**: content-aware caching with materialization and sharing strategies.
+- **Caching**: host tasks keep the local content-addressed cache; containerized work uses Dagger's engine cache ([RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/)).
+- **Dagger v1 native runtime**: `#DaggerRuntime` executes as written, one session per graph, Dockerfile images through Dagger. See [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/).
 - **Monorepos**: better workspace detection, per‑workspace locks, and ergonomics.
 
 ## Later
 
-- **Remote caching**: share artifacts between CI and developer machines.
+- **Remote caching**: share *host-task* artifacts between CI and developer machines. Container reuse is Dagger's job.
 - **IDE experience**: smooth authoring and validation feedback loops.
