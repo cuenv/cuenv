@@ -212,7 +212,7 @@ Older configurations attach a `dagger:` block directly to a `#Task` (as in `exam
 runtime: schema.#ContainerRuntime & {image: "node:20"}
 ```
 
-Do not recommend or depend on `#ContainerRuntime`. If you need containerized execution, opt in with [`#DaggerRuntime`](#dagger-runtime) and name an `image` or `from`. [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/) keeps this variant schema-only so Dagger is never inferred.
+Do not recommend or depend on `#ContainerRuntime`. If you need containerized execution, opt in with [`#DaggerRuntime`](#dagger-runtime) and name an `image` or `from`. [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/) drops this variant from the `#Runtime` union so CUE rejects it at eval time.
 
 ## Where to go next
 
