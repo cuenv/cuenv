@@ -44,14 +44,14 @@ CUE remains the authoring surface. cuenv is a Dagger v1 SDK *client*, not a modu
 | SDK | Pin `dagger-sdk` to `1.0.0-beta.14`. Engine/CLI must match. Bump to 1.0.0 stable in a follow-up when Dagger tags it. |
 | Session | One Dagger session per graph that contains at least one opted-in Dagger task. Shared `DaggerBackend` holds the client and container-id map. |
 | Dispatch | Per-task. Host and Dagger tasks may share one graph. |
-| CLI | `--backend host` demotes opted-in Dagger tasks to local for debugging. `--backend dagger` does not invent an image: it fails unless every selected task already has an explicit Dagger spec with `image` or `from`. |
+| CLI | `--backend host` demotes opted-in Dagger tasks to local for debugging. `--backend dagger` never invents an image. A one-shot is allowed only when the caller names the image: `cuenv task test --backend dagger --image python:3.12-slim`. Without `--image` or a CUE Dagger spec, fail and point at `#DaggerRuntime`. |
 | Defaults | Project `runtime: #DaggerRuntime & { image: ... }` is the opt-in default for tasks that inherit it. Do not add `config.backend` to closed `#Config`. |
 | Legacy | Keep reading `task.dagger` as a shim onto `#DaggerRuntime`. Stop teaching `config.backend`. |
 | Cache | Skip `cuenv-cas` action-cache wrap for Dagger-executed tasks. DagQL + `#DaggerCacheMount` are the cache. Host tasks keep `cuenv-cas`. |
 | Outputs | After exec, export declared `outputs` from `/workspace` onto the host task workdir. |
 | Timeout | Honour `task.timeout` by cancelling the in-flight session query; session teardown stops the engine exec. |
 | Platform | `#DaggerRuntime.platform` is applied on `Container.from` / image build. |
-| Images | Dockerfile `#ContainerImage` (`context`) builds through Dagger `dockerBuild` / `publish`. Nix `installable` images stay on the existing nix+docker path. |
+| Images | `cuenv build` stays on docker/buildx (and Nix for `installable`) unless the project opted into Dagger or the caller passed `--backend dagger`. Only then do Dockerfile images use `dockerBuild` / `publish`. |
 | Secrets | Unchanged shape: cuenv resolvers → `client.set_secret` → env or file mount. `#DaggerSecret` / `#DaggerCacheMount` are first-class runtime types, not legacy. |
 | Events | All Dagger user output goes through `cuenv_events`. No `print!` / `eprint!`. |
 
@@ -62,7 +62,8 @@ CUE remains the authoring surface. cuenv is a Dagger v1 SDK *client*, not a modu
 - Remote Bazel REAPI / bazel-remote / BuildBarn
 - Building Nix `installable` images inside Dagger
 - Dagger service bindings for `cuenv up` sidecars
-- Shipping Dagger OTLP into the TUI (may follow once the session exists)
+- Calling published Daggerverse modules from CUE (a later RFC; this plan compiles CUE tasks to `Container.from` + `withExec`)
+- Replacing Dagger's own TUI with a reimplementation. Phase 2 must still surface engine progress so `cuenv task` does not look hung.
 
 ## Native mapping
 
@@ -130,7 +131,15 @@ tasks: {
 
 `cuenv task test` is enough **after** that opt-in. No `config.backend`. `#ContainerRuntime` is not an opt-in.
 
-`--backend host` demotes an opted-in Dagger task to local for debugging. `--backend dagger` never supplies a base image: if a selected task has no `#DaggerRuntime`/`task.dagger` with `image` or `from`, fail and point at the runtime form.
+`--backend host` demotes an opted-in Dagger task to local for debugging. `--backend dagger` never invents a base image. Discovery one-shot:
+
+```bash
+cuenv task test --backend dagger --image python:3.12-slim
+```
+
+That `--image` is the opt-in for the invocation. Persist it in CUE as `#DaggerRuntime` when the team wants it every time. `--backend dagger` alone still fails and points at the runtime form.
+
+`#ContainerRuntime` is a footgun if it stays a silent no-op. Phase 1 fails closed: if a task or project sets `#ContainerRuntime`, error with "Dagger opt-in is `runtime: schema.#DaggerRuntime & { image: ... }`". Do not run it on the host and do not infer Dagger.
 
 ## Effective runtime
 
@@ -143,7 +152,7 @@ Resolve once per task, before backend dispatch:
 
 `#DaggerRuntime` without `image` or `from` is a configuration error, not a host fallback and not a guessed `alpine`. `#ContainerRuntime` never enters this table.
 
-`--backend host` skips steps 1–3 and runs locally. `--backend dagger` requires steps 1–3 to produce a spec; it does not invent one.
+`--backend host` skips steps 1–3 and runs locally. `--backend dagger` uses `--image` if given, otherwise requires steps 1–3; it does not invent an image.
 
 `TaskExecutor` holds both backends. The Dagger session is created only when at least one selected task opted in, and is shared across graph clones so `from:` and DagQL reuse work.
 
@@ -159,14 +168,21 @@ Today `DaggerBackend::execute` calls `connect_opts` per task, then `print!`s std
 6. Emits stdout/stderr through `cuenv_events`, never `print!`.
 7. Drops the session when the graph finishes so engine teardown cannot leak.
 
-Chaining rule stays: do not remount `/workspace` when continuing `from:` a prior container. Fresh images still mount the host project (or the hermetic workdir) at `/workspace`.
+Chaining and workdir rules:
+
+- `from:` is graph-scoped. IDs live in the session, not across `cuenv` processes. `cuenv task stage2` alone fails with "run the graph that includes the `from` predecessor" — not a generic missing-container error.
+- `from:` may only name a predecessor that itself opted into Dagger. Host → Dagger `from:` is a configuration error.
+- Honour `task.dir` as `with_workdir` (resolved under `/workspace`).
+- Fresh images mount the same workdir the host backend would have used (hermetic workspace or project root). Mixed graphs share artifacts only through declared `outputs` / `inputs`.
+- First connect failure when no engine is present must say how to install/start Dagger and which engine version this SDK pin expects. Version skew is a configuration error, not a GraphQL dump.
+- Emit engine progress through `cuenv_events` (pull, exec, cache hit if the SDK exposes it) so a long Dagger task does not look hung.
 
 ## Cache split
 
 Two caches, one job each:
 
 - **Host tasks:** `cuenv-cas` action cache, per [ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/). Local, input-addressed, stays.
-- **Dagger tasks:** do not consult or record `cuenv-cas`. The engine's DagQL cache plus named `#DaggerCacheMount` volumes are the hit path. cuenv still emits `task_cache_*` events from Dagger when we can distinguish a cached exec; until the SDK exposes that cleanly, skip the wrap and let the engine be silent-fast.
+- **Dagger tasks:** do not consult or record `cuenv-cas`. The engine's DagQL cache plus named `#DaggerCacheMount` volumes are the hit path. The CLI must say so: a Dagger task with `cache:` in CUE reports `engine=dagger` (and a cache hit only when DagQL says it was cached). Never print a cuenv action-cache hit for a task that did not run on the host. Document that pip/cargo/npm speed needs `#DaggerCacheMount`; we do not invent those volumes.
 
 This is how cuenv avoids owning a Bazel-style CAS for containerized CI. It is not a deletion of `cuenv-cas`.
 
@@ -186,7 +202,7 @@ In [`schema/tasks.cue`](../../../../../schema/tasks.cue):
 
 Do not add `backend` to [`schema/config.cue`](../../../../../schema/config.cue).
 
-`#ContainerImage` gains no new fields. Dockerfile execution moves from docker/buildx to Dagger; the CUE stays `context` / `dockerfile` / `target` / `buildArgs` / `tags` / `registry` / `platform`.
+`#ContainerImage` gains no new fields. Dockerfile CUE stays `context` / `dockerfile` / `target` / `buildArgs` / `tags` / `registry` / `platform`. Execution stays docker/buildx until the project or the `cuenv build` invocation opts into Dagger.
 
 ## Implementation phases
 
@@ -196,7 +212,7 @@ Close the honesty gap without waiting on the SDK bump if the current 0.20 client
 
 - Resolve the effective Dagger spec in `cuenv-task-exec` / `cuenv-dagger` (`task.runtime`, then `task.dagger`, then project `runtime`). Require `image` or `from`.
 - Per-task dispatch: local vs opted-in Dagger on one graph; share one `DaggerBackend` `Arc` only when at least one task opted in.
-- Do not treat `#ContainerRuntime` as Dagger. `--backend host` demotes; `--backend dagger` refuses tasks without an explicit Dagger spec.
+- Do not treat `#ContainerRuntime` as Dagger. Fail closed if it is set. `--backend host` demotes; `--backend dagger` requires `--image` or an explicit Dagger spec.
 - Stop requiring `config.backend`. Delete it from the example.
 - Rewrite [`examples/dagger-task/env.cue`](../../../../../examples/dagger-task/env.cue) to `#DaggerRuntime`.
 - Replace `print!` / `eprint!` with `cuenv_events`.
@@ -215,14 +231,17 @@ Focused gate: `cuenv fmt --fix`, `git diff --check`, `cuenv exec -- cargo test -
 - Skip `cuenv-cas` lookup/record when the dispatched backend is Dagger.
 - Remove the dagger-sdk rustls advisory ignores in `deny.toml` if the 1.0 crate left reqwest 0.11.
 - Add engine-gated integration tests that skip cleanly when no Dagger engine is present.
+- Surface engine progress and a first-run "Dagger engine missing / version mismatch" error.
+- Honour `task.dir`; reject illegal `from:` (host predecessor or missing from this graph).
 
 Focused gate: crate tests + clippy for `cuenv-dagger` / `cuenv-task-exec` / `cuenv`. Full flake before review (production lockfile + cross-crate runtime).
 
 ### Phase 3 — Dockerfile images through Dagger
 
-- Build `#ContainerImage` Dockerfile images with Dagger `dockerBuild` when the user asks `cuenv build` (that command is the opt-in for image builds). Push with `publish` when `registry` is set; write `.ref` and `.digest`.
+- Build `#ContainerImage` Dockerfile images with Dagger `dockerBuild` only when the project has a Dagger opt-in or the caller passed `--backend dagger`. Otherwise keep docker/buildx so `cuenv build` does not suddenly require an engine.
+- Push with `publish` when `registry` is set; write `.ref` and `.digest`.
 - Leave Nix `installable` images on the current nix+docker path.
-- Leave `#ContainerRuntime` schema-only. A later RFC can decide whether it becomes a second opt-in or is removed.
+- Keep `#ContainerRuntime` schema-only and fail closed if used. A later RFC can delete it or give it its own backend.
 - Promote matrix rows that the phases actually finish (`#DaggerRuntime` toward `implemented` only if timeout, export, session, and the explicit runtime form all work; `#ContainerImage` notes lose "Dagger pending" for Dockerfile).
 
 Focused gate: `cuenv build` smoke on `examples/container-image`, schema-docs-check, crate tests. Full flake before review.
@@ -240,6 +259,51 @@ Every phase updates:
 Run `cuenv task ci.schema-docs-check` on those edits.
 
 After Phase 2, write a short ADR that records the cache split (host `cuenv-cas`, Dagger DagQL) next to ADR-0008. Do not rewrite ADR-0008 until that ADR exists.
+
+## Golden path
+
+Typical app: lint on the host, tests in Dagger, image build only when opted in.
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "app"
+
+tasks: {
+	lint: schema.#Task & {
+		command: "cargo"
+		args: ["clippy", "--", "-D", "warnings"]
+	}
+
+	test: schema.#Task & {
+		command: "cargo"
+		args: ["test"]
+		runtime: schema.#DaggerRuntime & {
+			image: "rust:1.85-slim"
+			cache: [{path: "/usr/local/cargo/registry", name: "cargo-registry"}]
+		}
+	}
+}
+
+images: {
+	app: schema.#ContainerImage & {
+		context: "."
+		tags: ["latest"]
+	}
+}
+```
+
+```bash
+cuenv task lint                 # host
+cuenv task test                 # Dagger, image from CUE
+cuenv task test --backend host  # demote for debugging
+cuenv task test --backend dagger --image rust:1.85-slim  # one-shot if CUE has no runtime yet
+cuenv build app                 # docker/buildx (no Dagger opt-in on the project)
+```
 
 ## Consequences
 

@@ -241,7 +241,7 @@ cuenv task build --backend dagger
 ```
 
 :::note[Dagger backend is Partial]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage.
+The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage. [RFC-0007](/decisions/rfcs/rfc-0007-dagger-v1-native-runtime/) will keep host as the default and require an explicit image (`#DaggerRuntime` or a future `--image` on a dagger one-shot). Do not assume `--backend dagger` invents a base image.
 :::
 
 ### Cache helpers
