@@ -355,10 +355,17 @@ mod tests {
             crates_io: None,
             cue_registry: Some(true),
         };
-        let json = serde_json::to_string(&config).unwrap();
-        assert_eq!(json, r#"{"cratesIo":null,"cueRegistry":true}"#);
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value.get("cueRegistry").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(matches!(
+            value.get("cratesIo"),
+            Some(serde_json::Value::Null)
+        ));
 
-        let parsed: TrustedPublishingConfig = serde_json::from_str(&json).unwrap();
+        let parsed: TrustedPublishingConfig = serde_json::from_value(value).unwrap();
         assert_eq!(parsed.cue_registry, Some(true));
     }
 }

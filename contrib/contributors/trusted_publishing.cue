@@ -51,6 +51,8 @@ import "github.com/cuenv/cuenv/schema"
 		id:       "trusted-publishing.cue-registry.auth"
 		label:    "Authenticate with the CUE Registry"
 		priority: 25
+		command:  "sh"
+		args:     ["-c", "echo 'Trusted publishing is only available on GitHub Actions'; exit 1"]
 		provider: github: {
 			uses: "cue-labs/registry-login-action@v1"
 			if:   "github.job == 'publish-cue'"
