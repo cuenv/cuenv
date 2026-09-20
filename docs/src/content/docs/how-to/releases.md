@@ -258,6 +258,14 @@ enabled, while `hestia` configures the Hestia binary cache after Nix setup
 without using Namespace volume snapshots.
 :::
 
+For CUE Registry publishing, prefer GitHub trusted publishing: enable
+`ci.provider.github.trustedPublishing.cueRegistry`, include
+`contributors.#CueRegistryTrustedPublishing`, and grant the release pipeline
+`id-token: write`. The generated workflow runs
+[`cue-labs/registry-login-action`](https://github.com/cue-labs/registry-login-action)
+before `publish.cue`; the task then runs `cue mod publish` without storing a
+long-lived CUE Registry token.
+
 ## 5. Prepare a release in one shot
 
 `cuenv release prepare` is the unified path: it analyzes commits since the last
@@ -380,10 +388,10 @@ do not present it as a finished pipeline.
 - **Publish skips and guards.** Crates with `publish = false` are skipped, and
   publishing a crate that depends on a skipped crate is rejected with a
   configuration error.
-- **Auth is token-env driven.** crates.io uses `CARGO_REGISTRY_TOKEN` (or your
+- **Auth is backend-specific.** crates.io uses `CARGO_REGISTRY_TOKEN` (or your
   `tokenEnv`), GitHub Releases use `GITHUB_TOKEN`, and Homebrew uses
-  `HOMEBREW_TAP_TOKEN` (or your `tokenEnv`). Missing tokens silently skip the
-  affected backend rather than erroring.
+  `HOMEBREW_TAP_TOKEN` (or your `tokenEnv`). The custom CUE Registry release
+  task can use GitHub trusted publishing instead of a long-lived token.
 - **No `v` prefix, ever.** Tags and release titles are bare versions. The
   schema default for `git.tagPrefix` is empty, which already enforces this.
 - **`release version` does not touch `cue.mod/module.cue`.** That is expected.

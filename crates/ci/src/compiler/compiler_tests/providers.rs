@@ -23,6 +23,24 @@ fn compiler_with_github_provider(global: Value, pipeline: Option<Value>) -> Comp
     Compiler::with_options(project, options)
 }
 
+fn compiler_with_github_provider_and_environment(global: Value, environment: &str) -> Compiler {
+    let mut project = Project::new("test");
+    project.ci = Some(CI {
+        provider: Some(github_provider_config(global)),
+        ..Default::default()
+    });
+
+    let options = CompilerOptions {
+        pipeline: Some(Pipeline {
+            environment: Some(environment.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    Compiler::with_options(project, options)
+}
+
 fn trusted_publishing_contributor() -> Contributor {
     test_contributor(
         "trusted-publishing",
@@ -31,6 +49,43 @@ fn trusted_publishing_contributor() -> Contributor {
             ..Default::default()
         }),
     )
+}
+
+fn cue_registry_trusted_publishing_contributor() -> Contributor {
+    test_contributor(
+        "trusted-publishing.cue-registry",
+        Some(ActivationCondition {
+            provider_config: vec!["github.trustedPublishing.cueRegistry".to_string()],
+            environment: vec!["production".to_string()],
+            ..Default::default()
+        }),
+    )
+}
+
+#[test]
+fn test_cue_registry_trusted_publishing_requires_production_environment() {
+    let production_compiler = compiler_with_github_provider_and_environment(
+        json!({
+            "trustedPublishing": { "cueRegistry": true },
+        }),
+        "production",
+    );
+
+    assert!(
+        production_compiler
+            .cue_contributor_is_active(&cue_registry_trusted_publishing_contributor(), &test_ir())
+    );
+
+    let development_compiler = compiler_with_github_provider_and_environment(
+        json!({
+            "trustedPublishing": { "cueRegistry": true },
+        }),
+        "development",
+    );
+    assert!(
+        !development_compiler
+            .cue_contributor_is_active(&cue_registry_trusted_publishing_contributor(), &test_ir())
+    );
 }
 
 #[test]

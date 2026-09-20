@@ -49,6 +49,9 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: Upload cuenv
       uses: actions/upload-artifact@v4
       with:
@@ -82,6 +85,9 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: Upload cuenv
       uses: actions/upload-artifact@v4
       with:
@@ -115,6 +121,9 @@ jobs:
         ./result/bin/cuenv sync ci
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: Upload cuenv
       uses: actions/upload-artifact@v4
       with:
@@ -155,6 +164,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: cargo.build (darwin-arm64)
       run: cuenv task cargo.build -e production --skip-dependencies
       working-directory: .
@@ -206,6 +218,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: cargo.build (linux-arm64)
       run: cuenv task cargo.build -e production --skip-dependencies
       working-directory: .
@@ -257,6 +272,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: cargo.build (linux-x64)
       run: cuenv task cargo.build -e production --skip-dependencies
       working-directory: .
@@ -311,6 +329,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: Download cargo-build-darwin-arm64
       uses: actions/download-artifact@v4
       with:
@@ -370,6 +391,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: publish.cue
       run: cuenv task publish.cue -e production --skip-dependencies
       working-directory: .
@@ -414,6 +438,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: publish.homebrew
       run: cuenv task publish.homebrew -e production --skip-dependencies
       working-directory: .
@@ -458,6 +485,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: Download docs-build-artifacts
       uses: actions/download-artifact@v4
       with:
@@ -505,6 +535,9 @@ jobs:
       run: cuenv exec -- cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+    - name: Authenticate with the CUE Registry
+      if: github.job == 'publish-cue'
+      uses: cue-labs/registry-login-action@v1
     - name: docs.build
       run: cuenv task docs.build -e production --skip-dependencies
       working-directory: .
