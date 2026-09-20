@@ -795,6 +795,7 @@ async fn test_cache_hit_replays_task_output_events() {
         runtime_identity_properties: std::collections::BTreeMap::new(),
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
     };
     let executor = TaskExecutor::new(ExecutorConfig {
         capture_output: OutputCapture::Capture,

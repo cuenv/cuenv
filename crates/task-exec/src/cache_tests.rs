@@ -29,6 +29,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
     }
 }
 
@@ -1030,4 +1031,158 @@ async fn rotating_a_secret_changes_the_action_digest() {
 
     // A revoked credential must not keep serving results produced with it.
     assert_ne!(digest_for("old").await, digest_for("new").await);
+}
+
+// =============================================================================
+// Output collection scope
+// =============================================================================
+
+#[test]
+fn output_walk_roots_bound_a_literal_pattern() {
+    let workdir = Path::new("/w");
+    let roots = output_walk_roots(workdir, &["target/release/app".to_string()]);
+    assert_eq!(roots, vec![PathBuf::from("/w/target/release/app")]);
+}
+
+#[test]
+fn output_walk_roots_stop_at_the_first_wildcard() {
+    let workdir = Path::new("/w");
+    let roots = output_walk_roots(workdir, &["dist/**/*.js".to_string()]);
+    assert_eq!(roots, vec![PathBuf::from("/w/dist")]);
+}
+
+#[test]
+fn a_leading_wildcard_forces_the_whole_workdir() {
+    let workdir = Path::new("/w");
+    let roots = output_walk_roots(
+        workdir,
+        &["**/*.js".to_string(), "dist/app".to_string()],
+    );
+    assert_eq!(roots, vec![PathBuf::from("/w")]);
+}
+
+#[test]
+fn nested_roots_are_collapsed_so_no_subtree_is_walked_twice() {
+    let workdir = Path::new("/w");
+    let roots = output_walk_roots(
+        workdir,
+        &[
+            "dist/nested/deep/**/*".to_string(),
+            "dist/**/*".to_string(),
+            "other/x".to_string(),
+        ],
+    );
+    assert_eq!(
+        roots,
+        vec![PathBuf::from("/w/dist"), PathBuf::from("/w/other/x")]
+    );
+}
+
+#[tokio::test]
+async fn output_collection_ignores_trees_outside_the_declared_patterns() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path();
+    fs::create_dir_all(workdir.join("dist")).unwrap();
+    fs::write(workdir.join("dist/app.js"), "built").unwrap();
+
+    // A large unrelated tree that a full-workdir walk would traverse.
+    fs::create_dir_all(workdir.join("node_modules/pkg/deep")).unwrap();
+    fs::write(workdir.join("node_modules/pkg/deep/index.js"), "dep").unwrap();
+
+    let collected = collect_outputs(workdir, &["dist/**/*".to_string()]).unwrap();
+    assert_eq!(collected, vec![PathBuf::from("dist/app.js")]);
+}
+
+#[tokio::test]
+async fn a_declared_output_that_was_never_produced_is_not_an_error() {
+    let tmp = TempDir::new().unwrap();
+    let collected = collect_outputs(tmp.path(), &["dist/**/*".to_string()]).unwrap();
+    assert!(collected.is_empty());
+}
+
+#[tokio::test]
+async fn overlapping_patterns_report_each_file_once() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path();
+    fs::create_dir_all(workdir.join("dist")).unwrap();
+    fs::write(workdir.join("dist/app.js"), "built").unwrap();
+
+    let collected = collect_outputs(
+        workdir,
+        &["dist/**/*".to_string(), "dist/app.js".to_string()],
+    )
+    .unwrap();
+    assert_eq!(collected, vec![PathBuf::from("dist/app.js")]);
+}
+
+#[tokio::test]
+async fn a_bare_directory_output_still_collects_its_tree() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path();
+    fs::create_dir_all(workdir.join("dist/sub")).unwrap();
+    fs::write(workdir.join("dist/a.js"), "a").unwrap();
+    fs::write(workdir.join("dist/sub/b.js"), "b").unwrap();
+
+    let collected = collect_outputs(workdir, &["dist".to_string()]).unwrap();
+    assert_eq!(
+        collected,
+        vec![PathBuf::from("dist/a.js"), PathBuf::from("dist/sub/b.js")]
+    );
+}
+
+// =============================================================================
+// Run-wide cache override (CUENV_CACHE)
+// =============================================================================
+
+#[test]
+fn an_override_narrows_a_read_write_task_to_read() {
+    let tmp = TempDir::new().unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.mode_override = Some(TaskCacheMode::Read);
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let policy = effective_policy(&cache, &task);
+    assert!(policy.mode.allows_read());
+    assert!(!policy.mode.allows_write());
+}
+
+#[test]
+fn an_override_can_force_write_only_to_refresh_a_poisoned_entry() {
+    let tmp = TempDir::new().unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.mode_override = Some(TaskCacheMode::Write);
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let policy = effective_policy(&cache, &task);
+    assert!(!policy.mode.allows_read());
+    assert!(policy.mode.allows_write());
+}
+
+#[test]
+fn an_override_never_caches_a_task_that_opted_out() {
+    // CUENV_CACHE is a brake, not an accelerator: it must not switch caching
+    // on for a task whose own policy is `never`.
+    let tmp = TempDir::new().unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.mode_override = Some(TaskCacheMode::ReadWrite);
+    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    task.cache = Some(TaskCachePolicy {
+        mode: TaskCacheMode::Never,
+        max_age: None,
+    });
+
+    let policy = effective_policy(&cache, &task);
+    assert!(!policy.mode.allows_read());
+    assert!(!policy.mode.allows_write());
+}
+
+#[test]
+fn without_an_override_the_task_policy_is_used_verbatim() {
+    let tmp = TempDir::new().unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let policy = effective_policy(&cache, &task);
+    assert!(policy.mode.allows_read());
+    assert!(policy.mode.allows_write());
 }

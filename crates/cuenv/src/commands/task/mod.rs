@@ -15,6 +15,7 @@ use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
 use cuenv_core::tasks::{TaskNode, Tasks};
+use cuenv_core::tasks::TaskCacheMode;
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
@@ -66,6 +67,12 @@ fn build_task_cache(
     project_root: &Path,
     runtime_identity: RuntimeCacheIdentity,
 ) -> Option<TaskCacheConfig> {
+    let cache_override = cache_override();
+    if cache_override == CacheOverride::Off {
+        tracing::debug!("task cache disabled by CUENV_CACHE=off");
+        return None;
+    }
+
     let root = resolve_cache_root(project_root);
     let cas = match cuenv_cas::LocalCas::open(&root) {
         Ok(c) => Arc::new(c) as Arc<dyn cuenv_cas::Cas>,
@@ -92,7 +99,56 @@ fn build_task_cache(
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: runtime_identity.cache_disabled_reason,
         secret_salt: secret_cache_salt(),
+        mode_override: match cache_override {
+            CacheOverride::None | CacheOverride::Off => None,
+            CacheOverride::ReadOnly => Some(TaskCacheMode::Read),
+            CacheOverride::WriteOnly => Some(TaskCacheMode::Write),
+        },
     })
+}
+
+/// How `CUENV_CACHE` overrides the per-task cache policy for a whole run.
+///
+/// Without this the only way to bust a bad entry is editing CUE, which is a
+/// poor answer when a cache is misbehaving and you want to know whether the
+/// cache is the reason. moon has `MOON_CACHE` for the same purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheOverride {
+    /// Honour each task's declared policy.
+    None,
+    /// Ignore the cache entirely for this run.
+    Off,
+    /// Read existing entries but record nothing.
+    ReadOnly,
+    /// Ignore existing entries but record fresh ones — the way to refresh a
+    /// poisoned entry without discarding the whole store.
+    WriteOnly,
+}
+
+/// Parse `CUENV_CACHE`.
+///
+/// Accepts `off`/`false`/`0`, `read`, `write`, and `read-write`/`on`/`true`.
+/// An unrecognised value warns and is ignored rather than failing the run: a
+/// typo in an environment variable should not stop a build.
+fn cache_override() -> CacheOverride {
+    let Ok(raw) = std::env::var("CUENV_CACHE") else {
+        return CacheOverride::None;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "false" | "0" | "none" => CacheOverride::Off,
+        "read" | "read-only" => CacheOverride::ReadOnly,
+        "write" | "write-only" => CacheOverride::WriteOnly,
+        // Empty and the explicit "on" spellings both mean "leave each task's
+        // declared policy alone".
+        "" | "read-write" | "rw" | "on" | "true" | "1" => CacheOverride::None,
+        other => {
+            tracing::warn!(
+                value = other,
+                "ignoring unrecognised CUENV_CACHE; expected off, read, write or read-write"
+            );
+            CacheOverride::None
+        }
+    }
 }
 
 /// Salt used to fingerprint secret-derived environment values into action

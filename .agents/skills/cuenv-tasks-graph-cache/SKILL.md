@@ -48,6 +48,8 @@ Generation rules:
 - `RemoteConfig` is read-only until `writable()` is called, because filesystem isolation (F1) is still open and a shared cache multiplies the blast radius of an unsound entry.
 - A cache hit is only served after `cuenv_cas::missing_blobs` confirms every referenced blob is present, and outputs are staged inside the workdir (`.cuenv-stage-*`) before being renamed into place. Cached output paths that escape the workdir are rejected.
 - `--show-cache-path` and `--materialize-outputs` parse but do nothing; never recommend them. There is no `cuenv cache` command surface yet.
+- `CUENV_CACHE=off|read|write|read-write` overrides every task's cache mode for one run (the analogue of moon's `MOON_CACHE`). It only narrows a declared policy — it never enables caching for a task whose mode is `never`.
+- `collect_outputs` derives walk roots from each output pattern's literal prefix. Do not reintroduce a full-workdir walk; a task declaring `target/release/app` must not traverse `node_modules`.
 - Treat task-level `dagger` as legacy; prefer runtime Dagger only when the matrix says it is appropriate.
 
 Event surface (`cuenv-events`):

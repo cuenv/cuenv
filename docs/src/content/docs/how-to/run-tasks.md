@@ -258,6 +258,31 @@ phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
 On a cache hit, cuenv restores the task's declared `outputs` into its working
 directory automatically — there is no flag to enable it.
 
+### Overriding the cache for one run
+
+`CUENV_CACHE` overrides every task's declared cache mode for a single
+invocation, which is how you find out whether the cache is the reason
+something looks wrong:
+
+| Value | Effect |
+| --- | --- |
+| `off` (also `false`, `0`, `none`) | Ignore the cache entirely |
+| `read` | Serve existing entries, record nothing |
+| `write` | Ignore existing entries, record fresh ones |
+| `read-write` (also `on`, `true`, `1`) | Default behaviour |
+
+```bash
+# Is the cache lying to me?
+CUENV_CACHE=off cuenv task build
+
+# Refresh a poisoned entry without discarding the whole store.
+CUENV_CACHE=write cuenv task build
+```
+
+It can only ever narrow what a task does. `CUENV_CACHE=read-write` will not
+start caching a task whose own policy is `never` — the setting is a brake,
+not an accelerator.
+
 ## Dependencies & Parallelism
 
 A `Makefile` makes you spell out ordering by hand, re-runs everything every time, and runs serially unless you remember `-j`:

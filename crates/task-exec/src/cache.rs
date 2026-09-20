@@ -10,7 +10,7 @@
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
 use super::TaskCommandExt;
-use crate::{Task, TaskCachePolicy};
+use crate::{Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
     CanonicalMessage, ExecutionMetadata, FileNode, OutputFile, Platform, canonical_bytes, digest_of,
@@ -64,6 +64,9 @@ pub struct TaskCacheConfig {
     /// action key, from `CUENV_SECRET_SALT`. Without it, a task whose
     /// environment holds a secret is not cacheable.
     pub secret_salt: Option<String>,
+    /// Run-wide override of every task's declared cache mode, from
+    /// `CUENV_CACHE`. `None` honours what each task declares.
+    pub mode_override: Option<TaskCacheMode>,
 }
 
 impl std::fmt::Debug for TaskCacheConfig {
@@ -81,10 +84,20 @@ impl std::fmt::Debug for TaskCacheConfig {
     }
 }
 
-/// Returns the effective task cache policy.
+/// Returns the effective task cache policy, after any run-wide override.
+///
+/// An override can only ever narrow what a task does — it cannot cache a task
+/// whose own policy is `never` — so `CUENV_CACHE=read-write` does not turn
+/// caching on for tasks that never opted in.
 #[must_use]
-pub fn effective_policy(task: &Task) -> TaskCachePolicy {
-    task.cache_policy()
+pub fn effective_policy(cache: &TaskCacheConfig, task: &Task) -> TaskCachePolicy {
+    let mut policy = task.cache_policy();
+    if let Some(override_mode) = cache.mode_override
+        && policy.mode != TaskCacheMode::Never
+    {
+        policy.mode = override_mode;
+    }
+    policy
 }
 
 /// Inputs to [`build_action`].
@@ -135,7 +148,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }));
     }
 
-    let policy = effective_policy(task);
+    let policy = effective_policy(cache, task);
     if !policy.mode.allows_read() && !policy.mode.allows_write() {
         tracing::debug!(task = %task_name, "skipping cache: task cache mode is never");
         return Ok(CacheOutcome::Skipped(CacheSkipReason::NeverMode));
@@ -364,7 +377,7 @@ pub async fn lookup(
     action_digest: &Digest,
     task: &Task,
 ) -> Result<Option<ActionResult>> {
-    let policy = effective_policy(task);
+    let policy = effective_policy(cache, task);
     if !policy.mode.allows_read() {
         return Ok(None);
     }
@@ -907,20 +920,16 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
     }
 
     let mut builder = GlobSetBuilder::new();
-    let mut has_patterns = false;
+    let mut effective = Vec::with_capacity(patterns.len());
     for pattern in patterns {
         let trimmed = pattern.trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        let looks_like_glob = trimmed.contains('*')
-            || trimmed.contains('{')
-            || trimmed.contains('?')
-            || trimmed.contains('[');
         let mut glob_pattern = trimmed.to_string();
         let absolute = workdir.join(trimmed);
-        if absolute.is_dir() && !looks_like_glob {
+        if absolute.is_dir() && !looks_like_glob(trimmed) {
             glob_pattern = format!("{}/**/*", trimmed.trim_end_matches('/'));
         }
 
@@ -928,10 +937,10 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
             cuenv_core::Error::configuration(format!("invalid output glob '{glob_pattern}': {e}"))
         })?;
         builder.add(glob);
-        has_patterns = true;
+        effective.push(glob_pattern);
     }
 
-    if !has_patterns {
+    if effective.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -940,35 +949,101 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
     })?;
 
     let mut resolved = Vec::new();
-    let walker = WalkDir::new(workdir)
-        .into_iter()
-        // A concurrent cache hit stages its outputs inside this workdir.
-        // Capturing another task's staging tree would record outputs this
-        // task never produced.
-        .filter_entry(|entry| !is_staging_dir(entry.path()));
-
-    for entry in walker {
-        let entry = entry.map_err(|e| {
-            cuenv_core::Error::configuration(format!("walk output tree {}: {e}", workdir.display()))
-        })?;
-        if entry.file_type().is_dir() {
+    for root in output_walk_roots(workdir, &effective) {
+        // A declared output that the task did not produce is ordinary — the
+        // glob simply matches nothing — so a missing root is skipped rather
+        // than reported.
+        if !root.exists() {
             continue;
         }
 
-        let relative = entry.path().strip_prefix(workdir).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "output path '{}' not under workdir '{}': {e}",
-                entry.path().display(),
-                workdir.display()
-            ))
-        })?;
-        if globset.is_match(relative) {
-            resolved.push(relative.to_path_buf());
+        let walker = WalkDir::new(&root)
+            .into_iter()
+            // A concurrent cache hit stages its outputs inside this workdir.
+            // Capturing another task's staging tree would record outputs this
+            // task never produced.
+            .filter_entry(|entry| !is_staging_dir(entry.path()));
+
+        for entry in walker {
+            let entry = entry.map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "walk output tree {}: {e}",
+                    root.display()
+                ))
+            })?;
+            if entry.file_type().is_dir() {
+                continue;
+            }
+
+            let relative = entry.path().strip_prefix(workdir).map_err(|e| {
+                cuenv_core::Error::configuration(format!(
+                    "output path '{}' not under workdir '{}': {e}",
+                    entry.path().display(),
+                    workdir.display()
+                ))
+            })?;
+            if globset.is_match(relative) {
+                resolved.push(relative.to_path_buf());
+            }
         }
     }
 
     resolved.sort();
+    resolved.dedup();
     Ok(resolved)
+}
+
+fn looks_like_glob(pattern: &str) -> bool {
+    pattern.contains('*') || pattern.contains('{') || pattern.contains('?') || pattern.contains('[')
+}
+
+/// The directories that have to be walked to satisfy `patterns`.
+///
+/// A glob's literal prefix bounds where its matches can live, so a task
+/// declaring `target/release/app` has no reason to walk `node_modules`.
+/// Walking the whole working directory instead — which is what this used to
+/// do — costs a full tree traversal on every recorded task, which is exactly
+/// the cost a cache is supposed to avoid.
+///
+/// Roots that contain one another are collapsed so no subtree is walked
+/// twice, and a pattern whose first segment is already a wildcard forces the
+/// whole working directory, because nothing narrower is correct.
+fn output_walk_roots(workdir: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let mut bases: Vec<PathBuf> = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        let mut base = PathBuf::new();
+        for segment in pattern.split('/') {
+            if looks_like_glob(segment) {
+                break;
+            }
+            if !segment.is_empty() && segment != "." {
+                base.push(segment);
+            }
+        }
+        if base.as_os_str().is_empty() {
+            // Unbounded: the whole working directory is in scope, and no
+            // other root can narrow that.
+            return vec![workdir.to_path_buf()];
+        }
+        bases.push(base);
+    }
+
+    // Sorting puts a parent immediately before its descendants, so a single
+    // pass collapses them.
+    bases.sort();
+    bases.dedup();
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(bases.len());
+    for base in bases {
+        if roots.last().is_some_and(|kept| base.starts_with(kept)) {
+            continue;
+        }
+        roots.push(base);
+    }
+
+    roots
+        .into_iter()
+        .map(|base| workdir.join(base))
+        .collect()
 }
 
 fn path_to_forward_slashes(path: &Path) -> String {

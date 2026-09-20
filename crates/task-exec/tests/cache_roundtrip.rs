@@ -31,6 +31,7 @@ fn build_executor(workspace: &std::path::Path, cache_root: &std::path::Path) -> 
         runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
     };
 
     let config = ExecutorConfig {

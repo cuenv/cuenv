@@ -223,7 +223,7 @@ impl TaskExecutor {
         // Persist on successful miss. Cache writes are best-effort: a write
         // failure logs but does not fail the user's task.
         if let Some((cache, action_digest, workdir)) = cache_handle
-            && super::cache::effective_policy(task).mode.allows_write()
+            && super::cache::effective_policy(&cache, task).mode.allows_write()
             && result.exit_code == Some(0)
         {
             let recorded = super::cache::record(RecordInput {

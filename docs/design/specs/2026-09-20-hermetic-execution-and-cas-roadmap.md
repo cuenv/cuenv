@@ -152,6 +152,19 @@ into `ExecutorConfig` (`executor.rs:88`, `executor.rs:92`) and never read. The
 docs told users to use them. Documented as unimplemented in phase 0; the flags
 become real with the `cuenv cache` surface in phase 2.
 
+**F19 — Output collection walked the entire working directory.** *[fixed]*
+`collect_outputs` built a globset and then walked all of `workdir` to filter
+against it, so a task declaring `target/release/app` traversed `node_modules`
+and the whole of `target` on every recorded run — a full tree walk to avoid
+work, which is the cost a cache exists to remove. Walk roots are now derived
+from each pattern's literal prefix, collapsed where they nest.
+
+**F20 — No way to bypass the cache for one run.** *[fixed]* The only way to
+bust a bad entry was editing CUE. `CUENV_CACHE=off|read|write|read-write` now
+overrides every task's mode for a single invocation, matching what moon's
+`MOON_CACHE` is for. It can only narrow a task's declared policy, never widen
+it, so it cannot start caching a task that opted out.
+
 ### Found during review, fixed immediately
 
 **F18 — Resolved secrets were written into the CAS in plaintext.** *[fixed]*
