@@ -8,12 +8,26 @@ standalone Rust desktop application using GPUI for the product shell and the
 pinned Rio terminal engine for terminal state, parsing, PTY integration, and
 semantic render frames.
 
-The active Rio revision is:
+The direct-`rio-vt` qualification revision is:
 
-`b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`
+`b0694c0707a90dc93fdf01cbf8a658424be285ee`
 
-That pin is intentional. Cuetty uses the public APIs available at this
-revision rather than depending on private renderer or embedding APIs.
+That pin is intentional. It is the head of
+[Rio PR #1927](https://github.com/raphamorim/rio/pull/1927), which preserves
+final PTY output under terminal-lock contention and gives Unix child teardown
+an ownership-safe shutdown/reap contract. Cuetty uses public APIs available at
+this revision rather than private renderer or embedding APIs.
+
+The original proof of concept used `librio` at
+`b0b79c1ebadc8d6a9a79c4c44a91a42b3ea439d1`. The M0 implementation migrates to
+direct `rio-vt` integration behind the existing session seam;
+see [ADR-0010: Direct rio-vt Integration for Cuetty](/decisions/adrs/adr-0010-cuetty-direct-rio-vt-integration/).
+Promotion is gated by the documented qualification spike and does not imply
+a Rio engine replacement. The new source preserves full cell-cluster text
+through rendering, copy, and visible-frame literal search, and samples
+observed cursor state and row-aware styles under one terminal lock. These
+changes are not yet qualification-complete; see the
+[M0 implementation checkpoint](/explanation/cuetty-daily-driver-roadmap/#implementation-checkpoint-7-september-2026).
 
 ## Architecture
 
@@ -33,18 +47,21 @@ The boundary is deliberately replaceable:
 
 The current usable slice includes:
 
-- A login shell attached to a Rio-backed terminal session.
+- A login shell attached to a Rio-backed terminal session. Cuetty resets the
+  inherited `SHLVL` base so a new window starts at shell level 1 rather than
+  leaking the launcher's nesting into the prompt.
 - Fixed-width, fixed-row-height GPUI rendering with semantic colours and
   explicit wide-cell and soft-wrap occupancy.
 - Catppuccin Mocha is the built-in terminal colour scheme shared by Rio's
   semantic resolver and the GPUI chrome.
 - Ghostty is the visual reference for restrained native chrome: traffic lights,
   one title strip, stable single-line tab labels, and a full-bleed terminal.
-- Keyboard input, paste, resize, title updates, clipboard copy, mouse
-  selection, and visible-frame literal search.
-- Window and rail geometry are mapped to the active pane before each Rio
-  resize, so changing either boundary recalculates terminal rows and columns
-  instead of leaving a stale frame clipped in the viewport.
+- Keyboard input, including macOS Control chords, paste, resize, title updates, clipboard copy, mouse
+  selection, Rio-owned history navigation, and visible-frame literal search.
+- The active pane's post-layout GPUI canvas is the source of truth for each Rio
+  resize, so the measured width already excludes the title strip, terminal
+  inset, divider, and fixed rail width instead of leaving a stale frame
+  clipped in the viewport.
 - The terminal surface keeps an 8px inset from the host chrome; the inset uses
   the same terminal surface colour and is subtracted from the Rio grid
   dimensions as well as the rendered bounds.
@@ -53,9 +70,8 @@ The current usable slice includes:
   every newly-created session starts in `$HOME`,
   split shortcuts are rejected with a visible notice until pane/session
   allocation is implemented, and the UI never presents a fake terminal pane.
-- A vertical GPUI Component tab rail that resizes from 50px to 280px. The
-  50px compact mode shows tab ordinals with title tooltips, and the collapse
-  control restores the last expanded width.
+- A fixed 56px right-side vertical tab rail. It shows tab ordinals with stable
+  path-name tooltips and deliberately has no resize or expand mode.
 - A session-only Settings destination with transactional Apply, Cancel, and
   Reset controls for font size and line height. The native Cuetty menu exposes
   Quit Cuetty and Cmd-Q uses the same application-level action.
@@ -82,22 +98,39 @@ Directory and module-metadata changes are watched natively. Evaluation and
 validation occur off the GPUI thread. Invalid matching CUE keeps the last
 valid presentation for that directory and exposes an integration notice.
 
+Cuetty separately evaluates `package cuenv` in the same exact directory and
+surfaces its task, group, and sequence names in a floating sidebar and a
+Command-K palette. These overlays do not participate in terminal layout, so
+opening them does not change the PTY's reported rows or columns. Launching a
+task delegates to `cuenv task` in the same pane that supplied the catalogue;
+required task parameters leave an editable command at the prompt. The app does not duplicate
+the task graph, cache, hooks, or secret resolution.
+
 ## Current limits
 
 The following are deliberately documented as staged work rather than implied
 support:
 
-- Full scrollback navigation and full-history search; current search is over
-  the visible frame and supports literal matching only.
+- Full-history selection and search; history navigation is live, but current
+  selection/search coordinates cover one visible viewport and search is
+  literal-only.
 - Complete Unicode behaviour, including combining marks, ZWJ sequences,
   emoji presentation, and IME correctness.
 - Kitty graphics and other image protocols.
 - tmux, remote, attach, and reconnect backends.
+- Rich task progress, cancellation controls, and source-linked diagnostics;
+  the current task surface launches the canonical CLI in a terminal tab.
 - Wasm plugins and a plugin/component-tree runtime.
 - Split-pane session allocation, plus live workspace restore/reconnect.
 
-The implementation has focused Rust validation and signed macOS bundle
-verification. Human visual and input acceptance remains a separate caveat:
+Earlier implementation work recorded focused Rust validation and macOS bundle
+verification. Those results do not validate the new direct-`rio-vt` migration:
+app compilation, the real PTY lifecycle suite, and an Apple Silicon smoke run
+are still required for this change. The GPUI-representable Kitty and
+`modifyOtherKeys` subset now has deterministic coverage; IME, focus reporting,
+application keypad identity, key releases, alternate-key reporting, and
+hyperlinks remain qualification items.
+Human visual and input acceptance remains a separate caveat:
 the terminal must still be exercised interactively for font metrics, line
 spacing, selection, search focus, clipboard behaviour, resize, and shell
 lifecycle before a release claim. macOS with Apple's Metal toolchain is the
@@ -109,6 +142,8 @@ Use the app-local workflow from `apps/cuetty`. The app remains standalone and
 does not participate in the root cuenv release pipeline until it is ready:
 
 ```bash
+nix develop
+rustc --version # Must report 1.98.1 for this qualification baseline.
 cargo fmt -- --check
 cargo check --locked
 cargo test --locked
@@ -116,6 +151,15 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo build --release --locked
 ./script/build_and_run.sh --verify
 ```
+
+The app-local and root flakes both pin Rust **1.98.1**, with a matching
+`rust-overlay` revision in each lockfile. Enter the app-local Nix shell before
+using Cargo or the packaging script so they use the pinned compiler. This
+upgrade supplies the compiler baseline for the direct `rio-vt` qualification
+spike and does not change the declared workspace MSRV; it is not evidence that
+Rio integration or macOS acceptance has passed. Rust 1.98.1 is the latest stable
+release as of 7 September 2026, per the
+[official release announcement](https://blog.rust-lang.org/2026/09/03/Rust-1.98.1/).
 
 `build_and_run.sh --verify` uses the installed macOS Metal toolchain to build,
 sign, and validate the application bundle. The exact commands and resulting

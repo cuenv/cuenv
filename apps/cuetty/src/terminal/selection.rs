@@ -64,9 +64,9 @@ impl Selection {
             if from < to_exclusive {
                 for cell in cells.get(from..to_exclusive).into_iter().flatten() {
                     if matches!(cell.occupancy, CellOccupancy::Narrow | CellOccupancy::Wide)
-                        && let Some(ch) = cell.codepoint
+                        && let Some(text) = &cell.text
                     {
-                        out.push(ch);
+                        out.push_str(text);
                     }
                 }
             }

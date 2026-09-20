@@ -160,7 +160,7 @@ fn test_extract_static_env_vars_skips_secrets() {
     };
 
     let vars = extract_static_env_vars(&cfg);
-    assert!(vars.get("PLAIN") == Some(&"value".to_string()));
+    assert_eq!(vars.get("PLAIN"), Some(&"value".to_string()));
     assert!(!vars.contains_key("SECRET"));
 }
 

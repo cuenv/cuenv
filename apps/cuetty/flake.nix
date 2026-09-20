@@ -25,7 +25,7 @@
           overlays = [ rust-overlay.overlays.default ];
         };
         lib = pkgs.lib;
-        rustToolchain = pkgs.rust-bin.stable."1.90.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.98.1".default.override {
           extensions = [ "clippy" "rustfmt" ];
         };
         rustPlatform = pkgs.makeRustPlatform {

@@ -314,8 +314,7 @@ fn is_indexed_task_directly_affected(
 ) -> bool {
     index
         .resolve(task_name)
-        .ok()
-        .is_some_and(|entry| entry.node.is_affected_by(changed_files, project_root))
+        .is_ok_and(|entry| entry.node.is_affected_by(changed_files, project_root))
 }
 
 #[cfg(test)]

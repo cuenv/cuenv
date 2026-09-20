@@ -46,7 +46,7 @@ pub fn execute_ps(options: &PsOptions) -> cuenv_core::Result<String> {
             "{:<20} {:<12} {:<20} {:<12} {:<10} {:<8}",
             "NAME", "STATE", "ENDPOINTS", "UPTIME", "RESTARTS", "PID"
         ));
-        emit_stdout!(format!("{}", "-".repeat(84)));
+        emit_stdout!("-".repeat(84));
 
         for svc in &services {
             let uptime = match svc.started_at {
