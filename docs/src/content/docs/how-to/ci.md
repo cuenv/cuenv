@@ -146,6 +146,15 @@ always runs** (cuenv cannot prove it is unaffected). If `--from` is omitted,
 cuenv uses the provider's default base (for example, a PR's base branch). Declare
 tight `inputs` on every task to get the most out of affected detection.
 
+For GitHub pull-request workflows, cuenv uses the local checkout first. The
+generated workflow uses `actions/checkout` with `fetch-depth: 2`; GitHub's
+default pull-request ref is a synthetic merge commit, so `HEAD^1..HEAD` contains
+the aggregate diff for the entire pull request, regardless of how many commits
+it has. If a workflow checks out the PR head instead, cuenv uses the immutable
+base SHA from the event payload; that same path handles depth-1 checkouts where
+the merge parents are unavailable. The GitHub changed-files API is only a
+fallback, and cuenv follows all of its pagination links when it is needed.
+
 See the contributor-driven setup that wraps these runs in
 [CI Contributors](/reference/ci-contributors/), which injects the Nix/cuenv/cache
 bootstrap around the affected DAG.

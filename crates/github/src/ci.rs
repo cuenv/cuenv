@@ -24,6 +24,7 @@ pub struct GitHubCIProvider {
     owner: String,
     repo: String,
     pr_number: Option<u64>,
+    is_pr_merge_ref: bool,
 }
 
 const NULL_SHA: &str = "0000000000000000000000000000000000000000";
@@ -67,10 +68,68 @@ impl GitHubCIProvider {
             .is_ok_and(|o| o.status.success())
     }
 
+    fn commit_exists(revision: &str) -> bool {
+        Command::new("git")
+            .arg("cat-file")
+            .arg("-e")
+            .arg(format!("{revision}^{{commit}}"))
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn is_merge_commit() -> bool {
+        Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD^2"])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    fn is_synthetic_merge_checkout(&self) -> bool {
+        if self.context.sha.is_empty() {
+            return false;
+        }
+
+        Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .is_ok_and(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout)
+                        .trim()
+                        .eq_ignore_ascii_case(&self.context.sha)
+            })
+    }
+
     fn get_before_sha() -> Option<String> {
         std::env::var("GITHUB_BEFORE")
             .ok()
             .filter(|sha| sha != NULL_SHA && !sha.is_empty())
+    }
+
+    fn parse_pr_base_sha(event: &serde_json::Value) -> Option<String> {
+        let sha = event
+            .pointer("/pull_request/base/sha")?
+            .as_str()?
+            .to_string();
+        if sha.is_empty() || sha == NULL_SHA {
+            None
+        } else {
+            Some(sha)
+        }
+    }
+
+    fn get_pr_base_sha() -> Option<String> {
+        let event_path = std::env::var("GITHUB_EVENT_PATH").ok()?;
+        let event = serde_json::from_str(&std::fs::read_to_string(event_path).ok()?).ok()?;
+        Self::parse_pr_base_sha(&event)
+    }
+
+    fn parse_changed_files(stdout: &str) -> Vec<PathBuf> {
+        stdout
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| PathBuf::from(line.trim()))
+            .collect()
     }
 
     fn try_git_diff(range: &str) -> Option<Vec<PathBuf>> {
@@ -89,13 +148,7 @@ impl GitHubCIProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Some(
-            stdout
-                .lines()
-                .filter(|line| !line.trim().is_empty())
-                .map(|line| PathBuf::from(line.trim()))
-                .collect(),
-        )
+        Some(Self::parse_changed_files(&stdout))
     }
 
     fn get_all_tracked_files() -> Vec<PathBuf> {
@@ -129,13 +182,14 @@ impl GitHubCIProvider {
 
     /// Get changed files for a PR using the GitHub API.
     ///
-    /// This is faster and more reliable than git diff for PRs, as it doesn't
-    /// require fetching git history. Works with shallow clones.
+    /// This is a fallback for checkouts where the local merge diff is not
+    /// available. The API returns paginated results, so every page must be
+    /// followed or large PRs will be silently truncated.
     async fn get_pr_files_from_api(&self, pr_number: u64) -> Result<Vec<PathBuf>> {
         debug!("Fetching PR files from GitHub API for PR #{pr_number}");
         let octocrab = self.octocrab()?;
 
-        let page = octocrab
+        let mut page = octocrab
             .pulls(&self.owner, &self.repo)
             .list_files(pr_number)
             .await
@@ -143,11 +197,24 @@ impl GitHubCIProvider {
                 cuenv_core::Error::configuration(format!("Failed to get PR files from API: {e}"))
             })?;
 
-        let files: Vec<PathBuf> = page
-            .items
-            .iter()
-            .map(|f| PathBuf::from(&f.filename))
-            .collect();
+        let mut files = Vec::new();
+        loop {
+            files.extend(page.items.iter().map(|file| PathBuf::from(&file.filename)));
+
+            let next_page = octocrab
+                .get_page::<octocrab::models::repos::DiffEntry>(&page.next)
+                .await
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "Failed to get next PR files page from API: {e}"
+                    ))
+                })?;
+
+            let Some(next_page) = next_page else {
+                break;
+            };
+            page = next_page;
+        }
 
         info!("Got {} changed files from GitHub API", files.len());
         Ok(files)
@@ -203,6 +270,7 @@ impl CIProvider for GitHubCIProvider {
 
         let github_ref = std::env::var("GITHUB_REF").unwrap_or_default();
         let pr_number = Self::parse_pr_number(&github_ref);
+        let is_pr_merge_ref = github_ref.ends_with("/merge");
 
         Some(Self {
             context: CIContext {
@@ -216,6 +284,7 @@ impl CIProvider for GitHubCIProvider {
             owner,
             repo,
             pr_number,
+            is_pr_merge_ref,
         })
     }
 
@@ -224,9 +293,43 @@ impl CIProvider for GitHubCIProvider {
     }
 
     async fn changed_files(&self) -> Result<Vec<PathBuf>> {
-        // Strategy 1: Pull Request - use GitHub API (fastest, no git history needed)
+        // Strategy 1: Pull Request - use the checkout's synthetic merge commit.
+        // GitHub's default pull_request checkout is refs/pull/<number>/merge;
+        // HEAD^1 is the base and HEAD includes the complete PR result, no
+        // matter how many commits the PR contains.
         if let Some(pr_number) = self.pr_number {
-            debug!("PR #{pr_number} detected, using GitHub API for changed files");
+            if self.is_pr_merge_ref
+                && self.is_synthetic_merge_checkout()
+                && Self::is_merge_commit()
+                && let Some(files) = Self::try_git_diff("HEAD^1..HEAD")
+            {
+                info!(
+                    "Got {} changed files from the pull request merge diff",
+                    files.len()
+                );
+                return Ok(files);
+            }
+
+            // A workflow may explicitly check out the PR head instead of the
+            // merge ref. Use the event's immutable base SHA in that case so a
+            // moving base branch cannot change the affected-task result.
+            if let Some(base_sha) = Self::get_pr_base_sha() {
+                debug!("PR #{pr_number} detected, using base SHA {base_sha}");
+                if !Self::commit_exists(&base_sha) {
+                    Self::fetch_ref(&base_sha);
+                }
+
+                if let Some(files) = Self::try_git_diff(&format!("{base_sha}..HEAD")) {
+                    info!(
+                        "Got {} changed files from the pull request base SHA diff",
+                        files.len()
+                    );
+                    return Ok(files);
+                }
+            }
+
+            // Strategy 2: Pull Request - paginated API fallback.
+            debug!("PR #{pr_number} detected, using GitHub API fallback for changed files");
             match self.get_pr_files_from_api(pr_number).await {
                 Ok(files) => return Ok(files),
                 Err(e) => {
@@ -235,7 +338,7 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 2: Push event - use GitHub Compare API (no git history needed)
+        // Strategy 3: Push event - use GitHub Compare API (no git history needed)
         if let Some(before_sha) = Self::get_before_sha() {
             debug!(
                 "Push event detected, using Compare API: {before_sha}...{}",
@@ -254,7 +357,7 @@ impl CIProvider for GitHubCIProvider {
         let is_shallow = Self::is_shallow_clone();
         debug!("Shallow clone detected: {is_shallow}");
 
-        // Strategy 3: Pull Request - use git diff with base_ref (fallback if API fails)
+        // Strategy 4: Pull Request - use git diff with base_ref (last-resort fallback)
         if let Some(base) = &self.context.base_ref
             && !base.is_empty()
         {
@@ -269,7 +372,7 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 4: Push event with valid GITHUB_BEFORE - git diff fallback
+        // Strategy 5: Push event with valid GITHUB_BEFORE - git diff fallback
         if let Some(before_sha) = Self::get_before_sha() {
             debug!("Push event git diff fallback, GITHUB_BEFORE: {before_sha}");
 
@@ -282,13 +385,13 @@ impl CIProvider for GitHubCIProvider {
             }
         }
 
-        // Strategy 5: Try comparing against parent commit
+        // Strategy 6: Try comparing against parent commit
         if let Some(files) = Self::try_git_diff("HEAD^..HEAD") {
             debug!("Using HEAD^ comparison");
             return Ok(files);
         }
 
-        // Strategy 6: Fall back to all tracked files
+        // Strategy 7: Fall back to all tracked files
         warn!(
             "Could not determine changed files (shallow clone: {is_shallow}). \
              Running all tasks. For better performance, consider: \
@@ -546,6 +649,37 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_pr_base_sha() {
+        let event = serde_json::json!({
+            "pull_request": {
+                "base": {
+                    "sha": "abc123def456"
+                }
+            }
+        });
+
+        assert_eq!(
+            GitHubCIProvider::parse_pr_base_sha(&event),
+            Some("abc123def456".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_pr_base_sha_rejects_missing_or_null_sha() {
+        let missing = serde_json::json!({"pull_request": {"base": {}}});
+        assert_eq!(GitHubCIProvider::parse_pr_base_sha(&missing), None);
+
+        let null_sha = serde_json::json!({
+            "pull_request": {
+                "base": {
+                    "sha": NULL_SHA
+                }
+            }
+        });
+        assert_eq!(GitHubCIProvider::parse_pr_base_sha(&null_sha), None);
+    }
+
+    #[test]
     fn test_detect_not_github_actions() {
         // Clear GitHub Actions environment variables
         temp_env::with_vars_unset(["GITHUB_ACTIONS", "GITHUB_REPOSITORY"], || {
@@ -564,38 +698,37 @@ mod tests {
 
     #[test]
     fn test_try_git_diff_parses_output() {
-        // This test just verifies the diff output parsing logic
-        // In a real repo, this would test actual git diff output
-
         // Test that empty output results in empty vec
-        // This is implicitly tested through the filter logic
         let empty_lines = "";
-        let files: Vec<PathBuf> = empty_lines
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| PathBuf::from(line.trim()))
-            .collect();
+        let files = GitHubCIProvider::parse_changed_files(empty_lines);
         assert!(files.is_empty());
 
         // Test that whitespace-only lines are filtered
         let whitespace_only = "   \n\t\n";
-        let files: Vec<PathBuf> = whitespace_only
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| PathBuf::from(line.trim()))
-            .collect();
+        let files = GitHubCIProvider::parse_changed_files(whitespace_only);
         assert!(files.is_empty());
 
         // Test that valid file paths are parsed
         let valid_output = "src/main.rs\nCargo.toml\nREADME.md";
-        let files: Vec<PathBuf> = valid_output
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| PathBuf::from(line.trim()))
-            .collect();
+        let files = GitHubCIProvider::parse_changed_files(valid_output);
         assert_eq!(files.len(), 3);
         assert_eq!(files[0], PathBuf::from("src/main.rs"));
         assert_eq!(files[1], PathBuf::from("Cargo.toml"));
         assert_eq!(files[2], PathBuf::from("README.md"));
+    }
+
+    #[test]
+    fn test_parse_changed_files_does_not_truncate_large_diff() {
+        use std::fmt::Write;
+
+        let mut output = String::new();
+        for index in 0..65 {
+            let _ = writeln!(output, "website/file-{index}.md");
+        }
+
+        let files = GitHubCIProvider::parse_changed_files(&output);
+
+        assert_eq!(files.len(), 65);
+        assert_eq!(files[64], PathBuf::from("website/file-64.md"));
     }
 }
