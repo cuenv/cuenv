@@ -1380,6 +1380,8 @@ dependencies = [
 name = "cuenv-cas"
 version = "0.55.1"
 dependencies = [
+ "async-recursion",
+ "async-trait",
  "bazel-remote-apis",
  "chrono",
  "hex",
@@ -1391,8 +1393,28 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "cuenv-cas-remote"
+version = "0.55.1"
+dependencies = [
+ "async-trait",
+ "bazel-remote-apis",
+ "chrono",
+ "cuenv-cas",
+ "futures",
+ "miette",
+ "prost",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tracing",
 ]
 
 [[package]]
@@ -7612,9 +7634,11 @@ dependencies = [
  "hyper-util",
  "percent-encoding",
  "pin-project",
+ "rustls-native-certs",
  "socket2 0.6.3",
  "sync_wrapper 1.0.2",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-stream",
  "tower",
  "tower-layer",

@@ -316,24 +316,36 @@ not by hashing or copying; the cache respects a configured size budget.
   every pre-existing entry as intended. Bindings come from
   `bazel-remote-apis`, which ships pre-generated prost/tonic code, so no
   `protoc` is needed at build time and the Nix build is untouched.
-- Split the store traits into `LocalCas` / `RemoteCas` with a layered
-  read-through, async write-back stack. The traits are synchronous today;
-  gRPC is not, and blocking an executor worker thread on network I/O would
-  serialize the task graph, so the traits become `async` first.
-- gRPC client (tonic + `bazel-remote-apis`): `ContentAddressableStorage`,
-  `ActionCache`, `ByteStream`, `Capabilities`. Day-one compatibility with
-  bazel-remote, buildbarn, BuildBuddy, NativeLink, EngFlow and Namespace —
-  all of which expose the same `grpcs://` endpoint Bazel's `--remote_cache`
-  takes.
-- Honour `Capabilities.max_batch_total_size_bytes`: batch small blobs,
-  stream large ones over `ByteStream`, and refuse a server whose digest
-  function is not SHA-256.
+- **Done: the store traits are async.** `Cas` and `ActionCache` are
+  `#[async_trait]`, so a store can be remote. They were synchronous, and
+  gRPC is not; the alternative was blocking an executor worker thread on
+  network I/O and serializing the task graph behind it.
+- **Done: `cuenv-cas-remote`.** A REAPI client plus `LayeredCas` /
+  `LayeredActionCache`, which read through a local store to a remote one and
+  keep what they fetch. A remote failure degrades — an unreachable cache is
+  a miss, a failed upload is a warning — because a cache is an optimization
+  and a dead network should make a build slower, not broken.
+- **Done: the gRPC client** (tonic + `bazel-remote-apis`) covering
+  `ContentAddressableStorage`, `ActionCache`, `ByteStream` and
+  `Capabilities`. It honours `max_batch_total_size_bytes` — batching small
+  blobs, streaming large ones — skips uploading blobs `FindMissingBlobs`
+  says the server already holds, refuses a server that does not offer
+  SHA-256 rather than missing forever, and verifies every fetched blob's
+  digest before the bytes reach the workspace.
+- **Done: auth.** Bearer tokens and arbitrary headers, with credentials
+  redacted from every `Debug` and error message, and non-printable
+  credential bytes rejected up front rather than becoming an opaque 401.
+- **Still to do: wiring.** `cuenv task` does not build a remote store yet.
+  That needs the `#Cache.remote` schema below, CLI plumbing, and the
+  decision about when writes are allowed (see §6.5).
 - HTTP/object-store fallback (bazel-remote HTTP layout over S3/GCS/R2) for
   teams without a gRPC endpoint.
 - Auth: bearer headers and mTLS; read-only credentials for untrusted PR
   builds so a fork cannot poison the shared cache.
 - Only tasks that ran at tier `strict` or `sandbox-exec` write to the
-  remote cache by default. **(F1, enforced)**
+  remote cache by default. **(F1, enforced)** Until phase 1 lands there is
+  no such tier, which is why `RemoteConfig` is read-only unless
+  `writable()` is called.
 
 *Exit:* a cold CI runner gets hits from a developer's local build and vice
 versa.
@@ -390,6 +402,24 @@ start failing. Options:
    default is a task runner, not a competitor to buck2.
 3. Auto-detect: hermetic only when `inputs` are declared. Muddy — the same
    field would mean different things depending on a sibling field.
+
+### 6.5 When may cuenv write to a shared cache?
+
+A shared cache multiplies the consequence of an unsound entry: a wrong result
+stops being one developer's confusing afternoon and becomes every machine's.
+F1 is still open — a task can read a file it never declared — so an entry
+cuenv writes today may be wrong on another machine.
+
+The client therefore defaults to read-only and will not upload unless
+`RemoteConfig::writable()` is called. When the schema lands, `#Cache.remote.mode`
+should default to `"read"` for the same reason, and the recommendation should
+stay "read-only until phase 1" until filesystem isolation exists.
+
+Reading from a shared cache is not risk-free either — you consume whatever
+someone else produced — but the exposure is bounded by the key, which now
+records the declared inputs, the declared environment, the platform and the
+runtime identity. Writing is what turns one machine's unsound entry into
+everyone's.
 
 ### 6.4 Dependency outputs as inputs
 

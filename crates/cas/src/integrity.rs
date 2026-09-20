@@ -13,6 +13,7 @@ use crate::cas::Cas;
 use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::ActionResult;
+use async_recursion::async_recursion;
 use std::collections::HashSet;
 
 /// Maximum directory nesting walked while checking an output tree.
@@ -37,27 +38,28 @@ const MAX_TREE_DEPTH: usize = 128;
 /// Returns an error if the store cannot be queried, if a directory message
 /// cannot be decoded, or if an output tree nests deeper than
 /// [`MAX_TREE_DEPTH`].
-pub fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<Digest>> {
+pub async fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<Digest>> {
     let mut missing = Vec::new();
     let mut seen = HashSet::new();
 
-    let direct = result
+    let direct: Vec<&Digest> = result
         .output_files
         .iter()
         .map(|file| &file.digest)
         .chain(result.stdout_digest.iter())
-        .chain(result.stderr_digest.iter());
+        .chain(result.stderr_digest.iter())
+        .collect();
     for digest in direct {
-        check(cas, digest, &mut seen, &mut missing)?;
+        check(cas, digest, &mut seen, &mut missing).await?;
     }
 
     for directory in &result.output_directories {
-        if !check(cas, &directory.tree_digest, &mut seen, &mut missing)? {
+        if !check(cas, &directory.tree_digest, &mut seen, &mut missing).await? {
             // Root is absent: nothing to walk, and the caller already knows
             // the tree cannot be materialized.
             continue;
         }
-        walk_tree(cas, &directory.tree_digest, 0, &mut seen, &mut missing)?;
+        walk_tree(cas, &directory.tree_digest, 0, &mut seen, &mut missing).await?;
     }
 
     Ok(missing)
@@ -67,7 +69,7 @@ pub fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<Digest>
 ///
 /// Returns whether the blob is present. Digests already visited are skipped
 /// and reported using their first-seen presence.
-fn check(
+async fn check(
     cas: &dyn Cas,
     digest: &Digest,
     seen: &mut HashSet<Digest>,
@@ -76,14 +78,15 @@ fn check(
     if !seen.insert(digest.clone()) {
         return Ok(!missing.contains(digest));
     }
-    if cas.contains(digest)? {
+    if cas.contains(digest).await? {
         return Ok(true);
     }
     missing.push(digest.clone());
     Ok(false)
 }
 
-fn walk_tree(
+#[async_recursion]
+async fn walk_tree(
     cas: &dyn Cas,
     root: &Digest,
     depth: usize,
@@ -96,15 +99,15 @@ fn walk_tree(
         )));
     }
 
-    let directory = crate::merkle::decode_directory(&cas.get(root)?)
+    let directory = crate::merkle::decode_directory(&cas.get(root).await?)
         .map_err(|e| Error::serialization(format!("decode Directory {root}: {e}")))?;
 
     for file in &directory.files {
-        check(cas, &file.digest, seen, missing)?;
+        check(cas, &file.digest, seen, missing).await?;
     }
     for child in &directory.directories {
-        if check(cas, &child.digest, seen, missing)? {
-            walk_tree(cas, &child.digest, depth + 1, seen, missing)?;
+        if check(cas, &child.digest, seen, missing).await? {
+            walk_tree(cas, &child.digest, depth + 1, seen, missing).await?;
         }
     }
     Ok(())
@@ -136,42 +139,42 @@ mod tests {
         }
     }
 
-    #[test]
-    fn complete_result_reports_nothing_missing() {
+    #[tokio::test]
+    async fn complete_result_reports_nothing_missing() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
-        let digest = cas.put_bytes(b"present").unwrap();
+        let digest = cas.put_bytes(b"present").await.unwrap();
 
         let result = result_with_output(digest);
-        assert!(missing_blobs(&cas, &result).unwrap().is_empty());
+        assert!(missing_blobs(&cas, &result).await.unwrap().is_empty());
     }
 
-    #[test]
-    fn evicted_output_blob_is_reported() {
+    #[tokio::test]
+    async fn evicted_output_blob_is_reported() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
         let digest = Digest::of_bytes(b"never stored");
 
         let result = result_with_output(digest.clone());
-        assert_eq!(missing_blobs(&cas, &result).unwrap(), vec![digest]);
+        assert_eq!(missing_blobs(&cas, &result).await.unwrap(), vec![digest]);
     }
 
-    #[test]
-    fn missing_stdout_and_stderr_are_reported() {
+    #[tokio::test]
+    async fn missing_stdout_and_stderr_are_reported() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
-        let present = cas.put_bytes(b"out").unwrap();
+        let present = cas.put_bytes(b"out").await.unwrap();
 
         let mut result = result_with_output(present);
         result.stdout_digest = Some(Digest::of_bytes(b"gone-stdout"));
         result.stderr_digest = Some(Digest::of_bytes(b"gone-stderr"));
 
-        let missing = missing_blobs(&cas, &result).unwrap();
+        let missing = missing_blobs(&cas, &result).await.unwrap();
         assert_eq!(missing.len(), 2);
     }
 
-    #[test]
-    fn duplicate_digests_are_reported_once() {
+    #[tokio::test]
+    async fn duplicate_digests_are_reported_once() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
         let gone = Digest::of_bytes(b"gone");
@@ -184,11 +187,11 @@ mod tests {
         });
         result.stdout_digest = Some(gone.clone());
 
-        assert_eq!(missing_blobs(&cas, &result).unwrap(), vec![gone]);
+        assert_eq!(missing_blobs(&cas, &result).await.unwrap(), vec![gone]);
     }
 
-    #[test]
-    fn nested_output_tree_leaf_is_reported() {
+    #[tokio::test]
+    async fn nested_output_tree_leaf_is_reported() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
 
@@ -202,7 +205,10 @@ mod tests {
             directories: vec![],
             symlinks: vec![],
         };
-        let child_digest = cas.put_bytes(&child.to_canonical_bytes().unwrap()).unwrap();
+        let child_digest = cas
+            .put_bytes(&child.to_canonical_bytes().unwrap())
+            .await
+            .unwrap();
         let root = Directory {
             files: vec![],
             directories: vec![DirectoryNode {
@@ -211,20 +217,23 @@ mod tests {
             }],
             symlinks: vec![],
         };
-        let root_digest = cas.put_bytes(&root.to_canonical_bytes().unwrap()).unwrap();
+        let root_digest = cas
+            .put_bytes(&root.to_canonical_bytes().unwrap())
+            .await
+            .unwrap();
 
-        let mut result = result_with_output(cas.put_bytes(b"fine").unwrap());
+        let mut result = result_with_output(cas.put_bytes(b"fine").await.unwrap());
         result.output_directories = vec![OutputDirectory {
             path: "dist".into(),
             tree_digest: root_digest,
         }];
 
-        let missing = missing_blobs(&cas, &result).unwrap();
+        let missing = missing_blobs(&cas, &result).await.unwrap();
         assert_eq!(missing, vec![Digest::of_bytes(b"absent leaf")]);
     }
 
-    #[test]
-    fn absent_tree_root_does_not_abort_the_check() {
+    #[tokio::test]
+    async fn absent_tree_root_does_not_abort_the_check() {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
 
@@ -237,7 +246,7 @@ mod tests {
             tree_digest: tree_digest.clone(),
         }];
 
-        let missing = missing_blobs(&cas, &result).unwrap();
+        let missing = missing_blobs(&cas, &result).await.unwrap();
         assert!(missing.contains(&tree_digest));
         assert!(missing.contains(&Digest::of_bytes(b"also absent")));
     }

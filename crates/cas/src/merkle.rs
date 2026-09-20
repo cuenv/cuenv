@@ -10,6 +10,7 @@ use crate::digest::{Digest, digest_of};
 use crate::error::{Error, Result};
 use crate::message::{Directory, DirectoryNode, FileNode};
 use crate::reapi::CanonicalMessage;
+use async_recursion::async_recursion;
 use bazel_remote_apis::build::bazel::remote::execution::v2::Directory as PbDirectory;
 use std::collections::BTreeMap;
 use std::fs;
@@ -26,9 +27,9 @@ use std::path::{Path, PathBuf};
 /// Returns an error if any filesystem operation fails, if a child blob
 /// cannot be stored in `cas`, or if a [`Directory`] message cannot be
 /// serialized.
-pub fn build_input_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
-    let tree = build_directory(root, cas)?;
-    cas.put_bytes(&tree.to_canonical_bytes()?)
+pub async fn build_input_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
+    let tree = build_directory(root, cas).await?;
+    cas.put_bytes(&tree.to_canonical_bytes()?).await
 }
 
 /// Materialize a previously-built input tree to `destination`. The destination
@@ -38,17 +39,18 @@ pub fn build_input_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
 ///
 /// Returns an error if any blob is missing from `cas`, if a [`Directory`]
 /// message cannot be decoded, or if any filesystem operation fails.
-pub fn materialize_input_tree(
+pub async fn materialize_input_tree(
     cas: &dyn Cas,
     root_digest: &Digest,
     destination: &Path,
 ) -> Result<()> {
-    let dir = decode_directory(&cas.get(root_digest)?)?;
+    let dir = decode_directory(&cas.get(root_digest).await?)?;
     fs::create_dir_all(destination).map_err(|e| Error::io(e, destination, "create_dir_all"))?;
-    materialize_directory(cas, &dir, destination)
+    materialize_directory(cas, &dir, destination).await
 }
 
-fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
+#[async_recursion]
+async fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
     // Collect children first so we can sort deterministically.
     let mut files: BTreeMap<String, (PathBuf, bool)> = BTreeMap::new();
     let mut subdirs: BTreeMap<String, PathBuf> = BTreeMap::new();
@@ -72,7 +74,7 @@ fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
 
     let mut file_nodes: Vec<FileNode> = Vec::with_capacity(files.len());
     for (name, (path, is_executable)) in files {
-        let digest = cas.put_file(&path)?;
+        let digest = cas.put_file(&path).await?;
         file_nodes.push(FileNode {
             name,
             digest,
@@ -82,8 +84,8 @@ fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
 
     let mut dir_nodes: Vec<DirectoryNode> = Vec::with_capacity(subdirs.len());
     for (name, path) in subdirs {
-        let child = build_directory(&path, cas)?;
-        let digest = cas.put_bytes(&child.to_canonical_bytes()?)?;
+        let child = build_directory(&path, cas).await?;
+        let digest = cas.put_bytes(&child.to_canonical_bytes()?).await?;
         dir_nodes.push(DirectoryNode { name, digest });
     }
 
@@ -94,10 +96,11 @@ fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
     })
 }
 
-fn materialize_directory(cas: &dyn Cas, dir: &Directory, destination: &Path) -> Result<()> {
+#[async_recursion]
+async fn materialize_directory(cas: &dyn Cas, dir: &Directory, destination: &Path) -> Result<()> {
     for file in &dir.files {
         let dst = destination.join(&file.name);
-        cas.get_to_file(&file.digest, &dst)?;
+        cas.get_to_file(&file.digest, &dst).await?;
         #[cfg(unix)]
         if file.is_executable {
             use std::os::unix::fs::PermissionsExt;
@@ -111,8 +114,8 @@ fn materialize_directory(cas: &dyn Cas, dir: &Directory, destination: &Path) -> 
     for child in &dir.directories {
         let dst = destination.join(&child.name);
         fs::create_dir_all(&dst).map_err(|e| Error::io(e, &dst, "create_dir_all"))?;
-        let sub = decode_directory(&cas.get(&child.digest)?)?;
-        materialize_directory(cas, &sub, &dst)?;
+        let sub = decode_directory(&cas.get(&child.digest).await?)?;
+        materialize_directory(cas, &sub, &dst).await?;
     }
     Ok(())
 }
@@ -166,8 +169,8 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
-    #[test]
-    fn build_flat_directory() {
+    #[tokio::test]
+    async fn build_flat_directory() {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("src");
         write(&src.join("a.txt"), b"A");
@@ -175,17 +178,17 @@ mod tests {
 
         let cas_root = TempDir::new().unwrap();
         let cas = LocalCas::open(cas_root.path()).unwrap();
-        let root_digest = build_input_tree(&src, &cas).unwrap();
+        let root_digest = build_input_tree(&src, &cas).await.unwrap();
 
         // Materialize into a fresh directory and assert content matches.
         let out = TempDir::new().unwrap();
-        materialize_input_tree(&cas, &root_digest, out.path()).unwrap();
+        materialize_input_tree(&cas, &root_digest, out.path()).await.unwrap();
         assert_eq!(fs::read(out.path().join("a.txt")).unwrap(), b"A");
         assert_eq!(fs::read(out.path().join("b.txt")).unwrap(), b"B");
     }
 
-    #[test]
-    fn build_nested_directory() {
+    #[tokio::test]
+    async fn build_nested_directory() {
         let tmp = TempDir::new().unwrap();
         let src = tmp.path().join("src");
         write(&src.join("top.txt"), b"top");
@@ -194,10 +197,10 @@ mod tests {
 
         let cas_root = TempDir::new().unwrap();
         let cas = LocalCas::open(cas_root.path()).unwrap();
-        let root_digest = build_input_tree(&src, &cas).unwrap();
+        let root_digest = build_input_tree(&src, &cas).await.unwrap();
 
         let out = TempDir::new().unwrap();
-        materialize_input_tree(&cas, &root_digest, out.path()).unwrap();
+        materialize_input_tree(&cas, &root_digest, out.path()).await.unwrap();
         assert_eq!(fs::read(out.path().join("top.txt")).unwrap(), b"top");
         assert_eq!(fs::read(out.path().join("sub/one.txt")).unwrap(), b"one");
         assert_eq!(
@@ -206,8 +209,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn same_content_yields_same_root_digest() {
+    #[tokio::test]
+    async fn same_content_yields_same_root_digest() {
         let mk = || {
             let tmp = TempDir::new().unwrap();
             let src = tmp.path().join("src");
@@ -220,13 +223,13 @@ mod tests {
 
         let cas_root = TempDir::new().unwrap();
         let cas = LocalCas::open(cas_root.path()).unwrap();
-        let d1 = build_input_tree(&src1, &cas).unwrap();
-        let d2 = build_input_tree(&src2, &cas).unwrap();
+        let d1 = build_input_tree(&src1, &cas).await.unwrap();
+        let d2 = build_input_tree(&src2, &cas).await.unwrap();
         assert_eq!(d1, d2, "identical trees must hash the same");
     }
 
-    #[test]
-    fn differing_content_yields_different_root_digest() {
+    #[tokio::test]
+    async fn differing_content_yields_different_root_digest() {
         let tmp = TempDir::new().unwrap();
         let a = tmp.path().join("a");
         let b = tmp.path().join("b");
@@ -235,8 +238,8 @@ mod tests {
 
         let cas_root = TempDir::new().unwrap();
         let cas = LocalCas::open(cas_root.path()).unwrap();
-        let da = build_input_tree(&a, &cas).unwrap();
-        let db = build_input_tree(&b, &cas).unwrap();
+        let da = build_input_tree(&a, &cas).await.unwrap();
+        let db = build_input_tree(&b, &cas).await.unwrap();
         assert_ne!(da, db);
     }
 }

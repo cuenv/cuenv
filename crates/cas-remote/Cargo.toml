@@ -1,5 +1,5 @@
 [package]
-name = "cuenv-cas"
+name = "cuenv-cas-remote"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,30 +9,27 @@ homepage.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Content-addressed store and action cache for cuenv, modelled on the Bazel Remote Execution API"
-
-[features]
-default = []
+description = "Bazel Remote Execution API v2 client for cuenv's content-addressed cache"
 
 [dependencies]
+cuenv-cas = { workspace = true }
+
 async-trait = { workspace = true }
-async-recursion = "1.1"
 bazel-remote-apis = { workspace = true }
 prost = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
-chrono = { workspace = true }
+tonic = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync"] }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
-walkdir = { workspace = true }
-tempfile = { workspace = true }
 
 [dev-dependencies]
-proptest = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio-stream = { workspace = true, features = ["net"] }
+tempfile = { workspace = true }
+chrono = { workspace = true }
 
 [lints]
 workspace = true

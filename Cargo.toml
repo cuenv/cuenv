@@ -7,6 +7,7 @@ members = [
     "crates/hooks",
     "crates/manifest",
     "crates/cas",
+    "crates/cas-remote",
     "crates/vcs",
     "crates/task-graph",
     "crates/task-discovery",
@@ -62,6 +63,7 @@ cuenv-core = { path = "crates/core", version = "0.55.1" }
 cuenv-hooks = { path = "crates/hooks", version = "0.55.1" }
 cuenv-manifest = { path = "crates/manifest", version = "0.55.1" }
 cuenv-cas = { path = "crates/cas", version = "0.55.1" }
+cuenv-cas-remote = { path = "crates/cas-remote", version = "0.55.1" }
 cuenv-vcs = { path = "crates/vcs", version = "0.55.1" }
 cuenv-task-graph = { path = "crates/task-graph", version = "0.55.1" }
 cuenv-task-discovery = { path = "crates/task-discovery", version = "0.55.1" }
@@ -121,8 +123,10 @@ sha2 = "0.10"
 # prost/tonic bindings, so building it needs no `protoc` on the host.
 bazel-remote-apis = "0.29"
 prost = "0.14"
+tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
 secrecy = { version = "0.10", features = ["serde"] }
 futures = "0.3"
+tokio-stream = "0.1"
 rayon = "1.12"
 notify = "8"
 tokio-util = { version = "0.7", features = ["rt"] }

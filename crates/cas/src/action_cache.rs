@@ -7,6 +7,7 @@ use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::ActionResult;
 use crate::reapi::CanonicalMessage;
+use async_trait::async_trait;
 use bazel_remote_apis::build::bazel::remote::execution::v2::ActionResult as Pb;
 use std::fs;
 use std::io::{self, Write};
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 use tracing::trace;
 
 /// A key/value store mapping action digests to [`ActionResult`] records.
+#[async_trait]
 pub trait ActionCache: Send + Sync {
     /// Look up the result recorded for `action_digest`, if any.
     ///
@@ -21,7 +23,7 @@ pub trait ActionCache: Send + Sync {
     ///
     /// Returns an error if the underlying storage fails or the stored
     /// [`ActionResult`] cannot be decoded.
-    fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>>;
+    async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>>;
 
     /// Record `result` as the outcome of `action_digest`. Overwrites any
     /// existing entry (last writer wins).
@@ -29,7 +31,7 @@ pub trait ActionCache: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the result cannot be encoded or persisted.
-    fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
+    async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
 }
 
 /// Filesystem-backed action cache, laid out as:
@@ -79,8 +81,9 @@ impl LocalActionCache {
     }
 }
 
+#[async_trait]
 impl ActionCache for LocalActionCache {
-    fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
+    async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
         let path = self.entry_path(action_digest);
         match fs::read(&path) {
             Ok(bytes) => {
@@ -102,7 +105,7 @@ impl ActionCache for LocalActionCache {
         }
     }
 
-    fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+    async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
         let path = self.entry_path(action_digest);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
@@ -150,40 +153,40 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lookup_missing_is_none() {
+    #[tokio::test]
+    async fn lookup_missing_is_none() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"no-such-action");
-        assert!(ac.lookup(&d).unwrap().is_none());
+        assert!(ac.lookup(&d).await.unwrap().is_none());
     }
 
-    #[test]
-    fn update_then_lookup_roundtrips() {
+    #[tokio::test]
+    async fn update_then_lookup_roundtrips() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"action-1");
         let result = sample_result();
-        ac.update(&d, &result).unwrap();
-        let got = ac.lookup(&d).unwrap().unwrap();
+        ac.update(&d, &result).await.unwrap();
+        let got = ac.lookup(&d).await.unwrap().unwrap();
         assert_eq!(got, result);
     }
 
-    #[test]
-    fn update_overwrites_existing() {
+    #[tokio::test]
+    async fn update_overwrites_existing() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"action-2");
 
         let mut first = sample_result();
         first.exit_code = 1;
-        ac.update(&d, &first).unwrap();
+        ac.update(&d, &first).await.unwrap();
 
         let mut second = sample_result();
         second.exit_code = 0;
-        ac.update(&d, &second).unwrap();
+        ac.update(&d, &second).await.unwrap();
 
-        let got = ac.lookup(&d).unwrap().unwrap();
+        let got = ac.lookup(&d).await.unwrap().unwrap();
         assert_eq!(got.exit_code, 0);
     }
 }

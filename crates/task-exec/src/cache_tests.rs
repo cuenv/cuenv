@@ -425,16 +425,17 @@ async fn record_then_lookup_roundtrips() {
         exit_code: 0,
         duration_ms: 42,
     })
+    .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task).unwrap().unwrap();
+    let recorded = lookup(&cache, &action_digest, &task).await.unwrap().unwrap();
     assert_eq!(recorded.exit_code, 0);
     assert_eq!(recorded.output_files.len(), 1);
     assert_eq!(recorded.output_files[0].path, "out.txt");
 
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    let (stdout, stderr, exit_code) = materialize_hit(&cache, &fresh, &recorded).unwrap();
+    let (stdout, stderr, exit_code) = materialize_hit(&cache, &fresh, &recorded).await.unwrap();
     assert_eq!(stdout, "stdout-text");
     assert_eq!(stderr, "stderr-text");
     assert_eq!(exit_code, 0);
@@ -483,12 +484,13 @@ async fn record_and_materialize_preserve_executable_outputs() {
         exit_code: 0,
         duration_ms: 1,
     })
+    .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task).unwrap().unwrap();
+    let recorded = lookup(&cache, &action_digest, &task).await.unwrap().unwrap();
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    materialize_hit(&cache, &fresh, &recorded).unwrap();
+    materialize_hit(&cache, &fresh, &recorded).await.unwrap();
 
     let mode = fs::metadata(fresh.join("bin/run.sh"))
         .unwrap()
@@ -591,10 +593,11 @@ async fn lookup_respects_max_age() {
         exit_code: 0,
         duration_ms: 42,
     })
+    .await
     .unwrap();
 
     std::thread::sleep(std::time::Duration::from_millis(5));
-    let lookup_result = lookup(&cache, &action_digest, &task).unwrap();
+    let lookup_result = lookup(&cache, &action_digest, &task).await.unwrap();
     assert!(lookup_result.is_none());
 }
 
@@ -632,9 +635,10 @@ async fn record_skips_non_zero_exit_codes() {
         exit_code: 1,
         duration_ms: 42,
     })
+    .await
     .unwrap();
 
-    let lookup_result = lookup(&cache, &action_digest, &task).unwrap();
+    let lookup_result = lookup(&cache, &action_digest, &task).await.unwrap();
     assert!(lookup_result.is_none());
 }
 
@@ -738,7 +742,7 @@ async fn action_environment_is_declared_only() {
 
     // Re-decode the stored Command blob: it is what the digest was taken over,
     // and it is REAPI protobuf, exactly as a remote server would store it.
-    let bytes = cache.cas.get(&action.command_digest).unwrap();
+    let bytes = cache.cas.get(&action.command_digest).await.unwrap();
     let command = decode_command(&bytes);
 
     assert_eq!(
@@ -775,10 +779,10 @@ async fn build_action_stores_action_and_command_blobs() {
 
     // Both blobs present means a later `explain` can diff two keys instead of
     // just reporting that they differ.
-    assert!(cache.cas.contains(&action_digest).unwrap());
-    assert!(cache.cas.contains(&action.command_digest).unwrap());
+    assert!(cache.cas.contains(&action_digest).await.unwrap());
+    assert!(cache.cas.contains(&action.command_digest).await.unwrap());
 
-    let stored = decode_action(&cache.cas.get(&action_digest).unwrap());
+    let stored = decode_action(&cache.cas.get(&action_digest).await.unwrap());
     assert_eq!(stored, action);
 }
 
@@ -807,11 +811,17 @@ async fn lookup_ignores_entry_whose_output_blob_was_evicted() {
         exit_code: 0,
         duration_ms: 1,
     })
+    .await
     .unwrap();
-    assert!(lookup(&cache, &action_digest, &task).unwrap().is_some());
+    assert!(lookup(&cache, &action_digest, &task).await.unwrap().is_some());
 
     // Simulate garbage collection removing the output blob.
-    let stored = cache.action_cache.lookup(&action_digest).unwrap().unwrap();
+    let stored = cache
+        .action_cache
+        .lookup(&action_digest)
+        .await
+        .unwrap()
+        .unwrap();
     let blob = tmp.path().join("cas").join("sha256").join(
         Path::new(&stored.output_files[0].digest.hash[..2])
             .join(&stored.output_files[0].digest.hash[2..]),
@@ -819,7 +829,7 @@ async fn lookup_ignores_entry_whose_output_blob_was_evicted() {
     fs::remove_file(&blob).unwrap();
 
     assert!(
-        lookup(&cache, &action_digest, &task).unwrap().is_none(),
+        lookup(&cache, &action_digest, &task).await.unwrap().is_none(),
         "a dangling entry must degrade to a miss, not a partial restore"
     );
 }
@@ -831,7 +841,7 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
     fs::create_dir_all(&workdir).unwrap();
     let cache = make_cache(tmp.path());
 
-    let digest = cache.cas.put_bytes(b"owned").unwrap();
+    let digest = cache.cas.put_bytes(b"owned").await.unwrap();
     let result = ActionResult {
         output_files: vec![OutputFile {
             path: "../escaped.txt".to_string(),
@@ -845,7 +855,7 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
         execution_metadata: ExecutionMetadata::default(),
     };
 
-    let error = materialize_hit(&cache, &workdir, &result).unwrap_err();
+    let error = materialize_hit(&cache, &workdir, &result).await.unwrap_err();
     assert!(
         error.to_string().contains("stay inside the working directory"),
         "unexpected error: {error}"
@@ -862,7 +872,7 @@ async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing()
     fs::write(workdir.join("second.txt"), "original second").unwrap();
 
     let cache = make_cache(tmp.path());
-    let present = cache.cas.put_bytes(b"cached first").unwrap();
+    let present = cache.cas.put_bytes(b"cached first").await.unwrap();
 
     let result = ActionResult {
         output_files: vec![
@@ -884,7 +894,7 @@ async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing()
         execution_metadata: ExecutionMetadata::default(),
     };
 
-    assert!(materialize_hit(&cache, &workdir, &result).is_err());
+    assert!(materialize_hit(&cache, &workdir, &result).await.is_err());
 
     // Staging means the first output is never installed, so the workspace is
     // not left as a mix of cached and pre-existing files.
@@ -899,7 +909,7 @@ async fn materialize_hit_removes_its_staging_directory() {
     fs::create_dir_all(&workdir).unwrap();
     let cache = make_cache(tmp.path());
 
-    let digest = cache.cas.put_bytes(b"restored").unwrap();
+    let digest = cache.cas.put_bytes(b"restored").await.unwrap();
     let result = ActionResult {
         output_files: vec![OutputFile {
             path: "nested/out.txt".to_string(),
@@ -913,7 +923,7 @@ async fn materialize_hit_removes_its_staging_directory() {
         execution_metadata: ExecutionMetadata::default(),
     };
 
-    materialize_hit(&cache, &workdir, &result).unwrap();
+    materialize_hit(&cache, &workdir, &result).await.unwrap();
 
     assert_eq!(
         fs::read_to_string(workdir.join("nested/out.txt")).unwrap(),

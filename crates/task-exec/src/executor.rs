@@ -187,16 +187,20 @@ impl TaskExecutor {
                 match outcome {
                     super::cache::CacheOutcome::Eligible(_, action_digest) => {
                         // Cache lookup. On a hit, short-circuit execution.
-                        if let Some(cached) = super::cache::lookup(&cache, &action_digest, task)? {
+                        if let Some(cached) =
+                            super::cache::lookup(&cache, &action_digest, task).await?
+                        {
                             tracing::debug!(task = %name, "action cache hit");
                             cuenv_events::emit_task_cache_hit!(name, action_digest.to_string());
-                            return self.return_cache_hit(CacheHitInput {
-                                name,
-                                task,
-                                cache: &cache,
-                                workdir: &workdir,
-                                cached: &cached,
-                            });
+                            return self
+                                .return_cache_hit(CacheHitInput {
+                                    name,
+                                    task,
+                                    cache: &cache,
+                                    workdir: &workdir,
+                                    cached: &cached,
+                                })
+                                .await;
                         }
                         tracing::debug!(task = %name, "action cache miss");
                         cuenv_events::emit_task_cache_miss!(name);
@@ -221,7 +225,8 @@ impl TaskExecutor {
         if let Some((cache, action_digest, workdir)) = cache_handle
             && super::cache::effective_policy(task).mode.allows_write()
             && result.exit_code == Some(0)
-            && let Err(e) = super::cache::record(RecordInput {
+        {
+            let recorded = super::cache::record(RecordInput {
                 cache: &cache,
                 action_digest: &action_digest,
                 workdir: &workdir,
@@ -231,8 +236,10 @@ impl TaskExecutor {
                 exit_code: 0,
                 duration_ms,
             })
-        {
-            tracing::warn!(task = %name, error = %e, "cache write failed");
+            .await;
+            if let Err(e) = recorded {
+                tracing::warn!(task = %name, error = %e, "cache write failed");
+            }
         }
 
         Ok(result)
@@ -302,7 +309,7 @@ impl TaskExecutor {
     /// lifecycle events the executor would emit on a normal run, so
     /// downstream renderers (CLI / TUI / JSON) see no behavioral
     /// difference between a cached and an uncached task.
-    fn return_cache_hit(&self, input: CacheHitInput<'_>) -> Result<TaskResult> {
+    async fn return_cache_hit(&self, input: CacheHitInput<'_>) -> Result<TaskResult> {
         let CacheHitInput {
             name,
             task,
@@ -311,7 +318,8 @@ impl TaskExecutor {
             cached,
         } = input;
 
-        let (stdout, stderr, exit_code) = super::cache::materialize_hit(cache, workdir, cached)?;
+        let (stdout, stderr, exit_code) =
+            super::cache::materialize_hit(cache, workdir, cached).await?;
         let success = exit_code == 0;
 
         let cmd_str = if let Some(script) = &task.script {

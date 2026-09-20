@@ -213,7 +213,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         output_directories: Vec::new(),
         working_directory,
     };
-    let Some(command_digest) = store_message(cache, &command, "command", task_name) else {
+    let Some(command_digest) = store_message(cache, &command, "command", task_name).await else {
         return Ok(store_unwritable());
     };
 
@@ -232,7 +232,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         },
         action_semantics_version: cache.action_semantics_version,
     };
-    let Some(action_digest) = store_message(cache, &action, "action", task_name) else {
+    let Some(action_digest) = store_message(cache, &action, "action", task_name).await else {
         return Ok(store_unwritable());
     };
 
@@ -250,7 +250,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
 /// A store that cannot be written — read-only, full, wrong permissions —
 /// disables caching for the task rather than failing it. Cache eligibility
 /// must never decide whether a user's command runs.
-fn store_message(
+async fn store_message(
     cache: &TaskCacheConfig,
     message: &impl CanonicalMessage,
     kind: &str,
@@ -263,7 +263,7 @@ fn store_message(
             return None;
         }
     };
-    match cache.cas.put_bytes(&bytes) {
+    match cache.cas.put_bytes(&bytes).await {
         Ok(digest) => Some(digest),
         Err(error) => {
             tracing::warn!(task = %task_name, kind, %error, "skipping cache: cannot write to the blob store");
@@ -341,7 +341,7 @@ async fn resolve_hashed_inputs(
 /// # Errors
 ///
 /// Propagates any error from the underlying [`ActionCache`] implementation.
-pub fn lookup(
+pub async fn lookup(
     cache: &TaskCacheConfig,
     action_digest: &Digest,
     task: &Task,
@@ -354,6 +354,7 @@ pub fn lookup(
     let Some(result) = cache
         .action_cache
         .lookup(action_digest)
+        .await
         .map_err(|e| cuenv_core::Error::configuration(format!("action cache lookup: {e}")))?
     else {
         return Ok(None);
@@ -382,6 +383,7 @@ pub fn lookup(
     // ordinary miss instead of a materialization that fails halfway and
     // leaves a half-restored output tree behind.
     let missing = missing_blobs(cache.cas.as_ref(), &result)
+        .await
         .map_err(|e| cuenv_core::Error::configuration(format!("cache integrity check: {e}")))?;
     if !missing.is_empty() {
         tracing::warn!(
@@ -405,17 +407,18 @@ pub fn lookup(
 ///
 /// Propagates any error from the [`Cas`] when fetching blobs or restoring
 /// output permissions.
-pub fn materialize_hit(
+pub async fn materialize_hit(
     cache: &TaskCacheConfig,
     workdir: &Path,
     result: &ActionResult,
 ) -> Result<(String, String, i32)> {
-    materialize_outputs(cache, workdir, result)?;
+    materialize_outputs(cache, workdir, result).await?;
 
     let stdout = if let Some(digest) = &result.stdout_digest {
         let bytes = cache
             .cas
             .get(digest)
+            .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get stdout: {e}")))?;
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
@@ -426,6 +429,7 @@ pub fn materialize_hit(
         let bytes = cache
             .cas
             .get(digest)
+            .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get stderr: {e}")))?;
         String::from_utf8_lossy(&bytes).into_owned()
     } else {
@@ -447,7 +451,7 @@ pub fn materialize_hit(
 /// guarantee is that the fallible work — fetching, verifying, setting modes —
 /// happens entirely in staging, and the commit phase is renames within one
 /// filesystem.
-fn materialize_outputs(
+async fn materialize_outputs(
     cache: &TaskCacheConfig,
     workdir: &Path,
     result: &ActionResult,
@@ -466,6 +470,7 @@ fn materialize_outputs(
         cache
             .cas
             .get_to_file(&output_file.digest, &staged_path)
+            .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
         set_executable_if_needed(&staged_path, output_file.is_executable)?;
         staged.push((staged_path, workdir.join(&relative)));
@@ -592,7 +597,7 @@ impl Drop for StagingDir {
 /// # Errors
 ///
 /// Returns an error if the [`Cas`] or [`ActionCache`] persistence fails.
-pub fn record(input: RecordInput<'_>) -> Result<()> {
+pub async fn record(input: RecordInput<'_>) -> Result<()> {
     let RecordInput {
         cache,
         action_digest,
@@ -616,6 +621,7 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
         let digest = cache
             .cas
             .put_file(&absolute_path)
+            .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas put output: {e}")))?;
         output_files.push(OutputFile {
             path: path_to_forward_slashes(&relative_path),
@@ -629,10 +635,12 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
     let stdout_digest = cache
         .cas
         .put_bytes(redacted_stdout.as_bytes())
+        .await
         .map_err(|e| cuenv_core::Error::configuration(format!("cas put stdout: {e}")))?;
     let stderr_digest = cache
         .cas
         .put_bytes(redacted_stderr.as_bytes())
+        .await
         .map_err(|e| cuenv_core::Error::configuration(format!("cas put stderr: {e}")))?;
 
     let result = ActionResult {
@@ -650,6 +658,7 @@ pub fn record(input: RecordInput<'_>) -> Result<()> {
     cache
         .action_cache
         .update(action_digest, &result)
+        .await
         .map_err(|e| cuenv_core::Error::configuration(format!("action cache update: {e}")))?;
     Ok(())
 }
