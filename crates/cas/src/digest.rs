@@ -4,7 +4,8 @@
 //! Bazel Remote Execution API v2 `Digest` message so that the same value can
 //! later be handed to a `bazel-remote-apis` gRPC client without conversion.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
+use crate::reapi::CanonicalMessage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::fmt;
@@ -42,28 +43,33 @@ impl fmt::Display for Digest {
     }
 }
 
-/// Serialize a value with stable field ordering for digest computation.
+/// Serialize a value to its canonical REAPI protobuf encoding.
 ///
-/// Backed by `serde_json` with `BTreeMap` in the source types — both provide
-/// deterministic ordering, so the output bytes are stable across platforms
-/// and process runs. This is our local pre-protobuf canonical form; when the
-/// remote backend lands we switch to protobuf canonical bytes.
+/// A digest only means something relative to an encoding, and REAPI defines a
+/// blob's name as the SHA-256 of its **protobuf** serialization. Servers rely
+/// on that: a CAS verifies `digest == sha256(bytes)` before accepting a blob,
+/// and an action cache parses the `ActionResult` it is given. Encoding these
+/// messages any other way would make cuenv's store unreadable to every REAPI
+/// implementation.
+///
+/// Protobuf is not canonical on its own, so [`crate::reapi`] pins the orderings
+/// REAPI requires before encoding.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Serialization`](crate::error::Error::Serialization) if
-/// the value cannot be JSON-encoded.
-pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(value)
-        .map_err(|e| Error::serialization(format!("canonical encode failed: {e}")))
+/// Returns [`Error::Serialization`](crate::error::Error::Serialization) if the
+/// value cannot be represented in REAPI — in practice only a blob size beyond
+/// `i64::MAX`.
+pub fn canonical_bytes(value: &impl CanonicalMessage) -> Result<Vec<u8>> {
+    value.to_canonical_bytes()
 }
 
-/// Compute a digest over a serializable value's canonical encoding.
+/// Compute a digest over a value's canonical REAPI encoding.
 ///
 /// # Errors
 ///
 /// Returns any error produced by [`canonical_bytes`].
-pub fn digest_of<T: Serialize>(value: &T) -> Result<Digest> {
+pub fn digest_of(value: &impl CanonicalMessage) -> Result<Digest> {
     let bytes = canonical_bytes(value)?;
     Ok(Digest::of_bytes(&bytes))
 }

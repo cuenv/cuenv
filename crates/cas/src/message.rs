@@ -97,7 +97,14 @@ pub struct Directory {
 /// - `1` — initial versioned semantics. Action environment is the declared
 ///   CUE environment plus explicitly declared host passthrough, replacing
 ///   the previous implicit merge of ambient host variables.
-pub const ACTION_SEMANTICS_VERSION: u32 = 1;
+/// - `2` — canonical encoding moved from `serde_json` to REAPI protobuf, and
+///   a command's declared outputs are sorted into REAPI's merged
+///   `output_paths`. Every digest changes.
+///
+/// On the wire this travels in REAPI's `Action.salt`, which exists to place
+/// an action into a separate cache namespace without altering what it does.
+/// See [`crate::reapi::salt_for`].
+pub const ACTION_SEMANTICS_VERSION: u32 = 2;
 
 /// An action to execute.
 ///

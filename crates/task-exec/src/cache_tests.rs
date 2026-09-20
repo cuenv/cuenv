@@ -642,6 +642,20 @@ async fn record_skips_non_zero_exit_codes() {
 // Action key portability
 // =============================================================================
 
+/// Decode a stored `Command` blob from its REAPI protobuf encoding.
+fn decode_command(bytes: &[u8]) -> cuenv_cas::Command {
+    use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
+    let proto = <pb::Command as prost::Message>::decode(bytes).expect("decode Command");
+    cuenv_cas::Command::from_proto(&proto)
+}
+
+/// Decode a stored `Action` blob from its REAPI protobuf encoding.
+fn decode_action(bytes: &[u8]) -> Action {
+    use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
+    let proto = <pb::Action as prost::Message>::decode(bytes).expect("decode Action");
+    Action::from_proto(&proto).expect("convert Action")
+}
+
 async fn skip_reason_for_test(input: BuildActionInput<'_>) -> Option<CacheSkipReason> {
     match build_action(input).await.unwrap() {
         CacheOutcome::Eligible(..) => None,
@@ -722,9 +736,10 @@ async fn action_environment_is_declared_only() {
     .await
     .unwrap();
 
-    // Re-decode the stored Command blob: it is what the digest was taken over.
+    // Re-decode the stored Command blob: it is what the digest was taken over,
+    // and it is REAPI protobuf, exactly as a remote server would store it.
     let bytes = cache.cas.get(&action.command_digest).unwrap();
-    let command: cuenv_cas::Command = serde_json::from_slice(&bytes).unwrap();
+    let command = decode_command(&bytes);
 
     assert_eq!(
         command.environment_variables.get("DECLARED").map(String::as_str),
@@ -763,7 +778,7 @@ async fn build_action_stores_action_and_command_blobs() {
     assert!(cache.cas.contains(&action_digest).unwrap());
     assert!(cache.cas.contains(&action.command_digest).unwrap());
 
-    let stored: Action = serde_json::from_slice(&cache.cas.get(&action_digest).unwrap()).unwrap();
+    let stored = decode_action(&cache.cas.get(&action_digest).unwrap());
     assert_eq!(stored, action);
 }
 

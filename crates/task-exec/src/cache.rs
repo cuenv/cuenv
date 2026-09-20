@@ -13,14 +13,14 @@ use super::TaskCommandExt;
 use crate::{Task, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
-    ExecutionMetadata, FileNode, OutputFile, Platform, canonical_bytes, digest_of, missing_blobs,
+    CanonicalMessage, ExecutionMetadata, FileNode, OutputFile, Platform, canonical_bytes, digest_of,
+    missing_blobs,
 };
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
-use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -252,7 +252,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
 /// must never decide whether a user's command runs.
 fn store_message(
     cache: &TaskCacheConfig,
-    message: &impl Serialize,
+    message: &impl CanonicalMessage,
     kind: &str,
     task_name: &str,
 ) -> Option<Digest> {

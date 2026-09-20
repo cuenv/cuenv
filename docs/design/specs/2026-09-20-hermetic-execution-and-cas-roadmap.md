@@ -308,15 +308,26 @@ not by hashing or copying; the cache respects a configured size budget.
 
 ### Phase 3 — Remote cache
 
+- **Done: canonical encoding is REAPI protobuf.** `cuenv_cas::reapi` converts
+  cuenv's messages to `build.bazel.remote.execution.v2` types and digests
+  their protobuf bytes; the local CAS and action cache now store exactly what
+  a REAPI server exchanges. The semantics version travels in REAPI's
+  `Action.salt`, and `ACTION_SEMANTICS_VERSION` went to `2`, invalidating
+  every pre-existing entry as intended. Bindings come from
+  `bazel-remote-apis`, which ships pre-generated prost/tonic code, so no
+  `protoc` is needed at build time and the Nix build is untouched.
 - Split the store traits into `LocalCas` / `RemoteCas` with a layered
-  read-through, async write-back stack.
-- Switch the canonical encoding from `serde_json` to REAPI protobuf. This
-  is a breaking key change — land it together with an
-  `action_semantics_version` bump, and land it *before* anyone depends on
-  remote hit rates.
+  read-through, async write-back stack. The traits are synchronous today;
+  gRPC is not, and blocking an executor worker thread on network I/O would
+  serialize the task graph, so the traits become `async` first.
 - gRPC client (tonic + `bazel-remote-apis`): `ContentAddressableStorage`,
   `ActionCache`, `ByteStream`, `Capabilities`. Day-one compatibility with
-  bazel-remote, buildbarn, BuildBuddy, NativeLink and EngFlow.
+  bazel-remote, buildbarn, BuildBuddy, NativeLink, EngFlow and Namespace —
+  all of which expose the same `grpcs://` endpoint Bazel's `--remote_cache`
+  takes.
+- Honour `Capabilities.max_batch_total_size_bytes`: batch small blobs,
+  stream large ones over `ByteStream`, and refuse a server whose digest
+  function is not SHA-256.
 - HTTP/object-store fallback (bazel-remote HTTP layout over S3/GCS/R2) for
   teams without a gRPC endpoint.
 - Auth: bearer headers and mTLS; read-only credentials for untrusted PR

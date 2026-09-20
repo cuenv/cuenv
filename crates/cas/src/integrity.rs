@@ -12,7 +12,7 @@
 use crate::cas::Cas;
 use crate::digest::Digest;
 use crate::error::{Error, Result};
-use crate::message::{ActionResult, Directory};
+use crate::message::ActionResult;
 use std::collections::HashSet;
 
 /// Maximum directory nesting walked while checking an output tree.
@@ -96,8 +96,7 @@ fn walk_tree(
         )));
     }
 
-    let bytes = cas.get(root)?;
-    let directory: Directory = serde_json::from_slice(&bytes)
+    let directory = crate::merkle::decode_directory(&cas.get(root)?)
         .map_err(|e| Error::serialization(format!("decode Directory {root}: {e}")))?;
 
     for file in &directory.files {
@@ -116,7 +115,10 @@ mod tests {
     use super::*;
     use crate::cas::LocalCas;
     use crate::digest::digest_of;
-    use crate::message::{DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile};
+    use crate::reapi::CanonicalMessage;
+    use crate::message::{
+        Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile,
+    };
     use tempfile::TempDir;
 
     fn result_with_output(digest: Digest) -> ActionResult {
@@ -200,7 +202,7 @@ mod tests {
             directories: vec![],
             symlinks: vec![],
         };
-        let child_digest = cas.put_bytes(&serde_json::to_vec(&child).unwrap()).unwrap();
+        let child_digest = cas.put_bytes(&child.to_canonical_bytes().unwrap()).unwrap();
         let root = Directory {
             files: vec![],
             directories: vec![DirectoryNode {
@@ -209,7 +211,7 @@ mod tests {
             }],
             symlinks: vec![],
         };
-        let root_digest = cas.put_bytes(&serde_json::to_vec(&root).unwrap()).unwrap();
+        let root_digest = cas.put_bytes(&root.to_canonical_bytes().unwrap()).unwrap();
 
         let mut result = result_with_output(cas.put_bytes(b"fine").unwrap());
         result.output_directories = vec![OutputDirectory {

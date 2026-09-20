@@ -30,8 +30,9 @@ hermetic/CAS roadmap
   semantics change.
 - **Decision 4 (storage layout) is superseded.** Results are stored in a
   content-addressed store plus an action cache
-  (`~/.cache/cuenv/{cas,ac}/sha256/…`) modelled on the Bazel Remote
-  Execution API, not the `tasks/<key>/` layout described below. There is no
+  (`~/.cache/cuenv/{cas,ac}/sha256/…`) speaking the Bazel Remote Execution
+  API v2 — messages are REAPI protobuf and digests are taken over those
+  bytes — not the `tasks/<key>/` layout described below. There is no
   `workspace.tar.zst` snapshot. Outputs *are* materialized on a hit, staged
   first so a missing blob cannot leave a half-restored tree.
 - **Decision 6 (CLI UX) is not implemented.** There are no

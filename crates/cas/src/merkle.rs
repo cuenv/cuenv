@@ -9,6 +9,8 @@ use crate::cas::Cas;
 use crate::digest::{Digest, digest_of};
 use crate::error::{Error, Result};
 use crate::message::{Directory, DirectoryNode, FileNode};
+use crate::reapi::CanonicalMessage;
+use bazel_remote_apis::build::bazel::remote::execution::v2::Directory as PbDirectory;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,9 +28,7 @@ use std::path::{Path, PathBuf};
 /// serialized.
 pub fn build_input_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
     let tree = build_directory(root, cas)?;
-    let bytes = serde_json::to_vec(&tree)
-        .map_err(|e| Error::serialization(format!("encode Directory: {e}")))?;
-    cas.put_bytes(&bytes)
+    cas.put_bytes(&tree.to_canonical_bytes()?)
 }
 
 /// Materialize a previously-built input tree to `destination`. The destination
@@ -43,9 +43,7 @@ pub fn materialize_input_tree(
     root_digest: &Digest,
     destination: &Path,
 ) -> Result<()> {
-    let bytes = cas.get(root_digest)?;
-    let dir: Directory = serde_json::from_slice(&bytes)
-        .map_err(|e| Error::serialization(format!("decode Directory: {e}")))?;
+    let dir = decode_directory(&cas.get(root_digest)?)?;
     fs::create_dir_all(destination).map_err(|e| Error::io(e, destination, "create_dir_all"))?;
     materialize_directory(cas, &dir, destination)
 }
@@ -85,9 +83,7 @@ fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
     let mut dir_nodes: Vec<DirectoryNode> = Vec::with_capacity(subdirs.len());
     for (name, path) in subdirs {
         let child = build_directory(&path, cas)?;
-        let bytes = serde_json::to_vec(&child)
-            .map_err(|e| Error::serialization(format!("encode Directory: {e}")))?;
-        let digest = cas.put_bytes(&bytes)?;
+        let digest = cas.put_bytes(&child.to_canonical_bytes()?)?;
         dir_nodes.push(DirectoryNode { name, digest });
     }
 
@@ -115,12 +111,22 @@ fn materialize_directory(cas: &dyn Cas, dir: &Directory, destination: &Path) -> 
     for child in &dir.directories {
         let dst = destination.join(&child.name);
         fs::create_dir_all(&dst).map_err(|e| Error::io(e, &dst, "create_dir_all"))?;
-        let bytes = cas.get(&child.digest)?;
-        let sub: Directory = serde_json::from_slice(&bytes)
-            .map_err(|e| Error::serialization(format!("decode Directory: {e}")))?;
+        let sub = decode_directory(&cas.get(&child.digest)?)?;
         materialize_directory(cas, &sub, &dst)?;
     }
     Ok(())
+}
+
+/// Decode a `Directory` blob from its REAPI protobuf encoding.
+///
+/// # Errors
+///
+/// Returns an error if the bytes are not a valid `Directory` message or a
+/// child digest is missing.
+pub fn decode_directory(bytes: &[u8]) -> Result<Directory> {
+    let proto = <PbDirectory as prost::Message>::decode(bytes)
+        .map_err(|e| Error::serialization(format!("decode Directory: {e}")))?;
+    Directory::from_proto(&proto)
 }
 
 #[cfg(unix)]

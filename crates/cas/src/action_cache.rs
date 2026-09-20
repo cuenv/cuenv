@@ -6,6 +6,8 @@
 use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::ActionResult;
+use crate::reapi::CanonicalMessage;
+use bazel_remote_apis::build::bazel::remote::execution::v2::ActionResult as Pb;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -33,9 +35,12 @@ pub trait ActionCache: Send + Sync {
 /// Filesystem-backed action cache, laid out as:
 ///
 /// ```text
-/// root/ac/sha256/<ab>/<cdef...>    JSON-encoded ActionResult
+/// root/ac/sha256/<ab>/<cdef...>    protobuf-encoded REAPI ActionResult
 /// root/tmp/                         staging for atomic writes
 /// ```
+///
+/// Entries are stored in the same wire format a REAPI server exchanges, so
+/// the local cache and a remote one hold byte-identical records.
 #[derive(Debug, Clone)]
 pub struct LocalActionCache {
     root: PathBuf,
@@ -79,12 +84,13 @@ impl ActionCache for LocalActionCache {
         let path = self.entry_path(action_digest);
         match fs::read(&path) {
             Ok(bytes) => {
-                let result: ActionResult = serde_json::from_slice(&bytes).map_err(|e| {
+                let proto = <Pb as prost::Message>::decode(bytes.as_slice()).map_err(|e| {
                     Error::serialization(format!(
                         "failed to decode ActionResult at {}: {e}",
                         path.display()
                     ))
                 })?;
+                let result = ActionResult::from_proto(&proto)?;
                 trace!(action = %action_digest, "action cache hit");
                 Ok(Some(result))
             }
@@ -101,8 +107,7 @@ impl ActionCache for LocalActionCache {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
-        let bytes = serde_json::to_vec(result)
-            .map_err(|e| Error::serialization(format!("encode ActionResult: {e}")))?;
+        let bytes = result.to_canonical_bytes()?;
         let tmp_dir = self.tmp_dir();
         let mut tmp = tempfile::NamedTempFile::new_in(&tmp_dir)
             .map_err(|e| Error::io(e, &tmp_dir, "tempfile"))?;

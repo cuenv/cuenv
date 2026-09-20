@@ -25,12 +25,14 @@ pub mod error;
 pub mod integrity;
 pub mod merkle;
 pub mod message;
+pub mod reapi;
 
 pub use action_cache::{ActionCache, LocalActionCache};
 pub use cas::{Cas, LocalCas};
 pub use digest::{Digest, canonical_bytes, digest_of};
 pub use error::{Error, Result};
 pub use integrity::missing_blobs;
+pub use reapi::CanonicalMessage;
 pub use merkle::{build_input_tree, directory_digest, materialize_input_tree};
 pub use message::{
     ACTION_SEMANTICS_VERSION, Action, ActionResult, Command, Directory, DirectoryNode,

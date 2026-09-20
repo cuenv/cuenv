@@ -15,6 +15,8 @@ description = "Content-addressed store and action cache for cuenv, modelled on t
 default = []
 
 [dependencies]
+bazel-remote-apis = { workspace = true }
+prost = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
