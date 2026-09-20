@@ -293,13 +293,9 @@ async fn test_timeout_kills_process_tree() {
         .parse()
         .unwrap();
 
-    // kill(pid, 0) returns Err(ESRCH) once the process is gone. Poll briefly
-    // for the OS to finish reaping after the SIGKILL.
     let mut alive = true;
     for _ in 0..40 {
-        #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
-        let exists = unsafe { libc::kill(pid, 0) } == 0;
-        if !exists {
+        if !process_is_running(pid) {
             alive = false;
             break;
         }
@@ -309,6 +305,45 @@ async fn test_timeout_kills_process_tree() {
         !alive,
         "grandchild {pid} should be killed when the task times out"
     );
+}
+
+/// Whether `pid` names a process that is still running.
+///
+/// `kill(pid, 0)` alone is not enough. Killing the grandchild orphans it, and
+/// an orphan stays in the process table as a zombie until something reaps it.
+/// Reaping is the init process's job, not cuenv's — and a container whose PID
+/// 1 is a plain application rather than a reaping init never does it. Probing
+/// with `kill` alone therefore asserts "was reaped" when the test means "was
+/// killed", and hangs the assertion forever on such a host.
+///
+/// On Linux the process state in `/proc` settles the question directly. On
+/// other unices there is no equivalent cheap probe, but their init processes
+/// do reap orphans, so `kill(pid, 0)` is accurate there.
+#[cfg(unix)]
+fn process_is_running(pid: i32) -> bool {
+    #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
+    let exists = unsafe { libc::kill(pid, 0) } == 0;
+    if !exists {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(state) = process_state(pid) {
+        // 'Z' is a terminated process awaiting reaping: dead for our purposes.
+        return state != 'Z';
+    }
+    true
+}
+
+/// Read a process's state character from `/proc/<pid>/stat`.
+///
+/// The second field is the executable name in parentheses and may itself
+/// contain spaces and parentheses, so the state is found after the *last*
+/// `)` rather than by splitting on whitespace from the start.
+#[cfg(all(unix, target_os = "linux"))]
+fn process_state(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().next()?.chars().next()
 }
 
 #[tokio::test]
