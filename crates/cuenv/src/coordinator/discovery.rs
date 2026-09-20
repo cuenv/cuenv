@@ -114,8 +114,7 @@ fn is_cuenv_process(pid: i32) -> bool {
         std::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
             .output()
-            .ok()
-            .is_some_and(|o| {
+            .is_ok_and(|o| {
                 let cmd = String::from_utf8_lossy(&o.stdout);
                 cmd.contains("cuenv") && cmd.contains("__coordinator")
             })
