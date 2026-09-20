@@ -26,6 +26,11 @@ CLI-only note: cuenv reads `cue.mod/module.cue` only to warn when a module's
 `github.com/cuenv/cuenv` schema dependency version differs from the running CLI.
 `cuenv sync` never writes `cue.mod/module.cue`.
 
+CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
+`cueRegistry`. The CUE Registry path is implemented by the GitHub contributor
+and generated workflow action; it requires `id-token: write` and is intended
+for production release pipelines.
+
 | Schema file | Definition | Feature | Audience | Implementation owner | CLI surface | Docs page | Example | Test/eval | Skill | Status | Drift/UX note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | app-local `cuetty` package | `banner`, `border` | terminal presentation accent | Cuetty users | `apps/cuetty/src/integrations/cuenv.rs` | active shell CWD | `docs/explanation/cuetty` | `banner: "Welcome to Cuetty"`, `border: "#ff0000"` | Cuetty evaluator tests | — | experimental | exact-CWD only; invalid matching CUE retains per-tab last-good presentation |

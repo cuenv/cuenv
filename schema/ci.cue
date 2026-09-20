@@ -44,7 +44,8 @@ package schema
 	})
 	// Trusted publishing via OIDC (no secrets needed)
 	trustedPublishing?: close({
-		cratesIo?: bool // Enable trusted publishing for crates.io
+		cratesIo?:    bool // Enable trusted publishing for crates.io
+		cueRegistry?: bool // Enable trusted publishing for the CUE Registry
 	})
 	permissions?: [string]: string
 })
@@ -190,6 +191,7 @@ package schema
 
 	// Provider configuration detection (active if these config paths are set)
 	// Path format: "github.cachix", "github.trustedPublishing.cratesIo"
+	// or "github.trustedPublishing.cueRegistry"
 	providerConfig?: [...string]
 
 	// Task command detection (active if any task uses these commands)
