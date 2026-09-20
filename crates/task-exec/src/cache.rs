@@ -17,7 +17,7 @@ use cuenv_cas::{
     missing_blobs,
 };
 use cuenv_core::Result;
-use cuenv_core::environment::Environment;
+use cuenv_core::environment::{ActionEnvironment, Environment};
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
@@ -60,6 +60,10 @@ pub struct TaskCacheConfig {
     pub runtime_identity_properties: BTreeMap<String, String>,
     /// Optional reason caching is disabled for this run.
     pub cache_disabled_reason: Option<String>,
+    /// Salt for fingerprinting secret-derived environment values into the
+    /// action key, from `CUENV_SECRET_SALT`. Without it, a task whose
+    /// environment holds a secret is not cacheable.
+    pub secret_salt: Option<String>,
 }
 
 impl std::fmt::Debug for TaskCacheConfig {
@@ -199,7 +203,21 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         return Ok(CacheOutcome::Skipped(CacheSkipReason::UnportableWorkdir));
     };
 
-    let environment_variables = environment.action_environment(task.env_passthrough());
+    let environment_variables = match environment
+        .action_environment(task.env_passthrough(), cache.secret_salt.as_deref())
+    {
+        ActionEnvironment::Ready(environment_variables) => environment_variables,
+        ActionEnvironment::SecretsWithoutSalt { names } => {
+            tracing::debug!(
+                task = %task_name,
+                secrets = ?names,
+                "skipping cache: secret-derived environment values and no CUENV_SECRET_SALT"
+            );
+            return Ok(CacheOutcome::Skipped(
+                CacheSkipReason::SecretsWithoutCacheSalt,
+            ));
+        }
+    };
 
     let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
     let mut arguments = Vec::with_capacity(1 + command_spec.args.len());

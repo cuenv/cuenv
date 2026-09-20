@@ -288,6 +288,15 @@ pub enum CacheSkipReason {
     /// project or module root, so the key would embed a host-specific
     /// absolute path.
     UnportableWorkdir,
+    /// The environment holds secret-derived values but no `CUENV_SECRET_SALT`
+    /// is configured.
+    ///
+    /// A secret's value cannot go into the key — the key is stored in the
+    /// content-addressed store and a remote cache would ship it off the
+    /// machine — and it cannot be omitted either, because two different
+    /// credentials would then key identically. Without a salt there is no
+    /// third option, so the task is not cached.
+    SecretsWithoutCacheSalt,
 }
 
 impl std::fmt::Display for CacheSkipReason {
@@ -304,6 +313,9 @@ impl std::fmt::Display for CacheSkipReason {
             Self::HashFailed => write!(f, "hashing failed"),
             Self::NonHermetic => write!(f, "task is not hermetic"),
             Self::UnportableWorkdir => write!(f, "working directory is not portable"),
+            Self::SecretsWithoutCacheSalt => {
+                write!(f, "secrets in environment and CUENV_SECRET_SALT is unset")
+            }
         }
     }
 }

@@ -91,7 +91,20 @@ fn build_task_cache(
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: runtime_identity.cache_disabled_reason,
+        secret_salt: secret_cache_salt(),
     })
+}
+
+/// Salt used to fingerprint secret-derived environment values into action
+/// keys.
+///
+/// Read from `CUENV_SECRET_SALT`, the same variable the CI secret pipeline
+/// already uses. An empty value counts as unset: an empty salt would make
+/// fingerprints trivially reversible by anyone who can read the store.
+fn secret_cache_salt() -> Option<String> {
+    std::env::var("CUENV_SECRET_SALT")
+        .ok()
+        .filter(|salt| !salt.is_empty())
 }
 
 #[derive(Debug, Clone, Default)]

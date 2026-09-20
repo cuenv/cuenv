@@ -10,7 +10,7 @@ use super::{
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::extract_static_env_vars;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
-use cuenv_core::environment::Environment;
+use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
 use cuenv_core::runtime::resolve_runtime_environment;
 use cuenv_core::tasks::{TaskNode, Tasks};
@@ -306,7 +306,15 @@ async fn apply_task_environment(application: TaskEnvironmentApplication<'_, '_>)
         cuenv_events::register_secrets(secrets);
 
         for (key, value) in task_env_vars {
-            application.runtime_env.set(key, value);
+            // Resolution flattens everything to a plain string, so the CUE
+            // declaration is the last place that still knows which values are
+            // credentials. Carry that through: a secret must be fingerprinted
+            // rather than written into the cache key.
+            if env_vars.get(&key).is_some_and(EnvValue::is_secret) {
+                application.runtime_env.set_secret(key, value);
+            } else {
+                application.runtime_env.set(key, value);
+            }
         }
     } else {
         for (key, value) in application.base_env_vars {

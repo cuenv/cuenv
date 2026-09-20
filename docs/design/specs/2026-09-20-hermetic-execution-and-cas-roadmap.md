@@ -152,6 +152,23 @@ into `ExecutorConfig` (`executor.rs:88`, `executor.rs:92`) and never read. The
 docs told users to use them. Documented as unimplemented in phase 0; the flags
 become real with the `cuenv cache` surface in phase 2.
 
+### Found during review, fixed immediately
+
+**F18 — Resolved secrets were written into the CAS in plaintext.** *[fixed]*
+`apply_task_environment` resolves project-level secrets and `set`s them into
+`Environment.vars`, a plain `HashMap<String, String>` with no marking. That map
+went verbatim into `Command.environment_variables`, and phase 0's own F15 fix —
+storing the `Command` blob so a miss is explicable — turned what had been a
+one-way hash into **plaintext credentials at rest**. The REAPI transport would
+then have uploaded them to a shared server on the first `read-write` run.
+
+Ironically the code already refused to cache *task-level* env
+(`CacheSkipReason::RuntimeEnv`) on exactly these grounds, one line after
+folding project-level secrets straight in.
+
+Fixed by §6.6 below. The lesson worth keeping: storing a blob is not the same
+risk as hashing it, and F15 changed which one the cache was doing.
+
 ## 3. Competitive position
 
 **Be honest about what each competitor is.**
@@ -402,6 +419,39 @@ start failing. Options:
    default is a task runner, not a competitor to buck2.
 3. Auto-detect: hermetic only when `inputs` are declared. Muddy — the same
    field would mean different things depending on a sibling field.
+
+### 6.6 How secrets enter a cache key
+
+A cache key has to change when a secret changes, or a rotated credential keeps
+serving results produced with the old one — and from a *shared* cache, that is
+a "deploy succeeded" entry served after the deploy key was revoked. The key
+must also never carry the value, because it is stored in the CAS and a remote
+cache ships it off the machine.
+
+Two representations were considered:
+
+1. **The secret's reference** (`op://Engineering/prod-db/password`). Rejected:
+   rotation does not change it, so it produces exactly the stale hit above; the
+   reference itself leaks vault structure to the server; and `exec`-derived
+   secrets have no reference at all, only a command line.
+2. **A salted keyed hash of the value.** Adopted. Rotation invalidates, the
+   value is not recoverable without the salt, and `exec` is covered because the
+   fingerprint is taken over the resolved output rather than the command.
+
+`cuenv-secrets` already had this for the CI pipeline, so the action key reuses
+it: `cuenv-secret-fp:<hmac-sha256(salt, name ‖ value)>`, keyed by
+`CUENV_SECRET_SALT`. The construction was documented as HMAC but implemented as
+`H(salt ‖ name ‖ value)`, which is length-extendable; it is now a real HMAC with
+the name length-prefixed so `("AB","C")` and `("A","BC")` cannot collide.
+
+**With no salt configured, the task is not cached** —
+`CacheSkipReason::SecretsWithoutCacheSalt`. Including the value is unsafe and
+omitting it would let two different credentials key identically, so there is no
+third option. This is a deliberate refusal rather than a silent degradation.
+
+Residual risk, stated plainly: a low-entropy secret is brute-forceable by
+someone who holds both the store and the salt, and a secret baked into a task's
+*output* is not keyable at all. Both are the user's to manage, as with moon.
 
 ### 6.5 When may cuenv write to a shared cache?
 

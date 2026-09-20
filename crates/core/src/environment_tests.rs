@@ -619,7 +619,7 @@ fn action_environment_contains_declared_cue_vars() {
     env.set("PATH".to_string(), "/nix/store/abc/bin".to_string());
     env.set("BUILD_MODE".to_string(), "release".to_string());
 
-    let action = env.action_environment(&[]);
+    let action = ready(&env, &[], None);
 
     assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/abc/bin"));
     assert_eq!(action.get("BUILD_MODE").map(String::as_str), Some("release"));
@@ -631,7 +631,7 @@ fn action_environment_omits_undeclared_ambient_vars() {
     // `merge_with_system_hermetic` folds these in; the action key must not,
     // or two machines can never agree on a digest.
     let env = Environment::new();
-    let action = env.action_environment(&[]);
+    let action = ready(&env, &[], None);
 
     assert!(action.is_empty(), "ambient host vars leaked into the action env: {action:?}");
     for ambient in ["HOME", "USER", "TERM", "TMPDIR", "XDG_CACHE_HOME"] {
@@ -647,7 +647,7 @@ fn action_environment_includes_declared_passthrough() {
     };
     let env = Environment::new();
 
-    let action = env.action_environment(&["PATH".to_string()]);
+    let action = ready(&env, &["PATH".to_string()], None);
 
     assert_eq!(action.get("PATH"), Some(&host_path));
 }
@@ -656,7 +656,7 @@ fn action_environment_includes_declared_passthrough() {
 fn action_environment_skips_passthrough_names_unset_on_the_host() {
     let env = Environment::new();
 
-    let action = env.action_environment(&["CUENV_TEST_DEFINITELY_UNSET_VARIABLE".to_string()]);
+    let action = ready(&env, &["CUENV_TEST_DEFINITELY_UNSET_VARIABLE".to_string()], None);
 
     // Absent rather than empty-string: "unset" and "set to empty" must key
     // differently.
@@ -671,7 +671,101 @@ fn declared_cue_vars_win_over_passthrough_of_the_same_name() {
     let mut env = Environment::new();
     env.set("PATH".to_string(), "/nix/store/declared/bin".to_string());
 
-    let action = env.action_environment(&["PATH".to_string()]);
+    let action = ready(&env, &["PATH".to_string()], None);
 
     assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/declared/bin"));
+}
+
+/// Unwrap the ready form; every caller here supplies a salt when it needs one.
+fn ready(
+    env: &Environment,
+    passthrough: &[String],
+    salt: Option<&str>,
+) -> std::collections::BTreeMap<String, String> {
+    match env.action_environment(passthrough, salt) {
+        ActionEnvironment::Ready(vars) => vars,
+        ActionEnvironment::SecretsWithoutSalt { names } => {
+            panic!("expected a ready action environment, got secrets without salt: {names:?}")
+        }
+    }
+}
+
+#[test]
+fn a_resolved_secret_never_appears_in_the_action_environment() {
+    // This is the regression that matters: the action environment becomes a
+    // `Command` message written into the content-addressed store, and a
+    // remote cache ships that blob off the machine.
+    let mut env = Environment::new();
+    env.set("PLAIN".to_string(), "visible".to_string());
+    env.set_secret("API_KEY".to_string(), "hunter2".to_string());
+
+    let action = ready(&env, &[], Some("salt"));
+
+    assert_eq!(action.get("PLAIN").map(String::as_str), Some("visible"));
+    let fingerprint = action.get("API_KEY").expect("secret name is still keyed");
+    assert!(!fingerprint.contains("hunter2"), "secret leaked: {fingerprint}");
+    assert!(fingerprint.starts_with("cuenv-secret-fp:"), "{fingerprint}");
+}
+
+#[test]
+fn rotating_a_secret_changes_the_action_environment() {
+    // Otherwise a revoked credential keeps serving results produced with it.
+    let mut before = Environment::new();
+    before.set_secret("API_KEY".to_string(), "old".to_string());
+    let mut after = Environment::new();
+    after.set_secret("API_KEY".to_string(), "new".to_string());
+
+    assert_ne!(
+        ready(&before, &[], Some("salt")),
+        ready(&after, &[], Some("salt"))
+    );
+}
+
+#[test]
+fn secrets_without_a_salt_refuse_to_produce_an_action_environment() {
+    let mut env = Environment::new();
+    env.set_secret("API_KEY".to_string(), "hunter2".to_string());
+
+    match env.action_environment(&[], None) {
+        ActionEnvironment::SecretsWithoutSalt { names } => {
+            assert_eq!(names, vec!["API_KEY".to_string()]);
+        }
+        ActionEnvironment::Ready(vars) => {
+            panic!("secret was keyed without a salt: {vars:?}")
+        }
+    }
+}
+
+#[test]
+fn the_failure_report_names_variables_not_values() {
+    let mut env = Environment::new();
+    env.set_secret("API_KEY".to_string(), "hunter2".to_string());
+
+    let reported = format!("{:?}", env.action_environment(&[], None));
+    assert!(!reported.contains("hunter2"), "{reported}");
+}
+
+#[test]
+fn overwriting_a_secret_with_a_plain_value_clears_the_marking() {
+    let mut env = Environment::new();
+    env.set_secret("VALUE".to_string(), "secret".to_string());
+    assert!(env.is_secret_var("VALUE"));
+
+    env.set("VALUE".to_string(), "now public".to_string());
+
+    assert!(!env.is_secret_var("VALUE"));
+    assert_eq!(
+        ready(&env, &[], None).get("VALUE").map(String::as_str),
+        Some("now public")
+    );
+}
+
+#[test]
+fn a_non_secret_environment_needs_no_salt() {
+    let mut env = Environment::new();
+    env.set("PLAIN".to_string(), "visible".to_string());
+    assert_eq!(
+        ready(&env, &[], None).get("PLAIN").map(String::as_str),
+        Some("visible")
+    );
 }

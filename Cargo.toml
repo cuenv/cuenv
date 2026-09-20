@@ -118,6 +118,7 @@ reqwest = { version = "0.13.3", default-features = false, features = ["json", "r
 # New dependencies for hook execution system
 dirs = "6.0"
 sha2 = "0.10"
+hmac = "0.12"
 
 # Bazel Remote Execution API v2. `bazel-remote-apis` ships pre-generated
 # prost/tonic bindings, so building it needs no `protoc` on the host.

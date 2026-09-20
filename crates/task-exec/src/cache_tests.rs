@@ -28,6 +28,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         action_semantics_version: 1,
         runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
     }
 }
 
@@ -935,4 +936,98 @@ async fn materialize_hit_removes_its_staging_directory() {
         .filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGING_PREFIX))
         .collect();
     assert!(leftovers.is_empty(), "staging directory was left behind");
+}
+
+#[tokio::test]
+async fn a_resolved_secret_is_never_written_into_the_stored_command_blob() {
+    // `store_message` puts the Command message in the CAS at key-computation
+    // time. Before secrets were classified, a resolved credential landed
+    // there in plaintext — and a remote cache would have uploaded it.
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let mut env = Environment::new();
+    env.set_secret("API_KEY".to_string(), "hunter2".to_string());
+
+    let (action, _) = build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "secret-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    let bytes = cache.cas.get(&action.command_digest).await.unwrap();
+    assert!(
+        !String::from_utf8_lossy(&bytes).contains("hunter2"),
+        "the secret reached the content-addressed store"
+    );
+
+    let command = decode_command(&bytes);
+    let recorded = command.environment_variables.get("API_KEY").unwrap();
+    assert!(recorded.starts_with("cuenv-secret-fp:"), "{recorded}");
+}
+
+#[tokio::test]
+async fn a_task_with_secrets_and_no_salt_is_not_cached() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let mut cache = make_cache(tmp.path());
+    cache.secret_salt = None;
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let mut env = Environment::new();
+    env.set_secret("API_KEY".to_string(), "hunter2".to_string());
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "secret-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await;
+
+    assert_eq!(reason, Some(CacheSkipReason::SecretsWithoutCacheSalt));
+}
+
+#[tokio::test]
+async fn rotating_a_secret_changes_the_action_digest() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+
+    let digest_for = |value: &str| {
+        let mut env = Environment::new();
+        env.set_secret("API_KEY".to_string(), value.to_string());
+        let cache = &cache;
+        let task = &task;
+        let tmp = &tmp;
+        async move {
+            build_action_for_test(BuildActionInput {
+                task,
+                task_name: "secret-env",
+                environment: &env,
+                cache,
+                workdir: tmp.path(),
+                project_root: tmp.path(),
+                module_root: tmp.path(),
+            })
+            .await
+            .unwrap()
+            .1
+        }
+    };
+
+    // A revoked credential must not keep serving results produced with it.
+    assert_ne!(digest_for("old").await, digest_for("new").await);
 }
