@@ -261,7 +261,7 @@ async fn prepare_task_runtime(
 
     Ok(PreparedTaskRuntime {
         env: runtime_env,
-        cache: task_cache_for_context(context),
+        cache: task_cache_for_context(context).await,
     })
 }
 
@@ -362,7 +362,7 @@ fn should_activate_lockfile_tools(project: &Project) -> bool {
     matches!(project.runtime, Some(Runtime::Tools(_)))
 }
 
-fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCacheConfig> {
+async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCacheConfig> {
     let module_root = context
         .cue_module_root
         .as_deref()
@@ -375,7 +375,12 @@ fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCacheCon
     if let Some(reason) = &runtime_identity.cache_disabled_reason {
         tracing::warn!(reason, "task cache disabled for this invocation");
     }
-    build_task_cache(&context.project_root, runtime_identity)
+    build_task_cache(
+        &context.project_root,
+        runtime_identity,
+        context.manifest.cache.as_ref(),
+    )
+    .await
 }
 
 struct TaskRunRequest<'a, 'input> {

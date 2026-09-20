@@ -38,6 +38,10 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci: Option<CI>,
 
+    /// Project-level cache settings (where the cache lives).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache: Option<super::Cache>,
+
     /// Tasks configuration
     #[serde(default)]
     pub tasks: HashMap<String, TaskNode>,

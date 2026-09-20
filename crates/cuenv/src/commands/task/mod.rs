@@ -5,6 +5,7 @@ mod dag_export;
 mod discovery;
 mod execution;
 pub mod list_builder;
+mod remote_cache;
 mod rendering;
 mod types;
 
@@ -63,9 +64,10 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
 /// Returns `None` if the local CAS or action cache cannot be opened (e.g.
 /// permissions). In that case the executor falls back to the no-cache code
 /// path so the user's command still works — degraded, not broken.
-fn build_task_cache(
+async fn build_task_cache(
     project_root: &Path,
     runtime_identity: RuntimeCacheIdentity,
+    cache_config: Option<&cuenv_core::manifest::Cache>,
 ) -> Option<TaskCacheConfig> {
     let cache_override = cache_override();
     if cache_override == CacheOverride::Off {
@@ -88,11 +90,16 @@ fn build_task_cache(
             return None;
         }
     };
+    // Stack a remote cache behind the local one when configured. Every
+    // failure in here degrades to local-only: a cache is an optimization, so
+    // an unreachable server should make a build slower, not broken.
+    let layers = remote_cache::build(cache_config, cas, action_cache).await;
+
     let vcs_hasher =
         Arc::new(cuenv_vcs::WalkHasher::new(project_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
-        cas,
-        action_cache,
+        cas: layers.cas,
+        action_cache: layers.action_cache,
         vcs_hasher,
         vcs_hasher_root: project_root.to_path_buf(),
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
