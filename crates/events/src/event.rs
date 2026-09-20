@@ -297,6 +297,24 @@ pub enum CacheSkipReason {
     /// credentials would then key identically. Without a salt there is no
     /// third option, so the task is not cached.
     SecretsWithoutCacheSalt,
+    /// A cross-project input names a project the CUE module does not contain.
+    ///
+    /// The reference cannot be resolved to a directory, so there is nothing to
+    /// hash and no honest key to compute.
+    UnknownProject {
+        /// The unresolvable project name or path, as written.
+        project: String,
+    },
+    /// Two inputs would occupy the same path in the task's workspace.
+    ///
+    /// A cross-project mapping's `to` landing on a local input — or on another
+    /// mapping's `to` — means the task would see one file where two were
+    /// declared. Which one wins is an ordering accident, so the key would be
+    /// ambiguous.
+    InputCollision {
+        /// The contested workspace-relative path.
+        path: String,
+    },
 }
 
 impl std::fmt::Display for CacheSkipReason {
@@ -315,6 +333,12 @@ impl std::fmt::Display for CacheSkipReason {
             Self::UnportableWorkdir => write!(f, "working directory is not portable"),
             Self::SecretsWithoutCacheSalt => {
                 write!(f, "secrets in environment and CUENV_SECRET_SALT is unset")
+            }
+            Self::UnknownProject { project } => {
+                write!(f, "unknown project reference '{project}'")
+            }
+            Self::InputCollision { path } => {
+                write!(f, "two inputs map to the same workspace path '{path}'")
             }
         }
     }

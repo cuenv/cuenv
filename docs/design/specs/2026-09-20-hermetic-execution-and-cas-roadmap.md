@@ -101,8 +101,11 @@ task's output is uncacheable** — that is the central monorepo workflow.
 
 `RuntimeEnv` is gone: §6.6 fingerprints secrets, so a task with `env:` is
 cacheable. Same-project `#TaskOutput` references are gone too (§6.7).
-Cross-project `#ProjectReference` still skips, because the producer's outputs
-live under a different project root than the input hasher (see §6.7).
+Cross-project `#ProjectReference` is gone as well: the input hasher is now
+rooted at the CUE module rather than the consuming project, so a sibling
+project's files are reachable (see §6.7). What remains of `NonPathRef` is an
+`Input::Task` that manifest expansion could not resolve to concrete output
+paths — a reference to nothing, which has no honest key.
 
 ### Serious
 
@@ -467,13 +470,31 @@ dependency's output without declaring it, and would then get a stale hit.
 Declaring the output as an input is both the fix and the thing that buys
 early cutoff, so it is what the docs tell users to do.
 
-**Cross-project references are not done.** `#ProjectReference` still skips
-with `NonPathRef`: the producer's outputs live under a sibling project root,
-while the input hasher is rooted at the consuming project
-(`commands/task/mod.rs`), so `prefix_patterns_for_hasher_root` cannot express
-them. Fixing that means rooting the hasher at the CUE module root and
-rebasing per task. Also note `Mapping.to` is a materialization destination
-that nothing currently creates; only `from` is hashed.
+**Cross-project references are done.** *[fixed]* The input hasher is rooted at
+the CUE module root, not the consuming project, so a sibling project's files
+are reachable; `prefix_patterns_for_hasher_root` and
+`rebase_hashed_inputs_for_project_root` were already written for a non-empty
+project prefix and now get one. `TaskCacheConfig::project_roots` resolves a
+reference to a directory, indexed by both the project's `name` and its
+module-relative path because `#ProjectReference.project` may be written either
+way; a name that resolves to neither is `UnknownProject`.
+
+Files are recorded at the mapping's `to` path rather than at `from`, because
+the input root is supposed to describe the layout the action executes against
+— the same reason Bazel's input root is exec-root-relative. `from`'s literal
+prefix bounds what is hashed and everything below it is reproduced under `to`,
+so a directory mapping keeps its structure and a single-file mapping lands
+exactly on `to`.
+
+That choice has one consequence worth naming: two inputs can now claim the
+same workspace path. Overwriting would make the key depend on which input was
+hashed last, so `InputDirectoryBuilder` rejects it and the task is reported
+`InputCollision`. It is a real declaration conflict, not a detail to paper
+over.
+
+Still open: `Mapping.to` is a *materialization* destination that nothing
+creates. The key is now correct about what the task will read; Phase 1 has to
+make the task actually read it.
 
 ### 6.6 How secrets enter a cache key
 

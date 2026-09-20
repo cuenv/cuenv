@@ -30,6 +30,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
+        project_roots: BTreeMap::new(),
     }
 }
 
@@ -1185,4 +1186,201 @@ fn without_an_override_the_task_policy_is_used_verbatim() {
     let policy = effective_policy(&cache, &task);
     assert!(policy.mode.allows_read());
     assert!(policy.mode.allows_write());
+}
+
+// ---------------------------------------------------------------------------
+// Cross-project inputs
+// ---------------------------------------------------------------------------
+
+/// A two-project module: `producer/` and `consumer/`, with the hasher rooted
+/// at the module so either project's files are reachable.
+struct CrossProjectModule {
+    _tmp: TempDir,
+    module_root: PathBuf,
+    consumer_root: PathBuf,
+    cache: TaskCacheConfig,
+}
+
+fn cross_project_module() -> CrossProjectModule {
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().to_path_buf();
+    let producer_root = module_root.join("producer");
+    let consumer_root = module_root.join("consumer");
+    fs::create_dir_all(producer_root.join("dist/nested")).unwrap();
+    fs::create_dir_all(&consumer_root).unwrap();
+    fs::write(producer_root.join("dist/app.js"), "built").unwrap();
+    fs::write(producer_root.join("dist/nested/lib.js"), "nested").unwrap();
+    fs::write(consumer_root.join("main.ts"), "local").unwrap();
+
+    let mut cache = make_cache(&module_root);
+    cache
+        .project_roots
+        .insert("producer".to_string(), producer_root);
+    CrossProjectModule {
+        _tmp: tmp,
+        module_root,
+        consumer_root,
+        cache,
+    }
+}
+
+fn consuming_task(project: &str, mappings: &[(&str, &str)]) -> Task {
+    let mut task = make_task("bundle", &[], &[], &[]);
+    task.inputs = vec![Input::Project(cuenv_manifest::tasks::ProjectReference {
+        project: project.to_string(),
+        task: "build".to_string(),
+        map: mappings
+            .iter()
+            .map(|(from, to)| cuenv_manifest::tasks::Mapping {
+                from: (*from).to_string(),
+                to: (*to).to_string(),
+            })
+            .collect(),
+    })];
+    task
+}
+
+async fn cross_project_digest(module: &CrossProjectModule, task: &Task) -> Option<Digest> {
+    let env = Environment::new();
+    build_action_for_test(BuildActionInput {
+        task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await
+    .map(|(_, digest)| digest)
+}
+
+#[tokio::test]
+async fn a_cross_project_input_is_hashed_from_the_other_project() {
+    // The whole point: a consumer's key is a function of the producer's
+    // bytes, so the producer emitting identical output leaves it unchanged.
+    let module = cross_project_module();
+    let task = consuming_task("producer", &[("dist/app.js", "vendor/app.js")]);
+
+    let before = cross_project_digest(&module, &task).await.unwrap();
+    let unchanged = cross_project_digest(&module, &task).await.unwrap();
+    assert_eq!(before, unchanged, "identical bytes must key identically");
+
+    fs::write(
+        module.module_root.join("producer/dist/app.js"),
+        "rebuilt differently",
+    )
+    .unwrap();
+    let after = cross_project_digest(&module, &task).await.unwrap();
+    assert_ne!(
+        before, after,
+        "a change in the other project must change the key"
+    );
+}
+
+#[tokio::test]
+async fn a_directory_mapping_keeps_its_internal_structure() {
+    let module = cross_project_module();
+    let task = consuming_task("producer", &[("dist", "vendor")]);
+
+    let before = cross_project_digest(&module, &task).await.unwrap();
+    fs::write(
+        module.module_root.join("producer/dist/nested/lib.js"),
+        "changed",
+    )
+    .unwrap();
+    let after = cross_project_digest(&module, &task).await.unwrap();
+    assert_ne!(
+        before, after,
+        "a file nested under the mapped directory is part of the key"
+    );
+}
+
+#[tokio::test]
+async fn the_destination_path_is_part_of_the_key() {
+    // Two tasks consuming the same bytes at different workspace paths see
+    // different input roots, so they must not share an entry.
+    let module = cross_project_module();
+    let here = consuming_task("producer", &[("dist/app.js", "vendor/app.js")]);
+    let there = consuming_task("producer", &[("dist/app.js", "third_party/app.js")]);
+
+    assert_ne!(
+        cross_project_digest(&module, &here).await.unwrap(),
+        cross_project_digest(&module, &there).await.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn a_local_input_and_a_cross_project_input_combine() {
+    let module = cross_project_module();
+    let mut task = consuming_task("producer", &[("dist/app.js", "vendor/app.js")]);
+    task.inputs.push(Input::Path("main.ts".to_string()));
+
+    let before = cross_project_digest(&module, &task).await.unwrap();
+    fs::write(module.consumer_root.join("main.ts"), "edited").unwrap();
+    let after = cross_project_digest(&module, &task).await.unwrap();
+    assert_ne!(before, after, "the local input still contributes");
+}
+
+#[tokio::test]
+async fn an_unknown_project_reference_is_not_cached() {
+    let module = cross_project_module();
+    let task = consuming_task("does-not-exist", &[("dist/app.js", "vendor/app.js")]);
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await;
+
+    assert_eq!(
+        reason,
+        Some(CacheSkipReason::UnknownProject {
+            project: "does-not-exist".to_string()
+        })
+    );
+}
+
+#[tokio::test]
+async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
+    // Which file wins would be an ordering accident, and the key would not
+    // describe what the task actually reads.
+    let module = cross_project_module();
+    let task = consuming_task(
+        "producer",
+        &[("dist/app.js", "vendor.js"), ("dist/nested/lib.js", "vendor.js")],
+    );
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await;
+
+    assert_eq!(
+        reason,
+        Some(CacheSkipReason::InputCollision {
+            path: "vendor.js".to_string()
+        })
+    );
+}
+
+#[test]
+fn literal_prefix_bounds_a_pattern() {
+    assert_eq!(literal_prefix("dist/**/*.js"), PathBuf::from("dist"));
+    assert_eq!(literal_prefix("dist/app.js"), PathBuf::from("dist/app.js"));
+    assert_eq!(literal_prefix("./dist/app.js"), PathBuf::from("dist/app.js"));
+    assert_eq!(literal_prefix("**/*.js"), PathBuf::new());
 }

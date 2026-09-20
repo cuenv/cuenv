@@ -18,6 +18,7 @@ use cuenv_cas::{
 };
 use cuenv_core::Result;
 use cuenv_core::environment::{ActionEnvironment, Environment};
+use cuenv_core::tasks::{Input, ProjectReference};
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
@@ -67,6 +68,14 @@ pub struct TaskCacheConfig {
     /// Run-wide override of every task's declared cache mode, from
     /// `CUENV_CACHE`. `None` honours what each task declares.
     pub mode_override: Option<TaskCacheMode>,
+    /// Roots of every project in the CUE module, so a cross-project input can
+    /// be resolved to files on disk.
+    ///
+    /// Keyed by both the project's `name` and its module-relative path,
+    /// because a `#ProjectReference` may be written either way. Empty means
+    /// no cross-project input can be hashed, and tasks that declare one are
+    /// not cached.
+    pub project_roots: BTreeMap<String, PathBuf>,
 }
 
 impl std::fmt::Debug for TaskCacheConfig {
@@ -170,15 +179,22 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     }
 
     let mut patterns = Vec::with_capacity(task.inputs.len());
+    let mut project_references = Vec::new();
     for input in &task.inputs {
-        if let Some(path) = input.as_path() {
-            patterns.push(path.clone());
-        } else {
-            tracing::debug!(
-                task = %task_name,
-                "skipping cache: task uses non-path input (project/task reference)"
-            );
-            return Ok(CacheOutcome::Skipped(CacheSkipReason::NonPathRef));
+        match input {
+            Input::Path(path) => patterns.push(path.clone()),
+            Input::Project(reference) => project_references.push(reference),
+            // `Input::Task` is rewritten to the producer's declared output
+            // paths during manifest expansion. One that survives to here is
+            // a reference nothing could resolve, so there is no content to
+            // hash and no honest key.
+            Input::Task(_) => {
+                tracing::debug!(
+                    task = %task_name,
+                    "skipping cache: task uses an unresolvable task-output input"
+                );
+                return Ok(CacheOutcome::Skipped(CacheSkipReason::NonPathRef));
+            }
         }
     }
 
@@ -190,10 +206,22 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         return Ok(CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv));
     }
 
-    let hashed = match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
-        ResolveOutcome::Resolved(h) => h,
-        ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
+    let mut hashed = if patterns.is_empty() {
+        Vec::new()
+    } else {
+        match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
+            ResolveOutcome::Resolved(h) => h,
+            ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
+        }
     };
+
+    for reference in project_references {
+        match resolve_project_reference(cache, reference, task_name).await? {
+            ResolveOutcome::Resolved(external) => hashed.extend(external),
+            ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
+        }
+    }
+
     if hashed.is_empty() {
         tracing::debug!(
             task = %task_name,
@@ -201,7 +229,20 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         );
         return Ok(CacheOutcome::Skipped(CacheSkipReason::NoResolvedInputs));
     }
-    let input_root_digest = build_input_root_digest(&hashed)?;
+    let input_root_digest = match build_input_root_digest(&hashed) {
+        Ok(digest) => digest,
+        Err(InputRootError::Collision(path)) => {
+            tracing::warn!(
+                task = %task_name,
+                path,
+                "skipping cache: two inputs map to the same workspace path"
+            );
+            return Ok(CacheOutcome::Skipped(CacheSkipReason::InputCollision {
+                path,
+            }));
+        }
+        Err(InputRootError::Failed(error)) => return Err(error),
+    };
 
     // A workdir that resolves under neither root would put a host-specific
     // absolute path in the key, which no other machine can reproduce.
@@ -365,6 +406,73 @@ async fn resolve_hashed_inputs(
         };
 
     Ok(ResolveOutcome::Resolved(rebased))
+}
+
+/// Hash a cross-project input and place it where the task will see it.
+///
+/// A `#ProjectReference` names another project's task and maps files out of
+/// that project into this task's workspace. The key has to be a function of
+/// the *content* those files carry, not of the producing task's own key:
+/// hashing content is what gives early cutoff, so a producer that reruns and
+/// emits identical bytes leaves every consumer's key unchanged. This is the
+/// same reason `Input::Task` is rewritten to concrete output paths.
+///
+/// Files are recorded at their `to` path, because that is the layout the
+/// action actually executes against. Two different sources mapped to one
+/// destination therefore collide, and [`build_input_root_digest`] rejects it.
+async fn resolve_project_reference(
+    cache: &TaskCacheConfig,
+    reference: &ProjectReference,
+    task_name: &str,
+) -> Result<ResolveOutcome> {
+    let Some(external_root) = cache.project_roots.get(&reference.project) else {
+        tracing::debug!(
+            task = %task_name,
+            project = reference.project,
+            "skipping cache: cross-project input names an unknown project"
+        );
+        return Ok(ResolveOutcome::Skipped(CacheSkipReason::UnknownProject {
+            project: reference.project.clone(),
+        }));
+    };
+
+    let mut resolved = Vec::new();
+    for mapping in &reference.map {
+        let hashed = match resolve_hashed_inputs(
+            cache,
+            std::slice::from_ref(&mapping.from),
+            external_root,
+            task_name,
+        )
+        .await?
+        {
+            ResolveOutcome::Resolved(hashed) => hashed,
+            ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
+        };
+
+        // `from` bounds where its matches live; everything below that bound is
+        // reproduced verbatim under `to`, so a directory mapping keeps its
+        // internal structure and a single-file mapping lands exactly on `to`.
+        let base = literal_prefix(&mapping.from);
+        let destination = PathBuf::from(mapping.to.trim_end_matches('/'));
+        for input in hashed {
+            let relative = input
+                .relative_path
+                .strip_prefix(&base)
+                .unwrap_or(input.relative_path.as_path());
+            let relative_path = if relative.as_os_str().is_empty() {
+                destination.clone()
+            } else {
+                destination.join(relative)
+            };
+            resolved.push(HashedInput {
+                relative_path,
+                ..input
+            });
+        }
+    }
+
+    Ok(ResolveOutcome::Resolved(resolved))
 }
 
 /// Query the action cache for a previous result.
@@ -769,16 +877,28 @@ struct InputDirectoryBuilder {
     directories: BTreeMap<String, Self>,
 }
 
+/// Why an input root could not be built.
+enum InputRootError {
+    /// Two inputs claimed the same workspace path, named here.
+    Collision(String),
+    /// Anything else, propagated to the caller.
+    Failed(cuenv_core::Error),
+}
+
 impl InputDirectoryBuilder {
-    fn insert(&mut self, relative_path: &Path, digest: &Digest, is_executable: bool) -> Result<()> {
+    fn insert(
+        &mut self,
+        relative_path: &Path,
+        digest: &Digest,
+        is_executable: bool,
+    ) -> std::result::Result<(), InputRootError> {
         let mut components = relative_path.components().peekable();
         let mut current = self;
 
         while let Some(component) = components.next() {
             let Component::Normal(name) = component else {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "invalid hashed input path '{}'",
-                    relative_path.display()
+                return Err(InputRootError::Failed(cuenv_core::Error::configuration(
+                    format!("invalid hashed input path '{}'", relative_path.display()),
                 )));
             };
 
@@ -786,6 +906,19 @@ impl InputDirectoryBuilder {
             if components.peek().is_some() {
                 current = current.directories.entry(name).or_default();
             } else {
+                // Overwriting here would make the key depend on which input
+                // happened to be hashed last. A cross-project mapping landing
+                // on a local input is a real declaration conflict, not a
+                // detail to paper over.
+                let contested = current
+                    .files
+                    .get(&name)
+                    .is_some_and(|existing| existing.digest != *digest);
+                if contested {
+                    return Err(InputRootError::Collision(path_to_forward_slashes(
+                        relative_path,
+                    )));
+                }
                 current.files.insert(
                     name.clone(),
                     FileNode {
@@ -800,7 +933,7 @@ impl InputDirectoryBuilder {
         Ok(())
     }
 
-    fn into_directory(self) -> Result<(Directory, Digest)> {
+    fn into_directory(self) -> std::result::Result<(Directory, Digest), InputRootError> {
         let mut directories = Vec::with_capacity(self.directories.len());
         for (name, child) in self.directories {
             let (_, child_digest) = child.into_directory()?;
@@ -815,13 +948,18 @@ impl InputDirectoryBuilder {
             directories,
             symlinks: Vec::new(),
         };
-        let digest = digest_of(&directory)
-            .map_err(|e| cuenv_core::Error::configuration(format!("input root digest: {e}")))?;
+        let digest = digest_of(&directory).map_err(|e| {
+            InputRootError::Failed(cuenv_core::Error::configuration(format!(
+                "input root digest: {e}"
+            )))
+        })?;
         Ok((directory, digest))
     }
 }
 
-fn build_input_root_digest(hashed: &[HashedInput]) -> Result<Digest> {
+fn build_input_root_digest(
+    hashed: &[HashedInput],
+) -> std::result::Result<Digest, InputRootError> {
     let mut builder = InputDirectoryBuilder::default();
     for input in hashed {
         let digest = Digest {
@@ -997,6 +1135,23 @@ fn looks_like_glob(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('{') || pattern.contains('?') || pattern.contains('[')
 }
 
+/// The leading literal path a pattern's matches are guaranteed to live under.
+///
+/// `dist/**/*.js` yields `dist`; `dist/app.js` yields itself; `**/*.js`
+/// yields an empty path, meaning the pattern is unbounded.
+fn literal_prefix(pattern: &str) -> PathBuf {
+    let mut base = PathBuf::new();
+    for segment in pattern.split('/') {
+        if looks_like_glob(segment) {
+            break;
+        }
+        if !segment.is_empty() && segment != "." {
+            base.push(segment);
+        }
+    }
+    base
+}
+
 /// The directories that have to be walked to satisfy `patterns`.
 ///
 /// A glob's literal prefix bounds where its matches can live, so a task
@@ -1011,15 +1166,7 @@ fn looks_like_glob(pattern: &str) -> bool {
 fn output_walk_roots(workdir: &Path, patterns: &[String]) -> Vec<PathBuf> {
     let mut bases: Vec<PathBuf> = Vec::with_capacity(patterns.len());
     for pattern in patterns {
-        let mut base = PathBuf::new();
-        for segment in pattern.split('/') {
-            if looks_like_glob(segment) {
-                break;
-            }
-            if !segment.is_empty() && segment != "." {
-                base.push(segment);
-            }
-        }
+        let base = literal_prefix(pattern);
         if base.as_os_str().is_empty() {
             // Unbounded: the whole working directory is in scope, and no
             // other root can narrow that.

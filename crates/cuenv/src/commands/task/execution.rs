@@ -4,9 +4,10 @@ use super::list_builder::prepare_task_index;
 use super::rendering::get_task_cli_help;
 use super::types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection};
 use super::{
-    build_task_cache, build_task_executor, execute_task_with_strategy, execute_with_rich_tui,
-    format_task_results, resolve_runtime_cache_identity,
+    TaskCacheContext, build_task_cache, build_task_executor, execute_task_with_strategy,
+    execute_with_rich_tui, format_task_results, resolve_runtime_cache_identity,
 };
+use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::extract_static_env_vars;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
@@ -19,7 +20,7 @@ use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_task_exec::{ExecutorConfig, TaskGraph, TaskIndex};
 use cuenv_tool_runtime::apply_resolved_tool_activation;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 mod help;
@@ -116,6 +117,9 @@ struct TaskExecutionContext {
     manifest: Project,
     project_root: PathBuf,
     cue_module_root: Option<PathBuf>,
+    /// Every project in the module, by name and by module-relative path, so a
+    /// cross-project input resolves to a directory the hasher can read.
+    project_roots: BTreeMap<String, PathBuf>,
     task_index: TaskIndex,
     local_tasks: Tasks,
 }
@@ -137,6 +141,7 @@ fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExe
     let project_root =
         std::fs::canonicalize(input.path).unwrap_or_else(|_| Path::new(input.path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
+    let project_roots = discover_project_roots(input.executor, &project_root);
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let local_tasks = task_index.to_tasks();
 
@@ -144,9 +149,48 @@ fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExe
         manifest,
         project_root,
         cue_module_root,
+        project_roots,
         task_index,
         local_tasks,
     })
+}
+
+/// Map every project in the CUE module to its absolute root.
+///
+/// A `#ProjectReference` may spell its target as the project's `name` or as
+/// its path relative to the module root, so both spellings are indexed rather
+/// than guessing which one a user meant. A module that cannot be evaluated
+/// yields an empty map: cross-project inputs then cannot be hashed, and the
+/// tasks that declare them are reported as uncacheable instead of being
+/// keyed on a fraction of their inputs.
+fn discover_project_roots(
+    executor: &CommandExecutor,
+    project_root: &Path,
+) -> BTreeMap<String, PathBuf> {
+    let mut roots = BTreeMap::new();
+    let module = match executor.get_module(project_root) {
+        Ok(module) => module,
+        Err(error) => {
+            tracing::debug!(
+                error = %error,
+                "cross-project inputs unavailable: module evaluation failed"
+            );
+            return roots;
+        }
+    };
+
+    for instance in module.projects() {
+        let absolute = module.root.join(&instance.path);
+        if let Some(name) = instance.project_name() {
+            roots.insert(name.to_string(), absolute.clone());
+        }
+        let relative = instance.path.to_string_lossy().replace('\\', "/");
+        if !relative.is_empty() {
+            roots.insert(relative, absolute);
+        }
+    }
+
+    roots
 }
 
 /// Internal implementation of task execution.
@@ -376,8 +420,12 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
         tracing::warn!(reason, "task cache disabled for this invocation");
     }
     build_task_cache(
-        &context.project_root,
-        runtime_identity,
+        TaskCacheContext {
+            project_root: &context.project_root,
+            module_root,
+            project_roots: context.project_roots.clone(),
+            runtime_identity,
+        },
         context.manifest.cache.as_ref(),
     )
     .await

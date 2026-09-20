@@ -32,6 +32,7 @@ fn build_executor(workspace: &std::path::Path, cache_root: &std::path::Path) -> 
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
+        project_roots: std::collections::BTreeMap::new(),
     };
 
     let config = ExecutorConfig {

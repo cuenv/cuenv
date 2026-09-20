@@ -326,7 +326,48 @@ and materialized results.
 - **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the cached task result may be reused.
 - **Outputs**: Files or directories created by the task.
 - **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
-- **Limitations**: Tasks with non-path inputs or task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
+- **Limitations**: Tasks with task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
+
+### Inputs from another project
+
+An input may name another project's task instead of a path. cuenv hashes the
+files that project produced and records them under each mapping's `to` path,
+which is where the consuming task will read them:
+
+```cue
+tasks: {
+    bundle: schema.#Task & {
+        command: "esbuild"
+        inputs: [
+            "src/**/*.ts",
+            {
+                project: "design-system"
+                task:    "build"
+                map: [{from: "dist", to: "vendor/design-system"}]
+            },
+        ]
+        outputs: ["out/bundle.js"]
+        cache: mode: "read-write"
+    }
+}
+```
+
+The key is a function of the referenced files' **content**, not of the
+producing task's own key. That is what gives early cutoff: a producer that
+reruns and emits identical bytes leaves every consumer's key unchanged, so the
+consumers stay cached. `project` may be written as the other project's `name`
+or as its path relative to the CUE module root.
+
+Two rules follow from recording files at their `to` path:
+
+- `from` bounds what is hashed. A directory or glob keeps its internal
+  structure below `to`; a single file lands exactly on `to`.
+- Two inputs may not claim the same workspace path. A mapping whose `to`
+  collides with a local input — or with another mapping — makes the task
+  uncacheable, because which file the task would see is an ordering accident.
+
+A reference to a project the CUE module does not contain is also uncacheable:
+there is nothing to hash, so there is no honest key.
 
 ```cue
 tasks: {

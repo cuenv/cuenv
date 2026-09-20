@@ -64,11 +64,28 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
 /// Returns `None` if the local CAS or action cache cannot be opened (e.g.
 /// permissions). In that case the executor falls back to the no-cache code
 /// path so the user's command still works — degraded, not broken.
-async fn build_task_cache(
-    project_root: &Path,
+/// Everything `build_task_cache` needs that is not the cache's own settings.
+struct TaskCacheContext<'a> {
+    /// Root of the project whose task is running.
+    project_root: &'a Path,
+    /// Root of the CUE module, which bounds every project in the workspace.
+    module_root: &'a Path,
+    /// Project roots by name and by module-relative path.
+    project_roots: BTreeMap<String, PathBuf>,
+    /// Runtime identity folded into every action key.
     runtime_identity: RuntimeCacheIdentity,
+}
+
+async fn build_task_cache(
+    context: TaskCacheContext<'_>,
     cache_config: Option<&cuenv_core::manifest::Cache>,
 ) -> Option<TaskCacheConfig> {
+    let TaskCacheContext {
+        project_root,
+        module_root,
+        project_roots,
+        runtime_identity,
+    } = context;
     let cache_override = cache_override();
     if cache_override == CacheOverride::Off {
         tracing::debug!("task cache disabled by CUENV_CACHE=off");
@@ -95,13 +112,20 @@ async fn build_task_cache(
     // an unreachable server should make a build slower, not broken.
     let layers = remote_cache::build(cache_config, cas, action_cache).await;
 
+    // Rooted at the module, not the project: a task may declare an input in a
+    // sibling project, and a hasher that cannot see outside its own project
+    // can only answer such a reference by declining to cache. Patterns are
+    // prefixed with each project's module-relative path before they reach the
+    // walker, so this widens what is reachable without widening what is
+    // walked.
     let vcs_hasher =
-        Arc::new(cuenv_vcs::WalkHasher::new(project_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+        Arc::new(cuenv_vcs::WalkHasher::new(module_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
         cas: layers.cas,
         action_cache: layers.action_cache,
         vcs_hasher,
-        vcs_hasher_root: project_root.to_path_buf(),
+        vcs_hasher_root: module_root.to_path_buf(),
+        project_roots,
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: runtime_identity.cache_disabled_reason,
