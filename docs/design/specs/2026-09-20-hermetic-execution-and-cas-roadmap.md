@@ -92,11 +92,17 @@ runners start cold every time. This is the single feature users switch
 build tools for, and moon has had it for years.
 
 **F5 — Caching is off by default and opts out of the monorepo case.**
+*[same-project half fixed]*
 `#TaskCachePolicy.mode` defaults to `"never"` (`schema/tasks.cue:76`), and
 even when enabled we skip on `EmptyInputs`, `NonPathRef`, and `RuntimeEnv`
 (`cache.rs:138-161`). `NonPathRef` means **any task consuming another
 task's output is uncacheable** — that is the central monorepo workflow.
 `RuntimeEnv` means any task with `env:` is uncacheable.
+
+`RuntimeEnv` is gone: §6.6 fingerprints secrets, so a task with `env:` is
+cacheable. Same-project `#TaskOutput` references are gone too (§6.7).
+Cross-project `#ProjectReference` still skips, because the producer's outputs
+live under a different project root than the input hasher (see §6.7).
 
 ### Serious
 
@@ -432,6 +438,42 @@ start failing. Options:
    default is a task runner, not a competitor to buck2.
 3. Auto-detect: hermetic only when `inputs` are declared. Muddy — the same
    field would mean different things depending on a sibling field.
+
+### 6.7 Consuming another task's output
+
+Bazel and buck2 both treat a reference to another target's output as two
+things at once: a dependency edge, and a set of input files. cuenv treated it
+as neither — `Input::Task` created no edge (`project.rs` added one only for
+`Input::Project`, and no graph code reads `inputs` at all), and the cache
+refused the task outright with `NonPathRef`.
+
+Both are now derived from the reference. `inputs: [{task: "build"}]` adds the
+implicit `dependsOn` and expands to `build`'s declared `outputs` as ordinary
+path inputs, hashed from disk like any other.
+
+**Hashing the produced content, not the producer's key, is the important
+part.** Folding the producer's action digest into the consumer — which is what
+moon does — means any change to the producer's inputs invalidates every
+consumer, even when the producer rebuilt byte-identical output. Hashing the
+output gives *early cutoff*: touch a comment in `build.rs`, `build` reruns,
+its output is unchanged, and every downstream `test` still hits. This is the
+property that makes a monorepo cache worth having, and it is why Bazel and
+buck2 both work this way.
+
+A consequence worth stating: `dependsOn` on its own contributes nothing to the
+key, which is also Bazel's semantics — an edge that provides no files cannot
+change your output. With filesystem isolation (F1) open, a task *can* read a
+dependency's output without declaring it, and would then get a stale hit.
+Declaring the output as an input is both the fix and the thing that buys
+early cutoff, so it is what the docs tell users to do.
+
+**Cross-project references are not done.** `#ProjectReference` still skips
+with `NonPathRef`: the producer's outputs live under a sibling project root,
+while the input hasher is rooted at the consuming project
+(`commands/task/mod.rs`), so `prefix_patterns_for_hasher_root` cannot express
+them. Fixing that means rooting the hasher at the CUE module root and
+rebasing per task. Also note `Mapping.to` is a materialization destination
+that nothing currently creates; only `from` is hashed.
 
 ### 6.6 How secrets enter a cache key
 

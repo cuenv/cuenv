@@ -144,28 +144,64 @@ impl Project {
     /// Converts them to explicit ProjectReference inputs.
     /// Also adds implicit dependsOn entries for all project references.
     pub fn expand_cross_project_references(&mut self) {
+        let declared_outputs = self.declared_outputs_by_task();
         for task_node in self.tasks.values_mut() {
-            Self::expand_task_node(task_node);
+            Self::expand_task_node(task_node, &declared_outputs);
         }
     }
 
-    fn expand_task_node(node: &mut TaskNode) {
+    /// Map every task's dotted path to the outputs it declares.
+    ///
+    /// Consuming a task's output is resolved against this: the consumer's
+    /// inputs become the producer's output paths, so the consumer's cache key
+    /// is a function of what the producer actually built.
+    fn declared_outputs_by_task(&self) -> HashMap<String, Vec<String>> {
+        let mut declared = HashMap::new();
+        for (name, node) in &self.tasks {
+            Self::collect_declared_outputs(name, node, &mut declared);
+        }
+        declared
+    }
+
+    fn collect_declared_outputs(
+        path: &str,
+        node: &TaskNode,
+        declared: &mut HashMap<String, Vec<String>>,
+    ) {
         match node {
-            TaskNode::Task(task) => Self::expand_task(task),
+            TaskNode::Task(task) => {
+                declared.insert(path.to_string(), task.outputs.clone());
+            }
+            TaskNode::Group(group) => {
+                for (child, sub_node) in &group.children {
+                    Self::collect_declared_outputs(&format!("{path}.{child}"), sub_node, declared);
+                }
+            }
+            TaskNode::Sequence(steps) => {
+                for (index, sub_node) in steps.iter().enumerate() {
+                    Self::collect_declared_outputs(&format!("{path}[{index}]"), sub_node, declared);
+                }
+            }
+        }
+    }
+
+    fn expand_task_node(node: &mut TaskNode, declared_outputs: &HashMap<String, Vec<String>>) {
+        match node {
+            TaskNode::Task(task) => Self::expand_task(task, declared_outputs),
             TaskNode::Group(group) => {
                 for sub_node in group.children.values_mut() {
-                    Self::expand_task_node(sub_node);
+                    Self::expand_task_node(sub_node, declared_outputs);
                 }
             }
             TaskNode::Sequence(steps) => {
                 for sub_node in steps {
-                    Self::expand_task_node(sub_node);
+                    Self::expand_task_node(sub_node, declared_outputs);
                 }
             }
         }
     }
 
-    fn expand_task(task: &mut Task) {
+    fn expand_task(task: &mut Task, declared_outputs: &HashMap<String, Vec<String>>) {
         let mut new_inputs = Vec::new();
         let mut implicit_deps = Vec::new();
 
@@ -210,7 +246,42 @@ impl Project {
                     implicit_deps.push(format!("#{}:{}", proj_ref.project, proj_ref.task));
                     new_inputs.push(input.clone());
                 }
-                _ => new_inputs.push(input.clone()),
+                Input::Task(task_output) => {
+                    // Consuming a task's output is a dependency on it. Bazel
+                    // and buck2 both derive the edge from the reference rather
+                    // than making you declare it twice; without this the
+                    // consumer can be scheduled alongside its producer.
+                    implicit_deps.push(task_output.task.clone());
+
+                    // Rewrite to the producer's concrete output paths so the
+                    // consumer's cache key is a function of what the producer
+                    // built. Hashing the produced *content* rather than the
+                    // producer's own key is what gives early cutoff: a
+                    // producer that reruns and emits identical bytes leaves
+                    // every consumer's key unchanged.
+                    match &task_output.map {
+                        // An explicit mapping names the paths to consume.
+                        // `to` is where materialization will place them, which
+                        // does not exist yet; `from` is what gets hashed.
+                        Some(mappings) => new_inputs.extend(
+                            mappings
+                                .iter()
+                                .map(|mapping| Input::Path(mapping.from.clone())),
+                        ),
+                        // No mapping: consume everything the producer declares.
+                        None => match declared_outputs.get(&task_output.task) {
+                            Some(outputs) => new_inputs
+                                .extend(outputs.iter().cloned().map(Input::Path)),
+                            // An unresolvable reference is left alone rather
+                            // than silently dropped: the cache layer reports it
+                            // as a skip reason, and execution still fails the
+                            // way it did before.
+                            None => new_inputs.push(input.clone()),
+                        },
+                    }
+                }
+                // An ordinary path input, already concrete.
+                Input::Path(_) => new_inputs.push(input.clone()),
             }
         }
 

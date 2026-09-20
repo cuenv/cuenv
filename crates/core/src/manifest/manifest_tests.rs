@@ -1,5 +1,5 @@
 use super::*;
-use crate::tasks::{Input, Task, TaskDependency, TaskGroup, TaskNode};
+use crate::tasks::{Input, Mapping, Task, TaskDependency, TaskGroup, TaskNode, TaskOutput};
 use crate::test_utils::create_test_hook;
 use cuenv_hooks::Hooks;
 use std::collections::HashMap;
@@ -694,4 +694,179 @@ fn test_deserialize_actual_cuenv_project() {
             panic!("Deserialization failed");
         }
     }
+}
+
+// =============================================================================
+// Consuming another task's output
+// =============================================================================
+
+/// A project with `build` producing two outputs and `test` consuming them.
+fn project_with_producer_and_consumer(consumer_input: Input) -> Project {
+    let build = Task {
+        command: "make".to_string(),
+        outputs: vec!["dist/app.js".to_string(), "dist/app.css".to_string()],
+        ..Default::default()
+    };
+    let test = Task {
+        command: "jest".to_string(),
+        inputs: vec![consumer_input],
+        ..Default::default()
+    };
+
+    let mut project = Project::new("test");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(build)));
+    project
+        .tasks
+        .insert("test".into(), TaskNode::Task(Box::new(test)));
+    project.expand_cross_project_references();
+    project
+}
+
+fn consumer_of(project: &Project) -> &Task {
+    project.tasks.get("test").unwrap().as_task().unwrap()
+}
+
+#[test]
+fn consuming_a_task_output_creates_the_dependency_edge() {
+    // Bazel and buck2 both derive the edge from the reference rather than
+    // making you declare it twice. Without it the consumer can be scheduled
+    // alongside its producer.
+    let project = project_with_producer_and_consumer(Input::Task(TaskOutput {
+        task: "build".to_string(),
+        map: None,
+    }));
+
+    let names: Vec<&str> = consumer_of(&project)
+        .depends_on
+        .iter()
+        .map(TaskDependency::task_name)
+        .collect();
+    assert_eq!(names, vec!["build"]);
+}
+
+#[test]
+fn consuming_a_task_output_expands_to_the_producers_declared_outputs() {
+    let project = project_with_producer_and_consumer(Input::Task(TaskOutput {
+        task: "build".to_string(),
+        map: None,
+    }));
+
+    let paths: Vec<&str> = consumer_of(&project)
+        .inputs
+        .iter()
+        .filter_map(|input| input.as_path().map(String::as_str))
+        .collect();
+    assert_eq!(paths, vec!["dist/app.js", "dist/app.css"]);
+}
+
+#[test]
+fn an_explicit_mapping_selects_which_outputs_are_consumed() {
+    let project = project_with_producer_and_consumer(Input::Task(TaskOutput {
+        task: "build".to_string(),
+        map: Some(vec![Mapping {
+            from: "dist/app.js".to_string(),
+            to: "vendor/app.js".to_string(),
+        }]),
+    }));
+
+    let paths: Vec<&str> = consumer_of(&project)
+        .inputs
+        .iter()
+        .filter_map(|input| input.as_path().map(String::as_str))
+        .collect();
+    // `to` is a materialization destination, which does not exist yet; `from`
+    // is what the key is taken over.
+    assert_eq!(paths, vec!["dist/app.js"]);
+}
+
+#[test]
+fn a_reference_to_an_unknown_task_is_left_for_the_executor_to_report() {
+    // Silently dropping it would turn a typo into a task that caches nothing
+    // and explains nothing.
+    let project = project_with_producer_and_consumer(Input::Task(TaskOutput {
+        task: "no-such-task".to_string(),
+        map: None,
+    }));
+
+    let consumer = consumer_of(&project);
+    assert!(consumer.inputs[0].as_task_output().is_some());
+    let names: Vec<&str> = consumer
+        .depends_on
+        .iter()
+        .map(TaskDependency::task_name)
+        .collect();
+    assert_eq!(names, vec!["no-such-task"]);
+}
+
+#[test]
+fn a_nested_producer_is_resolved_by_its_dotted_path() {
+    let inner = Task {
+        command: "make".to_string(),
+        outputs: vec!["docs/site".to_string()],
+        ..Default::default()
+    };
+    let mut children = HashMap::new();
+    children.insert("build".to_string(), TaskNode::Task(Box::new(inner)));
+    let group = TaskGroup {
+        type_: "group".to_string(),
+        depends_on: vec![],
+        max_concurrency: None,
+        description: None,
+        children,
+    };
+
+    let consumer = Task {
+        command: "deploy".to_string(),
+        inputs: vec![Input::Task(TaskOutput {
+            task: "docs.build".to_string(),
+            map: None,
+        })],
+        ..Default::default()
+    };
+
+    let mut project = Project::new("test");
+    project.tasks.insert("docs".into(), TaskNode::Group(group));
+    project
+        .tasks
+        .insert("deploy".into(), TaskNode::Task(Box::new(consumer)));
+    project.expand_cross_project_references();
+
+    let deploy = project.tasks.get("deploy").unwrap().as_task().unwrap();
+    let paths: Vec<&str> = deploy
+        .inputs
+        .iter()
+        .filter_map(|input| input.as_path().map(String::as_str))
+        .collect();
+    assert_eq!(paths, vec!["docs/site"]);
+}
+
+#[test]
+fn an_existing_dependency_is_not_duplicated_by_the_reference() {
+    let build = Task {
+        command: "make".to_string(),
+        outputs: vec!["dist/app.js".to_string()],
+        ..Default::default()
+    };
+    let test = Task {
+        command: "jest".to_string(),
+        depends_on: vec![TaskDependency::from_name("build".to_string())],
+        inputs: vec![Input::Task(TaskOutput {
+            task: "build".to_string(),
+            map: None,
+        })],
+        ..Default::default()
+    };
+
+    let mut project = Project::new("test");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(build)));
+    project
+        .tasks
+        .insert("test".into(), TaskNode::Task(Box::new(test)));
+    project.expand_cross_project_references();
+
+    assert_eq!(consumer_of(&project).depends_on.len(), 1);
 }
