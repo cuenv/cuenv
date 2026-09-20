@@ -1,14 +1,18 @@
 # Hermetic Execution and CAS: Gap Analysis and Roadmap
 
 **Date:** 2026-09-20
-**Status:** Draft — planning only, no code changes
+**Status:** Phase 0 implemented; phases 1–4 planned
 **Supersedes in practice:** the unimplemented half of
 [ADR-0008](../../src/content/docs/decisions/adrs/adr-0008-hermetic-task-execution-cache.md)
 
 ## Summary
 
+> **Reading note.** §§1–2 describe the state this document was written
+> against. Phase 0 has since shipped and fixed F3, F6, F7, F13 and F15; see
+> §5 for exactly what changed. The rest of the analysis stands.
+
 `cuenv` ships a content-addressed store, an action cache, and a schema field
-called `hermetic`. None of the three currently does what its name implies:
+called `hermetic`. None of the three did what its name implies:
 
 - **`hermetic` is a no-op.** Every host task runs through
   `execute_task_non_hermetic` (`crates/task-exec/src/executor.rs:284-299`).
@@ -56,7 +60,8 @@ and it is something moon does not have.
 ## 2. Findings
 
 Ranked by whether they block us from competing. Severity is about the
-product, not the code.
+product, not the code. Findings marked **[fixed in phase 0]** describe the
+state this document was written against; see §5 for what replaced them.
 
 ### Blocking
 
@@ -75,7 +80,7 @@ Without an ingested input root there is no remote execution, no
 cold-cache reconstruction of an exec root, and no way to explain a cache
 key after the fact. `merkle.rs` exists for exactly this and is unwired.
 
-**F3 — The action key embeds ambient host state.**
+**F3 — The action key embeds ambient host state.** *[fixed in phase 0]*
 `HOME`, `USER`, `LOGNAME`, `SHELL`, `TERM`, `COLORTERM`, `TMPDIR`,
 `XDG_RUNTIME_DIR`, `XDG_*` and every `LC_*` go into the key. Cross-machine
 hit rate is structurally zero. Env that reaches an action must be
@@ -95,13 +100,13 @@ task's output is uncacheable** — that is the central monorepo workflow.
 
 ### Serious
 
-**F6 — `cuenv_version` in every key.**
+**F6 — `cuenv_version` in every key.** *[fixed in phase 0]*
 `cuenv_version: env!("CARGO_PKG_VERSION")` invalidates the entire cache on
 every release. Tolerable locally; catastrophic once a shared remote cache
 exists. Needs an explicit `action_semantics_version` integer, bumped only
 when execution semantics change.
 
-**F7 — Action-result integrity is unchecked.**
+**F7 — Action-result integrity is unchecked.** *[fixed in phase 0]*
 `lookup` (`cache.rs:280`) returns a hit without verifying that the blobs it
 references still exist. `materialize_hit` then writes files one at a time
 and can fail halfway, leaving a half-restored workdir with no rollback.
@@ -133,14 +138,19 @@ all — no `stats`, `gc`, `prune`, `verify`.
 
 **F12** — No single-flight: two concurrent tasks with the same action digest
 both execute.
-**F13** — `normalize_workdir` falls back to an absolute path when the workdir
-is under neither the project nor the module root (`cache.rs:649-657`),
+**F13** *[fixed in phase 0]* — `normalize_workdir` fell back to an absolute
+path when the workdir was under neither the project nor the module root,
 baking a machine-specific path into the key.
 **F14** — Symlinks are silently dropped from input trees
 (`merkle.rs:72`); `SymlinkNode` is modelled but always empty.
-**F15** — Neither the `Action` nor the `Command` blob is ever stored, so a
-cache miss cannot be explained or diffed against the previous run.
+**F15** *[fixed in phase 0]* — Neither the `Action` nor the `Command` blob was
+stored, so a cache miss could not be explained or diffed against the
+previous run.
 **F16** — Cached stdout/stderr replay as two blocks, losing interleaving.
+**F17** — `--show-cache-path` and `--materialize-outputs` are parsed, plumbed
+into `ExecutorConfig` (`executor.rs:88`, `executor.rs:92`) and never read. The
+docs told users to use them. Documented as unimplemented in phase 0; the flags
+become real with the `cuenv cache` surface in phase 2.
 
 ## 3. Competitive position
 
@@ -209,24 +219,44 @@ Each phase is independently shippable and has an exit criterion. Phases 0–2
 are prerequisites for phase 3; do not reorder them, because shipping a
 remote cache on top of unsound keys is worse than shipping nothing.
 
-### Phase 0 — Stop lying (correctness, no new capability)
+### Phase 0 — Stop lying (correctness, no new capability) — **done**
 
-- Declared env only. Add `env.passthrough` to the task schema; drop
-  `merge_with_system_hermetic` from the action key path. Ambient env may
-  still reach a non-hermetic task, but it may not enter a key it did not
-  declare. **(F3)**
-- Replace `cuenv_version` with `action_semantics_version: u32`. **(F6)**
-- Verify every referenced blob exists before declaring a hit; make
-  materialization atomic (stage to a temp tree, rename into place). **(F7)**
-- Store the `Action` and `Command` blobs in the CAS at key-computation
-  time. **(F15)**
-- Fix the absolute-path fallback in `normalize_workdir`: refuse to cache
-  rather than bake a host path into the key. **(F13)**
-- Either implement `hermetic` or mark it `partial` in the
-  schema-coverage-matrix and the schema comment until phase 1 lands. It
-  must not keep claiming isolation it does not provide. **(F1, partial)**
+- **Declared env only. (F3)** `hermetic` now accepts an options form,
+  `{passthrough: [...]}`, naming the host variables an action may depend on.
+  `Environment::action_environment` records the declared CUE environment plus
+  those names; `merge_with_system_hermetic` is off the key path entirely.
+- **`action_semantics_version: u32` replaces `cuenv_version`. (F6)** Defined
+  as `cuenv_cas::ACTION_SEMANTICS_VERSION` with a documented bump rule, so a
+  release no longer invalidates the world.
+- **Dangling entries degrade to misses. (F7)** `cuenv_cas::missing_blobs`
+  walks everything an `ActionResult` references — output files, stdout,
+  stderr, and output directory trees transitively — before a hit is served.
+  Materialization stages into a scratch directory inside the workspace and
+  commits by rename, so a missing or corrupt blob cannot leave a tree that is
+  half cached output and half whatever was there before. Cached output paths
+  that would escape the working directory are rejected outright.
+- **`Action` and `Command` blobs are stored. (F15)** Both are written to the
+  CAS at key-computation time, which is what phase 4's `explain` needs to
+  diff two keys rather than just report that they differ.
+- **Unportable working directories refuse to cache. (F13)** A workdir under
+  neither the project nor the module root skips with
+  `CacheSkipReason::UnportableWorkdir` instead of baking `/home/<user>/…`
+  into the key.
+- **`hermetic` means something. (F1, partial)** `hermetic: false` now skips
+  the cache (`CacheSkipReason::NonHermetic`) rather than recording an entry
+  keyed on a fraction of what produced it. The schema, the ADR and the
+  coverage matrix all state plainly that filesystem isolation is not yet
+  implemented.
 
-*Exit:* two machines with identical checkouts and toolchains compute
+**Deliberately deferred to phase 1:** execution environment is unchanged. A
+task still *receives* ambient `HOME`, `TERM`, `XDG_*` and friends even though
+its key no longer records them. Making the key match reality requires the
+exec root and sandbox below; until then the narrow exposure — a cached task
+whose result depends on an undeclared ambient variable — is strictly smaller
+than F1, which lets it depend on undeclared *files*. Cache mode defaults to
+`never`, so this reaches only tasks that explicitly opted in.
+
+*Exit (met):* two machines with identical checkouts and toolchains compute
 identical action digests for the same task.
 
 ### Phase 1 — Real hermetic execution
@@ -270,6 +300,8 @@ of silently producing a poisoned cache entry.
   lockfile. **(F12)**
 - `cuenv cache` command surface: `stats`, `gc` (LRU by access time against a
   size budget), `prune`, `verify`. **(F11)**
+- Make `--show-cache-path` and `--materialize-outputs` do what they say, or
+  remove them. **(F17)**
 
 *Exit:* warm no-op run on a large monorepo is dominated by process spawn,
 not by hashing or copying; the cache respects a configured size budget.

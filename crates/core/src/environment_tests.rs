@@ -612,3 +612,66 @@ async fn test_resolve_interpolated_with_actual_secret() {
     assert!(resolved.contains("-suffix"));
     assert_eq!(secrets.len(), 1);
 }
+
+#[test]
+fn action_environment_contains_declared_cue_vars() {
+    let mut env = Environment::new();
+    env.set("PATH".to_string(), "/nix/store/abc/bin".to_string());
+    env.set("BUILD_MODE".to_string(), "release".to_string());
+
+    let action = env.action_environment(&[]);
+
+    assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/abc/bin"));
+    assert_eq!(action.get("BUILD_MODE").map(String::as_str), Some("release"));
+    assert_eq!(action.len(), 2);
+}
+
+#[test]
+fn action_environment_omits_undeclared_ambient_vars() {
+    // `merge_with_system_hermetic` folds these in; the action key must not,
+    // or two machines can never agree on a digest.
+    let env = Environment::new();
+    let action = env.action_environment(&[]);
+
+    assert!(action.is_empty(), "ambient host vars leaked into the action env: {action:?}");
+    for ambient in ["HOME", "USER", "TERM", "TMPDIR", "XDG_CACHE_HOME"] {
+        assert!(!action.contains_key(ambient), "{ambient} leaked into the action env");
+    }
+}
+
+#[test]
+fn action_environment_includes_declared_passthrough() {
+    // PATH is set in every environment this test can run in.
+    let Ok(host_path) = env::var("PATH") else {
+        return;
+    };
+    let env = Environment::new();
+
+    let action = env.action_environment(&["PATH".to_string()]);
+
+    assert_eq!(action.get("PATH"), Some(&host_path));
+}
+
+#[test]
+fn action_environment_skips_passthrough_names_unset_on_the_host() {
+    let env = Environment::new();
+
+    let action = env.action_environment(&["CUENV_TEST_DEFINITELY_UNSET_VARIABLE".to_string()]);
+
+    // Absent rather than empty-string: "unset" and "set to empty" must key
+    // differently.
+    assert!(action.is_empty());
+}
+
+#[test]
+fn declared_cue_vars_win_over_passthrough_of_the_same_name() {
+    if env::var("PATH").is_err() {
+        return;
+    }
+    let mut env = Environment::new();
+    env.set("PATH".to_string(), "/nix/store/declared/bin".to_string());
+
+    let action = env.action_environment(&["PATH".to_string()]);
+
+    assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/declared/bin"));
+}

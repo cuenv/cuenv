@@ -246,15 +246,17 @@ The `dagger` backend is optional and gated behind the `dagger-backend` build fea
 
 ### Cache helpers
 
-When a task uses `cache`, two flags help you work with the content-addressed store:
+:::caution[Not implemented]
+`--show-cache-path` and `--materialize-outputs` are accepted on the command
+line but currently do nothing: the flags are parsed and passed to the executor,
+which ignores them. They are listed in
+[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/) as intended
+behaviour and are tracked as part of the `cuenv cache` command surface in
+phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
+:::
 
-```bash
-# Print the cache directory for this task's current key (does not run the task)
-cuenv task build --show-cache-path
-
-# On a cache hit, copy the cached outputs into a directory of your choice
-cuenv task build --materialize-outputs ./dist
-```
+On a cache hit, cuenv restores the task's declared `outputs` into its working
+directory automatically — there is no flag to enable it.
 
 ## Dependencies & Parallelism
 
@@ -571,14 +573,52 @@ tasks: {
 
 ## Hermeticity
 
-Tasks run hermetically by default: cuenv prepares an isolated working directory
-and makes declared `inputs` available to the command. This is why task examples
-should list every file, directory, generated output, or embedded script they
-read.
+Tasks are hermetic by default (`hermetic: true`). Today that means two things:
 
-Set `hermetic: false` only for tasks that intentionally operate on the live
-checkout, such as local development servers or commands that manage files
-outside the declared input/output boundary.
+- The task is **eligible for the action cache**. `hermetic: false` is never
+  cached, because a task that reads and writes the live checkout with the
+  ambient host environment produces results the cache key cannot describe.
+- Its cache key records only what it **declares** — the resolved `inputs`, the
+  command, the CUE-declared environment, the platform, and any host variables
+  named in `hermetic.passthrough`.
+
+:::caution[Not yet filesystem isolation]
+`hermetic: true` does **not** currently sandbox the task. It still runs in the
+project root and can read any file in the checkout, declared or not. Declaring
+complete `inputs` is therefore your responsibility: an undeclared read that
+changes the result will produce a stale cache hit. Filesystem and network
+isolation are phase 1 of the hermetic/CAS roadmap.
+:::
+
+Set `hermetic: false` for tasks that intentionally operate on the live
+checkout, such as local development servers, dependency installers, or
+commands that manage files outside the declared input/output boundary.
+
+### Declaring host environment dependencies
+
+A cache key that silently includes `HOME`, `TERM` or `XDG_CACHE_HOME` can never
+match between two machines, so cuenv excludes ambient host variables from the
+key entirely. If a task's result genuinely depends on one, declare it:
+
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "cargo"
+        args: ["build", "--release"]
+        inputs: ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
+        outputs: ["target/release/myapp"]
+        cache: mode: "read-write"
+
+        // This task's result depends on the host's CARGO_HOME, so record it.
+        hermetic: passthrough: ["CARGO_HOME"]
+    }
+}
+```
+
+Declaring a variable partitions the cache by its value — that is the point. A
+task that lists `HOME` will only reuse entries produced under the same `HOME`,
+which is correct, and is why the portable case is to declare nothing and put
+what the task needs in `env` instead.
 
 Tasks default to the directory containing the CUE file where the executable task
 is defined: `dir: {from: "definition", path: "."}`. This matters for imported

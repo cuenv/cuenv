@@ -79,6 +79,26 @@ pub struct Directory {
     pub symlinks: Vec<SymlinkNode>,
 }
 
+/// Version of cuenv's action execution semantics.
+///
+/// This is the cache-invalidation salt folded into every [`Action`]. It is
+/// deliberately **not** the cuenv package version: keying on the package
+/// version invalidates every entry on every release, which is merely
+/// annoying for a local cache and unacceptable for a shared remote one.
+///
+/// Bump this only when a change alters what executing an action *means* —
+/// the set of files an action can see, the environment it receives, how
+/// outputs are collected, or the canonical encoding used for digests. A bug
+/// fix that does not change the result of a correctly-cached action must not
+/// bump it.
+///
+/// History:
+///
+/// - `1` — initial versioned semantics. Action environment is the declared
+///   CUE environment plus explicitly declared host passthrough, replacing
+///   the previous implicit merge of ambient host variables.
+pub const ACTION_SEMANTICS_VERSION: u32 = 1;
+
 /// An action to execute.
 ///
 /// Mirrors `build.bazel.remote.execution.v2.Action`. The [`Digest`] of this
@@ -91,9 +111,8 @@ pub struct Action {
     pub input_root_digest: Digest,
     /// Execution platform.
     pub platform: Platform,
-    /// cuenv-specific salt. Bumping this invalidates every entry; useful
-    /// when the execution semantics of cuenv itself change.
-    pub cuenv_version: String,
+    /// Execution-semantics salt. See [`ACTION_SEMANTICS_VERSION`].
+    pub action_semantics_version: u32,
 }
 
 /// A file produced by an action.
@@ -177,7 +196,7 @@ mod tests {
             platform: Platform {
                 properties: a_props,
             },
-            cuenv_version: "0.30.8".into(),
+            action_semantics_version: 1,
         };
 
         let mut b_props = BTreeMap::new();
@@ -200,7 +219,7 @@ mod tests {
             command_digest: Digest::of_bytes(b"cmd-1"),
             input_root_digest: Digest::of_bytes(b"root"),
             platform: Platform::default(),
-            cuenv_version: "0.30.8".into(),
+            action_semantics_version: 1,
         };
         let other = Action {
             command_digest: Digest::of_bytes(b"cmd-2"),
@@ -215,7 +234,7 @@ mod tests {
             command_digest: Digest::of_bytes(b"cmd"),
             input_root_digest: Digest::of_bytes(b"root-1"),
             platform: Platform::default(),
-            cuenv_version: "0.30.8".into(),
+            action_semantics_version: 1,
         };
         let other = Action {
             input_root_digest: Digest::of_bytes(b"root-2"),
@@ -225,15 +244,15 @@ mod tests {
     }
 
     #[test]
-    fn action_digest_changes_with_cuenv_version() {
+    fn action_digest_changes_with_semantics_version() {
         let base = Action {
             command_digest: Digest::of_bytes(b"cmd"),
             input_root_digest: Digest::of_bytes(b"root"),
             platform: Platform::default(),
-            cuenv_version: "0.30.8".into(),
+            action_semantics_version: 1,
         };
         let other = Action {
-            cuenv_version: "0.31.0".into(),
+            action_semantics_version: 2,
             ..base.clone()
         };
         assert_ne!(digest_of(&base).unwrap(), digest_of(&other).unwrap());

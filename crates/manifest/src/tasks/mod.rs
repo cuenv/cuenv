@@ -15,6 +15,7 @@ mod cache_policy;
 mod capture_types;
 mod dagger;
 mod dependency;
+mod hermetic;
 mod inputs;
 mod params;
 mod resolver;
@@ -25,6 +26,7 @@ pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
 pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
 pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
+pub use hermetic::{Hermetic, HermeticOptions};
 pub use inputs::{
     Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
 };
@@ -36,8 +38,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
-fn default_hermetic() -> bool {
-    true
+fn default_hermetic() -> Hermetic {
+    Hermetic::Enabled(true)
 }
 
 // =============================================================================
@@ -100,10 +102,11 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<crate::manifest::Runtime>,
 
-    /// When true (default), task runs in isolated hermetic directory.
-    /// When false, task runs directly in workspace/project root.
+    /// Hermeticity settings. `true` (the default) or an options struct
+    /// opts the task into isolated execution; `false` runs it directly in
+    /// the workspace/project root.
     #[serde(default = "default_hermetic")]
-    pub hermetic: bool,
+    pub hermetic: Hermetic,
 
     /// Task dependencies - embedded task references with _name field
     /// In CUE, users write `dependsOn: [build, test]` with direct references.
@@ -212,7 +215,7 @@ impl<'de> serde::Deserialize<'de> for Task {
             #[serde(default)]
             runtime: Option<crate::manifest::Runtime>,
             #[serde(default = "default_hermetic")]
-            hermetic: bool,
+            hermetic: Hermetic,
             #[serde(default, rename = "dependsOn")]
             depends_on: Vec<TaskDependency>,
             #[serde(default)]
@@ -303,7 +306,7 @@ impl Default for Task {
             env: HashMap::new(),
             dagger: None,
             runtime: None,
-            hermetic: true, // Default to hermetic execution
+            hermetic: Hermetic::Enabled(true), // Default to hermetic execution
             depends_on: vec![],
             inputs: vec![],
             outputs: vec![],
@@ -351,6 +354,18 @@ impl Task {
     #[must_use]
     pub fn cache_policy(&self) -> TaskCachePolicy {
         self.cache.clone().unwrap_or_default()
+    }
+
+    /// Whether this task opts into hermetic execution.
+    #[must_use]
+    pub fn is_hermetic(&self) -> bool {
+        self.hermetic.is_enabled()
+    }
+
+    /// Host environment variable names this task declares as action inputs.
+    #[must_use]
+    pub fn env_passthrough(&self) -> &[String] {
+        self.hermetic.passthrough()
     }
 
     /// Returns the description, or a default if not set.

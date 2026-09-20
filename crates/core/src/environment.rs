@@ -181,6 +181,39 @@ impl Environment {
         !Self::HERMETIC_TEMP_VARS.contains(&var) || Path::new(value).is_dir()
     }
 
+    /// The environment recorded in an action's cache key.
+    ///
+    /// Contains the CUE-declared variables plus the host values of the names
+    /// in `passthrough`, which a task declares through `hermetic.passthrough`.
+    ///
+    /// Ambient host variables never enter implicitly. [`merge_with_system_hermetic`]
+    /// folds in whatever `HOME`, `USER`, `TERM`, `TMPDIR` and `XDG_*` happen to
+    /// hold on this machine; a key computed that way can never match one
+    /// computed on another machine, which makes a shared cache pointless.
+    /// Declaring a name is how a task says "my result legitimately depends on
+    /// this, and I accept that it partitions the cache".
+    ///
+    /// Names that are unset on the host are omitted, so "unset" and "set to a
+    /// value" produce different keys. A CUE-declared variable wins over a
+    /// passthrough name of the same spelling.
+    ///
+    /// [`merge_with_system_hermetic`]: Self::merge_with_system_hermetic
+    #[must_use]
+    pub fn action_environment(
+        &self,
+        passthrough: &[String],
+    ) -> std::collections::BTreeMap<String, String> {
+        let declared = passthrough
+            .iter()
+            .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)));
+        let cue = self
+            .vars
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()));
+        // CUE variables are applied last so they win on collision.
+        declared.chain(cue).collect()
+    }
+
     /// Convert to a vector of key=value strings including system environment
     pub fn to_full_env_vec(&self) -> Vec<String> {
         self.merge_with_system()

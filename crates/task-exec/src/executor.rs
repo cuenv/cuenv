@@ -367,7 +367,7 @@ impl TaskExecutor {
                     .clone()
                     .unwrap_or_else(|| self.config.project_root.clone()))
             }
-        } else if !task.hermetic {
+        } else if !task.is_hermetic() {
             if let Some(manager) = cuenv_workspaces::detect_from_command(&task.command) {
                 Ok(find_workspace_root(manager, &self.config.project_root))
             } else {

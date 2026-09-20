@@ -10,6 +10,8 @@
 //!   ([`Action`], [`Command`], [`Directory`], [`ActionResult`], …).
 //! - [`merkle::build_input_tree`] / [`merkle::materialize_input_tree`] —
 //!   Merkle-tree construction and materialization.
+//! - [`integrity::missing_blobs`] — referential integrity check for an
+//!   [`ActionResult`] before it is served as a cache hit.
 //!
 //! The types in this crate deliberately mirror
 //! `build.bazel.remote.execution.v2.*` so that a future remote backend can
@@ -20,6 +22,7 @@ pub mod action_cache;
 pub mod cas;
 pub mod digest;
 pub mod error;
+pub mod integrity;
 pub mod merkle;
 pub mod message;
 
@@ -27,8 +30,9 @@ pub use action_cache::{ActionCache, LocalActionCache};
 pub use cas::{Cas, LocalCas};
 pub use digest::{Digest, canonical_bytes, digest_of};
 pub use error::{Error, Result};
+pub use integrity::missing_blobs;
 pub use merkle::{build_input_tree, directory_digest, materialize_input_tree};
 pub use message::{
-    Action, ActionResult, Command, Directory, DirectoryNode, ExecutionMetadata, FileNode,
-    OutputDirectory, OutputFile, Platform, SymlinkNode,
+    ACTION_SEMANTICS_VERSION, Action, ActionResult, Command, Directory, DirectoryNode,
+    ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform, SymlinkNode,
 };

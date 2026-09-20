@@ -25,7 +25,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         action_cache: Arc::new(LocalActionCache::open(root).unwrap()),
         vcs_hasher: Arc::new(WalkHasher::new(root)),
         vcs_hasher_root: root.to_path_buf(),
-        cuenv_version: "test-version".to_string(),
+        action_semantics_version: 1,
         runtime_identity_properties: BTreeMap::new(),
         cache_disabled_reason: None,
     }
@@ -636,4 +636,278 @@ async fn record_skips_non_zero_exit_codes() {
 
     let lookup_result = lookup(&cache, &action_digest, &task).unwrap();
     assert!(lookup_result.is_none());
+}
+
+// =============================================================================
+// Action key portability
+// =============================================================================
+
+async fn skip_reason_for_test(input: BuildActionInput<'_>) -> Option<CacheSkipReason> {
+    match build_action(input).await.unwrap() {
+        CacheOutcome::Eligible(..) => None,
+        CacheOutcome::Skipped(reason) => Some(reason),
+    }
+}
+
+#[tokio::test]
+async fn build_action_skips_non_hermetic_tasks() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    task.hermetic = cuenv_manifest::tasks::Hermetic::Enabled(false);
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "non-hermetic",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await;
+
+    assert_eq!(reason, Some(CacheSkipReason::NonHermetic));
+}
+
+#[tokio::test]
+async fn build_action_skips_workdir_outside_project_and_module_roots() {
+    let tmp = TempDir::new().unwrap();
+    let project = tmp.path().join("project");
+    let elsewhere = tmp.path().join("elsewhere");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(project.join("input.txt"), "payload").unwrap();
+
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "stray-workdir",
+        environment: &env,
+        cache: &cache,
+        // Under neither the project nor the module root: normalizing would
+        // bake an absolute host path into the key.
+        workdir: &elsewhere,
+        project_root: &project,
+        module_root: &project,
+    })
+    .await;
+
+    assert_eq!(reason, Some(CacheSkipReason::UnportableWorkdir));
+}
+
+#[tokio::test]
+async fn action_environment_is_declared_only() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let mut env = Environment::new();
+    env.set("DECLARED".to_string(), "yes".to_string());
+
+    let (action, _) = build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "declared-env",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    // Re-decode the stored Command blob: it is what the digest was taken over.
+    let bytes = cache.cas.get(&action.command_digest).unwrap();
+    let command: cuenv_cas::Command = serde_json::from_slice(&bytes).unwrap();
+
+    assert_eq!(
+        command.environment_variables.get("DECLARED").map(String::as_str),
+        Some("yes")
+    );
+    for ambient in ["HOME", "USER", "TERM", "XDG_CACHE_HOME"] {
+        assert!(
+            !command.environment_variables.contains_key(ambient),
+            "{ambient} leaked into the action key"
+        );
+    }
+}
+
+#[tokio::test]
+async fn build_action_stores_action_and_command_blobs() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let env = Environment::new();
+
+    let (action, action_digest) = build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "stored",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    // Both blobs present means a later `explain` can diff two keys instead of
+    // just reporting that they differ.
+    assert!(cache.cas.contains(&action_digest).unwrap());
+    assert!(cache.cas.contains(&action.command_digest).unwrap());
+
+    let stored: Action = serde_json::from_slice(&cache.cas.get(&action_digest).unwrap()).unwrap();
+    assert_eq!(stored, action);
+}
+
+// =============================================================================
+// Cache-hit integrity
+// =============================================================================
+
+#[tokio::test]
+async fn lookup_ignores_entry_whose_output_blob_was_evicted() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    fs::write(workdir.join("out.txt"), "produced").unwrap();
+
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["out.txt"], &["out.txt"]);
+    let action_digest = Digest::of_bytes(b"evicted-action");
+
+    record(RecordInput {
+        cache: &cache,
+        action_digest: &action_digest,
+        workdir: &workdir,
+        task: &task,
+        stdout: "",
+        stderr: "",
+        exit_code: 0,
+        duration_ms: 1,
+    })
+    .unwrap();
+    assert!(lookup(&cache, &action_digest, &task).unwrap().is_some());
+
+    // Simulate garbage collection removing the output blob.
+    let stored = cache.action_cache.lookup(&action_digest).unwrap().unwrap();
+    let blob = tmp.path().join("cas").join("sha256").join(
+        Path::new(&stored.output_files[0].digest.hash[..2])
+            .join(&stored.output_files[0].digest.hash[2..]),
+    );
+    fs::remove_file(&blob).unwrap();
+
+    assert!(
+        lookup(&cache, &action_digest, &task).unwrap().is_none(),
+        "a dangling entry must degrade to a miss, not a partial restore"
+    );
+}
+
+#[tokio::test]
+async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    let cache = make_cache(tmp.path());
+
+    let digest = cache.cas.put_bytes(b"owned").unwrap();
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "../escaped.txt".to_string(),
+            digest,
+            is_executable: false,
+        }],
+        output_directories: vec![],
+        exit_code: 0,
+        stdout_digest: None,
+        stderr_digest: None,
+        execution_metadata: ExecutionMetadata::default(),
+    };
+
+    let error = materialize_hit(&cache, &workdir, &result).unwrap_err();
+    assert!(
+        error.to_string().contains("stay inside the working directory"),
+        "unexpected error: {error}"
+    );
+    assert!(!tmp.path().join("escaped.txt").exists());
+}
+
+#[tokio::test]
+async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    fs::write(workdir.join("first.txt"), "original first").unwrap();
+    fs::write(workdir.join("second.txt"), "original second").unwrap();
+
+    let cache = make_cache(tmp.path());
+    let present = cache.cas.put_bytes(b"cached first").unwrap();
+
+    let result = ActionResult {
+        output_files: vec![
+            OutputFile {
+                path: "first.txt".to_string(),
+                digest: present,
+                is_executable: false,
+            },
+            OutputFile {
+                path: "second.txt".to_string(),
+                digest: Digest::of_bytes(b"never stored"),
+                is_executable: false,
+            },
+        ],
+        output_directories: vec![],
+        exit_code: 0,
+        stdout_digest: None,
+        stderr_digest: None,
+        execution_metadata: ExecutionMetadata::default(),
+    };
+
+    assert!(materialize_hit(&cache, &workdir, &result).is_err());
+
+    // Staging means the first output is never installed, so the workspace is
+    // not left as a mix of cached and pre-existing files.
+    assert_eq!(fs::read_to_string(workdir.join("first.txt")).unwrap(), "original first");
+    assert_eq!(fs::read_to_string(workdir.join("second.txt")).unwrap(), "original second");
+}
+
+#[tokio::test]
+async fn materialize_hit_removes_its_staging_directory() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    let cache = make_cache(tmp.path());
+
+    let digest = cache.cas.put_bytes(b"restored").unwrap();
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "nested/out.txt".to_string(),
+            digest,
+            is_executable: false,
+        }],
+        output_directories: vec![],
+        exit_code: 0,
+        stdout_digest: None,
+        stderr_digest: None,
+        execution_metadata: ExecutionMetadata::default(),
+    };
+
+    materialize_hit(&cache, &workdir, &result).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(workdir.join("nested/out.txt")).unwrap(),
+        "restored"
+    );
+    let leftovers: Vec<_> = fs::read_dir(&workdir)
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGING_PREFIX))
+        .collect();
+    assert!(leftovers.is_empty(), "staging directory was left behind");
 }

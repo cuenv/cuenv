@@ -338,7 +338,7 @@ schema.#Project & {
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
-| `hermetic`       | `bool`                                            | No       | Isolated execution (default: true)       |
+| `hermetic`       | `bool \| #Hermetic`                                | No       | Cache eligibility and declared host-env dependencies (default: true). Not yet filesystem isolation — see [#Hermetic](#hermetic) |
 | `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")†         |
 | `retry`          | `{ attempts: int \| *3, delay?: string }`         | No       | Retry policy: `attempts` defaults to 3, optional `delay` (e.g., "5s")† |
 | `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)†    |
@@ -397,6 +397,49 @@ helper.
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 When using `scriptShell: "sh"`, set `shellOptions.pipefail: false`. Plain `sh` does not reliably support `set -o pipefail`.
+
+### #Hermetic
+
+Object form of a task's `hermetic` field. Setting it always means hermeticity
+is on — there would be nothing to configure otherwise.
+
+| Field         | Type            | Required | Description                                         |
+| ------------- | --------------- | -------- | --------------------------------------------------- |
+| `passthrough` | `[...string]`   | No       | Host environment variable names the action may depend on |
+
+```cue
+tasks: build: schema.#Task & {
+    command: "cargo"
+    args: ["build", "--release"]
+    inputs: ["src/**/*.rs", "Cargo.toml"]
+    outputs: ["target/release/app"]
+    cache: mode: "read-write"
+    hermetic: passthrough: ["CARGO_HOME"]
+}
+```
+
+**What `hermetic` controls today:**
+
+- **Cache eligibility.** `hermetic: false` is never cached: such a task reads
+  and writes the live checkout with the ambient host environment, so the cache
+  key would describe a fraction of what produced the result. The skip is
+  reported as `task is not hermetic`.
+- **Cache key contents.** The key records the resolved `inputs`, the command,
+  the CUE-declared environment, the platform, and the host values of any names
+  in `passthrough`. Ambient host variables — `HOME`, `USER`, `TERM`, `TMPDIR`,
+  `XDG_*` — are excluded, so two machines with the same checkout and toolchain
+  compute the same key.
+
+Declaring a name in `passthrough` partitions the cache by its value. That is
+the intended trade: a task whose result depends on `HOME` is not portable, and
+cuenv records that rather than hiding it.
+
+:::caution[Not yet filesystem isolation]
+`hermetic: true` does not currently sandbox the task. It runs in the project
+root and can read any file in the checkout, declared or not. Complete `inputs`
+are your responsibility until filesystem isolation lands. See
+[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/).
+:::
 
 ### #TaskGroup
 

@@ -12,6 +12,33 @@ superseded_by: []
 ---
 
 
+## Implementation status
+
+This ADR records the accepted design, not the shipped behaviour. As of the
+hermetic/CAS roadmap
+(`docs/design/specs/2026-09-20-hermetic-execution-and-cas-roadmap.md`):
+
+- **Decision 2 (hermetic execution) is not implemented.** Tasks run in the
+  project root with the whole workspace readable. `hermetic: true` currently
+  means "eligible for the action cache", not "isolated from undeclared
+  files". Filesystem isolation is phase 1 of the roadmap.
+- **Decision 3 (cache key) shipped with one change.** The key no longer
+  contains the cuenv package version — that invalidated every entry on every
+  release — nor ambient host environment variables. It records the declared
+  CUE environment plus the names a task lists in `hermetic.passthrough`, and
+  an execution-semantics version that is bumped only when execution
+  semantics change.
+- **Decision 4 (storage layout) is superseded.** Results are stored in a
+  content-addressed store plus an action cache
+  (`~/.cache/cuenv/{cas,ac}/sha256/…`) modelled on the Bazel Remote
+  Execution API, not the `tasks/<key>/` layout described below. There is no
+  `workspace.tar.zst` snapshot. Outputs *are* materialized on a hit, staged
+  first so a missing blob cannot leave a half-restored tree.
+- **Decision 6 (CLI UX) is not implemented.** There are no
+  `--materialize-outputs` or `--show-cache-path` flags, and no `cuenv cache`
+  command surface. Cache hits, misses, and structured skip reasons are
+  reported through the event system.
+
 ## Context
 
 Tasks must execute deterministically from a set of explicitly declared inputs and produce a set of declared outputs. To enable reproducibility and performance, we want a persistent, content-addressed cache that skips reruns when inputs and execution context are identical. Hermeticity here refers to a directory-only isolation model: the task runs in a clean working directory populated solely from declared inputs.

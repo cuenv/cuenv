@@ -756,7 +756,7 @@ async fn test_cache_hit_replays_task_output_events() {
         action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
         vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
         vcs_hasher_root: workspace.path().to_path_buf(),
-        cuenv_version: "test".to_string(),
+        action_semantics_version: 1,
         runtime_identity_properties: std::collections::BTreeMap::new(),
         cache_disabled_reason: None,
     };
@@ -953,7 +953,7 @@ fn test_workdir_for_non_hermetic_package_task_prefers_source_directory() {
     let task = Task {
         command: "bun".to_string(),
         args: vec!["run".to_string(), "build".to_string()],
-        hermetic: false,
+        hermetic: cuenv_manifest::tasks::Hermetic::Enabled(false),
         source: Some(source("projects/app/env.cue")),
         ..Task::default()
     };

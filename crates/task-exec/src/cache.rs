@@ -13,13 +13,14 @@ use super::TaskCommandExt;
 use crate::{Task, TaskCachePolicy};
 use cuenv_cas::{
     Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
-    ExecutionMetadata, FileNode, OutputFile, Platform, digest_of,
+    ExecutionMetadata, FileNode, OutputFile, Platform, canonical_bytes, digest_of, missing_blobs,
 };
 use cuenv_core::Result;
 use cuenv_core::environment::Environment;
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -50,9 +51,10 @@ pub struct TaskCacheConfig {
     pub vcs_hasher: Arc<dyn VcsHasher>,
     /// Root path the shared [`VcsHasher`] resolves inputs against.
     pub vcs_hasher_root: PathBuf,
-    /// cuenv binary version, baked into every action digest. Bumping this
-    /// invalidates all cache entries on upgrade.
-    pub cuenv_version: String,
+    /// Execution-semantics salt baked into every action digest. See
+    /// [`cuenv_cas::ACTION_SEMANTICS_VERSION`]; bumping it invalidates every
+    /// entry, so it tracks changes in what execution *means*, not releases.
+    pub action_semantics_version: u32,
     /// Optional runtime identity properties folded into action identity.
     /// For Nix runtime this includes the locked runtime digest.
     pub runtime_identity_properties: BTreeMap<String, String>,
@@ -65,7 +67,7 @@ impl std::fmt::Debug for TaskCacheConfig {
         f.debug_struct("TaskCacheConfig")
             .field("vcs_hasher", &self.vcs_hasher.name())
             .field("vcs_hasher_root", &self.vcs_hasher_root)
-            .field("cuenv_version", &self.cuenv_version)
+            .field("action_semantics_version", &self.action_semantics_version)
             .field(
                 "runtime_identity_properties",
                 &self.runtime_identity_properties,
@@ -135,6 +137,17 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         return Ok(CacheOutcome::Skipped(CacheSkipReason::NeverMode));
     }
 
+    // A non-hermetic task reads and writes the live workspace and inherits
+    // ambient host environment variables. The action key records neither, so
+    // an entry written here would be keyed on a fraction of what produced it.
+    if !task.is_hermetic() {
+        tracing::debug!(
+            task = %task_name,
+            "skipping cache: task opted out of hermetic execution"
+        );
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::NonHermetic));
+    }
+
     if task.inputs.is_empty() {
         return Ok(CacheOutcome::Skipped(CacheSkipReason::EmptyInputs));
     }
@@ -173,11 +186,20 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     }
     let input_root_digest = build_input_root_digest(&hashed)?;
 
-    let mut environment_variables = BTreeMap::new();
-    let resolved = environment.merge_with_system_hermetic();
-    for (key, value) in &resolved {
-        environment_variables.insert(key.clone(), value.clone());
-    }
+    // A workdir that resolves under neither root would put a host-specific
+    // absolute path in the key, which no other machine can reproduce.
+    let Some(working_directory) = normalize_workdir(workdir, project_root, module_root) else {
+        tracing::warn!(
+            task = %task_name,
+            workdir = %workdir.display(),
+            project_root = %project_root.display(),
+            module_root = %module_root.display(),
+            "skipping cache: working directory is outside the project and module roots"
+        );
+        return Ok(CacheOutcome::Skipped(CacheSkipReason::UnportableWorkdir));
+    };
+
+    let environment_variables = environment.action_environment(task.env_passthrough());
 
     let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
     let mut arguments = Vec::with_capacity(1 + command_spec.args.len());
@@ -189,10 +211,11 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         environment_variables,
         output_files: task.outputs.clone(),
         output_directories: Vec::new(),
-        working_directory: normalize_workdir(workdir, project_root, module_root),
+        working_directory,
     };
-    let command_digest = digest_of(&command)
-        .map_err(|e| cuenv_core::Error::configuration(format!("command digest: {e}")))?;
+    let Some(command_digest) = store_message(cache, &command, "command", task_name) else {
+        return Ok(store_unwritable());
+    };
 
     let mut platform_properties = BTreeMap::new();
     platform_properties.insert("os".to_string(), std::env::consts::OS.to_string());
@@ -207,12 +230,53 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         platform: Platform {
             properties: platform_properties,
         },
-        cuenv_version: cache.cuenv_version.clone(),
+        action_semantics_version: cache.action_semantics_version,
     };
-    let action_digest = digest_of(&action)
-        .map_err(|e| cuenv_core::Error::configuration(format!("action digest: {e}")))?;
+    let Some(action_digest) = store_message(cache, &action, "action", task_name) else {
+        return Ok(store_unwritable());
+    };
 
     Ok(CacheOutcome::Eligible(Box::new(action), action_digest))
+}
+
+/// Store a message in the CAS and return its digest, or `None` if the store
+/// would not take it.
+///
+/// The digest is what the cache is keyed on; storing the message it was
+/// computed from is what makes a key explicable afterwards. Without the blob,
+/// a miss can only be reported ("these digests differ"), never explained
+/// ("this environment variable changed").
+///
+/// A store that cannot be written — read-only, full, wrong permissions —
+/// disables caching for the task rather than failing it. Cache eligibility
+/// must never decide whether a user's command runs.
+fn store_message(
+    cache: &TaskCacheConfig,
+    message: &impl Serialize,
+    kind: &str,
+    task_name: &str,
+) -> Option<Digest> {
+    let bytes = match canonical_bytes(message) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(task = %task_name, kind, %error, "skipping cache: canonical encode failed");
+            return None;
+        }
+    };
+    match cache.cas.put_bytes(&bytes) {
+        Ok(digest) => Some(digest),
+        Err(error) => {
+            tracing::warn!(task = %task_name, kind, %error, "skipping cache: cannot write to the blob store");
+            None
+        }
+    }
+}
+
+/// The skip reported when the blob store will not accept a write.
+fn store_unwritable() -> CacheOutcome {
+    CacheOutcome::Skipped(CacheSkipReason::Disabled {
+        reason: Some("cache store is not writable".to_string()),
+    })
 }
 
 /// Internal outcome from input resolution, distinguishing skip reasons.
@@ -313,6 +377,22 @@ pub fn lookup(
         return Ok(None);
     }
 
+    // An entry only promises its blobs; eviction or an interrupted write can
+    // break that promise. Checking now turns a dangling entry into an
+    // ordinary miss instead of a materialization that fails halfway and
+    // leaves a half-restored output tree behind.
+    let missing = missing_blobs(cache.cas.as_ref(), &result)
+        .map_err(|e| cuenv_core::Error::configuration(format!("cache integrity check: {e}")))?;
+    if !missing.is_empty() {
+        tracing::warn!(
+            action = %action_digest,
+            missing = missing.len(),
+            first_missing = %missing[0],
+            "ignoring cache entry referencing blobs the store no longer holds"
+        );
+        return Ok(None);
+    }
+
     Ok(Some(result))
 }
 
@@ -330,22 +410,7 @@ pub fn materialize_hit(
     workdir: &Path,
     result: &ActionResult,
 ) -> Result<(String, String, i32)> {
-    for output_file in &result.output_files {
-        let destination = workdir.join(&output_file.path);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "create output parent {}: {e}",
-                    parent.display()
-                ))
-            })?;
-        }
-        cache
-            .cas
-            .get_to_file(&output_file.digest, &destination)
-            .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
-        set_executable_if_needed(&destination, output_file.is_executable)?;
-    }
+    materialize_outputs(cache, workdir, result)?;
 
     let stdout = if let Some(digest) = &result.stdout_digest {
         let bytes = cache
@@ -368,6 +433,155 @@ pub fn materialize_hit(
     };
 
     Ok((stdout, stderr, result.exit_code))
+}
+
+/// Restore a cache hit's output files, staging them first.
+///
+/// Every blob is fetched and digest-verified into a staging directory inside
+/// `workdir` before anything replaces a real file. A missing or corrupt blob
+/// therefore aborts before the workspace is touched, instead of leaving half
+/// the outputs from the cached run and half from whatever was there before.
+///
+/// Full atomicity would need a directory swap, which is not available when
+/// outputs land in a tree that holds unrelated files. What this does
+/// guarantee is that the fallible work — fetching, verifying, setting modes —
+/// happens entirely in staging, and the commit phase is renames within one
+/// filesystem.
+fn materialize_outputs(
+    cache: &TaskCacheConfig,
+    workdir: &Path,
+    result: &ActionResult,
+) -> Result<()> {
+    if result.output_files.is_empty() {
+        return Ok(());
+    }
+
+    let staging = StagingDir::create(workdir)?;
+    let mut staged = Vec::with_capacity(result.output_files.len());
+
+    for output_file in &result.output_files {
+        let relative = safe_output_path(&output_file.path)?;
+        let staged_path = staging.path().join(&relative);
+        create_parent_dir(&staged_path)?;
+        cache
+            .cas
+            .get_to_file(&output_file.digest, &staged_path)
+            .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
+        set_executable_if_needed(&staged_path, output_file.is_executable)?;
+        staged.push((staged_path, workdir.join(&relative)));
+    }
+
+    for (from, to) in staged {
+        create_parent_dir(&to)?;
+        std::fs::rename(&from, &to).map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "install cached output {}: {e}",
+                to.display()
+            ))
+        })?;
+    }
+
+    Ok(())
+}
+
+/// Reject a cached output path that would escape the working directory.
+///
+/// Output paths come out of the action cache, which in a shared-cache
+/// deployment means they come from whoever last wrote the entry. A path like
+/// `../../.ssh/authorized_keys` must never be joined onto the workspace root.
+fn safe_output_path(path: &str) -> Result<PathBuf> {
+    let reject = || {
+        cuenv_core::Error::configuration(format!(
+            "refusing to materialize cached output '{path}': \
+             output paths must be relative and stay inside the working directory"
+        ))
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in Path::new(path).components() {
+        match component {
+            // `.` carries no meaning once the path is rebuilt component-wise.
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            // `..`, `/` and Windows prefixes all escape the working directory.
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(reject());
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        return Err(reject());
+    }
+    Ok(normalized)
+}
+
+fn create_parent_dir(path: &Path) -> Result<()> {
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(parent).map_err(|e| {
+        cuenv_core::Error::configuration(format!("create output parent {}: {e}", parent.display()))
+    })
+}
+
+/// Prefix of the scratch directories [`StagingDir`] creates.
+const STAGING_PREFIX: &str = ".cuenv-stage-";
+
+fn is_staging_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(STAGING_PREFIX))
+}
+
+/// A scratch directory inside the workspace, removed when dropped.
+///
+/// It lives inside `workdir` rather than the cache root so that the commit
+/// phase is a same-filesystem rename; a staging area under `$XDG_CACHE_HOME`
+/// would degrade to a copy whenever the cache and the workspace sit on
+/// different devices.
+struct StagingDir {
+    path: PathBuf,
+}
+
+impl StagingDir {
+    fn create(workdir: &Path) -> Result<Self> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let path = workdir.join(format!(
+            "{STAGING_PREFIX}{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        // A leftover from a killed run would otherwise merge into this one.
+        if path.exists() {
+            let _ = std::fs::remove_dir_all(&path);
+        }
+        std::fs::create_dir_all(&path).map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "create staging directory {}: {e}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for StagingDir {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %e,
+                "failed to remove cache staging directory"
+            );
+        }
+    }
 }
 
 /// Persist a successful execution to the cache.
@@ -646,14 +860,18 @@ fn rebase_hashed_inputs_for_project_root(
         .collect()
 }
 
-fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) -> String {
-    if let Ok(relative) = workdir.strip_prefix(project_root) {
-        return path_to_forward_slashes(relative);
-    }
-    if let Ok(relative) = workdir.strip_prefix(module_root) {
-        return path_to_forward_slashes(relative);
-    }
-    path_to_forward_slashes(workdir)
+/// Express `workdir` relative to the project or module root.
+///
+/// Returns `None` when it is under neither. The previous behaviour — falling
+/// back to the absolute path — silently baked `/home/<user>/…` into the
+/// action key, guaranteeing that no other machine could ever reproduce it.
+/// Declining to cache is the honest outcome.
+fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) -> Option<String> {
+    workdir
+        .strip_prefix(project_root)
+        .or_else(|_| workdir.strip_prefix(module_root))
+        .ok()
+        .map(path_to_forward_slashes)
 }
 
 fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
@@ -695,7 +913,14 @@ fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> 
     })?;
 
     let mut resolved = Vec::new();
-    for entry in WalkDir::new(workdir) {
+    let walker = WalkDir::new(workdir)
+        .into_iter()
+        // A concurrent cache hit stages its outputs inside this workdir.
+        // Capturing another task's staging tree would record outputs this
+        // task never produced.
+        .filter_entry(|entry| !is_staging_dir(entry.path()));
+
+    for entry in walker {
         let entry = entry.map_err(|e| {
             cuenv_core::Error::configuration(format!("walk output tree {}: {e}", workdir.display()))
         })?;

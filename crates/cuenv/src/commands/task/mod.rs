@@ -88,7 +88,7 @@ fn build_task_cache(
         action_cache,
         vcs_hasher,
         vcs_hasher_root: project_root.to_path_buf(),
-        cuenv_version: env!("CARGO_PKG_VERSION").to_string(),
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
         cache_disabled_reason: runtime_identity.cache_disabled_reason,
     })

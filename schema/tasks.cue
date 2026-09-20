@@ -78,6 +78,24 @@ package schema
 	maxAge?: string
 }
 
+// =============================================================================
+// Hermeticity
+// =============================================================================
+
+// Object form of a task's `hermetic` field. Setting it always means
+// hermeticity is on; there would be nothing to configure otherwise.
+#Hermetic: {
+	// Host environment variable names the action is allowed to depend on.
+	//
+	// Their host values are folded into the cache key, so a task listing
+	// HOME will only reuse entries produced with the same HOME. Names not
+	// listed here never enter the key: cuenv will not silently key a result
+	// on the machine it was computed on. Omit the field when a task's result
+	// does not depend on the host environment, which is the portable case
+	// and the one a shared cache can serve.
+	passthrough?: [...string]
+}
+
 // Working directory base for object-shaped task dir values.
 #TaskDirBase: "definition" | "caller" | "module"
 
@@ -131,9 +149,17 @@ package schema
 	// Working directory override. Defaults to the task definition directory.
 	dir: #TaskDir
 
-	// When true (default), task runs in an isolated hermetic directory with only
-	// declared inputs available. When false, task runs directly in the workspace.
-	hermetic?: bool | *true
+	// Hermeticity settings.
+	//
+	// When true (default), the task opts into hermetic execution: it is
+	// eligible for the action cache, and its cache key records only what it
+	// declares. When false, the task runs directly in the workspace with the
+	// ambient host environment and is never cached, because the key would
+	// describe a fraction of what produced the result.
+	//
+	// The object form additionally declares which host environment variables
+	// the action may depend on. See #Hermetic.
+	hermetic?: bool | #Hermetic | *true
 
 	// Dependencies - reference other tasks or images for compile-time validation
 	dependsOn?: [...(#TaskNode | #ContainerImage)]

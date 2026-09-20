@@ -277,6 +277,17 @@ pub enum CacheSkipReason {
     HasherRootMismatch,
     /// Input hashing itself failed.
     HashFailed,
+    /// Task opted out of hermetic execution (`hermetic: false`).
+    ///
+    /// A non-hermetic task reads and writes the live workspace and receives
+    /// ambient host environment variables, none of which the action key
+    /// records. Caching it would key a result on a fraction of what produced
+    /// it.
+    NonHermetic,
+    /// The task's working directory could not be expressed relative to the
+    /// project or module root, so the key would embed a host-specific
+    /// absolute path.
+    UnportableWorkdir,
 }
 
 impl std::fmt::Display for CacheSkipReason {
@@ -291,6 +302,8 @@ impl std::fmt::Display for CacheSkipReason {
             Self::NeverMode => write!(f, "cache mode never"),
             Self::HasherRootMismatch => write!(f, "hasher root mismatch"),
             Self::HashFailed => write!(f, "hashing failed"),
+            Self::NonHermetic => write!(f, "task is not hermetic"),
+            Self::UnportableWorkdir => write!(f, "working directory is not portable"),
         }
     }
 }
