@@ -31,3 +31,29 @@ import "github.com/cuenv/cuenv/schema"
 		provider: github: uses: "rust-lang/crates-io-auth-action@v1"
 	}]
 }
+
+// #CueRegistryTrustedPublishing enables OIDC-based trusted publishing for the
+// CUE Registry in GitHub release workflows.
+//
+// Active when:
+// - ci.provider.github.trustedPublishing.cueRegistry is true
+// - the pipeline environment is "production"
+//
+// The action is scoped to the conventional `publish.cue` job so the login is
+// available before `cue mod publish` without minting a token in build jobs.
+#CueRegistryTrustedPublishing: schema.#Contributor & {
+	id: "trusted-publishing.cue-registry"
+	when: {
+		providerConfig: ["github.trustedPublishing.cueRegistry"]
+		environment:    ["production"]
+	}
+	tasks: [{
+		id:       "trusted-publishing.cue-registry.auth"
+		label:    "Authenticate with the CUE Registry"
+		priority: 25
+		provider: github: {
+			uses: "cue-labs/registry-login-action@v1"
+			if:   "github.job == 'publish-cue'"
+		}
+	}]
+}

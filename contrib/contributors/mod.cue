@@ -20,6 +20,7 @@
 //   - #NamespaceCache: Configures Namespace nscloud-cache for Nix store caching
 //   - #GhModels: Installs GitHub Models CLI extension
 //   - #TrustedPublishing: Enables OIDC-based crates.io authentication
+//   - #CueRegistryTrustedPublishing: Enables OIDC-based CUE Registry authentication
 //
 // Usage:
 //
@@ -74,6 +75,7 @@ import (
 	#NamespaceCache,
 	#GhModels,
 	#TrustedPublishing,
+	#CueRegistryTrustedPublishing,
 ]
 
 // #DefaultContributors contains all default contributors.
