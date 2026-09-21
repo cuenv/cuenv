@@ -102,7 +102,10 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
 
-    let result = executor.execute_task("read-undeclared", &task).await.unwrap();
+    let result = executor
+        .execute_task("read-undeclared", &task)
+        .await
+        .unwrap();
     assert!(
         !result.success,
         "an undeclared read must fail, not silently succeed"
@@ -233,7 +236,6 @@ async fn a_sandboxed_task_still_caches() {
         "the second run must be served from cache, restoring the output"
     );
 }
-
 
 #[tokio::test]
 async fn a_plain_hermetic_task_is_sandboxed_without_asking() {

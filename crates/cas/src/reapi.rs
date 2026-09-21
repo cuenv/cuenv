@@ -180,17 +180,15 @@ impl Action {
     /// Returns an error if a required digest is missing or malformed, or if
     /// the salt is not one cuenv wrote.
     pub fn from_proto(proto: &pb::Action) -> Result<Self> {
-        let action_semantics_version = semantics_version_from_salt(&proto.salt).ok_or_else(|| {
-            Error::serialization(format!(
-                "action salt {:?} was not written by cuenv",
-                String::from_utf8_lossy(&proto.salt)
-            ))
-        })?;
+        let action_semantics_version =
+            semantics_version_from_salt(&proto.salt).ok_or_else(|| {
+                Error::serialization(format!(
+                    "action salt {:?} was not written by cuenv",
+                    String::from_utf8_lossy(&proto.salt)
+                ))
+            })?;
         Ok(Self {
-            command_digest: require_digest(
-                proto.command_digest.as_ref(),
-                "Action.command_digest",
-            )?,
+            command_digest: require_digest(proto.command_digest.as_ref(), "Action.command_digest")?,
             input_root_digest: require_digest(
                 proto.input_root_digest.as_ref(),
                 "Action.input_root_digest",
@@ -470,8 +468,16 @@ impl CanonicalMessage for ActionResult {
         output_files.sort_by(|a, b| a.path.cmp(&b.path));
         output_directories.sort_by(|a, b| a.path.cmp(&b.path));
 
-        let stdout_digest = self.stdout_digest.as_ref().map(Digest::to_proto).transpose()?;
-        let stderr_digest = self.stderr_digest.as_ref().map(Digest::to_proto).transpose()?;
+        let stdout_digest = self
+            .stdout_digest
+            .as_ref()
+            .map(Digest::to_proto)
+            .transpose()?;
+        let stderr_digest = self
+            .stderr_digest
+            .as_ref()
+            .map(Digest::to_proto)
+            .transpose()?;
 
         Ok(pb::ActionResult {
             output_files,
@@ -755,7 +761,11 @@ mod tests {
         };
         let proto = directory.to_proto().unwrap();
         assert_eq!(
-            proto.files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            proto
+                .files
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.txt", "z.txt"]
         );
         let back = Directory::from_proto(&proto).unwrap();

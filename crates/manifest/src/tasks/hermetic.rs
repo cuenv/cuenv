@@ -62,13 +62,19 @@ impl SandboxPolicy {
     /// A tier the task named.
     #[must_use]
     pub fn requested(tier: Sandbox) -> Self {
-        Self { tier, explicit: true }
+        Self {
+            tier,
+            explicit: true,
+        }
     }
 
     /// A tier inherited from the default.
     #[must_use]
     pub fn defaulted(tier: Sandbox) -> Self {
-        Self { tier, explicit: false }
+        Self {
+            tier,
+            explicit: false,
+        }
     }
 
     /// Whether this policy runs the task in a per-action exec root.
@@ -251,7 +257,10 @@ mod tests {
 
     #[test]
     fn serializes_back_to_its_input_shape() {
-        assert_eq!(serde_json::to_string(&Hermetic::Enabled(false)).unwrap(), "false");
+        assert_eq!(
+            serde_json::to_string(&Hermetic::Enabled(false)).unwrap(),
+            "false"
+        );
         assert_eq!(
             serde_json::to_string(&Hermetic::Options(HermeticOptions {
                 passthrough: vec!["HOME".into()],

@@ -339,7 +339,9 @@ mod tests {
 
         // Materialize into a fresh directory and assert content matches.
         let out = TempDir::new().unwrap();
-        materialize_input_tree(&cas, &root_digest, out.path()).await.unwrap();
+        materialize_input_tree(&cas, &root_digest, out.path())
+            .await
+            .unwrap();
         assert_eq!(fs::read(out.path().join("a.txt")).unwrap(), b"A");
         assert_eq!(fs::read(out.path().join("b.txt")).unwrap(), b"B");
     }
@@ -357,7 +359,9 @@ mod tests {
         let root_digest = build_input_tree(&src, &cas).await.unwrap();
 
         let out = TempDir::new().unwrap();
-        materialize_input_tree(&cas, &root_digest, out.path()).await.unwrap();
+        materialize_input_tree(&cas, &root_digest, out.path())
+            .await
+            .unwrap();
         assert_eq!(fs::read(out.path().join("top.txt")).unwrap(), b"top");
         assert_eq!(fs::read(out.path().join("sub/one.txt")).unwrap(), b"one");
         assert_eq!(

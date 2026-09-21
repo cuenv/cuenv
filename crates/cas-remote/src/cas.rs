@@ -50,7 +50,10 @@ impl RemoteCas {
             .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
         let max_batch_size = advertised_max_batch_size.clamp(0, DEFAULT_MAX_BATCH_SIZE);
         debug!(max_batch_size, "connected to remote CAS");
-        Ok(Self { client, max_batch_size })
+        Ok(Self {
+            client,
+            max_batch_size,
+        })
     }
 
     /// Build a store without a capabilities handshake, assuming defaults.
@@ -151,10 +154,8 @@ impl RemoteCas {
             .map_err(|status| Error::rpc("BatchReadBlobs", &status))?
             .into_inner();
 
-        let [entry]: [pb::batch_read_blobs_response::Response; 1] = response
-            .responses
-            .try_into()
-            .map_err(|responses: Vec<_>| {
+        let [entry]: [pb::batch_read_blobs_response::Response; 1] =
+            response.responses.try_into().map_err(|responses: Vec<_>| {
                 Error::protocol(
                     "BatchReadBlobs",
                     format!(
@@ -204,9 +205,10 @@ impl RemoteCas {
         let mut bytes = Vec::with_capacity(initial_capacity);
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|status| Error::rpc("ByteStream.Read", &status))?;
-            let next_size = bytes.len().checked_add(chunk.data.len()).ok_or_else(|| {
-                Error::protocol("ByteStream.Read", "response size overflow")
-            })?;
+            let next_size = bytes
+                .len()
+                .checked_add(chunk.data.len())
+                .ok_or_else(|| Error::protocol("ByteStream.Read", "response size overflow"))?;
             if u64::try_from(next_size).unwrap_or(u64::MAX) > digest.size_bytes {
                 return Err(Error::protocol(
                     "ByteStream.Read",
@@ -248,10 +250,8 @@ impl RemoteCas {
             .map_err(|status| Error::rpc("BatchUpdateBlobs", &status))?
             .into_inner();
 
-        let [entry]: [pb::batch_update_blobs_response::Response; 1] = response
-            .responses
-            .try_into()
-            .map_err(|responses: Vec<_>| {
+        let [entry]: [pb::batch_update_blobs_response::Response; 1] =
+            response.responses.try_into().map_err(|responses: Vec<_>| {
                 Error::protocol(
                     "BatchUpdateBlobs",
                     format!(
@@ -350,11 +350,7 @@ impl RemoteCas {
         Digest::new(hex::encode(hasher.finalize()), size)
     }
 
-    async fn write_file_streamed(
-        &self,
-        digest: &Digest,
-        source: &Path,
-    ) -> cuenv_cas::Result<()> {
+    async fn write_file_streamed(&self, digest: &Digest, source: &Path) -> cuenv_cas::Result<()> {
         const CHUNK: usize = 1024 * 1024;
 
         let (sender, receiver) = tokio::sync::mpsc::channel(2);
@@ -378,9 +374,9 @@ impl RemoteCas {
                 if count == 0 {
                     break;
                 }
-                let next_offset = offset.checked_add(count as u64).ok_or_else(|| {
-                    cuenv_cas::Error::serialization("upload offset overflow")
-                })?;
+                let next_offset = offset
+                    .checked_add(count as u64)
+                    .ok_or_else(|| cuenv_cas::Error::serialization("upload offset overflow"))?;
                 let request = WriteRequest {
                     resource_name: if first {
                         resource_name.clone()
@@ -473,9 +469,9 @@ impl RemoteCas {
                 let chunk = chunk.map_err(|status| {
                     cuenv_cas::Error::from(Error::rpc("ByteStream.Read", &status))
                 })?;
-                size = size.checked_add(chunk.data.len() as u64).ok_or_else(|| {
-                    cuenv_cas::Error::serialization("download size overflow")
-                })?;
+                size = size
+                    .checked_add(chunk.data.len() as u64)
+                    .ok_or_else(|| cuenv_cas::Error::serialization("download size overflow"))?;
                 if size > digest.size_bytes {
                     return Err(cuenv_cas::Error::serialization(format!(
                         "server sent more than the declared {} bytes",
@@ -513,7 +509,11 @@ impl RemoteCas {
         // Skip the upload when the server already holds the blob. Content
         // addressing makes this safe and it is the common case in a warm
         // cache.
-        if self.find_missing(std::slice::from_ref(&digest)).await?.is_empty() {
+        if self
+            .find_missing(std::slice::from_ref(&digest))
+            .await?
+            .is_empty()
+        {
             trace!(digest = %digest, "remote CAS already holds the blob");
             return Ok(digest);
         }
@@ -587,9 +587,7 @@ impl Cas for RemoteCas {
             if let Some(parent) = destination.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
-                    .map_err(|error| {
-                        cuenv_cas::Error::io(error, parent, "create_dir_all")
-                    })?;
+                    .map_err(|error| cuenv_cas::Error::io(error, parent, "create_dir_all"))?;
             }
             tokio::fs::write(destination, &bytes)
                 .await
@@ -681,7 +679,10 @@ mod tests {
         let digest = Digest::of_bytes(b"x");
         let name = cas("inst").write_resource_name(&digest);
         assert!(name.starts_with("inst/uploads/"), "{name}");
-        assert!(name.ends_with(&format!("/blobs/{}/1", digest.hash)), "{name}");
+        assert!(
+            name.ends_with(&format!("/blobs/{}/1", digest.hash)),
+            "{name}"
+        );
     }
 
     #[tokio::test]

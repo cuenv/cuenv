@@ -1,8 +1,8 @@
 //! [`Cas`] trait and local on-disk implementation.
 
 use crate::digest::Digest;
-use async_trait::async_trait;
 use crate::error::{Error, Result};
+use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -103,12 +103,7 @@ impl LocalCas {
     pub fn blob_path(&self, digest: &Digest) -> Result<PathBuf> {
         digest.validate()?;
         let (prefix, rest) = digest.hash.split_at(2);
-        Ok(self
-            .root
-            .join("cas")
-            .join("sha256")
-            .join(prefix)
-            .join(rest))
+        Ok(self.root.join("cas").join("sha256").join(prefix).join(rest))
     }
 
     fn tmp_dir(&self) -> PathBuf {

@@ -223,10 +223,7 @@ impl Project {
         }
     }
 
-    fn expand_task(
-        task: &mut Task,
-        declared_outputs: &HashMap<String, DeclaredTaskOutputs>,
-    ) {
+    fn expand_task(task: &mut Task, declared_outputs: &HashMap<String, DeclaredTaskOutputs>) {
         let mut new_inputs = Vec::new();
         let mut implicit_deps = Vec::new();
 
@@ -299,9 +296,7 @@ impl Project {
                                 });
                                 new_inputs.extend(mappings.into_iter().map(|mapping| {
                                     Input::Mapped(MappedInput {
-                                        source: path_to_forward_slashes(
-                                            &base.join(&mapping.from),
-                                        ),
+                                        source: path_to_forward_slashes(&base.join(&mapping.from)),
                                         destination: mapping.to,
                                     })
                                 }));

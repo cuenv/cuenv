@@ -77,12 +77,7 @@ impl LocalActionCache {
     pub fn entry_path(&self, action_digest: &Digest) -> Result<PathBuf> {
         action_digest.validate()?;
         let (prefix, rest) = action_digest.hash.split_at(2);
-        Ok(self
-            .root
-            .join("ac")
-            .join("sha256")
-            .join(prefix)
-            .join(rest))
+        Ok(self.root.join("ac").join("sha256").join(prefix).join(rest))
     }
 
     fn tmp_dir(&self) -> PathBuf {

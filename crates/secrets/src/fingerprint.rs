@@ -38,7 +38,10 @@ pub fn compute_secret_fingerprint(name: &str, value: &str, salt: &str) -> String
     mac.update(&(name.len() as u64).to_be_bytes());
     mac.update(name.as_bytes());
     mac.update(value.as_bytes());
-    format!("{FINGERPRINT_PREFIX}{}", hex::encode(mac.finalize().into_bytes()))
+    format!(
+        "{FINGERPRINT_PREFIX}{}",
+        hex::encode(mac.finalize().into_bytes())
+    )
 }
 
 #[cfg(test)]

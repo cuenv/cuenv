@@ -23,9 +23,7 @@ use bazel_remote_apis::google::bytestream::{
     WriteResponse,
 };
 use cuenv_cas::{ActionCache, Cas, Digest};
-use cuenv_cas_remote::{
-    Credentials, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig,
-};
+use cuenv_cas_remote::{Credentials, RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
@@ -154,7 +152,8 @@ impl CasService for CasImpl {
         Ok(Response::new(pb::BatchReadBlobsResponse { responses }))
     }
 
-    type GetTreeStream = tokio_stream::Iter<std::vec::IntoIter<Result<pb::GetTreeResponse, Status>>>;
+    type GetTreeStream =
+        tokio_stream::Iter<std::vec::IntoIter<Result<pb::GetTreeResponse, Status>>>;
 
     async fn get_tree(
         &self,
@@ -187,7 +186,9 @@ impl CasService for CasImpl {
         &self,
         _request: Request<pb::GetChunkMappingRequest>,
     ) -> Result<Response<Self::GetChunkMappingStream>, Status> {
-        Err(Status::unimplemented("GetChunkMapping is not used by cuenv"))
+        Err(Status::unimplemented(
+            "GetChunkMapping is not used by cuenv",
+        ))
     }
 
     async fn register_chunk_mapping(
@@ -265,7 +266,9 @@ impl ByteStreamService for ByteStreamImpl {
         &self,
         _request: Request<QueryWriteStatusRequest>,
     ) -> Result<Response<QueryWriteStatusResponse>, Status> {
-        Err(Status::unimplemented("QueryWriteStatus is not used by cuenv"))
+        Err(Status::unimplemented(
+            "QueryWriteStatus is not used by cuenv",
+        ))
     }
 }
 
@@ -339,7 +342,10 @@ struct TestServer {
 }
 
 impl TestServer {
-    #[expect(clippy::panic, reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns")]
+    #[expect(
+        clippy::panic,
+        reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns"
+    )]
     async fn start(store: Store, digest_functions: Vec<i32>) -> Self {
         let store = Arc::new(store);
         let listener = match TcpListener::bind("127.0.0.1:0").await {
@@ -376,7 +382,10 @@ impl TestServer {
         }
     }
 
-    #[expect(clippy::panic, reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns")]
+    #[expect(
+        clippy::panic,
+        reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns"
+    )]
     async fn client(&self, config: RemoteConfig) -> RemoteClient {
         match RemoteClient::connect(RemoteConfig {
             endpoint: self.endpoint.clone(),
@@ -405,11 +414,12 @@ fn sha256() -> Vec<i32> {
     vec![i32::from(pb::digest_function::Value::Sha256)]
 }
 
-#[expect(clippy::panic, reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns")]
+#[expect(
+    clippy::panic,
+    reason = "test harness setup; clippy's allow-panic-in-tests does not reach helper fns"
+)]
 async fn writable_cas(server: &TestServer) -> RemoteCas {
-    let client = server
-        .client(RemoteConfig::default().writable())
-        .await;
+    let client = server.client(RemoteConfig::default().writable()).await;
     match RemoteCas::connect(client).await {
         Ok(cas) => cas,
         Err(e) => panic!("capabilities handshake failed: {e}"),
@@ -487,12 +497,10 @@ async fn a_corrupt_blob_is_rejected_rather_than_returned() {
     // A hostile or buggy server hands back different bytes under the same
     // digest. These would otherwise be installed into the workspace as if
     // the task had produced them.
-    server
-        .store
-        .blobs
-        .lock()
-        .unwrap()
-        .insert(format!("{}/{}", digest.hash, digest.size_bytes), b"tampered".to_vec());
+    server.store.blobs.lock().unwrap().insert(
+        format!("{}/{}", digest.hash, digest.size_bytes),
+        b"tampered".to_vec(),
+    );
 
     let error = cas.get(&digest).await.unwrap_err();
     assert!(
@@ -608,7 +616,10 @@ async fn a_read_only_client_refuses_to_update_an_action_result() {
     let action_cache = RemoteActionCache::new(client);
 
     let result = action_cache
-        .update(&Digest::of_bytes(b"action"), &cuenv_cas::ActionResult::default())
+        .update(
+            &Digest::of_bytes(b"action"),
+            &cuenv_cas::ActionResult::default(),
+        )
         .await;
     assert!(result.is_err());
 }

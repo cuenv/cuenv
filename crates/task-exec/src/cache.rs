@@ -12,8 +12,8 @@
 use super::TaskCommandExt;
 use crate::{Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
-    Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
-    CanonicalMessage, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
+    Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
+    DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
     build_output_tree, canonical_bytes, digest_of, materialize_output_tree,
 };
 use cuenv_core::Result;
@@ -264,10 +264,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
                 path,
                 "skipping cache: two inputs map to the same workspace path"
             );
-            return Ok(skipped(
-                CacheSkipReason::InputCollision { path },
-                None,
-            ));
+            return Ok(skipped(CacheSkipReason::InputCollision { path }, None));
         }
         Err(InputRootError::Failed(error)) => return Err(error),
     };
@@ -300,10 +297,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
             task = %task_name,
             "skipping cache: declared path inputs resolved to no files"
         );
-        return Ok(skipped(
-            CacheSkipReason::NoResolvedInputs,
-            Some(execution),
-        ));
+        return Ok(skipped(CacheSkipReason::NoResolvedInputs, Some(execution)));
     }
     if !task.env.is_empty() {
         tracing::debug!(
@@ -431,10 +425,7 @@ fn store_unwritable(execution: ResolvedExecution) -> CacheOutcome {
     )
 }
 
-fn skipped(
-    reason: CacheSkipReason,
-    execution: Option<ResolvedExecution>,
-) -> CacheOutcome {
+fn skipped(reason: CacheSkipReason, execution: Option<ResolvedExecution>) -> CacheOutcome {
     CacheOutcome::Skipped { reason, execution }
 }
 
@@ -587,14 +578,7 @@ async fn resolve_path_mapping(
         task_name,
     } = input;
     let patterns = [source.to_string()];
-    let hashed = match resolve_hashed_inputs(
-        cache,
-        &patterns,
-        source_root,
-        task_name,
-    )
-    .await?
-    {
+    let hashed = match resolve_hashed_inputs(cache, &patterns, source_root, task_name).await? {
         ResolveOutcome::Resolved(hashed) => hashed,
         ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
     };
@@ -671,9 +655,7 @@ pub async fn lookup(
     let missing = cuenv_cas::missing_blobs(cache.cas.as_ref(), &result)
         .await
         .map_err(|error| {
-            cuenv_core::Error::configuration(format!(
-                "validate action cache result blobs: {error}"
-            ))
+            cuenv_core::Error::configuration(format!("validate action cache result blobs: {error}"))
         })?;
     if !missing.is_empty() {
         tracing::warn!(
@@ -813,7 +795,10 @@ async fn materialize_outputs(
             .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
         set_executable_if_needed(&staged_path, output_file.is_executable)?;
-        staged.push((staged_path, secure_workspace_destination(workdir, &relative)?));
+        staged.push((
+            staged_path,
+            secure_workspace_destination(workdir, &relative)?,
+        ));
     }
 
     for output_directory in &result.output_directories {
@@ -826,20 +811,18 @@ async fn materialize_outputs(
             &staged_path,
         )
         .await
-        .map_err(|e| {
-            cuenv_core::Error::configuration(format!("cas get output directory: {e}"))
-        })?;
-        staged.push((staged_path, secure_workspace_destination(workdir, &relative)?));
+        .map_err(|e| cuenv_core::Error::configuration(format!("cas get output directory: {e}")))?;
+        staged.push((
+            staged_path,
+            secure_workspace_destination(workdir, &relative)?,
+        ));
     }
 
     for (from, to) in staged {
         create_parent_dir(&to)?;
         remove_existing_output(&to)?;
         std::fs::rename(&from, &to).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "install cached output {}: {e}",
-                to.display()
-            ))
+            cuenv_core::Error::configuration(format!("install cached output {}: {e}", to.display()))
         })?;
     }
 
@@ -1063,11 +1046,10 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
                 tree_digest,
             });
         } else {
-            let digest = cache
-                .cas
-                .put_file(&absolute_path)
-                .await
-                .map_err(|e| cuenv_core::Error::configuration(format!("cas put output: {e}")))?;
+            let digest =
+                cache.cas.put_file(&absolute_path).await.map_err(|e| {
+                    cuenv_core::Error::configuration(format!("cas put output: {e}"))
+                })?;
             output_files.push(OutputFile {
                 path: path_to_forward_slashes(relative_path),
                 digest,
@@ -1264,9 +1246,7 @@ impl InputDirectoryBuilder {
     }
 }
 
-fn build_input_root_digest(
-    hashed: &[HashedInput],
-) -> std::result::Result<Digest, InputRootError> {
+fn build_input_root_digest(hashed: &[HashedInput]) -> std::result::Result<Digest, InputRootError> {
     let mut builder = InputDirectoryBuilder::default();
     for input in hashed {
         let digest = Digest {
@@ -1465,9 +1445,10 @@ pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec
     // that directory's REAPI Tree and must not also appear as output files.
     let mut collapsed: Vec<PathBuf> = Vec::with_capacity(resolved.len());
     for path in resolved {
-        if collapsed.iter().any(|parent| {
-            path.starts_with(parent) && workdir.join(parent).is_dir()
-        }) {
+        if collapsed
+            .iter()
+            .any(|parent| path.starts_with(parent) && workdir.join(parent).is_dir())
+        {
             continue;
         }
         collapsed.push(path);
@@ -1545,10 +1526,7 @@ fn output_walk_roots(workdir: &Path, patterns: &[String]) -> Vec<PathBuf> {
         roots.push(base);
     }
 
-    roots
-        .into_iter()
-        .map(|base| workdir.join(base))
-        .collect()
+    roots.into_iter().map(|base| workdir.join(base)).collect()
 }
 
 fn path_to_forward_slashes(path: &Path) -> String {

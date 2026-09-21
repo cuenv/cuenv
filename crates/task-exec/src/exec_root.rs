@@ -81,19 +81,12 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
         .map_err(|e| Error::io_with_path("create exec root parent", parent.clone(), e))?;
     let path = loop {
         let suffix = INVOCATION.fetch_add(1, Ordering::Relaxed);
-        let candidate = parent.join(format!(
-            "{action_digest}-{}-{suffix}",
-            std::process::id()
-        ));
+        let candidate = parent.join(format!("{action_digest}-{}-{suffix}", std::process::id()));
         match std::fs::create_dir(&candidate) {
             Ok(()) => break candidate,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(Error::io_with_path(
-                    "create exec root",
-                    candidate,
-                    error,
-                ));
+                return Err(Error::io_with_path("create exec root", candidate, error));
             }
         }
     };
@@ -231,11 +224,7 @@ fn secure_destination(base: &Path, relative: &Path) -> Result<PathBuf> {
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => {
-                return Err(Error::io_with_path(
-                    "inspect output parent",
-                    current,
-                    error,
-                ));
+                return Err(Error::io_with_path("inspect output parent", current, error));
             }
         }
     }
@@ -271,9 +260,9 @@ fn place(input: &HashedInput, destination: &Path) -> Result<()> {
     let mut size = 0_u64;
     let mut buffer = vec![0_u8; 64 * 1024];
     loop {
-        let count = file
-            .read(&mut buffer)
-            .map_err(|e| Error::io_with_path("verify staged input", destination.to_path_buf(), e))?;
+        let count = file.read(&mut buffer).map_err(|e| {
+            Error::io_with_path("verify staged input", destination.to_path_buf(), e)
+        })?;
         if count == 0 {
             break;
         }

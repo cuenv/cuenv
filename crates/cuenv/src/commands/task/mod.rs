@@ -15,8 +15,8 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
-use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_core::tasks::TaskCacheMode;
+use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
@@ -89,7 +89,9 @@ async fn build_task_cache(
     let cache_override = cache_override();
     let cache_off = cache_override == CacheOverride::Off;
     if cache_off {
-        tracing::debug!("task result cache disabled by CUENV_CACHE=off; input isolation remains enabled");
+        tracing::debug!(
+            "task result cache disabled by CUENV_CACHE=off; input isolation remains enabled"
+        );
     }
 
     let root = resolve_cache_root(project_root);

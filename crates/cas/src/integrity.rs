@@ -59,21 +59,15 @@ pub async fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<D
             // the tree cannot be materialized.
             continue;
         }
-        let tree = crate::merkle::decode_tree(&cas.get(&directory.tree_digest).await?)
-            .map_err(|e| Error::serialization(format!("decode Tree {}: {e}", directory.tree_digest)))?;
+        let tree =
+            crate::merkle::decode_tree(&cas.get(&directory.tree_digest).await?).map_err(|e| {
+                Error::serialization(format!("decode Tree {}: {e}", directory.tree_digest))
+            })?;
         let mut children = HashMap::with_capacity(tree.children.len());
         for child in tree.children {
             children.insert(crate::merkle::directory_digest(&child)?, child);
         }
-        walk_tree(
-            cas,
-            &tree.root,
-            &children,
-            0,
-            &mut seen,
-            &mut missing,
-        )
-        .await?;
+        walk_tree(cas, &tree.root, &children, 0, &mut seen, &mut missing).await?;
     }
 
     Ok(missing)
@@ -124,15 +118,7 @@ async fn walk_tree(
                 child.name, child.digest
             ))
         })?;
-        walk_tree(
-            cas,
-            child_directory,
-            children,
-            depth + 1,
-            seen,
-            missing,
-        )
-        .await?;
+        walk_tree(cas, child_directory, children, depth + 1, seen, missing).await?;
     }
     Ok(())
 }
@@ -142,11 +128,10 @@ mod tests {
     use super::*;
     use crate::cas::LocalCas;
     use crate::digest::digest_of;
-    use crate::reapi::CanonicalMessage;
     use crate::message::{
-        Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile,
-        Tree,
+        Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Tree,
     };
+    use crate::reapi::CanonicalMessage;
     use tempfile::TempDir;
 
     fn result_with_output(digest: Digest) -> ActionResult {

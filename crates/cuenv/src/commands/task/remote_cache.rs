@@ -120,12 +120,10 @@ fn credentials(remote: &RemoteCache) -> CredentialResolution {
 
     if let Some(header) = &auth.header {
         return match std::env::var(&header.value_env) {
-            Ok(value) if !value.is_empty() => {
-                CredentialResolution::Ready(Credentials::Header {
-                    name: header.name.clone(),
-                    value,
-                })
-            }
+            Ok(value) if !value.is_empty() => CredentialResolution::Ready(Credentials::Header {
+                name: header.name.clone(),
+                value,
+            }),
             _ => {
                 tracing::warn!(
                     variable = header.value_env,
@@ -178,11 +176,7 @@ pub async fn build(
     let config = RemoteConfig::new(&remote.endpoint)
         .with_instance_name(&remote.instance)
         .with_credentials(credentials);
-    let config = if upload {
-        config.writable()
-    } else {
-        config
-    };
+    let config = if upload { config.writable() } else { config };
 
     let client = match RemoteClient::connect(config).await {
         Ok(client) => client,
@@ -243,10 +237,9 @@ mod tests {
 
     #[test]
     fn no_configuration_and_no_environment_means_local_only() {
-        temp_env::with_vars(
-            [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)],
-            || assert!(resolve(None).is_none()),
-        );
+        temp_env::with_vars([(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)], || {
+            assert!(resolve(None).is_none())
+        });
     }
 
     #[test]
@@ -267,7 +260,10 @@ mod tests {
     #[test]
     fn the_environment_overrides_a_configured_endpoint() {
         temp_env::with_vars(
-            [(ENDPOINT_ENV, Some("grpcs://override:443")), (UPLOAD_ENV, None)],
+            [
+                (ENDPOINT_ENV, Some("grpcs://override:443")),
+                (UPLOAD_ENV, None),
+            ],
             || {
                 let resolved = resolve(Some(&configured("grpcs://from-cue:443"))).unwrap();
                 assert_eq!(resolved.endpoint, "grpcs://override:443");
@@ -311,7 +307,13 @@ mod tests {
         // shared cache.
         temp_env::with_vars(
             [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, Some("maybe"))],
-            || assert!(!resolve(Some(&configured("grpcs://cache:443"))).unwrap().upload),
+            || {
+                assert!(
+                    !resolve(Some(&configured("grpcs://cache:443")))
+                        .unwrap()
+                        .upload
+                )
+            },
         );
     }
 

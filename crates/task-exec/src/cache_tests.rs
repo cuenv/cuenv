@@ -498,7 +498,10 @@ async fn record_then_lookup_roundtrips() {
     .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task).await.unwrap().unwrap();
+    let recorded = lookup(&cache, &action_digest, &task)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(recorded.exit_code, 0);
     assert_eq!(recorded.output_files.len(), 1);
     assert_eq!(recorded.output_files[0].path, "out.txt");
@@ -600,7 +603,10 @@ async fn record_and_materialize_preserve_executable_outputs() {
     .await
     .unwrap();
 
-    let recorded = lookup(&cache, &action_digest, &task).await.unwrap().unwrap();
+    let recorded = lookup(&cache, &action_digest, &task)
+        .await
+        .unwrap()
+        .unwrap();
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
     materialize_hit(&cache, &fresh, &recorded).await.unwrap();
@@ -859,7 +865,10 @@ async fn action_environment_is_declared_only() {
     let command = decode_command(&bytes);
 
     assert_eq!(
-        command.environment_variables.get("DECLARED").map(String::as_str),
+        command
+            .environment_variables
+            .get("DECLARED")
+            .map(String::as_str),
         Some("yes")
     );
     for ambient in ["HOME", "USER", "TERM", "XDG_CACHE_HOME"] {
@@ -926,7 +935,12 @@ async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     })
     .await
     .unwrap();
-    assert!(lookup(&cache, &action_digest, &task).await.unwrap().is_some());
+    assert!(
+        lookup(&cache, &action_digest, &task)
+            .await
+            .unwrap()
+            .is_some()
+    );
 
     // Simulate garbage collection removing the output blob.
     let stored = cache
@@ -941,8 +955,16 @@ async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     );
     fs::remove_file(&blob).unwrap();
 
-    assert!(lookup(&cache, &action_digest, &task).await.unwrap().is_none());
-    assert_eq!(fs::read_to_string(workdir.join("out.txt")).unwrap(), "produced");
+    assert!(
+        lookup(&cache, &action_digest, &task)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        fs::read_to_string(workdir.join("out.txt")).unwrap(),
+        "produced"
+    );
 }
 
 #[tokio::test]
@@ -966,9 +988,13 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
         execution_metadata: ExecutionMetadata::default(),
     };
 
-    let error = materialize_hit(&cache, &workdir, &result).await.unwrap_err();
+    let error = materialize_hit(&cache, &workdir, &result)
+        .await
+        .unwrap_err();
     assert!(
-        error.to_string().contains("stay inside the working directory"),
+        error
+            .to_string()
+            .contains("stay inside the working directory"),
         "unexpected error: {error}"
     );
     assert!(!tmp.path().join("escaped.txt").exists());
@@ -1009,8 +1035,14 @@ async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing()
 
     // Staging means the first output is never installed, so the workspace is
     // not left as a mix of cached and pre-existing files.
-    assert_eq!(fs::read_to_string(workdir.join("first.txt")).unwrap(), "original first");
-    assert_eq!(fs::read_to_string(workdir.join("second.txt")).unwrap(), "original second");
+    assert_eq!(
+        fs::read_to_string(workdir.join("first.txt")).unwrap(),
+        "original first"
+    );
+    assert_eq!(
+        fs::read_to_string(workdir.join("second.txt")).unwrap(),
+        "original second"
+    );
 }
 
 #[tokio::test]
@@ -1043,7 +1075,12 @@ async fn materialize_hit_removes_its_staging_directory() {
     let leftovers: Vec<_> = fs::read_dir(&workdir)
         .unwrap()
         .filter_map(std::result::Result::ok)
-        .filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGING_PREFIX))
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(STAGING_PREFIX)
+        })
         .collect();
     assert!(leftovers.is_empty(), "staging directory was left behind");
 }
@@ -1163,10 +1200,7 @@ fn output_walk_roots_stop_at_the_first_wildcard() {
 #[test]
 fn a_leading_wildcard_forces_the_whole_workdir() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(
-        workdir,
-        &["**/*.js".to_string(), "dist/app".to_string()],
-    );
+    let roots = output_walk_roots(workdir, &["**/*.js".to_string(), "dist/app".to_string()]);
     assert_eq!(roots, vec![PathBuf::from("/w")]);
 }
 
@@ -1495,7 +1529,10 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
     let module = cross_project_module();
     let task = consuming_task(
         "producer",
-        &[("dist/app.js", "vendor.js"), ("dist/nested/lib.js", "vendor.js")],
+        &[
+            ("dist/app.js", "vendor.js"),
+            ("dist/nested/lib.js", "vendor.js"),
+        ],
     );
     let env = Environment::new();
 
@@ -1522,6 +1559,9 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
 fn literal_prefix_bounds_a_pattern() {
     assert_eq!(literal_prefix("dist/**/*.js"), PathBuf::from("dist"));
     assert_eq!(literal_prefix("dist/app.js"), PathBuf::from("dist/app.js"));
-    assert_eq!(literal_prefix("./dist/app.js"), PathBuf::from("dist/app.js"));
+    assert_eq!(
+        literal_prefix("./dist/app.js"),
+        PathBuf::from("dist/app.js")
+    );
     assert_eq!(literal_prefix("**/*.js"), PathBuf::new());
 }

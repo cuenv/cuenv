@@ -139,11 +139,9 @@ impl TaskExecutor {
             cas: Arc::new(cuenv_cas::LocalCas::open(&cache_root).map_err(|error| {
                 Error::configuration(format!("open sandbox blob store: {error}"))
             })?),
-            action_cache: Arc::new(
-                cuenv_cas::LocalActionCache::open(&cache_root).map_err(|error| {
-                    Error::configuration(format!("open sandbox action cache: {error}"))
-                })?,
-            ),
+            action_cache: Arc::new(cuenv_cas::LocalActionCache::open(&cache_root).map_err(
+                |error| Error::configuration(format!("open sandbox action cache: {error}")),
+            )?),
             vcs_hasher: Arc::new(cuenv_vcs::WalkHasher::new(&self.config.project_root)),
             vcs_hasher_root: self.config.project_root.clone(),
             action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
@@ -413,11 +411,7 @@ impl TaskExecutor {
             return Ok(None);
         }
 
-        let exec_root = super::exec_root::prepare(
-            &cache.cache_root,
-            root_key,
-            inputs,
-        )?;
+        let exec_root = super::exec_root::prepare(&cache.cache_root, root_key, inputs)?;
         tracing::info!(
             task = %name,
             path = %exec_root.path().display(),

@@ -101,7 +101,8 @@ impl WalkHasher {
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
-            let metadata = fs::symlink_metadata(&abs).map_err(|e| Error::io(e, &abs, "metadata"))?;
+            let metadata =
+                fs::symlink_metadata(&abs).map_err(|e| Error::io(e, &abs, "metadata"))?;
             if metadata.file_type().is_symlink() {
                 return Err(Error::pattern(format!(
                     "symlink inputs are not supported: {raw}"

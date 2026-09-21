@@ -621,8 +621,14 @@ fn action_environment_contains_declared_cue_vars() {
 
     let action = ready(&env, &[], None);
 
-    assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/abc/bin"));
-    assert_eq!(action.get("BUILD_MODE").map(String::as_str), Some("release"));
+    assert_eq!(
+        action.get("PATH").map(String::as_str),
+        Some("/nix/store/abc/bin")
+    );
+    assert_eq!(
+        action.get("BUILD_MODE").map(String::as_str),
+        Some("release")
+    );
     assert_eq!(action.len(), 2);
 }
 
@@ -633,9 +639,15 @@ fn action_environment_omits_undeclared_ambient_vars() {
     let env = Environment::new();
     let action = ready(&env, &[], None);
 
-    assert!(action.is_empty(), "ambient host vars leaked into the action env: {action:?}");
+    assert!(
+        action.is_empty(),
+        "ambient host vars leaked into the action env: {action:?}"
+    );
     for ambient in ["HOME", "USER", "TERM", "TMPDIR", "XDG_CACHE_HOME"] {
-        assert!(!action.contains_key(ambient), "{ambient} leaked into the action env");
+        assert!(
+            !action.contains_key(ambient),
+            "{ambient} leaked into the action env"
+        );
     }
 }
 
@@ -656,7 +668,11 @@ fn action_environment_includes_declared_passthrough() {
 fn action_environment_skips_passthrough_names_unset_on_the_host() {
     let env = Environment::new();
 
-    let action = ready(&env, &["CUENV_TEST_DEFINITELY_UNSET_VARIABLE".to_string()], None);
+    let action = ready(
+        &env,
+        &["CUENV_TEST_DEFINITELY_UNSET_VARIABLE".to_string()],
+        None,
+    );
 
     // Absent rather than empty-string: "unset" and "set to empty" must key
     // differently.
@@ -673,7 +689,10 @@ fn declared_cue_vars_win_over_passthrough_of_the_same_name() {
 
     let action = ready(&env, &["PATH".to_string()], None);
 
-    assert_eq!(action.get("PATH").map(String::as_str), Some("/nix/store/declared/bin"));
+    assert_eq!(
+        action.get("PATH").map(String::as_str),
+        Some("/nix/store/declared/bin")
+    );
 }
 
 /// Unwrap the ready form; every caller here supplies a salt when it needs one.
@@ -703,7 +722,10 @@ fn a_resolved_secret_never_appears_in_the_action_environment() {
 
     assert_eq!(action.get("PLAIN").map(String::as_str), Some("visible"));
     let fingerprint = action.get("API_KEY").expect("secret name is still keyed");
-    assert!(!fingerprint.contains("hunter2"), "secret leaked: {fingerprint}");
+    assert!(
+        !fingerprint.contains("hunter2"),
+        "secret leaked: {fingerprint}"
+    );
     assert!(fingerprint.starts_with("cuenv-secret-fp:"), "{fingerprint}");
 }
 

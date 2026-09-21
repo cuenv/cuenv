@@ -734,9 +734,7 @@ fn mapped_inputs(task: &Task) -> Vec<(&str, &str)> {
     task.inputs
         .iter()
         .filter_map(|input| match input {
-            Input::Mapped(mapping) => {
-                Some((mapping.source.as_str(), mapping.destination.as_str()))
-            }
+            Input::Mapped(mapping) => Some((mapping.source.as_str(), mapping.destination.as_str())),
             _ => None,
         })
         .collect()
