@@ -324,7 +324,7 @@ impl TaskExecutor {
             .map(|handle| handle.run_workdir.as_path());
         let start = std::time::Instant::now();
         let result = self
-            .execute_task_with_retries(name, task, run_workdir.as_deref())
+            .execute_task_with_retries(name, task, run_workdir)
             .await?;
         let duration_ms = start.elapsed().as_millis();
 
