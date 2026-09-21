@@ -30,6 +30,13 @@ fn scoped_dir(from: TaskDirectoryBase, path: &str) -> TaskDirectory {
     }
 }
 
+fn unisolated_hermeticity() -> Hermetic {
+    Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::None),
+    })
+}
+
 #[tokio::test]
 async fn test_executor_config_default() {
     let config = ExecutorConfig::default();
@@ -215,6 +222,7 @@ async fn test_execute_task_retries_until_success() {
             attempts: 2,
             delay: Some("1ms".to_string()),
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -244,6 +252,7 @@ async fn test_timeout_is_not_retried() {
             attempts: 3,
             delay: None,
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -280,6 +289,7 @@ async fn test_timeout_kills_process_tree() {
             "sleep 30 & echo $! > grandchild.pid; sleep 30".to_string(),
         ],
         timeout: Some("150ms".to_string()),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -756,6 +766,7 @@ async fn test_execute_graph_respects_dependency_levels() {
         TaskNode::Task(Box::new(Task {
             command: "sh".into(),
             args: vec!["-c".into(), "sleep 0.2 && echo ok > marker.txt".into()],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );
@@ -765,6 +776,7 @@ async fn test_execute_graph_respects_dependency_levels() {
             command: "sh".into(),
             args: vec!["-c".into(), "cat marker.txt".into()],
             depends_on: vec![TaskDependency::from_name("dep")],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );

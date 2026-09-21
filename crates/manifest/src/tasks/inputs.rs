@@ -9,6 +9,15 @@ pub struct Mapping {
     pub to: String,
 }
 
+/// Internal, expanded same-project output mapping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedInput {
+    /// Source path/glob relative to the CUE module root.
+    pub source: String,
+    /// Destination path inside the consumer's execution root.
+    pub destination: String,
+}
+
 /// A single task input definition
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(untagged)]
@@ -19,6 +28,10 @@ pub enum Input {
     Project(ProjectReference),
     /// Same-project task output reference
     Task(TaskOutput),
+    /// Internal expansion of a same-project `from` → `to` task-output
+    /// mapping. The CUE schema never emits this shape directly.
+    #[serde(skip)]
+    Mapped(MappedInput),
 }
 
 impl Input {
@@ -27,7 +40,7 @@ impl Input {
     pub fn as_path(&self) -> Option<&String> {
         match self {
             Self::Path(path) => Some(path),
-            Self::Project(_) | Self::Task(_) => None,
+            Self::Project(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -36,7 +49,7 @@ impl Input {
     pub fn as_project(&self) -> Option<&ProjectReference> {
         match self {
             Self::Project(reference) => Some(reference),
-            Self::Path(_) | Self::Task(_) => None,
+            Self::Path(_) | Self::Task(_) | Self::Mapped(_) => None,
         }
     }
 
@@ -45,7 +58,7 @@ impl Input {
     pub fn as_task_output(&self) -> Option<&TaskOutput> {
         match self {
             Self::Task(output) => Some(output),
-            Self::Path(_) | Self::Project(_) => None,
+            Self::Path(_) | Self::Project(_) | Self::Mapped(_) => None,
         }
     }
 }

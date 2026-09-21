@@ -64,6 +64,7 @@ impl WalkHasher {
             if trimmed.is_empty() {
                 continue;
             }
+            validate_pattern(trimmed)?;
             let looks_like_glob = trimmed.contains('*')
                 || trimmed.contains('{')
                 || trimmed.contains('?')
@@ -100,6 +101,12 @@ impl WalkHasher {
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
+            let metadata = fs::symlink_metadata(&abs).map_err(|e| Error::io(e, &abs, "metadata"))?;
+            if metadata.file_type().is_symlink() {
+                return Err(Error::pattern(format!(
+                    "symlink inputs are not supported: {raw}"
+                )));
+            }
             if abs.is_file() {
                 let rel = normalize_rel_path(Path::new(raw));
                 if seen.insert(rel.clone()) {
@@ -130,7 +137,7 @@ impl WalkHasher {
                 debug!(dir = %base_dir, "Directory does not exist, skipping");
                 continue;
             }
-            for entry in WalkDir::new(&walk_root).follow_links(true) {
+            for entry in WalkDir::new(&walk_root).follow_links(false) {
                 let entry = entry.map_err(|e| {
                     let path = e.path().unwrap_or(walk_root.as_path());
                     Error::io(
@@ -144,6 +151,12 @@ impl WalkHasher {
                     )
                 })?;
                 let path = entry.path();
+                if entry.file_type().is_symlink() {
+                    return Err(Error::pattern(format!(
+                        "symlink inputs are not supported: {}",
+                        path.display()
+                    )));
+                }
                 if path.is_dir() {
                     continue;
                 }
@@ -186,15 +199,26 @@ impl VcsHasher for WalkHasher {
     }
 }
 
-/// Strip `.` / `..` components from a relative path so the result is a clean
+fn validate_pattern(pattern: &str) -> Result<()> {
+    if Path::new(pattern).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(Error::pattern(format!(
+            "input pattern must stay within the workspace: {pattern}"
+        )));
+    }
+    Ok(())
+}
+
+/// Strip `.` components from a relative path so the result is a clean
 /// workspace-relative identifier.
 fn normalize_rel_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
         match comp {
-            Component::ParentDir => {
-                out.pop();
-            }
             Component::Normal(s) => out.push(s),
             _ => {}
         }

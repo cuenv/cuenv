@@ -44,7 +44,7 @@ use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::{
     Action, ActionResult, Command, Directory, DirectoryNode, ExecutionMetadata, FileNode,
-    OutputDirectory, OutputFile, Platform, SymlinkNode,
+    OutputDirectory, OutputFile, Platform, SymlinkNode, Tree,
 };
 use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
 use bazel_remote_apis::google::protobuf::Timestamp;
@@ -88,6 +88,7 @@ impl Digest {
     /// Returns an error if the size exceeds `i64::MAX`, which REAPI cannot
     /// represent.
     pub fn to_proto(&self) -> Result<pb::Digest> {
+        self.validate()?;
         let size_bytes = i64::try_from(self.size_bytes).map_err(|_| {
             Error::serialization(format!(
                 "blob size {} exceeds the REAPI maximum of {}",
@@ -105,15 +106,13 @@ impl Digest {
     ///
     /// # Errors
     ///
-    /// Returns an error if the size is negative.
+    /// Returns an error if the size is negative or the hash is not canonical
+    /// lowercase SHA-256 hexadecimal.
     pub fn from_proto(proto: &pb::Digest) -> Result<Self> {
         let size_bytes = u64::try_from(proto.size_bytes).map_err(|_| {
             Error::serialization(format!("negative blob size {}", proto.size_bytes))
         })?;
-        Ok(Self {
-            hash: proto.hash.clone(),
-            size_bytes,
-        })
+        Self::new(proto.hash.clone(), size_bytes)
     }
 }
 
@@ -393,6 +392,57 @@ impl Directory {
 }
 
 // =============================================================================
+// Tree
+// =============================================================================
+
+impl CanonicalMessage for Tree {
+    type Proto = pb::Tree;
+
+    fn to_proto(&self) -> Result<pb::Tree> {
+        let root = Some(self.root.to_proto()?);
+        let mut children = self
+            .children
+            .iter()
+            .map(|directory| {
+                let digest = crate::digest::digest_of(directory)?;
+                Ok((digest.hash, directory.to_proto()?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        children.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        Ok(pb::Tree {
+            root,
+            children: children
+                .into_iter()
+                .map(|(_, directory)| directory)
+                .collect(),
+        })
+    }
+}
+
+impl Tree {
+    /// Build from a REAPI output tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the required root is absent or a child digest is
+    /// malformed.
+    pub fn from_proto(proto: &pb::Tree) -> Result<Self> {
+        let root = proto
+            .root
+            .as_ref()
+            .ok_or_else(|| Error::serialization("missing required Tree.root"))
+            .and_then(Directory::from_proto)?;
+        let children = proto
+            .children
+            .iter()
+            .map(Directory::from_proto)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { root, children })
+    }
+}
+
+// =============================================================================
 // ActionResult
 // =============================================================================
 
@@ -599,6 +649,21 @@ mod tests {
         let mut proto = sample_action().to_proto().unwrap();
         proto.salt = b"some-other-tool".to_vec();
         assert!(Action::from_proto(&proto).is_err());
+    }
+
+    #[test]
+    fn malformed_remote_digest_is_rejected() {
+        let proto = pb::Digest {
+            hash: "../escape".to_string(),
+            size_bytes: 0,
+        };
+        assert!(Digest::from_proto(&proto).is_err());
+
+        let proto = pb::Digest {
+            hash: "A".repeat(64),
+            size_bytes: 0,
+        };
+        assert!(Digest::from_proto(&proto).is_err());
     }
 
     #[test]

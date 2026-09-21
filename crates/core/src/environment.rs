@@ -297,6 +297,26 @@ impl Environment {
         ActionEnvironment::Ready(merged)
     }
 
+    /// Exact variables supplied to a hermetic child process.
+    ///
+    /// This mirrors [`Self::action_environment`] but keeps real secret values
+    /// for execution. Callers must clear the inherited process environment
+    /// before applying this map; otherwise undeclared host variables can
+    /// affect outputs without entering the action key.
+    #[must_use]
+    pub fn execution_environment(&self, passthrough: &[String]) -> BTreeMap<String, String> {
+        let mut merged = passthrough
+            .iter()
+            .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)))
+            .collect::<BTreeMap<_, _>>();
+        merged.extend(
+            self.vars
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        merged
+    }
+
     /// Convert to a vector of key=value strings including system environment
     pub fn to_full_env_vec(&self) -> Vec<String> {
         self.merge_with_system()

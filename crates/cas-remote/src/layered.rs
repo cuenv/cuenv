@@ -194,12 +194,9 @@ impl ActionCache for LayeredActionCache {
             return Ok(None);
         };
 
-        // Record it locally so a second lookup in the same run is free. The
-        // caller still checks that the referenced blobs exist before acting
-        // on the result, which is what makes fetching them lazily safe.
-        if let Err(e) = self.local.update(action_digest, &result).await {
-            warn!(action = %action_digest, error = %e, "cannot cache remote action result locally");
-        }
+        // Do not persist a remote result before its referenced blobs have
+        // been fetched and verified. A dangling local result would shadow a
+        // later repaired remote entry indefinitely.
         Ok(Some(result))
     }
 
@@ -367,7 +364,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_remote_action_result_is_cached_locally() {
+    async fn a_remote_action_result_is_not_cached_before_blob_verification() {
         let local_dir = TempDir::new().unwrap();
         let remote_dir = TempDir::new().unwrap();
         let local: Arc<dyn ActionCache> =
@@ -380,7 +377,7 @@ mod tests {
 
         let layered = LayeredActionCache::new(local.clone(), remote);
         assert!(layered.lookup(&digest).await.unwrap().is_some());
-        assert!(local.lookup(&digest).await.unwrap().is_some());
+        assert!(local.lookup(&digest).await.unwrap().is_none());
     }
 
     #[tokio::test]

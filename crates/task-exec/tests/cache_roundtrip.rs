@@ -10,7 +10,9 @@ use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_core::OutputCapture;
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{ExecutorConfig, TaskExecutor};
-use cuenv_task_exec::{Input, Task, TaskCacheMode, TaskCachePolicy};
+use cuenv_task_exec::{
+    Hermetic, HermeticOptions, Input, Sandbox, Task, TaskCacheMode, TaskCachePolicy,
+};
 use cuenv_vcs::WalkHasher;
 use std::collections::BTreeMap;
 use std::fs;
@@ -45,6 +47,13 @@ fn build_executor(workspace: &std::path::Path, cache_root: &std::path::Path) -> 
     TaskExecutor::new(config)
 }
 
+fn cache_only_hermeticity() -> Hermetic {
+    Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::None),
+    })
+}
+
 #[tokio::test]
 async fn second_run_with_unchanged_inputs_is_a_cache_hit() {
     let workspace = TempDir::new().unwrap();
@@ -66,6 +75,7 @@ async fn second_run_with_unchanged_inputs_is_a_cache_hit() {
             mode: TaskCacheMode::ReadWrite,
             max_age: None,
         }),
+        hermetic: cache_only_hermeticity(),
         ..Task::default()
     };
 
@@ -113,6 +123,7 @@ async fn cache_invalidates_when_input_changes() {
             mode: TaskCacheMode::ReadWrite,
             max_age: None,
         }),
+        hermetic: cache_only_hermeticity(),
         ..Task::default()
     };
 
@@ -142,6 +153,7 @@ async fn task_without_inputs_is_never_cached() {
         command: "sh".to_string(),
         args: vec!["-c".to_string(), "touch marker.txt".to_string()],
         // no `inputs`
+        hermetic: cache_only_hermeticity(),
         ..Task::default()
     };
 

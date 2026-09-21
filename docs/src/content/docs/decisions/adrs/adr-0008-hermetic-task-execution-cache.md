@@ -20,9 +20,10 @@ hermetic/CAS roadmap
 
 - **Decision 2 (hermetic execution) is implemented and on by default.** The
   directory-only isolation this ADR describes is the default tier
-  (`hermetic.sandbox: "dir"`): a cache-eligible task runs in a per-action
-  directory populated solely from declared inputs, and only declared outputs
-  are copied back. `hermetic: sandbox: "none"` is the explicit opt-out.
+  (`hermetic.sandbox: "dir"`): every hermetic host task runs in a per-action
+  directory populated solely from declared inputs, even when result caching
+  is disabled, and only declared outputs are copied back.
+  `hermetic: sandbox: "none"` is the explicit opt-out.
   Isolation applies where the action is cache-eligible, since that is what
   supplies the input set; a task that names `"dir"` and cannot have it fails
   rather than downgrading. Network isolation and OS-level sandbox tiers remain

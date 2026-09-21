@@ -2,22 +2,9 @@ use super::*;
 use crate::{Input, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_core::environment::Environment;
-use cuenv_vcs::{HashedInput, VcsHasher, WalkHasher};
+use cuenv_vcs::WalkHasher;
 use std::fs;
 use tempfile::TempDir;
-
-struct PanicHasher;
-
-#[async_trait::async_trait]
-impl VcsHasher for PanicHasher {
-    async fn resolve_and_hash(&self, _patterns: &[String]) -> cuenv_vcs::Result<Vec<HashedInput>> {
-        panic!("runtime-env tasks should skip cache before hashing inputs");
-    }
-
-    fn name(&self) -> &'static str {
-        "panic"
-    }
-}
 
 fn make_cache(root: &Path) -> TaskCacheConfig {
     TaskCacheConfig {
@@ -55,7 +42,7 @@ fn make_task(command: &str, args: &[&str], inputs: &[&str], outputs: &[&str]) ->
 async fn build_action_for_test(input: BuildActionInput<'_>) -> Option<(Action, Digest)> {
     match build_action(input).await.unwrap() {
         CacheOutcome::Eligible(eligible) => Some((eligible.action, eligible.digest)),
-        CacheOutcome::Skipped(_) => None,
+        CacheOutcome::Skipped { .. } => None,
     }
 }
 
@@ -184,11 +171,10 @@ async fn build_action_returns_none_when_task_has_task_level_env() {
 }
 
 #[tokio::test]
-async fn build_action_skips_runtime_env_before_hashing_inputs() {
+async fn runtime_env_skip_keeps_resolved_inputs_for_sandboxing() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
-    let mut cache = make_cache(tmp.path());
-    cache.vcs_hasher = Arc::new(PanicHasher);
+    let cache = make_cache(tmp.path());
 
     let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
     task.env
@@ -207,14 +193,15 @@ async fn build_action_skips_runtime_env_before_hashing_inputs() {
     .await
     .unwrap();
 
-    assert!(matches!(
-        outcome,
-        CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv)
-    ));
+    let CacheOutcome::Skipped { reason, execution } = outcome else {
+        panic!("task-level runtime environment must skip result caching");
+    };
+    assert_eq!(reason, CacheSkipReason::RuntimeEnv);
+    assert_eq!(execution.unwrap().inputs.len(), 1);
 }
 
 #[tokio::test]
-async fn build_action_runtime_env_skip_precedes_hasher_root_mismatch() {
+async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();
     let mut cache = make_cache(tmp.path());
@@ -239,7 +226,10 @@ async fn build_action_runtime_env_skip_precedes_hasher_root_mismatch() {
 
     assert!(matches!(
         outcome,
-        CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv)
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::HasherRootMismatch,
+            ..
+        }
     ));
 }
 
@@ -396,6 +386,45 @@ async fn build_action_changes_when_script_changes() {
 }
 
 #[tokio::test]
+async fn sandbox_tier_changes_action_digest() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "same").unwrap();
+    let cache = make_cache(tmp.path());
+    let env = Environment::new();
+    let isolated = make_task("echo", &["hi"], &["input.txt"], &["out.txt"]);
+    let mut unisolated = isolated.clone();
+    unisolated.hermetic = crate::Hermetic::Options(crate::HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(crate::Sandbox::None),
+    });
+
+    let (_, isolated_digest) = build_action_for_test(BuildActionInput {
+        task: &isolated,
+        task_name: "sandbox",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+    let (_, unisolated_digest) = build_action_for_test(BuildActionInput {
+        task: &unisolated,
+        task_name: "sandbox",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    assert_ne!(isolated_digest, unisolated_digest);
+}
+
+#[tokio::test]
 async fn record_then_lookup_roundtrips() {
     let tmp = TempDir::new().unwrap();
     let workdir = tmp.path().join("work");
@@ -444,6 +473,49 @@ async fn record_then_lookup_roundtrips() {
     assert_eq!(stderr, "stderr-text");
     assert_eq!(exit_code, 0);
     assert_eq!(fs::read(fresh.join("out.txt")).unwrap(), b"produced");
+}
+
+#[tokio::test]
+async fn output_directory_roundtrips_as_a_reapi_tree() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(workdir.join("dist/empty")).unwrap();
+    fs::create_dir_all(workdir.join("dist/nested")).unwrap();
+    fs::write(workdir.join("dist/nested/app.js"), "built").unwrap();
+
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &["hi"], &["input.txt"], &["dist"]);
+    let action_digest = Digest::of_bytes(b"directory-action");
+    record(RecordInput {
+        cache: &cache,
+        action_digest: &action_digest,
+        workdir: &workdir,
+        task: &task,
+        stdout: "",
+        stderr: "",
+        exit_code: 0,
+        duration_ms: 1,
+    })
+    .await
+    .unwrap();
+
+    let recorded = lookup(&cache, &action_digest, &task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(recorded.output_files.is_empty());
+    assert_eq!(recorded.output_directories.len(), 1);
+
+    let fresh = tmp.path().join("fresh");
+    fs::create_dir_all(&fresh).unwrap();
+    fs::write(fresh.join("dist"), "stale file").unwrap();
+    materialize_hit(&cache, &fresh, &recorded).await.unwrap();
+
+    assert_eq!(
+        fs::read_to_string(fresh.join("dist/nested/app.js")).unwrap(),
+        "built"
+    );
+    assert!(fresh.join("dist/empty").is_dir());
 }
 
 #[cfg(unix)]
@@ -667,7 +739,7 @@ fn decode_action(bytes: &[u8]) -> Action {
 async fn skip_reason_for_test(input: BuildActionInput<'_>) -> Option<CacheSkipReason> {
     match build_action(input).await.unwrap() {
         CacheOutcome::Eligible(_) => None,
-        CacheOutcome::Skipped(reason) => Some(reason),
+        CacheOutcome::Skipped { reason, .. } => Some(reason),
     }
 }
 
@@ -795,7 +867,7 @@ async fn build_action_stores_action_and_command_blobs() {
 // =============================================================================
 
 #[tokio::test]
-async fn lookup_ignores_entry_whose_output_blob_was_evicted() {
+async fn lookup_ignores_an_entry_whose_output_blob_was_evicted() {
     let tmp = TempDir::new().unwrap();
     let workdir = tmp.path().join("work");
     fs::create_dir_all(&workdir).unwrap();
@@ -832,10 +904,8 @@ async fn lookup_ignores_entry_whose_output_blob_was_evicted() {
     );
     fs::remove_file(&blob).unwrap();
 
-    assert!(
-        lookup(&cache, &action_digest, &task).await.unwrap().is_none(),
-        "a dangling entry must degrade to a miss, not a partial restore"
-    );
+    assert!(lookup(&cache, &action_digest, &task).await.unwrap().is_none());
+    assert_eq!(fs::read_to_string(workdir.join("out.txt")).unwrap(), "produced");
 }
 
 #[tokio::test]
@@ -1118,7 +1188,7 @@ async fn overlapping_patterns_report_each_file_once() {
 }
 
 #[tokio::test]
-async fn a_bare_directory_output_still_collects_its_tree() {
+async fn a_bare_directory_output_is_collected_as_one_tree() {
     let tmp = TempDir::new().unwrap();
     let workdir = tmp.path();
     fs::create_dir_all(workdir.join("dist/sub")).unwrap();
@@ -1126,10 +1196,7 @@ async fn a_bare_directory_output_still_collects_its_tree() {
     fs::write(workdir.join("dist/sub/b.js"), "b").unwrap();
 
     let collected = collect_outputs(workdir, &["dist".to_string()]).unwrap();
-    assert_eq!(
-        collected,
-        vec![PathBuf::from("dist/a.js"), PathBuf::from("dist/sub/b.js")]
-    );
+    assert_eq!(collected, vec![PathBuf::from("dist")]);
 }
 
 // =============================================================================
@@ -1276,6 +1343,42 @@ async fn a_cross_project_input_is_hashed_from_the_other_project() {
     assert_ne!(
         before, after,
         "a change in the other project must change the key"
+    );
+}
+
+#[tokio::test]
+async fn an_expanded_task_output_keeps_its_destination_mapping() {
+    let module = cross_project_module();
+    let mut task = make_task("bundle", &[], &[], &[]);
+    task.inputs = vec![Input::Mapped(cuenv_manifest::tasks::MappedInput {
+        source: "producer/dist/app.js".to_string(),
+        destination: "vendor/app.js".to_string(),
+    })];
+    let env = Environment::new();
+
+    let outcome = build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await
+    .unwrap();
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("mapped task output should be cache eligible");
+    };
+
+    assert_eq!(eligible.inputs.len(), 1);
+    assert_eq!(
+        eligible.inputs[0].relative_path,
+        PathBuf::from("vendor/app.js")
+    );
+    assert_eq!(
+        eligible.inputs[0].absolute_path,
+        module.module_root.join("producer/dist/app.js")
     );
 }
 

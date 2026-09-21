@@ -28,7 +28,8 @@ pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
 pub use hermetic::{Hermetic, HermeticOptions, Sandbox, SandboxPolicy};
 pub use inputs::{
-    Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
+    Input, MappedInput, Mapping, ProjectReference, SourceLocation, TaskDirectory,
+    TaskDirectoryBase, TaskOutput,
 };
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use retry::RetryConfig;

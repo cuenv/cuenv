@@ -87,9 +87,9 @@ async fn build_task_cache(
         runtime_identity,
     } = context;
     let cache_override = cache_override();
-    if cache_override == CacheOverride::Off {
-        tracing::debug!("task cache disabled by CUENV_CACHE=off");
-        return None;
+    let cache_off = cache_override == CacheOverride::Off;
+    if cache_off {
+        tracing::debug!("task result cache disabled by CUENV_CACHE=off; input isolation remains enabled");
     }
 
     let root = resolve_cache_root(project_root);
@@ -110,7 +110,11 @@ async fn build_task_cache(
     // Stack a remote cache behind the local one when configured. Every
     // failure in here degrades to local-only: a cache is an optimization, so
     // an unreachable server should make a build slower, not broken.
-    let layers = remote_cache::build(cache_config, cas, action_cache).await;
+    let layers = if cache_off {
+        remote_cache::CacheLayers { cas, action_cache }
+    } else {
+        remote_cache::build(cache_config, cas, action_cache).await
+    };
 
     // Rooted at the module, not the project: a task may declare an input in a
     // sibling project, and a hasher that cannot see outside its own project
@@ -129,7 +133,11 @@ async fn build_task_cache(
         project_roots,
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
-        cache_disabled_reason: runtime_identity.cache_disabled_reason,
+        cache_disabled_reason: if cache_off {
+            Some("disabled by CUENV_CACHE=off".to_string())
+        } else {
+            runtime_identity.cache_disabled_reason
+        },
         secret_salt: secret_cache_salt(),
         mode_override: match cache_override {
             CacheOverride::None | CacheOverride::Off => None,

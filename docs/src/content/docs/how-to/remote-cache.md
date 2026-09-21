@@ -32,28 +32,19 @@ schema.#Project & {
 Reads fall through to the remote and whatever is fetched is kept locally, so
 the second read of a blob is local.
 
-## Who is allowed to upload
+## Uploads are currently disabled
 
-`upload` defaults to `false`, and reading is always allowed. The intended
-shape is **one trusted builder writes, everyone else reads**:
+`upload` defaults to `false`. The field and
+`CUENV_REMOTE_CACHE_UPLOAD` override are reserved for the eventual trusted
+builder flow, but cuenv currently forces the CLI connection to read-only even
+when either setting requests uploads.
 
-```bash
-# On the CI builder
-CUENV_REMOTE_CACHE_UPLOAD=true cuenv task build
-```
-
-:::caution[Why uploading is opt-in]
-Cacheable tasks are [sandboxed by
-default](/how-to/run-tasks/#filesystem-isolation), so what you upload is
-normally backed by an enforced input declaration rather than a remembered one.
-The exceptions are what to watch: a task on `hermetic: sandbox: "none"` can
-read a file it never declared and record an entry that is wrong on another
-machine. Locally that is one confusing afternoon. Uploaded to a shared cache,
-it is everyone's.
-
-Keep `upload` off for developer machines and untrusted builds — a fork's pull
-request has no token and is read-only for free — and turn it on only for
-builders you trust.
+:::caution[Why uploads remain disabled]
+The default `"dir"` sandbox isolates relative workspace access, but it is not
+an OS security boundary: a command can still read absolute host paths or use
+the network. Publishing such a result could turn one machine's undeclared
+dependency into a shared wrong answer. Remote uploads will be enabled only
+after a strict platform sandbox confines those accesses.
 :::
 
 ## Environment overrides
@@ -63,7 +54,7 @@ CI usually should not hard-code an endpoint in CUE:
 | Variable | Effect |
 | --- | --- |
 | `CUENV_REMOTE_CACHE` | Sets or replaces the endpoint. Empty **disables** the remote. |
-| `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false`, overriding `upload`. |
+| `CUENV_REMOTE_CACHE_UPLOAD` | Reserved `true`/`false` override. `true` currently warns and remains read-only. |
 | `CUENV_CACHE` | `off`, `read`, `write` — overrides every task's cache mode for one run. |
 
 ```bash

@@ -654,9 +654,11 @@ commands that manage files outside the declared input/output boundary.
 
 ### Filesystem isolation
 
-A cacheable hermetic task runs **sandboxed by default**: in a per-action
-directory containing exactly its declared `inputs`, with only its declared
-`outputs` copied back out.
+A hermetic task runs **sandboxed by default**, independently of whether result
+caching is enabled: in a per-action directory containing exactly its declared
+`inputs`, with only its declared `outputs` copied back out. A task with no
+declared inputs receives an empty execution root, and `CUENV_CACHE=off` or
+`cache: mode: "never"` disables result reuse without disabling isolation.
 
 | Tier | What the task sees |
 | --- | --- |
@@ -685,6 +687,11 @@ comment. It is also what makes a cache entry worth sharing — an entry recorded
 without isolation is only as trustworthy as whatever someone remembered to
 list in `inputs`.
 
+The `"dir"` tier isolates relative workspace paths; it is not an OS security
+boundary. Absolute host paths and the network remain reachable, and symlink
+inputs or outputs are rejected. Remote cache uploads remain disabled until a
+strict platform sandbox closes those gaps.
+
 #### Opting out
 
 Some tasks must touch the live checkout. Say so, the way you would with
@@ -700,20 +707,17 @@ tasks: {
 }
 ```
 
-#### Where the default does not apply
+#### When isolation cannot be constructed
 
-Isolation needs a resolvable input set, so the default only takes effect where
-the task is cache-eligible to begin with. A task that declares no `inputs`,
-sets `cache: mode: "never"`, or is skipped for any other reason has nothing to
-build a sandbox from, and runs where it always did. That is not a silent
-downgrade — it never asked for isolation.
+Result-cache eligibility and sandboxing are separate. Cache skip reasons such
+as an empty input set, `cache: mode: "never"`, task-local runtime environment,
+or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
+directory sandbox. If an input declaration cannot be resolved safely, the
+task errors rather than silently running against the live checkout.
 
-Naming the tier changes that. A task that explicitly sets
-`hermetic: sandbox: "dir"` and cannot have it — no resolvable input set, no
-cache for this run, the dagger backend — is an **error**. Handing back a
-result that looks sandboxed but is not would be worse than not sandboxing at
-all, and it is the same line Bazel draws between a strategy you inherited and
-one you named.
+The Dagger backend provides its own container isolation instead of a host exec
+root. Explicitly requesting `hermetic: sandbox: "dir"` with Dagger is rejected
+because cuenv cannot honestly provide that named host strategy.
 
 Stricter tiers (OS namespaces on Linux, seatbelt on macOS) are absent from the
 schema until they are implemented, for that same reason.
