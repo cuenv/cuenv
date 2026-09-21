@@ -1424,6 +1424,7 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
     task.inputs = vec![Input::Mapped(cuenv_manifest::tasks::MappedInput {
         source: "producer/dist/app.js".to_string(),
         destination: "vendor/app.js".to_string(),
+        producer_task: None,
     })];
     let env = Environment::new();
 

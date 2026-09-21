@@ -161,6 +161,12 @@ bootstrap around the affected DAG.
 
 ## Matrix builds and artifacts
 
+A plain task can consume another task's declared outputs with
+`inputs: [{task: "docs.build"}]`. In generated expanded workflows, cuenv keeps
+the producer identity while resolving those paths for the local action key, then
+emits the corresponding artifact upload/download between jobs. `dependsOn`
+alone adds ordering but does not transfer files.
+
 A pipeline task can be a plain task reference **or** a matrix task
 ([`#MatrixTask`](https://github.com/cuenv/cuenv/blob/main/schema/ci.cue)). A
 matrix task fans one task out across dimensions and can download artifacts from

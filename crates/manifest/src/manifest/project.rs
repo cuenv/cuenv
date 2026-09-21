@@ -298,6 +298,7 @@ impl Project {
                                     Input::Mapped(MappedInput {
                                         source: path_to_forward_slashes(&base.join(&mapping.from)),
                                         destination: mapping.to,
+                                        producer_task: Some(task_output.task.clone()),
                                     })
                                 }));
                             }

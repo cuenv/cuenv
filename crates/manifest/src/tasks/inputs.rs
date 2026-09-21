@@ -16,6 +16,11 @@ pub struct MappedInput {
     pub source: String,
     /// Destination path inside the consumer's execution root.
     pub destination: String,
+    /// Same-project task that produced this input.
+    ///
+    /// Retained after expansion so CI compilation can still create the
+    /// orchestrator artifact handoff.
+    pub producer_task: Option<String>,
 }
 
 /// A single task input definition
@@ -59,6 +64,17 @@ impl Input {
         match self {
             Self::Task(output) => Some(output),
             Self::Path(_) | Self::Project(_) | Self::Mapped(_) => None,
+        }
+    }
+
+    /// Return the producer task name for a same-project task output,
+    /// including an internally expanded mapped input.
+    #[must_use]
+    pub fn task_output_name(&self) -> Option<&str> {
+        match self {
+            Self::Task(output) => Some(&output.task),
+            Self::Mapped(mapping) => mapping.producer_task.as_deref(),
+            Self::Path(_) | Self::Project(_) => None,
         }
     }
 }

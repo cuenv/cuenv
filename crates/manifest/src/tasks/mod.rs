@@ -398,6 +398,11 @@ impl Task {
         self.inputs.iter().filter_map(Input::as_task_output)
     }
 
+    /// Returns producer task names for original and expanded task-output inputs.
+    pub fn iter_task_output_names(&self) -> impl Iterator<Item = &str> {
+        self.inputs.iter().filter_map(Input::task_output_name)
+    }
+
     /// Collects path/glob inputs applying an optional prefix (for workspace roots).
     #[must_use]
     pub fn collect_path_inputs_with_prefix(&self, prefix: Option<&Path>) -> Vec<String> {

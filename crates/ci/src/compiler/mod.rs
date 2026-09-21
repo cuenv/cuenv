@@ -22,7 +22,7 @@ use cuenv_core::ci::{Pipeline, PipelineTask};
 use cuenv_core::manifest::Project;
 use cuenv_core::tasks::{Task, TaskGroup, TaskNode};
 use digest::DigestBuilder;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
@@ -568,13 +568,15 @@ impl Compiler {
 
         // Convert task output references to artifact downloads (CI mode only)
         let artifact_downloads: Vec<ArtifactDownload> = if self.options.ci_mode {
-            task.iter_task_outputs()
-                .map(|task_ref| {
+            task.iter_task_output_names()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .map(|task_name| {
                     // Use the task name to construct artifact name
                     // The path should match where the artifact was uploaded from
                     ArtifactDownload {
-                        name: format!("{}-artifacts", task_ref.task.replace('.', "-")),
-                        path: task_ref.task.replace('.', "/"),
+                        name: format!("{}-artifacts", task_name.replace('.', "-")),
+                        path: task_name.replace('.', "/"),
                         filter: String::new(),
                     }
                 })
