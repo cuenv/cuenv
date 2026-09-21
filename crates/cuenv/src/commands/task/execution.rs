@@ -412,8 +412,13 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
         .cue_module_root
         .as_deref()
         .unwrap_or(context.project_root.as_path());
-    let hasher_root =
-        find_git_root(&context.project_root).unwrap_or_else(|_| module_root.to_path_buf());
+    let hasher_root = find_git_root(&context.project_root).unwrap_or_else(|_| {
+        context
+            .project_root
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .map_or_else(|| module_root.to_path_buf(), Path::to_path_buf)
+    });
     let runtime_identity = resolve_runtime_cache_identity(
         module_root,
         context.project_root.as_path(),
