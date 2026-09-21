@@ -64,6 +64,50 @@ impl Drop for ExecRoot {
     }
 }
 
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    fn create(parent: &Path, prefix: &str) -> Result<Self> {
+        static INVOCATION: AtomicU64 = AtomicU64::new(0);
+
+        loop {
+            let suffix = INVOCATION.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!("{prefix}{}-{suffix}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    return Err(Error::io_with_path(
+                        "create output scratch directory",
+                        path,
+                        error,
+                    ));
+                }
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_dir_all(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                %error,
+                "could not remove output scratch directory"
+            );
+        }
+    }
+}
+
 /// Build an exec root under `cache_root` holding exactly `inputs`.
 ///
 /// Each input is copied and the staged copy is verified against the digest
@@ -152,10 +196,7 @@ pub fn project_outputs(input: ProjectOutputs<'_>) -> Result<()> {
     // Validate and copy every new output before changing the live workspace.
     // A deep symlink or read error therefore leaves the previous good output
     // untouched.
-    let staging = tempfile::Builder::new()
-        .prefix(".cuenv-project-")
-        .tempdir_in(workdir)
-        .map_err(|e| Error::io_with_path("create output staging directory", workdir, e))?;
+    let staging = ScratchDir::create(workdir, ".cuenv-project-")?;
     for relative in resolved {
         let source = secure_source(exec_root, relative)?;
         let destination = safe_join(staging.path(), relative)?;
@@ -221,63 +262,75 @@ pub(crate) fn commit_staged_outputs(
     reject_symlink_base(workdir)?;
     reject_overlapping_paths(resolved)?;
 
-    let backup = tempfile::Builder::new()
-        .prefix(".cuenv-backup-")
-        .tempdir_in(workdir)
-        .map_err(|e| Error::io_with_path("create output backup directory", workdir, e))?;
+    let backup = ScratchDir::create(workdir, ".cuenv-backup-")?;
     let owned_roots = collapse_owned_roots(existing, resolved);
     let mut backed_up = Vec::new();
 
     for relative in &owned_roots {
-        let destination = secure_destination(workdir, relative)?;
-        match std::fs::symlink_metadata(&destination) {
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+        match backup_owned_output(backup.path(), workdir, relative) {
+            Ok(Some(paths)) => backed_up.push(paths),
+            Ok(None) => {}
             Err(error) => {
-                return Err(Error::io_with_path(
-                    "inspect existing output",
-                    destination,
-                    error,
-                ));
+                rollback_outputs(&[], &backed_up);
+                return Err(error);
             }
         }
-        let saved = safe_join(backup.path(), relative)?;
-        if let Some(parent) = saved.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::io_with_path("create output backup parent", parent.to_path_buf(), e)
-            })?;
-        }
-        std::fs::rename(&destination, &saved)
-            .map_err(|e| Error::io_with_path("backup existing output", destination.clone(), e))?;
-        backed_up.push((saved, destination));
     }
 
     let mut installed = Vec::new();
     for relative in resolved {
-        let source = safe_join(staging, relative)?;
-        let destination = secure_destination(workdir, relative)?;
-        if let Some(parent) = destination.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
+        match install_staged_output(staging, workdir, relative) {
+            Ok(destination) => installed.push(destination),
+            Err(error) => {
                 rollback_outputs(&installed, &backed_up);
-                return Err(Error::io_with_path(
-                    "create output directory",
-                    parent.to_path_buf(),
-                    error,
-                ));
+                return Err(error);
             }
         }
-        if let Err(error) = std::fs::rename(&source, &destination) {
-            rollback_outputs(&installed, &backed_up);
+    }
+
+    Ok(())
+}
+
+fn backup_owned_output(
+    backup: &Path,
+    workdir: &Path,
+    relative: &Path,
+) -> Result<Option<(PathBuf, PathBuf)>> {
+    let destination = secure_destination(workdir, relative)?;
+    match std::fs::symlink_metadata(&destination) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
             return Err(Error::io_with_path(
-                "install projected output",
+                "inspect existing output",
                 destination,
                 error,
             ));
         }
-        installed.push(destination);
     }
+    let saved = safe_join(backup, relative)?;
+    if let Some(parent) = saved.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            Error::io_with_path("create output backup parent", parent.to_path_buf(), e)
+        })?;
+    }
+    std::fs::rename(&destination, &saved)
+        .map_err(|e| Error::io_with_path("backup existing output", destination.clone(), e))?;
+    Ok(Some((saved, destination)))
+}
 
-    Ok(())
+fn install_staged_output(staging: &Path, workdir: &Path, relative: &Path) -> Result<PathBuf> {
+    let source = safe_join(staging, relative)?;
+    let destination = secure_destination(workdir, relative)?;
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            Error::io_with_path("create output directory", parent.to_path_buf(), error)
+        })?;
+    }
+    std::fs::rename(&source, &destination).map_err(|error| {
+        Error::io_with_path("install projected output", destination.clone(), error)
+    })?;
+    Ok(destination)
 }
 
 fn collapse_owned_roots(existing: &[PathBuf], resolved: &[PathBuf]) -> Vec<PathBuf> {

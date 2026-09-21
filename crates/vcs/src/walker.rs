@@ -223,6 +223,13 @@ fn validate_pattern(pattern: &str) -> Result<()> {
 /// opens its root. A declaration such as `link/secret` would otherwise follow
 /// `link` before the walker sees it and could escape the workspace.
 fn reject_symlink_components(root: &Path, relative: &Path) -> Result<()> {
+    let root_metadata = fs::symlink_metadata(root).map_err(|e| Error::io(e, root, "metadata"))?;
+    if root_metadata.file_type().is_symlink() {
+        return Err(Error::pattern(format!(
+            "workspace root may not be a symlink: {}",
+            root.display()
+        )));
+    }
     let mut current = root.to_path_buf();
     for component in relative.components() {
         let Component::Normal(name) = component else {

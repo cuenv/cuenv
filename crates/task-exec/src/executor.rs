@@ -640,13 +640,17 @@ impl TaskExecutor {
 
         let (stdout, stderr, exit_code) =
             super::cache::materialize_hit(cache, workdir, task, cached).await?;
-        cache
+        if let Err(error) = cache
             .action_cache
             .commit_verified(action_digest, cached)
             .await
-            .map_err(|error| {
-                Error::configuration(format!("promote verified action cache result: {error}"))
-            })?;
+        {
+            tracing::warn!(
+                action = %action_digest,
+                %error,
+                "could not promote verified action result locally"
+            );
+        }
         let success = exit_code == 0;
 
         let cmd_str = if let Some(script) = &task.script {
