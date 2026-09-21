@@ -101,6 +101,10 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
 /// that write, visibly, on the first run rather than mysteriously on the
 /// hundredth.
 ///
+/// An output may name a directory. `outputs: ["dist"]` is how most real tasks
+/// describe what they produce, and since isolation is the default, refusing a
+/// directory here would fail builds that have always worked.
+///
 /// # Errors
 ///
 /// Returns an error if an output cannot be copied into `workdir`.
@@ -116,18 +120,51 @@ pub fn project_outputs(exec_root: &Path, workdir: &Path, outputs: &[PathBuf]) ->
                 Error::io_with_path("create output directory", parent.to_path_buf(), e)
             })?;
         }
-        // Replacing rather than linking: the workspace copy is the user's to
-        // edit, and a hard link would silently write through to the CAS-fed
-        // exec root of any concurrent action sharing the same blob.
-        if destination.exists() {
-            std::fs::remove_file(&destination).map_err(|e| {
-                Error::io_with_path("replace projected output", destination.clone(), e)
-            })?;
-        }
-        std::fs::copy(&source, &destination)
-            .map_err(|e| Error::io_with_path("project output", destination.clone(), e))?;
+        project_entry(&source, &destination)?;
     }
     Ok(())
+}
+
+/// Copy one output entry, recursing into directories.
+///
+/// Copying rather than linking: the workspace copy is the user's to edit, and
+/// a hard link would write through to the exec root of any concurrent action
+/// sharing the same blob.
+fn project_entry(source: &Path, destination: &Path) -> Result<()> {
+    if source.is_dir() {
+        // A stale file where a directory belongs would fail the create below.
+        if destination.is_file() {
+            std::fs::remove_file(destination).map_err(|e| {
+                Error::io_with_path("replace projected output", destination.to_path_buf(), e)
+            })?;
+        }
+        std::fs::create_dir_all(destination).map_err(|e| {
+            Error::io_with_path("create projected directory", destination.to_path_buf(), e)
+        })?;
+        let entries = std::fs::read_dir(source)
+            .map_err(|e| Error::io_with_path("read output directory", source.to_path_buf(), e))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                Error::io_with_path("read output directory entry", source.to_path_buf(), e)
+            })?;
+            project_entry(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    // A stale file of the wrong kind would otherwise make the copy fail.
+    if destination.is_dir() {
+        std::fs::remove_dir_all(destination).map_err(|e| {
+            Error::io_with_path("replace projected output", destination.to_path_buf(), e)
+        })?;
+    } else if destination.exists() {
+        std::fs::remove_file(destination).map_err(|e| {
+            Error::io_with_path("replace projected output", destination.to_path_buf(), e)
+        })?;
+    }
+    std::fs::copy(source, destination)
+        .map(|_| ())
+        .map_err(|e| Error::io_with_path("project output", destination.to_path_buf(), e))
 }
 
 /// Join `relative` onto `base`, refusing anything that escapes it.
@@ -271,6 +308,49 @@ mod tests {
 
         project_outputs(&exec_root, &workdir, &[PathBuf::from("target/app")]).unwrap();
         assert!(!workdir.join("target/app").exists());
+    }
+
+    #[test]
+    fn a_declared_output_directory_comes_back_whole() {
+        // `outputs: ["dist"]` is how most real tasks describe what they
+        // produce. Isolation is the default, so refusing a directory here
+        // would break builds that have always worked.
+        let tmp = TempDir::new().unwrap();
+        let exec_root = tmp.path().join("exec");
+        let workdir = tmp.path().join("workdir");
+        fs::create_dir_all(exec_root.join("dist/nested")).unwrap();
+        fs::create_dir_all(&workdir).unwrap();
+        fs::write(exec_root.join("dist/app.js"), "built").unwrap();
+        fs::write(exec_root.join("dist/nested/chunk.js"), "chunk").unwrap();
+
+        project_outputs(&exec_root, &workdir, &[PathBuf::from("dist")]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(workdir.join("dist/app.js")).unwrap(),
+            "built"
+        );
+        assert_eq!(
+            fs::read_to_string(workdir.join("dist/nested/chunk.js")).unwrap(),
+            "chunk"
+        );
+    }
+
+    #[test]
+    fn a_projected_directory_replaces_a_stale_file_of_the_wrong_kind() {
+        let tmp = TempDir::new().unwrap();
+        let exec_root = tmp.path().join("exec");
+        let workdir = tmp.path().join("workdir");
+        fs::create_dir_all(exec_root.join("dist")).unwrap();
+        fs::create_dir_all(&workdir).unwrap();
+        fs::write(exec_root.join("dist/app.js"), "built").unwrap();
+        // The workspace holds a *file* named `dist` from some earlier run.
+        fs::write(workdir.join("dist"), "stale file").unwrap();
+
+        project_outputs(&exec_root, &workdir, &[PathBuf::from("dist")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(workdir.join("dist/app.js")).unwrap(),
+            "built"
+        );
     }
 
     #[test]
