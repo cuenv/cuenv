@@ -159,77 +159,117 @@ impl TaskExecutor {
     ///    build the [`cuenv_cas::Action`] envelope and look it up in the
     ///    action cache. On a hit, materialize cached outputs into the
     ///    workdir and return without spawning anything.
-    /// 2. Otherwise dispatch to the configured backend (host or dagger).
-    /// 3. On a successful miss, persist outputs + result to the cache so
-    ///    the next invocation hits.
+    /// 2. On a miss, a task under `sandbox: "dir"` gets a per-action exec
+    ///    root holding exactly its declared inputs and runs there.
+    /// 3. Otherwise dispatch to the configured backend (host or dagger).
+    /// 4. On a successful miss, project declared outputs back into the
+    ///    workspace and persist outputs + result to the cache.
     #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
         // Cache plumbing — None means no caching, behave as before.
         // We compute the action digest up front so we can reuse it on the
         // record path without re-walking the inputs.
-        let cache_handle: Option<(TaskCacheConfig, cuenv_cas::Digest, PathBuf)> =
-            if let Some(cache) = self.config.cache.clone() {
-                let workdir = self.workdir_for_task(task)?;
-                let outcome = super::cache::build_action(BuildActionInput {
-                    task,
-                    task_name: name,
-                    environment: &self.config.environment,
-                    cache: &cache,
-                    workdir: &workdir,
-                    project_root: self.project_root_for_task(task),
-                    module_root: self
-                        .config
-                        .cue_module_root
-                        .as_deref()
-                        .unwrap_or(&self.config.project_root),
-                })
-                .await?;
-                match outcome {
-                    super::cache::CacheOutcome::Eligible(_, action_digest) => {
-                        // Cache lookup. On a hit, short-circuit execution.
-                        if let Some(cached) =
-                            super::cache::lookup(&cache, &action_digest, task).await?
-                        {
-                            tracing::debug!(task = %name, "action cache hit");
-                            cuenv_events::emit_task_cache_hit!(name, action_digest.to_string());
-                            return self
-                                .return_cache_hit(CacheHitInput {
-                                    name,
-                                    task,
-                                    cache: &cache,
-                                    workdir: &workdir,
-                                    cached: &cached,
-                                })
-                                .await;
-                        }
-                        tracing::debug!(task = %name, "action cache miss");
-                        cuenv_events::emit_task_cache_miss!(name);
-                        Some((cache, action_digest, workdir))
+        let mut cache_handle: Option<CacheHandle> = if let Some(cache) = self.config.cache.clone() {
+            let workdir = self.workdir_for_task(task)?;
+            let outcome = super::cache::build_action(BuildActionInput {
+                task,
+                task_name: name,
+                environment: &self.config.environment,
+                cache: &cache,
+                workdir: &workdir,
+                project_root: self.project_root_for_task(task),
+                module_root: self
+                    .config
+                    .cue_module_root
+                    .as_deref()
+                    .unwrap_or(&self.config.project_root),
+            })
+            .await?;
+            match outcome {
+                super::cache::CacheOutcome::Eligible(eligible) => {
+                    // Cache lookup. On a hit, short-circuit execution.
+                    if let Some(cached) =
+                        super::cache::lookup(&cache, &eligible.digest, task).await?
+                    {
+                        tracing::debug!(task = %name, "action cache hit");
+                        cuenv_events::emit_task_cache_hit!(name, eligible.digest.to_string());
+                        return self
+                            .return_cache_hit(CacheHitInput {
+                                name,
+                                task,
+                                cache: &cache,
+                                workdir: &workdir,
+                                cached: &cached,
+                            })
+                            .await;
                     }
-                    super::cache::CacheOutcome::Skipped(reason) => {
-                        cuenv_events::emit_task_cache_skipped!(name, reason);
-                        None
-                    }
+                    tracing::debug!(task = %name, "action cache miss");
+                    cuenv_events::emit_task_cache_miss!(name);
+                    let exec_root = self.prepare_exec_root(name, task, &cache, &eligible)?;
+                    Some(CacheHandle {
+                        cache,
+                        action_digest: eligible.digest,
+                        workdir,
+                        exec_root,
+                    })
                 }
-            } else {
-                None
-            };
+                super::cache::CacheOutcome::Skipped(reason) => {
+                    // Isolation the user *asked for* and did not get must be
+                    // loud: running unsandboxed would hand back a result that
+                    // looks like a sandboxed one. Isolation merely inherited
+                    // from the default degrades quietly, because a task with
+                    // no resolvable input set has no sandbox to be denied —
+                    // the same line Bazel draws between a strategy you named
+                    // and one you got by default.
+                    if task.sandbox().demands_exec_root() {
+                        return Err(Error::configuration(format!(
+                            "task '{name}' requests hermetic.sandbox: \"dir\" but is not \
+                             cache-eligible ({reason}), so cuenv cannot resolve the input set \
+                             the sandbox would contain. Fix the reason, or set \
+                             hermetic.sandbox: \"none\" to run in the project directory."
+                        )));
+                    }
+                    cuenv_events::emit_task_cache_skipped!(name, reason);
+                    None
+                }
+            }
+        } else {
+            if task.sandbox().demands_exec_root() {
+                return Err(Error::configuration(format!(
+                    "task '{name}' requests hermetic.sandbox: \"dir\" but the task cache is \
+                     unavailable for this run, so cuenv cannot resolve the input set the \
+                     sandbox would contain."
+                )));
+            }
+            None
+        };
 
-        // Real execution. Both backends produce the same `TaskResult`.
+        // Real execution. Both backends produce the same `TaskResult`. A
+        // sandboxed task runs in its exec root; everything else runs where it
+        // always did.
+        let run_workdir = cache_handle
+            .as_ref()
+            .and_then(|handle| handle.exec_root.as_ref())
+            .map(|exec_root| exec_root.path().to_path_buf());
         let start = std::time::Instant::now();
-        let result = self.execute_task_with_retries(name, task).await?;
+        let result = self
+            .execute_task_with_retries(name, task, run_workdir.as_deref())
+            .await?;
         let duration_ms = start.elapsed().as_millis();
 
         // Persist on successful miss. Cache writes are best-effort: a write
-        // failure logs but does not fail the user's task.
-        if let Some((cache, action_digest, workdir)) = cache_handle
-            && super::cache::effective_policy(&cache, task).mode.allows_write()
+        // failure logs but does not fail the user's task. Outputs are
+        // recorded from wherever the task actually ran.
+        if let Some(handle) = &cache_handle
+            && super::cache::effective_policy(&handle.cache, task)
+                .mode
+                .allows_write()
             && result.exit_code == Some(0)
         {
             let recorded = super::cache::record(RecordInput {
-                cache: &cache,
-                action_digest: &action_digest,
-                workdir: &workdir,
+                cache: &handle.cache,
+                action_digest: &handle.action_digest,
+                workdir: run_workdir.as_deref().unwrap_or(&handle.workdir),
                 task,
                 stdout: &result.stdout,
                 stderr: &result.stderr,
@@ -242,10 +282,68 @@ impl TaskExecutor {
             }
         }
 
+        // An output left in the exec root is an output thrown away, so this
+        // runs whether or not the entry was recorded — and before the guard
+        // drops the directory.
+        if let Some(handle) = &mut cache_handle
+            && let Some(exec_root) = handle.exec_root.take()
+        {
+            let outputs: Vec<PathBuf> = task.outputs.iter().map(PathBuf::from).collect();
+            super::exec_root::project_outputs(exec_root.path(), &handle.workdir, &outputs)?;
+        }
+
         Ok(result)
     }
 
-    async fn execute_task_with_retries(&self, name: &str, task: &Task) -> Result<TaskResult> {
+    /// Materialize the exec root a sandboxed task runs in.
+    ///
+    /// Returns `None` for a task that opted out of isolation. A task that
+    /// *asked* for isolation and cannot have it gets an error rather than a
+    /// quiet fallback; one that merely inherited the default steps aside.
+    fn prepare_exec_root(
+        &self,
+        name: &str,
+        task: &Task,
+        cache: &TaskCacheConfig,
+        eligible: &super::cache::EligibleAction,
+    ) -> Result<Option<super::exec_root::ExecRoot>> {
+        let policy = task.sandbox();
+        if !policy.uses_exec_root() {
+            return Ok(None);
+        }
+        // Dagger already runs each task in a container, so an exec root
+        // inside it would isolate nothing that is not isolated already.
+        if self.backend.name() == "dagger" {
+            if policy.explicit {
+                return Err(Error::configuration(format!(
+                    "task '{name}' requests hermetic.sandbox: \"dir\" on the dagger backend, \
+                     which provides its own isolation. Remove the sandbox setting or run on \
+                     the host backend."
+                )));
+            }
+            return Ok(None);
+        }
+
+        let exec_root = super::exec_root::prepare(
+            &cache.cache_root,
+            &eligible.digest.hash,
+            &eligible.inputs,
+        )?;
+        tracing::info!(
+            task = %name,
+            path = %exec_root.path().display(),
+            inputs = eligible.inputs.len(),
+            "running in a sandboxed exec root"
+        );
+        Ok(Some(exec_root))
+    }
+
+    async fn execute_task_with_retries(
+        &self,
+        name: &str,
+        task: &Task,
+        workdir: Option<&Path>,
+    ) -> Result<TaskResult> {
         // Timeout on the dagger backend would drop the future without tearing
         // down the remote container, leaking the running task. Reject it
         // explicitly rather than silently leak (host-backend timeout is killed
@@ -272,7 +370,7 @@ impl TaskExecutor {
             // A timeout is a hard policy violation, not a transient failure:
             // retrying would re-incur the full timeout each attempt, so a
             // timed-out attempt ends the task immediately.
-            let result = match self.execute_task_once(name, task).await? {
+            let result = match self.execute_task_once(name, task, workdir).await? {
                 TaskAttempt::TimedOut(result) => return Ok(result),
                 TaskAttempt::Completed(result) => result,
             };
@@ -288,7 +386,12 @@ impl TaskExecutor {
         }
     }
 
-    async fn execute_task_once(&self, name: &str, task: &Task) -> Result<TaskAttempt> {
+    async fn execute_task_once(
+        &self,
+        name: &str,
+        task: &Task,
+        workdir: Option<&Path>,
+    ) -> Result<TaskAttempt> {
         if self.backend.name() == "dagger" {
             // Dagger has no host timeout (rejected in `execute_task_with_retries`),
             // so every dagger attempt runs to completion.
@@ -301,7 +404,7 @@ impl TaskExecutor {
             };
             Ok(TaskAttempt::Completed(self.backend.execute(&ctx).await?))
         } else {
-            self.execute_task_non_hermetic(name, task).await
+            self.execute_task_non_hermetic(name, task, workdir).await
         }
     }
 
@@ -453,7 +556,12 @@ impl TaskExecutor {
     /// Execute a task non-hermetically (directly in workspace/project root)
     ///
     /// Used for tasks like `bun install` that need to write to the real filesystem.
-    async fn execute_task_non_hermetic(&self, name: &str, task: &Task) -> Result<TaskAttempt> {
+    async fn execute_task_non_hermetic(
+        &self,
+        name: &str,
+        task: &Task,
+        workdir_override: Option<&Path>,
+    ) -> Result<TaskAttempt> {
         // Check if this is an unresolved TaskRef (should have been resolved before execution)
         if task.is_task_ref() && task.project_root.is_none() {
             return Err(Error::configuration(format!(
@@ -472,14 +580,18 @@ impl TaskExecutor {
             )));
         }
 
-        // Determine working directory (in priority order: see `workdir_for_task`).
-        let workdir = self.workdir_for_task(task)?;
+        // A sandboxed task's exec root wins; everything else resolves the
+        // working directory the usual way (see `workdir_for_task`).
+        let workdir = match workdir_override {
+            Some(path) => path.to_path_buf(),
+            None => self.workdir_for_task(task)?,
+        };
 
         tracing::info!(
             task = %name,
             workdir = %workdir.display(),
-            hermetic = false,
-            "Executing non-hermetic task"
+            sandboxed = workdir_override.is_some(),
+            "Executing task"
         );
 
         // Emit command being run - always emit task_started for all modes
@@ -848,6 +960,21 @@ impl super::graph_walk::WalkOutcome for TaskWalkOutcome {
     fn continue_on_error(&self) -> bool {
         self.continue_on_error
     }
+}
+
+/// What `execute_task` carries from the cache lookup to the record step.
+///
+/// The exec root is held here so it lives exactly as long as the run: the
+/// guard's `Drop` removes the directory, so a task that fails or times out
+/// cleans up on the way out without a separate path saying so.
+struct CacheHandle {
+    cache: TaskCacheConfig,
+    action_digest: cuenv_cas::Digest,
+    /// Where the user expects outputs to land, which is not where a
+    /// sandboxed task runs.
+    workdir: PathBuf,
+    /// Present only for a task under `sandbox: "dir"`.
+    exec_root: Option<super::exec_root::ExecRoot>,
 }
 
 #[derive(Clone, Copy)]

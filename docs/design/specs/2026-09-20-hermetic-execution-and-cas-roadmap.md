@@ -75,7 +75,8 @@ local annoyance into a fleet-wide wrong-answer incident.
 *Schema-coverage-matrix already concedes this: "filesystem hermeticity needs
 status callouts" (`#Task` row).*
 
-**F2 — Input blobs never enter the CAS.**
+**F2 — Input blobs never enter the CAS.** *[exec roots landed; the CAS
+ingest itself is still open — see Phase 1]*
 Without an ingested input root there is no remote execution, no
 cold-cache reconstruction of an exec root, and no way to explain a cache
 key after the fact. `merkle.rs` exists for exactly this and is unwired.
@@ -283,9 +284,9 @@ remote cache on top of unsound keys is worse than shipping nothing.
   into the key.
 - **`hermetic` means something. (F1, partial)** `hermetic: false` now skips
   the cache (`CacheSkipReason::NonHermetic`) rather than recording an entry
-  keyed on a fraction of what produced it. The schema, the ADR and the
-  coverage matrix all state plainly that filesystem isolation is not yet
-  implemented.
+  keyed on a fraction of what produced it. Filesystem isolation arrived
+  separately in phase 1 and is now the default tier, so `hermetic: true` on a
+  cache-eligible task does sandbox it.
 
 **Deliberately deferred to phase 1:** execution environment is unchanged. A
 task still *receives* ambient `HOME`, `TERM`, `XDG_*` and friends even though
@@ -300,28 +301,63 @@ identical action digests for the same task.
 
 ### Phase 1 — Real hermetic execution
 
-- Wire `merkle.rs`. Ingest the resolved input set into the CAS; materialize
-  a per-action exec root under `$CACHE/exec/<action-digest>/`. **(F2)**
-- Run with `cwd` = exec root and exactly the declared environment. Collect
-  declared outputs *from the exec root*, ingest, then project into the
-  workspace.
-- Sandbox tiers, named and explicit:
-  - `strict` — Linux user + mount + PID + network namespaces
-    (`unshare`), read-only bind of the input root, tmpfs elsewhere.
-  - `sandbox-exec` — macOS seatbelt profile: deny filesystem writes outside
-    the exec root, deny network.
-  - `dir` — directory isolation only (today's ADR-0008 model), for
-    platforms and container environments where namespaces are unavailable.
-  - `none` — explicit opt-out for tasks that must touch the real workspace
-    (`bun install`, codegen writing back into the tree).
-  Degradation must be **named and recorded**, never silent.
+**Done: directory isolation, on by default.** `crates/task-exec/src/exec_root.rs`
+materializes a per-action exec root under `<cache root>/exec/<action digest>/`
+from the resolved input set, the task runs there with `cwd` = exec root,
+outputs are recorded from there, and only the declared `outputs` are projected
+back into the workspace. Inputs are hard-linked where the filesystem allows and
+copied otherwise — a link is not the weaker choice, because the input was
+hashed before staging and a task that mutates a declared input is misdeclared
+either way. The root is an RAII guard, so a task that fails or times out cleans
+up on the way out rather than leaving its inputs for the next run of the same
+action to find.
+
+`merkle.rs` stays unused (**F2** open): its `build_input_tree` walks a whole
+directory, which is the opposite of what an exec root needs. The resolved
+`HashedInput` set is already the right shape, and `build_action` now hands it
+back on `CacheOutcome::Eligible` rather than discarding everything but the
+digest.
+
+**`"dir"` is the default, not an opt-in.** Bazel and buck2 both sandbox actions
+by default and make `no-sandbox` the explicit act, and so does cuenv: an
+`inputs` field enforced only when someone opts in is not a declaration, it is a
+comment, and the stale cache entry it produces is discovered by a colleague
+rather than by its author. `hermetic: sandbox: "none"` is the escape hatch for
+tasks that must touch the live checkout.
+
+The default applies wherever the task is **cache-eligible**, since eligibility
+is what resolves the input set an exec root is built from. A task with no
+declared `inputs` runs where it always did — it never asked for isolation, so
+that is not a downgrade, and the same line separates a Bazel strategy you
+inherited from one you named.
+
+**Degradation of a tier you named is an error, not a fallback.** A task that
+explicitly asks for `"dir"` and cannot have it — not cache-eligible, no cache
+for this run, the dagger backend — fails. Running it unsandboxed would hand
+back a result that looks sandboxed, which is strictly worse than refusing.
+`SandboxPolicy` carries `explicit` alongside the tier to keep the two cases
+apart. The same reasoning keeps the stricter tiers out of `#Sandbox` until
+they exist: a tier the runtime silently degrades would be believed.
+
+Still open:
+
+- `strict` — Linux user + mount + PID + network namespaces
+  (`unshare`), read-only bind of the input root, tmpfs elsewhere.
+- `sandbox-exec` — macOS seatbelt profile: deny filesystem writes outside
+  the exec root, deny network.
+- Exactly the declared environment. A task still receives ambient `HOME`,
+  `TERM` and friends even though its key no longer records them; `"dir"`
+  closes the filesystem hole, not the environment one.
 - Network off by default for cacheable tasks. A cached result from a task
   that could reach the network is not a cached result; it is a guess. This
   is a genuine differentiator over moon.
 - Symlink support in the input tree. **(F14)**
+- Output *directories* as REAPI Trees: `project_outputs` copies files, so a
+  declared output directory does not round-trip yet.
 
-*Exit:* a task that reads an undeclared file fails under `strict` instead
-of silently producing a poisoned cache entry.
+*Exit (partially met):* a cache-eligible task that reads an undeclared file
+fails by default, instead of silently producing a poisoned cache entry. It can
+still reach the network and still sees ambient environment variables.
 
 ### Phase 2 — Fast and bounded
 

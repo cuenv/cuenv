@@ -59,11 +59,6 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
     project_root.join(".cuenv-cache")
 }
 
-/// Construct the [`TaskCacheConfig`] used by the executor.
-///
-/// Returns `None` if the local CAS or action cache cannot be opened (e.g.
-/// permissions). In that case the executor falls back to the no-cache code
-/// path so the user's command still works — degraded, not broken.
 /// Everything `build_task_cache` needs that is not the cache's own settings.
 struct TaskCacheContext<'a> {
     /// Root of the project whose task is running.
@@ -76,6 +71,11 @@ struct TaskCacheContext<'a> {
     runtime_identity: RuntimeCacheIdentity,
 }
 
+/// Construct the [`TaskCacheConfig`] used by the executor.
+///
+/// Returns `None` if the local CAS or action cache cannot be opened (e.g.
+/// permissions). In that case the executor falls back to the no-cache code
+/// path so the user's command still works — degraded, not broken.
 async fn build_task_cache(
     context: TaskCacheContext<'_>,
     cache_config: Option<&cuenv_core::manifest::Cache>,
@@ -125,6 +125,7 @@ async fn build_task_cache(
         action_cache: layers.action_cache,
         vcs_hasher,
         vcs_hasher_root: module_root.to_path_buf(),
+        cache_root: root,
         project_roots,
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,

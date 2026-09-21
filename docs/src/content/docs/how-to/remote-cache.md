@@ -43,13 +43,17 @@ CUENV_REMOTE_CACHE_UPLOAD=true cuenv task build
 ```
 
 :::caution[Why uploading is opt-in]
-cuenv does not yet isolate a task's filesystem, so a task can read a file it
-never declared and record an entry that is wrong on another machine. Locally
-that is one confusing afternoon. Uploaded to a shared cache, it is everyone's.
+Cacheable tasks are [sandboxed by
+default](/how-to/run-tasks/#filesystem-isolation), so what you upload is
+normally backed by an enforced input declaration rather than a remembered one.
+The exceptions are what to watch: a task on `hermetic: sandbox: "none"` can
+read a file it never declared and record an entry that is wrong on another
+machine. Locally that is one confusing afternoon. Uploaded to a shared cache,
+it is everyone's.
 
 Keep `upload` off for developer machines and untrusted builds — a fork's pull
 request has no token and is read-only for free — and turn it on only for
-builders you trust. Revisit this once filesystem isolation lands.
+builders you trust.
 :::
 
 ## Environment overrides

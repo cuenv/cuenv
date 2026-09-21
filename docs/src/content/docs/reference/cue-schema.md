@@ -434,10 +434,19 @@ Declaring a name in `passthrough` partitions the cache by its value. That is
 the intended trade: a task whose result depends on `HOME` is not portable, and
 cuenv records that rather than hiding it.
 
-:::caution[Not yet filesystem isolation]
-`hermetic: true` does not currently sandbox the task. It runs in the project
-root and can read any file in the checkout, declared or not. Complete `inputs`
-are your responsibility until filesystem isolation lands. See
+- **`sandbox`.** `"dir"` (the default) or `"none"`. Under `"dir"` the task
+  runs in a per-action directory holding exactly its declared `inputs`, and
+  only its declared `outputs` are copied back, so an undeclared read fails
+  instead of producing an entry that is wrong elsewhere. `"none"` is the
+  explicit opt-out. Stricter OS-level tiers are absent from the union until
+  they are implemented. See
+  [filesystem isolation](/how-to/run-tasks/#filesystem-isolation).
+
+:::note[Isolation applies where the action is resolvable]
+The default tier takes effect where the task is cache-eligible, since that is
+what supplies the input set to build a sandbox from. A task with no declared
+`inputs` runs unsandboxed; a task that explicitly asks for `"dir"` and cannot
+have it fails rather than downgrading. See
 [ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/).
 :::
 

@@ -28,11 +28,27 @@ use std::sync::Arc;
 use std::time::Duration;
 use walkdir::WalkDir;
 
+/// A task that is eligible for caching, with everything the executor needs.
+#[derive(Debug)]
+pub struct EligibleAction {
+    /// The action envelope: a deterministic summary of what affects outputs.
+    pub action: Action,
+    /// The key the action cache is consulted with.
+    pub digest: Digest,
+    /// Every input file the action declares, already hashed, each carrying
+    /// both where it lives on disk and where the action expects to see it.
+    ///
+    /// The executor needs the resolved set — not just its digest — to
+    /// materialize an exec root, which is the whole point of hashing it here
+    /// rather than twice.
+    pub inputs: Vec<HashedInput>,
+}
+
 /// Outcome of evaluating a task's cache eligibility.
 #[derive(Debug)]
 pub enum CacheOutcome {
-    /// Task is eligible for caching with the computed action and digest.
-    Eligible(Box<Action>, Digest),
+    /// Task is eligible for caching.
+    Eligible(Box<EligibleAction>),
     /// Task is not eligible; the [`CacheSkipReason`] explains why so renderers
     /// can surface the reason to the user.
     Skipped(CacheSkipReason),
@@ -68,6 +84,11 @@ pub struct TaskCacheConfig {
     /// Run-wide override of every task's declared cache mode, from
     /// `CUENV_CACHE`. `None` honours what each task declares.
     pub mode_override: Option<TaskCacheMode>,
+    /// On-disk root of the local cache, which is also where per-action exec
+    /// roots are materialized. Keeping them beside the store rather than in
+    /// the workspace means an interrupted run leaves nothing in the user's
+    /// checkout.
+    pub cache_root: PathBuf,
     /// Roots of every project in the CUE module, so a cross-project input can
     /// be resolved to files on disk.
     ///
@@ -304,11 +325,15 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         },
         action_semantics_version: cache.action_semantics_version,
     };
-    let Some(action_digest) = store_message(cache, &action, "action", task_name).await else {
+    let Some(digest) = store_message(cache, &action, "action", task_name).await else {
         return Ok(store_unwritable());
     };
 
-    Ok(CacheOutcome::Eligible(Box::new(action), action_digest))
+    Ok(CacheOutcome::Eligible(Box::new(EligibleAction {
+        action,
+        digest,
+        inputs: hashed,
+    })))
 }
 
 /// Store a message in the CAS and return its digest, or `None` if the store

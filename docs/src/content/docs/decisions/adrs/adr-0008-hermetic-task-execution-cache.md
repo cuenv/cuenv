@@ -18,10 +18,15 @@ This ADR records the accepted design, not the shipped behaviour. As of the
 hermetic/CAS roadmap
 (`docs/design/specs/2026-09-20-hermetic-execution-and-cas-roadmap.md`):
 
-- **Decision 2 (hermetic execution) is not implemented.** Tasks run in the
-  project root with the whole workspace readable. `hermetic: true` currently
-  means "eligible for the action cache", not "isolated from undeclared
-  files". Filesystem isolation is phase 1 of the roadmap.
+- **Decision 2 (hermetic execution) is implemented and on by default.** The
+  directory-only isolation this ADR describes is the default tier
+  (`hermetic.sandbox: "dir"`): a cache-eligible task runs in a per-action
+  directory populated solely from declared inputs, and only declared outputs
+  are copied back. `hermetic: sandbox: "none"` is the explicit opt-out.
+  Isolation applies where the action is cache-eligible, since that is what
+  supplies the input set; a task that names `"dir"` and cannot have it fails
+  rather than downgrading. Network isolation and OS-level sandbox tiers remain
+  phase 1 of the roadmap.
 - **Decision 3 (cache key) shipped with one change.** The key no longer
   contains the cuenv package version — that invalidated every entry on every
   release — nor ambient host environment variables. It records the declared

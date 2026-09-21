@@ -94,7 +94,29 @@ package schema
 	// does not depend on the host environment, which is the portable case
 	// and the one a shared cache can serve.
 	passthrough?: [...string]
+
+	// Filesystem isolation tier. Defaults to "dir".
+	//
+	//   "dir"  — the task runs in a per-action directory containing exactly
+	//            its declared `inputs`, and only its declared `outputs` are
+	//            projected back. An undeclared read fails instead of
+	//            silently poisoning the cache. The default.
+	//   "none" — the task runs in the project directory and can read and
+	//            write anything on the machine. Incomplete `inputs` produce
+	//            stale cache hits, so entries recorded here are only ever as
+	//            trustworthy as the declaration.
+	//
+	// Bazel and buck2 both sandbox by default and make opting out explicit,
+	// and so does cuenv: a declaration enforced only when asked is not a
+	// declaration. Reach for "none" when a task must touch the live
+	// checkout, the way Bazel's `no-sandbox` tag does.
+	sandbox?: #Sandbox
 }
+
+// Filesystem isolation tiers. Stricter tiers (OS-level namespace and
+// seatbelt sandboxes) are not listed until they are implemented: a tier the
+// runtime silently degrades would be worse than no tier at all.
+#Sandbox: "dir" | "none"
 
 // Working directory base for object-shaped task dir values.
 #TaskDirBase: "definition" | "caller" | "module"

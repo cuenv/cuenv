@@ -648,17 +648,75 @@ Tasks are hermetic by default (`hermetic: true`). Today that means two things:
   command, the CUE-declared environment, the platform, and any host variables
   named in `hermetic.passthrough`.
 
-:::caution[Not yet filesystem isolation]
-`hermetic: true` does **not** currently sandbox the task. It still runs in the
-project root and can read any file in the checkout, declared or not. Declaring
-complete `inputs` is therefore your responsibility: an undeclared read that
-changes the result will produce a stale cache hit. Filesystem and network
-isolation are phase 1 of the hermetic/CAS roadmap.
-:::
-
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or
 commands that manage files outside the declared input/output boundary.
+
+### Filesystem isolation
+
+A cacheable hermetic task runs **sandboxed by default**: in a per-action
+directory containing exactly its declared `inputs`, with only its declared
+`outputs` copied back out.
+
+| Tier | What the task sees |
+| --- | --- |
+| `"dir"` (default) | A per-action directory containing exactly its declared `inputs`. Only its declared `outputs` are copied back. |
+| `"none"` | The project directory, unrestricted. Nothing is proven. |
+
+So this task is already isolated — there is no sandbox key to add:
+
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "cargo"
+        args: ["build", "--release"]
+        inputs: ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
+        outputs: ["target/release/myapp"]
+        cache: mode: "read-write"
+    }
+}
+```
+
+An undeclared read **fails** instead of silently succeeding, and an undeclared
+write is lost on the first run rather than mysteriously on the hundredth.
+Bazel and buck2 both sandbox by default for the same reason: a declaration
+that is only enforced when you ask for it is not a declaration, it is a
+comment. It is also what makes a cache entry worth sharing — an entry recorded
+without isolation is only as trustworthy as whatever someone remembered to
+list in `inputs`.
+
+#### Opting out
+
+Some tasks must touch the live checkout. Say so, the way you would with
+Bazel's `no-sandbox` tag:
+
+```cue
+tasks: {
+    install: schema.#Task & {
+        command: "bun"
+        args: ["install"]
+        hermetic: sandbox: "none"
+    }
+}
+```
+
+#### Where the default does not apply
+
+Isolation needs a resolvable input set, so the default only takes effect where
+the task is cache-eligible to begin with. A task that declares no `inputs`,
+sets `cache: mode: "never"`, or is skipped for any other reason has nothing to
+build a sandbox from, and runs where it always did. That is not a silent
+downgrade — it never asked for isolation.
+
+Naming the tier changes that. A task that explicitly sets
+`hermetic: sandbox: "dir"` and cannot have it — no resolvable input set, no
+cache for this run, the dagger backend — is an **error**. Handing back a
+result that looks sandboxed but is not would be worse than not sandboxing at
+all, and it is the same line Bazel draws between a strategy you inherited and
+one you named.
+
+Stricter tiers (OS namespaces on Linux, seatbelt on macOS) are absent from the
+schema until they are implemented, for that same reason.
 
 ### Declaring host environment dependencies
 

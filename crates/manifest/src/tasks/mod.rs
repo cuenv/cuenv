@@ -26,7 +26,7 @@ pub use cache_policy::{TaskCacheMode, TaskCachePolicy};
 pub use capture_types::{CaptureSource, TaskCapture, TaskCaptureRef};
 pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
-pub use hermetic::{Hermetic, HermeticOptions};
+pub use hermetic::{Hermetic, HermeticOptions, Sandbox, SandboxPolicy};
 pub use inputs::{
     Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
 };
@@ -366,6 +366,12 @@ impl Task {
     #[must_use]
     pub fn env_passthrough(&self) -> &[String] {
         self.hermetic.passthrough()
+    }
+
+    /// Filesystem isolation policy this task runs under.
+    #[must_use]
+    pub fn sandbox(&self) -> SandboxPolicy {
+        self.hermetic.sandbox()
     }
 
     /// Returns the description, or a default if not set.

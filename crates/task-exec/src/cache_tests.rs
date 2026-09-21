@@ -30,6 +30,7 @@ fn make_cache(root: &Path) -> TaskCacheConfig {
         cache_disabled_reason: None,
         secret_salt: Some("test-salt".to_string()),
         mode_override: None,
+        cache_root: root.to_path_buf(),
         project_roots: BTreeMap::new(),
     }
 }
@@ -53,7 +54,7 @@ fn make_task(command: &str, args: &[&str], inputs: &[&str], outputs: &[&str]) ->
 
 async fn build_action_for_test(input: BuildActionInput<'_>) -> Option<(Action, Digest)> {
     match build_action(input).await.unwrap() {
-        CacheOutcome::Eligible(action, digest) => Some((*action, digest)),
+        CacheOutcome::Eligible(eligible) => Some((eligible.action, eligible.digest)),
         CacheOutcome::Skipped(_) => None,
     }
 }
@@ -665,7 +666,7 @@ fn decode_action(bytes: &[u8]) -> Action {
 
 async fn skip_reason_for_test(input: BuildActionInput<'_>) -> Option<CacheSkipReason> {
     match build_action(input).await.unwrap() {
-        CacheOutcome::Eligible(..) => None,
+        CacheOutcome::Eligible(_) => None,
         CacheOutcome::Skipped(reason) => Some(reason),
     }
 }
