@@ -990,7 +990,7 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
-    let task = make_task("echo", &[], &[], &["../escaped.txt"]);
+    let task = make_task("echo", &[], &[], &["escaped.txt"]);
 
     let error = materialize_hit(&cache, &workdir, &task, &result)
         .await
