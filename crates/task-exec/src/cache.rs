@@ -464,7 +464,9 @@ async fn resolve_hashed_inputs(
                 error = %error,
                 "skipping cache: input hashing failed"
             );
-            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed));
+            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed {
+                reason: error.to_string(),
+            }));
         }
     };
 

@@ -370,7 +370,9 @@ Two rules follow from recording files at their `to` path:
 
 A reference that resolves to neither a discovered project nor a safe workspace
 path has nothing honest to hash. Under the default directory sandbox, cuenv
-reports that configuration error instead of exposing the live checkout.
+reports that configuration error instead of exposing the live checkout. Input
+hash failures include the underlying path or pattern error so the declaration
+can be corrected directly.
 
 ```cue
 tasks: {
