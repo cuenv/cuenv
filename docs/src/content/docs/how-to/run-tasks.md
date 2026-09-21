@@ -266,6 +266,10 @@ transactional: all files are staged and validated before previous owned paths
 are replaced, and declared outputs omitted by the new result are removed
 instead of leaving stale artifacts behind.
 
+REAPI represents every path component as UTF-8. cuenv rejects declared input or
+output trees containing non-UTF-8 names instead of replacing bytes and risking
+two distinct filesystem names collapsing to one cache entry.
+
 ### Overriding the cache for one run
 
 `CUENV_CACHE` overrides every task's declared cache mode for a single

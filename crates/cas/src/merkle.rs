@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 ///
 /// # Errors
 ///
-/// Returns an error if any filesystem operation fails, if a child blob
-/// cannot be stored in `cas`, or if a [`Directory`] message cannot be
-/// serialized.
+/// Returns an error if any filesystem operation fails, if a child name is not
+/// valid UTF-8, if a child blob cannot be stored in `cas`, or if a
+/// [`Directory`] message cannot be serialized.
 pub async fn build_input_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
     let tree = build_directory(root, cas).await?;
     cas.put_bytes(&tree.to_canonical_bytes()?).await
@@ -59,8 +59,8 @@ pub async fn materialize_input_tree(
 ///
 /// # Errors
 ///
-/// Returns an error for filesystem failures, symlinks or special files, and
-/// CAS persistence failures.
+/// Returns an error for filesystem failures, non-UTF-8 names, symlinks or
+/// special files, and CAS persistence failures.
 pub async fn build_output_tree(root: &Path, cas: &dyn Cas) -> Result<Digest> {
     let (root, children) = build_tree_directory(root, cas).await?;
     let tree = Tree { root, children };
@@ -96,7 +96,7 @@ async fn build_directory(dir: &Path, cas: &dyn Cas) -> Result<Directory> {
     let entries = fs::read_dir(dir).map_err(|e| Error::io(e, dir, "read_dir"))?;
     for entry in entries {
         let entry = entry.map_err(|e| Error::io(e, dir, "read_dir_entry"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = reapi_name(&entry)?;
         let path = entry.path();
         let ft = entry
             .file_type()
@@ -142,7 +142,7 @@ async fn build_tree_directory(dir: &Path, cas: &dyn Cas) -> Result<(Directory, V
     let entries = fs::read_dir(dir).map_err(|e| Error::io(e, dir, "read_dir"))?;
     for entry in entries {
         let entry = entry.map_err(|e| Error::io(e, dir, "read_dir_entry"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
+        let name = reapi_name(&entry)?;
         let path = entry.path();
         let file_type = entry
             .file_type()
@@ -186,6 +186,16 @@ async fn build_tree_directory(dir: &Path, cas: &dyn Cas) -> Result<(Directory, V
         },
         children,
     ))
+}
+
+fn reapi_name(entry: &fs::DirEntry) -> Result<String> {
+    let path = entry.path();
+    entry.file_name().into_string().map_err(|_| {
+        Error::configuration(format!(
+            "REAPI path names must be valid UTF-8: {}",
+            path.display()
+        ))
+    })
 }
 
 #[async_recursion]
@@ -402,5 +412,39 @@ mod tests {
         let da = build_input_tree(&a, &cas).await.unwrap();
         let db = build_input_tree(&b, &cas).await.unwrap();
         assert_ne!(da, db);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn input_tree_rejects_non_utf8_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write(&src.join(OsStr::from_bytes(b"invalid-\xff")), b"content");
+
+        let cas_root = TempDir::new().unwrap();
+        let cas = LocalCas::open(cas_root.path()).unwrap();
+        let error = build_input_tree(&src, &cas).await.unwrap_err();
+
+        assert!(error.to_string().contains("must be valid UTF-8"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_tree_rejects_non_utf8_names() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        write(&src.join(OsStr::from_bytes(b"invalid-\xff")), b"content");
+
+        let cas_root = TempDir::new().unwrap();
+        let cas = LocalCas::open(cas_root.path()).unwrap();
+        let error = build_output_tree(&src, &cas).await.unwrap_err();
+
+        assert!(error.to_string().contains("must be valid UTF-8"));
     }
 }
