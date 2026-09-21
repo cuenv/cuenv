@@ -48,9 +48,7 @@ impl RemoteCas {
             .check_capabilities()
             .await?
             .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
-        let max_batch_size = advertised_max_batch_size
-            .max(0)
-            .min(DEFAULT_MAX_BATCH_SIZE);
+        let max_batch_size = advertised_max_batch_size.clamp(0, DEFAULT_MAX_BATCH_SIZE);
         debug!(max_batch_size, "connected to remote CAS");
         Ok(Self { client, max_batch_size })
     }
