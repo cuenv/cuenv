@@ -502,13 +502,17 @@ Declaring the output as an input is both the fix and the thing that buys
 early cutoff, so it is what the docs tell users to do.
 
 **Cross-project references are done.** *[fixed]* The input hasher is rooted at
-the CUE module root, not the consuming project, so a sibling project's files
-are reachable; `prefix_patterns_for_hasher_root` and
+the VCS workspace when one exists (falling back to the CUE module), not the
+consuming project, so sibling projects and sibling CUE modules are reachable;
+`prefix_patterns_for_hasher_root` and
 `rebase_hashed_inputs_for_project_root` were already written for a non-empty
 project prefix and now get one. `TaskCacheConfig::project_roots` resolves a
 reference to a directory, indexed by both the project's `name` and its
-module-relative path because `#ProjectReference.project` may be written either
-way; a name that resolves to neither is `UnknownProject`.
+workspace-relative path because `#ProjectReference.project` may be written
+either way. A path-shaped reference such as `../api` is resolved relative to
+the consumer, canonicalized, and accepted only inside the hasher root; a
+reference that resolves to neither a known project nor a safe path is
+`UnknownProject`.
 
 Files are recorded at the mapping's `to` path rather than at `from`, because
 the input root is supposed to describe the layout the action executes against

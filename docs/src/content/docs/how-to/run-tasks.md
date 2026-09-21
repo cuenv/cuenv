@@ -356,7 +356,9 @@ The key is a function of the referenced files' **content**, not of the
 producing task's own key. That is what gives early cutoff: a producer that
 reruns and emits identical bytes leaves every consumer's key unchanged, so the
 consumers stay cached. `project` may be written as the other project's `name`
-or as its path relative to the CUE module root.
+or as a path relative to the consuming project (for example `../design-system`).
+A leading `/` is VCS-workspace-relative, not host-root-relative. Path references
+are canonicalized and must remain inside the VCS workspace.
 
 Two rules follow from recording files at their `to` path:
 
@@ -366,8 +368,9 @@ Two rules follow from recording files at their `to` path:
   collides with a local input — or with another mapping — makes the task
   uncacheable, because which file the task would see is an ordering accident.
 
-A reference to a project the CUE module does not contain is also uncacheable:
-there is nothing to hash, so there is no honest key.
+A reference that resolves to neither a discovered project nor a safe workspace
+path has nothing honest to hash. Under the default directory sandbox, cuenv
+reports that configuration error instead of exposing the live checkout.
 
 ```cue
 tasks: {

@@ -63,8 +63,8 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
 struct TaskCacheContext<'a> {
     /// Root of the project whose task is running.
     project_root: &'a Path,
-    /// Root of the CUE module, which bounds every project in the workspace.
-    module_root: &'a Path,
+    /// Root of the VCS workspace, which bounds path-shaped project references.
+    hasher_root: &'a Path,
     /// Project roots by name and by module-relative path.
     project_roots: BTreeMap<String, PathBuf>,
     /// Runtime identity folded into every action key.
@@ -82,7 +82,7 @@ async fn build_task_cache(
 ) -> Option<TaskCacheConfig> {
     let TaskCacheContext {
         project_root,
-        module_root,
+        hasher_root,
         project_roots,
         runtime_identity,
     } = context;
@@ -118,19 +118,19 @@ async fn build_task_cache(
         remote_cache::build(cache_config, cas, action_cache).await
     };
 
-    // Rooted at the module, not the project: a task may declare an input in a
-    // sibling project, and a hasher that cannot see outside its own project
-    // can only answer such a reference by declining to cache. Patterns are
-    // prefixed with each project's module-relative path before they reach the
-    // walker, so this widens what is reachable without widening what is
-    // walked.
+    // Rooted at the VCS workspace, not the project: a task may declare an
+    // input in a sibling CUE module, and a hasher that cannot see outside its
+    // own module can only answer such a reference by declining to cache.
+    // Patterns are prefixed with each project's workspace-relative path before
+    // they reach the walker, so this widens what is reachable without widening
+    // what is walked.
     let vcs_hasher =
-        Arc::new(cuenv_vcs::WalkHasher::new(module_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+        Arc::new(cuenv_vcs::WalkHasher::new(hasher_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
         cas: layers.cas,
         action_cache: layers.action_cache,
         vcs_hasher,
-        vcs_hasher_root: module_root.to_path_buf(),
+        vcs_hasher_root: hasher_root.to_path_buf(),
         cache_root: root,
         project_roots,
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,

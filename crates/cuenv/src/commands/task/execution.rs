@@ -10,6 +10,7 @@ use super::{
 use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::extract_static_env_vars;
+use crate::commands::git_hooks::find_git_root;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
@@ -411,6 +412,8 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
         .cue_module_root
         .as_deref()
         .unwrap_or(context.project_root.as_path());
+    let hasher_root =
+        find_git_root(&context.project_root).unwrap_or_else(|_| module_root.to_path_buf());
     let runtime_identity = resolve_runtime_cache_identity(
         module_root,
         context.project_root.as_path(),
@@ -422,7 +425,7 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
     build_task_cache(
         TaskCacheContext {
             project_root: &context.project_root,
-            module_root,
+            hasher_root: &hasher_root,
             project_roots: context.project_roots.clone(),
             runtime_identity,
         },

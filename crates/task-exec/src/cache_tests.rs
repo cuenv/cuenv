@@ -1395,6 +1395,74 @@ async fn cross_project_digest(module: &CrossProjectModule, task: &Task) -> Optio
 }
 
 #[tokio::test]
+async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
+    let mut module = cross_project_module();
+    module.cache.project_roots.clear();
+    let task = consuming_task("../producer", &[("dist/app.js", "vendor/app.js")]);
+    let env = Environment::new();
+
+    let outcome = build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.consumer_root,
+    })
+    .await
+    .unwrap();
+
+    let CacheOutcome::Eligible(eligible) = outcome else {
+        panic!("safe sibling project path should be cache eligible");
+    };
+    assert_eq!(
+        eligible.inputs[0].absolute_path,
+        module.module_root.join("producer/dist/app.js")
+    );
+    assert_eq!(
+        eligible.inputs[0].relative_path,
+        PathBuf::from("vendor/app.js")
+    );
+}
+
+#[tokio::test]
+async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
+    let mut module = cross_project_module();
+    module.cache.project_roots.clear();
+    let outside = TempDir::new().unwrap();
+    fs::create_dir_all(outside.path().join("dist")).unwrap();
+    fs::write(outside.path().join("dist/app.js"), "outside").unwrap();
+    assert_eq!(module.module_root.parent(), outside.path().parent());
+    let relative = PathBuf::from("../..").join(outside.path().file_name().unwrap());
+    let task = consuming_task(
+        &relative.to_string_lossy(),
+        &[("dist/app.js", "vendor/app.js")],
+    );
+    let env = Environment::new();
+
+    let outcome = build_action(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.consumer_root,
+    })
+    .await
+    .unwrap();
+
+    assert!(matches!(
+        outcome,
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::UnknownProject { .. },
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
 async fn a_cross_project_input_is_hashed_from_the_other_project() {
     // The whole point: a consumer's key is a function of the producer's
     // bytes, so the producer emitting identical output leaves it unchanged.

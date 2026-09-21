@@ -245,7 +245,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     };
 
     for reference in project_references {
-        match resolve_project_reference(cache, reference, task_name).await? {
+        match resolve_project_reference(cache, reference, project_root, task_name).await? {
             ResolveOutcome::Resolved(external) => hashed.extend(external),
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
@@ -501,9 +501,15 @@ async fn resolve_hashed_inputs(
 async fn resolve_project_reference(
     cache: &TaskCacheConfig,
     reference: &ProjectReference,
+    project_root: &Path,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    let Some(external_root) = cache.project_roots.get(&reference.project) else {
+    let external_root = cache
+        .project_roots
+        .get(&reference.project)
+        .cloned()
+        .or_else(|| resolve_project_path(cache, project_root, &reference.project));
+    let Some(external_root) = external_root else {
         tracing::debug!(
             task = %task_name,
             project = reference.project,
@@ -516,13 +522,46 @@ async fn resolve_project_reference(
 
     let mut resolved = Vec::new();
     for mapping in &reference.map {
-        match resolve_mapping(cache, mapping, external_root, task_name).await? {
+        match resolve_mapping(cache, mapping, &external_root, task_name).await? {
             ResolveOutcome::Resolved(mapped) => resolved.extend(mapped),
             ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
         }
     }
 
     Ok(ResolveOutcome::Resolved(resolved))
+}
+
+/// Resolve a path-shaped project reference relative to the consuming project.
+///
+/// A leading slash means "from the VCS workspace root", not the host root.
+/// Canonicalization both normalizes `..` and prevents symlinks from escaping
+/// the workspace boundary used by the input hasher.
+fn resolve_project_path(
+    cache: &TaskCacheConfig,
+    project_root: &Path,
+    declared_project: &str,
+) -> Option<PathBuf> {
+    let declared = Path::new(declared_project);
+    let candidate = if declared.is_absolute() {
+        let workspace_relative = declared.components().try_fold(
+            PathBuf::new(),
+            |mut path, component| match component {
+                Component::Normal(part) => {
+                    path.push(part);
+                    Some(path)
+                }
+                Component::RootDir | Component::CurDir => Some(path),
+                Component::Prefix(_) | Component::ParentDir => None,
+            },
+        )?;
+        cache.vcs_hasher_root.join(workspace_relative)
+    } else {
+        project_root.join(declared)
+    };
+
+    let workspace_root = std::fs::canonicalize(&cache.vcs_hasher_root).ok()?;
+    let project = std::fs::canonicalize(candidate).ok()?;
+    project.starts_with(&workspace_root).then_some(project)
 }
 
 async fn resolve_mapping(
