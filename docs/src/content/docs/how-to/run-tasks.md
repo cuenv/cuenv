@@ -645,8 +645,8 @@ Tasks are hermetic by default (`hermetic: true`). Today that means two things:
   cached, because a task that reads and writes the live checkout with the
   ambient host environment produces results the cache key cannot describe.
 - Its cache key records only what it **declares** — the resolved `inputs`, the
-  command, the CUE-declared environment, the platform, and any host variables
-  named in `hermetic.passthrough`.
+  command, the CUE-declared environment, timeout, execution backend, platform,
+  and any host variables named in `hermetic.passthrough`.
 
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or

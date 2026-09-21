@@ -162,7 +162,7 @@ impl TaskExecutor {
     ///
     /// Pass `Some(cuenv_dagger::create_dagger_backend)` to enable dagger backend.
     pub fn with_dagger_factory(
-        config: ExecutorConfig,
+        mut config: ExecutorConfig,
         dagger_factory: Option<BackendFactory>,
     ) -> Self {
         let backend = create_backend_with_factory(
@@ -171,6 +171,11 @@ impl TaskExecutor {
             config.cli_backend.as_deref(),
             dagger_factory,
         );
+        if let Some(cache) = &mut config.cache {
+            cache
+                .runtime_identity_properties
+                .insert("cuenv.backend".to_string(), backend.name().to_string());
+        }
         Self { config, backend }
     }
 

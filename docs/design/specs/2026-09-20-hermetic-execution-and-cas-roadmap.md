@@ -1,15 +1,17 @@
 # Hermetic Execution and CAS: Gap Analysis and Roadmap
 
 **Date:** 2026-09-20
-**Status:** Phase 0 implemented; phases 1–4 planned
+**Status:** Phase 0 complete; directory isolation and remote read-through
+implemented; strict sandboxing, uploads, and phases 2/4 remain planned
 **Supersedes in practice:** the unimplemented half of
 [ADR-0008](../../src/content/docs/decisions/adrs/adr-0008-hermetic-task-execution-cache.md)
 
 ## Summary
 
 > **Reading note.** §§1–2 describe the state this document was written
-> against. Phase 0 has since shipped and fixed F3, F6, F7, F13 and F15; see
-> §5 for exactly what changed. The rest of the analysis stands.
+> against. Status annotations on each finding and §5 record what has changed
+> since; unannotated historical statements should not be read as current
+> implementation status.
 
 `cuenv` ships a content-addressed store, an action cache, and a schema field
 called `hermetic`. None of the three did what its name implies:
@@ -65,7 +67,8 @@ state this document was written against; see §5 for what replaced them.
 
 ### Blocking
 
-**F1 — `hermetic` does not isolate anything.**
+**F1 — `hermetic` does not isolate anything.** *[directory isolation fixed;
+strict host/network confinement remains open]*
 Tasks run in the project root with the full workspace visible. Any
 undeclared read is invisible to the action key, so a recorded
 `ActionResult` may be a function of files the key never saw. Every entry we
@@ -100,13 +103,14 @@ even when enabled we skip on `EmptyInputs`, `NonPathRef`, and `RuntimeEnv`
 task's output is uncacheable** — that is the central monorepo workflow.
 `RuntimeEnv` means any task with `env:` is uncacheable.
 
-`RuntimeEnv` is gone: §6.6 fingerprints secrets, so a task with `env:` is
-cacheable. Same-project `#TaskOutput` references are gone too (§6.7).
-Cross-project `#ProjectReference` is gone as well: the input hasher is now
-rooted at the CUE module rather than the consuming project, so a sibling
-project's files are reachable (see §6.7). What remains of `NonPathRef` is an
-`Input::Task` that manifest expansion could not resolve to concrete output
-paths — a reference to nothing, which has no honest key.
+Project-level resolved secrets are fingerprinted as described in §6.6.
+Task-local `env:` is still resolved immediately before process spawn and
+therefore still skips result caching with `RuntimeEnv`; directory isolation
+remains active. Same-project `#TaskOutput` and cross-project
+`#ProjectReference` inputs are now expanded, hashed, and materialized in the
+execution root (§6.7). What remains of `NonPathRef` is an `Input::Task` that
+manifest expansion could not resolve to concrete output paths — a reference
+to nothing, which has no honest key.
 
 ### Serious
 
@@ -121,11 +125,10 @@ when execution semantics change.
 references still exist. `materialize_hit` then writes files one at a time
 and can fail halfway, leaving a half-restored workdir with no rollback.
 
-**F8 — Output directories are not supported.**
-`output_directories` is `Vec::new()` on both the `Command` and the
-`ActionResult` (`cache.rs:191`, `cache.rs:427`). Only files matched by a
-glob *at record time* are captured, and a cache hit never removes stale
-files the previous build left behind.
+**F8 — Output directories are not supported.** *[fixed]*
+Declared output directories are now encoded as REAPI `Tree` blobs and
+materialized by replacing the destination tree, so stale files from a
+previous build do not survive a hit.
 
 **F9 — Hashing is the slow path.**
 `WalkHasher` re-reads and re-hashes every matched file on every task on
@@ -299,7 +302,7 @@ identical action digests for the same task.
 ### Phase 1 — Real hermetic execution
 
 **Done: directory isolation, on by default.** `crates/task-exec/src/exec_root.rs`
-materializes a per-action exec root under `<cache root>/exec/<action digest>/`
+materializes a unique per-invocation exec root under `<cache root>/exec/`
 from the resolved input set, the task runs there with `cwd` = exec root,
 outputs are recorded from there, and only the declared `outputs` are projected
 back into the workspace. Inputs are copied and the staged bytes are checked
@@ -520,9 +523,8 @@ hashed last, so `InputDirectoryBuilder` rejects it and the task is reported
 `InputCollision`. It is a real declaration conflict, not a detail to paper
 over.
 
-Still open: `Mapping.to` is a *materialization* destination that nothing
-creates. The key is now correct about what the task will read; Phase 1 has to
-make the task actually read it.
+Directory isolation now materializes every resolved mapping at `Mapping.to`.
+The key and the filesystem layout therefore describe the same input root.
 
 ### 6.6 How secrets enter a cache key
 
@@ -578,12 +580,10 @@ everyone's.
 
 ### 6.4 Dependency outputs as inputs
 
-`NonPathRef` currently disables caching for any task consuming a
-`#TaskOutputRef` or `#ProjectReference`. ADR-0008 explicitly chose "no
-implicit output injection". That choice is defensible for *materialization*
-but wrong for *hashing*: a dependency's output digests are exactly what
-should feed the consumer's input root. Resolve the reference to the
-producer's recorded `ActionResult` digests and fold them in.
+This original gap is closed by §6.7. Same-project and cross-project output
+references contribute the produced files' content and destination paths to
+the consumer input root, and directory isolation materializes that root before
+execution. `NonPathRef` remains only for an unresolved task-output reference.
 
 ## 7. Schema sketch
 

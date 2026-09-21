@@ -357,6 +357,13 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         }
         .to_string(),
     );
+    if let Some(timeout) = task.timeout.as_deref() {
+        // A cached success produced with a long timeout must not bypass a
+        // shorter timeout configured later. REAPI models timeout on Action;
+        // until the internal Action DTO carries that field, include the
+        // normalized declaration in the action platform identity.
+        platform_properties.insert("cuenv.timeout".to_string(), timeout.trim().to_string());
+    }
     for (key, value) in &cache.runtime_identity_properties {
         platform_properties.insert(key.clone(), value.clone());
     }

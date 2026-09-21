@@ -196,7 +196,7 @@ impl LocalCas {
 #[async_trait]
 impl Cas for LocalCas {
     async fn contains(&self, digest: &Digest) -> Result<bool> {
-        Ok(self.blob_path(digest)?.exists())
+        Self::contains_valid_blob(&self.blob_path(digest)?, digest)
     }
 
     async fn get(&self, digest: &Digest) -> Result<Vec<u8>> {
@@ -345,6 +345,7 @@ mod tests {
         let digest = cas.put_bytes(b"immutable").await.unwrap();
         fs::write(cas.blob_path(&digest).unwrap(), b"mutated").unwrap();
 
+        assert!(!cas.contains(&digest).await.unwrap());
         let err = cas.get(&digest).await.unwrap_err();
         assert!(matches!(err, Error::DigestMismatch { .. }));
     }

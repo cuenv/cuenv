@@ -136,6 +136,43 @@ async fn build_action_changes_when_input_changes() {
 }
 
 #[tokio::test]
+async fn build_action_changes_when_timeout_changes() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("input.txt"), "payload").unwrap();
+    let cache = make_cache(tmp.path());
+    let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+    let env = Environment::new();
+
+    task.timeout = Some("10s".to_string());
+    let (_, first) = build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "t",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    task.timeout = Some("1s".to_string());
+    let (_, second) = build_action_for_test(BuildActionInput {
+        task: &task,
+        task_name: "t",
+        environment: &env,
+        cache: &cache,
+        workdir: tmp.path(),
+        project_root: tmp.path(),
+        module_root: tmp.path(),
+    })
+    .await
+    .unwrap();
+
+    assert_ne!(first, second);
+}
+
+#[tokio::test]
 async fn build_action_returns_none_when_task_has_task_level_env() {
     let tmp = TempDir::new().unwrap();
     fs::write(tmp.path().join("input.txt"), "payload").unwrap();

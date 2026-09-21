@@ -3,6 +3,7 @@ use crate::cache::TaskCacheConfig;
 use crate::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
+use cuenv_manifest::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_vcs::WalkHasher;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -43,6 +44,43 @@ async fn test_executor_config_default() {
     assert!(config.capture_output.should_capture());
     assert_eq!(config.max_parallel, 0);
     assert!(config.environment.is_empty());
+}
+
+#[tokio::test]
+async fn test_executor_records_backend_in_cache_identity() {
+    let cache_root = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let cache = TaskCacheConfig {
+        cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
+        action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
+        vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
+        vcs_hasher_root: workspace.path().to_path_buf(),
+        action_semantics_version: 1,
+        runtime_identity_properties: std::collections::BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
+        cache_root: cache_root.path().to_path_buf(),
+        project_roots: std::collections::BTreeMap::new(),
+    };
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        project_root: workspace.path().to_path_buf(),
+        cache: Some(cache),
+        ..ExecutorConfig::default()
+    });
+
+    assert_eq!(
+        executor
+            .config
+            .cache
+            .as_ref()
+            .unwrap()
+            .runtime_identity_properties
+            .get("cuenv.backend")
+            .map(String::as_str),
+        Some("host")
+    );
 }
 
 #[tokio::test]
