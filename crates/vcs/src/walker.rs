@@ -219,9 +219,8 @@ fn validate_pattern(pattern: &str) -> Result<()> {
 fn normalize_rel_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
-        match comp {
-            Component::Normal(s) => out.push(s),
-            _ => {}
+        if let Component::Normal(s) = comp {
+            out.push(s);
         }
     }
     out
