@@ -329,10 +329,17 @@ inputs gets an empty root. Cache mode `never`, task-local runtime environment,
 resolved input snapshot and sandbox the process.
 
 **Degradation is an error, not a fallback.** If inputs cannot be resolved,
-cuenv refuses to expose the live checkout silently. Dagger supplies its own
-container isolation for the inherited policy; explicitly asking it for the
-host `"dir"` strategy is rejected. The same reasoning keeps stricter tiers out
-of `#Sandbox` until they exist.
+cuenv refuses to expose the live checkout silently. Dagger supplies container
+isolation but currently mounts the full project rather than the resolved input
+root, so its task-result cache is disabled; explicitly asking it for the host
+`"dir"` strategy is rejected. The same reasoning keeps stricter tiers out of
+`#Sandbox` until they exist.
+
+Every retry builds a fresh verified root, so failed-attempt files cannot make a
+later attempt succeed under the original action key. Successful output
+projection is staged with rollback, removes omitted owned paths, and runs only
+after a zero exit status; a partial failed build cannot replace the previous
+good workspace output.
 
 Still open:
 
@@ -379,8 +386,9 @@ not by hashing or copying; the cache respects a configured size budget.
   cuenv's messages to `build.bazel.remote.execution.v2` types and digests
   their protobuf bytes; the local CAS and action cache now store exactly what
   a REAPI server exchanges. The semantics version travels in REAPI's
-  `Action.salt`, and `ACTION_SEMANTICS_VERSION` went to `2`, invalidating
-  every pre-existing entry as intended. Bindings come from
+  `Action.salt`. `ACTION_SEMANTICS_VERSION` is now `3`: v2 introduced REAPI
+  trees and directory isolation; v3 adds fresh retry roots, transactional
+  complete output replacement, and stricter path/collision semantics. Bindings come from
   `bazel-remote-apis`, which ships pre-generated prost/tonic code, so no
   `protoc` is needed at build time and the Nix build is untouched.
 - **Done: the store traits are async.** `Cas` and `ActionCache` are

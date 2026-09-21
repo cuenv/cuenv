@@ -572,15 +572,12 @@ async fn resolve_mapping(
     source_root: &Path,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    resolve_path_mapping(
-        cache,
-        PathMappingInput {
-            source: &mapping.from,
-            destination: &mapping.to,
-            source_root,
-            task_name,
-        },
-    )
+    resolve_path_mapping(cache, PathMappingInput {
+        source: &mapping.from,
+        destination: &mapping.to,
+        source_root,
+        task_name,
+    })
     .await
 }
 
@@ -589,15 +586,12 @@ async fn resolve_mapped_input(
     mapping: &MappedInput,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    resolve_path_mapping(
-        cache,
-        PathMappingInput {
-            source: &mapping.source,
-            destination: &mapping.destination,
-            source_root: &cache.vcs_hasher_root,
-            task_name,
-        },
-    )
+    resolve_path_mapping(cache, PathMappingInput {
+        source: &mapping.source,
+        destination: &mapping.destination,
+        source_root: &cache.vcs_hasher_root,
+        task_name,
+    })
     .await
 }
 
@@ -724,12 +718,15 @@ fn validate_cached_result(task: &Task, result: &ActionResult) -> Result<()> {
         )
     {
         let relative = safe_output_path(path)?;
-        if !paths.insert(relative.clone()) {
+        if paths.iter().any(|existing: &PathBuf| {
+            existing.starts_with(&relative) || relative.starts_with(existing)
+        }) {
             return Err(cuenv_core::Error::configuration(format!(
-                "cached result contains duplicate output path '{}'",
+                "cached result contains overlapping output path '{}'",
                 relative.display()
             )));
         }
+        paths.insert(relative.clone());
         if !task
             .outputs
             .iter()
@@ -770,6 +767,7 @@ fn output_declaration_matches(declaration: &str, relative: &Path) -> bool {
 pub async fn materialize_hit(
     cache: &TaskCacheConfig,
     workdir: &Path,
+    task: &Task,
     result: &ActionResult,
 ) -> Result<(String, String, i32)> {
     let stdout = if let Some(digest) = &result.stdout_digest {
@@ -796,7 +794,7 @@ pub async fn materialize_hit(
 
     // No workspace path is touched until every stream and output blob has
     // been fetched and verified into staging.
-    materialize_outputs(cache, workdir, result).await?;
+    materialize_outputs(cache, workdir, task, result).await?;
 
     Ok((stdout, stderr, result.exit_code))
 }
@@ -816,14 +814,19 @@ pub async fn materialize_hit(
 async fn materialize_outputs(
     cache: &TaskCacheConfig,
     workdir: &Path,
+    task: &Task,
     result: &ActionResult,
 ) -> Result<()> {
-    if result.output_files.is_empty() && result.output_directories.is_empty() {
+    if result.output_files.is_empty()
+        && result.output_directories.is_empty()
+        && task.outputs.is_empty()
+    {
         return Ok(());
     }
 
+    let existing = collect_outputs(workdir, &task.outputs)?;
     let staging = StagingDir::create(workdir)?;
-    let mut staged =
+    let mut resolved =
         Vec::with_capacity(result.output_files.len() + result.output_directories.len());
 
     for output_file in &result.output_files {
@@ -836,10 +839,8 @@ async fn materialize_outputs(
             .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
         set_executable_if_needed(&staged_path, output_file.is_executable)?;
-        staged.push((
-            staged_path,
-            secure_workspace_destination(workdir, &relative)?,
-        ));
+        secure_workspace_destination(workdir, &relative)?;
+        resolved.push(relative);
     }
 
     for output_directory in &result.output_directories {
@@ -853,21 +854,11 @@ async fn materialize_outputs(
         )
         .await
         .map_err(|e| cuenv_core::Error::configuration(format!("cas get output directory: {e}")))?;
-        staged.push((
-            staged_path,
-            secure_workspace_destination(workdir, &relative)?,
-        ));
+        secure_workspace_destination(workdir, &relative)?;
+        resolved.push(relative);
     }
 
-    for (from, to) in staged {
-        create_parent_dir(&to)?;
-        remove_existing_output(&to)?;
-        std::fs::rename(&from, &to).map_err(|e| {
-            cuenv_core::Error::configuration(format!("install cached output {}: {e}", to.display()))
-        })?;
-    }
-
-    Ok(())
+    super::exec_root::commit_staged_outputs(staging.path(), workdir, &resolved, &existing)
 }
 
 /// Reject a cached output path that would escape the working directory.
@@ -912,6 +903,18 @@ fn create_parent_dir(path: &Path) -> Result<()> {
 }
 
 fn secure_workspace_destination(workdir: &Path, relative: &Path) -> Result<PathBuf> {
+    let metadata = std::fs::symlink_metadata(workdir).map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "inspect cached-output workdir '{}': {error}",
+            workdir.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "refusing to install cached output into symlink workdir '{}'",
+            workdir.display()
+        )));
+    }
     let destination = workdir.join(relative);
     let mut current = workdir.to_path_buf();
     let mut components = relative.components().peekable();
@@ -942,30 +945,6 @@ fn secure_workspace_destination(workdir: &Path, relative: &Path) -> Result<PathB
         }
     }
     Ok(destination)
-}
-
-fn remove_existing_output(path: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            std::fs::remove_dir_all(path).map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "replace cached output directory '{}': {e}",
-                    path.display()
-                ))
-            })
-        }
-        Ok(_) => std::fs::remove_file(path).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "replace cached output file '{}': {e}",
-                path.display()
-            ))
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(cuenv_core::Error::configuration(format!(
-            "inspect cached output '{}': {error}",
-            path.display()
-        ))),
-    }
 }
 
 /// Prefix of the scratch directories [`StagingDir`] creates.
@@ -1083,7 +1062,7 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
                     ))
                 })?;
             output_directories.push(OutputDirectory {
-                path: path_to_forward_slashes(relative_path),
+                path: utf8_forward_slashes(relative_path)?,
                 tree_digest,
             });
         } else {
@@ -1092,7 +1071,7 @@ pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf
                     cuenv_core::Error::configuration(format!("cas put output: {e}"))
                 })?;
             output_files.push(OutputFile {
-                path: path_to_forward_slashes(relative_path),
+                path: utf8_forward_slashes(relative_path)?,
                 digest,
                 is_executable: is_executable(&absolute_path)?,
             });
@@ -1232,31 +1211,33 @@ impl InputDirectoryBuilder {
                 )));
             };
 
-            let name = name.to_string_lossy().into_owned();
+            let name = name.to_str().ok_or_else(|| {
+                InputRootError::Failed(cuenv_core::Error::configuration(format!(
+                    "REAPI input paths must be UTF-8: '{}'",
+                    relative_path.display()
+                )))
+            })?;
             if components.peek().is_some() {
-                current = current.directories.entry(name).or_default();
-            } else {
-                // Overwriting here would make the key depend on which input
-                // happened to be hashed last. A cross-project mapping landing
-                // on a local input is a real declaration conflict, not a
-                // detail to paper over.
-                let contested = current
-                    .files
-                    .get(&name)
-                    .is_some_and(|existing| existing.digest != *digest);
-                if contested {
+                if current.files.contains_key(name) {
                     return Err(InputRootError::Collision(path_to_forward_slashes(
                         relative_path,
                     )));
                 }
-                current.files.insert(
-                    name.clone(),
-                    FileNode {
-                        name,
-                        digest: digest.clone(),
-                        is_executable,
-                    },
-                );
+                current = current.directories.entry(name.to_string()).or_default();
+            } else {
+                // Any second owner is ambiguous, even when the bytes happen
+                // to match. Mode, provenance, and future content can differ,
+                // and a file cannot also own a directory prefix.
+                if current.files.contains_key(name) || current.directories.contains_key(name) {
+                    return Err(InputRootError::Collision(path_to_forward_slashes(
+                        relative_path,
+                    )));
+                }
+                current.files.insert(name.to_string(), FileNode {
+                    name: name.to_string(),
+                    digest: digest.clone(),
+                    is_executable,
+                });
             }
         }
 
@@ -1317,17 +1298,17 @@ fn prefix_patterns_for_hasher_root(
         return Ok(patterns.to_vec());
     }
 
-    Ok(patterns
+    patterns
         .iter()
         .map(|pattern| {
             let trimmed = pattern.trim();
             if trimmed.is_empty() {
-                String::new()
+                Ok(String::new())
             } else {
-                path_to_forward_slashes(&prefix.join(trimmed))
+                utf8_forward_slashes(&prefix.join(trimmed))
             }
         })
-        .collect())
+        .collect()
 }
 
 fn rebase_hashed_inputs_for_project_root(
@@ -1377,7 +1358,7 @@ fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) ->
         .strip_prefix(project_root)
         .or_else(|_| workdir.strip_prefix(module_root))
         .ok()
-        .map(path_to_forward_slashes)
+        .and_then(|path| path.to_str().map(|value| value.replace('\\', "/")))
 }
 
 pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
@@ -1397,6 +1378,7 @@ pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec
 
         if !looks_like_glob(trimmed) {
             let relative = safe_output_path(trimmed)?;
+            reject_output_symlink_ancestors(workdir, &relative)?;
             let absolute = workdir.join(&relative);
             match std::fs::symlink_metadata(&absolute) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -1442,6 +1424,14 @@ pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec
             if !root.exists() {
                 continue;
             }
+            let relative_root = root.strip_prefix(workdir).map_err(|error| {
+                cuenv_core::Error::configuration(format!(
+                    "output walk root '{}' is outside workdir '{}': {error}",
+                    root.display(),
+                    workdir.display()
+                ))
+            })?;
+            reject_output_symlink_ancestors(workdir, relative_root)?;
 
             let walker = WalkDir::new(&root)
                 .follow_links(false)
@@ -1511,6 +1501,46 @@ fn validate_output_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
+fn reject_output_symlink_ancestors(workdir: &Path, relative: &Path) -> Result<()> {
+    let workdir_metadata = std::fs::symlink_metadata(workdir).map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "inspect output workdir '{}': {error}",
+            workdir.display()
+        ))
+    })?;
+    if workdir_metadata.file_type().is_symlink() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "output workdir may not be a symlink: '{}'",
+            workdir.display()
+        )));
+    }
+
+    let mut current = workdir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "output path traverses symlink '{}'",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "inspect output path '{}': {error}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn looks_like_glob(pattern: &str) -> bool {
     pattern.contains('*') || pattern.contains('{') || pattern.contains('?') || pattern.contains('[')
 }
@@ -1572,6 +1602,17 @@ fn output_walk_roots(workdir: &Path, patterns: &[String]) -> Vec<PathBuf> {
 
 fn path_to_forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn utf8_forward_slashes(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(|value| value.replace('\\', "/"))
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "REAPI paths must be UTF-8: '{}'",
+                path.display()
+            ))
+        })
 }
 
 #[cfg(unix)]

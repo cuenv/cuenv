@@ -442,11 +442,11 @@ cuenv records that rather than hiding it.
   they are implemented. See
   [filesystem isolation](/how-to/run-tasks/#filesystem-isolation).
 
-:::note[Isolation applies where the action is resolvable]
-The default tier takes effect where the task is cache-eligible, since that is
-what supplies the input set to build a sandbox from. A task with no declared
-`inputs` runs unsandboxed; a task that explicitly asks for `"dir"` and cannot
-have it fails rather than downgrading. See
+:::note[Isolation is independent of result caching]
+The default tier resolves inputs even when result caching is disabled. A task
+with no declared `inputs` runs in an empty execution root; `cache: mode:
+"never"` and `CUENV_CACHE=off` do not expose the live checkout. A task whose
+declared inputs cannot be resolved fails rather than downgrading. See
 [ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/).
 :::
 

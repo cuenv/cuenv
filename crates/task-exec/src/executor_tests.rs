@@ -271,6 +271,38 @@ async fn test_execute_task_retries_until_success() {
 }
 
 #[tokio::test]
+async fn sandboxed_retries_start_from_fresh_inputs() {
+    let tmp = TempDir::new().unwrap();
+    let counter = tmp.path().join("attempts.log");
+    let executor = executor_for(tmp.path());
+    let script = format!(
+        "if [ -e retry-marker ]; then exit 0; fi; \
+         touch retry-marker; echo attempt >> '{}'; exit 1",
+        counter.display()
+    );
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script],
+        retry: Some(RetryConfig {
+            attempts: 2,
+            delay: None,
+        }),
+        ..Default::default()
+    };
+
+    let result = executor
+        .execute_task("isolated-retry", &task)
+        .await
+        .unwrap();
+
+    assert!(
+        !result.success,
+        "failed-attempt state must not make a retry pass"
+    );
+    assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 3);
+}
+
+#[tokio::test]
 async fn test_timeout_is_not_retried() {
     // A timeout is a hard policy violation, not a transient failure: even with
     // retries configured, a timed-out attempt must end the task immediately

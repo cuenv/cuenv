@@ -216,7 +216,8 @@ impl ByteStreamService for ByteStreamImpl {
         request: Request<ReadRequest>,
     ) -> Result<Response<Self::ReadStream>, Status> {
         self.0.record_auth(request.metadata());
-        let resource_name = request.into_inner().resource_name;
+        let request = request.into_inner();
+        let resource_name = request.resource_name;
         let key = key_from_resource_name(&resource_name)
             .ok_or_else(|| Status::invalid_argument("malformed resource name"))?;
         let blobs = lock(&self.0.blobs);
@@ -224,6 +225,19 @@ impl ByteStreamService for ByteStreamImpl {
             .get(&key)
             .ok_or_else(|| Status::not_found("blob not found"))?
             .clone();
+        let offset = usize::try_from(request.read_offset)
+            .map_err(|_| Status::invalid_argument("negative read offset"))?;
+        if offset > data.len() {
+            return Err(Status::out_of_range("read offset exceeds blob size"));
+        }
+        let available = &data[offset..];
+        let data = if request.read_limit == 0 {
+            available
+        } else {
+            let limit = usize::try_from(request.read_limit)
+                .map_err(|_| Status::invalid_argument("negative read limit"))?;
+            &available[..available.len().min(limit)]
+        };
 
         // Deliberately chunk small so the client's reassembly is exercised.
         let chunks: Vec<Result<ReadResponse, Status>> = data
@@ -245,17 +259,37 @@ impl ByteStreamService for ByteStreamImpl {
         let mut stream = request.into_inner();
         let mut key = None;
         let mut data = Vec::new();
+        let mut expected_offset = 0_i64;
+        let mut finished = false;
 
         while let Some(chunk) = stream.message().await? {
+            if finished {
+                return Err(Status::invalid_argument("chunk sent after finish_write"));
+            }
             if key.is_none() && !chunk.resource_name.is_empty() {
                 key = key_from_resource_name(&chunk.resource_name);
+            } else if !chunk.resource_name.is_empty() {
+                return Err(Status::invalid_argument(
+                    "resource name must appear only in the first chunk",
+                ));
+            }
+            if chunk.write_offset != expected_offset {
+                return Err(Status::invalid_argument(format!(
+                    "unexpected write offset {}; expected {expected_offset}",
+                    chunk.write_offset
+                )));
             }
             data.extend_from_slice(&chunk.data);
+            expected_offset = i64::try_from(data.len())
+                .map_err(|_| Status::resource_exhausted("upload too large"))?;
             if chunk.finish_write {
-                break;
+                finished = true;
             }
         }
 
+        if !finished {
+            return Err(Status::invalid_argument("finish_write was not sent"));
+        }
         let key = key.ok_or_else(|| Status::invalid_argument("no resource name was sent"))?;
         let committed_size = i64::try_from(data.len()).unwrap_or(i64::MAX);
         lock(&self.0.blobs).insert(key, data);
@@ -456,8 +490,7 @@ async fn large_blob_round_trips_through_bytestream() {
 }
 
 #[tokio::test]
-async fn empty_blob_round_trips_through_bytestream() {
-    // An empty blob has no chunks; it still needs one `finish_write`.
+async fn empty_blob_round_trips_through_batch_rpc() {
     let store = Store {
         max_batch_total_size_bytes: 0,
         ..Store::default()
@@ -466,9 +499,6 @@ async fn empty_blob_round_trips_through_bytestream() {
     let client = server.client(RemoteConfig::default().writable()).await;
     let cas = RemoteCas::new_unchecked(client);
 
-    // Force the streaming path by asking for a blob larger than the batch
-    // ceiling is not possible for an empty blob, so exercise Write directly
-    // via the public API and assert the server committed it.
     let digest = cas.put_bytes(b"").await.unwrap();
     assert_eq!(cas.get(&digest).await.unwrap(), b"");
 }

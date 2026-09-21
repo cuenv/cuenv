@@ -261,13 +261,10 @@ async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
     .await
     .unwrap();
 
-    assert!(matches!(
-        outcome,
-        CacheOutcome::Skipped {
-            reason: CacheSkipReason::HasherRootMismatch,
-            ..
-        }
-    ));
+    assert!(matches!(outcome, CacheOutcome::Skipped {
+        reason: CacheSkipReason::HasherRootMismatch,
+        ..
+    }));
 }
 
 #[tokio::test]
@@ -508,7 +505,9 @@ async fn record_then_lookup_roundtrips() {
 
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    let (stdout, stderr, exit_code) = materialize_hit(&cache, &fresh, &recorded).await.unwrap();
+    let (stdout, stderr, exit_code) = materialize_hit(&cache, &fresh, &task, &recorded)
+        .await
+        .unwrap();
     assert_eq!(stdout, "stdout-text");
     assert_eq!(stderr, "stderr-text");
     assert_eq!(exit_code, 0);
@@ -549,7 +548,9 @@ async fn output_directory_roundtrips_as_a_reapi_tree() {
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
     fs::write(fresh.join("dist"), "stale file").unwrap();
-    materialize_hit(&cache, &fresh, &recorded).await.unwrap();
+    materialize_hit(&cache, &fresh, &task, &recorded)
+        .await
+        .unwrap();
 
     assert_eq!(
         fs::read_to_string(fresh.join("dist/nested/app.js")).unwrap(),
@@ -609,7 +610,9 @@ async fn record_and_materialize_preserve_executable_outputs() {
         .unwrap();
     let fresh = tmp.path().join("fresh");
     fs::create_dir_all(&fresh).unwrap();
-    materialize_hit(&cache, &fresh, &recorded).await.unwrap();
+    materialize_hit(&cache, &fresh, &task, &recorded)
+        .await
+        .unwrap();
 
     let mode = fs::metadata(fresh.join("bin/run.sh"))
         .unwrap()
@@ -987,8 +990,9 @@ async fn materialize_hit_rejects_output_paths_that_escape_the_workdir() {
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
+    let task = make_task("echo", &[], &[], &["../escaped.txt"]);
 
-    let error = materialize_hit(&cache, &workdir, &result)
+    let error = materialize_hit(&cache, &workdir, &task, &result)
         .await
         .unwrap_err();
     assert!(
@@ -1030,8 +1034,13 @@ async fn materialize_hit_leaves_existing_outputs_intact_when_a_blob_is_missing()
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
+    let task = make_task("echo", &[], &[], &["first.txt", "second.txt"]);
 
-    assert!(materialize_hit(&cache, &workdir, &result).await.is_err());
+    assert!(
+        materialize_hit(&cache, &workdir, &task, &result)
+            .await
+            .is_err()
+    );
 
     // Staging means the first output is never installed, so the workspace is
     // not left as a mix of cached and pre-existing files.
@@ -1065,8 +1074,11 @@ async fn materialize_hit_removes_its_staging_directory() {
         stderr_digest: None,
         execution_metadata: ExecutionMetadata::default(),
     };
+    let task = make_task("echo", &[], &[], &["nested/out.txt"]);
 
-    materialize_hit(&cache, &workdir, &result).await.unwrap();
+    materialize_hit(&cache, &workdir, &task, &result)
+        .await
+        .unwrap();
 
     assert_eq!(
         fs::read_to_string(workdir.join("nested/out.txt")).unwrap(),
@@ -1083,6 +1095,46 @@ async fn materialize_hit_removes_its_staging_directory() {
         })
         .collect();
     assert!(leftovers.is_empty(), "staging directory was left behind");
+}
+
+#[test]
+fn cached_result_rejects_ancestor_output_overlaps() {
+    let task = make_task("echo", &[], &[], &["dist"]);
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "dist/app.js".to_string(),
+            digest: Digest::of_bytes(b"app"),
+            is_executable: false,
+        }],
+        output_directories: vec![cuenv_cas::OutputDirectory {
+            path: "dist".to_string(),
+            tree_digest: Digest::of_bytes(b"tree"),
+        }],
+        ..ActionResult::default()
+    };
+
+    let error = validate_cached_result(&task, &result).unwrap_err();
+    assert!(error.to_string().contains("overlapping output path"));
+}
+
+#[tokio::test]
+async fn cache_hit_removes_a_declared_output_absent_from_the_result() {
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path().join("work");
+    fs::create_dir_all(&workdir).unwrap();
+    fs::write(workdir.join("stale.txt"), "old").unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &[], &[], &["stale.txt"]);
+    let result = ActionResult {
+        exit_code: 0,
+        ..ActionResult::default()
+    };
+
+    materialize_hit(&cache, &workdir, &task, &result)
+        .await
+        .unwrap();
+
+    assert!(!workdir.join("stale.txt").exists());
 }
 
 #[tokio::test]
@@ -1207,18 +1259,15 @@ fn a_leading_wildcard_forces_the_whole_workdir() {
 #[test]
 fn nested_roots_are_collapsed_so_no_subtree_is_walked_twice() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(
-        workdir,
-        &[
-            "dist/nested/deep/**/*".to_string(),
-            "dist/**/*".to_string(),
-            "other/x".to_string(),
-        ],
-    );
-    assert_eq!(
-        roots,
-        vec![PathBuf::from("/w/dist"), PathBuf::from("/w/other/x")]
-    );
+    let roots = output_walk_roots(workdir, &[
+        "dist/nested/deep/**/*".to_string(),
+        "dist/**/*".to_string(),
+        "other/x".to_string(),
+    ]);
+    assert_eq!(roots, vec![
+        PathBuf::from("/w/dist"),
+        PathBuf::from("/w/other/x")
+    ]);
 }
 
 #[tokio::test]
@@ -1250,10 +1299,10 @@ async fn overlapping_patterns_report_each_file_once() {
     fs::create_dir_all(workdir.join("dist")).unwrap();
     fs::write(workdir.join("dist/app.js"), "built").unwrap();
 
-    let collected = collect_outputs(
-        workdir,
-        &["dist/**/*".to_string(), "dist/app.js".to_string()],
-    )
+    let collected = collect_outputs(workdir, &[
+        "dist/**/*".to_string(),
+        "dist/app.js".to_string(),
+    ])
     .unwrap();
     assert_eq!(collected, vec![PathBuf::from("dist/app.js")]);
 }
@@ -1435,10 +1484,10 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     fs::write(outside.path().join("dist/app.js"), "outside").unwrap();
     assert_eq!(module.module_root.parent(), outside.path().parent());
     let relative = PathBuf::from("../..").join(outside.path().file_name().unwrap());
-    let task = consuming_task(
-        &relative.to_string_lossy(),
-        &[("dist/app.js", "vendor/app.js")],
-    );
+    let task = consuming_task(&relative.to_string_lossy(), &[(
+        "dist/app.js",
+        "vendor/app.js",
+    )]);
     let env = Environment::new();
 
     let outcome = build_action(BuildActionInput {
@@ -1453,13 +1502,10 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     .await
     .unwrap();
 
-    assert!(matches!(
-        outcome,
-        CacheOutcome::Skipped {
-            reason: CacheSkipReason::UnknownProject { .. },
-            ..
-        }
-    ));
+    assert!(matches!(outcome, CacheOutcome::Skipped {
+        reason: CacheSkipReason::UnknownProject { .. },
+        ..
+    }));
 }
 
 #[tokio::test]
@@ -1596,13 +1642,10 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
     // Which file wins would be an ordering accident, and the key would not
     // describe what the task actually reads.
     let module = cross_project_module();
-    let task = consuming_task(
-        "producer",
-        &[
-            ("dist/app.js", "vendor.js"),
-            ("dist/nested/lib.js", "vendor.js"),
-        ],
-    );
+    let task = consuming_task("producer", &[
+        ("dist/app.js", "vendor.js"),
+        ("dist/nested/lib.js", "vendor.js"),
+    ]);
     let env = Environment::new();
 
     let reason = skip_reason_for_test(BuildActionInput {
@@ -1622,6 +1665,65 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
             path: "vendor.js".to_string()
         })
     );
+}
+
+#[tokio::test]
+async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
+    let module = cross_project_module();
+    fs::write(
+        module.module_root.join("producer/dist/nested/lib.js"),
+        "built",
+    )
+    .unwrap();
+    let task = consuming_task("producer", &[
+        ("dist/app.js", "vendor.js"),
+        ("dist/nested/lib.js", "vendor.js"),
+    ]);
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await;
+
+    assert_eq!(
+        reason,
+        Some(CacheSkipReason::InputCollision {
+            path: "vendor.js".to_string()
+        })
+    );
+}
+
+#[tokio::test]
+async fn file_and_directory_prefix_inputs_are_not_cached() {
+    let module = cross_project_module();
+    let task = consuming_task("producer", &[
+        ("dist/app.js", "vendor"),
+        ("dist/nested/lib.js", "vendor/lib.js"),
+    ]);
+    let env = Environment::new();
+
+    let reason = skip_reason_for_test(BuildActionInput {
+        task: &task,
+        task_name: "consumer.bundle",
+        environment: &env,
+        cache: &module.cache,
+        workdir: &module.consumer_root,
+        project_root: &module.consumer_root,
+        module_root: &module.module_root,
+    })
+    .await;
+
+    assert!(matches!(
+        reason,
+        Some(CacheSkipReason::InputCollision { .. })
+    ));
 }
 
 #[test]

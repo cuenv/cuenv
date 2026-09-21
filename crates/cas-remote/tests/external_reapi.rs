@@ -3,7 +3,10 @@
 //! Run with:
 //! `CUENV_REAPI_TEST_ENDPOINT=grpc://127.0.0.1:9092 cargo test -p cuenv-cas-remote --test external_reapi -- --ignored`
 
-use cuenv_cas::{ActionCache, ActionResult, Cas, Digest, ExecutionMetadata};
+use cuenv_cas::{
+    ACTION_SEMANTICS_VERSION, Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command,
+    Directory, ExecutionMetadata, Platform,
+};
 use cuenv_cas_remote::{RemoteActionCache, RemoteCas, RemoteClient, RemoteConfig};
 use tempfile::TempDir;
 
@@ -35,7 +38,24 @@ async fn real_server_roundtrip() {
         .expect("stream large blob back");
     assert_eq!(tokio::fs::read(&destination).await.unwrap(), large);
 
-    let action_digest = Digest::of_bytes(b"cuenv-external-reapi-action");
+    let command_digest = cas
+        .put_bytes(&Command::default().to_canonical_bytes().unwrap())
+        .await
+        .expect("upload command");
+    let input_root_digest = cas
+        .put_bytes(&Directory::default().to_canonical_bytes().unwrap())
+        .await
+        .expect("upload input root");
+    let action = Action {
+        command_digest,
+        input_root_digest,
+        platform: Platform::default(),
+        action_semantics_version: ACTION_SEMANTICS_VERSION,
+    };
+    let action_digest = cas
+        .put_bytes(&action.to_canonical_bytes().unwrap())
+        .await
+        .expect("upload action");
     let result = ActionResult {
         exit_code: 0,
         stdout_digest: Some(small_digest),

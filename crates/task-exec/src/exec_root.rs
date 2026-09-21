@@ -11,6 +11,7 @@
 use cuenv_core::{Error, Result};
 use cuenv_vcs::HashedInput;
 use sha2::{Digest as _, Sha256};
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -110,6 +111,18 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
     Ok(root)
 }
 
+/// Inputs to [`project_outputs`].
+pub struct ProjectOutputs<'a> {
+    /// Root containing the completed task's outputs.
+    pub exec_root: &'a Path,
+    /// Live workspace directory that owns the declarations.
+    pub workdir: &'a Path,
+    /// Paths produced by this invocation.
+    pub resolved: &'a [PathBuf],
+    /// Paths currently owned by the declarations in the live workspace.
+    pub existing: &'a [PathBuf],
+}
+
 /// Copy the task's declared outputs out of the exec root and into `workdir`.
 ///
 /// Without this the user would run a build and find nothing built: the exec
@@ -126,21 +139,35 @@ pub fn prepare(cache_root: &Path, action_digest: &str, inputs: &[HashedInput]) -
 /// # Errors
 ///
 /// Returns an error if an output cannot be copied into `workdir`.
-pub fn project_outputs(exec_root: &Path, workdir: &Path, outputs: &[PathBuf]) -> Result<()> {
-    for relative in outputs {
-        let source = safe_join(exec_root, relative)?;
-        if !source.exists() {
-            continue;
-        }
-        let destination = secure_destination(workdir, relative)?;
+pub fn project_outputs(input: ProjectOutputs<'_>) -> Result<()> {
+    let ProjectOutputs {
+        exec_root,
+        workdir,
+        resolved,
+        existing,
+    } = input;
+    reject_symlink_base(workdir)?;
+    reject_overlapping_paths(resolved)?;
+
+    // Validate and copy every new output before changing the live workspace.
+    // A deep symlink or read error therefore leaves the previous good output
+    // untouched.
+    let staging = tempfile::Builder::new()
+        .prefix(".cuenv-project-")
+        .tempdir_in(workdir)
+        .map_err(|e| Error::io_with_path("create output staging directory", workdir, e))?;
+    for relative in resolved {
+        let source = secure_source(exec_root, relative)?;
+        let destination = safe_join(staging.path(), relative)?;
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
-                Error::io_with_path("create output directory", parent.to_path_buf(), e)
+                Error::io_with_path("create staged output directory", parent.to_path_buf(), e)
             })?;
         }
         project_entry(&source, &destination)?;
     }
-    Ok(())
+
+    commit_staged_outputs(staging.path(), workdir, resolved, existing)
 }
 
 /// Copy one output entry, recursing into directories.
@@ -180,6 +207,139 @@ fn project_entry(source: &Path, destination: &Path) -> Result<()> {
         .map_err(|e| Error::io_with_path("project output", destination.to_path_buf(), e))
 }
 
+/// Install a complete staged output set and remove stale owned paths.
+///
+/// Existing outputs move to a same-filesystem backup before the new set is
+/// installed. Any installation failure restores that backup, so a cache hit
+/// or successful task cannot leave a half-updated workspace.
+pub(crate) fn commit_staged_outputs(
+    staging: &Path,
+    workdir: &Path,
+    resolved: &[PathBuf],
+    existing: &[PathBuf],
+) -> Result<()> {
+    reject_symlink_base(workdir)?;
+    reject_overlapping_paths(resolved)?;
+
+    let backup = tempfile::Builder::new()
+        .prefix(".cuenv-backup-")
+        .tempdir_in(workdir)
+        .map_err(|e| Error::io_with_path("create output backup directory", workdir, e))?;
+    let owned_roots = collapse_owned_roots(existing, resolved);
+    let mut backed_up = Vec::new();
+
+    for relative in &owned_roots {
+        let destination = secure_destination(workdir, relative)?;
+        match std::fs::symlink_metadata(&destination) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(Error::io_with_path(
+                    "inspect existing output",
+                    destination,
+                    error,
+                ));
+            }
+        }
+        let saved = safe_join(backup.path(), relative)?;
+        if let Some(parent) = saved.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                Error::io_with_path("create output backup parent", parent.to_path_buf(), e)
+            })?;
+        }
+        std::fs::rename(&destination, &saved)
+            .map_err(|e| Error::io_with_path("backup existing output", destination.clone(), e))?;
+        backed_up.push((saved, destination));
+    }
+
+    let mut installed = Vec::new();
+    for relative in resolved {
+        let source = safe_join(staging, relative)?;
+        let destination = secure_destination(workdir, relative)?;
+        if let Some(parent) = destination.parent() {
+            if let Err(error) = std::fs::create_dir_all(parent) {
+                rollback_outputs(&installed, &backed_up);
+                return Err(Error::io_with_path(
+                    "create output directory",
+                    parent.to_path_buf(),
+                    error,
+                ));
+            }
+        }
+        if let Err(error) = std::fs::rename(&source, &destination) {
+            rollback_outputs(&installed, &backed_up);
+            return Err(Error::io_with_path(
+                "install projected output",
+                destination,
+                error,
+            ));
+        }
+        installed.push(destination);
+    }
+
+    Ok(())
+}
+
+fn collapse_owned_roots(existing: &[PathBuf], resolved: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = existing
+        .iter()
+        .chain(resolved)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| path.components().count());
+
+    candidates.into_iter().fold(Vec::new(), |mut roots, path| {
+        if !roots.iter().any(|root: &PathBuf| path.starts_with(root)) {
+            roots.push(path);
+        }
+        roots
+    })
+}
+
+fn rollback_outputs(installed: &[PathBuf], backed_up: &[(PathBuf, PathBuf)]) {
+    for path in installed.iter().rev() {
+        if let Err(error) = remove_existing(path) {
+            tracing::error!(path = %path.display(), %error, "could not remove partially installed output");
+        }
+    }
+    for (saved, destination) in backed_up.iter().rev() {
+        if let Some(parent) = destination.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            tracing::error!(path = %parent.display(), %error, "could not recreate output parent during rollback");
+            continue;
+        }
+        if let Err(error) = std::fs::rename(saved, destination) {
+            tracing::error!(
+                from = %saved.display(),
+                to = %destination.display(),
+                %error,
+                "could not restore output during rollback"
+            );
+        }
+    }
+}
+
+fn reject_overlapping_paths(paths: &[PathBuf]) -> Result<()> {
+    let mut sorted = paths.to_vec();
+    sorted.sort();
+    for (index, path) in sorted.iter().enumerate() {
+        if sorted
+            .iter()
+            .skip(index + 1)
+            .any(|candidate| candidate.starts_with(path))
+        {
+            return Err(Error::configuration(format!(
+                "declared outputs overlap at '{}'",
+                path.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Join `relative` onto `base`, refusing anything that escapes it.
 ///
 /// `..` in a declared input or output would write outside the sandbox, which
@@ -202,7 +362,32 @@ fn safe_join(base: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 fn secure_destination(base: &Path, relative: &Path) -> Result<PathBuf> {
+    reject_symlink_base(base)?;
     let destination = safe_join(base, relative)?;
+    reject_symlink_parents(base, relative, "project output")?;
+    Ok(destination)
+}
+
+fn secure_source(base: &Path, relative: &Path) -> Result<PathBuf> {
+    reject_symlink_base(base)?;
+    let source = safe_join(base, relative)?;
+    reject_symlink_parents(base, relative, "read output")?;
+    Ok(source)
+}
+
+fn reject_symlink_base(base: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(base)
+        .map_err(|error| Error::io_with_path("inspect output root", base, error))?;
+    if metadata.file_type().is_symlink() {
+        return Err(Error::configuration(format!(
+            "refusing to use symlink output root '{}'",
+            base.display()
+        )));
+    }
+    Ok(())
+}
+
+fn reject_symlink_parents(base: &Path, relative: &Path, operation: &str) -> Result<()> {
     let mut current = base.to_path_buf();
     let mut components = relative.components().peekable();
     while let Some(component) = components.next() {
@@ -216,7 +401,7 @@ fn secure_destination(base: &Path, relative: &Path) -> Result<PathBuf> {
         match std::fs::symlink_metadata(&current) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(Error::configuration(format!(
-                    "refusing to project output through symlink parent '{}'",
+                    "refusing to {operation} through symlink parent '{}'",
                     current.display()
                 )));
             }
@@ -228,7 +413,7 @@ fn secure_destination(base: &Path, relative: &Path) -> Result<PathBuf> {
             }
         }
     }
-    Ok(destination)
+    Ok(())
 }
 
 fn remove_existing(path: &Path) -> Result<()> {
@@ -276,6 +461,29 @@ fn place(input: &HashedInput, destination: &Path) -> Result<()> {
             input.relative_path.display()
         )));
     }
+    normalize_executable(destination, input.is_executable)?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn normalize_executable(path: &Path, is_executable: bool) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|e| Error::io_with_path("inspect staged input mode", path, e))?
+        .permissions();
+    let mode = if is_executable {
+        permissions.mode() | 0o111
+    } else {
+        permissions.mode() & !0o111
+    };
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|e| Error::io_with_path("normalize staged input mode", path, e))
+}
+
+#[cfg(not(unix))]
+fn normalize_executable(_path: &Path, _is_executable: bool) -> Result<()> {
     Ok(())
 }
 
@@ -382,7 +590,13 @@ mod tests {
         fs::write(exec_root.join("target/app"), "built").unwrap();
         fs::write(exec_root.join("scratch.tmp"), "noise").unwrap();
 
-        project_outputs(&exec_root, &workdir, &[PathBuf::from("target/app")]).unwrap();
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[PathBuf::from("target/app")],
+            existing: &[],
+        })
+        .unwrap();
 
         assert_eq!(
             fs::read_to_string(workdir.join("target/app")).unwrap(),
@@ -402,7 +616,13 @@ mod tests {
         fs::create_dir_all(&exec_root).unwrap();
         fs::create_dir_all(&workdir).unwrap();
 
-        project_outputs(&exec_root, &workdir, &[PathBuf::from("target/app")]).unwrap();
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[],
+            existing: &[],
+        })
+        .unwrap();
         assert!(!workdir.join("target/app").exists());
     }
 
@@ -420,7 +640,13 @@ mod tests {
         fs::write(exec_root.join("dist/nested/chunk.js"), "chunk").unwrap();
         fs::write(workdir.join("dist/stale.js"), "stale").unwrap();
 
-        project_outputs(&exec_root, &workdir, &[PathBuf::from("dist")]).unwrap();
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[PathBuf::from("dist")],
+            existing: &[PathBuf::from("dist")],
+        })
+        .unwrap();
 
         assert_eq!(
             fs::read_to_string(workdir.join("dist/app.js")).unwrap(),
@@ -444,7 +670,13 @@ mod tests {
         // The workspace holds a *file* named `dist` from some earlier run.
         fs::write(workdir.join("dist"), "stale file").unwrap();
 
-        project_outputs(&exec_root, &workdir, &[PathBuf::from("dist")]).unwrap();
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[PathBuf::from("dist")],
+            existing: &[PathBuf::from("dist")],
+        })
+        .unwrap();
         assert_eq!(
             fs::read_to_string(workdir.join("dist/app.js")).unwrap(),
             "built"
@@ -461,7 +693,33 @@ mod tests {
         fs::write(exec_root.join("out"), "fresh").unwrap();
         fs::write(workdir.join("out"), "stale").unwrap();
 
-        project_outputs(&exec_root, &workdir, &[PathBuf::from("out")]).unwrap();
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[PathBuf::from("out")],
+            existing: &[PathBuf::from("out")],
+        })
+        .unwrap();
         assert_eq!(fs::read_to_string(workdir.join("out")).unwrap(), "fresh");
+    }
+
+    #[test]
+    fn an_absent_output_removes_the_previous_owned_path() {
+        let tmp = TempDir::new().unwrap();
+        let exec_root = tmp.path().join("exec");
+        let workdir = tmp.path().join("workdir");
+        fs::create_dir_all(&exec_root).unwrap();
+        fs::create_dir_all(&workdir).unwrap();
+        fs::write(workdir.join("stale.txt"), "old").unwrap();
+
+        project_outputs(ProjectOutputs {
+            exec_root: &exec_root,
+            workdir: &workdir,
+            resolved: &[],
+            existing: &[PathBuf::from("stale.txt")],
+        })
+        .unwrap();
+
+        assert!(!workdir.join("stale.txt").exists());
     }
 }

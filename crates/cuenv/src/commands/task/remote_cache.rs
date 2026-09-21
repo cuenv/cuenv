@@ -209,9 +209,11 @@ pub async fn build(
         "remote cache connected"
     );
 
-    let mut cas = LayeredCas::new(local.cas, Arc::new(remote_cas));
+    let remote_cas = Arc::new(remote_cas) as Arc<dyn Cas>;
+    let mut cas = LayeredCas::new(local.cas, remote_cas.clone());
     let mut action_cache =
-        LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)));
+        LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)))
+            .with_remote_cas(remote_cas);
     if upload {
         cas = cas.with_push();
         action_cache = action_cache.with_push();

@@ -199,7 +199,6 @@ fn test_cache_hits_and_invalidation() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_mapping_error_undeclared_output() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
@@ -226,7 +225,6 @@ fn test_mapping_error_undeclared_output() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_path_safety_outside_git_root() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
@@ -253,7 +251,6 @@ fn test_path_safety_outside_git_root() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_collision_duplicate_dest() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();

@@ -3,14 +3,12 @@ title: Remote caching
 description: Share cuenv's task cache between machines with a Bazel Remote Execution API server
 ---
 
-cuenv's task cache speaks the [Bazel Remote Execution API v2][reapi]. Any REAPI
-cache works — [bazel-remote][], [buildbarn][], BuildBuddy, NativeLink, EngFlow
-and Namespace all expose the same `grpcs://` endpoint that Bazel's
-`--remote_cache` takes.
+cuenv's task cache speaks the [Bazel Remote Execution API v2][reapi]. The
+endpoint must provide ActionCache, ContentAddressableStorage, Capabilities, and
+ByteStream services using SHA-256 digests. cuenv verifies those capabilities
+during connection instead of assuming compatibility from a provider name.
 
 [reapi]: https://github.com/bazelbuild/remote-apis
-[bazel-remote]: https://github.com/buchgr/bazel-remote
-[buildbarn]: https://github.com/buildbarn
 
 ## Configuration
 
@@ -29,8 +27,10 @@ schema.#Project & {
 }
 ```
 
-Reads fall through to the remote and whatever is fetched is kept locally, so
-the second read of a blob is local.
+Reads fall through to the remote and whatever is fetched is streamed,
+digest-verified, and kept locally, so the second read of a blob is local. A
+remote action result is promoted into the local action cache only after all of
+its streams and outputs have been verified and committed successfully.
 
 ## Uploads are currently disabled
 
@@ -84,8 +84,9 @@ cache: remote: {
 }
 ```
 
-If the named variable is unset, cuenv warns and continues anonymously. A
-missing token degrades the cache; it does not fail the build.
+If the named variable is unset, cuenv warns and may continue with anonymous
+reads, but configured authentication never silently becomes an anonymous
+writer. A missing token degrades the cache; it does not fail the build.
 
 Bazel's credential-helper protocol is not supported yet. Providers that issue
 short-lived credentials through a helper — including Namespace — need the

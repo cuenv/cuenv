@@ -32,6 +32,16 @@ pub trait ActionCache: Send + Sync {
     ///
     /// Returns an error if the result cannot be encoded or persisted.
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
+
+    /// Persist a result only after its referenced blobs have been fetched,
+    /// verified, and committed successfully.
+    ///
+    /// Most caches store it like a normal update. A layered remote cache
+    /// overrides this to promote the verified candidate into its local action
+    /// cache without publishing the same result back to the remote.
+    async fn commit_verified(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        self.update(action_digest, result).await
+    }
 }
 
 /// Filesystem-backed action cache, laid out as:

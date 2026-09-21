@@ -190,7 +190,8 @@ impl RemoteCas {
         let request = self.client.request(ReadRequest {
             resource_name: self.read_resource_name(digest),
             read_offset: 0,
-            read_limit: 0,
+            read_limit: i64::try_from(digest.size_bytes)
+                .map_err(|_| Error::protocol("ByteStream.Read", "blob size exceeds i64"))?,
         })?;
         let mut stream = self
             .bytestream_client()
@@ -449,7 +450,9 @@ impl RemoteCas {
             .request(ReadRequest {
                 resource_name: self.read_resource_name(digest),
                 read_offset: 0,
-                read_limit: 0,
+                read_limit: i64::try_from(digest.size_bytes).map_err(|_| {
+                    cuenv_cas::Error::serialization("download size exceeds the REAPI signed limit")
+                })?,
             })
             .map_err(cuenv_cas::Error::from)?;
         let mut stream = self

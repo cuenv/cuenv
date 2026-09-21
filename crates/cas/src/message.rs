@@ -114,11 +114,13 @@ pub struct Tree {
 /// - `2` — canonical encoding moved from `serde_json` to REAPI protobuf, and
 ///   a command's declared outputs are sorted into REAPI's merged
 ///   `output_paths`. Every digest changes.
+/// - `3` — sandbox retries use fresh input roots, output replacement is
+///   complete and transactional, and path/collision validation is stricter.
 ///
 /// On the wire this travels in REAPI's `Action.salt`, which exists to place
 /// an action into a separate cache namespace without altering what it does.
 /// See [`crate::reapi::salt_for`].
-pub const ACTION_SEMANTICS_VERSION: u32 = 2;
+pub const ACTION_SEMANTICS_VERSION: u32 = 3;
 
 /// An action to execute.
 ///

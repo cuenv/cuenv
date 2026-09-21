@@ -183,13 +183,10 @@ impl Project {
     ) {
         match node {
             TaskNode::Task(task) => {
-                declared.insert(
-                    path.to_string(),
-                    DeclaredTaskOutputs {
-                        outputs: task.outputs.clone(),
-                        base: task_output_base(task),
-                    },
-                );
+                declared.insert(path.to_string(), DeclaredTaskOutputs {
+                    outputs: task.outputs.clone(),
+                    base: task_output_base(task),
+                });
             }
             TaskNode::Group(group) => {
                 for (child, sub_node) in &group.children {
@@ -290,7 +287,7 @@ impl Project {
                                         .iter()
                                         .map(|output| Mapping {
                                             from: output.clone(),
-                                            to: output.clone(),
+                                            to: implicit_output_destination(output),
                                         })
                                         .collect()
                                 });
@@ -350,6 +347,25 @@ fn task_output_base(task: &Task) -> Option<PathBuf> {
         None => source_base(false),
     };
     normalize_relative(&joined)
+}
+
+/// Preserve a producer glob's matched suffix at the same relative location.
+///
+/// Mapping `dist/**/*.js` to the literal glob string would create paths such
+/// as `dist/**/*.js/chunk.js` in the consumer. The non-glob prefix (`dist`) is
+/// the layout the producer actually wrote and therefore the implicit `to`.
+fn implicit_output_destination(output: &str) -> String {
+    output
+        .split('/')
+        .take_while(|segment| {
+            !segment.contains('*')
+                && !segment.contains('{')
+                && !segment.contains('?')
+                && !segment.contains('[')
+        })
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn normalize_relative(path: &Path) -> Option<PathBuf> {

@@ -164,26 +164,24 @@ impl LocalCas {
         }
     }
 
-    /// Atomically rename `src` into `dst`, tolerating the case where another
-    /// writer populated the same digest concurrently.
-    fn install(src: &Path, dst: &Path, digest: &Digest) -> Result<()> {
+    /// Atomically persist `src` into `dst`.
+    ///
+    /// `NamedTempFile::persist` uses replacement semantics on Windows as well
+    /// as Unix. Removing a corrupt destination before rename creates a window
+    /// where readers observe a missing blob and lets concurrent repair writers
+    /// delete one another's winner.
+    fn install(src: tempfile::NamedTempFile, dst: &Path, digest: &Digest) -> Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
-        match fs::rename(src, dst) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                // Windows does not replace an existing destination. A
-                // concurrent valid writer wins; a corrupt destination is
-                // removed and repaired with this verified temporary file.
+        match src.persist(dst) {
+            Ok(_) => Ok(()),
+            Err(error) => {
                 if Self::contains_valid_blob(dst, digest)? {
-                    let _ = fs::remove_file(src);
                     return Ok(());
                 }
-                fs::remove_file(dst).map_err(|error| Error::io(error, dst, "remove corrupt"))?;
-                fs::rename(src, dst).map_err(|error| Error::io(error, dst, "rename"))
+                Err(Error::io(error.error, dst, "persist"))
             }
-            Err(e) => Err(Error::io(e, dst, "rename")),
         }
     }
 }
@@ -235,10 +233,7 @@ impl Cas for LocalCas {
         tmp.as_file()
             .sync_all()
             .map_err(|e| Error::io(e, tmp.path(), "fsync"))?;
-        let (_, tmp_path) = tmp
-            .keep()
-            .map_err(|e| Error::io(e.error, &tmp_dir, "keep"))?;
-        Self::install(&tmp_path, &dst, &digest)?;
+        Self::install(tmp, &dst, &digest)?;
         trace!(digest = %digest, "CAS put_bytes: installed");
         Ok(digest)
     }
@@ -279,10 +274,7 @@ impl Cas for LocalCas {
         tmp.as_file()
             .sync_all()
             .map_err(|e| Error::io(e, tmp.path(), "fsync"))?;
-        let (_, tmp_path) = tmp
-            .keep()
-            .map_err(|e| Error::io(e.error, &tmp_dir, "keep"))?;
-        Self::install(&tmp_path, &dst, &digest)?;
+        Self::install(tmp, &dst, &digest)?;
         trace!(digest = %digest, "CAS put_file: copied");
         Ok(digest)
     }

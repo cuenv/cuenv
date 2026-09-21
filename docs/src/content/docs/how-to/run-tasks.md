@@ -241,7 +241,12 @@ cuenv task build --backend dagger
 ```
 
 :::note[Dagger backend is Partial]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage.
+The `dagger` backend is optional and gated behind the `dagger-backend` build
+feature; host execution is the default and fully supported. Dagger currently
+mounts the full project instead of cuenv's resolved input root, so task-result
+caching is disabled for Dagger even when a task declares a cache policy. See
+[the Dagger backend explainer](/explanation/dagger-backend/) and [Schema
+status](/reference/schema/status/) for current coverage.
 :::
 
 ### Cache helpers
@@ -256,7 +261,10 @@ phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
 :::
 
 On a cache hit, cuenv restores the task's declared `outputs` into its working
-directory automatically — there is no flag to enable it.
+directory automatically — there is no flag to enable it. Output replacement is
+transactional: all files are staged and validated before previous owned paths
+are replaced, and declared outputs omitted by the new result are removed
+instead of leaving stale artifacts behind.
 
 ### Overriding the cache for one run
 
@@ -266,7 +274,7 @@ something looks wrong:
 
 | Value | Effect |
 | --- | --- |
-| `off` (also `false`, `0`, `none`) | Ignore the cache entirely |
+| `off` (also `false`, `0`, `none`) | Disable the task-result cache; directory isolation remains enabled |
 | `read` | Serve existing entries, record nothing |
 | `write` | Ignore existing entries, record fresh ones |
 | `read-write` (also `on`, `true`, `1`) | Default behaviour |
@@ -364,9 +372,10 @@ Two rules follow from recording files at their `to` path:
 
 - `from` bounds what is hashed. A directory or glob keeps its internal
   structure below `to`; a single file lands exactly on `to`.
-- Two inputs may not claim the same workspace path. A mapping whose `to`
-  collides with a local input — or with another mapping — makes the task
-  uncacheable, because which file the task would see is an ordering accident.
+- Two inputs may not claim the same workspace path or a file/directory prefix
+  of one another. This remains an error when the bytes are identical: ownership
+  and executable mode can still differ, so accepting it would make precedence
+  an ordering accident.
 
 A reference that resolves to neither a discovered project nor a safe workspace
 path has nothing honest to hash. Under the default directory sandbox, cuenv
@@ -684,8 +693,9 @@ tasks: {
 }
 ```
 
-An undeclared read **fails** instead of silently succeeding, and an undeclared
-write is lost on the first run rather than mysteriously on the hundredth.
+An undeclared **relative workspace** read fails instead of silently
+succeeding, and an undeclared write is lost on the first run rather than
+mysteriously on the hundredth.
 Bazel and buck2 both sandbox by default for the same reason: a declaration
 that is only enforced when you ask for it is not a declaration, it is a
 comment. It is also what makes a cache entry worth sharing — an entry recorded
@@ -720,9 +730,16 @@ or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
 directory sandbox. If an input declaration cannot be resolved safely, the
 task errors rather than silently running against the live checkout.
 
-The Dagger backend provides its own container isolation instead of a host exec
-root. Explicitly requesting `hermetic: sandbox: "dir"` with Dagger is rejected
-because cuenv cannot honestly provide that named host strategy.
+The Dagger backend provides container isolation instead of a host exec root,
+but currently mounts the full project. Its task-result cache is disabled until
+it consumes cuenv's resolved input root and exports declared outputs through
+the same projection path. Explicitly requesting `hermetic: sandbox: "dir"`
+with Dagger is rejected because cuenv cannot honestly provide that named host
+strategy.
+
+Retries rebuild a fresh verified execution root for every attempt. Files left
+by a failed attempt therefore cannot make a later retry succeed and then be
+published under the original clean-input action key.
 
 Stricter tiers (OS namespaces on Linux, seatbelt on macOS) are absent from the
 schema until they are implemented, for that same reason.

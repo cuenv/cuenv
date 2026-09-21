@@ -73,6 +73,7 @@ impl WalkHasher {
 
             if looks_like_glob {
                 let base_dir = extract_glob_base(trimmed);
+                reject_symlink_components(&self.workspace_root, Path::new(&base_dir))?;
                 let glob = Glob::new(trimmed).map_err(|e| {
                     Error::pattern(format!("invalid glob pattern `{trimmed}`: {e}"))
                 })?;
@@ -82,6 +83,7 @@ impl WalkHasher {
                     .map_err(|e| Error::pattern(format!("failed to build globset: {e}")))?;
                 dirs_to_walk.push((base_dir, set));
             } else if abs.is_dir() {
+                reject_symlink_components(&self.workspace_root, Path::new(trimmed))?;
                 let glob_pat = format!("{}/**/*", trimmed.trim_end_matches('/'));
                 let glob = Glob::new(&glob_pat).map_err(|e| {
                     Error::pattern(format!("invalid glob pattern `{glob_pat}`: {e}"))
@@ -101,6 +103,7 @@ impl WalkHasher {
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
+            reject_symlink_components(&self.workspace_root, Path::new(raw))?;
             let metadata =
                 fs::symlink_metadata(&abs).map_err(|e| Error::io(e, &abs, "metadata"))?;
             if metadata.file_type().is_symlink() {
@@ -114,7 +117,7 @@ impl WalkHasher {
                     let (hash, size) = Self::hash_file(&abs)?;
                     results.push(HashedInput {
                         relative_path: rel,
-                        absolute_path: canonical_or_abs(&abs),
+                        absolute_path: canonical_input(&self.workspace_root, &abs)?,
                         sha256: hash,
                         size,
                         is_executable: is_executable(&abs)?,
@@ -169,7 +172,7 @@ impl WalkHasher {
                     let (hash, size) = Self::hash_file(path)?;
                     results.push(HashedInput {
                         relative_path: rel_norm,
-                        absolute_path: canonical_or_abs(path),
+                        absolute_path: canonical_input(&self.workspace_root, path)?,
                         sha256: hash,
                         size,
                         is_executable: is_executable(path)?,
@@ -214,6 +217,33 @@ fn validate_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject a path whose existing prefix traverses a symlink.
+///
+/// `WalkDir::follow_links(false)` only controls entries encountered after it
+/// opens its root. A declaration such as `link/secret` would otherwise follow
+/// `link` before the walker sees it and could escape the workspace.
+fn reject_symlink_components(root: &Path, relative: &Path) -> Result<()> {
+    let mut current = root.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(Error::pattern(format!(
+                    "symlink inputs are not supported: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(Error::io(error, &current, "metadata")),
+        }
+    }
+    Ok(())
+}
+
 /// Strip `.` components from a relative path so the result is a clean
 /// workspace-relative identifier.
 fn normalize_rel_path(p: &Path) -> PathBuf {
@@ -226,17 +256,19 @@ fn normalize_rel_path(p: &Path) -> PathBuf {
     out
 }
 
-/// Canonicalize a path, falling back to the absolute form when canonicalize fails.
-fn canonical_or_abs(p: &Path) -> PathBuf {
-    fs::canonicalize(p).unwrap_or_else(|_| {
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(p)
-        }
-    })
+/// Canonicalize an input and prove it remains beneath the workspace root.
+fn canonical_input(root: &Path, path: &Path) -> Result<PathBuf> {
+    let canonical_root = fs::canonicalize(root).map_err(|e| Error::io(e, root, "canonicalize"))?;
+    let canonical = fs::canonicalize(path).map_err(|e| Error::io(e, path, "canonicalize input"))?;
+    if canonical.starts_with(&canonical_root) {
+        Ok(canonical)
+    } else {
+        Err(Error::pattern(format!(
+            "input '{}' resolves outside workspace '{}'",
+            path.display(),
+            root.display()
+        )))
+    }
 }
 
 #[cfg(unix)]
@@ -444,6 +476,34 @@ mod tests {
     #[test]
     fn normalize_rel_path_strips_dots() {
         assert_eq!(normalize_rel_path(Path::new("./a/b")), PathBuf::from("a/b"));
-        assert_eq!(normalize_rel_path(Path::new("a/../b")), PathBuf::from("b"));
+    }
+
+    #[test]
+    fn traversal_patterns_are_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let hasher = WalkHasher::new(tmp.path());
+        let error = hasher.resolve_sync(&["a/../b".to_string()]).unwrap_err();
+        assert!(error.to_string().contains("must stay within the workspace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_input_ancestors_are_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("secret.txt"), "secret").unwrap();
+        symlink(outside.path(), workspace.path().join("link")).unwrap();
+
+        let hasher = WalkHasher::new(workspace.path());
+        let error = hasher
+            .resolve_sync(&["link/secret.txt".to_string()])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("symlink inputs are not supported")
+        );
     }
 }

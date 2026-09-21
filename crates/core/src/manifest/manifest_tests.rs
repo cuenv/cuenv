@@ -765,13 +765,41 @@ fn consuming_a_task_output_expands_to_the_producers_declared_outputs() {
         map: None,
     }));
 
-    assert_eq!(
-        mapped_inputs(consumer_of(&project)),
-        vec![
-            ("dist/app.js", "dist/app.js"),
-            ("dist/app.css", "dist/app.css")
-        ]
-    );
+    assert_eq!(mapped_inputs(consumer_of(&project)), vec![
+        ("dist/app.js", "dist/app.js"),
+        ("dist/app.css", "dist/app.css")
+    ]);
+}
+
+#[test]
+fn implicit_glob_output_mapping_uses_the_literal_prefix() {
+    let build = Task {
+        command: "make".to_string(),
+        outputs: vec!["dist/**/*.js".to_string()],
+        ..Default::default()
+    };
+    let test = Task {
+        command: "test".to_string(),
+        inputs: vec![Input::Task(TaskOutput {
+            task: "build".to_string(),
+            map: None,
+        })],
+        ..Default::default()
+    };
+    let mut project = Project::new("test");
+    project
+        .tasks
+        .insert("build".into(), TaskNode::Task(Box::new(build)));
+    project
+        .tasks
+        .insert("test".into(), TaskNode::Task(Box::new(test)));
+
+    project.expand_cross_project_references();
+
+    assert_eq!(mapped_inputs(consumer_of(&project)), vec![(
+        "dist/**/*.js",
+        "dist"
+    )]);
 }
 
 #[test]
@@ -784,10 +812,10 @@ fn an_explicit_mapping_selects_which_outputs_are_consumed() {
         }]),
     }));
 
-    assert_eq!(
-        mapped_inputs(consumer_of(&project)),
-        vec![("dist/app.js", "vendor/app.js")]
-    );
+    assert_eq!(mapped_inputs(consumer_of(&project)), vec![(
+        "dist/app.js",
+        "vendor/app.js"
+    )]);
 }
 
 #[test]
@@ -823,10 +851,10 @@ fn a_mapping_reads_from_the_producers_working_directory() {
 
     project.expand_cross_project_references();
 
-    assert_eq!(
-        mapped_inputs(consumer_of(&project)),
-        vec![("apps/web/dist/app.js", "vendor/app.js")]
-    );
+    assert_eq!(mapped_inputs(consumer_of(&project)), vec![(
+        "apps/web/dist/app.js",
+        "vendor/app.js"
+    )]);
 }
 
 #[test]

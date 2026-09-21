@@ -18,9 +18,42 @@
 
 use async_trait::async_trait;
 use cuenv_cas::{ActionCache, ActionResult, Cas, Digest, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, warn};
+use uuid::Uuid;
+
+struct TemporaryFile {
+    path: PathBuf,
+}
+
+impl TemporaryFile {
+    fn new() -> Result<Self> {
+        let path = std::env::temp_dir().join(format!("cuenv-layered-cas-{}.tmp", Uuid::new_v4()));
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| cuenv_cas::Error::io(error, &path, "create temporary file"))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn verify_digest(expected: &Digest, actual: &Digest) -> Result<()> {
+    (expected == actual).then_some(()).ok_or_else(|| {
+        cuenv_cas::Error::digest_mismatch(expected.to_resource(), actual.to_resource())
+    })
+}
 
 /// A [`Cas`] that reads through a local store to a remote one.
 #[derive(Clone)]
@@ -78,6 +111,28 @@ impl LayeredCas {
             }
         }
     }
+
+    async fn fetch_through_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
+        let downloaded = TemporaryFile::new()?;
+        if let Err(error) = self.remote.get_to_file(digest, downloaded.path()).await {
+            debug!(digest = %digest, error = %error, "remote CAS did not serve the blob");
+            return self.local.get_to_file(digest, destination).await;
+        }
+
+        let local_digest = self.local.put_file(downloaded.path()).await?;
+        verify_digest(digest, &local_digest)?;
+        self.local.get_to_file(digest, destination).await
+    }
+
+    async fn push_file_snapshot(&self, digest: &Digest) -> Result<()> {
+        let snapshot = TemporaryFile::new()?;
+        self.local.get_to_file(digest, snapshot.path()).await?;
+        let snapshot_digest = self.local.put_file(snapshot.path()).await?;
+        verify_digest(digest, &snapshot_digest)?;
+
+        let remote_digest = self.remote.put_file(snapshot.path()).await?;
+        verify_digest(digest, &remote_digest)
+    }
 }
 
 #[async_trait]
@@ -111,12 +166,7 @@ impl Cas for LayeredCas {
         if self.local.contains(digest).await? {
             return self.local.get_to_file(digest, destination).await;
         }
-        // Populate the local store first so the write to `destination` is a
-        // local copy and the blob stays for next time.
-        if self.fetch_through(digest).await.is_some() {
-            return self.local.get_to_file(digest, destination).await;
-        }
-        self.local.get_to_file(digest, destination).await
+        self.fetch_through_file(digest, destination).await
     }
 
     async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
@@ -132,7 +182,7 @@ impl Cas for LayeredCas {
     async fn put_file(&self, source: &Path) -> Result<Digest> {
         let digest = self.local.put_file(source).await?;
         if self.push
-            && let Err(e) = self.remote.put_file(source).await
+            && let Err(e) = self.push_file_snapshot(&digest).await
         {
             warn!(digest = %digest, error = %e, "remote CAS upload failed; keeping local copy");
         }
@@ -145,6 +195,7 @@ impl Cas for LayeredCas {
 pub struct LayeredActionCache {
     local: Arc<dyn ActionCache>,
     remote: Arc<dyn ActionCache>,
+    remote_cas: Option<Arc<dyn Cas>>,
     push: bool,
 }
 
@@ -163,8 +214,17 @@ impl LayeredActionCache {
         Self {
             local,
             remote,
+            remote_cas: None,
             push: false,
         }
+    }
+
+    /// Supply the remote CAS used to verify that an action result is complete
+    /// before publishing it remotely.
+    #[must_use]
+    pub fn with_remote_cas(mut self, remote_cas: Arc<dyn Cas>) -> Self {
+        self.remote_cas = Some(remote_cas);
+        self
     }
 
     /// Also push locally-recorded results to the remote cache.
@@ -202,12 +262,39 @@ impl ActionCache for LayeredActionCache {
 
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
         self.local.update(action_digest, result).await?;
-        if self.push
-            && let Err(e) = self.remote.update(action_digest, result).await
-        {
-            warn!(action = %action_digest, error = %e, "remote action cache update failed; keeping local entry");
+        if self.push {
+            let Some(remote_cas) = &self.remote_cas else {
+                warn!(
+                    action = %action_digest,
+                    "remote action result not published: no remote CAS verifier configured"
+                );
+                return Ok(());
+            };
+            let action_present = remote_cas.contains(action_digest).await.unwrap_or(false);
+            let missing = cuenv_cas::missing_blobs(remote_cas.as_ref(), result)
+                .await
+                .unwrap_or_else(|error| {
+                    warn!(action = %action_digest, %error, "could not verify remote action result blobs");
+                    vec![action_digest.clone()]
+                });
+            if !action_present || !missing.is_empty() {
+                warn!(
+                    action = %action_digest,
+                    missing = ?missing,
+                    action_present,
+                    "remote action result not published because referenced CAS blobs are incomplete"
+                );
+                return Ok(());
+            }
+            if let Err(e) = self.remote.update(action_digest, result).await {
+                warn!(action = %action_digest, error = %e, "remote action cache update failed; keeping local entry");
+            }
         }
         Ok(())
+    }
+
+    async fn commit_verified(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        self.local.update(action_digest, result).await
     }
 }
 
@@ -215,7 +302,10 @@ impl ActionCache for LayeredActionCache {
 mod tests {
     use super::*;
     use cuenv_cas::{LocalActionCache, LocalCas};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
     use tempfile::TempDir;
 
     /// A store that fails every operation, standing in for an unreachable
@@ -246,6 +336,126 @@ mod tests {
         async fn put_file(&self, _source: &Path) -> Result<Digest> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Err(cuenv_cas::Error::serialization("network is down"))
+        }
+    }
+
+    struct StreamingOnlyCas {
+        bytes: Vec<u8>,
+        get_calls: AtomicUsize,
+        get_to_file_calls: AtomicUsize,
+    }
+
+    impl StreamingOnlyCas {
+        fn new(bytes: &[u8]) -> Self {
+            Self {
+                bytes: bytes.to_vec(),
+                get_calls: AtomicUsize::new(0),
+                get_to_file_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Cas for StreamingOnlyCas {
+        async fn contains(&self, _digest: &Digest) -> Result<bool> {
+            Ok(true)
+        }
+
+        async fn get(&self, _digest: &Digest) -> Result<Vec<u8>> {
+            self.get_calls.fetch_add(1, Ordering::Relaxed);
+            Err(cuenv_cas::Error::serialization(
+                "in-memory get must not be called",
+            ))
+        }
+
+        async fn get_to_file(&self, _digest: &Digest, destination: &Path) -> Result<()> {
+            self.get_to_file_calls.fetch_add(1, Ordering::Relaxed);
+            std::fs::write(destination, &self.bytes)
+                .map_err(|error| cuenv_cas::Error::io(error, destination, "write"))
+        }
+
+        async fn put_bytes(&self, _bytes: &[u8]) -> Result<Digest> {
+            Err(cuenv_cas::Error::serialization("unexpected put_bytes"))
+        }
+
+        async fn put_file(&self, _source: &Path) -> Result<Digest> {
+            Err(cuenv_cas::Error::serialization("unexpected put_file"))
+        }
+    }
+
+    struct MutatingLocalCas {
+        inner: Arc<dyn Cas>,
+        replacement: Vec<u8>,
+        mutate_next_put: AtomicBool,
+    }
+
+    impl MutatingLocalCas {
+        fn new(inner: Arc<dyn Cas>, replacement: &[u8]) -> Self {
+            Self {
+                inner,
+                replacement: replacement.to_vec(),
+                mutate_next_put: AtomicBool::new(true),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Cas for MutatingLocalCas {
+        async fn contains(&self, digest: &Digest) -> Result<bool> {
+            self.inner.contains(digest).await
+        }
+
+        async fn get(&self, digest: &Digest) -> Result<Vec<u8>> {
+            self.inner.get(digest).await
+        }
+
+        async fn get_to_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
+            self.inner.get_to_file(digest, destination).await
+        }
+
+        async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
+            self.inner.put_bytes(bytes).await
+        }
+
+        async fn put_file(&self, source: &Path) -> Result<Digest> {
+            let digest = self.inner.put_file(source).await?;
+            if self.mutate_next_put.swap(false, Ordering::Relaxed) {
+                std::fs::write(source, &self.replacement)
+                    .map_err(|error| cuenv_cas::Error::io(error, source, "mutate test source"))?;
+            }
+            Ok(digest)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingUploadCas {
+        uploaded: Mutex<Option<Vec<u8>>>,
+    }
+
+    #[async_trait]
+    impl Cas for RecordingUploadCas {
+        async fn contains(&self, _digest: &Digest) -> Result<bool> {
+            Ok(false)
+        }
+
+        async fn get(&self, _digest: &Digest) -> Result<Vec<u8>> {
+            Err(cuenv_cas::Error::serialization("unexpected get"))
+        }
+
+        async fn get_to_file(&self, _digest: &Digest, _destination: &Path) -> Result<()> {
+            Err(cuenv_cas::Error::serialization("unexpected get_to_file"))
+        }
+
+        async fn put_bytes(&self, _bytes: &[u8]) -> Result<Digest> {
+            Err(cuenv_cas::Error::serialization("unexpected put_bytes"))
+        }
+
+        async fn put_file(&self, source: &Path) -> Result<Digest> {
+            let bytes = std::fs::read(source)
+                .map_err(|error| cuenv_cas::Error::io(error, source, "read upload"))?;
+            let digest = Digest::of_bytes(&bytes);
+            *self.uploaded.lock().unwrap() = Some(bytes);
+            Ok(digest)
         }
     }
 
@@ -344,16 +554,61 @@ mod tests {
     #[tokio::test]
     async fn get_to_file_populates_from_the_remote() {
         let local_dir = TempDir::new().unwrap();
-        let remote_dir = TempDir::new().unwrap();
         let out_dir = TempDir::new().unwrap();
-        let remote = local_cas(&remote_dir);
-        let digest = remote.put_bytes(b"materialize me").await.unwrap();
+        let local = local_cas(&local_dir);
+        let remote = Arc::new(StreamingOnlyCas::new(b"materialize me"));
+        let digest = Digest::of_bytes(b"materialize me");
 
-        let layered = LayeredCas::new(local_cas(&local_dir), remote);
+        let layered = LayeredCas::new(local.clone(), remote.clone());
         let destination = out_dir.path().join("nested/out.bin");
         layered.get_to_file(&digest, &destination).await.unwrap();
 
         assert_eq!(std::fs::read(&destination).unwrap(), b"materialize me");
+        assert!(local.contains(&digest).await.unwrap());
+        assert_eq!(remote.get_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(remote.get_to_file_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn get_to_file_rejects_a_download_with_the_wrong_digest() {
+        let local_dir = TempDir::new().unwrap();
+        let out_dir = TempDir::new().unwrap();
+        let remote = Arc::new(StreamingOnlyCas::new(b"wrong bytes"));
+        let digest = Digest::of_bytes(b"requested bytes");
+
+        let layered = LayeredCas::new(local_cas(&local_dir), remote);
+        let destination = out_dir.path().join("out.bin");
+        let error = layered
+            .get_to_file(&digest, &destination)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, cuenv_cas::Error::DigestMismatch { .. }));
+        assert!(!destination.exists());
+    }
+
+    #[tokio::test]
+    async fn put_file_uploads_the_local_snapshot_when_the_source_changes() {
+        let local_dir = TempDir::new().unwrap();
+        let source_dir = TempDir::new().unwrap();
+        let source = source_dir.path().join("source.bin");
+        std::fs::write(&source, b"original bytes").unwrap();
+
+        let local: Arc<dyn Cas> = Arc::new(MutatingLocalCas::new(
+            local_cas(&local_dir),
+            b"changed after local put",
+        ));
+        let remote = Arc::new(RecordingUploadCas::default());
+        let layered = LayeredCas::new(local, remote.clone()).with_push();
+
+        let digest = layered.put_file(&source).await.unwrap();
+
+        assert_eq!(digest, Digest::of_bytes(b"original bytes"));
+        assert_eq!(std::fs::read(&source).unwrap(), b"changed after local put");
+        assert_eq!(
+            remote.uploaded.lock().unwrap().as_deref(),
+            Some(&b"original bytes"[..])
+        );
     }
 
     fn sample_result() -> ActionResult {
@@ -378,6 +633,24 @@ mod tests {
         let layered = LayeredActionCache::new(local.clone(), remote);
         assert!(layered.lookup(&digest).await.unwrap().is_some());
         assert!(local.lookup(&digest).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_verified_remote_action_result_is_promoted_locally_only() {
+        let local_dir = TempDir::new().unwrap();
+        let remote_dir = TempDir::new().unwrap();
+        let local: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(local_dir.path()).unwrap());
+        let remote: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(remote_dir.path()).unwrap());
+
+        let digest = Digest::of_bytes(b"verified-action");
+        let result = sample_result();
+        let layered = LayeredActionCache::new(local.clone(), remote.clone()).with_push();
+        layered.commit_verified(&digest, &result).await.unwrap();
+
+        assert_eq!(local.lookup(&digest).await.unwrap(), Some(result));
+        assert!(remote.lookup(&digest).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -407,6 +680,55 @@ mod tests {
         let digest = Digest::of_bytes(b"action");
         layered.update(&digest, &sample_result()).await.unwrap();
         assert!(local.lookup(&digest).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn a_dangling_result_is_not_published_remotely() {
+        let local_dir = TempDir::new().unwrap();
+        let remote_dir = TempDir::new().unwrap();
+        let remote_cas = local_cas(&remote_dir);
+        let action_digest = remote_cas.put_bytes(b"action").await.unwrap();
+        let missing = Digest::of_bytes(b"missing output");
+        let result = ActionResult {
+            stdout_digest: Some(missing),
+            ..sample_result()
+        };
+        let local: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(local_dir.path()).unwrap());
+        let remote: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(remote_dir.path()).unwrap());
+        let layered = LayeredActionCache::new(local.clone(), remote.clone())
+            .with_remote_cas(remote_cas)
+            .with_push();
+
+        layered.update(&action_digest, &result).await.unwrap();
+
+        assert_eq!(local.lookup(&action_digest).await.unwrap(), Some(result));
+        assert!(remote.lookup(&action_digest).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_complete_result_can_be_published_remotely() {
+        let local_dir = TempDir::new().unwrap();
+        let remote_dir = TempDir::new().unwrap();
+        let remote_cas = local_cas(&remote_dir);
+        let action_digest = remote_cas.put_bytes(b"action").await.unwrap();
+        let stdout_digest = remote_cas.put_bytes(b"stdout").await.unwrap();
+        let result = ActionResult {
+            stdout_digest: Some(stdout_digest),
+            ..sample_result()
+        };
+        let local: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(local_dir.path()).unwrap());
+        let remote: Arc<dyn ActionCache> =
+            Arc::new(LocalActionCache::open(remote_dir.path()).unwrap());
+        let layered = LayeredActionCache::new(local, remote.clone())
+            .with_remote_cas(remote_cas)
+            .with_push();
+
+        layered.update(&action_digest, &result).await.unwrap();
+
+        assert_eq!(remote.lookup(&action_digest).await.unwrap(), Some(result));
     }
 
     #[tokio::test]
