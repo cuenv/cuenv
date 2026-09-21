@@ -100,7 +100,10 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
 
-    let result = executor.execute_task("read-undeclared", &task).await.unwrap();
+    let result = executor
+        .execute_task("read-undeclared", &task)
+        .await
+        .unwrap();
     assert!(
         !result.success,
         "an undeclared read must fail, not silently succeed"
@@ -215,22 +218,29 @@ async fn a_sandboxed_task_still_caches() {
 
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed(
-        "mkdir -p out && cp src.txt out/built.txt",
+        "cat /proc/sys/kernel/random/uuid; mkdir -p out && cp src.txt out/built.txt",
         &["src.txt"],
         &["out/built.txt"],
     );
 
-    executor.execute_task("build", &task).await.unwrap();
+    let first = executor.execute_task("build", &task).await.unwrap();
+    assert!(first.success, "stderr: {}", first.stderr);
+    let first_nonce = first.stdout.trim().to_string();
+    assert!(!first_nonce.is_empty());
     fs::remove_file(workspace.path().join("out/built.txt")).unwrap();
 
     let second = executor.execute_task("build", &task).await.unwrap();
     assert!(second.success);
+    assert_eq!(
+        second.stdout.trim(),
+        first_nonce,
+        "a new nonce means the task re-ran instead of hitting the cache"
+    );
     assert!(
         workspace.path().join("out/built.txt").exists(),
         "the second run must be served from cache, restoring the output"
     );
 }
-
 
 #[tokio::test]
 async fn a_plain_hermetic_task_is_sandboxed_without_asking() {

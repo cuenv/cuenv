@@ -1,15 +1,18 @@
 # Hermetic Execution and CAS: Gap Analysis and Roadmap
 
 **Date:** 2026-09-20
-**Status:** Phase 0 implemented; phases 1–4 planned
+**Status:** Phase 0 implemented. Phase 1 directory isolation is the default for cache-eligible tasks. The REAPI client is wired; upload stays off until a stricter sandbox exists. Phases 2–4 and the rest of phase 1 are still open.
 **Supersedes in practice:** the unimplemented half of
 [ADR-0008](../../src/content/docs/decisions/adrs/adr-0008-hermetic-task-execution-cache.md)
 
 ## Summary
 
 > **Reading note.** §§1–2 describe the state this document was written
-> against. Phase 0 has since shipped and fixed F3, F6, F7, F13 and F15; see
-> §5 for exactly what changed. The rest of the analysis stands.
+> against. Phase 0 fixed F3, F6, F7, F13 and F15. Directory isolation (the
+> filesystem half of F1) is now the default for cache-eligible tasks, and
+> the remote cache client (F4) is wired with uploads off. See §5 for what
+> changed. Sentences in §§1–2 that are not marked fixed still describe the
+> original gap.
 
 `cuenv` ships a content-addressed store, an action cache, and a schema field
 called `hermetic`. None of the three did what its name implies:
@@ -65,15 +68,14 @@ state this document was written against; see §5 for what replaced them.
 
 ### Blocking
 
-**F1 — `hermetic` does not isolate anything.**
-Tasks run in the project root with the full workspace visible. Any
-undeclared read is invisible to the action key, so a recorded
-`ActionResult` may be a function of files the key never saw. Every entry we
-write today is potentially unsound. This is the reason a remote cache
-cannot simply be bolted on: sharing unsound entries across machines turns a
-local annoyance into a fleet-wide wrong-answer incident.
-*Schema-coverage-matrix already concedes this: "filesystem hermeticity needs
-status callouts" (`#Task` row).*
+**F1 — `hermetic` does not isolate anything.** *[directory tier done;
+namespaces, network, and the declared environment are still open]*
+Tasks used to run in the project root with the full workspace visible. A
+cache-eligible hermetic task now runs in a per-action exec root built from
+its declared inputs, and an undeclared read fails. What remains unsound for
+a shared cache is everything `"dir"` does not close: ambient environment
+variables, the network, and symlinks. Uploads stay off until a stricter
+tier exists.
 
 **F2 — Input blobs never enter the CAS.** *[exec roots landed; the CAS
 ingest itself is still open — see Phase 1]*
@@ -87,10 +89,12 @@ key after the fact. `merkle.rs` exists for exactly this and is unwired.
 hit rate is structurally zero. Env that reaches an action must be
 *declared*, not inherited.
 
-**F4 — No remote cache.**
-Local only, under `$CUENV_CACHE_DIR` / `$XDG_CACHE_HOME/cuenv`. CI
-runners start cold every time. This is the single feature users switch
-build tools for, and moon has had it for years.
+**F4 — No remote cache.** *[client wired; uploads off by default]*
+`cuenv task` can speak REAPI to a remote action cache
+(`CUENV_REMOTE_CACHE`, or `cache.remote` in CUE). Writes require
+`CUENV_REMOTE_CACHE_UPLOAD` because a `"dir"` entry can still depend on
+the network and on ambient environment variables. HTTP/object-store
+fallback and mTLS are still open.
 
 **F5 — Caching is off by default and opts out of the monorepo case.**
 *[same-project half fixed]*
@@ -352,8 +356,10 @@ Still open:
   that could reach the network is not a cached result; it is a guess. This
   is a genuine differentiator over moon.
 - Symlink support in the input tree. **(F14)**
-- Output *directories* as REAPI Trees: `project_outputs` copies files, so a
-  declared output directory does not round-trip yet.
+- Output directories as REAPI Trees. `project_outputs` copies a declared
+  directory back into the workspace, which is enough for a local run. A
+  shared cache still wants that directory as a `Tree` message rather than
+  a flat list of files. **(F8)**
 
 *Exit (partially met):* a cache-eligible task that reads an undeclared file
 fails by default, instead of silently producing a poisoned cache entry. It can
@@ -410,9 +416,10 @@ not by hashing or copying; the cache respects a configured size budget.
 - **Done: auth.** Bearer tokens and arbitrary headers, with credentials
   redacted from every `Debug` and error message, and non-printable
   credential bytes rejected up front rather than becoming an opaque 401.
-- **Still to do: wiring.** `cuenv task` does not build a remote store yet.
-  That needs the `#Cache.remote` schema below, CLI plumbing, and the
-  decision about when writes are allowed (see §6.5).
+- **Done: wiring.** `#Cache.remote` and `CUENV_REMOTE_CACHE` build the
+  layered store inside `cuenv task`. An empty `CUENV_REMOTE_CACHE` is the
+  kill switch. Uploads stay off unless `CUENV_REMOTE_CACHE_UPLOAD` is set,
+  because `"dir"` is not yet a sound entry to share (see §6.5).
 - HTTP/object-store fallback (bazel-remote HTTP layout over S3/GCS/R2) for
   teams without a gRPC endpoint.
 - Auth: bearer headers and mTLS; read-only credentials for untrusted PR
@@ -501,10 +508,10 @@ buck2 both work this way.
 
 A consequence worth stating: `dependsOn` on its own contributes nothing to the
 key, which is also Bazel's semantics — an edge that provides no files cannot
-change your output. With filesystem isolation (F1) open, a task *can* read a
-dependency's output without declaring it, and would then get a stale hit.
-Declaring the output as an input is both the fix and the thing that buys
-early cutoff, so it is what the docs tell users to do.
+change your output. Directory isolation closes the old hole where a task
+could read a dependency's output without declaring it and still get a hit.
+Declaring the output as an input remains what buys early cutoff, so it is
+what the docs tell users to do.
 
 **Cross-project references are done.** *[fixed]* The input hasher is rooted at
 the CUE module root, not the consuming project, so a sibling project's files
@@ -528,9 +535,8 @@ hashed last, so `InputDirectoryBuilder` rejects it and the task is reported
 `InputCollision`. It is a real declaration conflict, not a detail to paper
 over.
 
-Still open: `Mapping.to` is a *materialization* destination that nothing
-creates. The key is now correct about what the task will read; Phase 1 has to
-make the task actually read it.
+`Mapping.to` is where the exec root places the referenced files. The key
+and the directory the task runs in now describe the same layout.
 
 ### 6.6 How secrets enter a cache key
 
@@ -673,8 +679,12 @@ behaviour change in task execution and caching, and therefore requires
 
 - Phase 0: property tests that identical logical inputs on different hosts
   produce identical action digests.
-- Phase 1: a fixture task that reads an undeclared file, asserted to fail
-  under `strict` and to be reported under `dir`.
+- Phase 1: `crates/task-exec/tests/sandbox_dir.rs` asserts that an
+  undeclared read fails for both a named `"dir"` sandbox and the default,
+  and that a cache hit replays stdout instead of re-executing.
+  `crates/task-exec/tests/cache_roundtrip.rs` uses the same stdout nonce,
+  because an undeclared side-effect file no longer reaches the workspace.
+  `strict` is not implemented, so there is nothing to assert for it yet.
 - Phase 2: benchmark the warm no-op run on a synthetic monorepo; assert GC
   respects the budget.
 - Phase 3: integration test against a local `bazel-remote` container.
