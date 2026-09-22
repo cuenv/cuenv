@@ -364,6 +364,12 @@ tasks: {
 }
 ```
 
+The reference is also an implicit dependency. cuenv loads the referenced
+project's task graph, runs that producer in its own project root, and only then
+hashes and materializes the mapped output for the consumer. A clean checkout
+therefore does not require the producer's output to exist before the task run
+starts.
+
 The key is a function of the referenced files' **content**, not of the
 producing task's own key. That is what gives early cutoff: a producer that
 reruns and emits identical bytes leaves every consumer's key unchanged, so the
