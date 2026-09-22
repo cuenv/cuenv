@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn no_configuration_and_no_environment_means_local_only() {
         temp_env::with_vars([(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)], || {
-            assert!(resolve(None).is_none())
+            assert!(resolve(None).is_none());
         });
     }
 
@@ -314,7 +314,7 @@ mod tests {
                     !resolve(Some(&configured("grpcs://cache:443")))
                         .unwrap()
                         .upload
-                )
+                );
             },
         );
     }

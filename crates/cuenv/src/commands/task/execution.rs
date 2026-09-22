@@ -317,11 +317,7 @@ fn resolve_external_project_root(
 ) -> Result<PathBuf> {
     if let Some(root) = project_roots.get(&request.declared_project) {
         return std::fs::canonicalize(root).map_err(|error| {
-            cuenv_core::Error::io_with_path(
-                "canonicalize referenced project",
-                root.to_path_buf(),
-                error,
-            )
+            cuenv_core::Error::io_with_path("canonicalize referenced project", root.clone(), error)
         });
     }
 
