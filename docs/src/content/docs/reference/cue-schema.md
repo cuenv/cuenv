@@ -1533,6 +1533,7 @@ ci: {
         hestia: {}
         namespaceCache: {}
         cachix: name: "my-cache"
+        trustedPublishing: cueRegistry: true
     }
 
     // Pipeline definitions
@@ -1556,6 +1557,9 @@ ci: {
 | `pipelines`    | `{[string]: #Pipeline}`     | No       | Named pipeline definitions                       |
 | `provider`     | `#ProviderConfig`           | No       | Provider-specific configuration                  |
 | `contributors` | `[...#Contributor]`         | No       | Contributors that inject tasks into the DAG      |
+
+For GitHub Actions, `trustedPublishing.cueRegistry: true` enables the CUE
+Registry OIDC contributor when the pipeline uses the `production` environment.
 
 :::note[Explicit Opt-In]
 If `providers` is not specified, **no CI workflows are emitted**. You must explicitly configure which providers to generate manifests for.

@@ -43,6 +43,11 @@ pub struct TrustedPublishingConfig {
     /// When enabled, uses `rust-lang/crates-io-auth-action` to obtain
     /// a short-lived token via OIDC for publishing to crates.io.
     pub crates_io: Option<bool>,
+    /// Enable trusted publishing for the CUE Registry
+    ///
+    /// When enabled, uses `cue-labs/registry-login-action` to obtain
+    /// a short-lived registry login via GitHub OIDC.
+    pub cue_registry: Option<bool>,
 }
 
 /// Cachix caching configuration.
@@ -207,6 +212,7 @@ mod tests {
     fn test_trusted_publishing_config_default() {
         let config = TrustedPublishingConfig::default();
         assert!(config.crates_io.is_none());
+        assert!(config.cue_registry.is_none());
     }
 
     #[test]
@@ -334,11 +340,32 @@ mod tests {
     fn test_trusted_publishing_with_crates_io() {
         let config = TrustedPublishingConfig {
             crates_io: Some(true),
+            cue_registry: None,
         };
         assert_eq!(config.crates_io, Some(true));
 
         let json = serde_json::to_string(&config).unwrap();
         let parsed: TrustedPublishingConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.crates_io, Some(true));
+    }
+
+    #[test]
+    fn test_trusted_publishing_with_cue_registry() {
+        let config = TrustedPublishingConfig {
+            crates_io: None,
+            cue_registry: Some(true),
+        };
+        let value = serde_json::to_value(&config).unwrap();
+        assert_eq!(
+            value.get("cueRegistry").and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert!(matches!(
+            value.get("cratesIo"),
+            Some(serde_json::Value::Null)
+        ));
+
+        let parsed: TrustedPublishingConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.cue_registry, Some(true));
     }
 }

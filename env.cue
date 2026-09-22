@@ -83,7 +83,6 @@ schema.#Project & {
 		environment: production: {
 			CLOUDFLARE_API_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cloudflare/password"}
 			CODECOV_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/codecov/password"}
-			CUE_REGISTRY_TOKEN: schema.#OnePasswordRef & {ref: "op://cuenv-github/cue/password"}
 			VSCE_PAT: schema.#OnePasswordRef & {ref: "op://cuenv-github/visual-studio-code/password"}
 		}
 	}
@@ -102,6 +101,7 @@ schema.#Project & {
 			xContributors.#CuenvNix,
 			xContributors.#OnePassword,
 			xCodecov.#Codecov,
+			xContributors.#CueRegistryTrustedPublishing,
 		]
 
 		provider: github: {
@@ -114,6 +114,8 @@ schema.#Project & {
 			}
 
 			hestia: {}
+
+			trustedPublishing: cueRegistry: true
 
 			artifacts: {
 				paths: [".cuenv/reports/"]
@@ -429,7 +431,7 @@ schema.#Project & {
 						echo "Error: No git tag found"
 						exit 1
 					fi
-					cue login --token=$CUE_REGISTRY_TOKEN && cue mod publish v$TAG
+					cue mod publish v$TAG
 					"""]
 				inputs: ["cue.mod/**", "schema/**"]
 			}

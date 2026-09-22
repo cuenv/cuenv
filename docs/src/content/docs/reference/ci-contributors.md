@@ -160,7 +160,7 @@ The default set is the concatenation of three groups:
 | --- | --- |
 | `#WorkspaceContributors` | `#BunWorkspace`, `#NpmWorkspace` |
 | `#CoreContributors` | `#Nix`, `#Cuenv`, `#OnePassword`, `#Infisical` |
-| `#GitHubContributors` | `#Cachix`, `#Hestia`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing` |
+| `#GitHubContributors` | `#Cachix`, `#Hestia`, `#NamespaceCache`, `#GhModels`, `#TrustedPublishing`, `#CueRegistryTrustedPublishing` |
 | `#DefaultContributors` | all of the above |
 
 Even when you include a contributor, it stays dormant until its `when` condition
@@ -458,6 +458,19 @@ Source: [`bun.cue`](https://github.com/cuenv/cuenv/blob/main/contrib/contributor
 - **Activates when:** `ci.provider.github.trustedPublishing.cratesIo` is set (`providerConfig: ["github.trustedPublishing.cratesIo"]`)
 
 Enables OIDC-based crates.io authentication with no long-lived secret.
+
+### `#CueRegistryTrustedPublishing` — CUE Registry OIDC publishing (GitHub)
+
+- **CUE id:** `trusted-publishing.cue-registry`
+- **Activates when:** `ci.provider.github.trustedPublishing.cueRegistry` is true and the pipeline environment is `production`
+- **Action:** [`cue-labs/registry-login-action`](https://github.com/cue-labs/registry-login-action)
+
+This adds the CUE Registry login action before the conventional `publish.cue`
+job's task step. The action uses GitHub OIDC and writes the CUE CLI login
+configuration; the task then runs `cue mod publish` without a long-lived
+`CUE_REGISTRY_TOKEN`. The workflow must grant `id-token: write`.
+If a provider without GitHub Actions support emits this contributor, its
+fallback command fails explicitly instead of attempting an empty action task.
 
 ## Activation conditions
 
