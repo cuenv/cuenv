@@ -678,8 +678,15 @@ behaviour change in task execution and caching, and therefore requires
 
 - Phase 0: property tests that identical logical inputs on different hosts
   produce identical action digests.
-- Phase 1: a fixture task that reads an undeclared file, asserted to fail
-  under `strict` and to be reported under `dir`.
+- Phase 1: `crates/task-exec/tests/sandbox_dir.rs` asserts that an
+  undeclared read fails for both a named `"dir"` sandbox and the default,
+  and that a cache hit replays stdout instead of re-executing.
+  `crates/task-exec/tests/cache_roundtrip.rs` uses the same stdout nonce,
+  because an undeclared side-effect file no longer reaches the workspace;
+  it also pins that `sandbox: "none"` still hits the cache without
+  spawning, and that the sandbox tier is part of the action key, so an
+  entry recorded in the checkout is never served to a sandboxed task.
+  `strict` is not implemented, so there is nothing to assert for it yet.
 - Phase 2: benchmark the warm no-op run on a synthetic monorepo; assert GC
   respects the budget.
 - Phase 3: integration test against a local `bazel-remote` container.

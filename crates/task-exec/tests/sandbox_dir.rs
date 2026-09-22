@@ -9,6 +9,7 @@
 
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_core::OutputCapture;
+use cuenv_core::environment::Environment;
 use cuenv_core::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{ExecutorConfig, TaskExecutor};
@@ -21,6 +22,23 @@ use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
+
+/// A hermetic task receives only the declared environment, so without this
+/// `sh` has no `PATH` and cannot find `cat`. The Nix Linux sandbox happens to
+/// paper over that with a standalone busybox `/bin/sh`; a macOS checkout does
+/// not. Declaring the host `PATH` makes the tests mean the same thing on both.
+fn host_path_environment() -> Environment {
+    let mut environment = Environment::new();
+    environment.set(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    );
+    environment
+}
+
+/// A shell fragment that prints 16 random bytes as hex. A cache hit replays
+/// the first run's stdout, so a repeated nonce proves no process ran.
+const PRINT_NONCE: &str = "od -An -N16 -tx1 /dev/urandom | tr -d ' \\n'; echo";
 
 fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
     let cache = TaskCacheConfig {
@@ -41,6 +59,7 @@ fn build_executor(workspace: &Path, cache_root: &Path) -> TaskExecutor {
         capture_output: OutputCapture::Capture,
         project_root: workspace.to_path_buf(),
         cache: Some(cache),
+        environment: host_path_environment(),
         ..Default::default()
     })
 }
@@ -130,9 +149,11 @@ async fn a_declared_output_is_projected_back_into_the_workspace() {
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
-    let task = sandboxed("mkdir -p out && cp src.txt out/built.txt", &["src.txt"], &[
-        "out/built.txt",
-    ]);
+    let task = sandboxed(
+        "mkdir -p out && cp src.txt out/built.txt",
+        &["src.txt"],
+        &["out/built.txt"],
+    );
 
     let result = executor.execute_task("build", &task).await.unwrap();
     assert!(result.success, "stderr: {}", result.stderr);
@@ -262,15 +283,25 @@ async fn a_sandboxed_task_still_caches() {
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
-    let task = sandboxed("mkdir -p out && cp src.txt out/built.txt", &["src.txt"], &[
-        "out/built.txt",
-    ]);
+    let task = sandboxed(
+        &format!("{PRINT_NONCE}; mkdir -p out && cp src.txt out/built.txt"),
+        &["src.txt"],
+        &["out/built.txt"],
+    );
 
-    executor.execute_task("build", &task).await.unwrap();
+    let first = executor.execute_task("build", &task).await.unwrap();
+    assert!(first.success, "stderr: {}", first.stderr);
+    let first_nonce = first.stdout.trim().to_string();
+    assert!(!first_nonce.is_empty(), "the process must print a nonce");
     fs::remove_file(workspace.path().join("out/built.txt")).unwrap();
 
     let second = executor.execute_task("build", &task).await.unwrap();
-    assert!(second.success);
+    assert!(second.success, "stderr: {}", second.stderr);
+    assert_eq!(
+        second.stdout.trim(),
+        first_nonce,
+        "a new nonce means the task re-ran instead of hitting the cache"
+    );
     assert!(
         workspace.path().join("out/built.txt").exists(),
         "the second run must be served from cache, restoring the output"
@@ -341,9 +372,11 @@ async fn nested_task_directory_is_preserved_inside_the_exec_root() {
     fs::write(workspace.path().join("sub/input.txt"), "nested").unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
-    let mut task = sandboxed("cat input.txt > output.txt", &["sub/input.txt"], &[
-        "output.txt",
-    ]);
+    let mut task = sandboxed(
+        "cat input.txt > output.txt",
+        &["sub/input.txt"],
+        &["output.txt"],
+    );
     task.directory = Some(TaskDirectory {
         from: TaskDirectoryBase::Module,
         path: "sub".to_string(),
