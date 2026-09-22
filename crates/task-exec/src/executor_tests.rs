@@ -16,6 +16,19 @@ fn executor_for(root: &Path) -> TaskExecutor {
     })
 }
 
+/// A hermetic task receives only the declared environment. Tests that spawn
+/// `sh` with coreutils must declare the host `PATH` for it; the Nix Linux
+/// sandbox hides the omission behind a standalone busybox `/bin/sh`, but a
+/// macOS checkout does not.
+fn host_path_environment() -> Environment {
+    let mut environment = Environment::new();
+    environment.set(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    );
+    environment
+}
+
 fn source(file: &str) -> SourceLocation {
     SourceLocation {
         file: file.to_string(),
@@ -221,6 +234,7 @@ async fn test_execute_failing_task() {
 #[tokio::test]
 async fn test_execute_task_timeout() {
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         ..Default::default()
     };
@@ -244,6 +258,7 @@ async fn test_execute_task_retries_until_success() {
     let tmp = TempDir::new().unwrap();
     let marker = tmp.path().join("attempts");
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -309,6 +324,7 @@ async fn test_timeout_is_not_retried() {
     // rather than re-incur the full timeout on every attempt.
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -347,6 +363,7 @@ async fn test_timeout_kills_process_tree() {
     // direct child (the orphaned-process failure mode).
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -657,6 +674,7 @@ async fn test_execute_graph_parallel_groups() {
 async fn test_execute_group_respects_max_concurrency() {
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -823,6 +841,7 @@ async fn test_execute_graph_respects_dependency_levels() {
     let root = tmp.path();
 
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         max_parallel: 2,
         project_root: root.to_path_buf(),
@@ -882,6 +901,7 @@ async fn test_cache_hit_replays_task_output_events() {
         project_roots: std::collections::BTreeMap::new(),
     };
     let executor = TaskExecutor::new(ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: workspace.path().to_path_buf(),
         cache: Some(cache),

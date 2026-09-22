@@ -1397,7 +1397,9 @@ struct CrossProjectModule {
 
 fn cross_project_module() -> CrossProjectModule {
     let tmp = TempDir::new().unwrap();
-    let module_root = tmp.path().to_path_buf();
+    // Input resolution canonicalizes what it hashes, so the fixture must too:
+    // on macOS `$TMPDIR` lives under a `/var -> /private/var` symlink.
+    let module_root = tmp.path().canonicalize().unwrap();
     let producer_root = module_root.join("producer");
     let consumer_root = module_root.join("consumer");
     fs::create_dir_all(producer_root.join("dist/nested")).unwrap();
@@ -1488,8 +1490,9 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     let outside = TempDir::new().unwrap();
     fs::create_dir_all(outside.path().join("dist")).unwrap();
     fs::write(outside.path().join("dist/app.js"), "outside").unwrap();
-    assert_eq!(module.module_root.parent(), outside.path().parent());
-    let relative = PathBuf::from("../..").join(outside.path().file_name().unwrap());
+    let outside_path = outside.path().canonicalize().unwrap();
+    assert_eq!(module.module_root.parent(), outside_path.parent());
+    let relative = PathBuf::from("../..").join(outside_path.file_name().unwrap());
     let task = consuming_task(
         &relative.to_string_lossy(),
         &[("dist/app.js", "vendor/app.js")],
