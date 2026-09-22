@@ -15,5 +15,8 @@ package schema
 	args?: [...string]
 	dir?: string | *"."
 	inputs?: [...string]
+	// Evaluate stdout as a shell script and capture the resulting
+	// environment. A hook whose output cannot be evaluated is reported as
+	// failed even when the process exits 0.
 	source?: bool
 })

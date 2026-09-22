@@ -1,8 +1,6 @@
 //! Integration test for hooks with syntax errors
 
-mod hook_test_support;
-
-use hook_test_support::{ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv};
+use super::{ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv};
 use std::fs;
 
 #[test]

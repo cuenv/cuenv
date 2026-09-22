@@ -981,6 +981,16 @@ hooks: {
 | `inputs`    | `[...string]` | `[]`     | Input files for cache tracking    |
 | `source`    | `bool`        | false    | Source output as shell script     |
 
+A `source: true` hook's stdout is evaluated as a shell script and the
+resulting environment is captured. The hook's own exit code and that
+evaluation are judged separately: a hook that prints valid exports and
+then exits non-zero still contributes what it exported (and is reported
+as failed because of the exit code), while a hook whose output cannot be
+evaluated at all — a syntax error, for example — is reported as failed
+even if the process exited 0, because it produced no environment.
+`cuenv env status` shows `[ERR]` and `cuenv export` emits nothing from it
+rather than a partial environment.
+
 ### #NixFlake
 
 Built-in shell hook for loading Nix flake environments in an interactive shell.

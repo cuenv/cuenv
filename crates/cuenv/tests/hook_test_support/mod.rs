@@ -1,3 +1,7 @@
+mod garbage;
+mod multiline;
+mod shell;
+
 use assert_cmd::Command;
 use std::error::Error;
 use std::fs;
