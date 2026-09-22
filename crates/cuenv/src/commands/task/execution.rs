@@ -232,8 +232,10 @@ fn extend_task_scope_with_cross_project(
             continue;
         }
 
+        let external_package = cue_package_name(&external_root)?;
+        let external_executor = executor.for_package(external_package.clone());
         let mut external_manifest =
-            evaluate_manifest(&external_root, executor.package(), executor)?;
+            evaluate_manifest(&external_root, &external_package, &external_executor)?;
         if !external_manifest.name.is_empty() {
             project_roots.insert(external_manifest.name.clone(), external_root.clone());
         }
@@ -368,6 +370,25 @@ fn resolve_external_project_root(
         )));
     }
     Ok(canonical_project)
+}
+
+fn cue_package_name(project_root: &Path) -> Result<String> {
+    let env_file = project_root.join("env.cue");
+    let contents = std::fs::read_to_string(&env_file).map_err(|error| {
+        cuenv_core::Error::io_with_path("read referenced project package", env_file.clone(), error)
+    })?;
+    contents
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("package ").map(str::trim))
+        .filter(|package| !package.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "referenced project '{}' has no package declaration in env.cue",
+                project_root.display()
+            ))
+        })
 }
 
 fn qualify_external_task_node(
