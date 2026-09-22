@@ -326,6 +326,13 @@ fn resolve_external_project_root(
     let declared = Path::new(&request.declared_project);
     let workspace_root = find_git_root(&request.origin_root)
         .ok()
+        .or_else(|| {
+            request
+                .origin_root
+                .ancestors()
+                .find(|ancestor| ancestor.join(".git").exists())
+                .map(Path::to_path_buf)
+        })
         .or_else(|| find_cue_module_root(&request.origin_root))
         .unwrap_or_else(|| request.origin_root.clone());
     let candidate = if declared.is_absolute() {
