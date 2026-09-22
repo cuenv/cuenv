@@ -639,9 +639,10 @@ fn action_environment_omits_undeclared_ambient_vars() {
     let env = Environment::new();
     let action = ready(&env, &[], None);
 
-    assert!(
-        action.is_empty(),
-        "ambient host vars leaked into the action env: {action:?}"
+    assert_eq!(
+        action.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["PATH"],
+        "only the fixed default PATH may appear without a declaration: {action:?}"
     );
     for ambient in ["HOME", "USER", "TERM", "TMPDIR", "XDG_CACHE_HOME"] {
         assert!(
@@ -676,7 +677,12 @@ fn action_environment_skips_passthrough_names_unset_on_the_host() {
 
     // Absent rather than empty-string: "unset" and "set to empty" must key
     // differently.
-    assert!(action.is_empty());
+    assert!(!action.contains_key("CUENV_TEST_DEFINITELY_UNSET_VARIABLE"));
+    assert_eq!(
+        action.len(),
+        1,
+        "only the default PATH is expected: {action:?}"
+    );
 }
 
 #[test]
@@ -790,4 +796,55 @@ fn a_non_secret_environment_needs_no_salt() {
         ready(&env, &[], None).get("PLAIN").map(String::as_str),
         Some("visible")
     );
+}
+
+#[test]
+fn an_undeclared_path_falls_back_to_the_fixed_hermetic_default() {
+    // A hermetic child starts from nothing. Without this, `sh -c ls` in a
+    // project that declares no PATH fails with "command not found" on any
+    // host whose shell does not carry its own applets. The fallback is a
+    // constant, not the host's PATH, so it is the same in the key on every
+    // machine.
+    let env = Environment::new();
+
+    let action = ready(&env, &[], None);
+    let execution = env.execution_environment(&[]);
+
+    assert_eq!(
+        action.get("PATH").map(String::as_str),
+        Some(Environment::HERMETIC_DEFAULT_PATH)
+    );
+    assert_eq!(execution.get("PATH"), action.get("PATH"));
+    assert_ne!(
+        env::var("PATH").ok().as_deref(),
+        Some(Environment::HERMETIC_DEFAULT_PATH),
+        "this test host's PATH coincidentally equals the default; the assertion above is vacuous"
+    );
+}
+
+#[test]
+fn a_declared_path_is_never_replaced_by_the_hermetic_default() {
+    let mut env = Environment::new();
+    env.set("PATH".to_string(), "/nix/store/abc/bin".to_string());
+
+    let action = ready(&env, &[], None);
+    let execution = env.execution_environment(&[]);
+
+    assert_eq!(
+        action.get("PATH").map(String::as_str),
+        Some("/nix/store/abc/bin")
+    );
+    assert_eq!(execution.get("PATH"), action.get("PATH"));
+}
+
+#[test]
+fn a_passthrough_path_is_never_replaced_by_the_hermetic_default() {
+    let Ok(host_path) = env::var("PATH") else {
+        return;
+    };
+    let env = Environment::new();
+
+    let execution = env.execution_environment(&["PATH".to_string()]);
+
+    assert_eq!(execution.get("PATH"), Some(&host_path));
 }

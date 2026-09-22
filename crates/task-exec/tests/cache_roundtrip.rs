@@ -25,10 +25,10 @@ use std::path::Path;
 use std::sync::Arc;
 use tempfile::TempDir;
 
-/// A hermetic task receives only the declared environment, so without this
-/// `sh` has no `PATH` and cannot find `cat`. The Nix Linux sandbox happens to
-/// paper over that with a standalone busybox `/bin/sh`; a macOS checkout does
-/// not. Declaring the host `PATH` makes the tests mean the same thing on both.
+/// These tests spawn coreutils through `sh`. A hermetic task that declares no
+/// `PATH` gets the fixed `Environment::HERMETIC_DEFAULT_PATH`, which need not
+/// resolve inside a Nix build sandbox, so declare the host `PATH` explicitly —
+/// the same thing the docs tell a project to do.
 fn host_path_environment() -> Environment {
     let mut environment = Environment::new();
     environment.set(

@@ -168,6 +168,17 @@ impl Environment {
 
     /// Essential system variables to preserve in hermetic mode.
     /// These are required for basic process operation but don't pollute PATH.
+    /// `PATH` a hermetic task receives when neither the project nor a
+    /// passthrough declares one.
+    ///
+    /// A hermetic child starts from an empty environment, and a shell with
+    /// no `PATH` cannot find `ls`. Inheriting the host's would put an
+    /// undeclared value behind every action key, so the fallback is a fixed
+    /// string instead — the same one Bazel's `--strict_action_env` uses on
+    /// macOS and Linux. It is a real declared variable: it enters the key
+    /// and is what the process sees.
+    pub const HERMETIC_DEFAULT_PATH: &'static str = "/usr/local/bin:/usr/bin:/bin";
+
     const HERMETIC_ALLOWED_VARS: &'static [&'static str] = &[
         "HOME",
         "USER",
@@ -294,7 +305,14 @@ impl Environment {
                 names: unfingerprintable,
             };
         }
+        Self::ensure_hermetic_path(&mut merged);
         ActionEnvironment::Ready(merged)
+    }
+
+    fn ensure_hermetic_path(merged: &mut BTreeMap<String, String>) {
+        merged
+            .entry("PATH".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_PATH.to_string());
     }
 
     /// Exact variables supplied to a hermetic child process.
@@ -314,6 +332,7 @@ impl Environment {
                 .iter()
                 .map(|(name, value)| (name.clone(), value.clone())),
         );
+        Self::ensure_hermetic_path(&mut merged);
         merged
     }
 

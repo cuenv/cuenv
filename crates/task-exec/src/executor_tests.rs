@@ -16,10 +16,10 @@ fn executor_for(root: &Path) -> TaskExecutor {
     })
 }
 
-/// A hermetic task receives only the declared environment. Tests that spawn
-/// `sh` with coreutils must declare the host `PATH` for it; the Nix Linux
-/// sandbox hides the omission behind a standalone busybox `/bin/sh`, but a
-/// macOS checkout does not.
+/// These tests spawn coreutils through `sh`. A hermetic task that declares no
+/// `PATH` gets the fixed `Environment::HERMETIC_DEFAULT_PATH`, which need not
+/// resolve inside a Nix build sandbox, so declare the host `PATH` explicitly —
+/// the same thing the docs tell a project to do.
 fn host_path_environment() -> Environment {
     let mut environment = Environment::new();
     environment.set(

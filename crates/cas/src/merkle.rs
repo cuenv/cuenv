@@ -414,7 +414,9 @@ mod tests {
         assert_ne!(da, db);
     }
 
-    #[cfg(unix)]
+    // APFS refuses to create a name that is not valid UTF-8, so the setup
+    // itself fails on macOS; the check under test is exercised on Linux.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn input_tree_rejects_non_utf8_names() {
         use std::ffi::OsStr;
@@ -431,7 +433,9 @@ mod tests {
         assert!(error.to_string().contains("must be valid UTF-8"));
     }
 
-    #[cfg(unix)]
+    // APFS refuses to create a name that is not valid UTF-8, so the setup
+    // itself fails on macOS; the check under test is exercised on Linux.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn output_tree_rejects_non_utf8_names() {
         use std::ffi::OsStr;

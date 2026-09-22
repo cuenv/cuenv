@@ -780,6 +780,14 @@ task that lists `HOME` will only reuse entries produced under the same `HOME`,
 which is correct, and is why the portable case is to declare nothing and put
 what the task needs in `env` instead.
 
+`PATH` is the one variable a hermetic task always has. If neither the
+project's `env` nor `passthrough` supplies one, the task runs with the fixed
+`/usr/local/bin:/usr/bin:/bin` — the same default Bazel uses under
+`--strict_action_env` — rather than inheriting the host's. It is an ordinary
+declared value: it is in the action key and it is what the process sees. A
+project that activates tools or a runtime already sets `PATH`, and that
+value wins; set `env: PATH:` yourself when the default is not enough.
+
 Tasks default to the directory containing the CUE file where the executable task
 is defined: `dir: {from: "definition", path: "."}`. This matters for imported
 tasks: a task imported from another package keeps the imported package's
