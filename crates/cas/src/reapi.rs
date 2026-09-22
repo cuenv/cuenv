@@ -44,7 +44,7 @@ use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::{
     Action, ActionResult, Command, Directory, DirectoryNode, ExecutionMetadata, FileNode,
-    OutputDirectory, OutputFile, Platform, SymlinkNode,
+    OutputDirectory, OutputFile, Platform, SymlinkNode, Tree,
 };
 use bazel_remote_apis::build::bazel::remote::execution::v2 as pb;
 use bazel_remote_apis::google::protobuf::Timestamp;
@@ -88,6 +88,7 @@ impl Digest {
     /// Returns an error if the size exceeds `i64::MAX`, which REAPI cannot
     /// represent.
     pub fn to_proto(&self) -> Result<pb::Digest> {
+        self.validate()?;
         let size_bytes = i64::try_from(self.size_bytes).map_err(|_| {
             Error::serialization(format!(
                 "blob size {} exceeds the REAPI maximum of {}",
@@ -105,15 +106,13 @@ impl Digest {
     ///
     /// # Errors
     ///
-    /// Returns an error if the size is negative.
+    /// Returns an error if the size is negative or the hash is not canonical
+    /// lowercase SHA-256 hexadecimal.
     pub fn from_proto(proto: &pb::Digest) -> Result<Self> {
         let size_bytes = u64::try_from(proto.size_bytes).map_err(|_| {
             Error::serialization(format!("negative blob size {}", proto.size_bytes))
         })?;
-        Ok(Self {
-            hash: proto.hash.clone(),
-            size_bytes,
-        })
+        Self::new(proto.hash.clone(), size_bytes)
     }
 }
 
@@ -181,17 +180,15 @@ impl Action {
     /// Returns an error if a required digest is missing or malformed, or if
     /// the salt is not one cuenv wrote.
     pub fn from_proto(proto: &pb::Action) -> Result<Self> {
-        let action_semantics_version = semantics_version_from_salt(&proto.salt).ok_or_else(|| {
-            Error::serialization(format!(
-                "action salt {:?} was not written by cuenv",
-                String::from_utf8_lossy(&proto.salt)
-            ))
-        })?;
+        let action_semantics_version =
+            semantics_version_from_salt(&proto.salt).ok_or_else(|| {
+                Error::serialization(format!(
+                    "action salt {:?} was not written by cuenv",
+                    String::from_utf8_lossy(&proto.salt)
+                ))
+            })?;
         Ok(Self {
-            command_digest: require_digest(
-                proto.command_digest.as_ref(),
-                "Action.command_digest",
-            )?,
+            command_digest: require_digest(proto.command_digest.as_ref(), "Action.command_digest")?,
             input_root_digest: require_digest(
                 proto.input_root_digest.as_ref(),
                 "Action.input_root_digest",
@@ -393,6 +390,57 @@ impl Directory {
 }
 
 // =============================================================================
+// Tree
+// =============================================================================
+
+impl CanonicalMessage for Tree {
+    type Proto = pb::Tree;
+
+    fn to_proto(&self) -> Result<pb::Tree> {
+        let root = Some(self.root.to_proto()?);
+        let mut children = self
+            .children
+            .iter()
+            .map(|directory| {
+                let digest = crate::digest::digest_of(directory)?;
+                Ok((digest.hash, directory.to_proto()?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        children.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+        Ok(pb::Tree {
+            root,
+            children: children
+                .into_iter()
+                .map(|(_, directory)| directory)
+                .collect(),
+        })
+    }
+}
+
+impl Tree {
+    /// Build from a REAPI output tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the required root is absent or a child digest is
+    /// malformed.
+    pub fn from_proto(proto: &pb::Tree) -> Result<Self> {
+        let root = proto
+            .root
+            .as_ref()
+            .ok_or_else(|| Error::serialization("missing required Tree.root"))
+            .and_then(Directory::from_proto)?;
+        let children = proto
+            .children
+            .iter()
+            .map(Directory::from_proto)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { root, children })
+    }
+}
+
+// =============================================================================
 // ActionResult
 // =============================================================================
 
@@ -420,8 +468,16 @@ impl CanonicalMessage for ActionResult {
         output_files.sort_by(|a, b| a.path.cmp(&b.path));
         output_directories.sort_by(|a, b| a.path.cmp(&b.path));
 
-        let stdout_digest = self.stdout_digest.as_ref().map(Digest::to_proto).transpose()?;
-        let stderr_digest = self.stderr_digest.as_ref().map(Digest::to_proto).transpose()?;
+        let stdout_digest = self
+            .stdout_digest
+            .as_ref()
+            .map(Digest::to_proto)
+            .transpose()?;
+        let stderr_digest = self
+            .stderr_digest
+            .as_ref()
+            .map(Digest::to_proto)
+            .transpose()?;
 
         Ok(pb::ActionResult {
             output_files,
@@ -602,6 +658,21 @@ mod tests {
     }
 
     #[test]
+    fn malformed_remote_digest_is_rejected() {
+        let proto = pb::Digest {
+            hash: "../escape".to_string(),
+            size_bytes: 0,
+        };
+        assert!(Digest::from_proto(&proto).is_err());
+
+        let proto = pb::Digest {
+            hash: "A".repeat(64),
+            size_bytes: 0,
+        };
+        assert!(Digest::from_proto(&proto).is_err());
+    }
+
+    #[test]
     fn semantics_version_changes_the_encoding() {
         let mut other = sample_action();
         other.action_semantics_version = 3;
@@ -690,7 +761,11 @@ mod tests {
         };
         let proto = directory.to_proto().unwrap();
         assert_eq!(
-            proto.files.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(),
+            proto
+                .files
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
             vec!["a.txt", "z.txt"]
         );
         let back = Directory::from_proto(&proto).unwrap();

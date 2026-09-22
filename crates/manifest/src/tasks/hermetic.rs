@@ -9,27 +9,20 @@ use serde::{Deserialize, Serialize};
 
 /// How much filesystem isolation a task runs under.
 ///
-/// The tiers are ordered by how much they can prove. [`Sandbox::Dir`] runs the
-/// task in a per-action directory holding exactly its declared inputs, so an
-/// undeclared read fails instead of quietly producing an entry that is wrong
-/// elsewhere. [`Sandbox::None`] proves nothing: the task runs in the project
-/// directory and may read and write anything, so a cache entry it records is
-/// only as trustworthy as the declaration that produced it.
+/// [`Sandbox::Dir`] runs the task in a per-action directory populated from
+/// declared inputs, isolating relative workspace reads and writes.
+/// It is not an OS security boundary: absolute host paths remain reachable.
+/// [`Sandbox::None`] runs directly in the project directory.
 ///
-/// [`Sandbox::Dir`] is the default, because that is the only order in which
-/// the declarations mean anything. Bazel and buck2 both sandbox actions by
-/// default and make opting out the explicit act; a tool that defaults the
-/// other way is asking every user to discover, one stale cache entry at a
-/// time, that its `inputs` field was a suggestion.
+/// [`Sandbox::Dir`] is the default so relative workspace access follows the
+/// declarations on the first run as well as on cache hits.
 ///
-/// Stricter tiers — namespaces on Linux, seatbelt on macOS — are deliberately
-/// absent until they exist. A tier the runtime silently degrades would be
-/// worse than no tier, because it would be believed.
+/// Stricter OS-level tiers are deliberately absent until they exist.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sandbox {
-    /// Directory isolation: a per-action root containing exactly the declared
-    /// inputs, with only the declared outputs projected back. The default.
+    /// Directory isolation for relative workspace access, with only declared
+    /// outputs projected back. The default.
     #[default]
     Dir,
     /// No isolation: the project directory, unrestricted. The explicit
@@ -69,13 +62,19 @@ impl SandboxPolicy {
     /// A tier the task named.
     #[must_use]
     pub fn requested(tier: Sandbox) -> Self {
-        Self { tier, explicit: true }
+        Self {
+            tier,
+            explicit: true,
+        }
     }
 
     /// A tier inherited from the default.
     #[must_use]
     pub fn defaulted(tier: Sandbox) -> Self {
-        Self { tier, explicit: false }
+        Self {
+            tier,
+            explicit: false,
+        }
     }
 
     /// Whether this policy runs the task in a per-action exec root.
@@ -258,7 +257,10 @@ mod tests {
 
     #[test]
     fn serializes_back_to_its_input_shape() {
-        assert_eq!(serde_json::to_string(&Hermetic::Enabled(false)).unwrap(), "false");
+        assert_eq!(
+            serde_json::to_string(&Hermetic::Enabled(false)).unwrap(),
+            "false"
+        );
         assert_eq!(
             serde_json::to_string(&Hermetic::Options(HermeticOptions {
                 passthrough: vec!["HOME".into()],

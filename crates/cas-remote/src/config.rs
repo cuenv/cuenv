@@ -31,7 +31,9 @@ impl std::fmt::Debug for Credentials {
         match self {
             Self::None => f.write_str("None"),
             Self::Bearer(_) => f.write_str("Bearer(<redacted>)"),
-            Self::Header { name, .. } => write!(f, "Header {{ name: {name:?}, value: <redacted> }}"),
+            Self::Header { name, .. } => {
+                write!(f, "Header {{ name: {name:?}, value: <redacted> }}")
+            }
         }
     }
 }
@@ -181,19 +183,27 @@ mod tests {
     #[test]
     fn http_and_https_pass_through() {
         assert!(!RemoteConfig::new("http://localhost:8980").is_tls().unwrap());
-        assert!(RemoteConfig::new("https://cache.example.com").is_tls().unwrap());
+        assert!(
+            RemoteConfig::new("https://cache.example.com")
+                .is_tls()
+                .unwrap()
+        );
     }
 
     #[test]
     fn a_bare_host_is_rejected_rather_than_guessed() {
         // Guessing plaintext would send a bearer token in the clear.
-        let error = RemoteConfig::new("cache.example.com:443").uri().unwrap_err();
+        let error = RemoteConfig::new("cache.example.com:443")
+            .uri()
+            .unwrap_err();
         assert!(error.to_string().contains("no scheme"), "{error}");
     }
 
     #[test]
     fn unknown_scheme_is_rejected() {
-        let error = RemoteConfig::new("ftp://cache.example.com").uri().unwrap_err();
+        let error = RemoteConfig::new("ftp://cache.example.com")
+            .uri()
+            .unwrap_err();
         assert!(error.to_string().contains("unsupported"), "{error}");
     }
 

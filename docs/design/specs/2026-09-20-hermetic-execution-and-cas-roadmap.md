@@ -1,15 +1,17 @@
 # Hermetic Execution and CAS: Gap Analysis and Roadmap
 
 **Date:** 2026-09-20
-**Status:** Phase 0 implemented; phases 1–4 planned
+**Status:** Phase 0 complete; directory isolation and remote read-through
+implemented; strict sandboxing, uploads, and phases 2/4 remain planned
 **Supersedes in practice:** the unimplemented half of
 [ADR-0008](../../src/content/docs/decisions/adrs/adr-0008-hermetic-task-execution-cache.md)
 
 ## Summary
 
 > **Reading note.** §§1–2 describe the state this document was written
-> against. Phase 0 has since shipped and fixed F3, F6, F7, F13 and F15; see
-> §5 for exactly what changed. The rest of the analysis stands.
+> against. Status annotations on each finding and §5 record what has changed
+> since; unannotated historical statements should not be read as current
+> implementation status.
 
 `cuenv` ships a content-addressed store, an action cache, and a schema field
 called `hermetic`. None of the three did what its name implies:
@@ -65,7 +67,8 @@ state this document was written against; see §5 for what replaced them.
 
 ### Blocking
 
-**F1 — `hermetic` does not isolate anything.**
+**F1 — `hermetic` does not isolate anything.** *[directory isolation fixed;
+strict host/network confinement remains open]*
 Tasks run in the project root with the full workspace visible. Any
 undeclared read is invisible to the action key, so a recorded
 `ActionResult` may be a function of files the key never saw. Every entry we
@@ -87,10 +90,10 @@ key after the fact. `merkle.rs` exists for exactly this and is unwired.
 hit rate is structurally zero. Env that reaches an action must be
 *declared*, not inherited.
 
-**F4 — No remote cache.**
-Local only, under `$CUENV_CACHE_DIR` / `$XDG_CACHE_HOME/cuenv`. CI
-runners start cold every time. This is the single feature users switch
-build tools for, and moon has had it for years.
+**F4 — No remote cache.** *[partially fixed in phase 3]*
+Read-through REAPI CAS and ActionCache access is now wired into `cuenv task`.
+Remote publication remains disabled until strict platform confinement makes
+shared entries trustworthy.
 
 **F5 — Caching is off by default and opts out of the monorepo case.**
 *[same-project half fixed]*
@@ -100,13 +103,14 @@ even when enabled we skip on `EmptyInputs`, `NonPathRef`, and `RuntimeEnv`
 task's output is uncacheable** — that is the central monorepo workflow.
 `RuntimeEnv` means any task with `env:` is uncacheable.
 
-`RuntimeEnv` is gone: §6.6 fingerprints secrets, so a task with `env:` is
-cacheable. Same-project `#TaskOutput` references are gone too (§6.7).
-Cross-project `#ProjectReference` is gone as well: the input hasher is now
-rooted at the CUE module rather than the consuming project, so a sibling
-project's files are reachable (see §6.7). What remains of `NonPathRef` is an
-`Input::Task` that manifest expansion could not resolve to concrete output
-paths — a reference to nothing, which has no honest key.
+Project-level resolved secrets are fingerprinted as described in §6.6.
+Task-local `env:` is still resolved immediately before process spawn and
+therefore still skips result caching with `RuntimeEnv`; directory isolation
+remains active. Same-project `#TaskOutput` and cross-project
+`#ProjectReference` inputs are now expanded, hashed, and materialized in the
+execution root (§6.7). What remains of `NonPathRef` is an `Input::Task` that
+manifest expansion could not resolve to concrete output paths — a reference
+to nothing, which has no honest key.
 
 ### Serious
 
@@ -121,11 +125,10 @@ when execution semantics change.
 references still exist. `materialize_hit` then writes files one at a time
 and can fail halfway, leaving a half-restored workdir with no rollback.
 
-**F8 — Output directories are not supported.**
-`output_directories` is `Vec::new()` on both the `Command` and the
-`ActionResult` (`cache.rs:191`, `cache.rs:427`). Only files matched by a
-glob *at record time* are captured, and a cache hit never removes stale
-files the previous build left behind.
+**F8 — Output directories are not supported.** *[fixed]*
+Declared output directories are now encoded as REAPI `Tree` blobs and
+materialized by replacing the destination tree, so stale files from a
+previous build do not survive a hit.
 
 **F9 — Hashing is the slow path.**
 `WalkHasher` re-reads and re-hashes every matched file on every task on
@@ -285,16 +288,13 @@ remote cache on top of unsound keys is worse than shipping nothing.
 - **`hermetic` means something. (F1, partial)** `hermetic: false` now skips
   the cache (`CacheSkipReason::NonHermetic`) rather than recording an entry
   keyed on a fraction of what produced it. Filesystem isolation arrived
-  separately in phase 1 and is now the default tier, so `hermetic: true` on a
-  cache-eligible task does sandbox it.
+  separately in phase 1 and is now the default tier, so every host task with
+  `hermetic: true` runs in a directory execution root.
 
-**Deliberately deferred to phase 1:** execution environment is unchanged. A
-task still *receives* ambient `HOME`, `TERM`, `XDG_*` and friends even though
-its key no longer records them. Making the key match reality requires the
-exec root and sandbox below; until then the narrow exposure — a cached task
-whose result depends on an undeclared ambient variable — is strictly smaller
-than F1, which lets it depend on undeclared *files*. Cache mode defaults to
-`never`, so this reaches only tasks that explicitly opted in.
+**Completed with phase 1:** hermetic processes now clear inherited host
+variables and receive exactly the declared CUE environment plus
+`hermetic.passthrough`. Secret-derived values execute as plaintext only in the
+child; the action key stores a salted fingerprint.
 
 *Exit (met):* two machines with identical checkouts and toolchains compute
 identical action digests for the same task.
@@ -302,21 +302,19 @@ identical action digests for the same task.
 ### Phase 1 — Real hermetic execution
 
 **Done: directory isolation, on by default.** `crates/task-exec/src/exec_root.rs`
-materializes a per-action exec root under `<cache root>/exec/<action digest>/`
+materializes a unique per-invocation exec root under `<cache root>/exec/`
 from the resolved input set, the task runs there with `cwd` = exec root,
 outputs are recorded from there, and only the declared `outputs` are projected
-back into the workspace. Inputs are hard-linked where the filesystem allows and
-copied otherwise — a link is not the weaker choice, because the input was
-hashed before staging and a task that mutates a declared input is misdeclared
-either way. The root is an RAII guard, so a task that fails or times out cleans
-up on the way out rather than leaving its inputs for the next run of the same
-action to find.
+back into the workspace. Inputs are copied and the staged bytes are checked
+against the resolved digest; hard links are forbidden because a task could
+otherwise mutate its source workspace through the shared inode. Each invocation
+gets a unique root, and the RAII guard removes it after success, failure, or
+timeout.
 
-`merkle.rs` stays unused (**F2** open): its `build_input_tree` walks a whole
-directory, which is the opposite of what an exec root needs. The resolved
-`HashedInput` set is already the right shape, and `build_action` now hands it
-back on `CacheOutcome::Eligible` rather than discarding everything but the
-digest.
+`merkle.rs::build_input_tree` stays unused for execution roots (**F2** open):
+walking a whole directory is the opposite of what an exec root needs. The
+resolved `HashedInput` set is already the right shape. The same module now
+does own REAPI output `Tree` construction and materialization.
 
 **`"dir"` is the default, not an opt-in.** Bazel and buck2 both sandbox actions
 by default and make `no-sandbox` the explicit act, and so does cuenv: an
@@ -325,19 +323,23 @@ comment, and the stale cache entry it produces is discovered by a colleague
 rather than by its author. `hermetic: sandbox: "none"` is the escape hatch for
 tasks that must touch the live checkout.
 
-The default applies wherever the task is **cache-eligible**, since eligibility
-is what resolves the input set an exec root is built from. A task with no
-declared `inputs` runs where it always did — it never asked for isolation, so
-that is not a downgrade, and the same line separates a Bazel strategy you
-inherited from one you named.
+Directory isolation is independent of result caching. A task with no declared
+inputs gets an empty root. Cache mode `never`, task-local runtime environment,
+`CUENV_CACHE=off`, and unavailable result-cache storage still retain the
+resolved input snapshot and sandbox the process.
 
-**Degradation of a tier you named is an error, not a fallback.** A task that
-explicitly asks for `"dir"` and cannot have it — not cache-eligible, no cache
-for this run, the dagger backend — fails. Running it unsandboxed would hand
-back a result that looks sandboxed, which is strictly worse than refusing.
-`SandboxPolicy` carries `explicit` alongside the tier to keep the two cases
-apart. The same reasoning keeps the stricter tiers out of `#Sandbox` until
-they exist: a tier the runtime silently degrades would be believed.
+**Degradation is an error, not a fallback.** If inputs cannot be resolved,
+cuenv refuses to expose the live checkout silently. Dagger supplies container
+isolation but currently mounts the full project rather than the resolved input
+root, so its task-result cache is disabled; explicitly asking it for the host
+`"dir"` strategy is rejected. The same reasoning keeps stricter tiers out of
+`#Sandbox` until they exist.
+
+Every retry builds a fresh verified root, so failed-attempt files cannot make a
+later attempt succeed under the original action key. Successful output
+projection is staged with rollback, removes omitted owned paths, and runs only
+after a zero exit status; a partial failed build cannot replace the previous
+good workspace output.
 
 Still open:
 
@@ -345,19 +347,16 @@ Still open:
   (`unshare`), read-only bind of the input root, tmpfs elsewhere.
 - `sandbox-exec` — macOS seatbelt profile: deny filesystem writes outside
   the exec root, deny network.
-- Exactly the declared environment. A task still receives ambient `HOME`,
-  `TERM` and friends even though its key no longer records them; `"dir"`
-  closes the filesystem hole, not the environment one.
 - Network off by default for cacheable tasks. A cached result from a task
   that could reach the network is not a cached result; it is a guess. This
   is a genuine differentiator over moon.
+- Absolute host-path confinement. `"dir"` isolates relative workspace access,
+  but it is not an OS security boundary.
 - Symlink support in the input tree. **(F14)**
-- Output *directories* as REAPI Trees: `project_outputs` copies files, so a
-  declared output directory does not round-trip yet.
 
-*Exit (partially met):* a cache-eligible task that reads an undeclared file
+*Exit (partially met):* a hermetic task that reads an undeclared relative file
 fails by default, instead of silently producing a poisoned cache entry. It can
-still reach the network and still sees ambient environment variables.
+still reach the network and absolute host paths.
 
 ### Phase 2 — Fast and bounded
 
@@ -369,8 +368,8 @@ still reach the network and still sees ambient environment variables.
 - Hardlink materialization from the CAS, with reflink (`FICLONE` /
   `clonefile`) where the filesystem supports it, copy as last resort. Skip
   the redundant post-copy re-hash on the hardlink path. **(F10)**
-- `output_directories` as first-class `Tree` messages; a cache hit replaces
-  the output tree rather than merging into whatever is there. **(F8)**
+- **Done: `output_directories` as first-class REAPI `Tree` messages.** A cache
+  hit replaces the output tree rather than merging into stale contents. **(F8)**
 - Single-flight on action digest: in-process map plus a cross-process
   lockfile. **(F12)**
 - `cuenv cache` command surface: `stats`, `gc` (LRU by access time against a
@@ -387,8 +386,9 @@ not by hashing or copying; the cache respects a configured size budget.
   cuenv's messages to `build.bazel.remote.execution.v2` types and digests
   their protobuf bytes; the local CAS and action cache now store exactly what
   a REAPI server exchanges. The semantics version travels in REAPI's
-  `Action.salt`, and `ACTION_SEMANTICS_VERSION` went to `2`, invalidating
-  every pre-existing entry as intended. Bindings come from
+  `Action.salt`. `ACTION_SEMANTICS_VERSION` is now `3`: v2 introduced REAPI
+  trees and directory isolation; v3 adds fresh retry roots, transactional
+  complete output replacement, and stricter path/collision semantics. Bindings come from
   `bazel-remote-apis`, which ships pre-generated prost/tonic code, so no
   `protoc` is needed at build time and the Nix build is untouched.
 - **Done: the store traits are async.** `Cas` and `ActionCache` are
@@ -410,17 +410,20 @@ not by hashing or copying; the cache respects a configured size budget.
 - **Done: auth.** Bearer tokens and arbitrary headers, with credentials
   redacted from every `Debug` and error message, and non-printable
   credential bytes rejected up front rather than becoming an opaque 401.
-- **Still to do: wiring.** `cuenv task` does not build a remote store yet.
-  That needs the `#Cache.remote` schema below, CLI plumbing, and the
-  decision about when writes are allowed (see §6.5).
+- **Done: read-through wiring.** `#Cache.remote` and
+  `$CUENV_REMOTE_CACHE` layer the remote CAS and ActionCache behind the local
+  stores. Empty `$CUENV_REMOTE_CACHE` disables the remote, and connection or
+  capability failures fall back to local-only execution.
+- **Still to do: uploads.** `upload` and
+  `$CUENV_REMOTE_CACHE_UPLOAD` are reserved, but the CLI forces them off until
+  strict platform confinement makes published entries trustworthy.
 - HTTP/object-store fallback (bazel-remote HTTP layout over S3/GCS/R2) for
   teams without a gRPC endpoint.
 - Auth: bearer headers and mTLS; read-only credentials for untrusted PR
   builds so a fork cannot poison the shared cache.
-- Only tasks that ran at tier `strict` or `sandbox-exec` write to the
-  remote cache by default. **(F1, enforced)** Until phase 1 lands there is
-  no such tier, which is why `RemoteConfig` is read-only unless
-  `writable()` is called.
+- Only tasks that ran at tier `strict` or `sandbox-exec` should write to the
+  remote cache by default. **(F1, pending)** Neither tier exists yet, so the
+  CLI keeps `RemoteConfig` read-only.
 
 *Exit:* a cold CI runner gets hits from a developer's local build and vice
 versa.
@@ -507,13 +510,17 @@ Declaring the output as an input is both the fix and the thing that buys
 early cutoff, so it is what the docs tell users to do.
 
 **Cross-project references are done.** *[fixed]* The input hasher is rooted at
-the CUE module root, not the consuming project, so a sibling project's files
-are reachable; `prefix_patterns_for_hasher_root` and
+the VCS workspace when one exists (falling back to the CUE module), not the
+consuming project, so sibling projects and sibling CUE modules are reachable;
+`prefix_patterns_for_hasher_root` and
 `rebase_hashed_inputs_for_project_root` were already written for a non-empty
 project prefix and now get one. `TaskCacheConfig::project_roots` resolves a
 reference to a directory, indexed by both the project's `name` and its
-module-relative path because `#ProjectReference.project` may be written either
-way; a name that resolves to neither is `UnknownProject`.
+workspace-relative path because `#ProjectReference.project` may be written
+either way. A path-shaped reference such as `../api` is resolved relative to
+the consumer, canonicalized, and accepted only inside the hasher root; a
+reference that resolves to neither a known project nor a safe path is
+`UnknownProject`.
 
 Files are recorded at the mapping's `to` path rather than at `from`, because
 the input root is supposed to describe the layout the action executes against
@@ -528,9 +535,8 @@ hashed last, so `InputDirectoryBuilder` rejects it and the task is reported
 `InputCollision`. It is a real declaration conflict, not a detail to paper
 over.
 
-Still open: `Mapping.to` is a *materialization* destination that nothing
-creates. The key is now correct about what the task will read; Phase 1 has to
-make the task actually read it.
+Directory isolation now materializes every resolved mapping at `Mapping.to`.
+The key and the filesystem layout therefore describe the same input root.
 
 ### 6.6 How secrets enter a cache key
 
@@ -569,13 +575,14 @@ someone who holds both the store and the salt, and a secret baked into a task's
 
 A shared cache multiplies the consequence of an unsound entry: a wrong result
 stops being one developer's confusing afternoon and becomes every machine's.
-F1 is still open — a task can read a file it never declared — so an entry
-cuenv writes today may be wrong on another machine.
+Directory isolation closes undeclared relative workspace reads, but F1 remains
+open at the OS boundary: absolute host paths and the network are still
+reachable, so an entry cuenv writes today may be wrong on another machine.
 
-The client therefore defaults to read-only and will not upload unless
-`RemoteConfig::writable()` is called. When the schema lands, `#Cache.remote.mode`
-should default to `"read"` for the same reason, and the recommendation should
-stay "read-only until phase 1" until filesystem isolation exists.
+The transport defaults to read-only and uploads require
+`RemoteConfig::writable()`. The CLI deliberately never enables that mode:
+`#RemoteCache.upload` and `$CUENV_REMOTE_CACHE_UPLOAD` are reserved until a
+strict platform sandbox confines filesystem and network access.
 
 Reading from a shared cache is not risk-free either — you consume whatever
 someone else produced — but the exposure is bounded by the key, which now
@@ -585,12 +592,10 @@ everyone's.
 
 ### 6.4 Dependency outputs as inputs
 
-`NonPathRef` currently disables caching for any task consuming a
-`#TaskOutputRef` or `#ProjectReference`. ADR-0008 explicitly chose "no
-implicit output injection". That choice is defensible for *materialization*
-but wrong for *hashing*: a dependency's output digests are exactly what
-should feed the consumer's input root. Resolve the reference to the
-producer's recorded `ActionResult` digests and fold them in.
+This original gap is closed by §6.7. Same-project and cross-project output
+references contribute the produced files' content and destination paths to
+the consumer input root, and directory isolation materializes that root before
+execution. `NonPathRef` remains only for an unresolved task-output reference.
 
 ## 7. Schema sketch
 

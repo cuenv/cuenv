@@ -2,6 +2,7 @@
 name = "cuenv-task-exec"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -37,6 +38,8 @@ regex = { workspace = true }
 globset = { workspace = true }
 walkdir = { workspace = true }
 chrono = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

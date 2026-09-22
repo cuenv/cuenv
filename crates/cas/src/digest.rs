@@ -4,7 +4,7 @@
 //! Bazel Remote Execution API v2 `Digest` message so that the same value can
 //! later be handed to a `bazel-remote-apis` gRPC client without conversion.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::reapi::CanonicalMessage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -20,6 +20,22 @@ pub struct Digest {
 }
 
 impl Digest {
+    /// Build a validated SHA-256 digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `hash` is exactly 64 lowercase hexadecimal
+    /// characters. Remote cache responses are untrusted, so accepting a
+    /// path-like or short hash would make the local CAS layout unsafe.
+    pub fn new(hash: impl Into<String>, size_bytes: u64) -> Result<Self> {
+        let digest = Self {
+            hash: hash.into(),
+            size_bytes,
+        };
+        digest.validate()?;
+        Ok(digest)
+    }
+
     /// Compute the digest of `bytes`.
     #[must_use]
     pub fn of_bytes(bytes: &[u8]) -> Self {
@@ -28,6 +44,26 @@ impl Digest {
             hash,
             size_bytes: bytes.len() as u64,
         }
+    }
+
+    /// Validate the digest before using it as a resource or filesystem key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the hash is canonical lowercase SHA-256 hex.
+    pub fn validate(&self) -> Result<()> {
+        if self.hash.len() != 64
+            || !self
+                .hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(Error::serialization(format!(
+                "invalid SHA-256 digest '{}': expected 64 lowercase hexadecimal characters",
+                self.hash
+            )));
+        }
+        Ok(())
     }
 
     /// Canonical `hash/size` form used in the Bazel RE API resource names.
@@ -111,5 +147,18 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: Digest = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
+    }
+
+    #[test]
+    fn rejects_noncanonical_hashes() {
+        let invalid = vec![
+            "a".to_string(),
+            "A".repeat(64),
+            format!("{}../x", "a".repeat(59)),
+        ];
+        for hash in invalid {
+            assert!(Digest::new(hash.clone(), 0).is_err(), "accepted {hash:?}");
+        }
+        assert!(Digest::new("a".repeat(64), 0).is_ok());
     }
 }

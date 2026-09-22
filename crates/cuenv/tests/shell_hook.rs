@@ -4,7 +4,7 @@ mod hook_test_support;
 
 use assert_cmd::Command;
 use hook_test_support::{
-    ApprovalOutcome, TestResult, approve_config, assert_sandbox_error, create_test_dir,
+    ApprovalOutcome, TestResult, approve_config, create_test_dir, load_hook_exports,
 };
 use std::fs;
 
@@ -38,34 +38,23 @@ hooks: {
         ApprovalOutcome::SandboxError => return Ok(()),
     }
 
-    let output = Command::new(cuenv_bin)
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .args([
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "if [ \"$SHELL_HOOK_VAR\" = \"from_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
-        ])
-        .output()
-        ?;
+    let export = load_hook_exports(path, cuenv_bin)?;
+    let exports = String::from_utf8(export.stdout)?;
+    let check_script = format!(
+        "{exports}\nif [ \"$BASE\" = \"ok\" ] && [ \"$SHELL_HOOK_VAR\" = \"from_shell_hook\" ]; then echo FOUND; else echo MISSING; exit 1; fi"
+    );
+    let output = Command::new("sh").args(["-c", &check_script]).output()?;
 
-    // Handle FFI error in sandbox
-    if output.status.code() == Some(3) {
-        assert_sandbox_error(&output, "in sandbox");
-    } else {
-        assert!(
-            output.status.success(),
-            "cuenv exec failed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("FOUND"),
-            "Expected FOUND in stdout, got: {stdout}"
-        );
-    }
+    assert!(
+        output.status.success(),
+        "evaluating hook exports failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FOUND"),
+        "expected source hook exports in stdout, got: {stdout}"
+    );
     Ok(())
 }

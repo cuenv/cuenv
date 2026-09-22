@@ -2,6 +2,7 @@
 name = "cuenv-cas-remote"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -24,6 +25,9 @@ futures = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }

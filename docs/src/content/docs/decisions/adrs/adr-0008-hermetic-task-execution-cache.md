@@ -20,13 +20,15 @@ hermetic/CAS roadmap
 
 - **Decision 2 (hermetic execution) is implemented and on by default.** The
   directory-only isolation this ADR describes is the default tier
-  (`hermetic.sandbox: "dir"`): a cache-eligible task runs in a per-action
-  directory populated solely from declared inputs, and only declared outputs
-  are copied back. `hermetic: sandbox: "none"` is the explicit opt-out.
-  Isolation applies where the action is cache-eligible, since that is what
-  supplies the input set; a task that names `"dir"` and cannot have it fails
-  rather than downgrading. Network isolation and OS-level sandbox tiers remain
-  phase 1 of the roadmap.
+  (`hermetic.sandbox: "dir"`): every hermetic host task runs in a per-action
+  directory populated solely from declared inputs, even when result caching
+  is disabled, and only declared outputs are copied back.
+  `hermetic: sandbox: "none"` is the explicit opt-out.
+  Input resolution is independent of result-cache eligibility: an empty input
+  set produces an empty execution root, and `cache: mode: "never"` or
+  `CUENV_CACHE=off` does not expose the checkout. A task whose inputs cannot be
+  resolved fails rather than downgrading. Network isolation and OS-level
+  sandbox tiers remain phase 1 of the roadmap.
 - **Decision 3 (cache key) shipped with one change.** The key no longer
   contains the cuenv package version — that invalidated every entry on every
   release — nor ambient host environment variables. It records the declared
@@ -60,7 +62,9 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 
 - Each task runs in a fresh working directory pre-populated only with its resolved inputs.
 - Directory-only isolation; no network isolation.
-- Symlinks are resolved to target content at population time. Hardlinks are used when possible, falling back to copies on cross-device or FS limitations.
+- Symlink inputs and outputs are rejected. Inputs are copied, digest-verified,
+  and assigned the executable mode recorded in the action key; hard links are
+  forbidden because a task could mutate the live workspace through them.
 
 3. Cache key
 

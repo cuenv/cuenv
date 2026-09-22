@@ -12,9 +12,9 @@
 use crate::cas::Cas;
 use crate::digest::Digest;
 use crate::error::{Error, Result};
-use crate::message::ActionResult;
+use crate::message::{ActionResult, Directory};
 use async_recursion::async_recursion;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Maximum directory nesting walked while checking an output tree.
 ///
@@ -59,7 +59,15 @@ pub async fn missing_blobs(cas: &dyn Cas, result: &ActionResult) -> Result<Vec<D
             // the tree cannot be materialized.
             continue;
         }
-        walk_tree(cas, &directory.tree_digest, 0, &mut seen, &mut missing).await?;
+        let tree =
+            crate::merkle::decode_tree(&cas.get(&directory.tree_digest).await?).map_err(|e| {
+                Error::serialization(format!("decode Tree {}: {e}", directory.tree_digest))
+            })?;
+        let mut children = HashMap::with_capacity(tree.children.len());
+        for child in tree.children {
+            children.insert(crate::merkle::directory_digest(&child)?, child);
+        }
+        walk_tree(cas, &tree.root, &children, 0, &mut seen, &mut missing).await?;
     }
 
     Ok(missing)
@@ -88,27 +96,29 @@ async fn check(
 #[async_recursion]
 async fn walk_tree(
     cas: &dyn Cas,
-    root: &Digest,
+    directory: &Directory,
+    children: &HashMap<Digest, Directory>,
     depth: usize,
     seen: &mut HashSet<Digest>,
     missing: &mut Vec<Digest>,
 ) -> Result<()> {
     if depth >= MAX_TREE_DEPTH {
         return Err(Error::serialization(format!(
-            "output tree nests deeper than {MAX_TREE_DEPTH} levels at {root}"
+            "output tree nests deeper than {MAX_TREE_DEPTH} levels"
         )));
     }
-
-    let directory = crate::merkle::decode_directory(&cas.get(root).await?)
-        .map_err(|e| Error::serialization(format!("decode Directory {root}: {e}")))?;
 
     for file in &directory.files {
         check(cas, &file.digest, seen, missing).await?;
     }
     for child in &directory.directories {
-        if check(cas, &child.digest, seen, missing).await? {
-            walk_tree(cas, &child.digest, depth + 1, seen, missing).await?;
-        }
+        let child_directory = children.get(&child.digest).ok_or_else(|| {
+            Error::serialization(format!(
+                "output Tree is missing child directory {} ({})",
+                child.name, child.digest
+            ))
+        })?;
+        walk_tree(cas, child_directory, children, depth + 1, seen, missing).await?;
     }
     Ok(())
 }
@@ -118,10 +128,10 @@ mod tests {
     use super::*;
     use crate::cas::LocalCas;
     use crate::digest::digest_of;
-    use crate::reapi::CanonicalMessage;
     use crate::message::{
-        Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile,
+        Directory, DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Tree,
     };
+    use crate::reapi::CanonicalMessage;
     use tempfile::TempDir;
 
     fn result_with_output(digest: Digest) -> ActionResult {
@@ -205,10 +215,7 @@ mod tests {
             directories: vec![],
             symlinks: vec![],
         };
-        let child_digest = cas
-            .put_bytes(&child.to_canonical_bytes().unwrap())
-            .await
-            .unwrap();
+        let child_digest = digest_of(&child).unwrap();
         let root = Directory {
             files: vec![],
             directories: vec![DirectoryNode {
@@ -217,15 +224,19 @@ mod tests {
             }],
             symlinks: vec![],
         };
-        let root_digest = cas
-            .put_bytes(&root.to_canonical_bytes().unwrap())
+        let tree = Tree {
+            root,
+            children: vec![child],
+        };
+        let tree_digest = cas
+            .put_bytes(&tree.to_canonical_bytes().unwrap())
             .await
             .unwrap();
 
         let mut result = result_with_output(cas.put_bytes(b"fine").await.unwrap());
         result.output_directories = vec![OutputDirectory {
             path: "dist".into(),
-            tree_digest: root_digest,
+            tree_digest,
         }];
 
         let missing = missing_blobs(&cas, &result).await.unwrap();
@@ -237,7 +248,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
 
-        let unstored_tree = Directory::default();
+        let unstored_tree = Tree::default();
         let tree_digest = digest_of(&unstored_tree).unwrap();
 
         let mut result = result_with_output(Digest::of_bytes(b"also absent"));

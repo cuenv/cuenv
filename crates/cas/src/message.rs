@@ -79,6 +79,20 @@ pub struct Directory {
     pub symlinks: Vec<SymlinkNode>,
 }
 
+/// A complete output directory tree.
+///
+/// REAPI stores output directories as one `Tree` blob: `root` is the
+/// directory at the declared output path and `children` embeds every
+/// descendant directory. `DirectoryNode` digests identify entries in
+/// `children`; they are not independent CAS blobs.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tree {
+    /// Root directory at the output path.
+    pub root: Directory,
+    /// Every non-root directory in the tree.
+    pub children: Vec<Directory>,
+}
+
 /// Version of cuenv's action execution semantics.
 ///
 /// This is the cache-invalidation salt folded into every [`Action`]. It is
@@ -100,11 +114,13 @@ pub struct Directory {
 /// - `2` — canonical encoding moved from `serde_json` to REAPI protobuf, and
 ///   a command's declared outputs are sorted into REAPI's merged
 ///   `output_paths`. Every digest changes.
+/// - `3` — sandbox retries use fresh input roots, output replacement is
+///   complete and transactional, and path/collision validation is stricter.
 ///
 /// On the wire this travels in REAPI's `Action.salt`, which exists to place
 /// an action into a separate cache namespace without altering what it does.
 /// See [`crate::reapi::salt_for`].
-pub const ACTION_SEMANTICS_VERSION: u32 = 2;
+pub const ACTION_SEMANTICS_VERSION: u32 = 3;
 
 /// An action to execute.
 ///
@@ -135,15 +151,14 @@ pub struct OutputFile {
     pub is_executable: bool,
 }
 
-/// A directory produced by an action, stored as a digest of a [`Directory`]
-/// Merkle tree.
+/// A directory produced by an action, stored as a digest of a [`Tree`].
 ///
 /// Mirrors `build.bazel.remote.execution.v2.OutputDirectory`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDirectory {
     /// Path relative to the action's working directory.
     pub path: String,
-    /// Digest of the root [`Directory`] describing the tree.
+    /// Digest of the [`Tree`] blob describing the complete output directory.
     pub tree_digest: Digest,
 }
 

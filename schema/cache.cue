@@ -15,9 +15,9 @@ package schema
 
 // A cache server speaking the Bazel Remote Execution API v2.
 //
-// Any REAPI cache works — bazel-remote, buildbarn, BuildBuddy, NativeLink,
-// EngFlow and Namespace all expose the same endpoint that Bazel's
-// `--remote_cache` takes.
+// The endpoint must expose REAPI v2 ActionCache, CAS, Capabilities and
+// ByteStream services with SHA-256 digests. Compatibility is verified during
+// connection; provider-specific behavior may still vary.
 #RemoteCache: close({
 	// Endpoint URL. `grpcs://` is TLS, `grpc://` is plaintext. A bare
 	// host:port is rejected rather than guessed, because guessing wrong
@@ -31,13 +31,12 @@ package schema
 	// string; multi-tenant providers use it to select a cache.
 	instance?: string | *""
 
-	// Whether this machine may upload. Reading is always allowed.
+	// Reserved upload opt-in. Reading is always allowed.
 	//
-	// Defaults to false, and should stay false until filesystem isolation
-	// lands: a task can currently read files it did not declare, so an
-	// entry it records may be wrong on another machine. Uploading is what
-	// turns one machine's unsound entry into everyone's. Give this to a
-	// trusted CI builder and leave developers read-only.
+	// Defaults to false. cuenv currently forces remote connections read-only
+	// even when this is true: directory execution roots isolate relative
+	// workspace access but do not yet confine absolute host filesystem reads.
+	// Upload will be enabled only after a strict platform sandbox lands.
 	//
 	// Overridden by $CUENV_REMOTE_CACHE_UPLOAD.
 	upload?: bool | *false
@@ -52,10 +51,10 @@ package schema
 	// Environment variable holding a bearer token. Sent as
 	// `authorization: Bearer <token>`, which is what the hosted providers
 	// issue.
-	bearerTokenEnv?: string
-
+	bearerTokenEnv!: string
+}) | close({
 	// An arbitrary header, for a provider that names its own.
-	header?: close({
+	header!: close({
 		name!:     string
 		valueEnv!: string
 	})

@@ -3,6 +3,7 @@ use crate::cache::TaskCacheConfig;
 use crate::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
+use cuenv_manifest::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_vcs::WalkHasher;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -30,12 +31,56 @@ fn scoped_dir(from: TaskDirectoryBase, path: &str) -> TaskDirectory {
     }
 }
 
+fn unisolated_hermeticity() -> Hermetic {
+    Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::None),
+    })
+}
+
 #[tokio::test]
 async fn test_executor_config_default() {
     let config = ExecutorConfig::default();
     assert!(config.capture_output.should_capture());
     assert_eq!(config.max_parallel, 0);
     assert!(config.environment.is_empty());
+}
+
+#[tokio::test]
+async fn test_executor_records_backend_in_cache_identity() {
+    let cache_root = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let cache = TaskCacheConfig {
+        cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
+        action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
+        vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
+        vcs_hasher_root: workspace.path().to_path_buf(),
+        action_semantics_version: 1,
+        runtime_identity_properties: std::collections::BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
+        cache_root: cache_root.path().to_path_buf(),
+        project_roots: std::collections::BTreeMap::new(),
+    };
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        project_root: workspace.path().to_path_buf(),
+        cache: Some(cache),
+        ..ExecutorConfig::default()
+    });
+
+    assert_eq!(
+        executor
+            .config
+            .cache
+            .as_ref()
+            .unwrap()
+            .runtime_identity_properties
+            .get("cuenv.backend")
+            .map(String::as_str),
+        Some("host")
+    );
 }
 
 #[tokio::test]
@@ -215,6 +260,7 @@ async fn test_execute_task_retries_until_success() {
             attempts: 2,
             delay: Some("1ms".to_string()),
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -222,6 +268,38 @@ async fn test_execute_task_retries_until_success() {
 
     assert!(result.success);
     assert_eq!(std::fs::read_to_string(marker).unwrap().trim(), "2");
+}
+
+#[tokio::test]
+async fn sandboxed_retries_start_from_fresh_inputs() {
+    let tmp = TempDir::new().unwrap();
+    let counter = tmp.path().join("attempts.log");
+    let executor = executor_for(tmp.path());
+    let script = format!(
+        "if [ -e retry-marker ]; then exit 0; fi; \
+         touch retry-marker; echo attempt >> '{}'; exit 1",
+        counter.display()
+    );
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script],
+        retry: Some(RetryConfig {
+            attempts: 2,
+            delay: None,
+        }),
+        ..Default::default()
+    };
+
+    let result = executor
+        .execute_task("isolated-retry", &task)
+        .await
+        .unwrap();
+
+    assert!(
+        !result.success,
+        "failed-attempt state must not make a retry pass"
+    );
+    assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 3);
 }
 
 #[tokio::test]
@@ -244,6 +322,7 @@ async fn test_timeout_is_not_retried() {
             attempts: 3,
             delay: None,
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -280,6 +359,7 @@ async fn test_timeout_kills_process_tree() {
             "sleep 30 & echo $! > grandchild.pid; sleep 30".to_string(),
         ],
         timeout: Some("150ms".to_string()),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -756,6 +836,7 @@ async fn test_execute_graph_respects_dependency_levels() {
         TaskNode::Task(Box::new(Task {
             command: "sh".into(),
             args: vec!["-c".into(), "sleep 0.2 && echo ok > marker.txt".into()],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );
@@ -765,6 +846,7 @@ async fn test_execute_graph_respects_dependency_levels() {
             command: "sh".into(),
             args: vec!["-c".into(), "cat marker.txt".into()],
             depends_on: vec![TaskDependency::from_name("dep")],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );

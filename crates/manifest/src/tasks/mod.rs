@@ -28,7 +28,8 @@ pub use dagger::{DaggerCacheMount, DaggerSecret, DaggerTaskConfig};
 pub use dependency::TaskDependency;
 pub use hermetic::{Hermetic, HermeticOptions, Sandbox, SandboxPolicy};
 pub use inputs::{
-    Input, Mapping, ProjectReference, SourceLocation, TaskDirectory, TaskDirectoryBase, TaskOutput,
+    Input, MappedInput, Mapping, ProjectReference, SourceLocation, TaskDirectory,
+    TaskDirectoryBase, TaskOutput,
 };
 pub use params::{ParamDef, ParamType, ResolvedArgs, TaskParams};
 pub use retry::RetryConfig;
@@ -395,6 +396,11 @@ impl Task {
     /// Returns an iterator over same-project task output references.
     pub fn iter_task_outputs(&self) -> impl Iterator<Item = &TaskOutput> {
         self.inputs.iter().filter_map(Input::as_task_output)
+    }
+
+    /// Returns producer task names for original and expanded task-output inputs.
+    pub fn iter_task_output_names(&self) -> impl Iterator<Item = &str> {
+        self.inputs.iter().filter_map(Input::task_output_name)
     }
 
     /// Collects path/glob inputs applying an optional prefix (for workspace roots).

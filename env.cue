@@ -27,13 +27,15 @@ let _checkInputs = list.Concat([
 
 let _schemaDocsInputs = [
 	"AGENTS.md",
-	"CLAUDE.md",
 	"readme.md",
 	"llms.txt",
 	"env.cue",
 	"schema/**",
 	"docs/design/specs/schema-coverage-matrix.md",
-	"docs/src/content/docs/reference/schema/**",
+	"docs/src/content/docs/decisions/adrs/adr-0006-library-first-provider-system.md",
+	"docs/src/content/docs/decisions/adrs/adr-0009-single-internal-sync-registry.md",
+	"docs/src/content/docs/explanation/**",
+	"docs/src/content/docs/reference/**",
 	"docs/src/content/docs/agents/**",
 	"docs/src/content/docs/index.mdx",
 	"docs/src/content/docs/tutorials/**",

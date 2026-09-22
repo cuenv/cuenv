@@ -32,9 +32,12 @@ pub use cas::{Cas, LocalCas};
 pub use digest::{Digest, canonical_bytes, digest_of};
 pub use error::{Error, Result};
 pub use integrity::missing_blobs;
-pub use reapi::CanonicalMessage;
-pub use merkle::{build_input_tree, directory_digest, materialize_input_tree};
+pub use merkle::{
+    build_input_tree, build_output_tree, decode_tree, directory_digest, materialize_input_tree,
+    materialize_output_tree,
+};
 pub use message::{
     ACTION_SEMANTICS_VERSION, Action, ActionResult, Command, Directory, DirectoryNode,
-    ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform, SymlinkNode,
+    ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform, SymlinkNode, Tree,
 };
+pub use reapi::CanonicalMessage;

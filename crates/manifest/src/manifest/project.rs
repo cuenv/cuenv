@@ -1,16 +1,25 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::{Component, Path, PathBuf};
 
 use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDependency};
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
-use crate::tasks::{Input, Mapping, ProjectReference, Task, TaskNode};
+use crate::tasks::{
+    Input, MappedInput, Mapping, ProjectReference, Task, TaskDirectoryBase, TaskNode,
+};
 use cuenv_hooks::{Hook, Hooks};
 
 // ============================================================================
 // Project Type
 // ============================================================================
+
+#[derive(Clone)]
+struct DeclaredTaskOutputs {
+    outputs: Vec<String>,
+    base: Option<PathBuf>,
+}
 
 /// Root Project configuration structure (leaf node - cannot unify with other projects)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -159,7 +168,7 @@ impl Project {
     /// Consuming a task's output is resolved against this: the consumer's
     /// inputs become the producer's output paths, so the consumer's cache key
     /// is a function of what the producer actually built.
-    fn declared_outputs_by_task(&self) -> HashMap<String, Vec<String>> {
+    fn declared_outputs_by_task(&self) -> HashMap<String, DeclaredTaskOutputs> {
         let mut declared = HashMap::new();
         for (name, node) in &self.tasks {
             Self::collect_declared_outputs(name, node, &mut declared);
@@ -170,11 +179,14 @@ impl Project {
     fn collect_declared_outputs(
         path: &str,
         node: &TaskNode,
-        declared: &mut HashMap<String, Vec<String>>,
+        declared: &mut HashMap<String, DeclaredTaskOutputs>,
     ) {
         match node {
             TaskNode::Task(task) => {
-                declared.insert(path.to_string(), task.outputs.clone());
+                declared.insert(path.to_string(), DeclaredTaskOutputs {
+                    outputs: task.outputs.clone(),
+                    base: task_output_base(task),
+                });
             }
             TaskNode::Group(group) => {
                 for (child, sub_node) in &group.children {
@@ -189,7 +201,10 @@ impl Project {
         }
     }
 
-    fn expand_task_node(node: &mut TaskNode, declared_outputs: &HashMap<String, Vec<String>>) {
+    fn expand_task_node(
+        node: &mut TaskNode,
+        declared_outputs: &HashMap<String, DeclaredTaskOutputs>,
+    ) {
         match node {
             TaskNode::Task(task) => Self::expand_task(task, declared_outputs),
             TaskNode::Group(group) => {
@@ -205,7 +220,7 @@ impl Project {
         }
     }
 
-    fn expand_task(task: &mut Task, declared_outputs: &HashMap<String, Vec<String>>) {
+    fn expand_task(task: &mut Task, declared_outputs: &HashMap<String, DeclaredTaskOutputs>) {
         let mut new_inputs = Vec::new();
         let mut implicit_deps = Vec::new();
 
@@ -263,29 +278,36 @@ impl Project {
                     // producer's own key is what gives early cutoff: a
                     // producer that reruns and emits identical bytes leaves
                     // every consumer's key unchanged.
-                    match &task_output.map {
-                        // An explicit mapping names the paths to consume.
-                        // `to` is where materialization will place them, which
-                        // does not exist yet; `from` is what gets hashed.
-                        Some(mappings) => new_inputs.extend(
-                            mappings
-                                .iter()
-                                .map(|mapping| Input::Path(mapping.from.clone())),
-                        ),
-                        // No mapping: consume everything the producer declares.
-                        None => match declared_outputs.get(&task_output.task) {
-                            Some(outputs) => new_inputs
-                                .extend(outputs.iter().cloned().map(Input::Path)),
-                            // An unresolvable reference is left alone rather
-                            // than silently dropped: the cache layer reports it
-                            // as a skip reason, and execution still fails the
-                            // way it did before.
+                    match declared_outputs.get(&task_output.task) {
+                        Some(declared) => match &declared.base {
+                            Some(base) => {
+                                let mappings = task_output.map.clone().unwrap_or_else(|| {
+                                    declared
+                                        .outputs
+                                        .iter()
+                                        .map(|output| Mapping {
+                                            from: output.clone(),
+                                            to: implicit_output_destination(output),
+                                        })
+                                        .collect()
+                                });
+                                new_inputs.extend(mappings.into_iter().map(|mapping| {
+                                    Input::Mapped(MappedInput {
+                                        source: path_to_forward_slashes(&base.join(&mapping.from)),
+                                        destination: mapping.to,
+                                        producer_task: Some(task_output.task.clone()),
+                                    })
+                                }));
+                            }
                             None => new_inputs.push(input.clone()),
                         },
+                        // An unresolvable reference is left alone rather than
+                        // silently dropped: the cache layer reports it.
+                        None => new_inputs.push(input.clone()),
                     }
                 }
                 // An ordinary path input, already concrete.
-                Input::Path(_) => new_inputs.push(input.clone()),
+                Input::Path(_) | Input::Mapped(_) => new_inputs.push(input.clone()),
             }
         }
 
@@ -299,4 +321,70 @@ impl Project {
             }
         }
     }
+}
+
+fn task_output_base(task: &Task) -> Option<PathBuf> {
+    let source_base = |caller: bool| {
+        let source = if caller {
+            task.caller_source.as_ref()
+        } else {
+            task.source.as_ref()
+        };
+        source
+            .and_then(|location| location.directory())
+            .map_or_else(PathBuf::new, PathBuf::from)
+    };
+
+    let joined = match &task.directory {
+        Some(directory) => {
+            let base = match directory.from {
+                TaskDirectoryBase::Definition => source_base(false),
+                TaskDirectoryBase::Caller => source_base(true),
+                TaskDirectoryBase::Module => PathBuf::new(),
+            };
+            base.join(&directory.path)
+        }
+        None => source_base(false),
+    };
+    normalize_relative(&joined)
+}
+
+/// Preserve a producer glob's matched suffix at the same relative location.
+///
+/// Mapping `dist/**/*.js` to the literal glob string would create paths such
+/// as `dist/**/*.js/chunk.js` in the consumer. The non-glob prefix (`dist`) is
+/// the layout the producer actually wrote and therefore the implicit `to`.
+fn implicit_output_destination(output: &str) -> String {
+    output
+        .split('/')
+        .take_while(|segment| {
+            !segment.contains('*')
+                && !segment.contains('{')
+                && !segment.contains('?')
+                && !segment.contains('[')
+        })
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn normalize_relative(path: &Path) -> Option<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(normalized)
+}
+
+fn path_to_forward_slashes(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }

@@ -10,6 +10,7 @@ use super::{
 use crate::commands::CommandExecutor;
 use crate::commands::env_file::find_cue_module_root;
 use crate::commands::export::extract_static_env_vars;
+use crate::commands::git_hooks::find_git_root;
 use crate::commands::tools::{ensure_tools_downloaded, resolve_tool_activation_steps};
 use cuenv_core::environment::{EnvValue, Environment};
 use cuenv_core::manifest::{Project, Runtime};
@@ -20,7 +21,7 @@ use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_task_exec::{ExecutorConfig, TaskGraph, TaskIndex};
 use cuenv_tool_runtime::apply_resolved_tool_activation;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 
 mod help;
@@ -141,9 +142,10 @@ fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExe
     let project_root =
         std::fs::canonicalize(input.path).unwrap_or_else(|_| Path::new(input.path).to_path_buf());
     let cue_module_root = find_cue_module_root(&project_root);
-    let project_roots = discover_project_roots(input.executor, &project_root);
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
-    let local_tasks = task_index.to_tasks();
+    let mut local_tasks = task_index.to_tasks();
+    let project_roots =
+        extend_task_scope_with_cross_project(input.executor, &project_root, &mut local_tasks)?;
 
     Ok(TaskExecutionContext {
         manifest,
@@ -191,6 +193,240 @@ fn discover_project_roots(
     }
 
     roots
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
+struct ExternalProjectRequest {
+    declared_project: String,
+    origin_root: PathBuf,
+}
+
+fn extend_task_scope_with_cross_project(
+    executor: &CommandExecutor,
+    project_root: &Path,
+    tasks: &mut Tasks,
+) -> Result<BTreeMap<String, PathBuf>> {
+    let mut project_roots = discover_project_roots(executor, project_root);
+    let mut pending = VecDeque::from(collect_project_requests(tasks, project_root));
+    if pending.is_empty() {
+        return Ok(project_roots);
+    }
+
+    {
+        let workspace = executor.discover_all_modules(project_root)?;
+        project_roots.extend(project_roots_from_module(&workspace));
+    }
+
+    let mut loaded_aliases = BTreeMap::<String, PathBuf>::new();
+    while let Some(request) = pending.pop_front() {
+        let external_root = resolve_external_project_root(&project_roots, &request)?;
+        if let Some(previous_root) = loaded_aliases.get(&request.declared_project) {
+            if previous_root != &external_root {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "cross-project reference '{}' is ambiguous: it resolves to both '{}' and '{}'",
+                    request.declared_project,
+                    previous_root.display(),
+                    external_root.display()
+                )));
+            }
+            continue;
+        }
+
+        let external_package = cue_package_name(&external_root)?;
+        let external_executor = executor.for_package(external_package.clone());
+        let mut external_manifest =
+            evaluate_manifest(&external_root, &external_package, &external_executor)?;
+        if !external_manifest.name.is_empty() {
+            project_roots.insert(external_manifest.name.clone(), external_root.clone());
+        }
+        project_roots.insert(request.declared_project.clone(), external_root.clone());
+
+        let external_index = prepare_task_index(&mut external_manifest, &external_root)?;
+        let external_tasks = external_index.to_tasks();
+        pending.extend(collect_project_requests(&external_tasks, &external_root));
+
+        for (task_name, node) in external_tasks.tasks {
+            let qualified_name = format!("#{}:{task_name}", request.declared_project);
+            let qualified_node =
+                qualify_external_task_node(node, &request.declared_project, &external_root);
+            tasks.tasks.insert(qualified_name, qualified_node);
+        }
+
+        loaded_aliases.insert(request.declared_project, external_root);
+    }
+
+    Ok(project_roots)
+}
+
+fn project_roots_from_module(
+    module: &cuenv_core::module::ModuleEvaluation,
+) -> BTreeMap<String, PathBuf> {
+    let mut roots = BTreeMap::new();
+    for instance in module.projects() {
+        let absolute = module.root.join(&instance.path);
+        if let Some(name) = instance.project_name() {
+            roots.insert(name.to_string(), absolute.clone());
+        }
+        let relative = instance.path.to_string_lossy().replace('\\', "/");
+        if !relative.is_empty() {
+            roots.insert(relative, absolute);
+        }
+    }
+    roots
+}
+
+fn collect_project_requests(tasks: &Tasks, origin_root: &Path) -> Vec<ExternalProjectRequest> {
+    let mut requests = BTreeSet::new();
+    for node in tasks.tasks.values() {
+        collect_node_project_requests(node, origin_root, &mut requests);
+    }
+    requests.into_iter().collect()
+}
+
+fn collect_node_project_requests(
+    node: &TaskNode,
+    origin_root: &Path,
+    requests: &mut BTreeSet<ExternalProjectRequest>,
+) {
+    match node {
+        TaskNode::Task(task) => {
+            requests.extend(
+                task.iter_project_refs()
+                    .map(|reference| ExternalProjectRequest {
+                        declared_project: reference.project.clone(),
+                        origin_root: origin_root.to_path_buf(),
+                    }),
+            );
+        }
+        TaskNode::Group(group) => {
+            for child in group.children.values() {
+                collect_node_project_requests(child, origin_root, requests);
+            }
+        }
+        TaskNode::Sequence(steps) => {
+            for step in steps {
+                collect_node_project_requests(step, origin_root, requests);
+            }
+        }
+    }
+}
+
+fn resolve_external_project_root(
+    project_roots: &BTreeMap<String, PathBuf>,
+    request: &ExternalProjectRequest,
+) -> Result<PathBuf> {
+    if let Some(root) = project_roots.get(&request.declared_project) {
+        return std::fs::canonicalize(root).map_err(|error| {
+            cuenv_core::Error::io_with_path("canonicalize referenced project", root.clone(), error)
+        });
+    }
+
+    let declared = Path::new(&request.declared_project);
+    let workspace_root = find_git_root(&request.origin_root)
+        .ok()
+        .or_else(|| {
+            request
+                .origin_root
+                .ancestors()
+                .find(|ancestor| ancestor.join(".git").exists())
+                .map(Path::to_path_buf)
+        })
+        .or_else(|| find_cue_module_root(&request.origin_root))
+        .unwrap_or_else(|| request.origin_root.clone());
+    let candidate = if declared.is_absolute() {
+        let workspace_relative = declared
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(part) => Some(part),
+                std::path::Component::ParentDir => Some(std::ffi::OsStr::new("..")),
+                std::path::Component::Prefix(_)
+                | std::path::Component::RootDir
+                | std::path::Component::CurDir => None,
+            })
+            .collect::<PathBuf>();
+        workspace_root.join(workspace_relative)
+    } else {
+        request.origin_root.join(declared)
+    };
+    let canonical_workspace = std::fs::canonicalize(&workspace_root).map_err(|error| {
+        cuenv_core::Error::io_with_path(
+            "canonicalize cross-project workspace",
+            workspace_root.clone(),
+            error,
+        )
+    })?;
+    let canonical_project = std::fs::canonicalize(&candidate).map_err(|error| {
+        cuenv_core::Error::io_with_path("canonicalize referenced project", candidate, error)
+    })?;
+    if !canonical_project.starts_with(&canonical_workspace) {
+        return Err(cuenv_core::Error::configuration(format!(
+            "cross-project reference '{}' resolves outside workspace '{}'",
+            request.declared_project,
+            canonical_workspace.display()
+        )));
+    }
+    Ok(canonical_project)
+}
+
+fn cue_package_name(project_root: &Path) -> Result<String> {
+    let env_file = project_root.join("env.cue");
+    let contents = std::fs::read_to_string(&env_file).map_err(|error| {
+        cuenv_core::Error::io_with_path("read referenced project package", env_file.clone(), error)
+    })?;
+    contents
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("package ").map(str::trim))
+        .filter(|package| !package.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "referenced project '{}' has no package declaration in env.cue",
+                project_root.display()
+            ))
+        })
+}
+
+fn qualify_external_task_node(
+    node: TaskNode,
+    project_alias: &str,
+    project_root: &Path,
+) -> TaskNode {
+    match node {
+        TaskNode::Task(mut task) => {
+            for dependency in &mut task.depends_on {
+                if !dependency.name.starts_with('#') {
+                    dependency.name = format!("#{project_alias}:{}", dependency.name);
+                }
+            }
+            task.project_root = Some(project_root.to_path_buf());
+            TaskNode::Task(task)
+        }
+        TaskNode::Group(mut group) => {
+            for dependency in &mut group.depends_on {
+                if !dependency.name.starts_with('#') {
+                    dependency.name = format!("#{project_alias}:{}", dependency.name);
+                }
+            }
+            group.children = group
+                .children
+                .into_iter()
+                .map(|(name, child)| {
+                    (
+                        name,
+                        qualify_external_task_node(child, project_alias, project_root),
+                    )
+                })
+                .collect();
+            TaskNode::Group(group)
+        }
+        TaskNode::Sequence(steps) => TaskNode::Sequence(
+            steps
+                .into_iter()
+                .map(|step| qualify_external_task_node(step, project_alias, project_root))
+                .collect(),
+        ),
+    }
 }
 
 /// Internal implementation of task execution.
@@ -411,6 +647,7 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
         .cue_module_root
         .as_deref()
         .unwrap_or(context.project_root.as_path());
+    let hasher_root = task_hasher_root(context);
     let runtime_identity = resolve_runtime_cache_identity(
         module_root,
         context.project_root.as_path(),
@@ -422,13 +659,27 @@ async fn task_cache_for_context(context: &TaskExecutionContext) -> Option<TaskCa
     build_task_cache(
         TaskCacheContext {
             project_root: &context.project_root,
-            module_root,
+            hasher_root: &hasher_root,
             project_roots: context.project_roots.clone(),
             runtime_identity,
         },
         context.manifest.cache.as_ref(),
     )
     .await
+}
+
+fn task_hasher_root(context: &TaskExecutionContext) -> PathBuf {
+    let module_root = context
+        .cue_module_root
+        .as_deref()
+        .unwrap_or(context.project_root.as_path());
+    find_git_root(&context.project_root).unwrap_or_else(|_| {
+        context
+            .project_root
+            .ancestors()
+            .find(|ancestor| ancestor.join(".git").exists())
+            .map_or_else(|| module_root.to_path_buf(), Path::to_path_buf)
+    })
 }
 
 struct TaskRunRequest<'a, 'input> {
@@ -518,5 +769,7 @@ fn task_executor_config(spec: &TaskExecutorConfigSpec<'_, '_>) -> ExecutorConfig
             .and_then(|config| config.backend.clone()),
         cli_backend: spec.input.backend.map(ToString::to_string),
         cache: spec.runtime.cache.clone(),
+        sandbox_hasher_root: Some(task_hasher_root(spec.context)),
+        sandbox_project_roots: spec.context.project_roots.clone(),
     }
 }

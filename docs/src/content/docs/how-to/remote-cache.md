@@ -3,14 +3,12 @@ title: Remote caching
 description: Share cuenv's task cache between machines with a Bazel Remote Execution API server
 ---
 
-cuenv's task cache speaks the [Bazel Remote Execution API v2][reapi]. Any REAPI
-cache works — [bazel-remote][], [buildbarn][], BuildBuddy, NativeLink, EngFlow
-and Namespace all expose the same `grpcs://` endpoint that Bazel's
-`--remote_cache` takes.
+cuenv's task cache speaks the [Bazel Remote Execution API v2][reapi]. The
+endpoint must provide ActionCache, ContentAddressableStorage, Capabilities, and
+ByteStream services using SHA-256 digests. cuenv verifies those capabilities
+during connection instead of assuming compatibility from a provider name.
 
 [reapi]: https://github.com/bazelbuild/remote-apis
-[bazel-remote]: https://github.com/buchgr/bazel-remote
-[buildbarn]: https://github.com/buildbarn
 
 ## Configuration
 
@@ -29,31 +27,24 @@ schema.#Project & {
 }
 ```
 
-Reads fall through to the remote and whatever is fetched is kept locally, so
-the second read of a blob is local.
+Reads fall through to the remote and whatever is fetched is streamed,
+digest-verified, and kept locally, so the second read of a blob is local. A
+remote action result is promoted into the local action cache only after all of
+its streams and outputs have been verified and committed successfully.
 
-## Who is allowed to upload
+## Uploads are currently disabled
 
-`upload` defaults to `false`, and reading is always allowed. The intended
-shape is **one trusted builder writes, everyone else reads**:
+`upload` defaults to `false`. The field and
+`CUENV_REMOTE_CACHE_UPLOAD` override are reserved for the eventual trusted
+builder flow, but cuenv currently forces the CLI connection to read-only even
+when either setting requests uploads.
 
-```bash
-# On the CI builder
-CUENV_REMOTE_CACHE_UPLOAD=true cuenv task build
-```
-
-:::caution[Why uploading is opt-in]
-Cacheable tasks are [sandboxed by
-default](/how-to/run-tasks/#filesystem-isolation), so what you upload is
-normally backed by an enforced input declaration rather than a remembered one.
-The exceptions are what to watch: a task on `hermetic: sandbox: "none"` can
-read a file it never declared and record an entry that is wrong on another
-machine. Locally that is one confusing afternoon. Uploaded to a shared cache,
-it is everyone's.
-
-Keep `upload` off for developer machines and untrusted builds — a fork's pull
-request has no token and is read-only for free — and turn it on only for
-builders you trust.
+:::caution[Why uploads remain disabled]
+The default `"dir"` sandbox isolates relative workspace access, but it is not
+an OS security boundary: a command can still read absolute host paths or use
+the network. Publishing such a result could turn one machine's undeclared
+dependency into a shared wrong answer. Remote uploads will be enabled only
+after a strict platform sandbox confines those accesses.
 :::
 
 ## Environment overrides
@@ -63,8 +54,8 @@ CI usually should not hard-code an endpoint in CUE:
 | Variable | Effect |
 | --- | --- |
 | `CUENV_REMOTE_CACHE` | Sets or replaces the endpoint. Empty **disables** the remote. |
-| `CUENV_REMOTE_CACHE_UPLOAD` | `true`/`false`, overriding `upload`. |
-| `CUENV_CACHE` | `off`, `read`, `write` — overrides every task's cache mode for one run. |
+| `CUENV_REMOTE_CACHE_UPLOAD` | Reserved `true`/`false` override. `true` currently warns and remains read-only. |
+| `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — overrides every task's cache mode for one run. |
 
 ```bash
 # Point at a cache the repository does not know about
@@ -93,8 +84,9 @@ cache: remote: {
 }
 ```
 
-If the named variable is unset, cuenv warns and continues anonymously. A
-missing token degrades the cache; it does not fail the build.
+If the named variable is unset, cuenv warns and may continue with anonymous
+reads, but configured authentication never silently becomes an anonymous
+writer. A missing token degrades the cache; it does not fail the build.
 
 Bazel's credential-helper protocol is not supported yet. Providers that issue
 short-lived credentials through a helper — including Namespace — need the

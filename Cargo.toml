@@ -47,6 +47,7 @@ members = [
 [workspace.package]
 version = "0.55.1"
 edition = "2024"
+rust-version = "1.90"
 authors = ["cuenv Contributors"]
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/cuenv/cuenv"

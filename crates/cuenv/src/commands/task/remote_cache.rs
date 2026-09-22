@@ -87,38 +87,54 @@ fn upload_override() -> Option<bool> {
 /// cache still works read-only against an unauthenticated endpoint, and
 /// failing the whole run because a token is missing would be a poor trade for
 /// something that is only an optimization.
-fn credentials(remote: &RemoteCache) -> Credentials {
+#[derive(Debug)]
+enum CredentialResolution {
+    Ready(Credentials),
+    MissingConfigured,
+    Ambiguous,
+}
+
+fn credentials(remote: &RemoteCache) -> CredentialResolution {
     let Some(auth) = &remote.auth else {
-        return Credentials::None;
+        return CredentialResolution::Ready(Credentials::None);
     };
+
+    if auth.bearer_token_env.is_some() && auth.header.is_some() {
+        tracing::warn!(
+            "remote cache auth config sets both bearerTokenEnv and header; disabling the remote"
+        );
+        return CredentialResolution::Ambiguous;
+    }
 
     if let Some(name) = &auth.bearer_token_env {
         return match std::env::var(name) {
-            Ok(token) if !token.is_empty() => Credentials::Bearer(token),
+            Ok(token) if !token.is_empty() => {
+                CredentialResolution::Ready(Credentials::Bearer(token))
+            }
             _ => {
                 tracing::warn!(variable = name, "bearer token variable is unset or empty");
-                Credentials::None
+                CredentialResolution::MissingConfigured
             }
         };
     }
 
     if let Some(header) = &auth.header {
         return match std::env::var(&header.value_env) {
-            Ok(value) if !value.is_empty() => Credentials::Header {
+            Ok(value) if !value.is_empty() => CredentialResolution::Ready(Credentials::Header {
                 name: header.name.clone(),
                 value,
-            },
+            }),
             _ => {
                 tracing::warn!(
                     variable = header.value_env,
                     "credential header variable is unset or empty"
                 );
-                Credentials::None
+                CredentialResolution::MissingConfigured
             }
         };
     }
 
-    Credentials::None
+    CredentialResolution::Ready(Credentials::None)
 }
 
 /// Stack a remote cache behind `local`, when one is configured and reachable.
@@ -141,14 +157,26 @@ pub async fn build(
         return local;
     };
 
+    let (credentials, credential_allows_upload) = match credentials(&remote) {
+        CredentialResolution::Ready(credentials) => (credentials, true),
+        CredentialResolution::MissingConfigured => {
+            tracing::warn!(
+                "remote cache upload disabled because configured credentials are unavailable"
+            );
+            (Credentials::None, false)
+        }
+        CredentialResolution::Ambiguous => return local,
+    };
+    let upload = false;
+    if remote.upload && credential_allows_upload {
+        tracing::warn!(
+            "remote cache upload is temporarily disabled until strict filesystem isolation is available"
+        );
+    }
     let config = RemoteConfig::new(&remote.endpoint)
         .with_instance_name(&remote.instance)
-        .with_credentials(credentials(&remote));
-    let config = if remote.upload {
-        config.writable()
-    } else {
-        config
-    };
+        .with_credentials(credentials);
+    let config = if upload { config.writable() } else { config };
 
     let client = match RemoteClient::connect(config).await {
         Ok(client) => client,
@@ -177,14 +205,16 @@ pub async fn build(
     tracing::info!(
         endpoint = remote.endpoint,
         instance = remote.instance,
-        upload = remote.upload,
+        upload,
         "remote cache connected"
     );
 
-    let mut cas = LayeredCas::new(local.cas, Arc::new(remote_cas));
+    let remote_cas = Arc::new(remote_cas) as Arc<dyn Cas>;
+    let mut cas = LayeredCas::new(local.cas, remote_cas.clone());
     let mut action_cache =
-        LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)));
-    if remote.upload {
+        LayeredActionCache::new(local.action_cache, Arc::new(RemoteActionCache::new(client)))
+            .with_remote_cas(remote_cas);
+    if upload {
         cas = cas.with_push();
         action_cache = action_cache.with_push();
     }
@@ -209,10 +239,9 @@ mod tests {
 
     #[test]
     fn no_configuration_and_no_environment_means_local_only() {
-        temp_env::with_vars(
-            [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)],
-            || assert!(resolve(None).is_none()),
-        );
+        temp_env::with_vars([(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, None)], || {
+            assert!(resolve(None).is_none());
+        });
     }
 
     #[test]
@@ -233,7 +262,10 @@ mod tests {
     #[test]
     fn the_environment_overrides_a_configured_endpoint() {
         temp_env::with_vars(
-            [(ENDPOINT_ENV, Some("grpcs://override:443")), (UPLOAD_ENV, None)],
+            [
+                (ENDPOINT_ENV, Some("grpcs://override:443")),
+                (UPLOAD_ENV, None),
+            ],
             || {
                 let resolved = resolve(Some(&configured("grpcs://from-cue:443"))).unwrap();
                 assert_eq!(resolved.endpoint, "grpcs://override:443");
@@ -277,7 +309,13 @@ mod tests {
         // shared cache.
         temp_env::with_vars(
             [(ENDPOINT_ENV, None::<&str>), (UPLOAD_ENV, Some("maybe"))],
-            || assert!(!resolve(Some(&configured("grpcs://cache:443"))).unwrap().upload),
+            || {
+                assert!(
+                    !resolve(Some(&configured("grpcs://cache:443")))
+                        .unwrap()
+                        .upload
+                );
+            },
         );
     }
 
@@ -289,19 +327,25 @@ mod tests {
             header: None,
         });
         temp_env::with_var("TEST_CACHE_TOKEN", Some("tok"), || {
-            assert!(matches!(credentials(&remote), Credentials::Bearer(token) if token == "tok"));
+            assert!(matches!(
+                credentials(&remote),
+                CredentialResolution::Ready(Credentials::Bearer(token)) if token == "tok"
+            ));
         });
     }
 
     #[test]
-    fn a_missing_token_degrades_to_anonymous_rather_than_failing() {
+    fn a_missing_token_disables_authenticated_writes() {
         let mut remote = configured("grpcs://cache:443");
         remote.auth = Some(CacheAuth {
             bearer_token_env: Some("TEST_CACHE_TOKEN_ABSENT".to_string()),
             header: None,
         });
         temp_env::with_var("TEST_CACHE_TOKEN_ABSENT", None::<&str>, || {
-            assert!(matches!(credentials(&remote), Credentials::None));
+            assert!(matches!(
+                credentials(&remote),
+                CredentialResolution::MissingConfigured
+            ));
         });
     }
 
@@ -317,7 +361,7 @@ mod tests {
         });
         temp_env::with_var("TEST_CACHE_KEY", Some("abc"), || {
             match credentials(&remote) {
-                Credentials::Header { name, value } => {
+                CredentialResolution::Ready(Credentials::Header { name, value }) => {
                     assert_eq!(name, "x-api-key");
                     assert_eq!(value, "abc");
                 }
@@ -330,7 +374,7 @@ mod tests {
     fn no_auth_block_means_anonymous() {
         assert!(matches!(
             credentials(&configured("grpc://cache:1")),
-            Credentials::None
+            CredentialResolution::Ready(Credentials::None)
         ));
     }
 }

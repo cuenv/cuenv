@@ -23,12 +23,10 @@ pub struct RemoteCache {
     #[serde(default)]
     pub instance: String,
 
-    /// Whether this machine may upload. Reading is always allowed.
+    /// Reserved upload opt-in. Reading is always allowed.
     ///
-    /// Defaults to `false` and should stay there until filesystem isolation
-    /// lands: a task can currently read files it did not declare, so an entry
-    /// it records may be wrong elsewhere, and uploading is what turns one
-    /// machine's unsound entry into everyone's.
+    /// Defaults to `false`; the CLI currently forces remote connections
+    /// read-only until a strict platform filesystem sandbox is available.
     #[serde(default)]
     pub upload: bool,
 

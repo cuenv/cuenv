@@ -1,8 +1,8 @@
 //! [`Cas`] trait and local on-disk implementation.
 
 use crate::digest::Digest;
-use async_trait::async_trait;
 use crate::error::{Error, Result};
+use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 use std::fs;
 use std::io::{self, Read, Write};
@@ -96,10 +96,14 @@ impl LocalCas {
     }
 
     /// Compute the on-disk path for `digest`.
-    #[must_use]
-    pub fn blob_path(&self, digest: &Digest) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an untrusted digest is not canonical SHA-256.
+    pub fn blob_path(&self, digest: &Digest) -> Result<PathBuf> {
+        digest.validate()?;
         let (prefix, rest) = digest.hash.split_at(2);
-        self.root.join("cas").join("sha256").join(prefix).join(rest)
+        Ok(self.root.join("cas").join("sha256").join(prefix).join(rest))
     }
 
     fn tmp_dir(&self) -> PathBuf {
@@ -147,30 +151,37 @@ impl LocalCas {
         Ok(())
     }
 
-    /// Atomically rename `src` into `dst`, tolerating the case where another
-    /// writer populated the same digest concurrently.
-    fn install(src: &Path, dst: &Path) -> Result<()> {
+    /// Whether `dst` already contains the bytes named by `digest`.
+    ///
+    /// A corrupt blob must not become permanent merely because its pathname
+    /// exists: a later write of the correct content should repair it.
+    fn contains_valid_blob(dst: &Path, digest: &Digest) -> Result<bool> {
+        match Self::verify_file(dst, digest) {
+            Ok(()) => Ok(true),
+            Err(Error::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(Error::DigestMismatch { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Atomically persist `src` into `dst`.
+    ///
+    /// `NamedTempFile::persist` uses replacement semantics on Windows as well
+    /// as Unix. Removing a corrupt destination before rename creates a window
+    /// where readers observe a missing blob and lets concurrent repair writers
+    /// delete one another's winner.
+    fn install(src: tempfile::NamedTempFile, dst: &Path, digest: &Digest) -> Result<()> {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
-        if dst.exists() {
-            // Content-addressed: same path ⇒ same content. Drop the temp.
-            let _ = fs::remove_file(src);
-            return Ok(());
-        }
-        match fs::rename(src, dst) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                let _ = fs::remove_file(src);
-                Ok(())
+        match src.persist(dst) {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                if Self::contains_valid_blob(dst, digest)? {
+                    return Ok(());
+                }
+                Err(Error::io(error.error, dst, "persist"))
             }
-            Err(e) if e.raw_os_error() == Some(EXDEV) => {
-                // Cross-device rename isn't supported; copy then drop temp.
-                fs::copy(src, dst).map_err(|e2| Error::io(e2, dst, "copy"))?;
-                let _ = fs::remove_file(src);
-                Ok(())
-            }
-            Err(e) => Err(Error::io(e, dst, "rename")),
         }
     }
 }
@@ -178,11 +189,11 @@ impl LocalCas {
 #[async_trait]
 impl Cas for LocalCas {
     async fn contains(&self, digest: &Digest) -> Result<bool> {
-        Ok(self.blob_path(digest).exists())
+        Self::contains_valid_blob(&self.blob_path(digest)?, digest)
     }
 
     async fn get(&self, digest: &Digest) -> Result<Vec<u8>> {
-        let path = self.blob_path(digest);
+        let path = self.blob_path(digest)?;
         match fs::read(&path) {
             Ok(bytes) => {
                 Self::verify_bytes(digest, &bytes)?;
@@ -196,7 +207,7 @@ impl Cas for LocalCas {
     }
 
     async fn get_to_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
-        let src = self.blob_path(digest);
+        let src = self.blob_path(digest)?;
         if !src.exists() {
             return Err(Error::not_found(digest.hash.clone()));
         }
@@ -209,8 +220,8 @@ impl Cas for LocalCas {
 
     async fn put_bytes(&self, bytes: &[u8]) -> Result<Digest> {
         let digest = Digest::of_bytes(bytes);
-        let dst = self.blob_path(&digest);
-        if dst.exists() {
+        let dst = self.blob_path(&digest)?;
+        if Self::contains_valid_blob(&dst, &digest)? {
             trace!(digest = %digest, "CAS put_bytes: already present");
             return Ok(digest);
         }
@@ -222,17 +233,19 @@ impl Cas for LocalCas {
         tmp.as_file()
             .sync_all()
             .map_err(|e| Error::io(e, tmp.path(), "fsync"))?;
-        let (_, tmp_path) = tmp
-            .keep()
-            .map_err(|e| Error::io(e.error, &tmp_dir, "keep"))?;
-        Self::install(&tmp_path, &dst)?;
+        Self::install(tmp, &dst, &digest)?;
         trace!(digest = %digest, "CAS put_bytes: installed");
         Ok(digest)
     }
 
     async fn put_file(&self, source: &Path) -> Result<Digest> {
-        // Pass 1: streaming sha256 + size, no copy yet.
+        // Hash the exact bytes copied into the temporary file. Hashing the
+        // source and then copying it in a second pass permits a concurrent
+        // writer to install different bytes under the first pass's digest.
         let mut file = fs::File::open(source).map_err(|e| Error::io(e, source, "open"))?;
+        let tmp_dir = self.tmp_dir();
+        let mut tmp = tempfile::NamedTempFile::new_in(&tmp_dir)
+            .map_err(|e| Error::io(e, &tmp_dir, "tempfile"))?;
         let mut hasher = Sha256::new();
         let mut size: u64 = 0;
         let mut buf: Box<[u8]> = vec![0u8; 64 * 1024].into_boxed_slice();
@@ -244,39 +257,28 @@ impl Cas for LocalCas {
                 break;
             }
             hasher.update(&buf[..n]);
+            tmp.write_all(&buf[..n])
+                .map_err(|e| Error::io(e, tmp.path(), "write"))?;
             size += n as u64;
         }
         let digest = Digest {
             hash: hex::encode(hasher.finalize()),
             size_bytes: size,
         };
-        let dst = self.blob_path(&digest);
-        if dst.exists() {
+        let dst = self.blob_path(&digest)?;
+        if Self::contains_valid_blob(&dst, &digest)? {
             trace!(digest = %digest, source = %source.display(), "CAS put_file: already present");
             return Ok(digest);
         }
 
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
-        }
-        let tmp_dir = self.tmp_dir();
-        let tmp = tempfile::NamedTempFile::new_in(&tmp_dir)
-            .map_err(|e| Error::io(e, &tmp_dir, "tempfile"))?;
-        fs::copy(source, tmp.path()).map_err(|e| Error::io(e, tmp.path(), "copy"))?;
-        let (_, tmp_path) = tmp
-            .keep()
-            .map_err(|e| Error::io(e.error, &tmp_dir, "keep"))?;
-        Self::install(&tmp_path, &dst)?;
+        tmp.as_file()
+            .sync_all()
+            .map_err(|e| Error::io(e, tmp.path(), "fsync"))?;
+        Self::install(tmp, &dst, &digest)?;
         trace!(digest = %digest, "CAS put_file: copied");
         Ok(digest)
     }
 }
-
-#[cfg(target_family = "unix")]
-const EXDEV: i32 = 18;
-
-#[cfg(not(target_family = "unix"))]
-const EXDEV: i32 = -1;
 
 #[cfg(test)]
 mod tests {
@@ -328,10 +330,22 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cas = LocalCas::open(tmp.path()).unwrap();
         let digest = cas.put_bytes(b"immutable").await.unwrap();
-        fs::write(cas.blob_path(&digest), b"mutated").unwrap();
+        fs::write(cas.blob_path(&digest).unwrap(), b"mutated").unwrap();
 
+        assert!(!cas.contains(&digest).await.unwrap());
         let err = cas.get(&digest).await.unwrap_err();
         assert!(matches!(err, Error::DigestMismatch { .. }));
+    }
+
+    #[tokio::test]
+    async fn putting_known_content_repairs_a_corrupted_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let digest = cas.put_bytes(b"immutable").await.unwrap();
+        fs::write(cas.blob_path(&digest).unwrap(), b"mutated").unwrap();
+
+        assert_eq!(cas.put_bytes(b"immutable").await.unwrap(), digest);
+        assert_eq!(cas.get(&digest).await.unwrap(), b"immutable");
     }
 
     #[tokio::test]
@@ -377,5 +391,18 @@ mod tests {
         assert!(!cas.contains(&d).await.unwrap());
         cas.put_bytes(b"x").await.unwrap();
         assert!(cas.contains(&d).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn malformed_digest_is_rejected_without_building_a_path() {
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let malformed = Digest {
+            hash: "../escape".to_string(),
+            size_bytes: 0,
+        };
+
+        assert!(cas.contains(&malformed).await.is_err());
+        assert!(cas.get(&malformed).await.is_err());
     }
 }

@@ -78,11 +78,7 @@ impl ActionCache for RemoteActionCache {
         Ok(self.get(action_digest).await?)
     }
 
-    async fn update(
-        &self,
-        action_digest: &Digest,
-        result: &ActionResult,
-    ) -> cuenv_cas::Result<()> {
+    async fn update(&self, action_digest: &Digest, result: &ActionResult) -> cuenv_cas::Result<()> {
         Ok(self.put(action_digest, result).await?)
     }
 }

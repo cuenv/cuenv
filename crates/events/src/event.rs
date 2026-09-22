@@ -276,7 +276,10 @@ pub enum CacheSkipReason {
     /// Inputs could not be mapped onto the cache hasher root.
     HasherRootMismatch,
     /// Input hashing itself failed.
-    HashFailed,
+    HashFailed {
+        /// Error returned by the input hasher.
+        reason: String,
+    },
     /// Task opted out of hermetic execution (`hermetic: false`).
     ///
     /// A non-hermetic task reads and writes the live workspace and receives
@@ -328,7 +331,7 @@ impl std::fmt::Display for CacheSkipReason {
             Self::Disabled { reason: None } => write!(f, "disabled"),
             Self::NeverMode => write!(f, "cache mode never"),
             Self::HasherRootMismatch => write!(f, "hasher root mismatch"),
-            Self::HashFailed => write!(f, "hashing failed"),
+            Self::HashFailed { reason } => write!(f, "hashing failed: {reason}"),
             Self::NonHermetic => write!(f, "task is not hermetic"),
             Self::UnportableWorkdir => write!(f, "working directory is not portable"),
             Self::SecretsWithoutCacheSalt => {

@@ -241,7 +241,12 @@ cuenv task build --backend dagger
 ```
 
 :::note[Dagger backend is Partial]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage.
+The `dagger` backend is optional and gated behind the `dagger-backend` build
+feature; host execution is the default and fully supported. Dagger currently
+mounts the full project instead of cuenv's resolved input root, so task-result
+caching is disabled for Dagger even when a task declares a cache policy. See
+[the Dagger backend explainer](/explanation/dagger-backend/) and [Schema
+status](/reference/schema/status/) for current coverage.
 :::
 
 ### Cache helpers
@@ -256,7 +261,14 @@ phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
 :::
 
 On a cache hit, cuenv restores the task's declared `outputs` into its working
-directory automatically — there is no flag to enable it.
+directory automatically — there is no flag to enable it. Output replacement is
+transactional: all files are staged and validated before previous owned paths
+are replaced, and declared outputs omitted by the new result are removed
+instead of leaving stale artifacts behind.
+
+REAPI represents every path component as UTF-8. cuenv rejects declared input or
+output trees containing non-UTF-8 names instead of replacing bytes and risking
+two distinct filesystem names collapsing to one cache entry.
 
 ### Overriding the cache for one run
 
@@ -266,7 +278,7 @@ something looks wrong:
 
 | Value | Effect |
 | --- | --- |
-| `off` (also `false`, `0`, `none`) | Ignore the cache entirely |
+| `off` (also `false`, `0`, `none`) | Disable the task-result cache; directory isolation remains enabled |
 | `read` | Serve existing entries, record nothing |
 | `write` | Ignore existing entries, record fresh ones |
 | `read-write` (also `on`, `true`, `1`) | Default behaviour |
@@ -352,22 +364,34 @@ tasks: {
 }
 ```
 
+The reference is also an implicit dependency. cuenv loads the referenced
+project's task graph, runs that producer in its own project root, and only then
+hashes and materializes the mapped output for the consumer. A clean checkout
+therefore does not require the producer's output to exist before the task run
+starts.
+
 The key is a function of the referenced files' **content**, not of the
 producing task's own key. That is what gives early cutoff: a producer that
 reruns and emits identical bytes leaves every consumer's key unchanged, so the
 consumers stay cached. `project` may be written as the other project's `name`
-or as its path relative to the CUE module root.
+or as a path relative to the consuming project (for example `../design-system`).
+A leading `/` is VCS-workspace-relative, not host-root-relative. Path references
+are canonicalized and must remain inside the VCS workspace.
 
 Two rules follow from recording files at their `to` path:
 
 - `from` bounds what is hashed. A directory or glob keeps its internal
   structure below `to`; a single file lands exactly on `to`.
-- Two inputs may not claim the same workspace path. A mapping whose `to`
-  collides with a local input — or with another mapping — makes the task
-  uncacheable, because which file the task would see is an ordering accident.
+- Two inputs may not claim the same workspace path or a file/directory prefix
+  of one another. This remains an error when the bytes are identical: ownership
+  and executable mode can still differ, so accepting it would make precedence
+  an ordering accident.
 
-A reference to a project the CUE module does not contain is also uncacheable:
-there is nothing to hash, so there is no honest key.
+A reference that resolves to neither a discovered project nor a safe workspace
+path has nothing honest to hash. Under the default directory sandbox, cuenv
+reports that configuration error instead of exposing the live checkout. Input
+hash failures include the underlying path or pattern error so the declaration
+can be corrected directly.
 
 ```cue
 tasks: {
@@ -645,8 +669,8 @@ Tasks are hermetic by default (`hermetic: true`). Today that means two things:
   cached, because a task that reads and writes the live checkout with the
   ambient host environment produces results the cache key cannot describe.
 - Its cache key records only what it **declares** — the resolved `inputs`, the
-  command, the CUE-declared environment, the platform, and any host variables
-  named in `hermetic.passthrough`.
+  command, the CUE-declared environment, timeout, execution backend, platform,
+  and any host variables named in `hermetic.passthrough`.
 
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or
@@ -654,9 +678,11 @@ commands that manage files outside the declared input/output boundary.
 
 ### Filesystem isolation
 
-A cacheable hermetic task runs **sandboxed by default**: in a per-action
-directory containing exactly its declared `inputs`, with only its declared
-`outputs` copied back out.
+A hermetic task runs **sandboxed by default**, independently of whether result
+caching is enabled: in a per-action directory containing exactly its declared
+`inputs`, with only its declared `outputs` copied back out. A task with no
+declared inputs receives an empty execution root, and `CUENV_CACHE=off` or
+`cache: mode: "never"` disables result reuse without disabling isolation.
 
 | Tier | What the task sees |
 | --- | --- |
@@ -677,13 +703,19 @@ tasks: {
 }
 ```
 
-An undeclared read **fails** instead of silently succeeding, and an undeclared
-write is lost on the first run rather than mysteriously on the hundredth.
+An undeclared **relative workspace** read fails instead of silently
+succeeding, and an undeclared write is lost on the first run rather than
+mysteriously on the hundredth.
 Bazel and buck2 both sandbox by default for the same reason: a declaration
 that is only enforced when you ask for it is not a declaration, it is a
 comment. It is also what makes a cache entry worth sharing — an entry recorded
 without isolation is only as trustworthy as whatever someone remembered to
 list in `inputs`.
+
+The `"dir"` tier isolates relative workspace paths; it is not an OS security
+boundary. Absolute host paths and the network remain reachable, and symlink
+inputs or outputs are rejected. Remote cache uploads remain disabled until a
+strict platform sandbox closes those gaps.
 
 #### Opting out
 
@@ -700,20 +732,24 @@ tasks: {
 }
 ```
 
-#### Where the default does not apply
+#### When isolation cannot be constructed
 
-Isolation needs a resolvable input set, so the default only takes effect where
-the task is cache-eligible to begin with. A task that declares no `inputs`,
-sets `cache: mode: "never"`, or is skipped for any other reason has nothing to
-build a sandbox from, and runs where it always did. That is not a silent
-downgrade — it never asked for isolation.
+Result-cache eligibility and sandboxing are separate. Cache skip reasons such
+as an empty input set, `cache: mode: "never"`, task-local runtime environment,
+or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
+directory sandbox. If an input declaration cannot be resolved safely, the
+task errors rather than silently running against the live checkout.
 
-Naming the tier changes that. A task that explicitly sets
-`hermetic: sandbox: "dir"` and cannot have it — no resolvable input set, no
-cache for this run, the dagger backend — is an **error**. Handing back a
-result that looks sandboxed but is not would be worse than not sandboxing at
-all, and it is the same line Bazel draws between a strategy you inherited and
-one you named.
+The Dagger backend provides container isolation instead of a host exec root,
+but currently mounts the full project. Its task-result cache is disabled until
+it consumes cuenv's resolved input root and exports declared outputs through
+the same projection path. Explicitly requesting `hermetic: sandbox: "dir"`
+with Dagger is rejected because cuenv cannot honestly provide that named host
+strategy.
+
+Retries rebuild a fresh verified execution root for every attempt. Files left
+by a failed attempt therefore cannot make a later retry succeed and then be
+published under the original clean-input action key.
 
 Stricter tiers (OS namespaces on Linux, seatbelt on macOS) are absent from the
 schema until they are implemented, for that same reason.

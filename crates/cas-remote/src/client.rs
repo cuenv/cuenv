@@ -213,9 +213,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_ascii_credential_is_rejected_without_quoting_it() {
-        let client = client(RemoteConfig::new("grpc://x:1").with_credentials(
-            Credentials::Bearer("tøken".into()),
-        ));
+        let client = client(
+            RemoteConfig::new("grpc://x:1").with_credentials(Credentials::Bearer("tøken".into())),
+        );
         let error = client.request(()).unwrap_err();
         assert!(!error.to_string().contains("tøken"), "{error}");
         assert!(error.to_string().contains("printable ASCII"), "{error}");

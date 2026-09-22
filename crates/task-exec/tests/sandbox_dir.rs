@@ -12,7 +12,9 @@ use cuenv_core::OutputCapture;
 use cuenv_core::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{ExecutorConfig, TaskExecutor};
-use cuenv_task_exec::{Input, Task, TaskCacheMode, TaskCachePolicy};
+use cuenv_task_exec::{
+    Input, Task, TaskCacheMode, TaskCachePolicy, TaskDirectory, TaskDirectoryBase,
+};
 use cuenv_vcs::WalkHasher;
 use std::collections::BTreeMap;
 use std::fs;
@@ -100,11 +102,25 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
 
-    let result = executor.execute_task("read-undeclared", &task).await.unwrap();
+    let result = executor
+        .execute_task("read-undeclared", &task)
+        .await
+        .unwrap();
     assert!(
         !result.success,
         "an undeclared read must fail, not silently succeed"
     );
+}
+
+#[tokio::test]
+async fn a_hermetic_task_does_not_inherit_undeclared_host_environment() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let task = sandboxed(r#"test -z "${HOME+x}""#, &[], &[]);
+
+    let result = executor.execute_task("clean-env", &task).await.unwrap();
+    assert!(result.success, "stderr: {}", result.stderr);
 }
 
 #[tokio::test]
@@ -114,11 +130,9 @@ async fn a_declared_output_is_projected_back_into_the_workspace() {
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
-    let task = sandboxed(
-        "mkdir -p out && cp src.txt out/built.txt",
-        &["src.txt"],
-        &["out/built.txt"],
-    );
+    let task = sandboxed("mkdir -p out && cp src.txt out/built.txt", &["src.txt"], &[
+        "out/built.txt",
+    ]);
 
     let result = executor.execute_task("build", &task).await.unwrap();
     assert!(result.success, "stderr: {}", result.stderr);
@@ -186,25 +200,59 @@ async fn a_failing_sandboxed_task_still_cleans_up() {
 }
 
 #[tokio::test]
-async fn isolation_the_user_asked_for_is_never_silently_dropped() {
-    // The task declares no inputs, so there is no input set to build a
-    // sandbox from. Running it unsandboxed would hand back a result that
-    // looks sandboxed, which is worse than refusing.
+async fn a_failing_task_does_not_replace_the_last_good_output() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    fs::write(workspace.path().join("src.txt"), "source").unwrap();
+    fs::create_dir_all(workspace.path().join("dist")).unwrap();
+    fs::write(workspace.path().join("dist/app.txt"), "last-good").unwrap();
+
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let task = sandboxed(
+        "mkdir -p dist; echo partial > dist/app.txt; exit 1",
+        &["src.txt"],
+        &["dist"],
+    );
+    let result = executor.execute_task("failed-build", &task).await.unwrap();
+
+    assert!(!result.success);
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("dist/app.txt")).unwrap(),
+        "last-good"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_symlinked_output_ancestor_is_rejected() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let task = sandboxed(
+        "mkdir real; ln -s real link; echo built > link/app.txt",
+        &[],
+        &["link/app.txt"],
+    );
+
+    let error = executor
+        .execute_task("symlink-output", &task)
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("symlink"));
+    assert!(!workspace.path().join("link").exists());
+}
+
+#[tokio::test]
+async fn an_explicit_sandbox_can_have_an_empty_input_root() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed("true", &[], &[]);
 
-    let error = executor
-        .execute_task("no-inputs", &task)
-        .await
-        .expect_err("a sandbox that cannot be built must be an error");
-    let message = error.to_string();
-    assert!(
-        message.contains("sandbox") && message.contains("no-inputs"),
-        "unexpected error: {message}"
-    );
+    let result = executor.execute_task("no-inputs", &task).await.unwrap();
+    assert!(result.success);
 }
 
 #[tokio::test]
@@ -214,11 +262,9 @@ async fn a_sandboxed_task_still_caches() {
     fs::write(workspace.path().join("src.txt"), "source").unwrap();
 
     let executor = build_executor(workspace.path(), cache_root.path());
-    let task = sandboxed(
-        "mkdir -p out && cp src.txt out/built.txt",
-        &["src.txt"],
-        &["out/built.txt"],
-    );
+    let task = sandboxed("mkdir -p out && cp src.txt out/built.txt", &["src.txt"], &[
+        "out/built.txt",
+    ]);
 
     executor.execute_task("build", &task).await.unwrap();
     fs::remove_file(workspace.path().join("out/built.txt")).unwrap();
@@ -230,7 +276,6 @@ async fn a_sandboxed_task_still_caches() {
         "the second run must be served from cache, restoring the output"
     );
 }
-
 
 #[tokio::test]
 async fn a_plain_hermetic_task_is_sandboxed_without_asking() {
@@ -254,11 +299,7 @@ async fn a_plain_hermetic_task_is_sandboxed_without_asking() {
 }
 
 #[tokio::test]
-async fn the_default_steps_aside_when_there_is_no_input_set() {
-    // A task with no declared inputs has no sandbox to be denied. It never
-    // asked for isolation, so it runs where it always did rather than
-    // failing — the line Bazel draws between a strategy you named and one
-    // you inherited.
+async fn the_default_uses_an_empty_input_root_when_no_inputs_are_declared() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("ambient.txt"), "ambient").unwrap();
@@ -267,10 +308,52 @@ async fn the_default_steps_aside_when_there_is_no_input_set() {
     let task = defaulted("cat ambient.txt", &[], &[]);
 
     let result = executor.execute_task("no-inputs", &task).await.unwrap();
-    assert_eq!(
+    assert_ne!(
         result.exit_code,
         Some(0),
-        "a task that never asked for isolation must not be broken by the default"
+        "an empty declaration must not expose the ambient workspace"
+    );
+}
+
+#[tokio::test]
+async fn sandboxing_is_independent_of_cache_mode() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    fs::write(workspace.path().join("declared.txt"), "declared").unwrap();
+    fs::write(workspace.path().join("undeclared.txt"), "undeclared").unwrap();
+
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let mut task = sandboxed("cat undeclared.txt", &["declared.txt"], &[]);
+    task.cache = Some(TaskCachePolicy {
+        mode: TaskCacheMode::Never,
+        max_age: None,
+    });
+
+    let result = executor.execute_task("never-cache", &task).await.unwrap();
+    assert!(!result.success);
+}
+
+#[tokio::test]
+async fn nested_task_directory_is_preserved_inside_the_exec_root() {
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    fs::create_dir_all(workspace.path().join("sub")).unwrap();
+    fs::write(workspace.path().join("sub/input.txt"), "nested").unwrap();
+
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let mut task = sandboxed("cat input.txt > output.txt", &["sub/input.txt"], &[
+        "output.txt",
+    ]);
+    task.directory = Some(TaskDirectory {
+        from: TaskDirectoryBase::Module,
+        path: "sub".to_string(),
+    });
+
+    let result = executor.execute_task("nested", &task).await.unwrap();
+    assert!(result.success, "stderr: {}", result.stderr);
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("sub/output.txt")).unwrap(),
+        "nested"
     );
 }
 

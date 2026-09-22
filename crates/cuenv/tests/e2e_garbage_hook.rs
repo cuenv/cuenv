@@ -2,9 +2,8 @@
 
 mod hook_test_support;
 
-use assert_cmd::Command;
 use hook_test_support::{
-    ApprovalOutcome, TestResult, approve_config, assert_sandbox_error, create_test_dir,
+    ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv,
 };
 use std::fs;
 
@@ -39,54 +38,44 @@ hooks: {
         ApprovalOutcome::SandboxError => return Ok(()),
     }
 
-    let output = Command::new(cuenv_bin)
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .args([
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "if [ \"$GOOD\" = \"success\" ]; then echo FOUND; else echo MISSING; exit 1; fi",
-        ])
-        .output()?;
+    let load = run_cuenv(path, cuenv_bin, &["env", "load"])?;
+    assert!(
+        load.status.success(),
+        "cuenv env load failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&load.stdout),
+        String::from_utf8_lossy(&load.stderr)
+    );
 
-    // Handle different behaviors based on environment and error handling:
-    // - Exit code 3: FFI/sandbox error
-    // - Exit code 2: CLI/configuration error (hook evaluation failed)
-    // - Exit code 1: Partial env (GOOD var not set, script returns MISSING)
-    let exit_code = output.status.code();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let status = run_cuenv(
+        path,
+        cuenv_bin,
+        &[
+            "env", "status", "--wait", "--timeout", "10", "--output", "short",
+        ],
+    )?;
+    assert!(
+        status.status.success(),
+        "cuenv env status failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim(),
+        "[ERR]",
+        "syntax-error hook should fail"
+    );
 
-    match exit_code {
-        Some(3) => {
-            assert_sandbox_error(&output, "in sandbox");
-        }
-        Some(2) => {
-            // CLI/configuration error - hook evaluation or environment setup failed
-            // This is acceptable behavior when hooks have syntax errors
-            assert!(
-                stderr.contains("error") || stderr.contains("Error") || stderr.contains("failed"),
-                "Expected error message in stderr for exit code 2, got: {stderr}"
-            );
-        }
-        Some(1) => {
-            // Local / Permissive behavior: Continue with partial env
-            assert!(
-                stdout.contains("MISSING"),
-                "Expected MISSING in stdout for exit code 1, got: {stdout}"
-            );
-        }
-        other => {
-            return Err(unexpected_exit(other, &stdout, &stderr).into());
-        }
-    }
+    let export = run_cuenv(path, cuenv_bin, &["export", "--shell", "bash"])?;
+    assert!(
+        export.status.success(),
+        "cuenv export failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&export.stdout),
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&export.stdout);
+    assert!(
+        !stdout.contains("BAD=") && !stdout.contains("GOOD="),
+        "failed hooks must not export partial environment: {stdout}"
+    );
     Ok(())
-}
-
-fn unexpected_exit(exit_code: Option<i32>, stdout: &str, stderr: &str) -> std::io::Error {
-    std::io::Error::other(format!(
-        "Unexpected exit code {exit_code:?}.\nstdout: {stdout}\nstderr: {stderr}"
-    ))
 }

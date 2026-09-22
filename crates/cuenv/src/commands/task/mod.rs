@@ -15,8 +15,8 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
-use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_core::tasks::TaskCacheMode;
+use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
 use cuenv_task_exec::{ExecutorConfig, TaskExecutor, TaskGraph};
@@ -63,8 +63,8 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
 struct TaskCacheContext<'a> {
     /// Root of the project whose task is running.
     project_root: &'a Path,
-    /// Root of the CUE module, which bounds every project in the workspace.
-    module_root: &'a Path,
+    /// Root of the VCS workspace, which bounds path-shaped project references.
+    hasher_root: &'a Path,
     /// Project roots by name and by module-relative path.
     project_roots: BTreeMap<String, PathBuf>,
     /// Runtime identity folded into every action key.
@@ -82,14 +82,16 @@ async fn build_task_cache(
 ) -> Option<TaskCacheConfig> {
     let TaskCacheContext {
         project_root,
-        module_root,
+        hasher_root,
         project_roots,
         runtime_identity,
     } = context;
     let cache_override = cache_override();
-    if cache_override == CacheOverride::Off {
-        tracing::debug!("task cache disabled by CUENV_CACHE=off");
-        return None;
+    let cache_off = cache_override == CacheOverride::Off;
+    if cache_off {
+        tracing::debug!(
+            "task result cache disabled by CUENV_CACHE=off; input isolation remains enabled"
+        );
     }
 
     let root = resolve_cache_root(project_root);
@@ -110,26 +112,34 @@ async fn build_task_cache(
     // Stack a remote cache behind the local one when configured. Every
     // failure in here degrades to local-only: a cache is an optimization, so
     // an unreachable server should make a build slower, not broken.
-    let layers = remote_cache::build(cache_config, cas, action_cache).await;
+    let layers = if cache_off {
+        remote_cache::CacheLayers { cas, action_cache }
+    } else {
+        remote_cache::build(cache_config, cas, action_cache).await
+    };
 
-    // Rooted at the module, not the project: a task may declare an input in a
-    // sibling project, and a hasher that cannot see outside its own project
-    // can only answer such a reference by declining to cache. Patterns are
-    // prefixed with each project's module-relative path before they reach the
-    // walker, so this widens what is reachable without widening what is
-    // walked.
+    // Rooted at the VCS workspace, not the project: a task may declare an
+    // input in a sibling CUE module, and a hasher that cannot see outside its
+    // own module can only answer such a reference by declining to cache.
+    // Patterns are prefixed with each project's workspace-relative path before
+    // they reach the walker, so this widens what is reachable without widening
+    // what is walked.
     let vcs_hasher =
-        Arc::new(cuenv_vcs::WalkHasher::new(module_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+        Arc::new(cuenv_vcs::WalkHasher::new(hasher_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
         cas: layers.cas,
         action_cache: layers.action_cache,
         vcs_hasher,
-        vcs_hasher_root: module_root.to_path_buf(),
+        vcs_hasher_root: hasher_root.to_path_buf(),
         cache_root: root,
         project_roots,
         action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
-        cache_disabled_reason: runtime_identity.cache_disabled_reason,
+        cache_disabled_reason: if cache_off {
+            Some("disabled by CUENV_CACHE=off".to_string())
+        } else {
+            runtime_identity.cache_disabled_reason
+        },
         secret_salt: secret_cache_salt(),
         mode_override: match cache_override {
             CacheOverride::None | CacheOverride::Off => None,

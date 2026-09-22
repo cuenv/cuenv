@@ -32,6 +32,16 @@ pub trait ActionCache: Send + Sync {
     ///
     /// Returns an error if the result cannot be encoded or persisted.
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
+
+    /// Persist a result only after its referenced blobs have been fetched,
+    /// verified, and committed successfully.
+    ///
+    /// Most caches store it like a normal update. A layered remote cache
+    /// overrides this to promote the verified candidate into its local action
+    /// cache without publishing the same result back to the remote.
+    async fn commit_verified(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        self.update(action_digest, result).await
+    }
 }
 
 /// Filesystem-backed action cache, laid out as:
@@ -70,10 +80,14 @@ impl LocalActionCache {
     }
 
     /// On-disk path for a given action digest.
-    #[must_use]
-    pub fn entry_path(&self, action_digest: &Digest) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an untrusted digest is not canonical SHA-256.
+    pub fn entry_path(&self, action_digest: &Digest) -> Result<PathBuf> {
+        action_digest.validate()?;
         let (prefix, rest) = action_digest.hash.split_at(2);
-        self.root.join("ac").join("sha256").join(prefix).join(rest)
+        Ok(self.root.join("ac").join("sha256").join(prefix).join(rest))
     }
 
     fn tmp_dir(&self) -> PathBuf {
@@ -84,7 +98,7 @@ impl LocalActionCache {
 #[async_trait]
 impl ActionCache for LocalActionCache {
     async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
-        let path = self.entry_path(action_digest);
+        let path = self.entry_path(action_digest)?;
         match fs::read(&path) {
             Ok(bytes) => {
                 let proto = <Pb as prost::Message>::decode(bytes.as_slice()).map_err(|e| {
@@ -106,7 +120,7 @@ impl ActionCache for LocalActionCache {
     }
 
     async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
-        let path = self.entry_path(action_digest);
+        let path = self.entry_path(action_digest)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
@@ -188,5 +202,18 @@ mod tests {
 
         let got = ac.lookup(&d).await.unwrap().unwrap();
         assert_eq!(got.exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_action_digest_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let cache = LocalActionCache::open(tmp.path()).unwrap();
+        let malformed = Digest {
+            hash: "a".to_string(),
+            size_bytes: 0,
+        };
+
+        assert!(cache.lookup(&malformed).await.is_err());
+        assert!(cache.update(&malformed, &sample_result()).await.is_err());
     }
 }

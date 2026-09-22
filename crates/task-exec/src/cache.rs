@@ -10,19 +10,19 @@
 //! 4. Persisting outputs and metadata after a successful execution on a miss.
 
 use super::TaskCommandExt;
-use crate::{Task, TaskCacheMode, TaskCachePolicy};
+use crate::{Sandbox, Task, TaskCacheMode, TaskCachePolicy};
 use cuenv_cas::{
-    Action, ActionCache, ActionResult, Cas, Command, Digest, Directory, DirectoryNode,
-    CanonicalMessage, ExecutionMetadata, FileNode, OutputFile, Platform, canonical_bytes, digest_of,
-    missing_blobs,
+    Action, ActionCache, ActionResult, CanonicalMessage, Cas, Command, Digest, Directory,
+    DirectoryNode, ExecutionMetadata, FileNode, OutputDirectory, OutputFile, Platform,
+    build_output_tree, canonical_bytes, digest_of, materialize_output_tree,
 };
 use cuenv_core::Result;
 use cuenv_core::environment::{ActionEnvironment, Environment};
-use cuenv_core::tasks::{Input, ProjectReference};
+use cuenv_core::tasks::{Input, MappedInput, Mapping, ProjectReference};
 use cuenv_events::CacheSkipReason;
 use cuenv_vcs::{HashedInput, VcsHasher};
 use globset::{Glob, GlobSetBuilder};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -42,6 +42,18 @@ pub struct EligibleAction {
     /// materialize an exec root, which is the whole point of hashing it here
     /// rather than twice.
     pub inputs: Vec<HashedInput>,
+    /// Working directory inside the input root.
+    pub working_directory: PathBuf,
+}
+
+/// Inputs and working directory needed for directory-isolated execution even
+/// when cache reads/writes are disabled.
+#[derive(Debug)]
+pub struct ResolvedExecution {
+    /// Verified input snapshot to materialize.
+    pub inputs: Vec<HashedInput>,
+    /// Working directory inside the execution root.
+    pub working_directory: PathBuf,
 }
 
 /// Outcome of evaluating a task's cache eligibility.
@@ -51,7 +63,12 @@ pub enum CacheOutcome {
     Eligible(Box<EligibleAction>),
     /// Task is not eligible; the [`CacheSkipReason`] explains why so renderers
     /// can surface the reason to the user.
-    Skipped(CacheSkipReason),
+    Skipped {
+        /// Why result caching is unavailable.
+        reason: CacheSkipReason,
+        /// Input snapshot usable for directory isolation despite the skip.
+        execution: Option<ResolvedExecution>,
+    },
 }
 
 /// Bundle of caching infrastructure used by the task executor.
@@ -171,19 +188,6 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         module_root,
     } = input;
 
-    if let Some(reason) = &cache.cache_disabled_reason {
-        tracing::debug!(task = %task_name, reason, "skipping cache");
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::Disabled {
-            reason: Some(reason.clone()),
-        }));
-    }
-
-    let policy = effective_policy(cache, task);
-    if !policy.mode.allows_read() && !policy.mode.allows_write() {
-        tracing::debug!(task = %task_name, "skipping cache: task cache mode is never");
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::NeverMode));
-    }
-
     // A non-hermetic task reads and writes the live workspace and inherits
     // ambient host environment variables. The action key records neither, so
     // an entry written here would be keyed on a fraction of what produced it.
@@ -192,19 +196,31 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
             task = %task_name,
             "skipping cache: task opted out of hermetic execution"
         );
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::NonHermetic));
+        return Ok(skipped(CacheSkipReason::NonHermetic, None));
     }
 
-    if task.inputs.is_empty() {
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::EmptyInputs));
-    }
+    // Record the task directory inside the action root so nested tasks run in
+    // the same place on misses and hits. Input declarations remain
+    // project-root-relative, matching affected-task and CI path semantics.
+    let Some(working_directory) = normalize_workdir(workdir, project_root, module_root) else {
+        tracing::warn!(
+            task = %task_name,
+            workdir = %workdir.display(),
+            project_root = %project_root.display(),
+            module_root = %module_root.display(),
+            "skipping cache: working directory is outside the project and module roots"
+        );
+        return Ok(skipped(CacheSkipReason::UnportableWorkdir, None));
+    };
 
     let mut patterns = Vec::with_capacity(task.inputs.len());
     let mut project_references = Vec::new();
+    let mut local_mappings = Vec::new();
     for input in &task.inputs {
         match input {
             Input::Path(path) => patterns.push(path.clone()),
             Input::Project(reference) => project_references.push(reference),
+            Input::Mapped(mapping) => local_mappings.push(mapping),
             // `Input::Task` is rewritten to the producer's declared output
             // paths during manifest expansion. One that survives to here is
             // a reference nothing could resolve, so there is no content to
@@ -214,17 +230,9 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
                     task = %task_name,
                     "skipping cache: task uses an unresolvable task-output input"
                 );
-                return Ok(CacheOutcome::Skipped(CacheSkipReason::NonPathRef));
+                return Ok(skipped(CacheSkipReason::NonPathRef, None));
             }
         }
-    }
-
-    if !task.env.is_empty() {
-        tracing::debug!(
-            task = %task_name,
-            "skipping cache: task defines task-level environment entries resolved at execution time"
-        );
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::RuntimeEnv));
     }
 
     let mut hashed = if patterns.is_empty() {
@@ -232,23 +240,21 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
     } else {
         match resolve_hashed_inputs(cache, &patterns, project_root, task_name).await? {
             ResolveOutcome::Resolved(h) => h,
-            ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
+            ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     };
 
     for reference in project_references {
-        match resolve_project_reference(cache, reference, task_name).await? {
+        match resolve_project_reference(cache, reference, project_root, task_name).await? {
             ResolveOutcome::Resolved(external) => hashed.extend(external),
-            ResolveOutcome::Skipped(reason) => return Ok(CacheOutcome::Skipped(reason)),
+            ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     }
-
-    if hashed.is_empty() {
-        tracing::debug!(
-            task = %task_name,
-            "skipping cache: declared path inputs resolved to no files"
-        );
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::NoResolvedInputs));
+    for mapping in local_mappings {
+        match resolve_mapped_input(cache, mapping, task_name).await? {
+            ResolveOutcome::Resolved(mapped) => hashed.extend(mapped),
+            ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
+        }
     }
     let input_root_digest = match build_input_root_digest(&hashed) {
         Ok(digest) => digest,
@@ -258,25 +264,48 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
                 path,
                 "skipping cache: two inputs map to the same workspace path"
             );
-            return Ok(CacheOutcome::Skipped(CacheSkipReason::InputCollision {
-                path,
-            }));
+            return Ok(skipped(CacheSkipReason::InputCollision { path }, None));
         }
         Err(InputRootError::Failed(error)) => return Err(error),
     };
 
-    // A workdir that resolves under neither root would put a host-specific
-    // absolute path in the key, which no other machine can reproduce.
-    let Some(working_directory) = normalize_workdir(workdir, project_root, module_root) else {
-        tracing::warn!(
-            task = %task_name,
-            workdir = %workdir.display(),
-            project_root = %project_root.display(),
-            module_root = %module_root.display(),
-            "skipping cache: working directory is outside the project and module roots"
-        );
-        return Ok(CacheOutcome::Skipped(CacheSkipReason::UnportableWorkdir));
+    let execution = ResolvedExecution {
+        inputs: hashed,
+        working_directory: PathBuf::from(&working_directory),
     };
+
+    if let Some(reason) = &cache.cache_disabled_reason {
+        tracing::debug!(task = %task_name, reason, "skipping cache");
+        return Ok(skipped(
+            CacheSkipReason::Disabled {
+                reason: Some(reason.clone()),
+            },
+            Some(execution),
+        ));
+    }
+
+    let policy = effective_policy(cache, task);
+    if !policy.mode.allows_read() && !policy.mode.allows_write() {
+        tracing::debug!(task = %task_name, "skipping cache: task cache mode is never");
+        return Ok(skipped(CacheSkipReason::NeverMode, Some(execution)));
+    }
+    if task.inputs.is_empty() {
+        return Ok(skipped(CacheSkipReason::EmptyInputs, Some(execution)));
+    }
+    if execution.inputs.is_empty() {
+        tracing::debug!(
+            task = %task_name,
+            "skipping cache: declared path inputs resolved to no files"
+        );
+        return Ok(skipped(CacheSkipReason::NoResolvedInputs, Some(execution)));
+    }
+    if !task.env.is_empty() {
+        tracing::debug!(
+            task = %task_name,
+            "skipping cache: task defines task-level environment entries resolved at execution time"
+        );
+        return Ok(skipped(CacheSkipReason::RuntimeEnv, Some(execution)));
+    }
 
     let environment_variables = match environment
         .action_environment(task.env_passthrough(), cache.secret_salt.as_deref())
@@ -288,8 +317,9 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
                 secrets = ?names,
                 "skipping cache: secret-derived environment values and no CUENV_SECRET_SALT"
             );
-            return Ok(CacheOutcome::Skipped(
+            return Ok(skipped(
                 CacheSkipReason::SecretsWithoutCacheSalt,
+                Some(execution),
             ));
         }
     };
@@ -304,15 +334,30 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         environment_variables,
         output_files: task.outputs.clone(),
         output_directories: Vec::new(),
-        working_directory,
+        working_directory: working_directory.clone(),
     };
     let Some(command_digest) = store_message(cache, &command, "command", task_name).await else {
-        return Ok(store_unwritable());
+        return Ok(store_unwritable(execution));
     };
 
     let mut platform_properties = BTreeMap::new();
     platform_properties.insert("os".to_string(), std::env::consts::OS.to_string());
     platform_properties.insert("arch".to_string(), std::env::consts::ARCH.to_string());
+    platform_properties.insert(
+        "cuenv.sandbox".to_string(),
+        match task.sandbox().tier {
+            Sandbox::Dir => "dir",
+            Sandbox::None => "none",
+        }
+        .to_string(),
+    );
+    if let Some(timeout) = task.timeout.as_deref() {
+        // A cached success produced with a long timeout must not bypass a
+        // shorter timeout configured later. REAPI models timeout on Action;
+        // until the internal Action DTO carries that field, include the
+        // normalized declaration in the action platform identity.
+        platform_properties.insert("cuenv.timeout".to_string(), timeout.trim().to_string());
+    }
     for (key, value) in &cache.runtime_identity_properties {
         platform_properties.insert(key.clone(), value.clone());
     }
@@ -326,13 +371,14 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         action_semantics_version: cache.action_semantics_version,
     };
     let Some(digest) = store_message(cache, &action, "action", task_name).await else {
-        return Ok(store_unwritable());
+        return Ok(store_unwritable(execution));
     };
 
     Ok(CacheOutcome::Eligible(Box::new(EligibleAction {
         action,
         digest,
-        inputs: hashed,
+        inputs: execution.inputs,
+        working_directory: execution.working_directory,
     })))
 }
 
@@ -370,10 +416,17 @@ async fn store_message(
 }
 
 /// The skip reported when the blob store will not accept a write.
-fn store_unwritable() -> CacheOutcome {
-    CacheOutcome::Skipped(CacheSkipReason::Disabled {
-        reason: Some("cache store is not writable".to_string()),
-    })
+fn store_unwritable(execution: ResolvedExecution) -> CacheOutcome {
+    skipped(
+        CacheSkipReason::Disabled {
+            reason: Some("cache store is not writable".to_string()),
+        },
+        Some(execution),
+    )
+}
+
+fn skipped(reason: CacheSkipReason, execution: Option<ResolvedExecution>) -> CacheOutcome {
+    CacheOutcome::Skipped { reason, execution }
 }
 
 /// Internal outcome from input resolution, distinguishing skip reasons.
@@ -411,7 +464,9 @@ async fn resolve_hashed_inputs(
                 error = %error,
                 "skipping cache: input hashing failed"
             );
-            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed));
+            return Ok(ResolveOutcome::Skipped(CacheSkipReason::HashFailed {
+                reason: error.to_string(),
+            }));
         }
     };
 
@@ -448,9 +503,15 @@ async fn resolve_hashed_inputs(
 async fn resolve_project_reference(
     cache: &TaskCacheConfig,
     reference: &ProjectReference,
+    project_root: &Path,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    let Some(external_root) = cache.project_roots.get(&reference.project) else {
+    let external_root = cache
+        .project_roots
+        .get(&reference.project)
+        .cloned()
+        .or_else(|| resolve_project_path(cache, project_root, &reference.project));
+    let Some(external_root) = external_root else {
         tracing::debug!(
             task = %task_name,
             project = reference.project,
@@ -463,24 +524,107 @@ async fn resolve_project_reference(
 
     let mut resolved = Vec::new();
     for mapping in &reference.map {
-        let hashed = match resolve_hashed_inputs(
-            cache,
-            std::slice::from_ref(&mapping.from),
-            external_root,
-            task_name,
-        )
-        .await?
-        {
-            ResolveOutcome::Resolved(hashed) => hashed,
+        match resolve_mapping(cache, mapping, &external_root, task_name).await? {
+            ResolveOutcome::Resolved(mapped) => resolved.extend(mapped),
             ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
-        };
+        }
+    }
 
-        // `from` bounds where its matches live; everything below that bound is
-        // reproduced verbatim under `to`, so a directory mapping keeps its
-        // internal structure and a single-file mapping lands exactly on `to`.
-        let base = literal_prefix(&mapping.from);
-        let destination = PathBuf::from(mapping.to.trim_end_matches('/'));
-        for input in hashed {
+    Ok(ResolveOutcome::Resolved(resolved))
+}
+
+/// Resolve a path-shaped project reference relative to the consuming project.
+///
+/// A leading slash means "from the VCS workspace root", not the host root.
+/// Canonicalization both normalizes `..` and prevents symlinks from escaping
+/// the workspace boundary used by the input hasher.
+fn resolve_project_path(
+    cache: &TaskCacheConfig,
+    project_root: &Path,
+    declared_project: &str,
+) -> Option<PathBuf> {
+    let declared = Path::new(declared_project);
+    let candidate = if declared.is_absolute() {
+        let workspace_relative = declared.components().try_fold(
+            PathBuf::new(),
+            |mut path, component| match component {
+                Component::Normal(part) => {
+                    path.push(part);
+                    Some(path)
+                }
+                Component::RootDir | Component::CurDir => Some(path),
+                Component::Prefix(_) | Component::ParentDir => None,
+            },
+        )?;
+        cache.vcs_hasher_root.join(workspace_relative)
+    } else {
+        project_root.join(declared)
+    };
+
+    let workspace_root = std::fs::canonicalize(&cache.vcs_hasher_root).ok()?;
+    let project = std::fs::canonicalize(candidate).ok()?;
+    project.starts_with(&workspace_root).then_some(project)
+}
+
+async fn resolve_mapping(
+    cache: &TaskCacheConfig,
+    mapping: &Mapping,
+    source_root: &Path,
+    task_name: &str,
+) -> Result<ResolveOutcome> {
+    resolve_path_mapping(cache, PathMappingInput {
+        source: &mapping.from,
+        destination: &mapping.to,
+        source_root,
+        task_name,
+    })
+    .await
+}
+
+async fn resolve_mapped_input(
+    cache: &TaskCacheConfig,
+    mapping: &MappedInput,
+    task_name: &str,
+) -> Result<ResolveOutcome> {
+    resolve_path_mapping(cache, PathMappingInput {
+        source: &mapping.source,
+        destination: &mapping.destination,
+        source_root: &cache.vcs_hasher_root,
+        task_name,
+    })
+    .await
+}
+
+struct PathMappingInput<'a> {
+    source: &'a str,
+    destination: &'a str,
+    source_root: &'a Path,
+    task_name: &'a str,
+}
+
+async fn resolve_path_mapping(
+    cache: &TaskCacheConfig,
+    input: PathMappingInput<'_>,
+) -> Result<ResolveOutcome> {
+    let PathMappingInput {
+        source,
+        destination,
+        source_root,
+        task_name,
+    } = input;
+    let patterns = [source.to_string()];
+    let hashed = match resolve_hashed_inputs(cache, &patterns, source_root, task_name).await? {
+        ResolveOutcome::Resolved(hashed) => hashed,
+        ResolveOutcome::Skipped(reason) => return Ok(ResolveOutcome::Skipped(reason)),
+    };
+
+    // `from` bounds where its matches live; everything below that bound is
+    // reproduced under `to`, so directory mappings retain their structure.
+    let base = literal_prefix(source);
+    let destination = PathBuf::from(destination.trim_end_matches('/'));
+    let resolved = hashed
+        .into_iter()
+        .map(|input| {
             let relative = input
                 .relative_path
                 .strip_prefix(&base)
@@ -490,13 +634,12 @@ async fn resolve_project_reference(
             } else {
                 destination.join(relative)
             };
-            resolved.push(HashedInput {
+            HashedInput {
                 relative_path,
                 ..input
-            });
-        }
-    }
-
+            }
+        })
+        .collect();
     Ok(ResolveOutcome::Resolved(resolved))
 }
 
@@ -542,24 +685,74 @@ pub async fn lookup(
         return Ok(None);
     }
 
-    // An entry only promises its blobs; eviction or an interrupted write can
-    // break that promise. Checking now turns a dangling entry into an
-    // ordinary miss instead of a materialization that fails halfway and
-    // leaves a half-restored output tree behind.
-    let missing = missing_blobs(cache.cas.as_ref(), &result)
+    validate_cached_result(task, &result)?;
+
+    let missing = cuenv_cas::missing_blobs(cache.cas.as_ref(), &result)
         .await
-        .map_err(|e| cuenv_core::Error::configuration(format!("cache integrity check: {e}")))?;
+        .map_err(|error| {
+            cuenv_core::Error::configuration(format!("validate action cache result blobs: {error}"))
+        })?;
     if !missing.is_empty() {
         tracing::warn!(
             action = %action_digest,
-            missing = missing.len(),
-            first_missing = %missing[0],
-            "ignoring cache entry referencing blobs the store no longer holds"
+            missing = ?missing,
+            "ignoring action cache result with missing blobs"
         );
         return Ok(None);
     }
 
     Ok(Some(result))
+}
+
+fn validate_cached_result(task: &Task, result: &ActionResult) -> Result<()> {
+    let mut paths = BTreeSet::new();
+    for path in result
+        .output_files
+        .iter()
+        .map(|output| output.path.as_str())
+        .chain(
+            result
+                .output_directories
+                .iter()
+                .map(|output| output.path.as_str()),
+        )
+    {
+        let relative = safe_output_path(path)?;
+        if paths.iter().any(|existing: &PathBuf| {
+            existing.starts_with(&relative) || relative.starts_with(existing)
+        }) {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cached result contains overlapping output path '{}'",
+                relative.display()
+            )));
+        }
+        paths.insert(relative.clone());
+        if !task
+            .outputs
+            .iter()
+            .any(|declaration| output_declaration_matches(declaration, &relative))
+        {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cached result contains undeclared output '{}'",
+                relative.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn output_declaration_matches(declaration: &str, relative: &Path) -> bool {
+    let declaration = declaration.trim();
+    if declaration.is_empty() {
+        return false;
+    }
+    if looks_like_glob(declaration) {
+        return Glob::new(declaration)
+            .ok()
+            .is_some_and(|glob| glob.compile_matcher().is_match(relative));
+    }
+    let declared = Path::new(declaration);
+    relative == declared || relative.starts_with(declared)
 }
 
 /// Materialize a cache hit's outputs into `workdir`.
@@ -574,10 +767,9 @@ pub async fn lookup(
 pub async fn materialize_hit(
     cache: &TaskCacheConfig,
     workdir: &Path,
+    task: &Task,
     result: &ActionResult,
 ) -> Result<(String, String, i32)> {
-    materialize_outputs(cache, workdir, result).await?;
-
     let stdout = if let Some(digest) = &result.stdout_digest {
         let bytes = cache
             .cas
@@ -600,6 +792,10 @@ pub async fn materialize_hit(
         String::new()
     };
 
+    // No workspace path is touched until every stream and output blob has
+    // been fetched and verified into staging.
+    materialize_outputs(cache, workdir, task, result).await?;
+
     Ok((stdout, stderr, result.exit_code))
 }
 
@@ -618,14 +814,20 @@ pub async fn materialize_hit(
 async fn materialize_outputs(
     cache: &TaskCacheConfig,
     workdir: &Path,
+    task: &Task,
     result: &ActionResult,
 ) -> Result<()> {
-    if result.output_files.is_empty() {
+    if result.output_files.is_empty()
+        && result.output_directories.is_empty()
+        && task.outputs.is_empty()
+    {
         return Ok(());
     }
 
+    let existing = collect_outputs(workdir, &task.outputs)?;
     let staging = StagingDir::create(workdir)?;
-    let mut staged = Vec::with_capacity(result.output_files.len());
+    let mut resolved =
+        Vec::with_capacity(result.output_files.len() + result.output_directories.len());
 
     for output_file in &result.output_files {
         let relative = safe_output_path(&output_file.path)?;
@@ -637,20 +839,26 @@ async fn materialize_outputs(
             .await
             .map_err(|e| cuenv_core::Error::configuration(format!("cas get output: {e}")))?;
         set_executable_if_needed(&staged_path, output_file.is_executable)?;
-        staged.push((staged_path, workdir.join(&relative)));
+        secure_workspace_destination(workdir, &relative)?;
+        resolved.push(relative);
     }
 
-    for (from, to) in staged {
-        create_parent_dir(&to)?;
-        std::fs::rename(&from, &to).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "install cached output {}: {e}",
-                to.display()
-            ))
-        })?;
+    for output_directory in &result.output_directories {
+        let relative = safe_output_path(&output_directory.path)?;
+        let staged_path = staging.path().join(&relative);
+        create_parent_dir(&staged_path)?;
+        materialize_output_tree(
+            cache.cas.as_ref(),
+            &output_directory.tree_digest,
+            &staged_path,
+        )
+        .await
+        .map_err(|e| cuenv_core::Error::configuration(format!("cas get output directory: {e}")))?;
+        secure_workspace_destination(workdir, &relative)?;
+        resolved.push(relative);
     }
 
-    Ok(())
+    super::exec_root::commit_staged_outputs(staging.path(), workdir, &resolved, &existing)
 }
 
 /// Reject a cached output path that would escape the working directory.
@@ -694,6 +902,51 @@ fn create_parent_dir(path: &Path) -> Result<()> {
     })
 }
 
+fn secure_workspace_destination(workdir: &Path, relative: &Path) -> Result<PathBuf> {
+    let metadata = std::fs::symlink_metadata(workdir).map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "inspect cached-output workdir '{}': {error}",
+            workdir.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "refusing to install cached output into symlink workdir '{}'",
+            workdir.display()
+        )));
+    }
+    let destination = workdir.join(relative);
+    let mut current = workdir.to_path_buf();
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        if components.peek().is_none() {
+            break;
+        }
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "refusing to install cached output through symlink parent '{}'",
+                    current.display()
+                )));
+            }
+            Ok(metadata) if !metadata.is_dir() => break,
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "inspect cached output parent '{}': {error}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(destination)
+}
+
 /// Prefix of the scratch directories [`StagingDir`] creates.
 const STAGING_PREFIX: &str = ".cuenv-stage-";
 
@@ -718,21 +971,23 @@ impl StagingDir {
         use std::sync::atomic::{AtomicU64, Ordering};
         static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-        let path = workdir.join(format!(
-            "{STAGING_PREFIX}{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        // A leftover from a killed run would otherwise merge into this one.
-        if path.exists() {
-            let _ = std::fs::remove_dir_all(&path);
-        }
-        std::fs::create_dir_all(&path).map_err(|e| {
-            cuenv_core::Error::configuration(format!(
-                "create staging directory {}: {e}",
-                path.display()
-            ))
-        })?;
+        let path = loop {
+            let path = workdir.join(format!(
+                "{STAGING_PREFIX}{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => break path,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "create staging directory {}: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        };
         Ok(Self { path })
     }
 
@@ -762,11 +1017,20 @@ impl Drop for StagingDir {
 ///
 /// Returns an error if the [`Cas`] or [`ActionCache`] persistence fails.
 pub async fn record(input: RecordInput<'_>) -> Result<()> {
+    let resolved_outputs = collect_outputs(input.workdir, &input.task.outputs)?;
+    record_resolved(input, &resolved_outputs).await
+}
+
+/// Persist a successful execution using an already-resolved output set.
+///
+/// The executor uses this after projecting the same set back to the
+/// workspace, ensuring first-run and cache-hit output semantics agree.
+pub async fn record_resolved(input: RecordInput<'_>, resolved_outputs: &[PathBuf]) -> Result<()> {
     let RecordInput {
         cache,
         action_digest,
         workdir,
-        task,
+        task: _,
         stdout,
         stderr,
         exit_code,
@@ -778,20 +1042,40 @@ pub async fn record(input: RecordInput<'_>) -> Result<()> {
         return Ok(());
     }
 
-    let resolved_outputs = collect_outputs(workdir, &task.outputs)?;
-    let mut output_files = Vec::with_capacity(resolved_outputs.len());
+    let mut output_files = Vec::new();
+    let mut output_directories = Vec::new();
     for relative_path in resolved_outputs {
-        let absolute_path = workdir.join(&relative_path);
-        let digest = cache
-            .cas
-            .put_file(&absolute_path)
-            .await
-            .map_err(|e| cuenv_core::Error::configuration(format!("cas put output: {e}")))?;
-        output_files.push(OutputFile {
-            path: path_to_forward_slashes(&relative_path),
-            digest,
-            is_executable: is_executable(&absolute_path)?,
-        });
+        let absolute_path = workdir.join(relative_path);
+        let metadata = std::fs::symlink_metadata(&absolute_path).map_err(|e| {
+            cuenv_core::Error::configuration(format!(
+                "inspect output {}: {e}",
+                absolute_path.display()
+            ))
+        })?;
+        if metadata.is_dir() {
+            let tree_digest = build_output_tree(&absolute_path, cache.cas.as_ref())
+                .await
+                .map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "cas put output directory {}: {e}",
+                        absolute_path.display()
+                    ))
+                })?;
+            output_directories.push(OutputDirectory {
+                path: utf8_forward_slashes(relative_path)?,
+                tree_digest,
+            });
+        } else {
+            let digest =
+                cache.cas.put_file(&absolute_path).await.map_err(|e| {
+                    cuenv_core::Error::configuration(format!("cas put output: {e}"))
+                })?;
+            output_files.push(OutputFile {
+                path: utf8_forward_slashes(relative_path)?,
+                digest,
+                is_executable: is_executable(&absolute_path)?,
+            });
+        }
     }
 
     let redacted_stdout = cuenv_events::redact(stdout);
@@ -809,7 +1093,7 @@ pub async fn record(input: RecordInput<'_>) -> Result<()> {
 
     let result = ActionResult {
         output_files,
-        output_directories: Vec::new(),
+        output_directories,
         exit_code,
         stdout_digest: Some(stdout_digest),
         stderr_digest: Some(stderr_digest),
@@ -927,31 +1211,33 @@ impl InputDirectoryBuilder {
                 )));
             };
 
-            let name = name.to_string_lossy().into_owned();
+            let name = name.to_str().ok_or_else(|| {
+                InputRootError::Failed(cuenv_core::Error::configuration(format!(
+                    "REAPI input paths must be UTF-8: '{}'",
+                    relative_path.display()
+                )))
+            })?;
             if components.peek().is_some() {
-                current = current.directories.entry(name).or_default();
-            } else {
-                // Overwriting here would make the key depend on which input
-                // happened to be hashed last. A cross-project mapping landing
-                // on a local input is a real declaration conflict, not a
-                // detail to paper over.
-                let contested = current
-                    .files
-                    .get(&name)
-                    .is_some_and(|existing| existing.digest != *digest);
-                if contested {
+                if current.files.contains_key(name) {
                     return Err(InputRootError::Collision(path_to_forward_slashes(
                         relative_path,
                     )));
                 }
-                current.files.insert(
-                    name.clone(),
-                    FileNode {
-                        name,
-                        digest: digest.clone(),
-                        is_executable,
-                    },
-                );
+                current = current.directories.entry(name.to_string()).or_default();
+            } else {
+                // Any second owner is ambiguous, even when the bytes happen
+                // to match. Mode, provenance, and future content can differ,
+                // and a file cannot also own a directory prefix.
+                if current.files.contains_key(name) || current.directories.contains_key(name) {
+                    return Err(InputRootError::Collision(path_to_forward_slashes(
+                        relative_path,
+                    )));
+                }
+                current.files.insert(name.to_string(), FileNode {
+                    name: name.to_string(),
+                    digest: digest.clone(),
+                    is_executable,
+                });
             }
         }
 
@@ -982,9 +1268,7 @@ impl InputDirectoryBuilder {
     }
 }
 
-fn build_input_root_digest(
-    hashed: &[HashedInput],
-) -> std::result::Result<Digest, InputRootError> {
+fn build_input_root_digest(hashed: &[HashedInput]) -> std::result::Result<Digest, InputRootError> {
     let mut builder = InputDirectoryBuilder::default();
     for input in hashed {
         let digest = Digest {
@@ -1014,17 +1298,17 @@ fn prefix_patterns_for_hasher_root(
         return Ok(patterns.to_vec());
     }
 
-    Ok(patterns
+    patterns
         .iter()
         .map(|pattern| {
             let trimmed = pattern.trim();
             if trimmed.is_empty() {
-                String::new()
+                Ok(String::new())
             } else {
-                path_to_forward_slashes(&prefix.join(trimmed))
+                utf8_forward_slashes(&prefix.join(trimmed))
             }
         })
-        .collect())
+        .collect()
 }
 
 fn rebase_hashed_inputs_for_project_root(
@@ -1074,86 +1358,187 @@ fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) ->
         .strip_prefix(project_root)
         .or_else(|_| workdir.strip_prefix(module_root))
         .ok()
-        .map(path_to_forward_slashes)
+        .and_then(|path| path.to_str().map(|value| value.replace('\\', "/")))
 }
 
-fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
+pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
     if patterns.is_empty() {
         return Ok(Vec::new());
     }
 
     let mut builder = GlobSetBuilder::new();
-    let mut effective = Vec::with_capacity(patterns.len());
+    let mut effective_globs = Vec::with_capacity(patterns.len());
+    let mut resolved = Vec::new();
     for pattern in patterns {
         let trimmed = pattern.trim();
         if trimmed.is_empty() {
             continue;
         }
+        validate_output_pattern(trimmed)?;
 
-        let mut glob_pattern = trimmed.to_string();
-        let absolute = workdir.join(trimmed);
-        if absolute.is_dir() && !looks_like_glob(trimmed) {
-            glob_pattern = format!("{}/**/*", trimmed.trim_end_matches('/'));
-        }
-
-        let glob = Glob::new(&glob_pattern).map_err(|e| {
-            cuenv_core::Error::configuration(format!("invalid output glob '{glob_pattern}': {e}"))
-        })?;
-        builder.add(glob);
-        effective.push(glob_pattern);
-    }
-
-    if effective.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let globset = builder.build().map_err(|e| {
-        cuenv_core::Error::configuration(format!("failed to build output globset: {e}"))
-    })?;
-
-    let mut resolved = Vec::new();
-    for root in output_walk_roots(workdir, &effective) {
-        // A declared output that the task did not produce is ordinary — the
-        // glob simply matches nothing — so a missing root is skipped rather
-        // than reported.
-        if !root.exists() {
+        if !looks_like_glob(trimmed) {
+            let relative = safe_output_path(trimmed)?;
+            reject_output_symlink_ancestors(workdir, &relative)?;
+            let absolute = workdir.join(&relative);
+            match std::fs::symlink_metadata(&absolute) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "declared output '{}' is a symlink; output symlinks are not supported",
+                        relative.display()
+                    )));
+                }
+                Ok(metadata) if metadata.is_file() || metadata.is_dir() => {
+                    resolved.push(relative);
+                }
+                Ok(_) => {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "declared output '{}' is not a regular file or directory",
+                        relative.display()
+                    )));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "inspect output '{}': {error}",
+                        absolute.display()
+                    )));
+                }
+            }
             continue;
         }
 
-        let walker = WalkDir::new(&root)
-            .into_iter()
-            // A concurrent cache hit stages its outputs inside this workdir.
-            // Capturing another task's staging tree would record outputs this
-            // task never produced.
-            .filter_entry(|entry| !is_staging_dir(entry.path()));
+        let glob = Glob::new(trimmed).map_err(|e| {
+            cuenv_core::Error::configuration(format!("invalid output glob '{trimmed}': {e}"))
+        })?;
+        builder.add(glob);
+        effective_globs.push(trimmed.to_string());
+    }
 
-        for entry in walker {
-            let entry = entry.map_err(|e| {
-                cuenv_core::Error::configuration(format!(
-                    "walk output tree {}: {e}",
-                    root.display()
-                ))
-            })?;
-            if entry.file_type().is_dir() {
+    if !effective_globs.is_empty() {
+        let globset = builder.build().map_err(|e| {
+            cuenv_core::Error::configuration(format!("failed to build output globset: {e}"))
+        })?;
+
+        for root in output_walk_roots(workdir, &effective_globs) {
+            // A declared output that the task did not produce is ordinary.
+            if !root.exists() {
                 continue;
             }
-
-            let relative = entry.path().strip_prefix(workdir).map_err(|e| {
+            let relative_root = root.strip_prefix(workdir).map_err(|error| {
                 cuenv_core::Error::configuration(format!(
-                    "output path '{}' not under workdir '{}': {e}",
-                    entry.path().display(),
+                    "output walk root '{}' is outside workdir '{}': {error}",
+                    root.display(),
                     workdir.display()
                 ))
             })?;
-            if globset.is_match(relative) {
-                resolved.push(relative.to_path_buf());
+            reject_output_symlink_ancestors(workdir, relative_root)?;
+
+            let walker = WalkDir::new(&root)
+                .follow_links(false)
+                .into_iter()
+                .filter_entry(|entry| !is_staging_dir(entry.path()));
+
+            for entry in walker {
+                let entry = entry.map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "walk output tree {}: {e}",
+                        root.display()
+                    ))
+                })?;
+                if entry.file_type().is_symlink() {
+                    return Err(cuenv_core::Error::configuration(format!(
+                        "output glob encountered unsupported symlink '{}'",
+                        entry.path().display()
+                    )));
+                }
+                if !entry.file_type().is_file() && !entry.file_type().is_dir() {
+                    continue;
+                }
+
+                let relative = entry.path().strip_prefix(workdir).map_err(|e| {
+                    cuenv_core::Error::configuration(format!(
+                        "output path '{}' not under workdir '{}': {e}",
+                        entry.path().display(),
+                        workdir.display()
+                    ))
+                })?;
+                if !relative.as_os_str().is_empty() && globset.is_match(relative) {
+                    resolved.push(relative.to_path_buf());
+                }
             }
         }
     }
 
     resolved.sort();
     resolved.dedup();
-    Ok(resolved)
+
+    // If a directory itself is selected, its descendants are represented by
+    // that directory's REAPI Tree and must not also appear as output files.
+    let mut collapsed: Vec<PathBuf> = Vec::with_capacity(resolved.len());
+    for path in resolved {
+        if collapsed
+            .iter()
+            .any(|parent| path.starts_with(parent) && workdir.join(parent).is_dir())
+        {
+            continue;
+        }
+        collapsed.push(path);
+    }
+    Ok(collapsed)
+}
+
+fn validate_output_pattern(pattern: &str) -> Result<()> {
+    if Path::new(pattern).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(cuenv_core::Error::configuration(format!(
+            "output pattern must stay inside the task working directory: {pattern}"
+        )));
+    }
+    Ok(())
+}
+
+fn reject_output_symlink_ancestors(workdir: &Path, relative: &Path) -> Result<()> {
+    let workdir_metadata = std::fs::symlink_metadata(workdir).map_err(|error| {
+        cuenv_core::Error::configuration(format!(
+            "inspect output workdir '{}': {error}",
+            workdir.display()
+        ))
+    })?;
+    if workdir_metadata.file_type().is_symlink() {
+        return Err(cuenv_core::Error::configuration(format!(
+            "output workdir may not be a symlink: '{}'",
+            workdir.display()
+        )));
+    }
+
+    let mut current = workdir.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "output path traverses symlink '{}'",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(cuenv_core::Error::configuration(format!(
+                    "inspect output path '{}': {error}",
+                    current.display()
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn looks_like_glob(pattern: &str) -> bool {
@@ -1212,14 +1597,22 @@ fn output_walk_roots(workdir: &Path, patterns: &[String]) -> Vec<PathBuf> {
         roots.push(base);
     }
 
-    roots
-        .into_iter()
-        .map(|base| workdir.join(base))
-        .collect()
+    roots.into_iter().map(|base| workdir.join(base)).collect()
 }
 
 fn path_to_forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn utf8_forward_slashes(path: &Path) -> Result<String> {
+    path.to_str()
+        .map(|value| value.replace('\\', "/"))
+        .ok_or_else(|| {
+            cuenv_core::Error::configuration(format!(
+                "REAPI paths must be UTF-8: '{}'",
+                path.display()
+            ))
+        })
 }
 
 #[cfg(unix)]
