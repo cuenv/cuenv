@@ -572,12 +572,15 @@ async fn resolve_mapping(
     source_root: &Path,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    resolve_path_mapping(cache, PathMappingInput {
-        source: &mapping.from,
-        destination: &mapping.to,
-        source_root,
-        task_name,
-    })
+    resolve_path_mapping(
+        cache,
+        PathMappingInput {
+            source: &mapping.from,
+            destination: &mapping.to,
+            source_root,
+            task_name,
+        },
+    )
     .await
 }
 
@@ -586,12 +589,15 @@ async fn resolve_mapped_input(
     mapping: &MappedInput,
     task_name: &str,
 ) -> Result<ResolveOutcome> {
-    resolve_path_mapping(cache, PathMappingInput {
-        source: &mapping.source,
-        destination: &mapping.destination,
-        source_root: &cache.vcs_hasher_root,
-        task_name,
-    })
+    resolve_path_mapping(
+        cache,
+        PathMappingInput {
+            source: &mapping.source,
+            destination: &mapping.destination,
+            source_root: &cache.vcs_hasher_root,
+            task_name,
+        },
+    )
     .await
 }
 
@@ -1233,11 +1239,14 @@ impl InputDirectoryBuilder {
                         relative_path,
                     )));
                 }
-                current.files.insert(name.to_string(), FileNode {
-                    name: name.to_string(),
-                    digest: digest.clone(),
-                    is_executable,
-                });
+                current.files.insert(
+                    name.to_string(),
+                    FileNode {
+                        name: name.to_string(),
+                        digest: digest.clone(),
+                        is_executable,
+                    },
+                );
             }
         }
 

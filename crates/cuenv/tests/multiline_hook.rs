@@ -44,9 +44,7 @@ hooks: {
     let check_script = format!(
         "{exports}\nif [ \"$SINGLE\" = \"success\" ]; then echo FOUND_SINGLE; else echo MISSING_SINGLE; fi; if [ \"$MULTI\" = \"line1\nline2\" ]; then echo FOUND_MULTI; else echo MISSING_MULTI; fi"
     );
-    let output = Command::new("sh")
-        .args(["-c", &check_script])
-        .output()?;
+    let output = Command::new("sh").args(["-c", &check_script]).output()?;
 
     assert!(
         output.status.success(),

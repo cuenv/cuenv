@@ -261,10 +261,13 @@ async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
     .await
     .unwrap();
 
-    assert!(matches!(outcome, CacheOutcome::Skipped {
-        reason: CacheSkipReason::HasherRootMismatch,
-        ..
-    }));
+    assert!(matches!(
+        outcome,
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::HasherRootMismatch,
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1259,15 +1262,18 @@ fn a_leading_wildcard_forces_the_whole_workdir() {
 #[test]
 fn nested_roots_are_collapsed_so_no_subtree_is_walked_twice() {
     let workdir = Path::new("/w");
-    let roots = output_walk_roots(workdir, &[
-        "dist/nested/deep/**/*".to_string(),
-        "dist/**/*".to_string(),
-        "other/x".to_string(),
-    ]);
-    assert_eq!(roots, vec![
-        PathBuf::from("/w/dist"),
-        PathBuf::from("/w/other/x")
-    ]);
+    let roots = output_walk_roots(
+        workdir,
+        &[
+            "dist/nested/deep/**/*".to_string(),
+            "dist/**/*".to_string(),
+            "other/x".to_string(),
+        ],
+    );
+    assert_eq!(
+        roots,
+        vec![PathBuf::from("/w/dist"), PathBuf::from("/w/other/x")]
+    );
 }
 
 #[tokio::test]
@@ -1299,10 +1305,10 @@ async fn overlapping_patterns_report_each_file_once() {
     fs::create_dir_all(workdir.join("dist")).unwrap();
     fs::write(workdir.join("dist/app.js"), "built").unwrap();
 
-    let collected = collect_outputs(workdir, &[
-        "dist/**/*".to_string(),
-        "dist/app.js".to_string(),
-    ])
+    let collected = collect_outputs(
+        workdir,
+        &["dist/**/*".to_string(), "dist/app.js".to_string()],
+    )
     .unwrap();
     assert_eq!(collected, vec![PathBuf::from("dist/app.js")]);
 }
@@ -1484,10 +1490,10 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     fs::write(outside.path().join("dist/app.js"), "outside").unwrap();
     assert_eq!(module.module_root.parent(), outside.path().parent());
     let relative = PathBuf::from("../..").join(outside.path().file_name().unwrap());
-    let task = consuming_task(&relative.to_string_lossy(), &[(
-        "dist/app.js",
-        "vendor/app.js",
-    )]);
+    let task = consuming_task(
+        &relative.to_string_lossy(),
+        &[("dist/app.js", "vendor/app.js")],
+    );
     let env = Environment::new();
 
     let outcome = build_action(BuildActionInput {
@@ -1502,10 +1508,13 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
     .await
     .unwrap();
 
-    assert!(matches!(outcome, CacheOutcome::Skipped {
-        reason: CacheSkipReason::UnknownProject { .. },
-        ..
-    }));
+    assert!(matches!(
+        outcome,
+        CacheOutcome::Skipped {
+            reason: CacheSkipReason::UnknownProject { .. },
+            ..
+        }
+    ));
 }
 
 #[tokio::test]
@@ -1642,10 +1651,13 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
     // Which file wins would be an ordering accident, and the key would not
     // describe what the task actually reads.
     let module = cross_project_module();
-    let task = consuming_task("producer", &[
-        ("dist/app.js", "vendor.js"),
-        ("dist/nested/lib.js", "vendor.js"),
-    ]);
+    let task = consuming_task(
+        "producer",
+        &[
+            ("dist/app.js", "vendor.js"),
+            ("dist/nested/lib.js", "vendor.js"),
+        ],
+    );
     let env = Environment::new();
 
     let reason = skip_reason_for_test(BuildActionInput {
@@ -1675,10 +1687,13 @@ async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
         "built",
     )
     .unwrap();
-    let task = consuming_task("producer", &[
-        ("dist/app.js", "vendor.js"),
-        ("dist/nested/lib.js", "vendor.js"),
-    ]);
+    let task = consuming_task(
+        "producer",
+        &[
+            ("dist/app.js", "vendor.js"),
+            ("dist/nested/lib.js", "vendor.js"),
+        ],
+    );
     let env = Environment::new();
 
     let reason = skip_reason_for_test(BuildActionInput {
@@ -1703,10 +1718,13 @@ async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
 #[tokio::test]
 async fn file_and_directory_prefix_inputs_are_not_cached() {
     let module = cross_project_module();
-    let task = consuming_task("producer", &[
-        ("dist/app.js", "vendor"),
-        ("dist/nested/lib.js", "vendor/lib.js"),
-    ]);
+    let task = consuming_task(
+        "producer",
+        &[
+            ("dist/app.js", "vendor"),
+            ("dist/nested/lib.js", "vendor/lib.js"),
+        ],
+    );
     let env = Environment::new();
 
     let reason = skip_reason_for_test(BuildActionInput {

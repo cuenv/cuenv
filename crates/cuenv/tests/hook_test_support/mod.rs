@@ -48,7 +48,13 @@ pub fn load_hook_exports(path: &Path, cuenv_bin: &str) -> TestResult<Output> {
         path,
         cuenv_bin,
         &[
-            "env", "status", "--wait", "--timeout", "10", "--output", "short",
+            "env",
+            "status",
+            "--wait",
+            "--timeout",
+            "10",
+            "--output",
+            "short",
         ],
     )?;
     assert_success(&status, "cuenv env status --wait");

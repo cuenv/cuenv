@@ -183,10 +183,13 @@ impl Project {
     ) {
         match node {
             TaskNode::Task(task) => {
-                declared.insert(path.to_string(), DeclaredTaskOutputs {
-                    outputs: task.outputs.clone(),
-                    base: task_output_base(task),
-                });
+                declared.insert(
+                    path.to_string(),
+                    DeclaredTaskOutputs {
+                        outputs: task.outputs.clone(),
+                        base: task_output_base(task),
+                    },
+                );
             }
             TaskNode::Group(group) => {
                 for (child, sub_node) in &group.children {

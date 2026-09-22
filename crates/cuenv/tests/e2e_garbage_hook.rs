@@ -2,9 +2,7 @@
 
 mod hook_test_support;
 
-use hook_test_support::{
-    ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv,
-};
+use hook_test_support::{ApprovalOutcome, TestResult, approve_config, create_test_dir, run_cuenv};
 use std::fs;
 
 #[test]
@@ -50,7 +48,13 @@ hooks: {
         path,
         cuenv_bin,
         &[
-            "env", "status", "--wait", "--timeout", "10", "--output", "short",
+            "env",
+            "status",
+            "--wait",
+            "--timeout",
+            "10",
+            "--output",
+            "short",
         ],
     )?;
     assert!(
