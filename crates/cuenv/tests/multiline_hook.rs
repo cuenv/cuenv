@@ -4,7 +4,7 @@ mod hook_test_support;
 
 use assert_cmd::Command;
 use hook_test_support::{
-    ApprovalOutcome, TestResult, approve_config, assert_sandbox_error, create_test_dir,
+    ApprovalOutcome, TestResult, approve_config, create_test_dir, load_hook_exports,
 };
 use std::fs;
 
@@ -39,35 +39,25 @@ hooks: {
         ApprovalOutcome::SandboxError => return Ok(()),
     }
 
-    // Check SINGLE variable first - if multiline broke the script, this will likely be missing too
-    let output = Command::new(cuenv_bin)
-        .current_dir(path)
-        .env("CUENV_EXECUTABLE", cuenv_bin)
-        .args([
-            "exec",
-            "--",
-            "sh",
-            "-c",
-            "if [ \"$SINGLE\" = \"success\" ]; then echo FOUND_SINGLE; else echo MISSING_SINGLE; fi; if [ \"$MULTI\" = \"line1\nline2\" ]; then echo FOUND_MULTI; else echo MISSING_MULTI; fi",
-        ])
+    let export = load_hook_exports(path, cuenv_bin)?;
+    let exports = String::from_utf8(export.stdout)?;
+    let check_script = format!(
+        "{exports}\nif [ \"$SINGLE\" = \"success\" ]; then echo FOUND_SINGLE; else echo MISSING_SINGLE; fi; if [ \"$MULTI\" = \"line1\nline2\" ]; then echo FOUND_MULTI; else echo MISSING_MULTI; fi"
+    );
+    let output = Command::new("sh")
+        .args(["-c", &check_script])
         .output()?;
 
-    // If the bug is fixed, both should be found
-    // Handle FFI error in sandbox
-    if output.status.code() == Some(3) {
-        assert_sandbox_error(&output, "in sandbox");
-    } else {
-        assert!(
-            output.status.success(),
-            "cuenv exec failed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            stdout.contains("FOUND_MULTI"),
-            "Expected FOUND_MULTI in stdout, got: {stdout}"
-        );
-    }
+    assert!(
+        output.status.success(),
+        "evaluating hook exports failed: stdout={}, stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("FOUND_SINGLE") && stdout.contains("FOUND_MULTI"),
+        "expected single-line and multiline hook exports, got: {stdout}"
+    );
     Ok(())
 }
