@@ -84,9 +84,9 @@ env: {}
 tasks: {
   build: {
     command: "sh"
-    args: ["-c", "mkdir -p dist/assets; cp -f src/version.txt dist/app.txt; echo asset > dist/assets/file.txt"]
+    args: ["-c", "IFS= read -r version < src/version.txt; printf '%s\n' \"$version\" > app.txt"]
     inputs: ["src/version.txt"]
-    outputs: ["dist/app.txt", "dist/assets"]
+    outputs: ["app.txt"]
   }
 }
 "#;
@@ -114,13 +114,13 @@ env: {{}}
 tasks: {{
   consume: {{
     command: "sh"
-    args: ["-c", "mkdir -p out; cp vendor/app.txt out/used.txt; echo done"]
+    args: ["-c", "IFS= read -r version < vendor/app.txt; printf '%s\n' \"$version\" > used.txt"]
     inputs: [{{
       project: "{external_project}"
       task: "build"
       map: [{{ from: "{mapping_from}", to: "{mapping_to}" }}]
     }}]
-    outputs: ["out/used.txt"]
+    outputs: ["used.txt"]
   }}
 }}
 "#
@@ -135,7 +135,7 @@ fn test_external_auto_run_and_materialization() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-auto")?;
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -167,7 +167,7 @@ fn test_cache_hits_and_invalidation() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-cache")?;
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
     let proja = root.join("projA");
     let proja_path = path_str(&proja)?;
 
@@ -204,7 +204,7 @@ fn test_mapping_error_undeclared_output() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-map")?;
-    write_proj_a(root, "dist/missing.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "missing.txt", "vendor/app.txt", "../projB")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -230,7 +230,7 @@ fn test_path_safety_outside_git_root() -> TestResult {
     let root = tmp.path();
 
     // Create projA only
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../../outside")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../../outside")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -276,8 +276,8 @@ tasks: {
       project: "../projB"
       task: "build"
       map: [
-        { from: "dist/app.txt", to: "vendor/app.txt" },
-        { from: "dist/app.txt", to: "vendor/app.txt" }
+        { from: "app.txt", to: "vendor/app.txt" },
+        { from: "app.txt", to: "vendor/app.txt" }
       ]
     }]
     outputs: []
