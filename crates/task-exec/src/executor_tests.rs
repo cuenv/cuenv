@@ -317,6 +317,82 @@ async fn sandboxed_retries_start_from_fresh_inputs() {
     assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 3);
 }
 
+/// A task whose input set cannot be resolved: it declares a file that does
+/// not exist, so no exec root can be built for it.
+fn task_with_missing_input(hermetic: Hermetic) -> Task {
+    Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "echo ran > marker".to_string()],
+        inputs: vec![cuenv_manifest::tasks::Input::Path(
+            "does-not-exist.txt".to_string(),
+        )],
+        hermetic,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn unresolvable_inputs_fail_rather_than_run_against_the_checkout() {
+    // Documented in ADR-0008: isolation fails closed whether the sandbox was
+    // requested or inherited.
+    let requested = Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::Dir),
+    });
+    for hermetic in [Hermetic::default(), requested] {
+        let tmp = TempDir::new().unwrap();
+        let error = executor_for(tmp.path())
+            .execute_task("missing-input", &task_with_missing_input(hermetic))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("requires hermetic.sandbox"));
+        assert!(!tmp.path().join("marker").exists());
+    }
+}
+
+#[tokio::test]
+async fn a_task_outside_its_project_sees_inputs_where_the_checkout_has_them() {
+    // `dir: {from: "module"}` puts the task in `lib/tasks` while its inputs
+    // are declared relative to `apps/web`. The exec root must mirror the
+    // workspace so the relative path between the two is the real one.
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let project_root = module_root.join("apps/web");
+    fs_write(&project_root.join("src/input.txt"), "declared");
+    std::fs::create_dir_all(module_root.join("lib/tasks")).unwrap();
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        project_root: project_root.clone(),
+        cue_module_root: Some(module_root.clone()),
+        ..ExecutorConfig::default()
+    });
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "cat ../../apps/web/src/input.txt".to_string(),
+        ],
+        inputs: vec![cuenv_manifest::tasks::Input::Path(
+            "src/input.txt".to_string(),
+        )],
+        directory: Some(scoped_dir(TaskDirectoryBase::Module, "lib/tasks")),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("module-dir", &task).await.unwrap();
+
+    assert!(result.success, "{}", result.stderr);
+    assert_eq!(result.stdout.trim(), "declared");
+}
+
+fn fs_write(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, contents).unwrap();
+}
+
 #[tokio::test]
 async fn test_timeout_is_not_retried() {
     // A timeout is a hard policy violation, not a transient failure: even with

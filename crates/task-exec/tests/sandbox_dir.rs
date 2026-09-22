@@ -245,6 +245,33 @@ async fn a_failing_task_does_not_replace_the_last_good_output() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn a_symlinked_input_is_staged_as_the_file_it_points_at() {
+    // Bazel's model for a symlinked source file: the action sees the target's
+    // bytes at the link's path, as a regular file it cannot write through.
+    let workspace = TempDir::new().unwrap();
+    let cache_root = TempDir::new().unwrap();
+    fs::create_dir_all(workspace.path().join("shared")).unwrap();
+    fs::write(workspace.path().join("shared/config.txt"), "shared").unwrap();
+    std::os::unix::fs::symlink(
+        workspace.path().join("shared/config.txt"),
+        workspace.path().join("config.txt"),
+    )
+    .unwrap();
+
+    let executor = build_executor(workspace.path(), cache_root.path());
+    let task = sandboxed(
+        "test ! -L config.txt && cat config.txt",
+        &["config.txt"],
+        &[],
+    );
+
+    let result = executor.execute_task("symlink-input", &task).await.unwrap();
+    assert!(result.success, "stderr: {}", result.stderr);
+    assert_eq!(result.stdout.trim(), "shared");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn a_symlinked_output_ancestor_is_rejected() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
@@ -311,8 +338,8 @@ async fn a_sandboxed_task_still_caches() {
 #[tokio::test]
 async fn a_plain_hermetic_task_is_sandboxed_without_asking() {
     // The default is the whole point: `inputs` that are only enforced when
-    // someone opts in are not a declaration, they are a comment. Bazel and
-    // buck2 sandbox by default and this must too.
+    // someone opts in are not a declaration, they are a comment. Bazel
+    // sandboxes local actions by default and this must too.
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
     fs::write(workspace.path().join("declared.txt"), "declared").unwrap();

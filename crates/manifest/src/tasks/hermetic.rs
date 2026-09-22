@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn a_hermetic_task_is_sandboxed_by_default() {
-        // Bazel and buck2 sandbox actions by default. A declaration that is
+        // Bazel sandboxes local actions by default. A declaration that is
         // only enforced when asked is not a declaration.
         let bare: Hermetic = serde_json::from_str("true").unwrap();
         assert_eq!(bare.sandbox().tier, Sandbox::Dir);

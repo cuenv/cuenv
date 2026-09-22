@@ -10,7 +10,11 @@ pub struct Mapping {
 }
 
 /// Internal, expanded same-project output mapping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serializable so an expanded task can still be listed (`cuenv task
+/// --format json`), but never deserialized: CUE has no way to spell it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MappedInput {
     /// Source path/glob relative to the CUE module root.
     pub source: String,
@@ -34,8 +38,9 @@ pub enum Input {
     /// Same-project task output reference
     Task(TaskOutput),
     /// Internal expansion of a same-project `from` → `to` task-output
-    /// mapping. The CUE schema never emits this shape directly.
-    #[serde(skip)]
+    /// mapping. The CUE schema never emits this shape directly, so it is
+    /// never deserialized; it is serialized so expanded tasks can be listed.
+    #[serde(skip_deserializing)]
     Mapped(MappedInput),
 }
 
@@ -149,4 +154,40 @@ pub struct TaskDirectory {
     /// Relative path from `from`.
     #[serde(default = "default_task_directory_path")]
     pub path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_expanded_mapped_input_serializes() {
+        // `cuenv task --format json` serializes expanded tasks, and a task
+        // consuming another task's outputs carries this variant.
+        let input = Input::Mapped(MappedInput {
+            source: "web/dist/**".to_string(),
+            destination: "dist".to_string(),
+            producer_task: Some("build".to_string()),
+        });
+
+        let json = serde_json::to_value(&input).unwrap();
+
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "source": "web/dist/**",
+                "destination": "dist",
+                "producerTask": "build",
+            })
+        );
+    }
+
+    #[test]
+    fn a_mapped_input_is_never_deserialized() {
+        let parsed: std::result::Result<Input, _> = serde_json::from_value(serde_json::json!({
+            "source": "web/dist/**",
+            "destination": "dist",
+        }));
+        assert!(!matches!(parsed, Ok(Input::Mapped(_))));
+    }
 }

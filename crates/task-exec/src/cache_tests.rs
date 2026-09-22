@@ -60,7 +60,6 @@ async fn build_action_returns_none_when_no_inputs() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
     assert!(result.is_none());
@@ -81,7 +80,6 @@ async fn build_action_is_deterministic() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -92,7 +90,6 @@ async fn build_action_is_deterministic() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -114,7 +111,6 @@ async fn build_action_changes_when_input_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -127,7 +123,6 @@ async fn build_action_changes_when_input_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -151,7 +146,6 @@ async fn build_action_changes_when_timeout_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -164,7 +158,6 @@ async fn build_action_changes_when_timeout_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -199,7 +192,6 @@ async fn build_action_returns_none_when_task_has_task_level_env() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
 
@@ -225,7 +217,6 @@ async fn runtime_env_skip_keeps_resolved_inputs_for_sandboxing() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -256,7 +247,6 @@ async fn input_resolution_failure_precedes_runtime_env_cache_skip() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -291,7 +281,6 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
-        module_root: workspace_root,
     })
     .await
     .unwrap();
@@ -308,7 +297,6 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
-        module_root: workspace_root,
     })
     .await
     .unwrap();
@@ -327,7 +315,6 @@ async fn build_action_hashes_inputs_relative_to_task_project_root() {
         cache: &cache,
         workdir: &nested_project_root,
         project_root: &nested_project_root,
-        module_root: workspace_root,
     })
     .await
     .unwrap();
@@ -352,7 +339,6 @@ async fn build_action_changes_when_command_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -363,7 +349,6 @@ async fn build_action_changes_when_command_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -403,7 +388,6 @@ async fn build_action_changes_when_script_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -414,7 +398,6 @@ async fn build_action_changes_when_script_changes() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -442,7 +425,6 @@ async fn sandbox_tier_changes_action_digest() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -453,7 +435,6 @@ async fn sandbox_tier_changes_action_digest() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -480,7 +461,6 @@ async fn record_then_lookup_roundtrips() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -589,7 +569,6 @@ async fn record_and_materialize_preserve_executable_outputs() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -648,7 +627,6 @@ async fn build_action_returns_none_when_cache_mode_never() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
     assert!(result.is_none());
@@ -668,7 +646,6 @@ async fn build_action_returns_none_when_explicit_input_is_missing() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
 
@@ -704,7 +681,6 @@ async fn lookup_respects_max_age() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -745,7 +721,6 @@ async fn record_skips_non_zero_exit_codes() {
         cache: &cache,
         workdir: &workdir,
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -808,7 +783,6 @@ async fn build_action_skips_non_hermetic_tasks() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
 
@@ -818,8 +792,9 @@ async fn build_action_skips_non_hermetic_tasks() {
 #[tokio::test]
 async fn build_action_skips_workdir_outside_project_and_module_roots() {
     let tmp = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
     let project = tmp.path().join("project");
-    let elsewhere = tmp.path().join("elsewhere");
+    let elsewhere = outside.path().join("elsewhere");
     fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(&elsewhere).unwrap();
     fs::write(project.join("input.txt"), "payload").unwrap();
@@ -833,11 +808,10 @@ async fn build_action_skips_workdir_outside_project_and_module_roots() {
         task_name: "stray-workdir",
         environment: &env,
         cache: &cache,
-        // Under neither the project nor the module root: normalizing would
-        // bake an absolute host path into the key.
+        // Outside the workspace: normalizing would bake an absolute host
+        // path into the key.
         workdir: &elsewhere,
         project_root: &project,
-        module_root: &project,
     })
     .await;
 
@@ -860,7 +834,6 @@ async fn action_environment_is_declared_only() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -900,7 +873,6 @@ async fn build_action_stores_action_and_command_blobs() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -1094,7 +1066,7 @@ async fn materialize_hit_removes_its_staging_directory() {
             entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with(STAGING_PREFIX)
+                .starts_with(cuenv_vcs::SCRATCH_PREFIX)
         })
         .collect();
     assert!(leftovers.is_empty(), "staging directory was left behind");
@@ -1118,6 +1090,53 @@ fn cached_result_rejects_ancestor_output_overlaps() {
 
     let error = validate_cached_result(&task, &result).unwrap_err();
     assert!(error.to_string().contains("overlapping output path"));
+}
+
+#[test]
+fn output_globs_skip_scratch_directories() {
+    // Another task projecting into the same workdir, or a run that was
+    // killed mid-projection, leaves a scratch copy here. It is not ours.
+    let tmp = TempDir::new().unwrap();
+    let workdir = tmp.path();
+    fs::create_dir_all(workdir.join("dist")).unwrap();
+    fs::write(workdir.join("dist/app.js"), "app").unwrap();
+    let scratch = workdir.join(format!("{}1-0", cuenv_vcs::SCRATCH_PREFIX));
+    fs::create_dir_all(scratch.join("dist")).unwrap();
+    fs::write(scratch.join("dist/other.js"), "other").unwrap();
+
+    let outputs = collect_outputs(workdir, &["**/*.js".to_string()]).unwrap();
+
+    assert_eq!(outputs, vec![PathBuf::from("dist/app.js")]);
+}
+
+#[tokio::test]
+async fn an_invalid_cached_result_is_a_miss_not_a_failure() {
+    // A shared cache can hand back an entry this task would never have
+    // written. That must cost a rerun, not fail the task on every run.
+    let tmp = TempDir::new().unwrap();
+    let cache = make_cache(tmp.path());
+    let task = make_task("echo", &[], &[], &["dist"]);
+    let action_digest = Digest::of_bytes(b"some-action");
+    let result = ActionResult {
+        output_files: vec![OutputFile {
+            path: "elsewhere/secret.txt".to_string(),
+            digest: Digest::of_bytes(b"secret"),
+            is_executable: false,
+        }],
+        ..ActionResult::default()
+    };
+    cache
+        .action_cache
+        .update(&action_digest, &result)
+        .await
+        .unwrap();
+
+    assert!(
+        lookup(&cache, &action_digest, &task)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -1160,7 +1179,6 @@ async fn a_resolved_secret_is_never_written_into_the_stored_command_blob() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await
     .unwrap();
@@ -1194,7 +1212,6 @@ async fn a_task_with_secrets_and_no_salt_is_not_cached() {
         cache: &cache,
         workdir: tmp.path(),
         project_root: tmp.path(),
-        module_root: tmp.path(),
     })
     .await;
 
@@ -1222,7 +1239,6 @@ async fn rotating_a_secret_changes_the_action_digest() {
                 cache,
                 workdir: tmp.path(),
                 project_root: tmp.path(),
-                module_root: tmp.path(),
             })
             .await
             .unwrap()
@@ -1372,6 +1388,43 @@ fn an_override_never_caches_a_task_that_opted_out() {
 }
 
 #[test]
+fn an_override_only_removes_permissions_a_task_declared() {
+    // Every (task mode, override) pair: the effective mode grants a
+    // permission only when both sides grant it.
+    let modes = [
+        TaskCacheMode::Never,
+        TaskCacheMode::Read,
+        TaskCacheMode::Write,
+        TaskCacheMode::ReadWrite,
+    ];
+    let tmp = TempDir::new().unwrap();
+    for declared in modes {
+        for override_mode in [TaskCacheMode::Read, TaskCacheMode::Write] {
+            let mut cache = make_cache(tmp.path());
+            cache.mode_override = Some(override_mode);
+            let mut task = make_task("echo", &["hi"], &["input.txt"], &[]);
+            task.cache = Some(TaskCachePolicy {
+                mode: declared,
+                max_age: None,
+            });
+
+            let effective = effective_policy(&cache, &task).mode;
+
+            assert_eq!(
+                effective.allows_read(),
+                declared.allows_read() && override_mode.allows_read(),
+                "{declared:?} under {override_mode:?}"
+            );
+            assert_eq!(
+                effective.allows_write(),
+                declared.allows_write() && override_mode.allows_write(),
+                "{declared:?} under {override_mode:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn without_an_override_the_task_policy_is_used_verbatim() {
     let tmp = TempDir::new().unwrap();
     let cache = make_cache(tmp.path());
@@ -1445,7 +1498,6 @@ async fn cross_project_digest(module: &CrossProjectModule, task: &Task) -> Optio
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await
     .map(|(_, digest)| digest)
@@ -1465,7 +1517,6 @@ async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.consumer_root,
     })
     .await
     .unwrap();
@@ -1479,7 +1530,9 @@ async fn a_relative_project_path_resolves_within_the_hasher_workspace() {
     );
     assert_eq!(
         eligible.inputs[0].relative_path,
-        PathBuf::from("vendor/app.js")
+        // Destinations are consumer-relative; the action frame is the
+        // workspace, where the consumer lives at `consumer/`.
+        PathBuf::from("consumer/vendor/app.js")
     );
 }
 
@@ -1506,7 +1559,6 @@ async fn a_relative_project_path_cannot_escape_the_hasher_workspace() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.consumer_root,
     })
     .await
     .unwrap();
@@ -1561,7 +1613,6 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await
     .unwrap();
@@ -1572,7 +1623,9 @@ async fn an_expanded_task_output_keeps_its_destination_mapping() {
     assert_eq!(eligible.inputs.len(), 1);
     assert_eq!(
         eligible.inputs[0].relative_path,
-        PathBuf::from("vendor/app.js")
+        // Destinations are consumer-relative; the action frame is the
+        // workspace, where the consumer lives at `consumer/`.
+        PathBuf::from("consumer/vendor/app.js")
     );
     assert_eq!(
         eligible.inputs[0].absolute_path,
@@ -1637,7 +1690,6 @@ async fn an_unknown_project_reference_is_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await;
 
@@ -1670,14 +1722,13 @@ async fn two_inputs_claiming_one_workspace_path_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await;
 
     assert_eq!(
         reason,
         Some(CacheSkipReason::InputCollision {
-            path: "vendor.js".to_string()
+            path: "consumer/vendor.js".to_string()
         })
     );
 }
@@ -1706,14 +1757,13 @@ async fn identical_inputs_claiming_one_workspace_path_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await;
 
     assert_eq!(
         reason,
         Some(CacheSkipReason::InputCollision {
-            path: "vendor.js".to_string()
+            path: "consumer/vendor.js".to_string()
         })
     );
 }
@@ -1737,7 +1787,6 @@ async fn file_and_directory_prefix_inputs_are_not_cached() {
         cache: &module.cache,
         workdir: &module.consumer_root,
         project_root: &module.consumer_root,
-        module_root: &module.module_root,
     })
     .await;
 

@@ -9,7 +9,7 @@
 //! addition to this execution root, so remote uploads remain disabled.
 
 use cuenv_core::{Error, Result};
-use cuenv_vcs::HashedInput;
+use cuenv_vcs::{HashedInput, SCRATCH_PREFIX};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -64,32 +64,39 @@ impl Drop for ExecRoot {
     }
 }
 
-struct ScratchDir {
+/// A uniquely named scratch directory, removed when dropped.
+///
+/// Every transient directory cuenv creates inside a workspace — staging a
+/// cache hit, projecting a first run's outputs, backing up the outputs they
+/// replace — is one of these. They share [`SCRATCH_PREFIX`] so that input
+/// hashing and output collection can recognise and skip them.
+///
+/// Staging happens beside the destination rather than under the cache root so
+/// that installing is a same-filesystem rename; a directory under
+/// `$XDG_CACHE_HOME` would degrade to a copy whenever the cache and the
+/// workspace sit on different devices.
+pub(crate) struct ScratchDir {
     path: PathBuf,
 }
 
 impl ScratchDir {
-    fn create(parent: &Path, prefix: &str) -> Result<Self> {
+    pub(crate) fn create(parent: &Path) -> Result<Self> {
         static INVOCATION: AtomicU64 = AtomicU64::new(0);
 
         loop {
             let suffix = INVOCATION.fetch_add(1, Ordering::Relaxed);
-            let path = parent.join(format!("{prefix}{}-{suffix}", std::process::id()));
+            let path = parent.join(format!("{SCRATCH_PREFIX}{}-{suffix}", std::process::id()));
             match std::fs::create_dir(&path) {
                 Ok(()) => return Ok(Self { path }),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
-                    return Err(Error::io_with_path(
-                        "create output scratch directory",
-                        path,
-                        error,
-                    ));
+                    return Err(Error::io_with_path("create scratch directory", path, error));
                 }
             }
         }
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -102,7 +109,7 @@ impl Drop for ScratchDir {
             tracing::warn!(
                 path = %self.path.display(),
                 %error,
-                "could not remove output scratch directory"
+                "could not remove scratch directory"
             );
         }
     }
@@ -196,7 +203,7 @@ pub fn project_outputs(input: ProjectOutputs<'_>) -> Result<()> {
     // Validate and copy every new output before changing the live workspace.
     // A deep symlink or read error therefore leaves the previous good output
     // untouched.
-    let staging = ScratchDir::create(workdir, ".cuenv-project-")?;
+    let staging = ScratchDir::create(workdir)?;
     for relative in resolved {
         let source = secure_source(exec_root, relative)?;
         let destination = safe_join(staging.path(), relative)?;
@@ -262,7 +269,7 @@ pub(crate) fn commit_staged_outputs(
     reject_symlink_base(workdir)?;
     reject_overlapping_paths(resolved)?;
 
-    let backup = ScratchDir::create(workdir, ".cuenv-backup-")?;
+    let backup = ScratchDir::create(workdir)?;
     let owned_roots = collapse_owned_roots(existing, resolved);
     let mut backed_up = Vec::new();
 

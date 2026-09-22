@@ -27,7 +27,7 @@ use cuenv_manifest::config::BackendConfig;
 use cuenv_workspaces::PackageManager;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::task::JoinSet;
@@ -131,6 +131,17 @@ impl Default for ExecutorConfig {
 pub struct TaskExecutor {
     config: ExecutorConfig,
     backend: Arc<dyn TaskBackend>,
+    /// Scratch store for directory isolation when no result cache is
+    /// configured. Created on first use, shared by every clone of this
+    /// executor, and removed when the last one is dropped.
+    sandbox_store: Arc<OnceLock<SandboxStore>>,
+}
+
+/// Where exec roots live when there is no result cache to put them beside.
+struct SandboxStore {
+    /// Removes the store's directory when the executor goes away.
+    _root: super::exec_root::ScratchDir,
+    config: TaskCacheConfig,
 }
 impl TaskExecutor {
     /// Create a new executor with host backend only
@@ -139,16 +150,22 @@ impl TaskExecutor {
     }
 
     fn sandbox_only_cache(&self) -> Result<TaskCacheConfig> {
-        let cache_root = std::env::temp_dir()
-            .join("cuenv-sandbox")
-            .join(std::process::id().to_string());
+        if let Some(store) = self.sandbox_store.get() {
+            return Ok(store.config.clone());
+        }
+
+        let parent = std::env::temp_dir().join("cuenv-sandbox");
+        std::fs::create_dir_all(&parent)
+            .map_err(|error| Error::io_with_path("create sandbox store", parent.clone(), error))?;
+        let root = super::exec_root::ScratchDir::create(&parent)?;
+        let cache_root = root.path().to_path_buf();
         let hasher_root = self
             .config
             .sandbox_hasher_root
             .clone()
             .or_else(|| self.config.cue_module_root.clone())
             .unwrap_or_else(|| self.config.project_root.clone());
-        Ok(TaskCacheConfig {
+        let config = TaskCacheConfig {
             cas: Arc::new(cuenv_cas::LocalCas::open(&cache_root).map_err(|error| {
                 Error::configuration(format!("open sandbox blob store: {error}"))
             })?),
@@ -166,7 +183,18 @@ impl TaskExecutor {
             mode_override: None,
             cache_root,
             project_roots: self.config.sandbox_project_roots.clone(),
-        })
+        };
+
+        // Two tasks racing here each build a store; the loser's is dropped,
+        // which removes its directory, and both use the winner's.
+        let _ = self.sandbox_store.set(SandboxStore {
+            _root: root,
+            config,
+        });
+        self.sandbox_store
+            .get()
+            .map(|store| store.config.clone())
+            .ok_or_else(|| Error::configuration("sandbox store was not initialized"))
     }
 
     /// Create a new executor with optional dagger backend support.
@@ -195,12 +223,11 @@ impl TaskExecutor {
                 .runtime_identity_properties
                 .insert("cuenv.backend".to_string(), backend.name().to_string());
         }
-        Self { config, backend }
-    }
-
-    /// Create a new executor with the given config but sharing the backend
-    fn with_shared_backend(config: ExecutorConfig, backend: Arc<dyn TaskBackend>) -> Self {
-        Self { config, backend }
+        Self {
+            config,
+            backend,
+            sandbox_store: Arc::new(OnceLock::new()),
+        }
     }
 
     /// Execute a single task, consulting the action cache when configured.
@@ -260,11 +287,6 @@ impl TaskExecutor {
                 cache: &cache,
                 workdir: &workdir,
                 project_root: self.project_root_for_task(task),
-                module_root: self
-                    .config
-                    .cue_module_root
-                    .as_deref()
-                    .unwrap_or(&self.config.project_root),
             })
             .await?;
             match outcome {
@@ -372,6 +394,10 @@ impl TaskExecutor {
                     if !task.sandbox().uses_exec_root() {
                         None
                     } else {
+                        // Fail closed, as documented: running against the
+                        // live checkout would hand back a result that looks
+                        // isolated and is not, and any input mapped from
+                        // another task or project would simply be missing.
                         let Some(execution) = execution else {
                             return Err(Error::configuration(format!(
                                 "task '{name}' requires hermetic.sandbox: \"dir\" but its input \
@@ -479,7 +505,7 @@ impl TaskExecutor {
 
     fn validate_backend_sandbox(&self, name: &str, task: &Task) -> Result<()> {
         let policy = task.sandbox();
-        if self.backend.name() == "dagger" && policy.uses_exec_root() && policy.explicit {
+        if self.backend.name() == "dagger" && policy.demands_exec_root() {
             return Err(Error::configuration(format!(
                 "task '{name}' requests hermetic.sandbox: \"dir\" on the dagger backend, \
                  which provides its own isolation. Remove the sandbox setting or run on \
@@ -1180,8 +1206,13 @@ impl TaskExecutor {
     }
 
     fn clone_with_config(&self) -> Self {
-        // Share the backend across clones to preserve container cache for Dagger chaining
-        Self::with_shared_backend(self.config.clone(), self.backend.clone())
+        // Share the backend across clones to preserve container cache for
+        // Dagger chaining, and the sandbox store so one run creates one.
+        Self {
+            config: self.config.clone(),
+            backend: self.backend.clone(),
+            sandbox_store: self.sandbox_store.clone(),
+        }
     }
 }
 

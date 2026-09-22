@@ -291,9 +291,11 @@ CUENV_CACHE=off cuenv task build
 CUENV_CACHE=write cuenv task build
 ```
 
-It can only ever narrow what a task does. `CUENV_CACHE=read-write` will not
-start caching a task whose own policy is `never` — the setting is a brake,
-not an accelerator.
+It can only ever narrow what a task does: a permission applies only when the
+task's own cache mode also grants it. `CUENV_CACHE=read-write` will not start
+caching a task whose own policy is `never`, and `CUENV_CACHE=write` records
+nothing for a task declared `read` — the setting is a brake, not an
+accelerator.
 
 ## Dependencies & Parallelism
 
@@ -706,16 +708,34 @@ tasks: {
 An undeclared **relative workspace** read fails instead of silently
 succeeding, and an undeclared write is lost on the first run rather than
 mysteriously on the hundredth.
-Bazel and buck2 both sandbox by default for the same reason: a declaration
+Bazel sandboxes local actions by default for the same reason: a declaration
 that is only enforced when you ask for it is not a declaration, it is a
-comment. It is also what makes a cache entry worth sharing — an entry recorded
+comment. buck2 deliberately does not sandbox local actions and relies on
+remote execution to surface undeclared inputs; cuenv has no remote execution,
+so the local sandbox is where those mistakes get caught. It is also what makes a cache entry worth sharing — an entry recorded
 without isolation is only as trustworthy as whatever someone remembered to
 list in `inputs`.
 
+The execution root mirrors your repository's layout: inputs sit at their
+paths relative to the VCS workspace root, and the task runs in its own
+directory at the same relative position. A task whose `dir` lies outside its
+project — `dir: {from: "module", path: "lib/tasks"}`, or a task imported from
+another package — therefore reaches its declared inputs by the same relative
+paths it would use in the checkout.
+
 The `"dir"` tier isolates relative workspace paths; it is not an OS security
-boundary. Absolute host paths and the network remain reachable, and symlink
-inputs or outputs are rejected. Remote cache uploads remain disabled until a
-strict platform sandbox closes those gaps.
+boundary. Absolute host paths and the network remain reachable. Remote cache
+uploads remain disabled until a strict platform sandbox closes those gaps.
+
+Symlinked inputs behave like Bazel's symlinked source files: the link is
+followed, the target's contents are hashed, and the task sees a regular file
+at the link's path. A symlinked file is followed wherever it points. A glob
+also descends through a symlinked directory that stays inside the workspace,
+such as a pnpm workspace link, but not one that leaves it, such as a `result`
+link from `nix build` — name a path through that link explicitly
+(`inputs: ["result/bin/tool"]`) when you do mean to depend on it. A dangling
+symlink is an error only when a pattern selects it, and a symlink cycle is
+not followed. Output symlinks are still rejected.
 
 #### Opting out
 

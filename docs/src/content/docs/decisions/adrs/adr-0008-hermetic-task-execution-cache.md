@@ -62,7 +62,16 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 
 - Each task runs in a fresh working directory pre-populated only with its resolved inputs.
 - Directory-only isolation; no network isolation.
-- Symlink inputs and outputs are rejected. Inputs are copied, digest-verified,
+- Input paths and the working directory are relative to the VCS workspace
+  root, so the execution root mirrors the repository layout (action semantics
+  v4). A task whose directory lies outside its project sees its inputs where
+  the checkout has them.
+- Symlinked inputs are followed, as Bazel follows symlinked source files: the
+  target's contents are hashed and staged as a regular file at the link's
+  path. Globs descend through directory symlinks only when they stay inside
+  the workspace; a path named explicitly is followed wherever it leads.
+  Dangling selected symlinks are errors; output symlinks are rejected.
+  Inputs are copied, digest-verified,
   and assigned the executable mode recorded in the action key; hard links are
   forbidden because a task could mutate the live workspace through them.
 

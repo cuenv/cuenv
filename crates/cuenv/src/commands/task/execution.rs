@@ -145,7 +145,7 @@ fn load_task_execution_context(input: &TaskExecutionInput<'_>) -> Result<TaskExe
     let task_index = prepare_task_index(&mut manifest, &project_root)?;
     let mut local_tasks = task_index.to_tasks();
     let project_roots =
-        extend_task_scope_with_cross_project(input.executor, &project_root, &mut local_tasks)?;
+        extend_task_scope_with_cross_project(input.executor, &project_root, &mut local_tasks);
 
     Ok(TaskExecutionContext {
         manifest,
@@ -169,30 +169,16 @@ fn discover_project_roots(
     executor: &CommandExecutor,
     project_root: &Path,
 ) -> BTreeMap<String, PathBuf> {
-    let mut roots = BTreeMap::new();
-    let module = match executor.get_module(project_root) {
-        Ok(module) => module,
+    match executor.get_module(project_root) {
+        Ok(module) => project_roots_from_module(&module),
         Err(error) => {
             tracing::debug!(
                 error = %error,
                 "cross-project inputs unavailable: module evaluation failed"
             );
-            return roots;
-        }
-    };
-
-    for instance in module.projects() {
-        let absolute = module.root.join(&instance.path);
-        if let Some(name) = instance.project_name() {
-            roots.insert(name.to_string(), absolute.clone());
-        }
-        let relative = instance.path.to_string_lossy().replace('\\', "/");
-        if !relative.is_empty() {
-            roots.insert(relative, absolute);
+            BTreeMap::new()
         }
     }
-
-    roots
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -201,61 +187,122 @@ struct ExternalProjectRequest {
     origin_root: PathBuf,
 }
 
+/// Load every project the local tasks reference, and add its tasks to scope.
+///
+/// This runs before any task is selected, so a reference that cannot be
+/// loaded is a warning here, not an error: it would otherwise stop every
+/// `cuenv task` in the project, including ones that never touch it. The task
+/// that declares it still fails where it is used, because the dependency it
+/// implies (`#project:task`) is then missing from the graph.
 fn extend_task_scope_with_cross_project(
     executor: &CommandExecutor,
     project_root: &Path,
     tasks: &mut Tasks,
-) -> Result<BTreeMap<String, PathBuf>> {
-    let mut project_roots = discover_project_roots(executor, project_root);
+) -> BTreeMap<String, PathBuf> {
     let mut pending = VecDeque::from(collect_project_requests(tasks, project_root));
     if pending.is_empty() {
-        return Ok(project_roots);
+        // Nothing references another project, so there is nothing to map
+        // and no reason to evaluate the module for it.
+        return BTreeMap::new();
     }
 
-    {
-        let workspace = executor.discover_all_modules(project_root)?;
-        project_roots.extend(project_roots_from_module(&workspace));
+    let mut project_roots = discover_project_roots(executor, project_root);
+    match executor.discover_all_modules(project_root) {
+        Ok(workspace) => project_roots.extend(project_roots_from_module(&workspace)),
+        Err(error) => tracing::warn!(
+            %error,
+            "workspace discovery failed; cross-project references resolve by path only"
+        ),
     }
 
     let mut loaded_aliases = BTreeMap::<String, PathBuf>::new();
     while let Some(request) = pending.pop_front() {
-        let external_root = resolve_external_project_root(&project_roots, &request)?;
-        if let Some(previous_root) = loaded_aliases.get(&request.declared_project) {
-            if previous_root != &external_root {
-                return Err(cuenv_core::Error::configuration(format!(
-                    "cross-project reference '{}' is ambiguous: it resolves to both '{}' and '{}'",
-                    request.declared_project,
-                    previous_root.display(),
-                    external_root.display()
-                )));
+        let loaded = load_external_project(ExternalProjectLoad {
+            executor,
+            request: &request,
+            project_roots: &mut project_roots,
+            loaded_aliases: &loaded_aliases,
+        });
+        match loaded {
+            Ok(ExternalProjectOutcome::AlreadyLoaded) => {}
+            Ok(ExternalProjectOutcome::Loaded {
+                root,
+                tasks: external_tasks,
+            }) => {
+                pending.extend(collect_project_requests(&external_tasks, &root));
+                for (task_name, node) in external_tasks.tasks {
+                    let qualified_name = format!("#{}:{task_name}", request.declared_project);
+                    let qualified_node =
+                        qualify_external_task_node(node, &request.declared_project, &root);
+                    tasks.tasks.insert(qualified_name, qualified_node);
+                }
+                loaded_aliases.insert(request.declared_project, root);
             }
-            continue;
+            Err(error) => {
+                tracing::warn!(
+                    project = request.declared_project,
+                    %error,
+                    "cross-project reference could not be loaded; tasks that use it will fail"
+                );
+            }
         }
-
-        let external_package = cue_package_name(&external_root)?;
-        let external_executor = executor.for_package(external_package.clone());
-        let mut external_manifest =
-            evaluate_manifest(&external_root, &external_package, &external_executor)?;
-        if !external_manifest.name.is_empty() {
-            project_roots.insert(external_manifest.name.clone(), external_root.clone());
-        }
-        project_roots.insert(request.declared_project.clone(), external_root.clone());
-
-        let external_index = prepare_task_index(&mut external_manifest, &external_root)?;
-        let external_tasks = external_index.to_tasks();
-        pending.extend(collect_project_requests(&external_tasks, &external_root));
-
-        for (task_name, node) in external_tasks.tasks {
-            let qualified_name = format!("#{}:{task_name}", request.declared_project);
-            let qualified_node =
-                qualify_external_task_node(node, &request.declared_project, &external_root);
-            tasks.tasks.insert(qualified_name, qualified_node);
-        }
-
-        loaded_aliases.insert(request.declared_project, external_root);
     }
 
-    Ok(project_roots)
+    project_roots
+}
+
+struct ExternalProjectLoad<'a> {
+    executor: &'a CommandExecutor,
+    request: &'a ExternalProjectRequest,
+    project_roots: &'a mut BTreeMap<String, PathBuf>,
+    loaded_aliases: &'a BTreeMap<String, PathBuf>,
+}
+
+enum ExternalProjectOutcome {
+    /// The alias already names this project; its tasks are in scope.
+    AlreadyLoaded,
+    /// A newly evaluated project and its tasks, not yet qualified.
+    Loaded { root: PathBuf, tasks: Tasks },
+}
+
+fn load_external_project(load: ExternalProjectLoad<'_>) -> Result<ExternalProjectOutcome> {
+    let ExternalProjectLoad {
+        executor,
+        request,
+        project_roots,
+        loaded_aliases,
+    } = load;
+
+    let external_root = resolve_external_project_root(project_roots, request)?;
+    if let Some(previous_root) = loaded_aliases.get(&request.declared_project) {
+        if previous_root != &external_root {
+            return Err(cuenv_core::Error::configuration(format!(
+                "cross-project reference '{}' is ambiguous: it resolves to both '{}' and '{}'",
+                request.declared_project,
+                previous_root.display(),
+                external_root.display()
+            )));
+        }
+        return Ok(ExternalProjectOutcome::AlreadyLoaded);
+    }
+
+    let external_package = cue_package_name(&external_root)?;
+    let external_executor = executor.for_package(external_package.clone());
+    let mut external_manifest =
+        evaluate_manifest(&external_root, &external_package, &external_executor)?;
+    let external_index = prepare_task_index(&mut external_manifest, &external_root)?;
+
+    // Record the roots only once the project has evaluated, so a failed load
+    // leaves no half-registered alias behind.
+    if !external_manifest.name.is_empty() {
+        project_roots.insert(external_manifest.name.clone(), external_root.clone());
+    }
+    project_roots.insert(request.declared_project.clone(), external_root.clone());
+
+    Ok(ExternalProjectOutcome::Loaded {
+        root: external_root,
+        tasks: external_index.to_tasks(),
+    })
 }
 
 fn project_roots_from_module(

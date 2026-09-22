@@ -116,11 +116,15 @@ pub struct Tree {
 ///   `output_paths`. Every digest changes.
 /// - `3` — sandbox retries use fresh input roots, output replacement is
 ///   complete and transactional, and path/collision validation is stricter.
+/// - `4` — input paths and the working directory are relative to the VCS
+///   workspace rather than the project, so the exec root mirrors the
+///   repository and a task whose directory lies outside its project sees its
+///   inputs where the checkout has them.
 ///
 /// On the wire this travels in REAPI's `Action.salt`, which exists to place
 /// an action into a separate cache namespace without altering what it does.
 /// See [`crate::reapi::salt_for`].
-pub const ACTION_SEMANTICS_VERSION: u32 = 3;
+pub const ACTION_SEMANTICS_VERSION: u32 = 4;
 
 /// An action to execute.
 ///

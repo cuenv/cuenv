@@ -251,6 +251,56 @@ fn test_path_safety_outside_git_root() -> TestResult {
 }
 
 #[test]
+fn a_broken_reference_only_fails_the_task_that_uses_it() -> TestResult {
+    let tmp = create_test_root()?;
+    let root = tmp.path();
+    let proja = root.join("projA");
+    fs::create_dir_all(&proja)?;
+    init_cue_module(&proja, "projA")?;
+    fs::write(
+        proja.join("env.cue"),
+        r#"package projA
+
+name: "projA"
+
+env: {}
+
+tasks: {
+  consume: {
+    command: "sh"
+    args: ["-c", "true"]
+    inputs: [{
+      project: "../missing"
+      task: "build"
+      map: [{ from: "app.txt", to: "vendor/app.txt" }]
+    }]
+  }
+  unrelated: {
+    command: "sh"
+    args: ["-c", "true"]
+  }
+}
+"#,
+    )?;
+    let proja_path = path_str(&proja)?;
+
+    let unrelated = run_cuenv(&["task", "-p", proja_path, "--package", "projA", "unrelated"])?;
+    assert!(
+        unrelated.success,
+        "A task that does not use the reference must still run.\nstdout: {}\nstderr: {}",
+        unrelated.stdout, unrelated.stderr
+    );
+
+    let consume = run_cuenv(&["task", "-p", proja_path, "--package", "projA", "consume"])?;
+    assert!(
+        !consume.success,
+        "The task that uses the reference must fail.\nstdout: {}\nstderr: {}",
+        consume.stdout, consume.stderr
+    );
+    Ok(())
+}
+
+#[test]
 fn test_collision_duplicate_dest() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();

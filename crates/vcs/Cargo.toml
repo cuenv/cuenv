@@ -22,7 +22,6 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
-walkdir = { workspace = true }
 globset = { workspace = true }
 async-trait = { workspace = true }
 

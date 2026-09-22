@@ -166,8 +166,6 @@ impl Environment {
         merged
     }
 
-    /// Essential system variables to preserve in hermetic mode.
-    /// These are required for basic process operation but don't pollute PATH.
     /// `PATH` a hermetic task receives when neither the project nor a
     /// passthrough declares one.
     ///
@@ -179,6 +177,8 @@ impl Environment {
     /// and is what the process sees.
     pub const HERMETIC_DEFAULT_PATH: &'static str = "/usr/local/bin:/usr/bin:/bin";
 
+    /// Essential system variables to preserve in hermetic mode.
+    /// These are required for basic process operation but don't pollute PATH.
     const HERMETIC_ALLOWED_VARS: &'static [&'static str] = &[
         "HOME",
         "USER",

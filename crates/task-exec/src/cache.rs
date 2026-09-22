@@ -139,10 +139,18 @@ impl std::fmt::Debug for TaskCacheConfig {
 #[must_use]
 pub fn effective_policy(cache: &TaskCacheConfig, task: &Task) -> TaskCachePolicy {
     let mut policy = task.cache_policy();
-    if let Some(override_mode) = cache.mode_override
-        && policy.mode != TaskCacheMode::Never
-    {
-        policy.mode = override_mode;
+    if let Some(override_mode) = cache.mode_override {
+        // Each permission survives only if both the task and the override
+        // grant it, so `CUENV_CACHE=write` on a task declared `read` records
+        // nothing rather than writing entries the task forbade.
+        let reads = policy.mode.allows_read() && override_mode.allows_read();
+        let writes = policy.mode.allows_write() && override_mode.allows_write();
+        policy.mode = match (reads, writes) {
+            (true, true) => TaskCacheMode::ReadWrite,
+            (true, false) => TaskCacheMode::Read,
+            (false, true) => TaskCacheMode::Write,
+            (false, false) => TaskCacheMode::Never,
+        };
     }
     policy
 }
@@ -161,8 +169,6 @@ pub struct BuildActionInput<'a> {
     pub workdir: &'a Path,
     /// Project root used for resolving task inputs.
     pub project_root: &'a Path,
-    /// cue module root used for relative workdir normalization when needed.
-    pub module_root: &'a Path,
 }
 
 /// Build the [`Action`] envelope for a task and compute its digest.
@@ -185,7 +191,6 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         cache,
         workdir,
         project_root,
-        module_root,
     } = input;
 
     // A non-hermetic task reads and writes the live workspace and inherits
@@ -199,16 +204,19 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
         return Ok(skipped(CacheSkipReason::NonHermetic, None));
     }
 
-    // Record the task directory inside the action root so nested tasks run in
-    // the same place on misses and hits. Input declarations remain
-    // project-root-relative, matching affected-task and CI path semantics.
-    let Some(working_directory) = normalize_workdir(workdir, project_root, module_root) else {
+    // Inputs and the working directory share one frame: paths relative to
+    // the VCS workspace the hasher is rooted at. The exec root is then a
+    // faithful slice of the repository, so a task defined in `lib/tasks`
+    // that reads a declared input in `apps/web/src` finds it at the same
+    // relative path it would in the checkout. Input declarations themselves
+    // stay project-root-relative; only the internal frame is workspace-wide.
+    let frame = ActionFrame::new(project_root, &cache.vcs_hasher_root);
+    let Some(working_directory) = frame.relative(workdir) else {
         tracing::warn!(
             task = %task_name,
             workdir = %workdir.display(),
-            project_root = %project_root.display(),
-            module_root = %module_root.display(),
-            "skipping cache: working directory is outside the project and module roots"
+            workspace_root = %frame.root.display(),
+            "skipping cache: working directory is outside the workspace"
         );
         return Ok(skipped(CacheSkipReason::UnportableWorkdir, None));
     };
@@ -256,6 +264,7 @@ pub async fn build_action(input: BuildActionInput<'_>) -> Result<CacheOutcome> {
             ResolveOutcome::Skipped(reason) => return Ok(skipped(reason, None)),
         }
     }
+    let hashed = frame.place_project_inputs(hashed);
     let input_root_digest = match build_input_root_digest(&hashed) {
         Ok(digest) => digest,
         Err(InputRootError::Collision(path)) => {
@@ -651,9 +660,15 @@ async fn resolve_path_mapping(
 
 /// Query the action cache for a previous result.
 ///
+/// Anything wrong with what the store holds — an unreadable store, an entry
+/// naming outputs the task does not declare, blobs that are missing or cannot
+/// be checked — is a miss, not a failure. The entry may have come from a
+/// shared cache, and one bad entry there must not stop every consumer from
+/// running the task.
+///
 /// # Errors
 ///
-/// Propagates any error from the underlying [`ActionCache`] implementation.
+/// Returns an error only when the task's own `cache.maxAge` cannot be parsed.
 pub async fn lookup(
     cache: &TaskCacheConfig,
     action_digest: &Digest,
@@ -664,13 +679,13 @@ pub async fn lookup(
         return Ok(None);
     }
 
-    let Some(result) = cache
-        .action_cache
-        .lookup(action_digest)
-        .await
-        .map_err(|e| cuenv_core::Error::configuration(format!("action cache lookup: {e}")))?
-    else {
-        return Ok(None);
+    let result = match cache.action_cache.lookup(action_digest).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            tracing::warn!(action = %action_digest, %error, "action cache lookup failed; treating as a miss");
+            return Ok(None);
+        }
     };
 
     if result.exit_code != 0 {
@@ -691,13 +706,22 @@ pub async fn lookup(
         return Ok(None);
     }
 
-    validate_cached_result(task, &result)?;
+    if let Err(error) = validate_cached_result(task, &result) {
+        tracing::warn!(action = %action_digest, %error, "ignoring invalid cached result");
+        return Ok(None);
+    }
 
-    let missing = cuenv_cas::missing_blobs(cache.cas.as_ref(), &result)
-        .await
-        .map_err(|error| {
-            cuenv_core::Error::configuration(format!("validate action cache result blobs: {error}"))
-        })?;
+    let missing = match cuenv_cas::missing_blobs(cache.cas.as_ref(), &result).await {
+        Ok(missing) => missing,
+        Err(error) => {
+            tracing::warn!(
+                action = %action_digest,
+                %error,
+                "could not verify cached result blobs; treating as a miss"
+            );
+            return Ok(None);
+        }
+    };
     if !missing.is_empty() {
         tracing::warn!(
             action = %action_digest,
@@ -831,7 +855,7 @@ async fn materialize_outputs(
     }
 
     let existing = collect_outputs(workdir, &task.outputs)?;
-    let staging = StagingDir::create(workdir)?;
+    let staging = super::exec_root::ScratchDir::create(workdir)?;
     let mut resolved =
         Vec::with_capacity(result.output_files.len() + result.output_directories.len());
 
@@ -951,67 +975,6 @@ fn secure_workspace_destination(workdir: &Path, relative: &Path) -> Result<PathB
         }
     }
     Ok(destination)
-}
-
-/// Prefix of the scratch directories [`StagingDir`] creates.
-const STAGING_PREFIX: &str = ".cuenv-stage-";
-
-fn is_staging_dir(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name.starts_with(STAGING_PREFIX))
-}
-
-/// A scratch directory inside the workspace, removed when dropped.
-///
-/// It lives inside `workdir` rather than the cache root so that the commit
-/// phase is a same-filesystem rename; a staging area under `$XDG_CACHE_HOME`
-/// would degrade to a copy whenever the cache and the workspace sit on
-/// different devices.
-struct StagingDir {
-    path: PathBuf,
-}
-
-impl StagingDir {
-    fn create(workdir: &Path) -> Result<Self> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-        let path = loop {
-            let path = workdir.join(format!(
-                "{STAGING_PREFIX}{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            match std::fs::create_dir(&path) {
-                Ok(()) => break path,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => {
-                    return Err(cuenv_core::Error::configuration(format!(
-                        "create staging directory {}: {error}",
-                        path.display()
-                    )));
-                }
-            }
-        };
-        Ok(Self { path })
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for StagingDir {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.path) {
-            tracing::warn!(
-                path = %self.path.display(),
-                error = %e,
-                "failed to remove cache staging directory"
-            );
-        }
-    }
 }
 
 /// Persist a successful execution to the cache.
@@ -1356,18 +1319,56 @@ fn rebase_hashed_inputs_for_project_root(
         .collect()
 }
 
-/// Express `workdir` relative to the project or module root.
+/// The directory an action's paths are relative to.
 ///
-/// Returns `None` when it is under neither. The previous behaviour — falling
-/// back to the absolute path — silently baked `/home/<user>/…` into the
-/// action key, guaranteeing that no other machine could ever reproduce it.
-/// Declining to cache is the honest outcome.
-fn normalize_workdir(workdir: &Path, project_root: &Path, module_root: &Path) -> Option<String> {
-    workdir
-        .strip_prefix(project_root)
-        .or_else(|_| workdir.strip_prefix(module_root))
-        .ok()
-        .and_then(|path| path.to_str().map(|value| value.replace('\\', "/")))
+/// It is the hasher's workspace root when the project lies inside it, and
+/// the project root otherwise. In the latter case a task with inputs cannot
+/// be hashed anyway, so the frame only has to place its working directory.
+struct ActionFrame<'a> {
+    root: &'a Path,
+    /// Where the project sits inside `root`; empty when they coincide.
+    project_prefix: &'a Path,
+}
+
+impl<'a> ActionFrame<'a> {
+    fn new(project_root: &'a Path, hasher_root: &'a Path) -> Self {
+        match project_root.strip_prefix(hasher_root) {
+            Ok(project_prefix) => Self {
+                root: hasher_root,
+                project_prefix,
+            },
+            Err(_) => Self {
+                root: project_root,
+                project_prefix: Path::new(""),
+            },
+        }
+    }
+
+    /// Express `path` relative to the frame root, with forward slashes.
+    ///
+    /// Returns `None` when it lies outside the workspace. Falling back to the
+    /// absolute path would bake `/home/<user>/…` into the action key and
+    /// guarantee no other machine could reproduce it; declining to cache is
+    /// the honest outcome.
+    fn relative(&self, path: &Path) -> Option<String> {
+        path.strip_prefix(self.root)
+            .ok()
+            .and_then(|relative| relative.to_str().map(|value| value.replace('\\', "/")))
+    }
+
+    /// Move project-relative inputs to where the project sits in the frame.
+    fn place_project_inputs(&self, inputs: Vec<HashedInput>) -> Vec<HashedInput> {
+        if self.project_prefix.as_os_str().is_empty() {
+            return inputs;
+        }
+        inputs
+            .into_iter()
+            .map(|input| HashedInput {
+                relative_path: self.project_prefix.join(&input.relative_path),
+                ..input
+            })
+            .collect()
+    }
 }
 
 pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
@@ -1445,7 +1446,7 @@ pub(crate) fn collect_outputs(workdir: &Path, patterns: &[String]) -> Result<Vec
             let walker = WalkDir::new(&root)
                 .follow_links(false)
                 .into_iter()
-                .filter_entry(|entry| !is_staging_dir(entry.path()));
+                .filter_entry(|entry| !cuenv_vcs::is_scratch_dir(entry.path()));
 
             for entry in walker {
                 let entry = entry.map_err(|e| {

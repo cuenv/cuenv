@@ -154,8 +154,10 @@ both execute.
 **F13** *[fixed in phase 0]* — `normalize_workdir` fell back to an absolute
 path when the workdir was under neither the project nor the module root,
 baking a machine-specific path into the key.
-**F14** — Symlinks are silently dropped from input trees
-(`merkle.rs:72`); `SymlinkNode` is modelled but always empty.
+**F14** *[partly fixed]* — Symlinks were silently dropped from input trees
+(`merkle.rs:72`). The input walker now follows them the way Bazel treats
+symlinked source files, hashing and staging the target as a regular file.
+Preserving a link *as a link* (`SymlinkNode`) is still not implemented.
 **F15** *[fixed in phase 0]* — Neither the `Action` nor the `Command` blob was
 stored, so a cache miss could not be explained or diffed against the
 previous run.
@@ -316,8 +318,10 @@ walking a whole directory is the opposite of what an exec root needs. The
 resolved `HashedInput` set is already the right shape. The same module now
 does own REAPI output `Tree` construction and materialization.
 
-**`"dir"` is the default, not an opt-in.** Bazel and buck2 both sandbox actions
-by default and make `no-sandbox` the explicit act, and so does cuenv: an
+**`"dir"` is the default, not an opt-in.** Bazel sandboxes local actions by
+default and makes `no-sandbox` the explicit act, and so does cuenv. (buck2
+deliberately does not sandbox local actions; it relies on remote execution to
+surface undeclared inputs.) An
 `inputs` field enforced only when someone opts in is not a declaration, it is a
 comment, and the stale cache entry it produces is discovered by a colleague
 rather than by its author. `hermetic: sandbox: "none"` is the escape hatch for
@@ -352,7 +356,7 @@ Still open:
   is a genuine differentiator over moon.
 - Absolute host-path confinement. `"dir"` isolates relative workspace access,
   but it is not an OS security boundary.
-- Symlink support in the input tree. **(F14)**
+- Preserving input symlinks as REAPI `SymlinkNode`s rather than following them. **(F14)**
 
 *Exit (partially met):* a hermetic task that reads an undeclared relative file
 fails by default, instead of silently producing a poisoned cache entry. It can
@@ -386,9 +390,10 @@ not by hashing or copying; the cache respects a configured size budget.
   cuenv's messages to `build.bazel.remote.execution.v2` types and digests
   their protobuf bytes; the local CAS and action cache now store exactly what
   a REAPI server exchanges. The semantics version travels in REAPI's
-  `Action.salt`. `ACTION_SEMANTICS_VERSION` is now `3`: v2 introduced REAPI
+  `Action.salt`. `ACTION_SEMANTICS_VERSION` is now `4`: v2 introduced REAPI
   trees and directory isolation; v3 adds fresh retry roots, transactional
-  complete output replacement, and stricter path/collision semantics. Bindings come from
+  complete output replacement, and stricter path/collision semantics; v4
+  makes input paths and the working directory VCS-workspace-relative. Bindings come from
   `bazel-remote-apis`, which ships pre-generated prost/tonic code, so no
   `protoc` is needed at build time and the Nix build is untouched.
 - **Done: the store traits are async.** `Cas` and `ActionCache` are
