@@ -105,7 +105,8 @@ impl RemoteClient {
         // The value is a secret, so no error message quotes it.
         if !is_valid_header_value(&value) {
             return Err(Error::config(format!(
-                "credential value for header '{name}' contains characters that are not                  printable ASCII; check for a stray newline or a smart quote in the token"
+                "credential value for header '{name}' contains characters that are not \
+                 printable ASCII; check for a stray newline or a smart quote in the token"
             )));
         }
 

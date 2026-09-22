@@ -32,11 +32,13 @@
 //!
 //! A shared cache multiplies the consequence of an unsound entry: a wrong
 //! result stops being one developer's confusing afternoon and becomes every
-//! machine's. cuenv does not yet isolate a task's filesystem, so a task that
-//! reads a file it did not declare can record an entry that is wrong
-//! elsewhere. That is why [`RemoteConfig`] is read-only until
-//! [`RemoteConfig::writable`] is called, and why callers should keep it that
-//! way until filesystem isolation lands.
+//! machine's. cuenv's default `"dir"` sandbox runs a task among only its
+//! declared inputs, which catches undeclared *relative* reads, but it is not
+//! an OS boundary: a task can still open an absolute host path or reach the
+//! network, and so record an entry that is wrong elsewhere. That is why
+//! [`RemoteConfig`] is read-only until [`RemoteConfig::writable`] is called,
+//! and why callers should keep it that way until strict filesystem and
+//! network confinement lands.
 
 pub mod action_cache;
 pub mod cas;

@@ -107,6 +107,9 @@ async fn walk_tree(
             "output tree nests deeper than {MAX_TREE_DEPTH} levels"
         )));
     }
+    // A tree that cannot be materialized faithfully is as unusable as one
+    // with a missing blob, and must be rejected before anything is written.
+    crate::merkle::validate_entry_names(directory)?;
 
     for file in &directory.files {
         check(cas, &file.digest, seen, missing).await?;
@@ -260,5 +263,48 @@ mod tests {
         let missing = missing_blobs(&cas, &result).await.unwrap();
         assert!(missing.contains(&tree_digest));
         assert!(missing.contains(&Digest::of_bytes(b"also absent")));
+    }
+
+    #[tokio::test]
+    async fn a_tree_naming_an_entry_twice_is_rejected() {
+        // Materialized in order, the second `app.js` would silently replace
+        // the first; the entry must be refused instead.
+        let tmp = TempDir::new().unwrap();
+        let cas = LocalCas::open(tmp.path()).unwrap();
+        let first = cas.put_bytes(b"first").await.unwrap();
+        let second = cas.put_bytes(b"second").await.unwrap();
+        let root = Directory {
+            files: vec![
+                FileNode {
+                    name: "app.js".into(),
+                    digest: first,
+                    is_executable: false,
+                },
+                FileNode {
+                    name: "app.js".into(),
+                    digest: second,
+                    is_executable: false,
+                },
+            ],
+            directories: vec![],
+            symlinks: vec![],
+        };
+        let tree = Tree {
+            root,
+            children: vec![],
+        };
+        let tree_digest = cas
+            .put_bytes(&tree.to_canonical_bytes().unwrap())
+            .await
+            .unwrap();
+
+        let mut result = result_with_output(cas.put_bytes(b"fine").await.unwrap());
+        result.output_directories = vec![OutputDirectory {
+            path: "dist".into(),
+            tree_digest,
+        }];
+
+        let error = missing_blobs(&cas, &result).await.unwrap_err();
+        assert!(error.to_string().contains("more than once"), "{error}");
     }
 }

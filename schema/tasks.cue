@@ -101,7 +101,8 @@ package schema
 	//            declared `inputs`, and only declared `outputs` are projected
 	//            back. This isolates relative workspace reads and writes, but
 	//            is not an OS security boundary: absolute host paths remain
-	//            reachable. Symlink inputs and outputs are rejected.
+	//            reachable. A symlinked input is followed and staged as a
+	//            regular file; output symlinks are rejected.
 	//   "none" — the task runs in the project directory and can read and
 	//            write anything on the machine. Incomplete `inputs` produce
 	//            stale cache hits, so entries recorded here are only ever as

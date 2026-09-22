@@ -124,8 +124,11 @@ async fn build_task_cache(
     // Patterns are prefixed with each project's workspace-relative path before
     // they reach the walker, so this widens what is reachable without widening
     // what is walked.
-    let vcs_hasher =
-        Arc::new(cuenv_vcs::WalkHasher::new(hasher_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+    // The store — and the exec roots materialized inside it — may sit inside
+    // the workspace (`<project>/.cuenv-cache`, or `CUENV_CACHE_DIR` pointed
+    // at the checkout). Its contents are never anyone's inputs.
+    let vcs_hasher = Arc::new(cuenv_vcs::WalkHasher::new(hasher_root).excluding(&root))
+        as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
         cas: layers.cas,
         action_cache: layers.action_cache,

@@ -35,6 +35,8 @@ pub fn is_scratch_dir(path: &Path) -> bool {
 #[derive(Debug, Clone)]
 pub struct WalkHasher {
     workspace_root: PathBuf,
+    /// Directories a glob never descends into.
+    excluded: Vec<PathBuf>,
 }
 
 impl WalkHasher {
@@ -43,7 +45,21 @@ impl WalkHasher {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
             workspace_root: workspace_root.as_ref().to_path_buf(),
+            excluded: Vec::new(),
         }
+    }
+
+    /// Never descend into `directory` while walking a glob.
+    ///
+    /// For cuenv's own state inside the workspace — the cache store and the
+    /// exec roots under it, when the cache lives at `<project>/.cuenv-cache`
+    /// or `CUENV_CACHE_DIR` points into the checkout. A `**` glob would
+    /// otherwise hash the store's blobs and other tasks' exec roots as
+    /// inputs. A path named explicitly is still honoured.
+    #[must_use]
+    pub fn excluding(mut self, directory: impl AsRef<Path>) -> Self {
+        self.excluded.push(directory.as_ref().to_path_buf());
+        self
     }
 
     /// Workspace root this walker is rooted at.
@@ -114,6 +130,13 @@ impl WalkHasher {
         let workspace = fs::canonicalize(&self.workspace_root)
             .map_err(|e| Error::io(e, &self.workspace_root, "canonicalize"))?;
         let mut collected = Collected::default();
+        // Canonical, so a walk that reaches them through a symlink or a
+        // `/var` -> `/private/var` alias still recognises them.
+        let excluded: Vec<PathBuf> = self
+            .excluded
+            .iter()
+            .filter_map(|directory| fs::canonicalize(directory).ok())
+            .collect();
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
@@ -144,6 +167,7 @@ impl WalkHasher {
             let mut walk = Walk {
                 globset,
                 workspace: &workspace,
+                excluded: &excluded,
                 descent: Vec::new(),
             };
             walk.directory(
@@ -243,6 +267,8 @@ struct Walk<'a> {
     globset: &'a GlobSet,
     /// Canonical workspace root.
     workspace: &'a Path,
+    /// Canonical directories never descended into.
+    excluded: &'a [PathBuf],
     /// Canonical directories on the current descent, so a symlink back to an
     /// ancestor is not followed forever.
     descent: Vec<PathBuf>,
@@ -255,6 +281,13 @@ impl Walk<'_> {
         physical: &Path,
         logical: &Path,
     ) -> Result<()> {
+        if self
+            .excluded
+            .iter()
+            .any(|excluded| physical.starts_with(excluded))
+        {
+            return Ok(());
+        }
         if self.descent.iter().any(|ancestor| ancestor == physical) {
             debug!(path = %logical.display(), "not following a symlink cycle");
             return Ok(());
@@ -720,5 +753,23 @@ mod tests {
             resolved(root, &["**/*.js"]),
             vec![(PathBuf::from("pkg/index.js"), "pkg".to_string())]
         );
+    }
+
+    #[test]
+    fn an_excluded_directory_is_never_walked() {
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::create_dir_all(root.join(".cuenv-cache/exec/abc/src")).unwrap();
+        fs::write(root.join(".cuenv-cache/exec/abc/src/main.rs"), "copy").unwrap();
+
+        let inputs = WalkHasher::new(root)
+            .excluding(root.join(".cuenv-cache"))
+            .resolve_sync(&["**/*.rs".to_string()])
+            .unwrap();
+
+        let rels: Vec<_> = inputs.iter().map(|f| f.relative_path.clone()).collect();
+        assert_eq!(rels, vec![PathBuf::from("src/main.rs")]);
     }
 }

@@ -55,7 +55,7 @@ CI usually should not hard-code an endpoint in CUE:
 | --- | --- |
 | `CUENV_REMOTE_CACHE` | Sets or replaces the endpoint. Empty **disables** the remote. |
 | `CUENV_REMOTE_CACHE_UPLOAD` | Reserved `true`/`false` override. `true` currently warns and remains read-only. |
-| `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — overrides every task's cache mode for one run. |
+| `CUENV_CACHE` | `off`, `read`, `write`, or `read-write` — narrows every task's cache mode for one run. A permission applies only when the task's own mode also grants it. |
 
 ```bash
 # Point at a cache the repository does not know about

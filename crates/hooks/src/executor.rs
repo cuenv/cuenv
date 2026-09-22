@@ -576,7 +576,13 @@ pub async fn execute_hooks(
                                 let error = format!("Failed to evaluate source hook output: {e}");
                                 warn!("{error}");
                                 hook_result.success = false;
-                                hook_result.error = Some(error);
+                                // A hook that also exited non-zero keeps that
+                                // failure in front: it is the first thing
+                                // that went wrong.
+                                hook_result.error = Some(match hook_result.error.take() {
+                                    Some(existing) => format!("{existing}; {error}"),
+                                    None => error,
+                                });
                             }
                         }
                     }

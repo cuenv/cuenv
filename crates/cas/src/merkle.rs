@@ -234,6 +234,7 @@ async fn materialize_tree_directory(
             "output Tree symlinks are not supported".to_string(),
         ));
     }
+    validate_entry_names(directory)?;
     for file in &directory.files {
         let name = safe_node_name(&file.name)?;
         let destination = destination.join(name);
@@ -261,6 +262,35 @@ async fn materialize_tree_directory(
         fs::create_dir_all(&destination)
             .map_err(|e| Error::io(e, &destination, "create_dir_all"))?;
         materialize_tree_directory(cas, child_directory, children, &destination).await?;
+    }
+    Ok(())
+}
+
+/// Reject a [`Directory`] that names the same entry twice.
+///
+/// REAPI requires every name in a directory to be unique across files,
+/// subdirectories and symlinks. A tree that breaks the rule would otherwise
+/// be materialized entry by entry, and a later entry would silently
+/// overwrite an earlier one — so a malformed or hostile cache entry must be
+/// refused, not partly restored.
+///
+/// # Errors
+///
+/// Returns an error naming the first repeated entry.
+pub(crate) fn validate_entry_names(directory: &Directory) -> Result<()> {
+    let mut seen = std::collections::HashSet::new();
+    let names = directory
+        .files
+        .iter()
+        .map(|file| file.name.as_str())
+        .chain(directory.directories.iter().map(|dir| dir.name.as_str()))
+        .chain(directory.symlinks.iter().map(|link| link.name.as_str()));
+    for name in names {
+        if !seen.insert(name) {
+            return Err(Error::serialization(format!(
+                "output Tree directory names {name:?} more than once"
+            )));
+        }
     }
     Ok(())
 }

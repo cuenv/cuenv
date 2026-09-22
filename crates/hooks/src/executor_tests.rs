@@ -1074,3 +1074,24 @@ async fn a_source_hook_that_exits_nonzero_still_captures_what_it_exported() {
         Some("kept")
     );
 }
+
+#[tokio::test]
+async fn a_failed_source_hook_keeps_its_exit_status_in_the_error() {
+    // Both things went wrong: the process exited non-zero, and what it
+    // printed is not shell. The exit status is reported first, not replaced.
+    let hook = source_hook("echo 'export BAD=\"unclosed'; exit 3");
+
+    let state = run_source_hook_to_completion(hook).await;
+
+    let result = state.hook_results.get(&0).expect("hook result recorded");
+    assert!(!result.success);
+    let error = result.error.as_deref().unwrap_or_default();
+    assert!(
+        error.contains("evaluate source hook output"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.starts_with("Command exited with status"),
+        "the exit-status error must come first: {error}"
+    );
+}

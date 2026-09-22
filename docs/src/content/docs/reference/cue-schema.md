@@ -338,7 +338,7 @@ schema.#Project & {
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
-| `hermetic`       | `bool \| #Hermetic`                                | No       | Cache eligibility and declared host-env dependencies (default: true). Not yet filesystem isolation — see [#Hermetic](#hermetic) |
+| `hermetic`       | `bool \| #Hermetic`                                | No       | Cache eligibility, declared host-env dependencies, and filesystem isolation (default: true, sandboxed in a `"dir"` exec root) — see [#Hermetic](#hermetic) |
 | `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")†         |
 | `retry`          | `{ attempts: int \| *3, delay?: string }`         | No       | Retry policy: `attempts` defaults to 3, optional `delay` (e.g., "5s")† |
 | `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)†    |
@@ -406,6 +406,7 @@ is on — there would be nothing to configure otherwise.
 | Field         | Type            | Required | Description                                         |
 | ------------- | --------------- | -------- | --------------------------------------------------- |
 | `passthrough` | `[...string]`   | No       | Host environment variable names the action may depend on |
+| `sandbox`     | `"dir" \| "none"` | No     | Filesystem isolation tier; defaults to `"dir"` (see below) |
 
 ```cue
 tasks: build: schema.#Task & {

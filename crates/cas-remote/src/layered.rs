@@ -119,9 +119,21 @@ impl LayeredCas {
             return self.local.get_to_file(digest, destination).await;
         }
 
-        let local_digest = self.local.put_file(downloaded.path()).await?;
-        verify_digest(digest, &local_digest)?;
-        self.local.get_to_file(digest, destination).await
+        match self.local.put_file(downloaded.path()).await {
+            Ok(local_digest) => {
+                verify_digest(digest, &local_digest)?;
+                self.local.get_to_file(digest, destination).await
+            }
+            // The remote verified these bytes against `digest` while
+            // downloading them; only keeping a local copy failed. Serve the
+            // download, and the next read repeats the fetch.
+            Err(e) => {
+                warn!(digest = %digest, error = %e, "cannot cache remote blob locally");
+                std::fs::copy(downloaded.path(), destination)
+                    .map(|_| ())
+                    .map_err(|error| cuenv_cas::Error::io(error, destination, "copy remote blob"))
+            }
+        }
     }
 
     async fn push_file_snapshot(&self, digest: &Digest) -> Result<()> {
@@ -138,8 +150,14 @@ impl LayeredCas {
 #[async_trait]
 impl Cas for LayeredCas {
     async fn contains(&self, digest: &Digest) -> Result<bool> {
-        if self.local.contains(digest).await? {
-            return Ok(true);
+        match self.local.contains(digest).await {
+            Ok(true) => return Ok(true),
+            Ok(false) => {}
+            // An unreadable local store is a local miss, not a failure: the
+            // remote may still hold the blob.
+            Err(e) => {
+                debug!(digest = %digest, error = %e, "local CAS unreadable; asking the remote");
+            }
         }
         match self.remote.contains(digest).await {
             Ok(found) => Ok(found),
@@ -163,8 +181,20 @@ impl Cas for LayeredCas {
     }
 
     async fn get_to_file(&self, digest: &Digest, destination: &Path) -> Result<()> {
-        if self.local.contains(digest).await? {
-            return self.local.get_to_file(digest, destination).await;
+        // Mirror `get`: a local copy that is missing, unreadable or fails
+        // verification falls through to the remote rather than failing a
+        // read the remote could have served.
+        match self.local.contains(digest).await {
+            Ok(true) => match self.local.get_to_file(digest, destination).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    debug!(digest = %digest, error = %e, "local CAS read failed; fetching from the remote");
+                }
+            },
+            Ok(false) => {}
+            Err(e) => {
+                debug!(digest = %digest, error = %e, "local CAS unreadable; fetching from the remote");
+            }
         }
         self.fetch_through_file(digest, destination).await
     }
@@ -474,6 +504,21 @@ mod tests {
 
     fn local_cas(dir: &TempDir) -> Arc<dyn Cas> {
         Arc::new(LocalCas::open(dir.path()).unwrap())
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_local_store_falls_back_to_the_remote() {
+        let remote_dir = TempDir::new().unwrap();
+        let remote = local_cas(&remote_dir);
+        let digest = remote.put_bytes(b"remote").await.unwrap();
+        let layered = LayeredCas::new(Arc::new(BrokenCas::default()), remote);
+        let out_dir = TempDir::new().unwrap();
+        let destination = out_dir.path().join("blob");
+
+        assert!(layered.contains(&digest).await.unwrap());
+        layered.get_to_file(&digest, &destination).await.unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"remote");
     }
 
     #[tokio::test]
