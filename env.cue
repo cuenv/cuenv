@@ -340,21 +340,61 @@ schema.#Project & {
 			type: "group"
 
 			build: schema.#Task & {
+				hermetic: {passthrough: ["PATH"]}
 				command: "bash"
-				args: ["-c", "bun install --frozen-lockfile && cd docs && bun run build && cp public/.assetsignore dist/"]
+				args: ["-c", """
+					set -euo pipefail
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
+					bun install --frozen-lockfile
+					cd docs
+					bun run build
+					cp public/.assetsignore dist/
+					"""]
 				inputs: [
 					"package.json",
 					"bun.lock",
+					"integrations/*/package.json",
 					"docs/**",
 				]
 				outputs: ["docs/dist"]
 			}
 
 			deploy: schema.#Task & {
+				// The task output carries docs/dist; this adds Wrangler's config.
+				hermetic: {passthrough: ["PATH"]}
 				command: "bash"
-				args: ["-c", "cd docs && npx wrangler deploy"]
+				args: ["-c", """
+					set -euo pipefail
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
+					bun install --frozen-lockfile
+					cd docs
+					bunx --no-install wrangler deploy
+					"""]
 				dependsOn: [_t.docs.build]
-				inputs: [{task: "docs.build"}]
+				inputs: [
+					{task: "docs.build"},
+					"package.json",
+					"bun.lock",
+					"integrations/*/package.json",
+					"docs/package.json",
+					"docs/wrangler.jsonc",
+				]
 			}
 		}
 
@@ -368,6 +408,7 @@ schema.#Project & {
 			}
 
 			build: #cargo & {
+				hermetic: {passthrough: ["PATH"]}
 				script: """
 					#!/usr/bin/env bash
 					set -euo pipefail
@@ -399,6 +440,7 @@ schema.#Project & {
 			type: "group"
 
 			linux: schema.#Task & {
+				hermetic: {passthrough: ["PATH"]}
 				command: "nix"
 				args: ["build", ".#cuenv", "-L", "--accept-flake-config"]
 				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
@@ -411,32 +453,70 @@ schema.#Project & {
 			type: "group"
 
 			github: schema.#Task & {
+				// Stage CI-downloaded binaries and explicitly pass release context.
+				hermetic: {passthrough: ["PATH"]}
+				env: {
+					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
+					GH_TOKEN: schema.#EnvPassthrough & {name: "GITHUB_TOKEN"}
+				}
+				inputs: ["dist/*/cuenv"]
 				command: "bash"
 				args: ["-c", """
+					set -euo pipefail
 					for dir in dist/*/; do
 						platform=$(basename "$dir")
-						mv "$dir/cuenv" "dist/cuenv-$platform"
+						cp "$dir/cuenv" "dist/cuenv-$platform"
 					done
-					rm -rf dist/*/
-					gh release upload $TAG dist/cuenv-*
+					gh release upload "$TAG" -R cuenv/cuenv dist/cuenv-*
 					"""]
+				outputs: ["dist/cuenv-*"]
 			}
 
 			cue: schema.#Task & {
+				// CUE's git source publishes the complete tracked module tree.
+				hermetic: {passthrough: ["PATH", "HOME", "XDG_CONFIG_HOME"]}
 				env: TAG: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
 				command: "bash"
 				args: ["-c", """
+					set -euo pipefail
+					task_root="$PWD"
+					source_root="$task_root/.cuenv-source"
+					mkdir -p .cuenv-cache .cuenv-tmp .git/refs .git/objects "$source_root"
+					trap 'rm -rf "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp" "$source_root"' EXIT
+					export XDG_CACHE_HOME="$PWD/.cuenv-cache"
+					export CUE_CACHE_DIR="$PWD/.cuenv-cache/cue"
+					export TMPDIR="$PWD/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+					export GIT_CONFIG_NOSYSTEM=1
+					export GIT_CONFIG_GLOBAL=/dev/null
+
 					TAG=${TAG:-$(git describe --tags --abbrev=0 2>/dev/null || echo "")}
 					if [ -z "$TAG" ]; then
 						echo "Error: No git tag found"
 						exit 1
 					fi
-					cue mod publish v$TAG
+
+					# Recreate the complete checked-out commit, including tracked
+					# symlinks and contrib packages, then give CUE its clean tree.
+					git archive --format=tar HEAD | tar -x -C "$source_root"
+					git -C "$source_root" init --quiet
+					git -C "$source_root" add --force -A
+					git -C "$source_root" -c user.name=cuenv -c user.email=cuenv@localhost commit --quiet -m "CUE release source"
+					cd "$source_root"
+					cue mod publish "v$TAG"
 					"""]
-				inputs: ["cue.mod/**", "schema/**"]
+				inputs: [
+					".git/HEAD",
+					".git/objects/**",
+					".git/refs/**",
+					".git/packed-refs*",
+				]
 			}
 
 			homebrew: schema.#Task & {
+				// Publishing token and tag are explicit task environment inputs.
+				hermetic: {passthrough: ["PATH"]}
 				dependsOn: [_t.publish.github]
 				env: {
 					TAG:      schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
@@ -459,16 +539,19 @@ schema.#Project & {
 					LINUX_ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/cuenv-linux-arm64"
 
 					# Download and checksum
-					TMPDIR=$(mktemp -d)
-					trap 'rm -rf "$TMPDIR"' EXIT
+					mkdir -p .cuenv-tmp
+					TMPDIR="$PWD/.cuenv-tmp"
+					export TMPDIR
+					task_tmpdir=$(mktemp -d)
+					trap 'rm -rf "$task_tmpdir"' EXIT
 
-					gh release download "$TAG" -R "$REPO" -p "cuenv-darwin-arm64" -D "$TMPDIR"
-					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-x64" -D "$TMPDIR"
-					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-arm64" -D "$TMPDIR"
+					gh release download "$TAG" -R "$REPO" -p "cuenv-darwin-arm64" -D "$task_tmpdir"
+					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-x64" -D "$task_tmpdir"
+					gh release download "$TAG" -R "$REPO" -p "cuenv-linux-arm64" -D "$task_tmpdir"
 
-					DARWIN_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-darwin-arm64" | awk '{print $1}')
-					LINUX_X64_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-x64" | awk '{print $1}')
-					LINUX_ARM64_SHA256=$(shasum -a 256 "$TMPDIR/cuenv-linux-arm64" | awk '{print $1}')
+					DARWIN_SHA256=$(shasum -a 256 "$task_tmpdir/cuenv-darwin-arm64" | awk '{print $1}')
+					LINUX_X64_SHA256=$(shasum -a 256 "$task_tmpdir/cuenv-linux-x64" | awk '{print $1}')
+					LINUX_ARM64_SHA256=$(shasum -a 256 "$task_tmpdir/cuenv-linux-arm64" | awk '{print $1}')
 
 					# Generate formula
 					FORMULA=$(cat <<RUBY
