@@ -91,7 +91,7 @@ pub fn evaluate_manifest(dir: &Path, package: &str, executor: &CommandExecutor) 
 
     // Check if this is a Project (has name field) or Base (no name)
     match instance.kind {
-        cuenv_core::InstanceKind::Project => instance.deserialize(),
+        cuenv_core::InstanceKind::Project => instance.to_project(),
         cuenv_core::InstanceKind::Base => {
             // Valid Base config, but this command needs Project
             Err(cuenv_core::Error::configuration(

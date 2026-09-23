@@ -153,7 +153,7 @@ fn resolve_label_tasks(
     let display_task_name = format_label_root(normalized_labels);
     let synthetic = Task {
         script: Some("true".to_string()),
-        hermetic: false,
+        hermetic: cuenv_core::tasks::Hermetic::Enabled(false),
         depends_on: matching_tasks
             .into_iter()
             .map(cuenv_core::tasks::TaskDependency::from_name)

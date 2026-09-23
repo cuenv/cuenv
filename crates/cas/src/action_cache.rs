@@ -6,12 +6,16 @@
 use crate::digest::Digest;
 use crate::error::{Error, Result};
 use crate::message::ActionResult;
+use crate::reapi::CanonicalMessage;
+use async_trait::async_trait;
+use bazel_remote_apis::build::bazel::remote::execution::v2::ActionResult as Pb;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use tracing::trace;
 
 /// A key/value store mapping action digests to [`ActionResult`] records.
+#[async_trait]
 pub trait ActionCache: Send + Sync {
     /// Look up the result recorded for `action_digest`, if any.
     ///
@@ -19,7 +23,7 @@ pub trait ActionCache: Send + Sync {
     ///
     /// Returns an error if the underlying storage fails or the stored
     /// [`ActionResult`] cannot be decoded.
-    fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>>;
+    async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>>;
 
     /// Record `result` as the outcome of `action_digest`. Overwrites any
     /// existing entry (last writer wins).
@@ -27,15 +31,28 @@ pub trait ActionCache: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the result cannot be encoded or persisted.
-    fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
+    async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()>;
+
+    /// Persist a result only after its referenced blobs have been fetched,
+    /// verified, and committed successfully.
+    ///
+    /// Most caches store it like a normal update. A layered remote cache
+    /// overrides this to promote the verified candidate into its local action
+    /// cache without publishing the same result back to the remote.
+    async fn commit_verified(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        self.update(action_digest, result).await
+    }
 }
 
 /// Filesystem-backed action cache, laid out as:
 ///
 /// ```text
-/// root/ac/sha256/<ab>/<cdef...>    JSON-encoded ActionResult
+/// root/ac/sha256/<ab>/<cdef...>    protobuf-encoded REAPI ActionResult
 /// root/tmp/                         staging for atomic writes
 /// ```
+///
+/// Entries are stored in the same wire format a REAPI server exchanges, so
+/// the local cache and a remote one hold byte-identical records.
 #[derive(Debug, Clone)]
 pub struct LocalActionCache {
     root: PathBuf,
@@ -63,10 +80,14 @@ impl LocalActionCache {
     }
 
     /// On-disk path for a given action digest.
-    #[must_use]
-    pub fn entry_path(&self, action_digest: &Digest) -> PathBuf {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an untrusted digest is not canonical SHA-256.
+    pub fn entry_path(&self, action_digest: &Digest) -> Result<PathBuf> {
+        action_digest.validate()?;
         let (prefix, rest) = action_digest.hash.split_at(2);
-        self.root.join("ac").join("sha256").join(prefix).join(rest)
+        Ok(self.root.join("ac").join("sha256").join(prefix).join(rest))
     }
 
     fn tmp_dir(&self) -> PathBuf {
@@ -74,17 +95,19 @@ impl LocalActionCache {
     }
 }
 
+#[async_trait]
 impl ActionCache for LocalActionCache {
-    fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
-        let path = self.entry_path(action_digest);
+    async fn lookup(&self, action_digest: &Digest) -> Result<Option<ActionResult>> {
+        let path = self.entry_path(action_digest)?;
         match fs::read(&path) {
             Ok(bytes) => {
-                let result: ActionResult = serde_json::from_slice(&bytes).map_err(|e| {
+                let proto = <Pb as prost::Message>::decode(bytes.as_slice()).map_err(|e| {
                     Error::serialization(format!(
                         "failed to decode ActionResult at {}: {e}",
                         path.display()
                     ))
                 })?;
+                let result = ActionResult::from_proto(&proto)?;
                 trace!(action = %action_digest, "action cache hit");
                 Ok(Some(result))
             }
@@ -96,13 +119,12 @@ impl ActionCache for LocalActionCache {
         }
     }
 
-    fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
-        let path = self.entry_path(action_digest);
+    async fn update(&self, action_digest: &Digest, result: &ActionResult) -> Result<()> {
+        let path = self.entry_path(action_digest)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| Error::io(e, parent, "create_dir_all"))?;
         }
-        let bytes = serde_json::to_vec(result)
-            .map_err(|e| Error::serialization(format!("encode ActionResult: {e}")))?;
+        let bytes = result.to_canonical_bytes()?;
         let tmp_dir = self.tmp_dir();
         let mut tmp = tempfile::NamedTempFile::new_in(&tmp_dir)
             .map_err(|e| Error::io(e, &tmp_dir, "tempfile"))?;
@@ -145,40 +167,53 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lookup_missing_is_none() {
+    #[tokio::test]
+    async fn lookup_missing_is_none() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"no-such-action");
-        assert!(ac.lookup(&d).unwrap().is_none());
+        assert!(ac.lookup(&d).await.unwrap().is_none());
     }
 
-    #[test]
-    fn update_then_lookup_roundtrips() {
+    #[tokio::test]
+    async fn update_then_lookup_roundtrips() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"action-1");
         let result = sample_result();
-        ac.update(&d, &result).unwrap();
-        let got = ac.lookup(&d).unwrap().unwrap();
+        ac.update(&d, &result).await.unwrap();
+        let got = ac.lookup(&d).await.unwrap().unwrap();
         assert_eq!(got, result);
     }
 
-    #[test]
-    fn update_overwrites_existing() {
+    #[tokio::test]
+    async fn update_overwrites_existing() {
         let tmp = TempDir::new().unwrap();
         let ac = LocalActionCache::open(tmp.path()).unwrap();
         let d = Digest::of_bytes(b"action-2");
 
         let mut first = sample_result();
         first.exit_code = 1;
-        ac.update(&d, &first).unwrap();
+        ac.update(&d, &first).await.unwrap();
 
         let mut second = sample_result();
         second.exit_code = 0;
-        ac.update(&d, &second).unwrap();
+        ac.update(&d, &second).await.unwrap();
 
-        let got = ac.lookup(&d).unwrap().unwrap();
+        let got = ac.lookup(&d).await.unwrap().unwrap();
         assert_eq!(got.exit_code, 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_action_digest_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let cache = LocalActionCache::open(tmp.path()).unwrap();
+        let malformed = Digest {
+            hash: "a".to_string(),
+            size_bytes: 0,
+        };
+
+        assert!(cache.lookup(&malformed).await.is_err());
+        assert!(cache.update(&malformed, &sample_result()).await.is_err());
     }
 }

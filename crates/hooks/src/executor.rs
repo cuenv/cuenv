@@ -528,7 +528,7 @@ pub async fn execute_hooks(
 
         // Record the result
         match result {
-            Ok(hook_result) => {
+            Ok(mut hook_result) => {
                 // If this is a source hook, evaluate its output to capture environment variables.
                 // We do this even if the hook failed (exit code != 0), because tools like devenv
                 // might output valid environment exports before crashing or exiting with error.
@@ -567,8 +567,22 @@ pub async fn execute_hooks(
                                 }
                             }
                             Err(e) => {
-                                warn!("Failed to evaluate source hook output: {}", e);
-                                // Don't fail the hook execution further, just log the error
+                                // Evaluation only errors when the shell rejected the
+                                // output *and* nothing was captured. The hook may have
+                                // exited 0, but its whole purpose was to produce an
+                                // environment, and it did not. Reporting it as
+                                // successful would tell the user their env is loaded
+                                // when `cuenv export` is about to hand them nothing.
+                                let error = format!("Failed to evaluate source hook output: {e}");
+                                warn!("{error}");
+                                hook_result.success = false;
+                                // A hook that also exited non-zero keeps that
+                                // failure in front: it is the first thing
+                                // that went wrong.
+                                hook_result.error = Some(match hook_result.error.take() {
+                                    Some(existing) => format!("{existing}; {error}"),
+                                    None => error,
+                                });
                             }
                         }
                     }

@@ -406,6 +406,8 @@ async fn execute_service_task_dependencies(
         backend_config: None,
         cli_backend: None,
         cache: None,
+        sandbox_hasher_root: None,
+        sandbox_project_roots: std::collections::BTreeMap::new(),
     });
 
     executor.execute_graph(&task_graph).await?;

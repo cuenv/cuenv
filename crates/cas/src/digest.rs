@@ -5,6 +5,7 @@
 //! later be handed to a `bazel-remote-apis` gRPC client without conversion.
 
 use crate::error::{Error, Result};
+use crate::reapi::CanonicalMessage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::fmt;
@@ -19,6 +20,22 @@ pub struct Digest {
 }
 
 impl Digest {
+    /// Build a validated SHA-256 digest.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `hash` is exactly 64 lowercase hexadecimal
+    /// characters. Remote cache responses are untrusted, so accepting a
+    /// path-like or short hash would make the local CAS layout unsafe.
+    pub fn new(hash: impl Into<String>, size_bytes: u64) -> Result<Self> {
+        let digest = Self {
+            hash: hash.into(),
+            size_bytes,
+        };
+        digest.validate()?;
+        Ok(digest)
+    }
+
     /// Compute the digest of `bytes`.
     #[must_use]
     pub fn of_bytes(bytes: &[u8]) -> Self {
@@ -27,6 +44,26 @@ impl Digest {
             hash,
             size_bytes: bytes.len() as u64,
         }
+    }
+
+    /// Validate the digest before using it as a resource or filesystem key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the hash is canonical lowercase SHA-256 hex.
+    pub fn validate(&self) -> Result<()> {
+        if self.hash.len() != 64
+            || !self
+                .hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(Error::serialization(format!(
+                "invalid SHA-256 digest '{}': expected 64 lowercase hexadecimal characters",
+                self.hash
+            )));
+        }
+        Ok(())
     }
 
     /// Canonical `hash/size` form used in the Bazel RE API resource names.
@@ -42,28 +79,33 @@ impl fmt::Display for Digest {
     }
 }
 
-/// Serialize a value with stable field ordering for digest computation.
+/// Serialize a value to its canonical REAPI protobuf encoding.
 ///
-/// Backed by `serde_json` with `BTreeMap` in the source types — both provide
-/// deterministic ordering, so the output bytes are stable across platforms
-/// and process runs. This is our local pre-protobuf canonical form; when the
-/// remote backend lands we switch to protobuf canonical bytes.
+/// A digest only means something relative to an encoding, and REAPI defines a
+/// blob's name as the SHA-256 of its **protobuf** serialization. Servers rely
+/// on that: a CAS verifies `digest == sha256(bytes)` before accepting a blob,
+/// and an action cache parses the `ActionResult` it is given. Encoding these
+/// messages any other way would make cuenv's store unreadable to every REAPI
+/// implementation.
+///
+/// Protobuf is not canonical on its own, so [`crate::reapi`] pins the orderings
+/// REAPI requires before encoding.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Serialization`](crate::error::Error::Serialization) if
-/// the value cannot be JSON-encoded.
-pub fn canonical_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
-    serde_json::to_vec(value)
-        .map_err(|e| Error::serialization(format!("canonical encode failed: {e}")))
+/// Returns [`Error::Serialization`](crate::error::Error::Serialization) if the
+/// value cannot be represented in REAPI — in practice only a blob size beyond
+/// `i64::MAX`.
+pub fn canonical_bytes(value: &impl CanonicalMessage) -> Result<Vec<u8>> {
+    value.to_canonical_bytes()
 }
 
-/// Compute a digest over a serializable value's canonical encoding.
+/// Compute a digest over a value's canonical REAPI encoding.
 ///
 /// # Errors
 ///
 /// Returns any error produced by [`canonical_bytes`].
-pub fn digest_of<T: Serialize>(value: &T) -> Result<Digest> {
+pub fn digest_of(value: &impl CanonicalMessage) -> Result<Digest> {
     let bytes = canonical_bytes(value)?;
     Ok(Digest::of_bytes(&bytes))
 }
@@ -105,5 +147,18 @@ mod tests {
         let json = serde_json::to_string(&d).unwrap();
         let back: Digest = serde_json::from_str(&json).unwrap();
         assert_eq!(d, back);
+    }
+
+    #[test]
+    fn rejects_noncanonical_hashes() {
+        let invalid = vec![
+            "a".to_string(),
+            "A".repeat(64),
+            format!("{}../x", "a".repeat(59)),
+        ];
+        for hash in invalid {
+            assert!(Digest::new(hash.clone(), 0).is_err(), "accepted {hash:?}");
+        }
+        assert!(Digest::new("a".repeat(64), 0).is_ok());
     }
 }

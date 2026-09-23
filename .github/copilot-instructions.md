@@ -164,7 +164,7 @@ cargo bench --workspace --no-fail-fast
 The project uses GitHub Actions with these key jobs:
 
 - **lint-and-format**: treefmt and clippy checks
-- **test-suite**: Tests on Ubuntu + macOS with Rust stable + MSRV (1.85.0)
+- **test-suite**: Tests on Ubuntu + macOS with Rust stable + MSRV (1.90.0)
 - **supply-chain-security**: cargo-audit and cargo-deny checks
 - **coverage**: Code coverage with cargo-llvm-cov
 - **benchmarks**: Performance regression testing
@@ -188,7 +188,7 @@ cargo test --workspace
 
 ### Build Failures:
 
-- Check Rust edition compatibility (requires 2024 edition, MSRV 1.85.0)
+- Check Rust edition compatibility (requires 2024 edition, MSRV 1.90.0)
 - Ensure Go is available for cuengine FFI bridge compilation
 - Clear target directory: `rm -rf target/` and rebuild
 

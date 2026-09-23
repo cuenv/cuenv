@@ -2,7 +2,7 @@
 name = "cuenv-tools-oci"
 version.workspace = true
 edition = "2024"
-rust-version = "1.85.0"
+rust-version = "1.90"
 license = "MIT"
 repository = "https://github.com/cuenv/cuenv"
 description = "OCI registry tool provider for cuenv"

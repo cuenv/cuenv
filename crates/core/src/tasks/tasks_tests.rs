@@ -12,7 +12,7 @@ fn test_task_default_values() {
     assert_eq!(task.command, "echo");
     assert_eq!(task.description(), "No description provided");
     assert!(task.args.is_empty());
-    assert!(task.hermetic); // default is true
+    assert!(task.is_hermetic()); // default is true
 }
 
 #[test]

@@ -471,6 +471,13 @@ impl CommandExecutor {
         &self.package
     }
 
+    /// Create an executor that shares this executor's event channel but
+    /// evaluates a different CUE package.
+    #[must_use]
+    pub fn for_package(&self, package: String) -> Self {
+        Self::new(self.event_sender.clone(), package)
+    }
+
     /// Get or load a path-local module evaluation (cached by target directory).
     ///
     /// This evaluates only the requested directory (`target_dir`) with

@@ -36,14 +36,14 @@ fn action_strategy() -> impl Strategy<Value = Action> {
         digest_strategy(),
         digest_strategy(),
         platform_strategy(),
-        "[0-9]+\\.[0-9]+\\.[0-9]+".prop_map(String::from),
+        0u32..8,
     )
         .prop_map(
-            |(command_digest, input_root_digest, platform, cuenv_version)| Action {
+            |(command_digest, input_root_digest, platform, action_semantics_version)| Action {
                 command_digest,
                 input_root_digest,
                 platform,
-                cuenv_version,
+                action_semantics_version,
             },
         )
 }
@@ -86,15 +86,15 @@ proptest! {
         prop_assert_ne!(original, modified);
     }
 
-    /// Different cuenv_version ⇒ different action digest.
+    /// Different semantics version ⇒ different action digest.
     #[test]
-    fn cuenv_version_sensitivity(
+    fn semantics_version_sensitivity(
         mut action in action_strategy(),
-        other in "[0-9]+\\.[0-9]+\\.[0-9]+".prop_map(String::from),
+        other in 0u32..8,
     ) {
-        prop_assume!(action.cuenv_version != other);
+        prop_assume!(action.action_semantics_version != other);
         let original = digest_of(&action).expect("digest_of");
-        action.cuenv_version = other;
+        action.action_semantics_version = other;
         let modified = digest_of(&action).expect("digest_of");
         prop_assert_ne!(original, modified);
     }
@@ -124,7 +124,7 @@ proptest! {
             command_digest: Digest::of_bytes(b"cmd"),
             input_root_digest: Digest::of_bytes(b"root"),
             platform: Platform { properties: BTreeMap::new() },
-            cuenv_version: "0.30.8".into(),
+            action_semantics_version: 1,
         };
         let mut a = base.clone();
         a.platform = Platform { properties: forward };
@@ -179,7 +179,7 @@ fn digest_hash_is_64_hex_chars() {
         command_digest: Digest::of_bytes(b"c"),
         input_root_digest: Digest::of_bytes(b"r"),
         platform: Platform::default(),
-        cuenv_version: "0.30.8".into(),
+        action_semantics_version: 1,
     };
     let d = digest_of(&action).expect("digest_of");
     assert_eq!(d.hash.len(), 64);
@@ -192,7 +192,7 @@ fn empty_action_still_produces_valid_digest() {
         command_digest: Digest::of_bytes(b""),
         input_root_digest: Digest::of_bytes(b""),
         platform: Platform::default(),
-        cuenv_version: String::new(),
+        action_semantics_version: 0,
     };
     let d = digest_of(&action).expect("digest_of");
     assert_eq!(d.hash.len(), 64);

@@ -20,6 +20,7 @@ package schema
 	hooks?:   #Hooks
 	vcs?:     [#VcsDependencyName]: #VcsDependency
 	ci?:      #CI
+	cache?:   #Cache
 	release?: #Release
 	// Named tasks and groups derive fully-qualified runtime names from their
 	// field labels. Sequences are handled by the Go bridge because list element

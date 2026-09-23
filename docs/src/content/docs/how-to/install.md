@@ -70,7 +70,7 @@ For project development environments, cuenv loads your `flake.nix` dev shell aut
 Building from source gives you the latest `main`. You need a recent Rust toolchain and a C toolchain plus OpenSSL headers (the FFI bridge to CUE links against Go).
 
 :::caution
-cuenv requires **Rust 1.85.0 or later** (Edition 2024). Older toolchains will
+cuenv requires **Rust 1.90.0 or later** (Edition 2024). Older toolchains will
 not compile the workspace. Update with `rustup update` if needed.
 :::
 

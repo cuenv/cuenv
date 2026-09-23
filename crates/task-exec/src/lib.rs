@@ -16,6 +16,7 @@ pub mod captures;
 mod command;
 mod command_ext;
 pub(crate) mod env;
+pub mod exec_root;
 pub mod executor;
 pub mod graph;
 pub mod graph_walk;

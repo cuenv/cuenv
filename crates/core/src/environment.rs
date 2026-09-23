@@ -4,7 +4,7 @@
 //! including extraction, propagation, and environment-specific overrides.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::env;
 use std::path::Path;
 
@@ -66,6 +66,31 @@ pub struct Environment {
     /// Map of environment variable names to values
     #[serde(flatten)]
     pub vars: HashMap<String, String>,
+
+    /// Names in [`Self::vars`] whose values came from secret resolution.
+    ///
+    /// Resolution flattens every variable to a plain string, which loses the
+    /// distinction between a literal and a resolved credential. That
+    /// distinction has to survive, because a cache key is written into the
+    /// content-addressed store and, with a remote cache, leaves the machine.
+    /// Tracked separately rather than by changing the value type so that
+    /// every existing reader of `vars` keeps working.
+    #[serde(skip)]
+    secret_names: BTreeSet<String>,
+}
+
+/// The environment to record in an action's cache key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionEnvironment {
+    /// Every variable could be represented in the key.
+    Ready(BTreeMap<String, String>),
+    /// The environment holds secret-derived values but no salt is configured,
+    /// so they can be neither included (that would write credentials into the
+    /// store) nor omitted (two different secrets would key the same).
+    SecretsWithoutSalt {
+        /// Names of the offending variables. Names only — never values.
+        names: Vec<String>,
+    },
 }
 
 impl Environment {
@@ -76,7 +101,10 @@ impl Environment {
 
     /// Create environment from a map
     pub fn from_map(vars: HashMap<String, String>) -> Self {
-        Self { vars }
+        Self {
+            vars,
+            secret_names: BTreeSet::new(),
+        }
     }
 
     /// Get an environment variable value
@@ -86,7 +114,30 @@ impl Environment {
 
     /// Set an environment variable
     pub fn set(&mut self, key: String, value: String) {
+        self.secret_names.remove(&key);
         self.vars.insert(key, value);
+    }
+
+    /// Set a variable whose value came from resolving a secret.
+    ///
+    /// The value is stored like any other so the child process receives it,
+    /// but the name is remembered so the cache key can carry a fingerprint
+    /// instead of the credential.
+    pub fn set_secret(&mut self, key: String, value: String) {
+        self.vars.insert(key.clone(), value);
+        self.secret_names.insert(key);
+    }
+
+    /// Whether `name` holds a secret-derived value.
+    #[must_use]
+    pub fn is_secret_var(&self, name: &str) -> bool {
+        self.secret_names.contains(name)
+    }
+
+    /// Names of all secret-derived variables.
+    #[must_use]
+    pub fn secret_names(&self) -> &BTreeSet<String> {
+        &self.secret_names
     }
 
     /// Check if an environment variable exists
@@ -114,6 +165,17 @@ impl Environment {
 
         merged
     }
+
+    /// `PATH` a hermetic task receives when neither the project nor a
+    /// passthrough declares one.
+    ///
+    /// A hermetic child starts from an empty environment, and a shell with
+    /// no `PATH` cannot find `ls`. Inheriting the host's would put an
+    /// undeclared value behind every action key, so the fallback is a fixed
+    /// string instead — the same one Bazel's `--strict_action_env` uses on
+    /// macOS and Linux. It is a real declared variable: it enters the key
+    /// and is what the process sees.
+    pub const HERMETIC_DEFAULT_PATH: &'static str = "/usr/local/bin:/usr/bin:/bin";
 
     /// Essential system variables to preserve in hermetic mode.
     /// These are required for basic process operation but don't pollute PATH.
@@ -179,6 +241,99 @@ impl Environment {
 
     fn should_preserve_system_var(var: &str, value: &str) -> bool {
         !Self::HERMETIC_TEMP_VARS.contains(&var) || Path::new(value).is_dir()
+    }
+
+    /// The environment recorded in an action's cache key.
+    ///
+    /// Contains the CUE-declared variables plus the host values of the names
+    /// in `passthrough`, which a task declares through `hermetic.passthrough`.
+    ///
+    /// Ambient host variables never enter implicitly. [`merge_with_system_hermetic`]
+    /// folds in whatever `HOME`, `USER`, `TERM`, `TMPDIR` and `XDG_*` happen to
+    /// hold on this machine; a key computed that way can never match one
+    /// computed on another machine, which makes a shared cache pointless.
+    /// Declaring a name is how a task says "my result legitimately depends on
+    /// this, and I accept that it partitions the cache".
+    ///
+    /// Names that are unset on the host are omitted, so "unset" and "set to a
+    /// value" produce different keys. A CUE-declared variable wins over a
+    /// passthrough name of the same spelling.
+    ///
+    /// [`merge_with_system_hermetic`]: Self::merge_with_system_hermetic
+    #[must_use]
+    pub fn action_environment(
+        &self,
+        passthrough: &[String],
+        secret_salt: Option<&str>,
+    ) -> ActionEnvironment {
+        // A secret's value must never reach the key: the key becomes a
+        // `Command` message in the content-addressed store, and a remote
+        // cache ships that blob off the machine. Omitting it is not an
+        // option either — two different credentials would then key
+        // identically and serve each other's results. A salted fingerprint
+        // is the only representation that both changes with the secret and
+        // does not reveal it.
+        let mut unfingerprintable = Vec::new();
+
+        let declared = passthrough
+            .iter()
+            .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)));
+
+        let mut merged: BTreeMap<String, String> = declared.collect();
+
+        for (key, value) in &self.vars {
+            if self.secret_names.contains(key) {
+                match secret_salt {
+                    Some(salt) => {
+                        merged.insert(
+                            key.clone(),
+                            cuenv_secrets::compute_secret_fingerprint(key, value, salt),
+                        );
+                    }
+                    None => unfingerprintable.push(key.clone()),
+                }
+            } else {
+                // CUE variables are applied after passthrough so they win on
+                // collision.
+                merged.insert(key.clone(), value.clone());
+            }
+        }
+
+        if !unfingerprintable.is_empty() {
+            unfingerprintable.sort();
+            return ActionEnvironment::SecretsWithoutSalt {
+                names: unfingerprintable,
+            };
+        }
+        Self::ensure_hermetic_path(&mut merged);
+        ActionEnvironment::Ready(merged)
+    }
+
+    fn ensure_hermetic_path(merged: &mut BTreeMap<String, String>) {
+        merged
+            .entry("PATH".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_PATH.to_string());
+    }
+
+    /// Exact variables supplied to a hermetic child process.
+    ///
+    /// This mirrors [`Self::action_environment`] but keeps real secret values
+    /// for execution. Callers must clear the inherited process environment
+    /// before applying this map; otherwise undeclared host variables can
+    /// affect outputs without entering the action key.
+    #[must_use]
+    pub fn execution_environment(&self, passthrough: &[String]) -> BTreeMap<String, String> {
+        let mut merged = passthrough
+            .iter()
+            .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)))
+            .collect::<BTreeMap<_, _>>();
+        merged.extend(
+            self.vars
+                .iter()
+                .map(|(name, value)| (name.clone(), value.clone())),
+        );
+        Self::ensure_hermetic_path(&mut merged);
+        merged
     }
 
     /// Convert to a vector of key=value strings including system environment

@@ -14,12 +14,29 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use tracing::{debug, trace};
-use walkdir::WalkDir;
+
+/// Name prefix of the transient directories cuenv creates inside a workspace
+/// while staging, projecting or backing up task outputs.
+///
+/// They hold copies of other files and vanish when their owner finishes, so
+/// nothing that scans a workspace — input hashing here, output collection in
+/// the executor — may treat their contents as the user's files.
+pub const SCRATCH_PREFIX: &str = ".cuenv-scratch-";
+
+/// Whether `path` names one of cuenv's transient scratch directories.
+#[must_use]
+pub fn is_scratch_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with(SCRATCH_PREFIX))
+}
 
 /// Workspace-rooted walker that streams SHA-256 over every matched file.
 #[derive(Debug, Clone)]
 pub struct WalkHasher {
     workspace_root: PathBuf,
+    /// Directories a glob never descends into.
+    excluded: Vec<PathBuf>,
 }
 
 impl WalkHasher {
@@ -28,7 +45,21 @@ impl WalkHasher {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
         Self {
             workspace_root: workspace_root.as_ref().to_path_buf(),
+            excluded: Vec::new(),
         }
+    }
+
+    /// Never descend into `directory` while walking a glob.
+    ///
+    /// For cuenv's own state inside the workspace — the cache store and the
+    /// exec roots under it, when the cache lives at `<project>/.cuenv-cache`
+    /// or `CUENV_CACHE_DIR` points into the checkout. A `**` glob would
+    /// otherwise hash the store's blobs and other tasks' exec roots as
+    /// inputs. A path named explicitly is still honoured.
+    #[must_use]
+    pub fn excluding(mut self, directory: impl AsRef<Path>) -> Self {
+        self.excluded.push(directory.as_ref().to_path_buf());
+        self
     }
 
     /// Workspace root this walker is rooted at.
@@ -64,6 +95,7 @@ impl WalkHasher {
             if trimmed.is_empty() {
                 continue;
             }
+            validate_pattern(trimmed)?;
             let looks_like_glob = trimmed.contains('*')
                 || trimmed.contains('{')
                 || trimmed.contains('?')
@@ -95,75 +127,57 @@ impl WalkHasher {
             }
         }
 
-        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut results: Vec<HashedInput> = Vec::new();
+        let workspace = fs::canonicalize(&self.workspace_root)
+            .map_err(|e| Error::io(e, &self.workspace_root, "canonicalize"))?;
+        let mut collected = Collected::default();
+        // Canonical, so a walk that reaches them through a symlink or a
+        // `/var` -> `/private/var` alias still recognises them.
+        let excluded: Vec<PathBuf> = self
+            .excluded
+            .iter()
+            .filter_map(|directory| fs::canonicalize(directory).ok())
+            .collect();
 
         for raw in &explicit_files {
             let abs = self.workspace_root.join(raw);
-            if abs.is_file() {
-                let rel = normalize_rel_path(Path::new(raw));
-                if seen.insert(rel.clone()) {
-                    let (hash, size) = Self::hash_file(&abs)?;
-                    results.push(HashedInput {
-                        relative_path: rel,
-                        absolute_path: canonical_or_abs(&abs),
-                        sha256: hash,
-                        size,
-                        is_executable: is_executable(&abs)?,
-                    });
+            // A declared path may be, or pass through, a symlink. Like a Bazel
+            // source file, it stands for whatever it points at.
+            let target = match fs::canonicalize(&abs) {
+                Ok(target) => target,
+                Err(error) if fs::symlink_metadata(&abs).is_ok() => {
+                    return Err(Error::io(error, &abs, "follow dangling symlink input"));
                 }
-            } else {
-                return Err(Error::io(
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("explicit input file '{raw}' not found"),
-                    ),
-                    &abs,
-                    "open",
-                ));
+                Err(_) => return Err(explicit_not_found(raw, &abs)),
+            };
+            if !target.is_file() {
+                return Err(explicit_not_found(raw, &abs));
             }
+            collected.push(normalize_rel_path(Path::new(raw)), &target)?;
         }
 
         for (base_dir, globset) in &dirs_to_walk {
             let walk_root = self.workspace_root.join(base_dir);
+            // `exists` follows symlinks, so a dangling base is skipped too.
             if !walk_root.exists() {
                 debug!(dir = %base_dir, "Directory does not exist, skipping");
                 continue;
             }
-            for entry in WalkDir::new(&walk_root).follow_links(true) {
-                let entry = entry.map_err(|e| {
-                    let path = e.path().unwrap_or(walk_root.as_path());
-                    Error::io(
-                        std::io::Error::new(
-                            e.io_error()
-                                .map_or(std::io::ErrorKind::Other, std::io::Error::kind),
-                            format!("walkdir error under {}: {e}", walk_root.display()),
-                        ),
-                        path,
-                        "walkdir",
-                    )
-                })?;
-                let path = entry.path();
-                if path.is_dir() {
-                    continue;
-                }
-                let Ok(rel) = path.strip_prefix(&self.workspace_root) else {
-                    continue;
-                };
-                let rel_norm = normalize_rel_path(rel);
-                if globset.is_match(rel_norm.as_path()) && seen.insert(rel_norm.clone()) {
-                    let (hash, size) = Self::hash_file(path)?;
-                    results.push(HashedInput {
-                        relative_path: rel_norm,
-                        absolute_path: canonical_or_abs(path),
-                        sha256: hash,
-                        size,
-                        is_executable: is_executable(path)?,
-                    });
-                }
-            }
+            let physical = fs::canonicalize(&walk_root)
+                .map_err(|e| Error::io(e, &walk_root, "canonicalize"))?;
+            let mut walk = Walk {
+                globset,
+                workspace: &workspace,
+                excluded: &excluded,
+                descent: Vec::new(),
+            };
+            walk.directory(
+                &mut collected,
+                &physical,
+                &normalize_rel_path(Path::new(base_dir)),
+            )?;
         }
 
+        let mut results = collected.results;
         // Deterministic ordering — `seen` is a BTreeSet but `results` is a Vec,
         // so we sort explicitly by relative path.
         results.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
@@ -186,33 +200,164 @@ impl VcsHasher for WalkHasher {
     }
 }
 
-/// Strip `.` / `..` components from a relative path so the result is a clean
+fn validate_pattern(pattern: &str) -> Result<()> {
+    if Path::new(pattern).components().any(|component| {
+        matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        )
+    }) {
+        return Err(Error::pattern(format!(
+            "input pattern must stay within the workspace: {pattern}"
+        )));
+    }
+    Ok(())
+}
+
+/// Strip `.` components from a relative path so the result is a clean
 /// workspace-relative identifier.
 fn normalize_rel_path(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in p.components() {
-        match comp {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(s) => out.push(s),
-            _ => {}
+        if let Component::Normal(s) = comp {
+            out.push(s);
         }
     }
     out
 }
 
-/// Canonicalize a path, falling back to the absolute form when canonicalize fails.
-fn canonical_or_abs(p: &Path) -> PathBuf {
-    fs::canonicalize(p).unwrap_or_else(|_| {
-        if p.is_absolute() {
-            p.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(p)
+/// Inputs resolved so far, deduplicated by workspace-relative path.
+#[derive(Default)]
+struct Collected {
+    seen: BTreeSet<PathBuf>,
+    results: Vec<HashedInput>,
+}
+
+impl Collected {
+    /// Record the file at `target` as the input named `relative`.
+    ///
+    /// `target` is the resolved file, so a symlinked input contributes the
+    /// bytes and mode of what it points at, and is staged as a regular copy.
+    fn push(&mut self, relative: PathBuf, target: &Path) -> Result<()> {
+        if !self.seen.insert(relative.clone()) {
+            return Ok(());
         }
-    })
+        let (sha256, size) = WalkHasher::hash_file(target)?;
+        self.results.push(HashedInput {
+            relative_path: relative,
+            absolute_path: target.to_path_buf(),
+            sha256,
+            size,
+            is_executable: is_executable(target)?,
+        });
+        Ok(())
+    }
+}
+
+/// One glob's walk, following symlinks the way Bazel treats source files.
+///
+/// Every path is matched by its *logical* name — where it sits in the
+/// workspace, including through symlinks — and hashed from its resolved
+/// target. A symlinked file is followed wherever it points. A symlinked
+/// directory is descended into only when it stays inside the workspace:
+/// walking past a `result` link from `nix build` into the store, or a
+/// `.direnv` profile, would hash a toolchain nobody declared. Naming such a
+/// directory explicitly in a pattern still follows it.
+struct Walk<'a> {
+    globset: &'a GlobSet,
+    /// Canonical workspace root.
+    workspace: &'a Path,
+    /// Canonical directories never descended into.
+    excluded: &'a [PathBuf],
+    /// Canonical directories on the current descent, so a symlink back to an
+    /// ancestor is not followed forever.
+    descent: Vec<PathBuf>,
+}
+
+impl Walk<'_> {
+    fn directory(
+        &mut self,
+        collected: &mut Collected,
+        physical: &Path,
+        logical: &Path,
+    ) -> Result<()> {
+        if self
+            .excluded
+            .iter()
+            .any(|excluded| physical.starts_with(excluded))
+        {
+            return Ok(());
+        }
+        if self.descent.iter().any(|ancestor| ancestor == physical) {
+            debug!(path = %logical.display(), "not following a symlink cycle");
+            return Ok(());
+        }
+        self.descent.push(physical.to_path_buf());
+
+        let entries =
+            fs::read_dir(physical).map_err(|e| Error::io(e, physical, "walk directory"))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| Error::io(e, physical, "walk directory"))?;
+            let path = entry.path();
+            if is_scratch_dir(&path) {
+                continue;
+            }
+            let logical_child = logical.join(entry.file_name());
+            let file_type = entry
+                .file_type()
+                .map_err(|e| Error::io(e, &path, "walk directory"))?;
+            if file_type.is_symlink() {
+                self.symlink(collected, &path, &logical_child)?;
+            } else if file_type.is_dir() {
+                self.directory(collected, &path, &logical_child)?;
+            } else if file_type.is_file() && self.globset.is_match(&logical_child) {
+                collected.push(logical_child, &path)?;
+            }
+        }
+
+        self.descent.pop();
+        Ok(())
+    }
+
+    fn symlink(&mut self, collected: &mut Collected, link: &Path, logical: &Path) -> Result<()> {
+        let selected = self.globset.is_match(logical);
+        let target = match fs::canonicalize(link) {
+            Ok(target) => target,
+            // A dangling link the pattern selects is a missing input; one it
+            // does not select is none of this action's business.
+            Err(error) if selected => {
+                return Err(Error::io(error, link, "follow dangling symlink input"));
+            }
+            Err(_) => return Ok(()),
+        };
+
+        if target.is_dir() {
+            if !target.starts_with(self.workspace) {
+                debug!(
+                    link = %logical.display(),
+                    target = %target.display(),
+                    "not descending into a directory symlink that leaves the workspace"
+                );
+                return Ok(());
+            }
+            return self.directory(collected, &target, logical);
+        }
+        if selected && target.is_file() {
+            collected.push(logical.to_path_buf(), &target)?;
+        }
+        Ok(())
+    }
+}
+
+fn explicit_not_found(raw: &str, abs: &Path) -> Error {
+    Error::io(
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("explicit input file '{raw}' not found"),
+        ),
+        abs,
+        "open",
+    )
 }
 
 #[cfg(unix)]
@@ -390,7 +535,7 @@ mod tests {
         cleanup_permissions.set_mode(0o755);
         fs::set_permissions(&unreadable, cleanup_permissions).unwrap();
 
-        assert!(err.to_string().contains("walkdir"));
+        assert!(err.to_string().contains("walk directory"));
     }
 
     #[test]
@@ -420,6 +565,211 @@ mod tests {
     #[test]
     fn normalize_rel_path_strips_dots() {
         assert_eq!(normalize_rel_path(Path::new("./a/b")), PathBuf::from("a/b"));
-        assert_eq!(normalize_rel_path(Path::new("a/../b")), PathBuf::from("b"));
+    }
+
+    #[test]
+    fn scratch_directories_are_never_inputs() {
+        // A concurrent task projecting outputs leaves copies here for a
+        // moment; hashing them would make keys depend on scheduling.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/a.ts"), "A").unwrap();
+        let scratch = root.join(format!("{SCRATCH_PREFIX}123-0"));
+        fs::create_dir_all(scratch.join("src")).unwrap();
+        fs::write(scratch.join("src/a.ts"), "copy").unwrap();
+
+        let inputs = WalkHasher::new(root)
+            .resolve_sync(&["**/*.ts".to_string()])
+            .unwrap();
+        let rels: Vec<_> = inputs.iter().map(|f| f.relative_path.clone()).collect();
+        assert_eq!(rels, vec![PathBuf::from("src/a.ts")]);
+    }
+
+    #[test]
+    fn traversal_patterns_are_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let hasher = WalkHasher::new(tmp.path());
+        let error = hasher.resolve_sync(&["a/../b".to_string()]).unwrap_err();
+        assert!(error.to_string().contains("must stay within the workspace"));
+    }
+
+    /// Resolve `patterns` and return `(relative path, file contents)` pairs.
+    #[cfg(unix)]
+    fn resolved(root: &Path, patterns: &[&str]) -> Vec<(PathBuf, String)> {
+        let patterns: Vec<String> = patterns.iter().map(ToString::to_string).collect();
+        WalkHasher::new(root)
+            .resolve_sync(&patterns)
+            .unwrap()
+            .into_iter()
+            .map(|input| {
+                let contents = fs::read_to_string(&input.absolute_path).unwrap();
+                (input.relative_path, contents)
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_selected_file_symlink_is_hashed_as_its_target() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        symlink(root.join("src/main.rs"), root.join("src/alias.rs")).unwrap();
+
+        assert_eq!(
+            resolved(root, &["**/*.rs"]),
+            vec![
+                (PathBuf::from("src/alias.rs"), "fn main() {}".to_string()),
+                (PathBuf::from("src/main.rs"), "fn main() {}".to_string()),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_symlink_may_point_outside_the_workspace() {
+        // Bazel treats a symlinked source file as whatever it points at.
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::write(outside.path().join("shared.toml"), "shared").unwrap();
+        symlink(
+            outside.path().join("shared.toml"),
+            workspace.path().join("config.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved(workspace.path(), &["*.toml"]),
+            vec![(PathBuf::from("config.toml"), "shared".to_string())]
+        );
+        assert_eq!(
+            resolved(workspace.path(), &["config.toml"]),
+            vec![(PathBuf::from("config.toml"), "shared".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_in_workspace_directory_symlink_is_walked_under_its_own_name() {
+        // pnpm links workspace packages this way.
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("packages/lib/src")).unwrap();
+        fs::write(root.join("packages/lib/src/index.ts"), "lib").unwrap();
+        fs::create_dir_all(root.join("app/node_modules")).unwrap();
+        symlink(root.join("packages/lib"), root.join("app/node_modules/lib")).unwrap();
+
+        assert_eq!(
+            resolved(root, &["app/**/*.ts"]),
+            vec![(
+                PathBuf::from("app/node_modules/lib/src/index.ts"),
+                "lib".to_string()
+            )]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_symlink_leaving_the_workspace_is_not_walked() {
+        // The shape `nix build` leaves behind. Walking it would hash a store
+        // path no declaration named.
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::create_dir_all(workspace.path().join("src")).unwrap();
+        fs::write(workspace.path().join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(outside.path().join("store.rs"), "not ours").unwrap();
+        symlink(outside.path(), workspace.path().join("result")).unwrap();
+
+        assert_eq!(
+            resolved(workspace.path(), &["**/*.rs"]),
+            vec![(PathBuf::from("src/main.rs"), "fn main() {}".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn naming_a_path_through_a_directory_symlink_follows_it() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        fs::create_dir_all(outside.path().join("bin")).unwrap();
+        fs::write(outside.path().join("bin/tool"), "tool").unwrap();
+        symlink(outside.path(), workspace.path().join("result")).unwrap();
+
+        assert_eq!(
+            resolved(workspace.path(), &["result/bin/tool"]),
+            vec![(PathBuf::from("result/bin/tool"), "tool".to_string())]
+        );
+        assert_eq!(
+            resolved(workspace.path(), &["result/bin"]),
+            vec![(PathBuf::from("result/bin/tool"), "tool".to_string())]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlink_fails_only_when_selected() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        symlink(root.join("gone"), root.join("src/stale.txt")).unwrap();
+
+        assert_eq!(
+            resolved(root, &["src/**/*.rs"]),
+            vec![(PathBuf::from("src/main.rs"), "fn main() {}".to_string())]
+        );
+        let error = WalkHasher::new(root)
+            .resolve_sync(&["src/**/*.txt".to_string()])
+            .unwrap_err();
+        assert!(error.to_string().contains("dangling symlink"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_is_not_followed_forever() {
+        use std::os::unix::fs::symlink;
+
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("pkg")).unwrap();
+        fs::write(root.join("pkg/index.js"), "pkg").unwrap();
+        symlink(root.join("pkg"), root.join("pkg/self")).unwrap();
+
+        assert_eq!(
+            resolved(root, &["**/*.js"]),
+            vec![(PathBuf::from("pkg/index.js"), "pkg".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_excluded_directory_is_never_walked() {
+        let workspace = TempDir::new().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::create_dir_all(root.join(".cuenv-cache/exec/abc/src")).unwrap();
+        fs::write(root.join(".cuenv-cache/exec/abc/src/main.rs"), "copy").unwrap();
+
+        let inputs = WalkHasher::new(root)
+            .excluding(root.join(".cuenv-cache"))
+            .resolve_sync(&["**/*.rs".to_string()])
+            .unwrap();
+
+        let rels: Vec<_> = inputs.iter().map(|f| f.relative_path.clone()).collect();
+        assert_eq!(rels, vec![PathBuf::from("src/main.rs")]);
     }
 }

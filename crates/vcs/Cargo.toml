@@ -2,6 +2,7 @@
 name = "cuenv-vcs"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -21,7 +22,6 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
 tracing = { workspace = true }
-walkdir = { workspace = true }
 globset = { workspace = true }
 async-trait = { workspace = true }
 

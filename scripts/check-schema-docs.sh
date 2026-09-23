@@ -112,8 +112,8 @@ for skill in "${required_skills[@]}"; do
 	fi
 done
 
-if ! grep -q 'cuenv task ci\.schema-docs-check' AGENTS.md CLAUDE.md; then
-	record_failure "AGENTS.md or CLAUDE.md must require cuenv task ci.schema-docs-check"
+if ! grep -q 'cuenv task ci\.schema-docs-check' AGENTS.md; then
+	record_failure "AGENTS.md must require cuenv task ci.schema-docs-check"
 fi
 
 stale_scope=(

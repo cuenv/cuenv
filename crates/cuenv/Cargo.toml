@@ -2,6 +2,7 @@
 name = "cuenv"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -57,6 +58,7 @@ harness = false
 
 [dependencies]
 cuenv-cas = { workspace = true }
+cuenv-cas-remote = { workspace = true }
 cuenv-vcs = { workspace = true }
 cuenv-codeowners = { workspace = true }
 cuenv-core = { workspace = true }
@@ -130,6 +132,7 @@ rustls = { workspace = true, features = ["ring"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+temp-env = { workspace = true }
 cucumber = { workspace = true }
 tokio-test = { workspace = true }
 sha2 = { workspace = true }
