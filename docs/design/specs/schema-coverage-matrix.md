@@ -26,6 +26,11 @@ CLI-only note: cuenv reads `cue.mod/module.cue` only to warn when a module's
 `github.com/cuenv/cuenv` schema dependency version differs from the running CLI.
 `cuenv sync` never writes `cue.mod/module.cue`.
 
+CLI-only note: module evaluation waits `CUENV_EVAL_TIMEOUT` seconds (default
+60) for the Go bridge before failing with a timeout error that names the
+variable. Invalid values are configuration errors; the variable has no schema
+definition.
+
 CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor
 and generated workflow action; it requires `id-token: write` and is intended
