@@ -397,10 +397,24 @@ do not present it as a finished pipeline.
 - **`release version` does not touch `cue.mod/module.cue`.** That is expected.
   Do not edit `cue.mod/module.cue` for a release-only version bump unless there
   is a separate CUE module metadata change.
-- **CUE publish tasks need a valid temp directory.** `cuenv task publish.cue`
-  runs hermetically and should not inherit stale Nix shell temp directories; if
-  `cue mod publish` reports a missing `cue-publish-*` path, check that the
-  task environment is not preserving a removed `TMPDIR`, `TMP`, or `TEMP`.
+- **Release tasks stay hermetic with their workspace and environment declared.**
+  Tools installed by runner setup steps are not on the hermetic task's default
+  `PATH`; release tasks that invoke them declare `PATH` as an environment
+  passthrough, so its value is part of the action key. `cargo.build` declares
+  `target/release/cuenv` as an output, and the workflow downloads those outputs
+  into `dist/<platform>/cuenv`; `publish.github` lists those files as inputs
+  and passes its token and tag explicitly. The CUE module uses
+  `source.kind: "git"`; the hermetic `publish.cue` task declares the checked-out
+  commit's Git objects and creates a clean local source snapshot for CUE. The
+  full tracked tree is preserved, including public `contrib/` packages and
+  symlinks. Registry authentication is written under the runner's `HOME`, which
+  `publish.cue` explicitly passes along with `XDG_CONFIG_HOME`; its CUE cache
+  and temporary directories stay inside the task workspace. `docs.deploy`
+  consumes the `docs.build` output, declares Wrangler's config and locked Bun
+  workspace files, and installs from `bun.lock` before using the local
+  Wrangler binary. Build tasks should list every workspace manifest and source
+  file they use; `docs.build` includes the Bun workspace manifests and
+  `docs/**`.
 
 The authoritative per-definition status lives in the
 [schema status page](/reference/schema/status/) and the schema coverage matrix.
