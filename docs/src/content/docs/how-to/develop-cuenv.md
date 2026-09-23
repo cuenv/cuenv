@@ -276,7 +276,7 @@ all workspace crate package entries match. Do not edit `cue.mod/module.cue` for
 a release-only version bump unless there is a separate CUE module metadata
 change.
 
-For release-only patch bumps from an already-green `main`, skip local test
+For release-only version bumps from an already-green `main`, skip local test
 execution and the full root flake check. Verify that `HEAD` is the green
 `origin/main` commit, Cargo manifests and `Cargo.lock` agree on the target
 version, `Cargo.lock` only updates workspace package versions, locked Cargo
