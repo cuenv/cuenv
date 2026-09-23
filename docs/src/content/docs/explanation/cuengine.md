@@ -301,7 +301,13 @@ the matching allocator. Do not wrap Rust-owned `CString::into_raw()` pointers in
 returned to `CString::from_raw()`.
 
 **Evaluation Timeouts**
-Increase timeout settings for complex CUE expressions.
+Module evaluation fails with `CUE evaluation timed out after …` when the Go
+bridge does not answer within the timeout. The default is 60 seconds; set
+`CUENV_EVAL_TIMEOUT` to a positive whole number of seconds to change it, for
+example `CUENV_EVAL_TIMEOUT=120` on slow CI runners with a cold module cache.
+Other non-empty values fail with a configuration error that names the variable.
+The timeout exists to stop a hung evaluation, not to bound normal evaluation
+time.
 
 **Version Mismatches**
 Use `get_bridge_version()` to verify Rust/Go component compatibility.

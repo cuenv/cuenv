@@ -19,7 +19,7 @@ use error::CueEngineError as Error;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::ffi::{CStr, CString};
+use std::ffi::{CStr, CString, OsStr};
 use std::marker::PhantomData;
 use std::os::raw::c_char;
 use std::path::{Path, PathBuf};
@@ -37,7 +37,16 @@ const ERROR_CODE_JSON_MARSHAL: &str = "JSON_MARSHAL_ERROR";
 const ERROR_CODE_REGISTRY_INIT: &str = "REGISTRY_INIT";
 const ERROR_CODE_DEPENDENCY_RES: &str = "DEPENDENCY_RESOLUTION";
 const BRIDGE_PROTOCOL_VERSION: &str = "bridge/1";
-const MODULE_EVAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Environment variable that sets the module evaluation timeout, in whole seconds.
+///
+/// The timeout exists to stop a hung evaluation. The default is deliberately
+/// generous because a cold evaluation that also fetches registry modules can
+/// take several seconds on small CI runners.
+pub const EVAL_TIMEOUT_ENV_VAR: &str = "CUENV_EVAL_TIMEOUT";
+
+/// Module evaluation timeout used when [`EVAL_TIMEOUT_ENV_VAR`] is unset or empty.
+pub const DEFAULT_MODULE_EVAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Error response from the Go bridge
 #[derive(Debug, Deserialize, Serialize)]
@@ -335,6 +344,7 @@ pub fn evaluate_module(
 ) -> Result<ModuleResult> {
     tracing::info!("Starting module-wide CUE evaluation");
     let start_time = Instant::now();
+    let timeout = module_eval_timeout()?;
 
     let c_module_root = path_to_cstring(module_root, "cue_eval_module", "module root")?;
     let c_package = str_to_cstring(package_name, "cue_eval_module", "package name")?;
@@ -348,11 +358,40 @@ pub fn evaluate_module(
     };
 
     let rx = spawn_module_eval_worker(worker);
-    let module_result =
-        receive_module_eval_result(&rx, module_root, package_name, MODULE_EVAL_TIMEOUT)?;
+    let module_result = receive_module_eval_result(&rx, module_root, package_name, timeout)?;
     log_module_eval_success(&module_result, start_time);
 
     Ok(module_result)
+}
+
+/// Reads the module evaluation timeout from [`EVAL_TIMEOUT_ENV_VAR`].
+fn module_eval_timeout() -> Result<Duration> {
+    parse_module_eval_timeout(std::env::var_os(EVAL_TIMEOUT_ENV_VAR).as_deref())
+}
+
+/// Parses a module evaluation timeout value.
+///
+/// An unset, empty, or whitespace-only value selects
+/// [`DEFAULT_MODULE_EVAL_TIMEOUT`]. Any other value must be a positive whole
+/// number of seconds.
+fn parse_module_eval_timeout(value: Option<&OsStr>) -> Result<Duration> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_MODULE_EVAL_TIMEOUT);
+    };
+    let invalid = || {
+        Error::configuration(format!(
+            "Invalid {EVAL_TIMEOUT_ENV_VAR} value \"{}\": expected a positive whole number of seconds, such as {EVAL_TIMEOUT_ENV_VAR}=120",
+            value.display()
+        ))
+    };
+    let text = value.to_str().ok_or_else(invalid)?.trim();
+    if text.is_empty() {
+        return Ok(DEFAULT_MODULE_EVAL_TIMEOUT);
+    }
+    match text.parse::<u64>() {
+        Ok(0) | Err(_) => Err(invalid()),
+        Ok(seconds) => Ok(Duration::from_secs(seconds)),
+    }
 }
 
 fn spawn_module_eval_worker(worker: ModuleEvalWorker) -> Receiver<Result<ModuleResult>> {
@@ -393,7 +432,7 @@ fn receive_module_eval_result(
             Err(Error::ffi(
                 "cue_eval_module",
                 format!(
-                    "CUE evaluation timed out after {}s for module {}",
+                    "CUE evaluation timed out after {}s for module {}; set {EVAL_TIMEOUT_ENV_VAR} to a larger number of seconds to allow more time",
                     timeout.as_secs(),
                     module_root.display()
                 ),
