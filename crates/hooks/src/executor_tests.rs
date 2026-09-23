@@ -989,3 +989,109 @@ async fn test_capture_source_environment_returns_resulting_env() {
         Some(&"from_runtime".to_string())
     );
 }
+
+fn source_hook(script: &str) -> Hook {
+    Hook {
+        order: 100,
+        propagate: false,
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script.to_string()],
+        dir: None,
+        inputs: vec![],
+        source: Some(true),
+    }
+}
+
+async fn run_source_hook_to_completion(hook: Hook) -> HookExecutionState {
+    let temp_dir = TempDir::new().unwrap();
+    let config = HookExecutionConfig {
+        default_timeout_seconds: 10,
+        fail_fast: true,
+        state_dir: Some(temp_dir.path().to_path_buf()),
+    };
+    let state_manager = StateManager::new(temp_dir.path().to_path_buf());
+    let mut state = HookExecutionState::new(
+        temp_dir.path().to_path_buf(),
+        "instance".to_string(),
+        "config".to_string(),
+        vec![hook.clone()],
+    );
+
+    execute_hooks(
+        vec![hook],
+        temp_dir.path(),
+        &config,
+        &state_manager,
+        &mut state,
+    )
+    .await
+    .unwrap();
+    state
+}
+
+#[tokio::test]
+async fn a_source_hook_whose_output_cannot_be_evaluated_is_a_failed_hook() {
+    // The hook process itself exits 0. What it printed is not shell, so
+    // nothing can be captured from it. Reporting that as success would tell
+    // the user their environment is loaded when it is empty.
+    let hook = source_hook("echo 'export BAD=\"unclosed'; echo 'export GOOD=success'");
+
+    let state = run_source_hook_to_completion(hook).await;
+
+    let result = state.hook_results.get(&0).expect("hook result recorded");
+    assert!(!result.success, "unevaluable output must fail the hook");
+    assert!(
+        result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("evaluate source hook output")),
+        "unexpected error: {:?}",
+        result.error
+    );
+    assert_eq!(state.status, ExecutionStatus::Failed);
+    assert!(
+        !state.environment_vars.contains_key("GOOD") && !state.environment_vars.contains_key("BAD"),
+        "a failed evaluation must not leak a partial environment"
+    );
+}
+
+#[tokio::test]
+async fn a_source_hook_that_exits_nonzero_still_captures_what_it_exported() {
+    // The devenv case: valid exports, then a crash. The captured environment
+    // is kept, and the non-zero exit is what marks the hook failed.
+    let hook = source_hook("echo 'export CUENV_PARTIAL=kept'; exit 3");
+
+    let state = run_source_hook_to_completion(hook).await;
+
+    let result = state.hook_results.get(&0).expect("hook result recorded");
+    assert!(!result.success);
+    assert_eq!(result.exit_status, Some(3));
+    assert_eq!(
+        state
+            .environment_vars
+            .get("CUENV_PARTIAL")
+            .map(String::as_str),
+        Some("kept")
+    );
+}
+
+#[tokio::test]
+async fn a_failed_source_hook_keeps_its_exit_status_in_the_error() {
+    // Both things went wrong: the process exited non-zero, and what it
+    // printed is not shell. The exit status is reported first, not replaced.
+    let hook = source_hook("echo 'export BAD=\"unclosed'; exit 3");
+
+    let state = run_source_hook_to_completion(hook).await;
+
+    let result = state.hook_results.get(&0).expect("hook result recorded");
+    assert!(!result.success);
+    let error = result.error.as_deref().unwrap_or_default();
+    assert!(
+        error.contains("evaluate source hook output"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.starts_with("Command exited with status"),
+        "the exit-status error must come first: {error}"
+    );
+}

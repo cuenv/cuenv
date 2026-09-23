@@ -2,6 +2,7 @@
 //!
 //! Based on schema/core.cue.
 
+mod cache;
 mod codegen;
 mod formatters;
 mod hooks;
@@ -18,6 +19,7 @@ use crate::config::Config;
 use crate::environment::Env;
 use cuenv_hooks::Hooks;
 
+pub use cache::{Cache, CacheAuth, CacheAuthHeader, RemoteCache};
 pub use codegen::*;
 pub use formatters::*;
 pub use hooks::*;

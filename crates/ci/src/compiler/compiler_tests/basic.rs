@@ -58,6 +58,49 @@ fn test_compile_task_with_dependencies() {
 }
 
 #[test]
+fn expanded_task_output_still_compiles_to_an_artifact_download() {
+    let mut project = Project::new("test-project");
+    project.tasks.insert(
+        "docs.build".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "build-docs".to_string(),
+            outputs: vec!["docs/dist".to_string()],
+            ..Default::default()
+        })),
+    );
+    project.tasks.insert(
+        "docs.deploy".to_string(),
+        TaskNode::Task(Box::new(Task {
+            command: "deploy-docs".to_string(),
+            inputs: vec![Input::Task(cuenv_core::tasks::TaskOutput {
+                task: "docs.build".to_string(),
+                map: None,
+            })],
+            ..Default::default()
+        })),
+    );
+    project.expand_cross_project_references();
+
+    let compiler = Compiler::with_options(
+        project,
+        CompilerOptions {
+            ci_mode: true,
+            ..Default::default()
+        },
+    );
+    let ir = compiler.compile().unwrap();
+    let deploy = ir
+        .tasks
+        .iter()
+        .find(|task| task.id == "docs.deploy")
+        .unwrap();
+
+    assert_eq!(deploy.artifact_downloads.len(), 1);
+    assert_eq!(deploy.artifact_downloads[0].name, "docs-build-artifacts");
+    assert_eq!(deploy.artifact_downloads[0].path, "docs/dist");
+}
+
+#[test]
 fn test_compile_deployment_task() {
     let mut project = Project::new("test-project");
 

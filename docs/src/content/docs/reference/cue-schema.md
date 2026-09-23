@@ -338,7 +338,7 @@ schema.#Project & {
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
-| `hermetic`       | `bool`                                            | No       | Isolated execution (default: true)       |
+| `hermetic`       | `bool \| #Hermetic`                                | No       | Cache eligibility, declared host-env dependencies, and filesystem isolation (default: true, sandboxed in a `"dir"` exec root) — see [#Hermetic](#hermetic) |
 | `timeout`        | `string`                                          | No       | Execution timeout (e.g., "30m")†         |
 | `retry`          | `{ attempts: int \| *3, delay?: string }`         | No       | Retry policy: `attempts` defaults to 3, optional `delay` (e.g., "5s")† |
 | `continueOnError`| `bool`                                            | No       | Continue on failure (default: false)†    |
@@ -397,6 +397,59 @@ helper.
 **Script Shells:** `bash`, `sh`, `zsh`, `fish`, `nu`, `powershell`, `pwsh`, `python`, `node`, `ruby`, `perl`
 
 When using `scriptShell: "sh"`, set `shellOptions.pipefail: false`. Plain `sh` does not reliably support `set -o pipefail`.
+
+### #Hermetic
+
+Object form of a task's `hermetic` field. Setting it always means hermeticity
+is on — there would be nothing to configure otherwise.
+
+| Field         | Type            | Required | Description                                         |
+| ------------- | --------------- | -------- | --------------------------------------------------- |
+| `passthrough` | `[...string]`   | No       | Host environment variable names the action may depend on |
+| `sandbox`     | `"dir" \| "none"` | No     | Filesystem isolation tier; defaults to `"dir"` (see below) |
+
+```cue
+tasks: build: schema.#Task & {
+    command: "cargo"
+    args: ["build", "--release"]
+    inputs: ["src/**/*.rs", "Cargo.toml"]
+    outputs: ["target/release/app"]
+    cache: mode: "read-write"
+    hermetic: passthrough: ["CARGO_HOME"]
+}
+```
+
+**What `hermetic` controls today:**
+
+- **Cache eligibility.** `hermetic: false` is never cached: such a task reads
+  and writes the live checkout with the ambient host environment, so the cache
+  key would describe a fraction of what produced the result. The skip is
+  reported as `task is not hermetic`.
+- **Cache key contents.** The key records the resolved `inputs`, the command,
+  the CUE-declared environment, the platform, and the host values of any names
+  in `passthrough`. Ambient host variables — `HOME`, `USER`, `TERM`, `TMPDIR`,
+  `XDG_*` — are excluded, so two machines with the same checkout and toolchain
+  compute the same key.
+
+Declaring a name in `passthrough` partitions the cache by its value. That is
+the intended trade: a task whose result depends on `HOME` is not portable, and
+cuenv records that rather than hiding it.
+
+- **`sandbox`.** `"dir"` (the default) or `"none"`. Under `"dir"` the task
+  runs in a per-action directory holding exactly its declared `inputs`, and
+  only its declared `outputs` are copied back, so an undeclared read fails
+  instead of producing an entry that is wrong elsewhere. `"none"` is the
+  explicit opt-out. Stricter OS-level tiers are absent from the union until
+  they are implemented. See
+  [filesystem isolation](/how-to/run-tasks/#filesystem-isolation).
+
+:::note[Isolation is independent of result caching]
+The default tier resolves inputs even when result caching is disabled. A task
+with no declared `inputs` runs in an empty execution root; `cache: mode:
+"never"` and `CUENV_CACHE=off` do not expose the live checkout. A task whose
+declared inputs cannot be resolved fails rather than downgrading. See
+[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/).
+:::
 
 ### #TaskGroup
 
@@ -928,6 +981,16 @@ hooks: {
 | `dir`       | `string`      | "."      | Working directory                 |
 | `inputs`    | `[...string]` | `[]`     | Input files for cache tracking    |
 | `source`    | `bool`        | false    | Source output as shell script     |
+
+A `source: true` hook's stdout is evaluated as a shell script and the
+resulting environment is captured. The hook's own exit code and that
+evaluation are judged separately: a hook that prints valid exports and
+then exits non-zero still contributes what it exported (and is reported
+as failed because of the exit code), while a hook whose output cannot be
+evaluated at all — a syntax error, for example — is reported as failed
+even if the process exited 0, because it produced no environment.
+`cuenv env status` shows `[ERR]` and `cuenv export` emits nothing from it
+rather than a partial environment.
 
 ### #NixFlake
 

@@ -12,6 +12,41 @@ superseded_by: []
 ---
 
 
+## Implementation status
+
+This ADR records the accepted design, not the shipped behaviour. As of the
+hermetic/CAS roadmap
+(`docs/design/specs/2026-09-20-hermetic-execution-and-cas-roadmap.md`):
+
+- **Decision 2 (hermetic execution) is implemented and on by default.** The
+  directory-only isolation this ADR describes is the default tier
+  (`hermetic.sandbox: "dir"`): every hermetic host task runs in a per-action
+  directory populated solely from declared inputs, even when result caching
+  is disabled, and only declared outputs are copied back.
+  `hermetic: sandbox: "none"` is the explicit opt-out.
+  Input resolution is independent of result-cache eligibility: an empty input
+  set produces an empty execution root, and `cache: mode: "never"` or
+  `CUENV_CACHE=off` does not expose the checkout. A task whose inputs cannot be
+  resolved fails rather than downgrading. Network isolation and OS-level
+  sandbox tiers remain phase 1 of the roadmap.
+- **Decision 3 (cache key) shipped with one change.** The key no longer
+  contains the cuenv package version — that invalidated every entry on every
+  release — nor ambient host environment variables. It records the declared
+  CUE environment plus the names a task lists in `hermetic.passthrough`, and
+  an execution-semantics version that is bumped only when execution
+  semantics change.
+- **Decision 4 (storage layout) is superseded.** Results are stored in a
+  content-addressed store plus an action cache
+  (`~/.cache/cuenv/{cas,ac}/sha256/…`) speaking the Bazel Remote Execution
+  API v2 — messages are REAPI protobuf and digests are taken over those
+  bytes — not the `tasks/<key>/` layout described below. There is no
+  `workspace.tar.zst` snapshot. Outputs *are* materialized on a hit, staged
+  first so a missing blob cannot leave a half-restored tree.
+- **Decision 6 (CLI UX) is not implemented.** There are no
+  `--materialize-outputs` or `--show-cache-path` flags, and no `cuenv cache`
+  command surface. Cache hits, misses, and structured skip reasons are
+  reported through the event system.
+
 ## Context
 
 Tasks must execute deterministically from a set of explicitly declared inputs and produce a set of declared outputs. To enable reproducibility and performance, we want a persistent, content-addressed cache that skips reruns when inputs and execution context are identical. Hermeticity here refers to a directory-only isolation model: the task runs in a clean working directory populated solely from declared inputs.
@@ -27,7 +62,18 @@ Tasks must execute deterministically from a set of explicitly declared inputs an
 
 - Each task runs in a fresh working directory pre-populated only with its resolved inputs.
 - Directory-only isolation; no network isolation.
-- Symlinks are resolved to target content at population time. Hardlinks are used when possible, falling back to copies on cross-device or FS limitations.
+- Input paths and the working directory are relative to the VCS workspace
+  root, so the execution root mirrors the repository layout (action semantics
+  v4). A task whose directory lies outside its project sees its inputs where
+  the checkout has them.
+- Symlinked inputs are followed, as Bazel follows symlinked source files: the
+  target's contents are hashed and staged as a regular file at the link's
+  path. Globs descend through directory symlinks only when they stay inside
+  the workspace; a path named explicitly is followed wherever it leads.
+  Dangling selected symlinks are errors; output symlinks are rejected.
+  Inputs are copied, digest-verified,
+  and assigned the executable mode recorded in the action key; hard links are
+  forbidden because a task could mutate the live workspace through them.
 
 3. Cache key
 

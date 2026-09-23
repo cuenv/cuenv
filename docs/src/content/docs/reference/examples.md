@@ -480,6 +480,9 @@ schema.#Project & {
 	tasks: inspect: schema.#Task & {
 		command: "sh"
 		args: ["-c", "find .agents/skills -maxdepth 2 -type f | sort | head"]
+		// A hermetic task sees only its declared inputs, so the synced
+		// tree it reads is declared here.
+		inputs: [".agents/skills/**"]
 	}
 }
 ```

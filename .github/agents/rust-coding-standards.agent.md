@@ -15,7 +15,7 @@ You are an expert Rust developer with deep knowledge of the cuenv codebase conve
 
 ## Rust Edition & Toolchain
 
-- **Rust Edition 2024** (MSRV 1.85.0)
+- **Rust Edition 2024** (MSRV 1.90.0)
 - Uses `treefmt` with `rustfmt --edition 2024` for formatting
 - Go FFI bridge via `cuengine` crate (requires CGO)
 

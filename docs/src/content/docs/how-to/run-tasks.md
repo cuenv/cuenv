@@ -241,20 +241,61 @@ cuenv task build --backend dagger
 ```
 
 :::note[Dagger backend is Partial]
-The `dagger` backend is optional and gated behind the `dagger-backend` build feature; host execution is the default and fully supported. See [the Dagger backend explainer](/explanation/dagger-backend/) and [Schema status](/reference/schema/status/) for current coverage.
+The `dagger` backend is optional and gated behind the `dagger-backend` build
+feature; host execution is the default and fully supported. Dagger currently
+mounts the full project instead of cuenv's resolved input root, so task-result
+caching is disabled for Dagger even when a task declares a cache policy. See
+[the Dagger backend explainer](/explanation/dagger-backend/) and [Schema
+status](/reference/schema/status/) for current coverage.
 :::
 
 ### Cache helpers
 
-When a task uses `cache`, two flags help you work with the content-addressed store:
+:::caution[Not implemented]
+`--show-cache-path` and `--materialize-outputs` are accepted on the command
+line but currently do nothing: the flags are parsed and passed to the executor,
+which ignores them. They are listed in
+[ADR-0008](/decisions/adrs/adr-0008-hermetic-task-execution-cache/) as intended
+behaviour and are tracked as part of the `cuenv cache` command surface in
+phase 2 of the hermetic/CAS roadmap. Do not rely on them yet.
+:::
+
+On a cache hit, cuenv restores the task's declared `outputs` into its working
+directory automatically — there is no flag to enable it. Output replacement is
+transactional: all files are staged and validated before previous owned paths
+are replaced, and declared outputs omitted by the new result are removed
+instead of leaving stale artifacts behind.
+
+REAPI represents every path component as UTF-8. cuenv rejects declared input or
+output trees containing non-UTF-8 names instead of replacing bytes and risking
+two distinct filesystem names collapsing to one cache entry.
+
+### Overriding the cache for one run
+
+`CUENV_CACHE` overrides every task's declared cache mode for a single
+invocation, which is how you find out whether the cache is the reason
+something looks wrong:
+
+| Value | Effect |
+| --- | --- |
+| `off` (also `false`, `0`, `none`) | Disable the task-result cache; directory isolation remains enabled |
+| `read` | Serve existing entries, record nothing |
+| `write` | Ignore existing entries, record fresh ones |
+| `read-write` (also `on`, `true`, `1`) | Default behaviour |
 
 ```bash
-# Print the cache directory for this task's current key (does not run the task)
-cuenv task build --show-cache-path
+# Is the cache lying to me?
+CUENV_CACHE=off cuenv task build
 
-# On a cache hit, copy the cached outputs into a directory of your choice
-cuenv task build --materialize-outputs ./dist
+# Refresh a poisoned entry without discarding the whole store.
+CUENV_CACHE=write cuenv task build
 ```
+
+It can only ever narrow what a task does: a permission applies only when the
+task's own cache mode also grants it. `CUENV_CACHE=read-write` will not start
+caching a task whose own policy is `never`, and `CUENV_CACHE=write` records
+nothing for a task declared `read` — the setting is a brake, not an
+accelerator.
 
 ## Dependencies & Parallelism
 
@@ -299,7 +340,60 @@ and materialized results.
 - **Inputs**: Files or glob patterns that the task reads. If these haven't changed since the last successful run, the cached task result may be reused.
 - **Outputs**: Files or directories created by the task.
 - **Cache policy**: Use `cache: {mode: "read-write"}` for ordinary read/write caching.
-- **Limitations**: Tasks with non-path inputs or task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
+- **Limitations**: Tasks with task-local runtime `env` entries may skip the task-result cache because cuenv cannot derive a stable key.
+
+### Inputs from another project
+
+An input may name another project's task instead of a path. cuenv hashes the
+files that project produced and records them under each mapping's `to` path,
+which is where the consuming task will read them:
+
+```cue
+tasks: {
+    bundle: schema.#Task & {
+        command: "esbuild"
+        inputs: [
+            "src/**/*.ts",
+            {
+                project: "design-system"
+                task:    "build"
+                map: [{from: "dist", to: "vendor/design-system"}]
+            },
+        ]
+        outputs: ["out/bundle.js"]
+        cache: mode: "read-write"
+    }
+}
+```
+
+The reference is also an implicit dependency. cuenv loads the referenced
+project's task graph, runs that producer in its own project root, and only then
+hashes and materializes the mapped output for the consumer. A clean checkout
+therefore does not require the producer's output to exist before the task run
+starts.
+
+The key is a function of the referenced files' **content**, not of the
+producing task's own key. That is what gives early cutoff: a producer that
+reruns and emits identical bytes leaves every consumer's key unchanged, so the
+consumers stay cached. `project` may be written as the other project's `name`
+or as a path relative to the consuming project (for example `../design-system`).
+A leading `/` is VCS-workspace-relative, not host-root-relative. Path references
+are canonicalized and must remain inside the VCS workspace.
+
+Two rules follow from recording files at their `to` path:
+
+- `from` bounds what is hashed. A directory or glob keeps its internal
+  structure below `to`; a single file lands exactly on `to`.
+- Two inputs may not claim the same workspace path or a file/directory prefix
+  of one another. This remains an error when the bytes are identical: ownership
+  and executable mode can still differ, so accepting it would make precedence
+  an ordering accident.
+
+A reference that resolves to neither a discovered project nor a safe workspace
+path has nothing honest to hash. Under the default directory sandbox, cuenv
+reports that configuration error instead of exposing the live checkout. Input
+hash failures include the underlying path or pattern error so the declaration
+can be corrected directly.
 
 ```cue
 tasks: {
@@ -571,14 +665,148 @@ tasks: {
 
 ## Hermeticity
 
-Tasks run hermetically by default: cuenv prepares an isolated working directory
-and makes declared `inputs` available to the command. This is why task examples
-should list every file, directory, generated output, or embedded script they
-read.
+Tasks are hermetic by default (`hermetic: true`). Today that means two things:
 
-Set `hermetic: false` only for tasks that intentionally operate on the live
-checkout, such as local development servers or commands that manage files
-outside the declared input/output boundary.
+- The task is **eligible for the action cache**. `hermetic: false` is never
+  cached, because a task that reads and writes the live checkout with the
+  ambient host environment produces results the cache key cannot describe.
+- Its cache key records only what it **declares** — the resolved `inputs`, the
+  command, the CUE-declared environment, timeout, execution backend, platform,
+  and any host variables named in `hermetic.passthrough`.
+
+Set `hermetic: false` for tasks that intentionally operate on the live
+checkout, such as local development servers, dependency installers, or
+commands that manage files outside the declared input/output boundary.
+
+### Filesystem isolation
+
+A hermetic task runs **sandboxed by default**, independently of whether result
+caching is enabled: in a per-action directory containing exactly its declared
+`inputs`, with only its declared `outputs` copied back out. A task with no
+declared inputs receives an empty execution root, and `CUENV_CACHE=off` or
+`cache: mode: "never"` disables result reuse without disabling isolation.
+
+| Tier | What the task sees |
+| --- | --- |
+| `"dir"` (default) | A per-action directory containing exactly its declared `inputs`. Only its declared `outputs` are copied back. |
+| `"none"` | The project directory, unrestricted. Nothing is proven. |
+
+So this task is already isolated — there is no sandbox key to add:
+
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "cargo"
+        args: ["build", "--release"]
+        inputs: ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
+        outputs: ["target/release/myapp"]
+        cache: mode: "read-write"
+    }
+}
+```
+
+An undeclared **relative workspace** read fails instead of silently
+succeeding, and an undeclared write is lost on the first run rather than
+mysteriously on the hundredth.
+Bazel sandboxes local actions by default for the same reason: a declaration
+that is only enforced when you ask for it is not a declaration, it is a
+comment. buck2 deliberately does not sandbox local actions and relies on
+remote execution to surface undeclared inputs; cuenv has no remote execution,
+so the local sandbox is where those mistakes get caught. It is also what makes a cache entry worth sharing — an entry recorded
+without isolation is only as trustworthy as whatever someone remembered to
+list in `inputs`.
+
+The execution root mirrors your repository's layout: inputs sit at their
+paths relative to the VCS workspace root, and the task runs in its own
+directory at the same relative position. A task whose `dir` lies outside its
+project — `dir: {from: "module", path: "lib/tasks"}`, or a task imported from
+another package — therefore reaches its declared inputs by the same relative
+paths it would use in the checkout.
+
+The `"dir"` tier isolates relative workspace paths; it is not an OS security
+boundary. Absolute host paths and the network remain reachable. Remote cache
+uploads remain disabled until a strict platform sandbox closes those gaps.
+
+Symlinked inputs behave like Bazel's symlinked source files: the link is
+followed, the target's contents are hashed, and the task sees a regular file
+at the link's path. A symlinked file is followed wherever it points. A glob
+also descends through a symlinked directory that stays inside the workspace,
+such as a pnpm workspace link, but not one that leaves it, such as a `result`
+link from `nix build` — name a path through that link explicitly
+(`inputs: ["result/bin/tool"]`) when you do mean to depend on it. A dangling
+symlink is an error only when a pattern selects it, and a symlink cycle is
+not followed. Output symlinks are still rejected.
+
+#### Opting out
+
+Some tasks must touch the live checkout. Say so, the way you would with
+Bazel's `no-sandbox` tag:
+
+```cue
+tasks: {
+    install: schema.#Task & {
+        command: "bun"
+        args: ["install"]
+        hermetic: sandbox: "none"
+    }
+}
+```
+
+#### When isolation cannot be constructed
+
+Result-cache eligibility and sandboxing are separate. Cache skip reasons such
+as an empty input set, `cache: mode: "never"`, task-local runtime environment,
+or `CUENV_CACHE=off` still retain the resolved input snapshot and run in a
+directory sandbox. If an input declaration cannot be resolved safely, the
+task errors rather than silently running against the live checkout.
+
+The Dagger backend provides container isolation instead of a host exec root,
+but currently mounts the full project. Its task-result cache is disabled until
+it consumes cuenv's resolved input root and exports declared outputs through
+the same projection path. Explicitly requesting `hermetic: sandbox: "dir"`
+with Dagger is rejected because cuenv cannot honestly provide that named host
+strategy.
+
+Retries rebuild a fresh verified execution root for every attempt. Files left
+by a failed attempt therefore cannot make a later retry succeed and then be
+published under the original clean-input action key.
+
+Stricter tiers (OS namespaces on Linux, seatbelt on macOS) are absent from the
+schema until they are implemented, for that same reason.
+
+### Declaring host environment dependencies
+
+A cache key that silently includes `HOME`, `TERM` or `XDG_CACHE_HOME` can never
+match between two machines, so cuenv excludes ambient host variables from the
+key entirely. If a task's result genuinely depends on one, declare it:
+
+```cue
+tasks: {
+    build: schema.#Task & {
+        command: "cargo"
+        args: ["build", "--release"]
+        inputs: ["src/**/*.rs", "Cargo.toml", "Cargo.lock"]
+        outputs: ["target/release/myapp"]
+        cache: mode: "read-write"
+
+        // This task's result depends on the host's CARGO_HOME, so record it.
+        hermetic: passthrough: ["CARGO_HOME"]
+    }
+}
+```
+
+Declaring a variable partitions the cache by its value — that is the point. A
+task that lists `HOME` will only reuse entries produced under the same `HOME`,
+which is correct, and is why the portable case is to declare nothing and put
+what the task needs in `env` instead.
+
+`PATH` is the one variable a hermetic task always has. If neither the
+project's `env` nor `passthrough` supplies one, the task runs with the fixed
+`/usr/local/bin:/usr/bin:/bin` — the same default Bazel uses under
+`--strict_action_env` — rather than inheriting the host's. It is an ordinary
+declared value: it is in the action key and it is what the process sees. A
+project that activates tools or a runtime already sets `PATH`, and that
+value wins; set `env: PATH:` yourself when the default is not enough.
 
 Tasks default to the directory containing the CUE file where the executable task
 is defined: `dir: {from: "definition", path: "."}`. This matters for imported

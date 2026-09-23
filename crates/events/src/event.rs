@@ -276,7 +276,48 @@ pub enum CacheSkipReason {
     /// Inputs could not be mapped onto the cache hasher root.
     HasherRootMismatch,
     /// Input hashing itself failed.
-    HashFailed,
+    HashFailed {
+        /// Error returned by the input hasher.
+        reason: String,
+    },
+    /// Task opted out of hermetic execution (`hermetic: false`).
+    ///
+    /// A non-hermetic task reads and writes the live workspace and receives
+    /// ambient host environment variables, none of which the action key
+    /// records. Caching it would key a result on a fraction of what produced
+    /// it.
+    NonHermetic,
+    /// The task's working directory could not be expressed relative to the
+    /// project or module root, so the key would embed a host-specific
+    /// absolute path.
+    UnportableWorkdir,
+    /// The environment holds secret-derived values but no `CUENV_SECRET_SALT`
+    /// is configured.
+    ///
+    /// A secret's value cannot go into the key — the key is stored in the
+    /// content-addressed store and a remote cache would ship it off the
+    /// machine — and it cannot be omitted either, because two different
+    /// credentials would then key identically. Without a salt there is no
+    /// third option, so the task is not cached.
+    SecretsWithoutCacheSalt,
+    /// A cross-project input names a project the CUE module does not contain.
+    ///
+    /// The reference cannot be resolved to a directory, so there is nothing to
+    /// hash and no honest key to compute.
+    UnknownProject {
+        /// The unresolvable project name or path, as written.
+        project: String,
+    },
+    /// Two inputs would occupy the same path in the task's workspace.
+    ///
+    /// A cross-project mapping's `to` landing on a local input — or on another
+    /// mapping's `to` — means the task would see one file where two were
+    /// declared. Which one wins is an ordering accident, so the key would be
+    /// ambiguous.
+    InputCollision {
+        /// The contested workspace-relative path.
+        path: String,
+    },
 }
 
 impl std::fmt::Display for CacheSkipReason {
@@ -290,7 +331,18 @@ impl std::fmt::Display for CacheSkipReason {
             Self::Disabled { reason: None } => write!(f, "disabled"),
             Self::NeverMode => write!(f, "cache mode never"),
             Self::HasherRootMismatch => write!(f, "hasher root mismatch"),
-            Self::HashFailed => write!(f, "hashing failed"),
+            Self::HashFailed { reason } => write!(f, "hashing failed: {reason}"),
+            Self::NonHermetic => write!(f, "task is not hermetic"),
+            Self::UnportableWorkdir => write!(f, "working directory is not portable"),
+            Self::SecretsWithoutCacheSalt => {
+                write!(f, "secrets in environment and CUENV_SECRET_SALT is unset")
+            }
+            Self::UnknownProject { project } => {
+                write!(f, "unknown project reference '{project}'")
+            }
+            Self::InputCollision { path } => {
+                write!(f, "two inputs map to the same workspace path '{path}'")
+            }
         }
     }
 }

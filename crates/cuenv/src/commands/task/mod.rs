@@ -5,6 +5,7 @@ mod dag_export;
 mod discovery;
 mod execution;
 pub mod list_builder;
+mod remote_cache;
 mod rendering;
 mod types;
 
@@ -14,6 +15,7 @@ pub use types::{ExecutionMode, OutputConfig, TaskExecutionRequest, TaskSelection
 use cuenv_core::Result;
 use cuenv_core::lockfile::{LOCKFILE_NAME, LockedRuntime, Lockfile};
 use cuenv_core::manifest::Runtime;
+use cuenv_core::tasks::TaskCacheMode;
 use cuenv_core::tasks::{TaskNode, Tasks};
 use cuenv_task_exec::cache::TaskCacheConfig;
 use cuenv_task_exec::executor::{TASK_FAILURE_SNIPPET_LINES, summarize_task_failure};
@@ -57,15 +59,41 @@ fn resolve_cache_root(project_root: &Path) -> PathBuf {
     project_root.join(".cuenv-cache")
 }
 
+/// Everything `build_task_cache` needs that is not the cache's own settings.
+struct TaskCacheContext<'a> {
+    /// Root of the project whose task is running.
+    project_root: &'a Path,
+    /// Root of the VCS workspace, which bounds path-shaped project references.
+    hasher_root: &'a Path,
+    /// Project roots by name and by module-relative path.
+    project_roots: BTreeMap<String, PathBuf>,
+    /// Runtime identity folded into every action key.
+    runtime_identity: RuntimeCacheIdentity,
+}
+
 /// Construct the [`TaskCacheConfig`] used by the executor.
 ///
 /// Returns `None` if the local CAS or action cache cannot be opened (e.g.
 /// permissions). In that case the executor falls back to the no-cache code
 /// path so the user's command still works — degraded, not broken.
-fn build_task_cache(
-    project_root: &Path,
-    runtime_identity: RuntimeCacheIdentity,
+async fn build_task_cache(
+    context: TaskCacheContext<'_>,
+    cache_config: Option<&cuenv_core::manifest::Cache>,
 ) -> Option<TaskCacheConfig> {
+    let TaskCacheContext {
+        project_root,
+        hasher_root,
+        project_roots,
+        runtime_identity,
+    } = context;
+    let cache_override = cache_override();
+    let cache_off = cache_override == CacheOverride::Off;
+    if cache_off {
+        tracing::debug!(
+            "task result cache disabled by CUENV_CACHE=off; input isolation remains enabled"
+        );
+    }
+
     let root = resolve_cache_root(project_root);
     let cas = match cuenv_cas::LocalCas::open(&root) {
         Ok(c) => Arc::new(c) as Arc<dyn cuenv_cas::Cas>,
@@ -81,17 +109,103 @@ fn build_task_cache(
             return None;
         }
     };
-    let vcs_hasher =
-        Arc::new(cuenv_vcs::WalkHasher::new(project_root)) as Arc<dyn cuenv_vcs::VcsHasher>;
+    // Stack a remote cache behind the local one when configured. Every
+    // failure in here degrades to local-only: a cache is an optimization, so
+    // an unreachable server should make a build slower, not broken.
+    let layers = if cache_off {
+        remote_cache::CacheLayers { cas, action_cache }
+    } else {
+        remote_cache::build(cache_config, cas, action_cache).await
+    };
+
+    // Rooted at the VCS workspace, not the project: a task may declare an
+    // input in a sibling CUE module, and a hasher that cannot see outside its
+    // own module can only answer such a reference by declining to cache.
+    // Patterns are prefixed with each project's workspace-relative path before
+    // they reach the walker, so this widens what is reachable without widening
+    // what is walked.
+    // The store — and the exec roots materialized inside it — may sit inside
+    // the workspace (`<project>/.cuenv-cache`, or `CUENV_CACHE_DIR` pointed
+    // at the checkout). Its contents are never anyone's inputs.
+    let vcs_hasher = Arc::new(cuenv_vcs::WalkHasher::new(hasher_root).excluding(&root))
+        as Arc<dyn cuenv_vcs::VcsHasher>;
     Some(TaskCacheConfig {
-        cas,
-        action_cache,
+        cas: layers.cas,
+        action_cache: layers.action_cache,
         vcs_hasher,
-        vcs_hasher_root: project_root.to_path_buf(),
-        cuenv_version: env!("CARGO_PKG_VERSION").to_string(),
+        vcs_hasher_root: hasher_root.to_path_buf(),
+        cache_root: root,
+        project_roots,
+        action_semantics_version: cuenv_cas::ACTION_SEMANTICS_VERSION,
         runtime_identity_properties: runtime_identity.properties,
-        cache_disabled_reason: runtime_identity.cache_disabled_reason,
+        cache_disabled_reason: if cache_off {
+            Some("disabled by CUENV_CACHE=off".to_string())
+        } else {
+            runtime_identity.cache_disabled_reason
+        },
+        secret_salt: secret_cache_salt(),
+        mode_override: match cache_override {
+            CacheOverride::None | CacheOverride::Off => None,
+            CacheOverride::ReadOnly => Some(TaskCacheMode::Read),
+            CacheOverride::WriteOnly => Some(TaskCacheMode::Write),
+        },
     })
+}
+
+/// How `CUENV_CACHE` overrides the per-task cache policy for a whole run.
+///
+/// Without this the only way to bust a bad entry is editing CUE, which is a
+/// poor answer when a cache is misbehaving and you want to know whether the
+/// cache is the reason. moon has `MOON_CACHE` for the same purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CacheOverride {
+    /// Honour each task's declared policy.
+    None,
+    /// Ignore the cache entirely for this run.
+    Off,
+    /// Read existing entries but record nothing.
+    ReadOnly,
+    /// Ignore existing entries but record fresh ones — the way to refresh a
+    /// poisoned entry without discarding the whole store.
+    WriteOnly,
+}
+
+/// Parse `CUENV_CACHE`.
+///
+/// Accepts `off`/`false`/`0`, `read`, `write`, and `read-write`/`on`/`true`.
+/// An unrecognised value warns and is ignored rather than failing the run: a
+/// typo in an environment variable should not stop a build.
+fn cache_override() -> CacheOverride {
+    let Ok(raw) = std::env::var("CUENV_CACHE") else {
+        return CacheOverride::None;
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "off" | "false" | "0" | "none" => CacheOverride::Off,
+        "read" | "read-only" => CacheOverride::ReadOnly,
+        "write" | "write-only" => CacheOverride::WriteOnly,
+        // Empty and the explicit "on" spellings both mean "leave each task's
+        // declared policy alone".
+        "" | "read-write" | "rw" | "on" | "true" | "1" => CacheOverride::None,
+        other => {
+            tracing::warn!(
+                value = other,
+                "ignoring unrecognised CUENV_CACHE; expected off, read, write or read-write"
+            );
+            CacheOverride::None
+        }
+    }
+}
+
+/// Salt used to fingerprint secret-derived environment values into action
+/// keys.
+///
+/// Read from `CUENV_SECRET_SALT`, the same variable the CI secret pipeline
+/// already uses. An empty value counts as unset: an empty salt would make
+/// fingerprints trivially reversible by anyone who can read the store.
+fn secret_cache_salt() -> Option<String> {
+    std::env::var("CUENV_SECRET_SALT")
+        .ok()
+        .filter(|salt| !salt.is_empty())
 }
 
 #[derive(Debug, Clone, Default)]

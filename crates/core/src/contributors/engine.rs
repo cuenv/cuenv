@@ -144,7 +144,7 @@ impl<'a> ContributorEngine<'a> {
                     .map(|s| Input::Path(s.clone()))
                     .collect(),
                 outputs: contrib_task.outputs.clone(),
-                hermetic: contrib_task.hermetic,
+                hermetic: contrib_task.hermetic.into(),
                 depends_on: contrib_task
                     .depends_on
                     .iter()

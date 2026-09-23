@@ -9,7 +9,7 @@ We welcome contributions to cuenv! This guide will help you get started with con
 
 ### Prerequisites
 
-- Rust 1.85.0+ (install via [rustup](https://rustup.rs/))
+- Rust 1.90.0+ (install via [rustup](https://rustup.rs/))
 - Git for version control
 - Nix (optional, for reproducible development environment)
 - Go 1.21+ (for CUE engine development)

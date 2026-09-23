@@ -3,6 +3,7 @@ use crate::cache::TaskCacheConfig;
 use crate::{RetryConfig, SourceLocation, TaskDependency};
 use cuenv_cas::{LocalActionCache, LocalCas};
 use cuenv_events::{EventBus, EventCategory, TaskEvent};
+use cuenv_manifest::tasks::{Hermetic, HermeticOptions, Sandbox};
 use cuenv_vcs::WalkHasher;
 use std::collections::HashMap;
 use tempfile::TempDir;
@@ -13,6 +14,19 @@ fn executor_for(root: &Path) -> TaskExecutor {
         cue_module_root: Some(root.to_path_buf()),
         ..ExecutorConfig::default()
     })
+}
+
+/// These tests spawn coreutils through `sh`. A hermetic task that declares no
+/// `PATH` gets the fixed `Environment::HERMETIC_DEFAULT_PATH`, which need not
+/// resolve inside a Nix build sandbox, so declare the host `PATH` explicitly —
+/// the same thing the docs tell a project to do.
+fn host_path_environment() -> Environment {
+    let mut environment = Environment::new();
+    environment.set(
+        "PATH".to_string(),
+        std::env::var("PATH").unwrap_or_default(),
+    );
+    environment
 }
 
 fn source(file: &str) -> SourceLocation {
@@ -30,12 +44,56 @@ fn scoped_dir(from: TaskDirectoryBase, path: &str) -> TaskDirectory {
     }
 }
 
+fn unisolated_hermeticity() -> Hermetic {
+    Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::None),
+    })
+}
+
 #[tokio::test]
 async fn test_executor_config_default() {
     let config = ExecutorConfig::default();
     assert!(config.capture_output.should_capture());
     assert_eq!(config.max_parallel, 0);
     assert!(config.environment.is_empty());
+}
+
+#[tokio::test]
+async fn test_executor_records_backend_in_cache_identity() {
+    let cache_root = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let cache = TaskCacheConfig {
+        cas: Arc::new(LocalCas::open(cache_root.path()).unwrap()),
+        action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
+        vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
+        vcs_hasher_root: workspace.path().to_path_buf(),
+        action_semantics_version: 1,
+        runtime_identity_properties: std::collections::BTreeMap::new(),
+        cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
+        cache_root: cache_root.path().to_path_buf(),
+        project_roots: std::collections::BTreeMap::new(),
+    };
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        project_root: workspace.path().to_path_buf(),
+        cache: Some(cache),
+        ..ExecutorConfig::default()
+    });
+
+    assert_eq!(
+        executor
+            .config
+            .cache
+            .as_ref()
+            .unwrap()
+            .runtime_identity_properties
+            .get("cuenv.backend")
+            .map(String::as_str),
+        Some("host")
+    );
 }
 
 #[tokio::test]
@@ -176,6 +234,7 @@ async fn test_execute_failing_task() {
 #[tokio::test]
 async fn test_execute_task_timeout() {
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         ..Default::default()
     };
@@ -199,6 +258,7 @@ async fn test_execute_task_retries_until_success() {
     let tmp = TempDir::new().unwrap();
     let marker = tmp.path().join("attempts");
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -215,6 +275,7 @@ async fn test_execute_task_retries_until_success() {
             attempts: 2,
             delay: Some("1ms".to_string()),
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -225,12 +286,121 @@ async fn test_execute_task_retries_until_success() {
 }
 
 #[tokio::test]
+async fn sandboxed_retries_start_from_fresh_inputs() {
+    let tmp = TempDir::new().unwrap();
+    let counter = tmp.path().join("attempts.log");
+    let executor = executor_for(tmp.path());
+    let script = format!(
+        "if [ -e retry-marker ]; then exit 0; fi; \
+         touch retry-marker; echo attempt >> '{}'; exit 1",
+        counter.display()
+    );
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), script],
+        retry: Some(RetryConfig {
+            attempts: 2,
+            delay: None,
+        }),
+        ..Default::default()
+    };
+
+    let result = executor
+        .execute_task("isolated-retry", &task)
+        .await
+        .unwrap();
+
+    assert!(
+        !result.success,
+        "failed-attempt state must not make a retry pass"
+    );
+    assert_eq!(std::fs::read_to_string(counter).unwrap().lines().count(), 3);
+}
+
+/// A task whose input set cannot be resolved: it declares a file that does
+/// not exist, so no exec root can be built for it.
+fn task_with_missing_input(hermetic: Hermetic) -> Task {
+    Task {
+        command: "sh".to_string(),
+        args: vec!["-c".to_string(), "echo ran > marker".to_string()],
+        inputs: vec![cuenv_manifest::tasks::Input::Path(
+            "does-not-exist.txt".to_string(),
+        )],
+        hermetic,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn unresolvable_inputs_fail_rather_than_run_against_the_checkout() {
+    // Documented in ADR-0008: isolation fails closed whether the sandbox was
+    // requested or inherited.
+    let requested = Hermetic::Options(HermeticOptions {
+        passthrough: Vec::new(),
+        sandbox: Some(Sandbox::Dir),
+    });
+    for hermetic in [Hermetic::default(), requested] {
+        let tmp = TempDir::new().unwrap();
+        let error = executor_for(tmp.path())
+            .execute_task("missing-input", &task_with_missing_input(hermetic))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("requires hermetic.sandbox"));
+        assert!(!tmp.path().join("marker").exists());
+    }
+}
+
+#[tokio::test]
+async fn a_task_outside_its_project_sees_inputs_where_the_checkout_has_them() {
+    // `dir: {from: "module"}` puts the task in `lib/tasks` while its inputs
+    // are declared relative to `apps/web`. The exec root must mirror the
+    // workspace so the relative path between the two is the real one.
+    let tmp = TempDir::new().unwrap();
+    let module_root = tmp.path().canonicalize().unwrap();
+    let project_root = module_root.join("apps/web");
+    fs_write(&project_root.join("src/input.txt"), "declared");
+    std::fs::create_dir_all(module_root.join("lib/tasks")).unwrap();
+
+    let executor = TaskExecutor::new(ExecutorConfig {
+        project_root: project_root.clone(),
+        cue_module_root: Some(module_root.clone()),
+        ..ExecutorConfig::default()
+    });
+    let task = Task {
+        command: "sh".to_string(),
+        args: vec![
+            "-c".to_string(),
+            "cat ../../apps/web/src/input.txt".to_string(),
+        ],
+        inputs: vec![cuenv_manifest::tasks::Input::Path(
+            "src/input.txt".to_string(),
+        )],
+        directory: Some(scoped_dir(TaskDirectoryBase::Module, "lib/tasks")),
+        ..Default::default()
+    };
+
+    let result = executor.execute_task("module-dir", &task).await.unwrap();
+
+    assert!(result.success, "{}", result.stderr);
+    assert_eq!(result.stdout.trim(), "declared");
+}
+
+fn fs_write(path: &Path, contents: &str) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, contents).unwrap();
+}
+
+#[tokio::test]
 async fn test_timeout_is_not_retried() {
     // A timeout is a hard policy violation, not a transient failure: even with
     // retries configured, a timed-out attempt must end the task immediately
     // rather than re-incur the full timeout on every attempt.
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -244,6 +414,7 @@ async fn test_timeout_is_not_retried() {
             attempts: 3,
             delay: None,
         }),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -268,6 +439,7 @@ async fn test_timeout_kills_process_tree() {
     // direct child (the orphaned-process failure mode).
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -280,6 +452,7 @@ async fn test_timeout_kills_process_tree() {
             "sleep 30 & echo $! > grandchild.pid; sleep 30".to_string(),
         ],
         timeout: Some("150ms".to_string()),
+        hermetic: unisolated_hermeticity(),
         ..Default::default()
     };
 
@@ -293,13 +466,9 @@ async fn test_timeout_kills_process_tree() {
         .parse()
         .unwrap();
 
-    // kill(pid, 0) returns Err(ESRCH) once the process is gone. Poll briefly
-    // for the OS to finish reaping after the SIGKILL.
     let mut alive = true;
     for _ in 0..40 {
-        #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
-        let exists = unsafe { libc::kill(pid, 0) } == 0;
-        if !exists {
+        if !process_is_running(pid) {
             alive = false;
             break;
         }
@@ -309,6 +478,45 @@ async fn test_timeout_kills_process_tree() {
         !alive,
         "grandchild {pid} should be killed when the task times out"
     );
+}
+
+/// Whether `pid` names a process that is still running.
+///
+/// `kill(pid, 0)` alone is not enough. Killing the grandchild orphans it, and
+/// an orphan stays in the process table as a zombie until something reaps it.
+/// Reaping is the init process's job, not cuenv's — and a container whose PID
+/// 1 is a plain application rather than a reaping init never does it. Probing
+/// with `kill` alone therefore asserts "was reaped" when the test means "was
+/// killed", and hangs the assertion forever on such a host.
+///
+/// On Linux the process state in `/proc` settles the question directly. On
+/// other unices there is no equivalent cheap probe, but their init processes
+/// do reap orphans, so `kill(pid, 0)` is accurate there.
+#[cfg(unix)]
+fn process_is_running(pid: i32) -> bool {
+    #[expect(unsafe_code, reason = "probing process liveness via kill(pid, 0)")]
+    let exists = unsafe { libc::kill(pid, 0) } == 0;
+    if !exists {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(state) = process_state(pid) {
+        // 'Z' is a terminated process awaiting reaping: dead for our purposes.
+        return state != 'Z';
+    }
+    true
+}
+
+/// Read a process's state character from `/proc/<pid>/stat`.
+///
+/// The second field is the executable name in parentheses and may itself
+/// contain spaces and parentheses, so the state is found after the *last*
+/// `)` rather than by splitting on whitespace from the start.
+#[cfg(all(unix, target_os = "linux"))]
+fn process_state(pid: i32) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    after_comm.split_whitespace().next()?.chars().next()
 }
 
 #[tokio::test]
@@ -542,6 +750,7 @@ async fn test_execute_graph_parallel_groups() {
 async fn test_execute_group_respects_max_concurrency() {
     let tmp = TempDir::new().unwrap();
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: tmp.path().to_path_buf(),
         ..Default::default()
@@ -708,6 +917,7 @@ async fn test_execute_graph_respects_dependency_levels() {
     let root = tmp.path();
 
     let config = ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         max_parallel: 2,
         project_root: root.to_path_buf(),
@@ -721,6 +931,7 @@ async fn test_execute_graph_respects_dependency_levels() {
         TaskNode::Task(Box::new(Task {
             command: "sh".into(),
             args: vec!["-c".into(), "sleep 0.2 && echo ok > marker.txt".into()],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );
@@ -730,6 +941,7 @@ async fn test_execute_graph_respects_dependency_levels() {
             command: "sh".into(),
             args: vec!["-c".into(), "cat marker.txt".into()],
             depends_on: vec![TaskDependency::from_name("dep")],
+            hermetic: unisolated_hermeticity(),
             ..Default::default()
         })),
     );
@@ -756,11 +968,16 @@ async fn test_cache_hit_replays_task_output_events() {
         action_cache: Arc::new(LocalActionCache::open(cache_root.path()).unwrap()),
         vcs_hasher: Arc::new(WalkHasher::new(workspace.path())),
         vcs_hasher_root: workspace.path().to_path_buf(),
-        cuenv_version: "test".to_string(),
+        action_semantics_version: 1,
         runtime_identity_properties: std::collections::BTreeMap::new(),
         cache_disabled_reason: None,
+        secret_salt: Some("test-salt".to_string()),
+        mode_override: None,
+        cache_root: cache_root.path().to_path_buf(),
+        project_roots: std::collections::BTreeMap::new(),
     };
     let executor = TaskExecutor::new(ExecutorConfig {
+        environment: host_path_environment(),
         capture_output: OutputCapture::Capture,
         project_root: workspace.path().to_path_buf(),
         cache: Some(cache),
@@ -953,7 +1170,7 @@ fn test_workdir_for_non_hermetic_package_task_prefers_source_directory() {
     let task = Task {
         command: "bun".to_string(),
         args: vec!["run".to_string(), "build".to_string()],
-        hermetic: false,
+        hermetic: cuenv_manifest::tasks::Hermetic::Enabled(false),
         source: Some(source("projects/app/env.cue")),
         ..Task::default()
     };

@@ -84,9 +84,9 @@ env: {}
 tasks: {
   build: {
     command: "sh"
-    args: ["-c", "mkdir -p dist/assets; cp -f src/version.txt dist/app.txt; echo asset > dist/assets/file.txt"]
+    args: ["-c", "IFS= read -r version < src/version.txt; printf '%s\n' \"$version\" > app.txt"]
     inputs: ["src/version.txt"]
-    outputs: ["dist/app.txt", "dist/assets"]
+    outputs: ["app.txt"]
   }
 }
 "#;
@@ -114,13 +114,13 @@ env: {{}}
 tasks: {{
   consume: {{
     command: "sh"
-    args: ["-c", "mkdir -p out; cp vendor/app.txt out/used.txt; echo done"]
+    args: ["-c", "IFS= read -r version < vendor/app.txt; printf '%s\n' \"$version\" > used.txt"]
     inputs: [{{
       project: "{external_project}"
       task: "build"
       map: [{{ from: "{mapping_from}", to: "{mapping_to}" }}]
     }}]
-    outputs: ["out/used.txt"]
+    outputs: ["used.txt"]
   }}
 }}
 "#
@@ -135,7 +135,7 @@ fn test_external_auto_run_and_materialization() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-auto")?;
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -167,7 +167,7 @@ fn test_cache_hits_and_invalidation() -> TestResult {
     let root = tmp.path();
 
     write_proj_b(root, "v1-cache")?;
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../projB")?;
     let proja = root.join("projA");
     let proja_path = path_str(&proja)?;
 
@@ -199,13 +199,12 @@ fn test_cache_hits_and_invalidation() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_mapping_error_undeclared_output() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
 
     write_proj_b(root, "v1-map")?;
-    write_proj_a(root, "dist/missing.txt", "vendor/app.txt", "../projB")?;
+    write_proj_a(root, "missing.txt", "vendor/app.txt", "../projB")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -226,13 +225,12 @@ fn test_mapping_error_undeclared_output() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
 fn test_path_safety_outside_git_root() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
 
     // Create projA only
-    write_proj_a(root, "dist/app.txt", "vendor/app.txt", "../../outside")?;
+    write_proj_a(root, "app.txt", "vendor/app.txt", "../../outside")?;
 
     let proja = root.join("projA");
     let output = run_cuenv(&[
@@ -253,7 +251,56 @@ fn test_path_safety_outside_git_root() -> TestResult {
 }
 
 #[test]
-#[ignore = "hermetic execution temporarily disabled - validation only runs in hermetic path"]
+fn a_broken_reference_only_fails_the_task_that_uses_it() -> TestResult {
+    let tmp = create_test_root()?;
+    let root = tmp.path();
+    let proja = root.join("projA");
+    fs::create_dir_all(&proja)?;
+    init_cue_module(&proja, "projA")?;
+    fs::write(
+        proja.join("env.cue"),
+        r#"package projA
+
+name: "projA"
+
+env: {}
+
+tasks: {
+  consume: {
+    command: "sh"
+    args: ["-c", "true"]
+    inputs: [{
+      project: "../missing"
+      task: "build"
+      map: [{ from: "app.txt", to: "vendor/app.txt" }]
+    }]
+  }
+  unrelated: {
+    command: "sh"
+    args: ["-c", "true"]
+  }
+}
+"#,
+    )?;
+    let proja_path = path_str(&proja)?;
+
+    let unrelated = run_cuenv(&["task", "-p", proja_path, "--package", "projA", "unrelated"])?;
+    assert!(
+        unrelated.success,
+        "A task that does not use the reference must still run.\nstdout: {}\nstderr: {}",
+        unrelated.stdout, unrelated.stderr
+    );
+
+    let consume = run_cuenv(&["task", "-p", proja_path, "--package", "projA", "consume"])?;
+    assert!(
+        !consume.success,
+        "The task that uses the reference must fail.\nstdout: {}\nstderr: {}",
+        consume.stdout, consume.stderr
+    );
+    Ok(())
+}
+
+#[test]
 fn test_collision_duplicate_dest() -> TestResult {
     let tmp = create_test_root()?;
     let root = tmp.path();
@@ -279,8 +326,8 @@ tasks: {
       project: "../projB"
       task: "build"
       map: [
-        { from: "dist/app.txt", to: "vendor/app.txt" },
-        { from: "dist/app.txt", to: "vendor/app.txt" }
+        { from: "app.txt", to: "vendor/app.txt" },
+        { from: "app.txt", to: "vendor/app.txt" }
       ]
     }]
     outputs: []
