@@ -38,6 +38,16 @@ The short flag for `--level` is `-L` (uppercase). The lowercase `-l` short flag 
 `cuenv --llms` prints a compact `llms.txt`-style context bundle, handy for feeding cuenv's surface to an LLM coding assistant.
 :::
 
+## Environment Variables
+
+| Variable             | Description                                                                                                                                                                                       | Default |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| `CUENV_EVAL_TIMEOUT` | Seconds to wait for CUE module evaluation before failing with a timeout. Must be a positive whole number; any other non-empty value is a configuration error. An empty value selects the default. | `60`    |
+
+The evaluation timeout only stops a hung evaluation. A cold evaluation that
+also fetches registry modules can take several seconds on small CI runners, so
+raise `CUENV_EVAL_TIMEOUT` if you see `CUE evaluation timed out after …`.
+
 ## Commands
 
 ### `cuenv version`

@@ -555,3 +555,80 @@ fn test_serialize_import_usage() {
     let _json = serde_json::to_string(&test).unwrap();
     // If this compiles, the Serialize import is working
 }
+
+#[test]
+fn test_module_eval_timeout_defaults_when_unset_or_empty() -> TestResult {
+    assert_eq!(
+        parse_module_eval_timeout(None)?,
+        DEFAULT_MODULE_EVAL_TIMEOUT
+    );
+    assert_eq!(
+        parse_module_eval_timeout(Some(OsStr::new("")))?,
+        DEFAULT_MODULE_EVAL_TIMEOUT
+    );
+    assert_eq!(
+        parse_module_eval_timeout(Some(OsStr::new("  ")))?,
+        DEFAULT_MODULE_EVAL_TIMEOUT
+    );
+    assert_eq!(DEFAULT_MODULE_EVAL_TIMEOUT, Duration::from_secs(60));
+    Ok(())
+}
+
+#[test]
+fn test_module_eval_timeout_parses_whole_seconds() -> TestResult {
+    assert_eq!(
+        parse_module_eval_timeout(Some(OsStr::new("1")))?,
+        Duration::from_secs(1)
+    );
+    assert_eq!(
+        parse_module_eval_timeout(Some(OsStr::new(" 120 ")))?,
+        Duration::from_secs(120)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_module_eval_timeout_rejects_invalid_values() {
+    for value in ["0", "-5", "abc", "1.5", "10s", "18446744073709551616"] {
+        let err = parse_module_eval_timeout(Some(OsStr::new(value)))
+            .expect_err("invalid timeout value must be rejected");
+        let message = err.to_string();
+        assert!(
+            matches!(err, CueEngineError::Configuration { .. }),
+            "unexpected error kind for {value:?}: {message}"
+        );
+        assert!(message.contains(EVAL_TIMEOUT_ENV_VAR), "{message}");
+        assert!(message.contains(value), "{message}");
+        assert!(
+            message.contains("positive whole number of seconds"),
+            "{message}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_module_eval_timeout_rejects_non_utf8_value() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let err = parse_module_eval_timeout(Some(OsStr::from_bytes(&[0x31, 0xff])))
+        .expect_err("non-UTF-8 timeout value must be rejected");
+    assert!(matches!(err, CueEngineError::Configuration { .. }));
+    assert!(err.to_string().contains(EVAL_TIMEOUT_ENV_VAR));
+}
+
+#[test]
+fn test_module_eval_timeout_error_names_env_var() {
+    let (_tx, rx) = std::sync::mpsc::sync_channel::<Result<ModuleResult>>(1);
+    let err = receive_module_eval_result(
+        &rx,
+        Path::new("/tmp/module"),
+        "cuenv",
+        Duration::from_millis(1),
+    )
+    .expect_err("an unanswered evaluation must time out");
+    let message = err.to_string();
+    assert!(message.contains("CUE evaluation timed out"), "{message}");
+    assert!(message.contains("/tmp/module"), "{message}");
+    assert!(message.contains(EVAL_TIMEOUT_ENV_VAR), "{message}");
+}
