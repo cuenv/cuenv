@@ -43,6 +43,7 @@ package schema
 #ContainerImage: close({
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
+	_cuenvValidatedDAGNode?: "image"
 	_name: string | *(_cuenvPrefix + _cuenvSelf)
 
 	// Type discriminator
@@ -72,7 +73,7 @@ package schema
 	platform?: [...string] // e.g., ["linux/amd64", "linux/arm64"]
 
 	// DAG integration
-	dependsOn?: [...(#TaskNode | #ContainerImage)]
+	dependsOn?: [...(#TaskDependencyNode | #NamedContainerImageReference)]
 	labels?: [...string]
 
 	// Cache / inputs
@@ -84,3 +85,12 @@ package schema
 	// Exactly one of `context` (Dockerfile) or `installable` (Nix) must be set;
 	// `cuenv build` enforces this at build time.
 })
+
+#NamedContainerImageReference: {
+	_cuenvValidatedDAGNode!:   "image"
+	_name!:                    string
+	type:                      "image"
+	"_name"?:                  _|_
+	"_cuenvValidatedDAGNode"?: _|_
+	...
+}

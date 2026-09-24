@@ -11,6 +11,7 @@ package schema
 #Service: {
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
+	_cuenvValidatedDAGNode?: "service"
 	_name: string | *(_cuenvPrefix + _cuenvSelf)
 
 	// Type discriminator — provided by #Service, users should not need
@@ -35,7 +36,7 @@ package schema
 	// Task references run to completion before service startup. Image references
 	// are resolved in the dependency plan, but selected image builds still fail
 	// fast until image execution backends exist.
-	dependsOn?: [...(#TaskNode | #Service | #ContainerImage)]
+	dependsOn?: [...(#TaskDependencyNode | #NamedServiceReference | #NamedContainerImageReference)]
 
 	// Labels for discovery via #ServiceMatcher (mirrors #TaskMatcher)
 	labels?: [...string]
@@ -66,6 +67,15 @@ package schema
 
 	// Hard kill if startup → ready exceeds this
 	timeout?: string
+}
+
+#NamedServiceReference: {
+	_cuenvValidatedDAGNode!:   "service"
+	_name!:                    string
+	type:                      "service"
+	"_name"?:                  _|_
+	"_cuenvValidatedDAGNode"?: _|_
+	...
 }
 
 // =============================================================================
@@ -162,7 +172,7 @@ package schema
 	on?: "restart" | "sync" | *"restart"
 	// Optional dependency tasks to re-run before restart
 	// (e.g., rebuild a binary). Treated as ad-hoc additions to the DAG.
-	rebuild?: [...#TaskNode]
+	rebuild?: [...#TaskSequenceNode]
 })
 
 // =============================================================================

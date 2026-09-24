@@ -14,6 +14,7 @@ package schema
 #VcsDependencyName: string & =~"^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$" & !~"\\.\\."
 
 #Project: close({
+	_cuenvValidatedProject: true
 	#Base
 	name!:    #ProjectName
 	runtime?: #Runtime
@@ -25,9 +26,14 @@ package schema
 	// Named tasks and groups derive fully-qualified runtime names from their
 	// field labels. Sequences are handled by the Go bridge because list element
 	// aliases are not implemented in CUE yet.
-	tasks?: [taskName=string]: ((#Task | #TaskGroup) & {
+	tasks?: [taskName=string]: (#Task & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   taskName
+		_cuenvValidatedDAGNode: "task"
+	}) | (#TaskGroup & {
+		_cuenvPrefix:           ""
+		_cuenvSelf:             taskName
+		_cuenvValidatedDAGNode: "group"
 	}) | #TaskSequence
 	// Services live in their own field but share the project DAG.
 	// Services may depend on tasks (build → run); tasks may depend on
@@ -35,6 +41,7 @@ package schema
 	services?: [svcName=string]: #Service & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   svcName
+		_cuenvValidatedDAGNode: "service"
 	}
 	// Container image builds — declarative image definitions that
 	// participate in the task DAG and produce output references
@@ -42,6 +49,7 @@ package schema
 	images?: [imageName=string]: #ContainerImage & {
 		_cuenvPrefix: ""
 		_cuenvSelf:   imageName
+		_cuenvValidatedDAGNode: "image"
 	}
 	codegen?: #Codegen
 })
