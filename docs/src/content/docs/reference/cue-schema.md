@@ -347,7 +347,8 @@ schema.#Project & {
 | `stderr`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stderr          |
 | `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
 
-*Either `command` or `script` should be provided.
+Exactly one of `command` or `script` must be set. `cuenv` rejects tasks that
+omit both or provide both.
 
 :::caution[Execution policy status]
 The task-level `timeout`, `retry`, and `continueOnError` fields (marked † above)
@@ -453,7 +454,9 @@ declared inputs cannot be resolved fails rather than downgrading. See
 
 ### #TaskGroup
 
-Parallel execution - all child tasks run concurrently.
+Parallel execution - all child tasks run concurrently. A group must set
+`type: "group"`; its named children may be tasks, nested groups, or task
+sequences.
 
 ```cue
 tasks: {

@@ -407,7 +407,7 @@ schema.#Project & {
 				inputs: _baseInputs
 			}
 
-			build: #cargo & {
+			build: schema.#Task & {
 				hermetic: {passthrough: ["PATH"]}
 				script: """
 					#!/usr/bin/env bash

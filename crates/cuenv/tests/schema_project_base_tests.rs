@@ -176,6 +176,74 @@ schema.#Project & {
 }
 
 #[test]
+fn task_requires_exactly_one_execution_mode() -> TestResult {
+    for task_fields in [
+        "description: \"missing executable\"",
+        "command: \"echo\"\n      script: \"echo\"",
+    ] {
+        let tmp = create_test_dir()?;
+        let root = tmp.path();
+        write_local_cuenv_module(root)?;
+
+        let env = r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    invalid: schema.#Task & {
+      TASK_FIELDS
+    }
+  }
+}
+"#
+        .replace("TASK_FIELDS", task_fields);
+        fs::write(root.join("env.cue"), env)?;
+
+        let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
+        assert!(
+            res.is_err(),
+            "cuenv should reject task fields: {task_fields}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn task_group_rejects_invalid_children() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "app"
+  tasks: {
+    checks: schema.#TaskGroup & {
+      type: "group"
+      invalid: "not a task"
+    }
+  }
+}
+"#,
+    )?;
+
+    let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
+    assert!(
+        res.is_err(),
+        "schema should reject a non-task child in a task group"
+    );
+    Ok(())
+}
+
+#[test]
 fn vcs_dependency_name_accepts_safe_names() -> TestResult {
     let tmp = create_test_dir()?;
     let root = tmp.path();
