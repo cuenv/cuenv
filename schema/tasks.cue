@@ -164,9 +164,7 @@ package schema
 	scriptShell?:  #ScriptShell | *"bash"
 	shellOptions?: #ShellOptions
 
-	// Executable tasks have exactly one execution mode. This also lets CUE
-	// distinguish them from tagged task groups without recursively treating
-	// every task field as a possible group child.
+	// An executable task has exactly one execution mode.
 	({command!: string, script?: _|_} | {script!: string, command?: _|_})
 
 	// Environment variables
@@ -253,13 +251,18 @@ package schema
 	// Task and group children derive their fully-qualified names from the
 	// current group's _name. Sequence children keep their name context in the
 	// bridge, which can see list indexes.
-	// Keep #Task's required execution mode: it lets CUE rule out this recursive
-	// group pattern for ordinary command/script task objects.
-	{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
-		_cuenvPrefix: _name + "."
-		_cuenvSelf:   childName
-	}) | #TaskSequence
+	// Select child validation from the group's existing type discriminator.
+	// This avoids applying the recursive group pattern to every task-shaped
+	// object while preserving the public task fields and flat child syntax.
+	let _childrenByType = {
+		group: {
+			{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
+				_cuenvPrefix: _name + "."
+				_cuenvSelf:   childName
+			}) | #TaskSequence}
+		}
 	}
+	_childrenByType[type]
 }
 
 // =============================================================================

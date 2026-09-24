@@ -204,7 +204,7 @@ schema.#Project & {
         let res = evaluate_cue_package_typed::<Project>(root, "cuenv");
         assert!(
             res.is_err(),
-            "schema should reject task fields: {task_fields}"
+            "cuenv should reject task fields: {task_fields}"
         );
     }
 
