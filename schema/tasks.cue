@@ -139,7 +139,7 @@ package schema
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
 
-	// Disallow 'type' field to prevent matching #TaskGroup pattern
+	// Executable tasks use command/script; task groups use type: "group".
 	type?: _|_
 
 	// Fully-qualified task name used by runtime output references.
@@ -163,6 +163,11 @@ package schema
 	script?:       string
 	scriptShell?:  #ScriptShell | *"bash"
 	shellOptions?: #ShellOptions
+
+	// Executable tasks have exactly one execution mode. This also lets CUE
+	// distinguish them from tagged task groups without recursively treating
+	// every task field as a possible group child.
+	({command!: string, script?: _|_} | {script!: string, command?: _|_})
 
 	// Environment variables
 	env?: [string]: #EnvironmentVariable | #TaskOutputRef
@@ -248,12 +253,12 @@ package schema
 	// Task and group children derive their fully-qualified names from the
 	// current group's _name. Sequence children keep their name context in the
 	// bridge, which can see list indexes.
-	if type == "group" {
-		{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
-			_cuenvPrefix: _name + "."
-			_cuenvSelf:   childName
-		}) | #TaskSequence
-	}
+	// Keep #Task's required execution mode: it lets CUE rule out this recursive
+	// group pattern for ordinary command/script task objects.
+	{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
+		_cuenvPrefix: _name + "."
+		_cuenvSelf:   childName
+	}) | #TaskSequence
 	}
 }
 

@@ -347,7 +347,8 @@ schema.#Project & {
 | `stderr`         | `#TaskOutputRef`                                  | Auto     | Reference to this task's stderr          |
 | `exitCode`       | `#TaskOutputRef`                                  | Auto     | Reference to this task's exit code       |
 
-*Either `command` or `script` should be provided.
+Exactly one of `command` or `script` is required; CUE rejects tasks that omit
+both or provide both.
 
 :::caution[Execution policy status]
 The task-level `timeout`, `retry`, and `continueOnError` fields (marked † above)
