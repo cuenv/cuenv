@@ -503,12 +503,6 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		if nameField.Exists() && nameField.Err() == nil {
 			isProject = true
 		}
-		if isProject {
-			if validationErr := validateProjectDAGReferences(v); validationErr != nil {
-				buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, validationErr))
-				continue
-			}
-		}
 
 		builtInstances = append(builtInstances, builtInstance{
 			relPath:   relPath,

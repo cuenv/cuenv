@@ -26,35 +26,6 @@ package schema
 // Union of all task types - explicit typing required
 #TaskNode: #Task | #TaskGroup | #TaskSequence
 
-// Sequence elements receive validation markers here so references to a step
-// can use the same shallow DAG edge constraints as named task map entries.
-#TaskSequenceNode: (#Task & {_cuenvValidatedDAGNode: "task"}) | (#TaskGroup & {_cuenvValidatedDAGNode: "group"}) | #TaskSequence
-
-// Named task and group references must point at a node that has already
-// passed its complete schema. The hidden marker proves those constraints were
-// retained; the Go bridge supplies canonical identity from reference metadata.
-#NamedTaskReference: {
-	_cuenvValidatedDAGNode!:   "task"
-	_name!:                    string
-	type?:                     _|_
-	"_name"?:                  _|_
-	"_cuenvValidatedDAGNode"?: _|_
-	...
-}
-
-#NamedTaskGroupReference: {
-	_cuenvValidatedDAGNode!:   "group"
-	_name!:                    string
-	type:                      "group"
-	"_name"?:                  _|_
-	"_cuenvValidatedDAGNode"?: _|_
-	...
-}
-
-// Task and group dependencies must reference named nodes in the project map.
-// Sequences remain full values so their steps receive normal validation.
-#TaskDependencyNode: #NamedTaskReference | #NamedTaskGroupReference | #TaskSequence
-
 // =============================================================================
 // Task Output References
 // =============================================================================
@@ -167,7 +138,6 @@ package schema
 #Task: {
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
-	_cuenvValidatedDAGNode?: "task"
 
 	// Disallow 'type' field to prevent matching #TaskGroup pattern
 	type?: _|_
@@ -213,7 +183,7 @@ package schema
 	hermetic?: bool | #Hermetic | *true
 
 	// Dependencies - reference other tasks or images for compile-time validation
-	dependsOn?: [...(#TaskDependencyNode | #NamedContainerImageReference)]
+	dependsOn?: [...(#TaskNode | #ContainerImage)]
 
 	// Labels for task discovery via #TaskMatcher
 	labels?: [...string]
@@ -258,7 +228,6 @@ package schema
 #TaskGroup: {
 	_cuenvPrefix: string | *""
 	_cuenvSelf:   string | *""
-	_cuenvValidatedDAGNode?: "group"
 
 	// Fully-qualified group path used to derive child task names.
 	_name: string | *(_cuenvPrefix + _cuenvSelf)
@@ -267,7 +236,7 @@ package schema
 	type: "group"
 
 	// Dependencies on other tasks
-	dependsOn?: [...#TaskDependencyNode]
+	dependsOn?: [...#TaskNode]
 
 	// Limit concurrent executions (0 = unlimited)
 	maxConcurrency?: int
@@ -279,15 +248,12 @@ package schema
 	// Task and group children derive their fully-qualified names from the
 	// current group's _name. Sequence children keep their name context in the
 	// bridge, which can see list indexes.
-	{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: (#Task & {
-		_cuenvPrefix:           _name + "."
-		_cuenvSelf:             childName
-		_cuenvValidatedDAGNode: "task"
-	}) | (#TaskGroup & {
-		_cuenvPrefix:           _name + "."
-		_cuenvSelf:             childName
-		_cuenvValidatedDAGNode: "group"
-	}) | #TaskSequence
+	if type == "group" {
+		{[childName= !~"^(type|dependsOn|maxConcurrency|description)$"]: ((#Task | #TaskGroup) & {
+			_cuenvPrefix: _name + "."
+			_cuenvSelf:   childName
+		}) | #TaskSequence
+	}
 	}
 }
 
@@ -296,7 +262,7 @@ package schema
 // =============================================================================
 
 // A sequence is simply an ordered list of task nodes - run in order
-#TaskSequence: [...#TaskSequenceNode]
+#TaskSequence: [...#TaskNode]
 
 // =============================================================================
 // Task Parameters

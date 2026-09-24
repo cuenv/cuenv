@@ -94,7 +94,7 @@ package schema
 })
 
 // Pipeline task reference - either a direct task reference or a matrix task
-#PipelineTask: *#TaskNode | #MatrixTask
+#PipelineTask: #TaskNode | #MatrixTask
 
 // GitHub Action configuration for contributor tasks
 #GitHubActionConfig: close({

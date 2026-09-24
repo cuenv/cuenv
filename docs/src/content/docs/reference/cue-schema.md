@@ -244,15 +244,6 @@ Union of all task types - this is what gets validated:
 #TaskNode: #Task | #TaskGroup | #TaskSequence
 ```
 
-Project dependency fields accept references to named, schema-validated tasks,
-groups, images, and services where that edge type is supported. Task sequences
-can be used as task dependencies; their individual steps are validated too.
-Output references such as `tasks.build.stdout` are values, not task nodes, so
-use them in `args` or `env` instead of `dependsOn`.
-The bridge's follow-up DAG walk is limited to 128 nested levels and 100,000
-node visits; repeated references count as visits. These limits bound the Go
-walk, not CUE's own evaluation.
-
 ### #TaskOutputRef
 
 A typed reference to another task's runtime output. Produced automatically when you reference `tasks.<name>.stdout`, `.stderr`, or `.exitCode` in CUE.
@@ -343,7 +334,7 @@ schema.#Project & {
 | `shellOptions`   | `#ShellOptions`                                   | No       | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
 | `env`            | `{[string]: #EnvironmentVariable \| #TaskOutputRef}` | No   | Task-specific environment                |
 | `dir`            | `#TaskDir`                                       | No       | Working directory override; defaults to `{from: "definition", path: "."}` |
-| `dependsOn`      | `[...#TaskDependencyNode \| #NamedContainerImageReference]` | No       | Task, group, sequence, or image dependencies (CUE references) |
+| `dependsOn`      | `[...#TaskNode]`                                  | No       | Task dependencies (CUE references)       |
 | `inputs`         | `[...#Input]`                                     | No       | Input file patterns for caching          |
 | `outputs`        | `[...string]`                                     | No       | Output file patterns for caching         |
 | `description`    | `string`                                          | No       | Human-readable description               |
@@ -462,7 +453,9 @@ declared inputs cannot be resolved fails rather than downgrading. See
 
 ### #TaskGroup
 
-Parallel execution - all child tasks run concurrently.
+Parallel execution - all child tasks run concurrently. A group must set
+`type: "group"`; its named children may be tasks, nested groups, or task
+sequences.
 
 ```cue
 tasks: {
@@ -484,7 +477,7 @@ tasks: {
 | Field            | Type             | Required | Description                        |
 | ---------------- | ---------------- | -------- | ---------------------------------- |
 | `type`           | `"group"`        | Yes      | Type discriminator                 |
-| `dependsOn`      | `[...#TaskDependencyNode]` | No       | Task, group, or sequence dependencies (CUE references) |
+| `dependsOn`      | `[...#TaskNode]` | No       | Dependencies (CUE references)      |
 | `maxConcurrency` | `int`            | No       | **Schema-only.** The executor honors global parallelism (`cuenv task -j <n>`); per-group caps are not yet enforced. |
 | `description`    | `string`         | No       | Human-readable description         |
 | `{children}`     | `#TaskNode`      | No       | Named child tasks (any other field)|
@@ -509,7 +502,7 @@ tasks: {
 }
 ```
 
-A sequence is an array of validated `#TaskSequenceNode` values - the tasks execute in array order.
+A sequence is simply an array of `#TaskNode` - the tasks execute in array order.
 
 ### #TaskCapture
 
@@ -669,7 +662,7 @@ services: {
 | `entrypoint`  | `#Task \| #Script \| #Command`    | Yes      | What the service runs (task, script, or command) |
 | `env`         | `{[string]: #EnvironmentVariable}` | No       | Environment variables                         |
 | `dir`         | `string`                          | No       | Working directory override                    |
-| `dependsOn`   | `[...#TaskDependencyNode \| #NamedServiceReference \| #NamedContainerImageReference]` | No | Task/group/sequence deps run before startup; service deps wait for readiness; image deps fail fast until image build backends exist |
+| `dependsOn`   | `[...(#TaskNode \| #Service \| #ContainerImage)]` | No       | Service deps wait for readiness; task deps run before startup; image deps fail fast until image build backends exist |
 | `labels`      | `[...string]`                     | No       | Labels for discovery                          |
 | `description` | `string`                          | No       | Human-readable description                    |
 | `runtime`     | `#Runtime`                        | No       | Runtime override                              |
@@ -811,7 +804,7 @@ watch: {
 | `ignore`   | `[...string]`   | -         | Patterns to ignore (gitignore syntax)        |
 | `debounce` | `string`        | `200ms`   | Debounce window for batched changes          |
 | `on`       | `string`        | `restart` | Action on change (`restart`)                 |
-| `rebuild`  | `[...#TaskSequenceNode]`| -    | Tasks to re-run before restart               |
+| `rebuild`  | `[...#TaskNode]`| -         | Tasks to re-run before restart               |
 
 Watch events are debounced, then the supervisor restarts the service. The
 schema exposes `rebuild`, but restart-on-change is the supported behavior in
@@ -876,7 +869,7 @@ images: {
 | `registry`    | `string`                               | No       | -              | Registry to push to (omit for local)     |
 | `repository`  | `string`                               | No       | -              | Repository name (defaults to image name) |
 | `platform`    | `[...string]`                          | No       | -              | Target platforms for multi-arch builds   |
-| `dependsOn`   | `[...#TaskDependencyNode \| #NamedContainerImageReference]` | No | - | Task, group, sequence, or image dependencies (CUE references) |
+| `dependsOn`   | `[...#TaskNode \| #ContainerImage]`     | No       | -              | Dependencies on tasks or other images    |
 | `labels`      | `[...string]`                          | No       | -              | Labels for discovery                     |
 | `inputs`      | `[...#Input]`                          | No       | -              | Input files for cache key derivation     |
 | `description` | `string`                               | No       | -              | Human-readable description               |
@@ -1603,9 +1596,6 @@ pipelines: {
 | `continueOnError` | `bool`               | No       | Keep running siblings after a task fails (default `false`; see below)    |
 | `derivePaths`     | `bool`               | No       | Derive provider path filters from task inputs                            |
 | `provider`        | `#ProviderConfig`    | No       | Provider-specific overrides                                              |
-
-Pipeline tasks accept regular task, group, and sequence entries. Matrix tasks
-use `type: "matrix"` and provide a task plus matrix dimensions.
 
 **Provider Override Behavior:** Per-pipeline `providers` **completely replaces** the global `ci.providers` - there is no merging.
 
