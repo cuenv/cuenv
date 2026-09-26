@@ -100,7 +100,8 @@ pub struct HermeticOptions {
     /// Names listed here have their host values folded into the action's
     /// cache key; names absent from the list never enter the key, so a task
     /// whose result depends on an undeclared host variable is not portable
-    /// and cuenv will not pretend otherwise.
+    /// and cuenv will not pretend otherwise. `HOME` is forbidden because
+    /// tasks that need the caller's home must opt out of hermetic execution.
     #[serde(default)]
     pub passthrough: Vec<String>,
 
@@ -117,13 +118,43 @@ pub struct HermeticOptions {
 /// `hermetic: {passthrough: [...]}` deserializes to [`Hermetic::Options`].
 /// The options form always implies hermeticity is on — there would be
 /// nothing to configure otherwise.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum Hermetic {
     /// Bare bool form.
     Enabled(bool),
     /// Options form.
     Options(HermeticOptions),
+}
+
+impl<'de> Deserialize<'de> for Hermetic {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum HermeticRepr {
+            Enabled(bool),
+            Options(HermeticOptions),
+        }
+
+        match HermeticRepr::deserialize(deserializer)? {
+            HermeticRepr::Enabled(enabled) => Ok(Self::Enabled(enabled)),
+            HermeticRepr::Options(options) => {
+                if options
+                    .passthrough
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case("HOME"))
+                {
+                    return Err(serde::de::Error::custom(
+                        "hermetic tasks cannot pass through host HOME; set hermetic: false to inherit the caller's environment",
+                    ));
+                }
+                Ok(Self::Options(options))
+            }
+        }
+    }
 }
 
 impl Default for Hermetic {
@@ -192,9 +223,13 @@ mod tests {
 
     #[test]
     fn options_form_parses_passthrough() {
-        let parsed: Hermetic = serde_json::from_str(r#"{"passthrough":["HOME","CI"]}"#).unwrap();
+        let parsed: Hermetic =
+            serde_json::from_str(r#"{"passthrough":["CARGO_HOME","CI"]}"#).unwrap();
         assert!(parsed.is_enabled());
-        assert_eq!(parsed.passthrough(), ["HOME".to_string(), "CI".to_string()]);
+        assert_eq!(
+            parsed.passthrough(),
+            ["CARGO_HOME".to_string(), "CI".to_string()]
+        );
     }
 
     #[test]
@@ -210,7 +245,7 @@ mod tests {
         // only enforced when asked is not a declaration.
         let bare: Hermetic = serde_json::from_str("true").unwrap();
         assert_eq!(bare.sandbox().tier, Sandbox::Dir);
-        let options: Hermetic = serde_json::from_str(r#"{"passthrough":["HOME"]}"#).unwrap();
+        let options: Hermetic = serde_json::from_str(r#"{"passthrough":["CI"]}"#).unwrap();
         assert_eq!(options.sandbox().tier, Sandbox::Dir);
     }
 
@@ -263,11 +298,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&Hermetic::Options(HermeticOptions {
-                passthrough: vec!["HOME".into()],
+                passthrough: vec!["CARGO_HOME".into()],
                 sandbox: None,
             }))
             .unwrap(),
-            r#"{"passthrough":["HOME"]}"#
+            r#"{"passthrough":["CARGO_HOME"]}"#
         );
         assert_eq!(
             serde_json::to_string(&Hermetic::Options(HermeticOptions {

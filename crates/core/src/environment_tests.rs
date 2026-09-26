@@ -64,6 +64,18 @@ fn test_hermetic_merge_omits_missing_system_temp_dirs() {
         let merged = env.merge_with_system_hermetic();
 
         assert!(!merged.contains_key("TMPDIR"));
+        assert_eq!(
+            merged.get("HOME").map(String::as_str),
+            Some(Environment::HERMETIC_DEFAULT_HOME)
+        );
+        assert_eq!(
+            merged.get("USER").map(String::as_str),
+            Some(Environment::HERMETIC_DEFAULT_USER)
+        );
+        assert_eq!(
+            merged.get("LOGNAME").map(String::as_str),
+            Some(Environment::HERMETIC_DEFAULT_USER)
+        );
     });
 }
 
@@ -629,22 +641,34 @@ fn action_environment_contains_declared_cue_vars() {
         action.get("BUILD_MODE").map(String::as_str),
         Some("release")
     );
-    assert_eq!(action.len(), 2);
+    assert_eq!(action.len(), 5);
 }
 
 #[test]
 fn action_environment_omits_undeclared_ambient_vars() {
-    // `merge_with_system_hermetic` folds these in; the action key must not,
-    // or two machines can never agree on a digest.
+    // Host identity and machine-local settings must not leak into the action
+    // key; hermetic identity defaults are fixed and stable across machines.
     let env = Environment::new();
     let action = ready(&env, &[], None);
 
     assert_eq!(
         action.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["PATH"],
-        "only the fixed default PATH may appear without a declaration: {action:?}"
+        vec!["HOME", "LOGNAME", "PATH", "USER"],
+        "only deterministic defaults may appear without a declaration: {action:?}"
     );
-    for ambient in ["HOME", "USER", "TERM", "TMPDIR", "XDG_CACHE_HOME"] {
+    assert_eq!(
+        action.get("HOME").map(String::as_str),
+        Some(Environment::HERMETIC_DEFAULT_HOME)
+    );
+    assert_eq!(
+        action.get("USER").map(String::as_str),
+        Some(Environment::HERMETIC_DEFAULT_USER)
+    );
+    assert_eq!(
+        action.get("LOGNAME").map(String::as_str),
+        Some(Environment::HERMETIC_DEFAULT_USER)
+    );
+    for ambient in ["TERM", "TMPDIR", "XDG_CACHE_HOME"] {
         assert!(
             !action.contains_key(ambient),
             "{ambient} leaked into the action env"
@@ -680,8 +704,8 @@ fn action_environment_skips_passthrough_names_unset_on_the_host() {
     assert!(!action.contains_key("CUENV_TEST_DEFINITELY_UNSET_VARIABLE"));
     assert_eq!(
         action.len(),
-        1,
-        "only the default PATH is expected: {action:?}"
+        4,
+        "only deterministic defaults are expected: {action:?}"
     );
 }
 
