@@ -110,15 +110,15 @@ pub async fn execute_command_with_redaction(
 ///
 /// `HOME` is deliberately isolated from the caller, but commands such as
 /// `cuenv secrets setup` still need somewhere writable for their caches. The
-/// home lives under cuenv's cache root so it survives separate `cuenv exec`
-/// invocations without exposing the caller's home directory.
+/// home normally lives under cuenv's cache root so it survives separate
+/// `cuenv exec` invocations. Sandboxed builds can make that root unwritable;
+/// in that case, fall back to a private directory under the system temp root.
 fn hermetic_exec_environment(environment: &Environment) -> Result<HashMap<String, String>> {
     let mut merged = environment.merge_with_system_hermetic();
     let home = match environment.get("HOME") {
         Some(value) => PathBuf::from(value),
         None => {
-            let path = cuenv_core::paths::cache_dir()?.join("exec-home");
-            create_private_directory(&path)?;
+            let path = default_exec_home()?;
             merged.insert("HOME".to_string(), path.to_string_lossy().into_owned());
             path
         }
@@ -138,6 +138,38 @@ fn hermetic_exec_environment(environment: &Environment) -> Result<HashMap<String
     }
 
     Ok(merged)
+}
+
+fn default_exec_home() -> Result<PathBuf> {
+    if let Ok(cache_root) = cuenv_core::paths::cache_dir() {
+        let home = cache_root.join("exec-home");
+        match create_private_directory(&home) {
+            Ok(()) => return Ok(home),
+            Err(error) => tracing::debug!(
+                path = %home.display(),
+                %error,
+                "cuenv cache directory is unavailable for hermetic exec home"
+            ),
+        }
+    }
+
+    let home = temporary_exec_home();
+    create_private_directory(&home)?;
+    Ok(home)
+}
+
+#[cfg(unix)]
+fn temporary_exec_home() -> PathBuf {
+    // SAFETY: `geteuid` reads the current process identity and has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    std::env::temp_dir()
+        .join(format!("cuenv-{uid}"))
+        .join("exec-home")
+}
+
+#[cfg(not(unix))]
+fn temporary_exec_home() -> PathBuf {
+    std::env::temp_dir().join("cuenv").join("exec-home")
 }
 
 fn create_private_directory(path: &Path) -> Result<()> {
