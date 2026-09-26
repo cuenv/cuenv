@@ -177,12 +177,16 @@ impl Environment {
     /// and is what the process sees.
     pub const HERMETIC_DEFAULT_PATH: &'static str = "/usr/local/bin:/usr/bin:/bin";
 
+    /// Host-independent home path paired with the stable `builder` identity.
+    /// It deliberately does not name the caller's home directory.
+    pub const HERMETIC_DEFAULT_HOME: &'static str = "/home/builder";
+
+    /// Stable process identity exposed to hermetic commands.
+    pub const HERMETIC_DEFAULT_USER: &'static str = "builder";
+
     /// Essential system variables to preserve in hermetic mode.
     /// These are required for basic process operation but don't pollute PATH.
     const HERMETIC_ALLOWED_VARS: &'static [&'static str] = &[
-        "HOME",
-        "USER",
-        "LOGNAME",
         "SHELL",
         "TERM",
         "COLORTERM",
@@ -207,7 +211,8 @@ impl Environment {
     /// polluting variables. PATH should come from cuenv tools activation.
     ///
     /// Included variables:
-    /// - User identity: HOME, USER, LOGNAME, SHELL
+    /// - User identity defaults: HOME, USER, LOGNAME
+    /// - User shell: SHELL
     /// - Terminal: TERM, COLORTERM
     /// - Locale: LANG, LC_* variables
     /// - Temp directories: TMPDIR, TMP, TEMP
@@ -237,6 +242,16 @@ impl Environment {
         }
 
         merged
+            .entry("HOME".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_HOME.to_string());
+        merged
+            .entry("USER".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_USER.to_string());
+        merged
+            .entry("LOGNAME".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_USER.to_string());
+
+        merged
     }
 
     fn should_preserve_system_var(var: &str, value: &str) -> bool {
@@ -245,15 +260,16 @@ impl Environment {
 
     /// The environment recorded in an action's cache key.
     ///
-    /// Contains the CUE-declared variables plus the host values of the names
-    /// in `passthrough`, which a task declares through `hermetic.passthrough`.
+    /// Contains the deterministic hermetic defaults, CUE-declared variables,
+    /// plus host values of the names in `passthrough`, which a task declares
+    /// through `hermetic.passthrough`.
     ///
-    /// Ambient host variables never enter implicitly. [`merge_with_system_hermetic`]
-    /// folds in whatever `HOME`, `USER`, `TERM`, `TMPDIR` and `XDG_*` happen to
-    /// hold on this machine; a key computed that way can never match one
-    /// computed on another machine, which makes a shared cache pointless.
-    /// Declaring a name is how a task says "my result legitimately depends on
-    /// this, and I accept that it partitions the cache".
+    /// Ambient host variables never enter implicitly. `HOME`, `USER`, and
+    /// `LOGNAME` default to fixed values; names such as `TERM`, `TMPDIR`, and
+    /// `XDG_*` are absent unless explicitly declared. This keeps the same
+    /// environment on different machines and makes a shared cache useful.
+    /// Declaring a passthrough name is how a task says "my result legitimately
+    /// depends on this, and I accept that it partitions the cache".
     ///
     /// Names that are unset on the host are omitted, so "unset" and "set to a
     /// value" produce different keys. A CUE-declared variable wins over a
@@ -277,6 +293,7 @@ impl Environment {
 
         let declared = passthrough
             .iter()
+            .filter(|name| !name.eq_ignore_ascii_case("HOME"))
             .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)));
 
         let mut merged: BTreeMap<String, String> = declared.collect();
@@ -305,11 +322,20 @@ impl Environment {
                 names: unfingerprintable,
             };
         }
-        Self::ensure_hermetic_path(&mut merged);
+        Self::ensure_hermetic_defaults(&mut merged);
         ActionEnvironment::Ready(merged)
     }
 
-    fn ensure_hermetic_path(merged: &mut BTreeMap<String, String>) {
+    fn ensure_hermetic_defaults(merged: &mut BTreeMap<String, String>) {
+        merged
+            .entry("HOME".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_HOME.to_string());
+        merged
+            .entry("USER".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_USER.to_string());
+        merged
+            .entry("LOGNAME".to_string())
+            .or_insert_with(|| Self::HERMETIC_DEFAULT_USER.to_string());
         merged
             .entry("PATH".to_string())
             .or_insert_with(|| Self::HERMETIC_DEFAULT_PATH.to_string());
@@ -325,6 +351,7 @@ impl Environment {
     pub fn execution_environment(&self, passthrough: &[String]) -> BTreeMap<String, String> {
         let mut merged = passthrough
             .iter()
+            .filter(|name| !name.eq_ignore_ascii_case("HOME"))
             .filter_map(|name| env::var(name).ok().map(|value| (name.clone(), value)))
             .collect::<BTreeMap<_, _>>();
         merged.extend(
@@ -332,7 +359,7 @@ impl Environment {
                 .iter()
                 .map(|(name, value)| (name.clone(), value.clone())),
         );
-        Self::ensure_hermetic_path(&mut merged);
+        Self::ensure_hermetic_defaults(&mut merged);
         merged
     }
 

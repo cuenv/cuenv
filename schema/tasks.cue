@@ -84,16 +84,20 @@ package schema
 
 // Object form of a task's `hermetic` field. Setting it always means
 // hermeticity is on; there would be nothing to configure otherwise.
+#HermeticPassthrough: string & !~"(?i)^HOME$"
+
 #Hermetic: {
 	// Host environment variable names the action is allowed to depend on.
 	//
-	// Their host values are folded into the cache key, so a task listing
-	// HOME will only reuse entries produced with the same HOME. Names not
-	// listed here never enter the key: cuenv will not silently key a result
-	// on the machine it was computed on. Omit the field when a task's result
-	// does not depend on the host environment, which is the portable case
-	// and the one a shared cache can serve.
-	passthrough?: [...string]
+	// Their host values are folded into the cache key. HOME is deliberately
+	// excluded: use hermetic: false when a host task must use the caller's home.
+	// Hermetic tasks otherwise get fixed HOME=/home/builder,
+	// USER=builder, and LOGNAME=builder values; these defaults enter the key.
+	// Host values of names not listed here never enter the key: cuenv will not
+	// silently key a result on the machine it was computed on. Omit the field
+	// when a task's result does not depend on the host environment, which is
+	// the portable case and the one a shared cache can serve.
+	passthrough?: [...#HermeticPassthrough]
 
 	// Filesystem isolation tier. Defaults to "dir".
 	//
@@ -168,7 +172,12 @@ package schema
 	({command!: string, script?: _|_} | {script!: string, command?: _|_})
 
 	// Environment variables
-	env?: [string]: #EnvironmentVariable | #TaskOutputRef
+	// Host HOME is never passed through by a task env marker. A non-hermetic
+	// host task inherits the caller's environment without declaring a marker.
+	env?: {
+		[string]: #EnvironmentVariable | #TaskOutputRef
+		HOME?:   (string & !~"(?i)^cuenv:passthrough:HOME$") | int | bool | #Secret | #InterpolatedEnv | #EnvironmentVariableWithPolicies | #TaskOutputRef
+	}
 
 	// Working directory override. Defaults to the task definition directory.
 	dir: #TaskDir

@@ -244,6 +244,12 @@ impl TaskExecutor {
     ///    workspace and persist outputs + result to the cache.
     #[instrument(name = "execute_task", skip(self, task), fields(task_name = %name))]
     pub async fn execute_task(&self, name: &str, task: &Task) -> Result<TaskResult> {
+        if task.has_host_home_passthrough() {
+            return Err(Error::configuration(
+                "host HOME cannot be passed through explicitly; remove the passthrough. Host tasks with hermetic: false inherit it automatically",
+            ));
+        }
+
         self.validate_backend_sandbox(name, task)?;
 
         // Dagger currently mounts the full project rather than the resolved

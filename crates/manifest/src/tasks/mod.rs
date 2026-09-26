@@ -43,6 +43,32 @@ fn default_hermetic() -> Hermetic {
     Hermetic::Enabled(true)
 }
 
+fn passthrough_home_source<'a>(env_name: &'a str, value: &'a serde_json::Value) -> Option<&'a str> {
+    const PASSTHROUGH_PREFIX: &str = "cuenv:passthrough:";
+
+    if let Some(name) = value
+        .as_str()
+        .and_then(|value| value.strip_prefix(PASSTHROUGH_PREFIX))
+    {
+        return name.eq_ignore_ascii_case("HOME").then_some(name);
+    }
+
+    let object = value.as_object()?;
+    if object
+        .get("cuenvPassthrough")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return None;
+    }
+
+    let source = object
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(env_name);
+    source.eq_ignore_ascii_case("HOME").then_some(source)
+}
+
 // =============================================================================
 // Single Executable Task
 // =============================================================================
@@ -253,6 +279,14 @@ impl<'de> serde::Deserialize<'de> for Task {
 
         let helper = TaskHelper::deserialize(deserializer)?;
 
+        if let Some((env_name, _)) = helper.env.iter().find_map(|(env_name, value)| {
+            passthrough_home_source(env_name, value).map(|source| (env_name, source))
+        }) {
+            return Err(serde::de::Error::custom(format!(
+                "task env '{env_name}' cannot pass through host HOME; remove the marker. Host tasks with hermetic: false inherit the caller's environment"
+            )));
+        }
+
         // Validate: either command, script, or task_ref must be present
         let has_command = helper.command.as_ref().is_some_and(|c| !c.is_empty());
         let has_script = helper.script.is_some();
@@ -361,6 +395,18 @@ impl Task {
     #[must_use]
     pub fn is_hermetic(&self) -> bool {
         self.hermetic.is_enabled()
+    }
+
+    /// Whether this task explicitly passes the host `HOME` into its child.
+    #[must_use]
+    pub fn has_host_home_passthrough(&self) -> bool {
+        self.env_passthrough()
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case("HOME"))
+            || self
+                .env
+                .iter()
+                .any(|(env_name, value)| passthrough_home_source(env_name, value).is_some())
     }
 
     /// Host environment variable names this task declares as action inputs.

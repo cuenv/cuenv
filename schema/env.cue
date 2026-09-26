@@ -15,13 +15,15 @@ package schema
 	policies?: [...#Policy]
 })
 
-// Host environment variable passthrough for hermetic tasks.
+// Host environment variable passthrough for task environments.
+// HOME cannot be passed through explicitly; set hermetic to false to inherit
+// the caller's environment, including HOME.
 // Forwards a host process env var into the task environment.
 // The optional `name` field specifies which host var to read;
 // when omitted the Rust executor uses the env map key.
 #EnvPassthrough: close({
 	cuenvPassthrough: true
-	name?:           string
+	name?:           string & !~"(?i)^HOME$"
 })
 
 // Environment variable can be a simple value or a value with policies

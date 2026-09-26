@@ -474,7 +474,8 @@ schema.#Project & {
 
 			cue: schema.#Task & {
 				// CUE's git source publishes the complete tracked module tree.
-				hermetic: {passthrough: ["PATH", "HOME", "XDG_CONFIG_HOME"]}
+				// Publishing uses the caller's CUE auth configuration under HOME.
+				hermetic: false
 				env: TAG: schema.#EnvPassthrough & {name: "GITHUB_REF_NAME"}
 				command: "bash"
 				args: ["-c", """
