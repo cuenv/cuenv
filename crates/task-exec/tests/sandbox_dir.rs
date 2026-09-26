@@ -136,7 +136,11 @@ async fn a_hermetic_task_does_not_inherit_undeclared_host_environment() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
     let executor = build_executor(workspace.path(), cache_root.path());
-    let task = sandboxed(r#"test -z "${HOME+x}""#, &[], &[]);
+    let task = sandboxed(
+        r#"test "$HOME" = "/home/builder" && test "$USER" = "builder" && test "$LOGNAME" = "builder""#,
+        &[],
+        &[],
+    );
 
     let result = executor.execute_task("clean-env", &task).await.unwrap();
     assert!(result.success, "stderr: {}", result.stderr);

@@ -406,7 +406,7 @@ is on — there would be nothing to configure otherwise.
 
 | Field         | Type            | Required | Description                                         |
 | ------------- | --------------- | -------- | --------------------------------------------------- |
-| `passthrough` | `[...string]`   | No       | Host environment variable names the action may depend on |
+| `passthrough` | `[...string]`   | No       | Host environment variable names the action may depend on; `HOME` is forbidden |
 | `sandbox`     | `"dir" \| "none"` | No     | Filesystem isolation tier; defaults to `"dir"` (see below) |
 
 ```cue
@@ -427,14 +427,20 @@ tasks: build: schema.#Task & {
   key would describe a fraction of what produced the result. The skip is
   reported as `task is not hermetic`.
 - **Cache key contents.** The key records the resolved `inputs`, the command,
-  the CUE-declared environment, the platform, and the host values of any names
-  in `passthrough`. Ambient host variables — `HOME`, `USER`, `TERM`, `TMPDIR`,
+  the CUE-declared environment, the platform, fixed hermetic defaults, and the
+  host values of any names in `passthrough`. By default, hermetic tasks receive
+  `HOME=/home/builder`, `USER=builder`, and `LOGNAME=builder`; host `HOME`
+  cannot be passed through. Task env passthrough markers cannot select host
+  `HOME` either. Declared environment values override these defaults. For host
+  execution, use `hermetic: false` to inherit the caller's home and ambient
+  environment; such tasks are never cached. Dagger tasks use the configured
+  container image. Other undeclared ambient host variables — `TERM`, `TMPDIR`,
   `XDG_*` — are excluded, so two machines with the same checkout and toolchain
   compute the same key.
 
-Declaring a name in `passthrough` partitions the cache by its value. That is
-the intended trade: a task whose result depends on `HOME` is not portable, and
-cuenv records that rather than hiding it.
+Declaring a name in `passthrough` partitions the cache by its value. A host
+task that depends on the caller's home must opt out of hermetic execution with
+`hermetic: false`; it inherits `HOME` without an explicit marker.
 
 - **`sandbox`.** `"dir"` (the default) or `"none"`. Under `"dir"` the task
   runs in a per-action directory holding exactly its declared `inputs`, and

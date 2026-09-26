@@ -100,7 +100,7 @@ fn ensure_wasm_available() -> TestResult<PathBuf> {
 /// This is where CI failures occur if there's a platform compatibility issue.
 ///
 /// Note: Scopes HOME for wasmtime's bytecode cache.
-/// In Nix sandbox, HOME=/homeless-shelter which is unwritable.
+/// In Nix sandboxes, HOME may point to an unwritable directory.
 ///
 #[test]
 fn test_wasm_loads_and_plugin_initializes() -> TestResult {
@@ -171,7 +171,7 @@ fn test_wasm_file_size() -> TestResult {
 /// Test using `SharedCore` directly (same code path as production)
 ///
 /// Note: Scopes HOME and ONEPASSWORD_WASM_PATH env vars.
-/// HOME is changed for wasmtime's bytecode cache (in Nix sandbox, HOME=/homeless-shelter).
+/// HOME is changed for wasmtime's bytecode cache (which may be unwritable in Nix).
 /// ONEPASSWORD_WASM_PATH ensures SharedCore finds the WASM after HOME is changed.
 #[test]
 fn test_shared_core_initializes() -> TestResult {

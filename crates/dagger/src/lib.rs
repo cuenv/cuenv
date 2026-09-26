@@ -47,6 +47,12 @@ impl TaskBackend for DaggerBackend {
         let env = ctx.environment;
         let capture_output = ctx.capture_output;
 
+        if task.has_host_home_passthrough() {
+            return Err(Error::configuration(
+                "host HOME cannot be passed through explicitly; remove the passthrough. Host tasks with hermetic: false inherit it automatically",
+            ));
+        }
+
         let dagger_config = task.dagger.as_ref();
 
         // Determine if we're using container chaining (from) or a base image
@@ -121,7 +127,22 @@ impl TaskBackend for DaggerBackend {
             )));
         }
 
-        let env_map = env.vars.clone();
+        let env_map = if task.is_hermetic() {
+            let mut env_map = env.execution_environment(task.env_passthrough());
+            if !env.vars.contains_key("PATH")
+                && !task
+                    .env_passthrough()
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case("PATH"))
+            {
+                // Preserve the image's PATH when the project did not declare
+                // one. Dagger already supplies an isolated image environment.
+                env_map.remove("PATH");
+            }
+            env_map
+        } else {
+            env.vars.clone().into_iter().collect()
+        };
         let project_root = self.project_root.clone();
         let task_name = name.to_string();
         let task_name_for_cache = task_name.clone();

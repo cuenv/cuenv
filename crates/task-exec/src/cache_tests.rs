@@ -850,7 +850,28 @@ async fn action_environment_is_declared_only() {
             .map(String::as_str),
         Some("yes")
     );
-    for ambient in ["HOME", "USER", "TERM", "XDG_CACHE_HOME"] {
+    assert_eq!(
+        command
+            .environment_variables
+            .get("HOME")
+            .map(String::as_str),
+        Some(cuenv_core::environment::Environment::HERMETIC_DEFAULT_HOME)
+    );
+    assert_eq!(
+        command
+            .environment_variables
+            .get("USER")
+            .map(String::as_str),
+        Some(cuenv_core::environment::Environment::HERMETIC_DEFAULT_USER)
+    );
+    assert_eq!(
+        command
+            .environment_variables
+            .get("LOGNAME")
+            .map(String::as_str),
+        Some(cuenv_core::environment::Environment::HERMETIC_DEFAULT_USER)
+    );
+    for ambient in ["TERM", "XDG_CACHE_HOME"] {
         assert!(
             !command.environment_variables.contains_key(ambient),
             "{ambient} leaked into the action key"

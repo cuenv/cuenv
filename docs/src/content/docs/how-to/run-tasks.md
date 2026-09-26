@@ -672,7 +672,17 @@ Tasks are hermetic by default (`hermetic: true`). Today that means two things:
   ambient host environment produces results the cache key cannot describe.
 - Its cache key records only what it **declares** — the resolved `inputs`, the
   command, the CUE-declared environment, timeout, execution backend, platform,
-  and any host variables named in `hermetic.passthrough`.
+  and any host variables named in `hermetic.passthrough`. The key also records
+  cuenv's fixed hermetic environment defaults.
+
+By default, every hermetic task starts with `HOME=/home/builder`,
+`USER=builder`, and `LOGNAME=builder`. That path is paired with the stable
+`builder` identity; cuenv never passes through the caller's home. These values
+are included in the action key, so they stay
+consistent across machines. Declared environment values can override the
+defaults. For host-executed tasks, use `hermetic: false` when a task needs the
+caller's actual home and ambient environment. Dagger tasks use their
+configured container image and do not inherit the caller's home.
 
 Set `hermetic: false` for tasks that intentionally operate on the live
 checkout, such as local development servers, dependency installers, or
@@ -776,9 +786,11 @@ schema until they are implemented, for that same reason.
 
 ### Declaring host environment dependencies
 
-A cache key that silently includes `HOME`, `TERM` or `XDG_CACHE_HOME` can never
-match between two machines, so cuenv excludes ambient host variables from the
-key entirely. If a task's result genuinely depends on one, declare it:
+Undeclared host-specific `TERM` or `XDG_CACHE_HOME` values can make cache keys
+differ between machines, so cuenv excludes undeclared ambient host variables
+from the key. `HOME`, `USER`, and `LOGNAME` use fixed defaults unless the task
+declares an override. If a task's result genuinely depends on another host
+variable, declare it:
 
 ```cue
 tasks: {
@@ -795,10 +807,10 @@ tasks: {
 }
 ```
 
-Declaring a variable partitions the cache by its value — that is the point. A
-task that lists `HOME` will only reuse entries produced under the same `HOME`,
-which is correct, and is why the portable case is to declare nothing and put
-what the task needs in `env` instead.
+Declaring a variable partitions the cache by its value — that is the point.
+Host `HOME` is never available through `hermetic.passthrough` or a task env
+passthrough marker. A host task that needs the caller's home sets
+`hermetic: false`, which inherits the ambient environment and is never cached.
 
 `PATH` is the one variable a hermetic task always has. If neither the
 project's `env` nor `passthrough` supplies one, the task runs with the fixed

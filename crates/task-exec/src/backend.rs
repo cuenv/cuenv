@@ -66,6 +66,12 @@ impl TaskBackend for HostBackend {
             "Executing task on host"
         );
 
+        if ctx.task.has_host_home_passthrough() {
+            return Err(Error::configuration(
+                "host HOME cannot be passed through explicitly; remove the passthrough. Host tasks with hermetic: false inherit it automatically",
+            ));
+        }
+
         let command_spec = ctx
             .task
             .command_spec(|command| ctx.environment.resolve_command(command))?;
@@ -76,9 +82,16 @@ impl TaskBackend for HostBackend {
         // Set working directory
         cmd.current_dir(ctx.project_root);
 
-        // Set environment variables
+        // Hermetic tasks get the same declared environment and fixed defaults
+        // used by the task executor's cache-aware host path.
         cmd.env_clear();
-        for (k, v) in &ctx.environment.vars {
+        let env = if ctx.task.is_hermetic() {
+            ctx.environment
+                .execution_environment(ctx.task.env_passthrough())
+        } else {
+            ctx.environment.merge_with_system().into_iter().collect()
+        };
+        for (k, v) in &env {
             cmd.env(k, v);
         }
 
