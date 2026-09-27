@@ -509,6 +509,41 @@ fn test_contributor_task_to_ir_cuenv_contributor_not_wrapped() {
 }
 
 #[test]
+fn test_contributor_task_to_ir_cuenv_command_with_args_not_wrapped() {
+    let contributor_task = ContributorTask {
+        id: "1password.setup".to_string(),
+        label: Some("Setup 1Password".to_string()),
+        description: None,
+        command: Some("cuenv".to_string()),
+        args: vec![
+            "secrets".to_string(),
+            "setup".to_string(),
+            "onepassword".to_string(),
+        ],
+        script: None,
+        shell: false,
+        env: HashMap::default(),
+        secrets: HashMap::default(),
+        inputs: vec![],
+        outputs: vec![],
+        hermetic: false,
+        depends_on: vec!["cuenv.setup".to_string()],
+        priority: 20,
+        condition: None,
+        provider: None,
+    };
+
+    let ir_task = test_compiler().contributor_task_to_ir(&contributor_task, "1password");
+
+    assert_eq!(ir_task.id, "cuenv:contributor:1password.setup");
+    assert_eq!(
+        ir_task.command,
+        vec!["cuenv", "secrets", "setup", "onepassword"]
+    );
+    assert_eq!(ir_task.phase, Some(BuildStage::Setup));
+}
+
+#[test]
 fn test_contributor_task_to_ir_bootstrap_not_wrapped() {
     // Bootstrap phase tasks (priority < 10) should NOT be wrapped with cuenv exec
     // because they run before cuenv is built

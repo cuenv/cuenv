@@ -20,12 +20,13 @@ import "github.com/cuenv/cuenv/schema"
 	id: "1password"
 	when: secretsProvider: ["onepassword"]
 	tasks: [{
-		id:        "1password.setup"
-		label:     "Setup 1Password"
-		priority:  20
-		shell:     false
+		id:       "1password.setup"
+		label:    "Setup 1Password"
+		priority: 20
+		shell:    false
 		dependsOn: ["cuenv.setup"]
-		command:   "cuenv secrets setup onepassword"
+		command: "cuenv"
+		args: ["secrets", "setup", "onepassword"]
 		env: OP_SERVICE_ACCOUNT_TOKEN: "${OP_SERVICE_ACCOUNT_TOKEN}"
 	}]
 }
