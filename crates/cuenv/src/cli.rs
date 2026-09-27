@@ -11,8 +11,9 @@ pub use commands::Commands;
 pub use error::{CliError, EXIT_CLI, EXIT_EVAL, EXIT_OK, exit_code_for, render_error};
 pub use output::{ErrorEnvelope, OkEnvelope, OutputFormat};
 pub use subcommands::{
-    ChangesetCommands, EnvCommands, OciCommands, ReleaseCommands, RuntimeCommands, SecretsCommands,
-    SecretsProvider, ShellCommands, ShellType, StatusFormat, SyncCommands, ToolsCommands,
+    ChangesetCommands, EnvCommands, InfraCommands, OciCommands, ReleaseCommands, RuntimeCommands,
+    SecretsCommands, SecretsProvider, ShellCommands, ShellType, StatusFormat, SyncCommands,
+    ToolsCommands,
 };
 
 /// Main CLI entry point for cuenv.

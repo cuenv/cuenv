@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDependency};
+use super::{CodegenConfig, ContainerImage, Formatters, Infra, Runtime, Service, VcsDependency};
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
@@ -74,6 +74,10 @@ pub struct Project {
     /// Formatters configuration
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatters: Option<Formatters>,
+
+    /// Infrastructure managed through Terraform provider plugins
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infra: Option<Infra>,
 }
 
 impl Project {

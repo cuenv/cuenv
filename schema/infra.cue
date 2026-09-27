@@ -1,0 +1,69 @@
+package schema
+
+// =============================================================================
+// Infra — infrastructure as code via Terraform provider plugins
+// =============================================================================
+//
+// cuenv launches unmodified Terraform provider binaries and drives them over
+// the tfplugin5/tfplugin6 gRPC protocol. Every managed resource is stored as
+// its own record in a remote Turso (libSQL) database, keyed by the CUE module
+// path (tenant) and the project name (discriminator).
+//
+// Proof of concept: resources cannot reference each other's attributes yet;
+// order them with `dependsOn`.
+
+#Infra: close({
+	// Where managed resource state lives.
+	state!: #InfraState
+
+	// Provider plugins keyed by local name. Resource types default to the
+	// provider named by their prefix (`random_pet` → `random`).
+	providers?: [#InfraName]: #InfraProvider
+
+	// Managed resources keyed by name. The state address is `type.name`.
+	resources?: [#InfraName]: #ManagedResource
+})
+
+#InfraName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
+
+#InfraState: close({
+	turso!: #TursoState
+})
+
+#TursoState: close({
+	// Database URL: libsql://<db>-<org>.turso.io, https://, or http:// for a
+	// local sqld.
+	url!: string & =~"^(libsql|https?|wss?)://"
+
+	// Environment variable holding the database auth token.
+	authTokenEnv: string | *"TURSO_AUTH_TOKEN"
+})
+
+#InfraProvider: close({
+	// Registry source address: "namespace/type" or "hostname/namespace/type".
+	source!: string & =~"^([a-zA-Z0-9.-]+/)?[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$"
+
+	// Exact version to install from the registry. Required unless `path`
+	// is set; version constraints are not supported.
+	version?: string & =~"^[0-9]+\\.[0-9]+\\.[0-9]+([-+].*)?$"
+
+	// Local provider binary, absolute or relative to the project directory.
+	path?: string
+
+	// Provider configuration block, validated by the provider's schema.
+	config?: {...}
+})
+
+#ManagedResource: close({
+	// Managed resource type, e.g. "random_pet".
+	type!: string & =~"^[a-z0-9]+_[a-z0-9_]+$"
+
+	// Local provider name; defaults to the type prefix.
+	provider?: #InfraName
+
+	// Resources that must be applied before this one (and destroyed after).
+	dependsOn?: [...#InfraName]
+
+	// Resource arguments, validated by the provider's schema.
+	config?: {...}
+})

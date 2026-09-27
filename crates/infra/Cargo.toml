@@ -1,0 +1,45 @@
+[package]
+name = "cuenv-infra"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Infrastructure as code for cuenv: drives Terraform provider plugins over gRPC with multi-tenant Turso state"
+
+[dependencies]
+cuenv-manifest = { workspace = true }
+
+async-trait = { workspace = true }
+base64 = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+hex = { workspace = true }
+hyper-util = { version = "0.1", features = ["tokio"] }
+prost = { workspace = true }
+reqwest = { workspace = true }
+rmpv = "1.3"
+rustls = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "rt", "sync", "time"] }
+tonic = { workspace = true }
+tonic-prost = "0.14"
+tower = { version = "0.5", features = ["util"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

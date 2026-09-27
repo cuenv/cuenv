@@ -187,6 +187,126 @@ pub enum SecretsCommands {
     },
 }
 
+/// Infrastructure subcommands (Terraform provider plugins + Turso state).
+#[derive(Subcommand, Debug, Clone)]
+pub enum InfraCommands {
+    /// Show the changes `apply` would make.
+    #[command(about = "Show the changes `apply` would make")]
+    Plan {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    /// Create, update, replace and delete resources to match the configuration.
+    #[command(about = "Converge managed resources on the configuration")]
+    Apply {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Apply without an interactive confirmation.
+        #[arg(long, help = "Apply without an interactive confirmation")]
+        auto_approve: bool,
+    },
+    /// Delete every managed resource the project owns.
+    #[command(about = "Delete every managed resource the project owns")]
+    Destroy {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+        /// Destroy without an interactive confirmation.
+        #[arg(long, help = "Destroy without an interactive confirmation")]
+        auto_approve: bool,
+    },
+    /// List managed resources recorded in state.
+    #[command(about = "List managed resources recorded in state")]
+    State {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+    /// Force-release the project's state lock.
+    #[command(about = "Force-release the project's state lock")]
+    Unlock {
+        /// Path to directory containing CUE files.
+        #[arg(
+            long,
+            short = 'p',
+            help = "Path to directory containing CUE files",
+            default_value = "."
+        )]
+        path: String,
+        /// Name of the CUE package to evaluate.
+        #[arg(
+            long,
+            help = "Name of the CUE package to evaluate",
+            default_value = "cuenv"
+        )]
+        package: String,
+    },
+}
+
+impl InfraCommands {
+    /// CUE package the subcommand evaluates.
+    #[must_use]
+    pub fn package(&self) -> &str {
+        match self {
+            Self::Plan { package, .. }
+            | Self::Apply { package, .. }
+            | Self::Destroy { package, .. }
+            | Self::State { package, .. }
+            | Self::Unlock { package, .. } => package,
+        }
+    }
+}
+
 /// Supported secret providers that require setup.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum SecretsProvider {

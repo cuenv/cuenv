@@ -157,6 +157,22 @@ async fn execute_service_command(
                     .map_err(|e| CliError::eval(format!("Logs command failed: {e}"))),
             )
         }
+        Command::Infra {
+            path,
+            package,
+            action,
+        } => {
+            let options = commands::infra::InfraOptions {
+                path: path.clone(),
+                package: package.clone(),
+                action: *action,
+            };
+            Some(
+                commands::infra::execute_infra(&options, executor)
+                    .await
+                    .map_err(CliError::from),
+            )
+        }
         Command::Ps {
             path,
             package,
