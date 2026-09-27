@@ -161,7 +161,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -215,7 +215,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -269,7 +269,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -326,7 +326,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -388,7 +388,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -435,7 +435,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -482,7 +482,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
@@ -532,7 +532,7 @@ jobs:
         chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
         echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
     - name: Setup 1Password
-      run: cuenv exec -- cuenv secrets setup onepassword
+      run: cuenv secrets setup onepassword
       env:
         OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
     - name: Authenticate with the CUE Registry
