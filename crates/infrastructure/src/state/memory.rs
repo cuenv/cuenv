@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use super::{ManagedResource, ResourceAddress, StateLock, StateStore};
-use crate::error::{InfraError, Result};
+use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
 
 type Rows = HashMap<TenantKey, BTreeMap<ResourceAddress, ManagedResource>>;
@@ -26,8 +26,8 @@ impl MemoryStateStore {
     }
 }
 
-fn poisoned() -> InfraError {
-    InfraError::state("in-memory state store mutex poisoned")
+fn poisoned() -> InfrastructureError {
+    InfrastructureError::state("in-memory state store mutex poisoned")
 }
 
 #[async_trait]
@@ -40,7 +40,7 @@ impl StateStore for MemoryStateStore {
         let rows = self.rows.lock().map_err(|_| poisoned())?;
         Ok(rows
             .get(tenant)
-            .map(|r| r.values().cloned().collect())
+            .map(|resources| resources.values().cloned().collect())
             .unwrap_or_default())
     }
 
@@ -54,30 +54,36 @@ impl StateStore for MemoryStateStore {
 
     async fn delete(&self, tenant: &TenantKey, address: &ResourceAddress) -> Result<()> {
         let mut rows = self.rows.lock().map_err(|_| poisoned())?;
-        if let Some(r) = rows.get_mut(tenant) {
-            r.remove(address);
+        if let Some(resources) = rows.get_mut(tenant) {
+            resources.remove(address);
         }
         Ok(())
     }
 
     async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock> {
         let mut locks = self.locks.lock().map_err(|_| poisoned())?;
-        if let Some((lock_id, existing)) = locks.get(tenant) {
-            return Err(InfraError::Locked {
+        if let Some((lock_identifier, existing)) = locks.get(tenant) {
+            return Err(InfrastructureError::Locked {
                 tenant: tenant.to_string(),
-                lock_id: lock_id.clone(),
+                lock_identifier: lock_identifier.clone(),
                 holder: existing.clone(),
                 acquired_at: "earlier in this process".to_string(),
             });
         }
-        let lock_id = uuid::Uuid::new_v4().to_string();
-        locks.insert(tenant.clone(), (lock_id.clone(), holder.to_string()));
-        Ok(StateLock { lock_id })
+        let lock_identifier = uuid::Uuid::new_v4().to_string();
+        locks.insert(
+            tenant.clone(),
+            (lock_identifier.clone(), holder.to_string()),
+        );
+        Ok(StateLock { lock_identifier })
     }
 
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
         let mut locks = self.locks.lock().map_err(|_| poisoned())?;
-        if locks.get(tenant).is_some_and(|(id, _)| *id == lock.lock_id) {
+        if locks
+            .get(tenant)
+            .is_some_and(|(lock_identifier, _)| *lock_identifier == lock.lock_identifier)
+        {
             locks.remove(tenant);
         }
         Ok(())
@@ -108,30 +114,30 @@ mod tests {
     #[tokio::test]
     async fn rows_are_isolated_per_tenant() {
         let store = MemoryStateStore::new();
-        let a = TenantKey::new("example.com/a", "web").unwrap();
-        let b = TenantKey::new("example.com/a", "api").unwrap();
-        store.put(&a, &resource("one")).await.unwrap();
-        assert_eq!(store.list(&a).await.unwrap().len(), 1);
-        assert!(store.list(&b).await.unwrap().is_empty());
+        let web = TenantKey::new("example.com/shop", "web").unwrap();
+        let api = TenantKey::new("example.com/shop", "api").unwrap();
+        store.put(&web, &resource("one")).await.unwrap();
+        assert_eq!(store.list(&web).await.unwrap().len(), 1);
+        assert!(store.list(&api).await.unwrap().is_empty());
         store
-            .delete(&a, &ResourceAddress::new("random_pet", "one"))
+            .delete(&web, &ResourceAddress::new("random_pet", "one"))
             .await
             .unwrap();
-        assert!(store.list(&a).await.unwrap().is_empty());
+        assert!(store.list(&web).await.unwrap().is_empty());
     }
 
     #[tokio::test]
     async fn lock_is_exclusive_until_released() {
         let store = MemoryStateStore::new();
-        let t = TenantKey::new("example.com/a", "web").unwrap();
-        let lock = store.lock(&t, "first").await.unwrap();
+        let tenant = TenantKey::new("example.com/shop", "web").unwrap();
+        let lock = store.lock(&tenant, "first").await.unwrap();
         assert!(matches!(
-            store.lock(&t, "second").await,
-            Err(InfraError::Locked { .. })
+            store.lock(&tenant, "second").await,
+            Err(InfrastructureError::Locked { .. })
         ));
-        store.unlock(&t, &lock).await.unwrap();
-        store.lock(&t, "third").await.unwrap();
-        store.force_unlock(&t).await.unwrap();
-        store.lock(&t, "fourth").await.unwrap();
+        store.unlock(&tenant, &lock).await.unwrap();
+        store.lock(&tenant, "third").await.unwrap();
+        store.force_unlock(&tenant).await.unwrap();
+        store.lock(&tenant, "fourth").await.unwrap();
     }
 }

@@ -45,7 +45,7 @@ package schema
 	}
 	codegen?: #Codegen
 	// Infrastructure managed through Terraform provider plugins.
-	infra?: #Infra
+	infrastructure?: #Infrastructure
 })
 
 // Match tasks across projects by metadata for discovery-based execution.

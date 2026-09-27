@@ -20,19 +20,21 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cuenv_manifest::manifest::{Infra, InfraProvider, ManagedResourceSpec};
+use cuenv_manifest::manifest::{
+    Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
+};
 
-use crate::cty::{self, Value};
-use crate::error::{InfraError, Result};
+use crate::error::{InfrastructureError, Result};
 use crate::plugin::{ApplyRequest, PlanRequest, ProviderClient};
-use crate::proto::{self, Diagnostic, Severity};
-use crate::registry::{ProviderInstaller, ProviderSource, default_cache_dir};
+use crate::protocol::{self, Diagnostic, Severity};
+use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
 use crate::schema::{ProviderSchema, Schema};
 use crate::state::{ManagedResource, ResourceAddress, StateStore};
 use crate::tenant::TenantKey;
+use crate::type_system::{self, Value};
 
-/// msgpack encoding of null, used for absent prior/planned states.
-const NULL_MSGPACK: [u8; 1] = [0xc0];
+/// MessagePack encoding of null, used for absent prior/planned states.
+const NULL_MESSAGE_PACK: [u8; 1] = [0xc0];
 
 /// What a plan intends to converge towards.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +79,7 @@ impl Action {
 struct ApplyStep {
     prior: Vec<u8>,
     planned: Vec<u8>,
-    config: Vec<u8>,
+    configuration: Vec<u8>,
     planned_private: Vec<u8>,
 }
 
@@ -132,23 +134,25 @@ impl Plan {
     /// Count changes by action.
     #[must_use]
     pub fn summary(&self) -> PlanSummary {
-        let mut s = PlanSummary::default();
+        let mut summary = PlanSummary::default();
         for change in &self.changes {
             match change.action {
-                Action::Create => s.create += 1,
-                Action::Update => s.update += 1,
-                Action::Replace => s.replace += 1,
-                Action::Delete => s.delete += 1,
-                Action::NoOp => s.unchanged += 1,
+                Action::Create => summary.create += 1,
+                Action::Update => summary.update += 1,
+                Action::Replace => summary.replace += 1,
+                Action::Delete => summary.delete += 1,
+                Action::NoOp => summary.unchanged += 1,
             }
         }
-        s
+        summary
     }
 
     /// Whether applying the plan would change anything.
     #[must_use]
     pub fn has_changes(&self) -> bool {
-        self.changes.iter().any(|c| c.action != Action::NoOp)
+        self.changes
+            .iter()
+            .any(|change| change.action != Action::NoOp)
     }
 }
 
@@ -173,13 +177,13 @@ pub enum ApplyEvent {
     Warning(String),
 }
 
-/// Options for [`InfraEngine::new`].
+/// Options for [`InfrastructureEngine::new`].
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
     /// Directory relative provider `path`s resolve against.
-    pub project_dir: PathBuf,
-    /// Provider plugin cache; defaults to [`default_cache_dir`].
-    pub plugin_cache_dir: Option<PathBuf>,
+    pub project_directory: PathBuf,
+    /// Provider plugin cache; defaults to [`default_cache_directory`].
+    pub plugin_cache_directory: Option<PathBuf>,
 }
 
 struct LoadedProvider {
@@ -188,28 +192,28 @@ struct LoadedProvider {
     source: String,
 }
 
-/// Plans and applies an `infra` configuration for one tenant.
-pub struct InfraEngine {
+/// Plans and applies an `infrastructure` configuration for one tenant.
+pub struct InfrastructureEngine {
     tenant: TenantKey,
     store: Arc<dyn StateStore>,
-    infra: Infra,
+    infrastructure: Infrastructure,
     options: EngineOptions,
     providers: BTreeMap<String, LoadedProvider>,
 }
 
-impl InfraEngine {
+impl InfrastructureEngine {
     /// Create an engine. Providers are launched lazily while planning.
     #[must_use]
     pub fn new(
         tenant: TenantKey,
         store: Arc<dyn StateStore>,
-        infra: Infra,
+        infrastructure: Infrastructure,
         options: EngineOptions,
     ) -> Self {
         Self {
             tenant,
             store,
-            infra,
+            infrastructure,
             options,
             providers: BTreeMap::new(),
         }
@@ -233,42 +237,45 @@ impl InfraEngine {
             .list(&self.tenant)
             .await?
             .into_iter()
-            .map(|r| (r.address.clone(), r))
+            .map(|resource| (resource.address.clone(), resource))
             .collect();
         let mut warnings = Vec::new();
         let mut changes = Vec::new();
 
-        let declared: BTreeMap<String, ManagedResourceSpec> = match mode {
-            PlanMode::Apply => self.infra.resources.clone(),
+        let declared: BTreeMap<String, ManagedResourceDeclaration> = match mode {
+            PlanMode::Apply => self.infrastructure.resources.clone(),
             PlanMode::Destroy => BTreeMap::new(),
         };
-        let order = topo_order(&dependency_graph(&declared))?;
+        let order = topological_order(&dependency_graph(&declared))?;
         let declared_addresses: BTreeSet<ResourceAddress> = declared
             .iter()
-            .map(|(name, spec)| ResourceAddress::new(&spec.resource_type, name))
+            .map(|(name, declaration)| ResourceAddress::new(&declaration.resource_type, name))
             .collect();
 
         // Orphans (and everything, when destroying) are deleted first, in
         // reverse dependency order.
         let orphans: Vec<&ManagedResource> = stored
             .values()
-            .filter(|r| !declared_addresses.contains(&r.address))
+            .filter(|resource| !declared_addresses.contains(&resource.address))
             .collect();
-        let mut orphan_order = topo_order(&orphan_graph(&orphans))?;
+        let mut orphan_order = topological_order(&orphan_graph(&orphans))?;
         orphan_order.reverse();
         for address in orphan_order {
-            if let Some(row) = orphans.iter().find(|r| r.address.to_string() == address) {
+            if let Some(row) = orphans
+                .iter()
+                .find(|orphan| orphan.address.to_string() == address)
+            {
                 changes.push(self.plan_delete(row, &mut warnings).await?);
             }
         }
 
         for name in order {
-            let Some(spec) = declared.get(&name) else {
+            let Some(declaration) = declared.get(&name) else {
                 continue;
             };
-            let address = ResourceAddress::new(&spec.resource_type, &name);
+            let address = ResourceAddress::new(&declaration.resource_type, &name);
             let change = self
-                .plan_resource(&name, spec, stored.get(&address), &mut warnings)
+                .plan_resource(&name, declaration, stored.get(&address), &mut warnings)
                 .await?;
             changes.push(change);
         }
@@ -280,7 +287,7 @@ impl InfraEngine {
         })
     }
 
-    /// Apply a plan produced by [`InfraEngine::plan`] on this engine.
+    /// Apply a plan produced by [`InfrastructureEngine::plan`] on this engine.
     ///
     /// State is persisted after every resource. On failure, resources
     /// already applied stay recorded and the error is returned.
@@ -294,12 +301,18 @@ impl InfraEngine {
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
     ) -> Result<PlanSummary> {
         if plan.tenant != self.tenant {
-            return Err(InfraError::config("plan belongs to a different tenant"));
+            return Err(InfrastructureError::configuration(
+                "plan belongs to a different tenant",
+            ));
         }
         for warning in &plan.warnings {
             on_event(ApplyEvent::Warning(warning.clone()));
         }
-        for change in plan.changes.iter().filter(|c| c.action != Action::NoOp) {
+        for change in plan
+            .changes
+            .iter()
+            .filter(|change| change.action != Action::NoOp)
+        {
             on_event(ApplyEvent::Started {
                 address: change.address.clone(),
                 action: change.action,
@@ -327,27 +340,32 @@ impl InfraEngine {
     ) -> Result<()> {
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
-        let ty = schema.block.implied_type();
+        let value_type = schema.block.implied_type();
 
         for step in &change.steps {
-            let resp = provider
+            let response = provider
                 .client
                 .apply_resource_change(ApplyRequest {
                     type_name: &change.address.resource_type,
                     prior_state: step.prior.clone(),
                     planned_state: step.planned.clone(),
-                    config: step.config.clone(),
+                    configuration: step.configuration.clone(),
                     planned_private: step.planned_private.clone(),
                 })
                 .await?;
-            let new_state =
-                cty::from_msgpack(resp.new_state.as_ref().map_or(&[][..], |v| &v.msgpack), &ty)?;
+            let new_state = type_system::from_message_pack(
+                response
+                    .new_state
+                    .as_ref()
+                    .map_or(&[][..], |dynamic_value| &dynamic_value.message_pack),
+                &value_type,
+            )?;
 
             // Persist what the provider reports before surfacing errors so a
             // partially-created resource stays tracked. A null (or still
             // unknown) result alongside errors means the change did not
             // happen: keep whatever was recorded, as Terraform does.
-            let failed = resp.diagnostics.iter().any(is_error);
+            let failed = response.diagnostics.iter().any(is_error);
             if new_state.is_null() {
                 if !failed {
                     self.store.delete(&self.tenant, &change.address).await?;
@@ -361,8 +379,8 @@ impl InfraEngine {
                             provider: change.provider.clone(),
                             provider_source: provider.source.clone(),
                             schema_version: schema.version,
-                            state: new_state.to_state_json(&ty)?,
-                            private: resp.private.clone(),
+                            state: new_state.to_state_json(&value_type)?,
+                            private: response.private.clone(),
                             dependencies: change.dependencies.clone(),
                         },
                     )
@@ -372,7 +390,7 @@ impl InfraEngine {
             let mut warnings = Vec::new();
             check_diagnostics(
                 &format!("apply {}", change.address),
-                &resp.diagnostics,
+                &response.diagnostics,
                 &mut warnings,
             )?;
             for warning in warnings {
@@ -390,28 +408,34 @@ impl InfraEngine {
     async fn plan_resource(
         &mut self,
         name: &str,
-        spec: &ManagedResourceSpec,
+        declaration: &ManagedResourceDeclaration,
         stored: Option<&ManagedResource>,
         warnings: &mut Vec<String>,
     ) -> Result<ResourceChange> {
-        let provider_name = spec.provider_name().to_string();
-        let address = ResourceAddress::new(&spec.resource_type, name);
+        let provider_name = declaration.provider_name().to_string();
+        let address = ResourceAddress::new(&declaration.resource_type, name);
         self.ensure_provider(&provider_name, warnings).await?;
         let provider = self.loaded(&provider_name)?;
-        let schema = resource_schema(provider, &provider_name, &spec.resource_type)?;
+        let schema = resource_schema(provider, &provider_name, &declaration.resource_type)?;
         let block = &schema.block;
-        let ty = block.implied_type();
+        let value_type = block.implied_type();
 
-        let config = block.normalize_config(
-            Value::from_config_json(&serde_json::Value::Object(spec.config.clone()), &ty)
-                .map_err(|e| InfraError::config(format!("{address}: {e}")))?,
+        let configuration = block.normalize_configuration(
+            Value::from_configuration_json(
+                &serde_json::Value::Object(declaration.configuration.clone()),
+                &value_type,
+            )
+            .map_err(|error| InfrastructureError::configuration(format!("{address}: {error}")))?,
         );
-        let config_bytes = cty::to_msgpack(&config, &ty)?;
-        let diags = provider
+        let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
+        let diagnostics = provider
             .client
-            .validate_resource_config(&spec.resource_type, config_bytes.clone())
+            .validate_resource_configuration(
+                &declaration.resource_type,
+                configuration_bytes.clone(),
+            )
             .await?;
-        check_diagnostics(&format!("validate {address}"), &diags, warnings)?;
+        check_diagnostics(&format!("validate {address}"), &diagnostics, warnings)?;
 
         let prior = match stored {
             Some(row) => refresh(provider, schema, row, warnings).await?,
@@ -426,61 +450,76 @@ impl InfraEngine {
             after: Value::Null,
             sensitive: block.sensitive_attributes(),
             requires_replace: Vec::new(),
-            dependencies: spec.depends_on.clone(),
+            dependencies: declaration.depends_on.clone(),
             steps: Vec::new(),
         };
 
         let Some(prior) = prior else {
-            let create =
-                plan_create(provider, spec, schema, &config, &config_bytes, warnings).await?;
+            let create = plan_create(
+                provider,
+                declaration,
+                schema,
+                &configuration,
+                &configuration_bytes,
+                warnings,
+            )
+            .await?;
             change.action = Action::Create;
             change.after = create.0;
             change.steps.push(create.1);
             return Ok(change);
         };
 
-        let proposed = block.proposed_new(&prior.value, &config);
-        let resp = provider
+        let proposed = block.proposed_new(&prior.value, &configuration);
+        let response = provider
             .client
             .plan_resource_change(PlanRequest {
-                type_name: &spec.resource_type,
+                type_name: &declaration.resource_type,
                 prior_state: prior.bytes.clone(),
-                proposed_new_state: cty::to_msgpack(&proposed, &ty)?,
-                config: config_bytes.clone(),
+                proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
+                configuration: configuration_bytes.clone(),
                 prior_private: prior.private.clone(),
             })
             .await?;
-        check_diagnostics(&format!("plan {address}"), &resp.diagnostics, warnings)?;
-        let planned_bytes = dynamic_bytes(resp.planned_state.as_ref());
-        let planned = cty::from_msgpack(&planned_bytes, &ty)?;
+        check_diagnostics(&format!("plan {address}"), &response.diagnostics, warnings)?;
+        let planned_bytes = dynamic_bytes(response.planned_state.as_ref());
+        let planned = type_system::from_message_pack(&planned_bytes, &value_type)?;
         change.before = prior.value.clone();
 
-        if cty::semantically_equal(&planned, &prior.value, &ty) {
+        if type_system::semantically_equal(&planned, &prior.value, &value_type) {
             change.after = planned;
             return Ok(change);
         }
 
-        if resp.requires_replace.is_empty() {
+        if response.requires_replace.is_empty() {
             change.action = Action::Update;
             change.after = planned;
             change.steps.push(ApplyStep {
                 prior: prior.bytes,
                 planned: planned_bytes,
-                config: config_bytes,
-                planned_private: resp.planned_private,
+                configuration: configuration_bytes,
+                planned_private: response.planned_private,
             });
             return Ok(change);
         }
 
         change.action = Action::Replace;
-        change.requires_replace = resp.requires_replace.iter().map(render_path).collect();
+        change.requires_replace = response.requires_replace.iter().map(render_path).collect();
         change.steps.push(ApplyStep {
             prior: prior.bytes,
-            planned: NULL_MSGPACK.to_vec(),
-            config: NULL_MSGPACK.to_vec(),
+            planned: NULL_MESSAGE_PACK.to_vec(),
+            configuration: NULL_MESSAGE_PACK.to_vec(),
             planned_private: prior.private,
         });
-        let create = plan_create(provider, spec, schema, &config, &config_bytes, warnings).await?;
+        let create = plan_create(
+            provider,
+            declaration,
+            schema,
+            &configuration,
+            &configuration_bytes,
+            warnings,
+        )
+        .await?;
         change.after = create.0;
         change.steps.push(create.1);
         Ok(change)
@@ -493,9 +532,9 @@ impl InfraEngine {
     ) -> Result<ResourceChange> {
         self.ensure_provider(&row.provider, warnings)
             .await
-            .map_err(|e| {
-                InfraError::config(format!(
-                    "cannot delete {}: provider '{}' is unavailable ({e}); keep it in infra.providers until its resources are gone",
+            .map_err(|error| {
+                InfrastructureError::configuration(format!(
+                    "cannot delete {}: provider '{}' is unavailable ({error}); keep it in infrastructure.providers until its resources are gone",
                     row.address, row.provider
                 ))
             })?;
@@ -518,8 +557,8 @@ impl InfraEngine {
             change.before = prior.value;
             change.steps.push(ApplyStep {
                 prior: prior.bytes,
-                planned: NULL_MSGPACK.to_vec(),
-                config: NULL_MSGPACK.to_vec(),
+                planned: NULL_MESSAGE_PACK.to_vec(),
+                configuration: NULL_MESSAGE_PACK.to_vec(),
                 planned_private: prior.private,
             });
         }
@@ -527,39 +566,61 @@ impl InfraEngine {
     }
 
     fn loaded(&self, name: &str) -> Result<&LoadedProvider> {
-        self.providers
-            .get(name)
-            .ok_or_else(|| InfraError::config(format!("provider '{name}' is not loaded")))
+        self.providers.get(name).ok_or_else(|| {
+            InfrastructureError::configuration(format!("provider '{name}' is not loaded"))
+        })
     }
 
     async fn ensure_provider(&mut self, name: &str, warnings: &mut Vec<String>) -> Result<()> {
         if self.providers.contains_key(name) {
             return Ok(());
         }
-        let spec = self.infra.providers.get(name).cloned().ok_or_else(|| {
-            InfraError::config(format!(
-                "provider '{name}' is not declared in infra.providers"
-            ))
-        })?;
-        let source = ProviderSource::parse(&spec.source)?;
-        let binary = self.resolve_binary(name, &spec, &source).await?;
+        let declaration = self
+            .infrastructure
+            .providers
+            .get(name)
+            .cloned()
+            .ok_or_else(|| {
+                InfrastructureError::configuration(format!(
+                    "provider '{name}' is not declared in infrastructure.providers"
+                ))
+            })?;
+        let source = ProviderSource::parse(&declaration.source)?;
+        let binary = self.resolve_binary(name, &declaration, &source).await?;
 
         let client = ProviderClient::launch(&binary).await?;
-        let (schema, diags) = client.schema().await?;
-        check_diagnostics(&format!("load provider '{name}' schema"), &diags, warnings)?;
+        let (schema, diagnostics) = client.schema().await?;
+        check_diagnostics(
+            &format!("load provider '{name}' schema"),
+            &diagnostics,
+            warnings,
+        )?;
 
-        let ty = schema.provider.block.implied_type();
-        let config = schema.provider.block.normalize_config(
-            Value::from_config_json(&serde_json::Value::Object(spec.config.clone()), &ty)
-                .map_err(|e| InfraError::config(format!("provider '{name}': {e}")))?,
+        let value_type = schema.provider.block.implied_type();
+        let configuration = schema.provider.block.normalize_configuration(
+            Value::from_configuration_json(
+                &serde_json::Value::Object(declaration.configuration.clone()),
+                &value_type,
+            )
+            .map_err(|error| {
+                InfrastructureError::configuration(format!("provider '{name}': {error}"))
+            })?,
         );
-        let config_bytes = cty::to_msgpack(&config, &ty)?;
-        let diags = client
-            .validate_provider_config(config_bytes.clone())
+        let configuration_bytes = type_system::to_message_pack(&configuration, &value_type)?;
+        let diagnostics = client
+            .validate_provider_configuration(configuration_bytes.clone())
             .await?;
-        check_diagnostics(&format!("validate provider '{name}'"), &diags, warnings)?;
-        let diags = client.configure(config_bytes).await?;
-        check_diagnostics(&format!("configure provider '{name}'"), &diags, warnings)?;
+        check_diagnostics(
+            &format!("validate provider '{name}'"),
+            &diagnostics,
+            warnings,
+        )?;
+        let diagnostics = client.configure(configuration_bytes).await?;
+        check_diagnostics(
+            &format!("configure provider '{name}'"),
+            &diagnostics,
+            warnings,
+        )?;
 
         tracing::debug!(provider = name, protocol = ?client.protocol(), binary = %binary.display(), "provider ready");
         self.providers.insert(
@@ -576,27 +637,27 @@ impl InfraEngine {
     async fn resolve_binary(
         &self,
         name: &str,
-        spec: &InfraProvider,
+        declaration: &InfrastructureProvider,
         source: &ProviderSource,
     ) -> Result<PathBuf> {
-        if let Some(path) = &spec.path {
+        if let Some(path) = &declaration.path {
             let path = Path::new(path);
             return Ok(if path.is_absolute() {
                 path.to_path_buf()
             } else {
-                self.options.project_dir.join(path)
+                self.options.project_directory.join(path)
             });
         }
-        let version = spec.version.as_deref().ok_or_else(|| {
-            InfraError::config(format!(
+        let version = declaration.version.as_deref().ok_or_else(|| {
+            InfrastructureError::configuration(format!(
                 "provider '{name}' needs an exact `version` (or a local `path`)"
             ))
         })?;
         let cache = self
             .options
-            .plugin_cache_dir
+            .plugin_cache_directory
             .clone()
-            .unwrap_or_else(default_cache_dir);
+            .unwrap_or_else(default_cache_directory);
         ProviderInstaller::new(cache)?.ensure(source, version).await
     }
 }
@@ -615,97 +676,99 @@ async fn refresh(
 ) -> Result<Option<Refreshed>> {
     let type_name = &row.address.resource_type;
     let state_json = serde_json::to_vec(&row.state)
-        .map_err(|e| InfraError::state(format!("serialize stored state: {e}")))?;
-    let (upgraded, diags) = provider
+        .map_err(|error| InfrastructureError::state(format!("serialize stored state: {error}")))?;
+    let (upgraded, diagnostics) = provider
         .client
         .upgrade_resource_state(type_name, row.schema_version, state_json)
         .await?;
     check_diagnostics(
         &format!("upgrade state of {}", row.address),
-        &diags,
+        &diagnostics,
         warnings,
     )?;
 
-    let resp = provider
+    let response = provider
         .client
         .read_resource(type_name, upgraded, row.private.clone())
         .await?;
     check_diagnostics(
         &format!("refresh {}", row.address),
-        &resp.diagnostics,
+        &response.diagnostics,
         warnings,
     )?;
-    let bytes = dynamic_bytes(resp.new_state.as_ref());
-    let value = cty::from_msgpack(&bytes, &schema.block.implied_type())?;
+    let bytes = dynamic_bytes(response.new_state.as_ref());
+    let value = type_system::from_message_pack(&bytes, &schema.block.implied_type())?;
     if value.is_null() {
         return Ok(None);
     }
     Ok(Some(Refreshed {
         value,
         bytes,
-        private: resp.private,
+        private: response.private,
     }))
 }
 
 async fn plan_create(
     provider: &LoadedProvider,
-    spec: &ManagedResourceSpec,
+    declaration: &ManagedResourceDeclaration,
     schema: &Schema,
-    config: &Value,
-    config_bytes: &[u8],
+    configuration: &Value,
+    configuration_bytes: &[u8],
     warnings: &mut Vec<String>,
 ) -> Result<(Value, ApplyStep)> {
-    let ty = schema.block.implied_type();
-    let proposed = schema.block.proposed_new(&Value::Null, config);
-    let resp = provider
+    let value_type = schema.block.implied_type();
+    let proposed = schema.block.proposed_new(&Value::Null, configuration);
+    let response = provider
         .client
         .plan_resource_change(PlanRequest {
-            type_name: &spec.resource_type,
-            prior_state: NULL_MSGPACK.to_vec(),
-            proposed_new_state: cty::to_msgpack(&proposed, &ty)?,
-            config: config_bytes.to_vec(),
+            type_name: &declaration.resource_type,
+            prior_state: NULL_MESSAGE_PACK.to_vec(),
+            proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
+            configuration: configuration_bytes.to_vec(),
             prior_private: Vec::new(),
         })
         .await?;
     check_diagnostics(
-        &format!("plan create of {}", spec.resource_type),
-        &resp.diagnostics,
+        &format!("plan create of {}", declaration.resource_type),
+        &response.diagnostics,
         warnings,
     )?;
-    let planned_bytes = dynamic_bytes(resp.planned_state.as_ref());
-    let planned = cty::from_msgpack(&planned_bytes, &ty)?;
+    let planned_bytes = dynamic_bytes(response.planned_state.as_ref());
+    let planned = type_system::from_message_pack(&planned_bytes, &value_type)?;
     Ok((
         planned,
         ApplyStep {
-            prior: NULL_MSGPACK.to_vec(),
+            prior: NULL_MESSAGE_PACK.to_vec(),
             planned: planned_bytes,
-            config: config_bytes.to_vec(),
-            planned_private: resp.planned_private,
+            configuration: configuration_bytes.to_vec(),
+            planned_private: response.planned_private,
         },
     ))
 }
 
-fn resource_schema<'a>(
-    provider: &'a LoadedProvider,
+fn resource_schema<'provider>(
+    provider: &'provider LoadedProvider,
     provider_name: &str,
     resource_type: &str,
-) -> Result<&'a Schema> {
+) -> Result<&'provider Schema> {
     provider.schema.resources.get(resource_type).ok_or_else(|| {
-        InfraError::config(format!(
+        InfrastructureError::configuration(format!(
             "provider '{provider_name}' has no managed resource type '{resource_type}'"
         ))
     })
 }
 
-fn dynamic_bytes(value: Option<&proto::DynamicValue>) -> Vec<u8> {
+fn dynamic_bytes(value: Option<&protocol::DynamicValue>) -> Vec<u8> {
     match value {
-        Some(v) if !v.msgpack.is_empty() => v.msgpack.clone(),
-        _ => NULL_MSGPACK.to_vec(),
+        Some(dynamic_value) if !dynamic_value.message_pack.is_empty() => {
+            dynamic_value.message_pack.clone()
+        }
+        _ => NULL_MESSAGE_PACK.to_vec(),
     }
 }
 
-fn is_error(d: &Diagnostic) -> bool {
-    Severity::try_from(d.severity).map_or(true, |s| s != Severity::Warning)
+fn is_error(diagnostic: &Diagnostic) -> bool {
+    Severity::try_from(diagnostic.severity).map_or(true, |severity| severity != Severity::Warning)
 }
 
 /// Dependency graph over orphaned records, keyed by address. Dependencies
@@ -713,121 +776,132 @@ fn is_error(d: &Diagnostic) -> bool {
 fn orphan_graph(orphans: &[&ManagedResource]) -> BTreeMap<String, Vec<String>> {
     orphans
         .iter()
-        .map(|r| {
-            let deps = orphans
+        .map(|orphan| {
+            let dependencies = orphans
                 .iter()
                 .filter(|other| {
-                    other.address != r.address && r.dependencies.contains(&other.address.name)
+                    other.address != orphan.address
+                        && orphan.dependencies.contains(&other.address.name)
                 })
                 .map(|other| other.address.to_string())
                 .collect();
-            (r.address.to_string(), deps)
+            (orphan.address.to_string(), dependencies)
         })
         .collect()
 }
 
 /// Render a diagnostic as a single human-readable string.
-fn render_diagnostic(d: &Diagnostic) -> String {
-    let mut out = d.summary.clone();
-    if !d.detail.is_empty() {
-        out.push_str(": ");
-        out.push_str(&d.detail);
+fn render_diagnostic(diagnostic: &Diagnostic) -> String {
+    let mut rendered = diagnostic.summary.clone();
+    if !diagnostic.detail.is_empty() {
+        rendered.push_str(": ");
+        rendered.push_str(&diagnostic.detail);
     }
-    if let Some(path) = &d.attribute
+    if let Some(path) = &diagnostic.attribute
         && !path.steps.is_empty()
     {
-        let _ = write!(out, " (at {})", render_path(path));
+        let _ = write!(rendered, " (at {})", render_path(path));
     }
-    out
+    rendered
 }
 
 /// Fail on error diagnostics; collect warnings.
 fn check_diagnostics(
     context: &str,
-    diags: &[Diagnostic],
+    diagnostics: &[Diagnostic],
     warnings: &mut Vec<String>,
 ) -> Result<()> {
     let mut errors = Vec::new();
-    for d in diags {
-        match Severity::try_from(d.severity).unwrap_or(Severity::Invalid) {
-            Severity::Warning => warnings.push(format!("{context}: {}", render_diagnostic(d))),
-            Severity::Error | Severity::Invalid => errors.push(render_diagnostic(d)),
+    for diagnostic in diagnostics {
+        match Severity::try_from(diagnostic.severity).unwrap_or(Severity::Invalid) {
+            Severity::Warning => {
+                warnings.push(format!("{context}: {}", render_diagnostic(diagnostic)));
+            }
+            Severity::Error | Severity::Invalid => errors.push(render_diagnostic(diagnostic)),
         }
     }
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(InfraError::Diagnostics {
+        Err(InfrastructureError::Diagnostics {
             context: context.to_string(),
             errors,
         })
     }
 }
 
-/// Render an attribute path as `a.b[0]["k"]`.
-fn render_path(path: &proto::AttributePath) -> String {
-    let mut out = String::new();
+/// Render an attribute path as `rules.match[0]["key"]`.
+fn render_path(path: &protocol::AttributePath) -> String {
+    let mut rendered = String::new();
     for step in &path.steps {
         match &step.selector {
-            Some(proto::Selector::AttributeName(name)) => {
-                if !out.is_empty() {
-                    out.push('.');
+            Some(protocol::Selector::AttributeName(name)) => {
+                if !rendered.is_empty() {
+                    rendered.push('.');
                 }
-                out.push_str(name);
+                rendered.push_str(name);
             }
-            Some(proto::Selector::ElementKeyString(key)) => {
-                let _ = write!(out, "[{key:?}]");
+            Some(protocol::Selector::ElementKeyString(key)) => {
+                let _ = write!(rendered, "[{key:?}]");
             }
-            Some(proto::Selector::ElementKeyInt(i)) => {
-                let _ = write!(out, "[{i}]");
+            Some(protocol::Selector::ElementKeyInt(index)) => {
+                let _ = write!(rendered, "[{index}]");
             }
             None => {}
         }
     }
-    out
+    rendered
 }
 
 fn dependency_graph(
-    resources: &BTreeMap<String, ManagedResourceSpec>,
+    resources: &BTreeMap<String, ManagedResourceDeclaration>,
 ) -> BTreeMap<String, Vec<String>> {
     resources
         .iter()
-        .map(|(name, spec)| (name.clone(), spec.depends_on.clone()))
+        .map(|(name, declaration)| (name.clone(), declaration.depends_on.clone()))
         .collect()
 }
 
 /// Order nodes so dependencies come first. Unknown dependencies are
 /// errors; ties are broken by name for deterministic plans.
-fn topo_order(graph: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>> {
-    for (name, deps) in graph {
-        if let Some(missing) = deps.iter().find(|d| !graph.contains_key(*d)) {
-            return Err(InfraError::config(format!(
+fn topological_order(graph: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>> {
+    for (name, dependencies) in graph {
+        if let Some(missing) = dependencies
+            .iter()
+            .find(|dependency| !graph.contains_key(*dependency))
+        {
+            return Err(InfrastructureError::configuration(format!(
                 "resource '{name}' depends on unknown resource '{missing}'"
             )));
         }
     }
     let mut remaining: BTreeMap<&str, BTreeSet<&str>> = graph
         .iter()
-        .map(|(n, deps)| (n.as_str(), deps.iter().map(String::as_str).collect()))
+        .map(|(name, dependencies)| {
+            (
+                name.as_str(),
+                dependencies.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
     let mut order = Vec::with_capacity(graph.len());
     while !remaining.is_empty() {
         let ready: Vec<&str> = remaining
             .iter()
-            .filter(|(_, deps)| deps.is_empty())
-            .map(|(n, _)| *n)
+            .filter(|(_, dependencies)| dependencies.is_empty())
+            .map(|(name, _)| *name)
             .collect();
         if ready.is_empty() {
             let cycle: Vec<&str> = remaining.keys().copied().collect();
-            return Err(InfraError::config(format!(
+            return Err(InfrastructureError::configuration(format!(
                 "dependency cycle between resources: {}",
                 cycle.join(", ")
             )));
         }
         for name in ready {
             remaining.remove(name);
-            for deps in remaining.values_mut() {
-                deps.remove(name);
+            for dependencies in remaining.values_mut() {
+                dependencies.remove(name);
             }
             order.push(name.to_string());
         }
@@ -838,7 +912,7 @@ fn topo_order(graph: &BTreeMap<String, Vec<String>>) -> Result<Vec<String>> {
 /// Render a plan as human-readable text.
 #[must_use]
 pub fn render_plan(plan: &Plan) -> String {
-    let mut out = String::new();
+    let mut rendered = String::new();
     for change in &plan.changes {
         let label = match change.action {
             Action::NoOp => continue,
@@ -848,62 +922,71 @@ pub fn render_plan(plan: &Plan) -> String {
             Action::Delete => "delete",
         };
         let _ = writeln!(
-            out,
+            rendered,
             "  {} {} ({label})",
             change.action.symbol(),
             change.address
         );
         if !change.requires_replace.is_empty() {
             let _ = writeln!(
-                out,
+                rendered,
                 "      # forced by: {}",
                 change.requires_replace.join(", ")
             );
         }
         for line in attribute_lines(change) {
-            out.push_str("      ");
-            out.push_str(&line);
-            out.push('\n');
+            rendered.push_str("      ");
+            rendered.push_str(&line);
+            rendered.push('\n');
         }
     }
-    let s = plan.summary();
+    let summary = plan.summary();
     let _ = writeln!(
-        out,
+        rendered,
         "\nPlan: {} to create, {} to update, {} to replace, {} to delete, {} unchanged.",
-        s.create, s.update, s.replace, s.delete, s.unchanged
+        summary.create, summary.update, summary.replace, summary.delete, summary.unchanged
     );
-    out
+    rendered
 }
 
 fn attribute_lines(change: &ResourceChange) -> Vec<String> {
     let empty = BTreeMap::new();
     let before = match &change.before {
-        Value::Object(a) => a,
+        Value::Object(attributes) => attributes,
         _ => &empty,
     };
     let after = match &change.after {
-        Value::Object(a) => a,
+        Value::Object(attributes) => attributes,
         _ => &empty,
     };
-    let render = |name: &str, v: &Value| {
-        if change.sensitive.iter().any(|s| s == name) && !v.is_null() {
+    let render = |name: &str, value: &Value| {
+        if change
+            .sensitive
+            .iter()
+            .any(|sensitive_name| sensitive_name == name)
+            && !value.is_null()
+        {
             "(sensitive)".to_string()
         } else {
-            v.to_string()
+            value.to_string()
         }
     };
     let names: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
     let mut lines = Vec::new();
     for name in names {
-        let b = before.get(name).unwrap_or(&Value::Null);
-        let a = after.get(name).unwrap_or(&Value::Null);
+        let before_value = before.get(name).unwrap_or(&Value::Null);
+        let after_value = after.get(name).unwrap_or(&Value::Null);
         match change.action {
-            Action::Create if !a.is_null() => lines.push(format!("+ {name} = {}", render(name, a))),
-            Action::Delete if !b.is_null() => lines.push(format!("- {name} = {}", render(name, b))),
-            Action::Update | Action::Replace if a != b => lines.push(format!(
+            Action::Create if !after_value.is_null() => {
+                lines.push(format!("+ {name} = {}", render(name, after_value)));
+            }
+            Action::Delete if !before_value.is_null() => {
+                lines.push(format!("- {name} = {}", render(name, before_value)));
+            }
+            Action::Update | Action::Replace if after_value != before_value => lines.push(format!(
                 "~ {name}: {} -> {}",
-                render(name, b),
-                render(name, a)
+                render(name, before_value),
+                render(name, after_value)
             )),
             _ => {}
         }
@@ -918,26 +1001,34 @@ mod tests {
     fn graph(edges: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
         edges
             .iter()
-            .map(|(n, deps)| ((*n).to_owned(), deps.iter().map(|d| (*d).to_owned()).collect()))
+            .map(|(name, dependencies)| {
+                (
+                    (*name).to_owned(),
+                    dependencies
+                        .iter()
+                        .map(|dependency| (*dependency).to_owned())
+                        .collect(),
+                )
+            })
             .collect()
     }
 
     #[test]
-    fn topo_order_puts_dependencies_first() {
-        let order = topo_order(&graph(&[
-            ("c", &["b"]),
-            ("b", &["a"]),
-            ("a", &[]),
-            ("z", &[]),
+    fn topological_order_puts_dependencies_first() {
+        let order = topological_order(&graph(&[
+            ("network", &["subnet"]),
+            ("subnet", &["account"]),
+            ("account", &[]),
+            ("unrelated", &[]),
         ]))
         .unwrap();
-        let pos = |n: &str| order.iter().position(|x| x == n).unwrap();
-        assert!(pos("a") < pos("b"));
-        assert!(pos("b") < pos("c"));
+        let position = |name: &str| order.iter().position(|entry| entry == name).unwrap();
+        assert!(position("account") < position("subnet"));
+        assert!(position("subnet") < position("network"));
         assert_eq!(order.len(), 4);
     }
 
-    fn orphan(resource_type: &str, name: &str, deps: &[&str]) -> ManagedResource {
+    fn orphan(resource_type: &str, name: &str, dependencies: &[&str]) -> ManagedResource {
         ManagedResource {
             address: ResourceAddress::new(resource_type, name),
             provider: "random".into(),
@@ -945,58 +1036,68 @@ mod tests {
             schema_version: 0,
             state: serde_json::json!({}),
             private: Vec::new(),
-            dependencies: deps.iter().map(|d| (*d).to_owned()).collect(),
+            dependencies: dependencies
+                .iter()
+                .map(|dependency| (*dependency).to_owned())
+                .collect(),
         }
     }
 
     #[test]
     fn orphan_graph_keys_by_address_and_ignores_declared_dependencies() {
-        let a = orphan("random_pet", "x", &[]);
-        let b = orphan("random_id", "x", &["x", "still_declared"]);
-        let graph = orphan_graph(&[&a, &b]);
+        let pet = orphan("random_pet", "shared", &[]);
+        let identifier = orphan("random_id", "shared", &["shared", "still_declared"]);
+        let graph = orphan_graph(&[&pet, &identifier]);
         assert_eq!(graph.len(), 2);
-        assert_eq!(graph["random_id.x"], vec!["random_pet.x".to_string()]);
-        assert!(graph["random_pet.x"].is_empty());
-        assert!(topo_order(&graph).is_ok());
+        assert_eq!(
+            graph["random_id.shared"],
+            vec!["random_pet.shared".to_string()]
+        );
+        assert!(graph["random_pet.shared"].is_empty());
+        assert!(topological_order(&graph).is_ok());
     }
 
     #[test]
-    fn topo_order_rejects_cycles_and_unknown_dependencies() {
-        assert!(topo_order(&graph(&[("a", &["b"]), ("b", &["a"])])).is_err());
-        assert!(topo_order(&graph(&[("a", &["missing"])])).is_err());
+    fn topological_order_rejects_cycles_and_unknown_dependencies() {
+        assert!(
+            topological_order(&graph(&[("first", &["second"]), ("second", &["first"])])).is_err()
+        );
+        assert!(topological_order(&graph(&[("first", &["missing"])])).is_err());
     }
 
     #[test]
     fn diagnostics_split_errors_from_warnings() {
         let mut warnings = Vec::new();
-        let warn = Diagnostic {
+        let warning = Diagnostic {
             severity: Severity::Warning as i32,
             summary: "deprecated".into(),
             detail: String::new(),
             attribute: None,
         };
-        check_diagnostics("ctx", std::slice::from_ref(&warn), &mut warnings).unwrap();
-        assert_eq!(warnings, vec!["ctx: deprecated".to_string()]);
+        check_diagnostics("context", std::slice::from_ref(&warning), &mut warnings).unwrap();
+        assert_eq!(warnings, vec!["context: deprecated".to_string()]);
 
-        let err = Diagnostic {
+        let error = Diagnostic {
             severity: Severity::Error as i32,
             summary: "bad".into(),
             detail: "value too long".into(),
-            attribute: Some(proto::AttributePath {
+            attribute: Some(protocol::AttributePath {
                 steps: vec![
-                    proto::AttributePathStep {
-                        selector: Some(proto::Selector::AttributeName("rules".into())),
+                    protocol::AttributePathStep {
+                        selector: Some(protocol::Selector::AttributeName("rules".into())),
                     },
-                    proto::AttributePathStep {
-                        selector: Some(proto::Selector::ElementKeyInt(0)),
+                    protocol::AttributePathStep {
+                        selector: Some(protocol::Selector::ElementKeyInt(0)),
                     },
                 ],
             }),
         };
-        let e = check_diagnostics("ctx", &[warn, err], &mut warnings).unwrap_err();
+        let failure = check_diagnostics("context", &[warning, error], &mut warnings).unwrap_err();
         assert!(
-            e.to_string().contains("bad: value too long (at rules[0])"),
-            "{e}"
+            failure
+                .to_string()
+                .contains("bad: value too long (at rules[0])"),
+            "{failure}"
         );
     }
 
@@ -1008,7 +1109,7 @@ mod tests {
         let plan = Plan {
             tenant: TenantKey::new("example.com/app", "web").unwrap(),
             changes: vec![ResourceChange {
-                address: ResourceAddress::new("random_password", "db"),
+                address: ResourceAddress::new("random_password", "database"),
                 provider: "random".into(),
                 action: Action::Create,
                 before: Value::Null,
@@ -1021,7 +1122,10 @@ mod tests {
             warnings: Vec::new(),
         };
         let text = render_plan(&plan);
-        assert!(text.contains("+ random_password.db (create)"), "{text}");
+        assert!(
+            text.contains("+ random_password.database (create)"),
+            "{text}"
+        );
         assert!(text.contains("+ id = (known after apply)"), "{text}");
         assert!(text.contains("+ secret = (sensitive)"), "{text}");
         assert!(!text.contains("hunter2"), "{text}");

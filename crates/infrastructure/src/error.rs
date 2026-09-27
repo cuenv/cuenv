@@ -3,14 +3,14 @@
 use thiserror::Error;
 
 /// Result alias for this crate.
-pub type Result<T> = std::result::Result<T, InfraError>;
+pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
 
 /// Errors raised while planning or applying infrastructure.
 #[derive(Debug, Error)]
-pub enum InfraError {
-    /// Invalid `infra` configuration.
-    #[error("infra configuration error: {0}")]
-    Config(String),
+pub enum InfrastructureError {
+    /// Invalid `infrastructure` configuration.
+    #[error("infrastructure configuration error: {0}")]
+    Configuration(String),
 
     /// Failure encoding or decoding Terraform values.
     #[error("value codec error: {0}")]
@@ -22,7 +22,7 @@ pub enum InfraError {
 
     /// A gRPC call to a provider failed.
     #[error("provider RPC {method} failed: {status}")]
-    Rpc {
+    RemoteProcedure {
         /// RPC method name.
         method: String,
         /// gRPC status returned by the provider.
@@ -48,14 +48,14 @@ pub enum InfraError {
 
     /// The tenant's state is locked by another run.
     #[error(
-        "state for {tenant} is locked by '{holder}' (lock {lock_id}, acquired {acquired_at}); \
-         run `cuenv infra unlock` if that run is gone"
+        "state for {tenant} is locked by '{holder}' (lock {lock_identifier}, acquired {acquired_at}); \
+         run `cuenv infrastructure unlock` if that run is gone"
     )]
     Locked {
         /// Tenant whose state is locked.
         tenant: String,
         /// Lock identifier.
-        lock_id: String,
+        lock_identifier: String,
         /// Description of the lock holder.
         holder: String,
         /// When the lock was acquired.
@@ -64,7 +64,7 @@ pub enum InfraError {
 
     /// I/O failure.
     #[error("{context}: {source}")]
-    Io {
+    InputOutput {
         /// What cuenv was doing.
         context: String,
         /// Underlying error.
@@ -73,35 +73,35 @@ pub enum InfraError {
     },
 }
 
-impl InfraError {
+impl InfrastructureError {
     /// Build a configuration error.
-    pub fn config(msg: impl Into<String>) -> Self {
-        Self::Config(msg.into())
+    pub fn configuration(message: impl Into<String>) -> Self {
+        Self::Configuration(message.into())
     }
 
     /// Build a codec error.
-    pub fn codec(msg: impl Into<String>) -> Self {
-        Self::Codec(msg.into())
+    pub fn codec(message: impl Into<String>) -> Self {
+        Self::Codec(message.into())
     }
 
     /// Build a plugin error.
-    pub fn plugin(msg: impl Into<String>) -> Self {
-        Self::Plugin(msg.into())
+    pub fn plugin(message: impl Into<String>) -> Self {
+        Self::Plugin(message.into())
     }
 
     /// Build an install error.
-    pub fn install(msg: impl Into<String>) -> Self {
-        Self::Install(msg.into())
+    pub fn install(message: impl Into<String>) -> Self {
+        Self::Install(message.into())
     }
 
     /// Build a state store error.
-    pub fn state(msg: impl Into<String>) -> Self {
-        Self::State(msg.into())
+    pub fn state(message: impl Into<String>) -> Self {
+        Self::State(message.into())
     }
 
     /// Build an I/O error with context.
     pub fn io(context: impl Into<String>, source: std::io::Error) -> Self {
-        Self::Io {
+        Self::InputOutput {
             context: context.into(),
             source,
         }

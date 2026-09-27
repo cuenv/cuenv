@@ -158,7 +158,7 @@ fn test_extract_static_env_vars_skips_secrets() {
         services: HashMap::new(),
         images: HashMap::new(),
         vcs: HashMap::new(),
-        infra: None,
+        infrastructure: None,
     };
 
     let vars = extract_static_env_vars(&cfg);
@@ -195,7 +195,7 @@ fn test_collect_all_env_vars_override() {
         services: HashMap::new(),
         images: HashMap::new(),
         vcs: HashMap::new(),
-        infra: None,
+        infrastructure: None,
     };
 
     let hook_env = HashMap::from([

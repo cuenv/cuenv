@@ -473,24 +473,27 @@ supervisor consumes that request to stop and re-spawn the service.
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 
-### `cuenv infra`
+### `cuenv infrastructure`
 
-Plan and apply infrastructure declared in the project's `infra` block by
+Plan and apply infrastructure declared in the project's `infrastructure` block by
 driving Terraform provider plugins over gRPC. State is stored in the
 configured Turso database, keyed by the CUE module path and project name.
-See [Manage infrastructure](/how-to/infra/).
+See [Manage infrastructure](/how-to/infrastructure/).
+
+`cuenv i` is the short form of `cuenv infrastructure` (for example
+`cuenv i apply`).
 
 ```bash
-cuenv infra plan    [OPTIONS]
-cuenv infra apply   [OPTIONS] [--auto-approve]
-cuenv infra destroy [OPTIONS] [--auto-approve]
-cuenv infra state   [OPTIONS]
-cuenv infra unlock  [OPTIONS]
+cuenv infrastructure plan    [OPTIONS]
+cuenv infrastructure apply   [OPTIONS] [--auto-approve]
+cuenv infrastructure destroy [OPTIONS] [--auto-approve]
+cuenv infrastructure state   [OPTIONS]
+cuenv infrastructure unlock  [OPTIONS]
 ```
 
 - `plan`: refresh recorded resources and show the changes `apply` would make.
 - `apply`: take the project's state lock, re-plan, confirm, and converge.
-  Resources removed from `infra.resources` are deleted.
+  Resources removed from `infrastructure.resources` are deleted.
 - `destroy`: delete every managed resource recorded for the project.
 - `state`: list managed resources recorded for the project.
 - `unlock`: force-release the project's state lock after an interrupted run.
@@ -500,10 +503,11 @@ cuenv infra unlock  [OPTIONS]
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `--auto-approve` (`apply`, `destroy`): Skip the confirmation prompt.
-  Required when stdin is not a terminal.
+  Required when standard input is not a terminal.
 
-The Turso auth token is read from the environment variable named by
-`infra.state.turso.authTokenEnv` (default `TURSO_AUTH_TOKEN`). Provider
+The Turso authentication token is read from the environment variable named by
+`infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default
+`TURSO_AUTH_TOKEN`). Provider
 downloads are cached in `TF_PLUGIN_CACHE_DIR` when set.
 
 ### `cuenv shell`

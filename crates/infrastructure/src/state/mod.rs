@@ -18,14 +18,14 @@ use crate::error::Result;
 use crate::tenant::TenantKey;
 
 pub use memory::MemoryStateStore;
-pub use turso::{TursoConfig, TursoStateStore};
+pub use turso::{TursoConfiguration, TursoStateStore};
 
 /// Address of a managed resource within a tenant: `type.name`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ResourceAddress {
     /// Resource type, e.g. `random_pet`.
     pub resource_type: String,
-    /// Resource name from the `infra.resources` map.
+    /// Resource name from the `infrastructure.resources` map.
     pub name: String,
 }
 
@@ -40,8 +40,8 @@ impl ResourceAddress {
 }
 
 impl fmt::Display for ResourceAddress {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}.{}", self.resource_type, self.name)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}.{}", self.resource_type, self.name)
     }
 }
 
@@ -50,7 +50,7 @@ impl fmt::Display for ResourceAddress {
 pub struct ManagedResource {
     /// Resource address.
     pub address: ResourceAddress,
-    /// Local provider name from `infra.providers`.
+    /// Local provider name from `infrastructure.providers`.
     pub provider: String,
     /// Provider source address, e.g. `registry.terraform.io/hashicorp/random`.
     pub provider_source: String,
@@ -69,7 +69,7 @@ pub struct ManagedResource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateLock {
     /// Lock identifier, needed to release it.
-    pub lock_id: String,
+    pub lock_identifier: String,
 }
 
 /// Storage backend for managed resource state.
@@ -92,7 +92,7 @@ pub trait StateStore: Send + Sync {
 
     /// Acquire the tenant's exclusive lock.
     ///
-    /// Fails with [`crate::InfraError::Locked`] if another run holds it.
+    /// Fails with [`crate::InfrastructureError::Locked`] if another run holds it.
     async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock>;
 
     /// Release a lock acquired with [`StateStore::lock`].
@@ -107,12 +107,17 @@ mod base64_bytes {
     use base64::engine::general_purpose::STANDARD;
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(&STANDARD.encode(bytes))
+    pub fn serialize<Output: Serializer>(
+        bytes: &[u8],
+        serializer: Output,
+    ) -> Result<Output::Ok, Output::Error> {
+        serializer.serialize_str(&STANDARD.encode(bytes))
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-        let encoded = String::deserialize(d)?;
+    pub fn deserialize<'input, Input: Deserializer<'input>>(
+        deserializer: Input,
+    ) -> Result<Vec<u8>, Input::Error> {
+        let encoded = String::deserialize(deserializer)?;
         STANDARD.decode(encoded).map_err(serde::de::Error::custom)
     }
 }

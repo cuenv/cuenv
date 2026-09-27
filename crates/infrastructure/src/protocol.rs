@@ -8,8 +8,9 @@
 //!
 //! Protocols 5 and 6 are wire-identical for every managed-resource RPC
 //! used here. They differ in RPC names (see [`crate::plugin`]) and in
-//! `Schema.Attribute`, where tag 10 is `write_only` in v5 but the nested
-//! attribute type in v6, so schema messages exist once per protocol.
+//! `Schema.Attribute`, where tag 10 is `write_only` in protocol 5 but the
+//! nested attribute type in protocol 6, so schema messages exist once per
+//! protocol.
 //!
 //! `required` and `write_only` attribute flags are not decoded: required is
 //! implied by neither optional nor computed, and cuenv advertises no
@@ -17,11 +18,11 @@
 
 use std::collections::HashMap;
 
-/// Opaque encoding of a Terraform value. cuenv always sends msgpack.
+/// Opaque encoding of a Terraform value. cuenv always sends MessagePack.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct DynamicValue {
     #[prost(bytes = "vec", tag = "1")]
-    pub msgpack: Vec<u8>,
+    pub message_pack: Vec<u8>,
     #[prost(bytes = "vec", tag = "2")]
     pub json: Vec<u8>,
 }
@@ -91,7 +92,8 @@ pub struct ClientCapabilities {
     pub write_only_attributes_allowed: bool,
 }
 
-/// Nesting mode shared by nested blocks (v5, v6) and nested attributes (v6).
+/// Nesting mode shared by nested blocks (protocols 5 and 6) and nested
+/// attributes (protocol 6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, prost::Enumeration)]
 #[repr(i32)]
 pub enum NestingMode {
@@ -114,29 +116,29 @@ pub struct StopResponse {
     pub error: String,
 }
 
-/// `ValidateProviderConfig.Request` (v6) / `PrepareProviderConfig.Request` (v5).
+/// `ValidateProviderConfig.Request` (protocol 6) / `PrepareProviderConfig.Request` (protocol 5).
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ValidateProviderConfigRequest {
     #[prost(message, optional, tag = "1")]
-    pub config: Option<DynamicValue>,
+    pub configuration: Option<DynamicValue>,
 }
 
-/// `ValidateProviderConfig.Response` (v6) / `PrepareProviderConfig.Response` (v5).
+/// `ValidateProviderConfig.Response` (protocol 6) / `PrepareProviderConfig.Response` (protocol 5).
 ///
-/// v5 additionally returns `prepared_config` at tag 1, which cuenv ignores.
+/// Protocol 5 additionally returns `prepared_config` at tag 1, which cuenv ignores.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ValidateProviderConfigResponse {
     #[prost(message, repeated, tag = "2")]
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// `ConfigureProvider.Request` (v6) / `Configure.Request` (v5).
+/// `ConfigureProvider.Request` (protocol 6) / `Configure.Request` (protocol 5).
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ConfigureProviderRequest {
     #[prost(string, tag = "1")]
     pub terraform_version: String,
     #[prost(message, optional, tag = "2")]
-    pub config: Option<DynamicValue>,
+    pub configuration: Option<DynamicValue>,
     #[prost(message, optional, tag = "3")]
     pub client_capabilities: Option<ClientCapabilities>,
 }
@@ -148,13 +150,13 @@ pub struct DiagnosticsResponse {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-/// `ValidateResourceConfig.Request` (v6) / `ValidateResourceTypeConfig.Request` (v5).
+/// `ValidateResourceConfig.Request` (protocol 6) / `ValidateResourceTypeConfig.Request` (protocol 5).
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ValidateResourceConfigRequest {
     #[prost(string, tag = "1")]
     pub type_name: String,
     #[prost(message, optional, tag = "2")]
-    pub config: Option<DynamicValue>,
+    pub configuration: Option<DynamicValue>,
     #[prost(message, optional, tag = "3")]
     pub client_capabilities: Option<ClientCapabilities>,
 }
@@ -213,7 +215,7 @@ pub struct PlanResourceChangeRequest {
     #[prost(message, optional, tag = "3")]
     pub proposed_new_state: Option<DynamicValue>,
     #[prost(message, optional, tag = "4")]
-    pub config: Option<DynamicValue>,
+    pub configuration: Option<DynamicValue>,
     #[prost(bytes = "vec", tag = "5")]
     pub prior_private: Vec<u8>,
     #[prost(message, optional, tag = "7")]
@@ -245,7 +247,7 @@ pub struct ApplyResourceChangeRequest {
     #[prost(message, optional, tag = "3")]
     pub planned_state: Option<DynamicValue>,
     #[prost(message, optional, tag = "4")]
-    pub config: Option<DynamicValue>,
+    pub configuration: Option<DynamicValue>,
     #[prost(bytes = "vec", tag = "5")]
     pub planned_private: Vec<u8>,
 }
@@ -264,7 +266,7 @@ pub struct ApplyResourceChangeResponse {
 }
 
 /// Schema messages for protocol 6.
-pub mod v6 {
+pub mod version6 {
     use super::{Diagnostic, NestingMode};
     use std::collections::HashMap;
 
@@ -336,7 +338,7 @@ pub mod v6 {
 }
 
 /// Schema messages for protocol 5.
-pub mod v5 {
+pub mod version5 {
     use super::{Diagnostic, NestingMode};
     use std::collections::HashMap;
 

@@ -1,0 +1,898 @@
+//! Minimal implementation of Terraform's `cty` type system.
+//!
+//! Terraform providers exchange values as MessagePack (and state as JSON)
+//! using a *type-directed* encoding: the same bytes mean different things
+//! depending on the schema type they are decoded against. This module
+//! implements exactly enough of `github.com/zclconf/go-cty` to:
+//!
+//! - parse the JSON type specifications found in provider schemas,
+//! - convert CUE-evaluated JSON configuration into typed values,
+//! - encode/decode values to and from cty MessagePack, including unknown
+//!   values and `DynamicPseudoType` wrappers, and
+//! - render values as cty JSON for durable state storage.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde_json::Number;
+
+use crate::error::{InfrastructureError, Result};
+
+/// MessagePack extension code cty uses for unknown values.
+const UNKNOWN_EXTENSION: i8 = 0;
+
+/// A cty type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Type {
+    /// `bool`
+    Boolean,
+    /// `number`
+    Number,
+    /// `string`
+    String,
+    /// `dynamic` — the concrete type travels alongside the value.
+    Dynamic,
+    /// `list(T)`
+    List(Box<Self>),
+    /// `set(T)`
+    Set(Box<Self>),
+    /// `map(T)`
+    Map(Box<Self>),
+    /// `object({...})`
+    Object(BTreeMap<String, Self>),
+    /// `tuple([...])`
+    Tuple(Vec<Self>),
+}
+
+impl Type {
+    /// Parse a cty JSON type specification such as `"string"` or
+    /// `["list", ["object", {"a": "number"}]]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Codec`] when the specification is malformed.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self> {
+        let json: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+            InfrastructureError::codec(format!("invalid cty type JSON: {error}"))
+        })?;
+        Self::from_json(&json)
+    }
+
+    /// Parse a cty JSON type specification from an already-decoded value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Codec`] when the specification is malformed.
+    pub fn from_json(json: &serde_json::Value) -> Result<Self> {
+        use serde_json::Value as Json;
+        match json {
+            Json::String(primitive) => match primitive.as_str() {
+                "bool" => Ok(Self::Boolean),
+                "number" => Ok(Self::Number),
+                "string" => Ok(Self::String),
+                "dynamic" => Ok(Self::Dynamic),
+                other => Err(InfrastructureError::codec(format!(
+                    "unknown cty primitive '{other}'"
+                ))),
+            },
+            Json::Array(parts) => {
+                let kind = parts.first().and_then(Json::as_str).ok_or_else(|| {
+                    InfrastructureError::codec("cty type array must start with a kind")
+                })?;
+                let argument = parts.get(1).ok_or_else(|| {
+                    InfrastructureError::codec(format!("cty '{kind}' type missing argument"))
+                })?;
+                match kind {
+                    "list" => Ok(Self::List(Box::new(Self::from_json(argument)?))),
+                    "set" => Ok(Self::Set(Box::new(Self::from_json(argument)?))),
+                    "map" => Ok(Self::Map(Box::new(Self::from_json(argument)?))),
+                    "object" => {
+                        let attributes = argument.as_object().ok_or_else(|| {
+                            InfrastructureError::codec(
+                                "cty object type attributes must be a JSON object",
+                            )
+                        })?;
+                        let attributes = attributes
+                            .iter()
+                            .map(|(name, specification)| {
+                                Ok((name.clone(), Self::from_json(specification)?))
+                            })
+                            .collect::<Result<_>>()?;
+                        Ok(Self::Object(attributes))
+                    }
+                    "tuple" => {
+                        let element_types = argument.as_array().ok_or_else(|| {
+                            InfrastructureError::codec(
+                                "cty tuple type elements must be a JSON array",
+                            )
+                        })?;
+                        Ok(Self::Tuple(
+                            element_types
+                                .iter()
+                                .map(Self::from_json)
+                                .collect::<Result<_>>()?,
+                        ))
+                    }
+                    other => Err(InfrastructureError::codec(format!(
+                        "unknown cty type kind '{other}'"
+                    ))),
+                }
+            }
+            other => Err(InfrastructureError::codec(format!(
+                "unsupported cty type specification: {other}"
+            ))),
+        }
+    }
+
+    /// Render this type as a cty JSON type specification.
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::{Value as Json, json};
+        match self {
+            Self::Boolean => Json::from("bool"),
+            Self::Number => Json::from("number"),
+            Self::String => Json::from("string"),
+            Self::Dynamic => Json::from("dynamic"),
+            Self::List(element_type) => json!(["list", element_type.to_json()]),
+            Self::Set(element_type) => json!(["set", element_type.to_json()]),
+            Self::Map(element_type) => json!(["map", element_type.to_json()]),
+            Self::Object(attributes) => {
+                let attributes: serde_json::Map<String, Json> = attributes
+                    .iter()
+                    .map(|(name, attribute_type)| (name.clone(), attribute_type.to_json()))
+                    .collect();
+                json!(["object", attributes])
+            }
+            Self::Tuple(element_types) => {
+                json!([
+                    "tuple",
+                    element_types.iter().map(Self::to_json).collect::<Vec<_>>()
+                ])
+            }
+        }
+    }
+}
+
+/// A cty value. Collections are untyped here; the [`Type`] they are
+/// encoded against supplies the distinction between list, set and tuple,
+/// and between map and object.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    /// A null value of any type.
+    Null,
+    /// A value that will only be known after apply.
+    Unknown,
+    /// A boolean.
+    Boolean(bool),
+    /// A number.
+    Number(Number),
+    /// A string.
+    String(String),
+    /// A list, set or tuple.
+    List(Vec<Self>),
+    /// A map or object.
+    Object(BTreeMap<String, Self>),
+}
+
+impl Value {
+    /// Whether this value is null.
+    #[must_use]
+    pub const fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+
+    /// Whether this value, or anything nested inside it, is unknown.
+    #[must_use]
+    pub fn contains_unknown(&self) -> bool {
+        match self {
+            Self::Unknown => true,
+            Self::List(items) => items.iter().any(Self::contains_unknown),
+            Self::Object(attributes) => attributes.values().any(Self::contains_unknown),
+            _ => false,
+        }
+    }
+
+    /// Look up an attribute of an object value.
+    #[must_use]
+    pub fn attribute(&self, name: &str) -> Option<&Self> {
+        match self {
+            Self::Object(attributes) => attributes.get(name),
+            _ => None,
+        }
+    }
+
+    /// Convert CUE-evaluated JSON into a value conforming to `value_type`.
+    ///
+    /// Object attributes missing from the JSON become null, mirroring how
+    /// Terraform decodes a configuration block with unset arguments.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] when the JSON cannot be converted.
+    pub fn from_configuration_json(json: &serde_json::Value, value_type: &Type) -> Result<Self> {
+        from_configuration_json(json, value_type, &mut Vec::new())
+    }
+
+    /// Render this value as cty JSON (the format Terraform stores state in).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Codec`] if the value contains unknowns, which
+    /// can never be persisted.
+    pub fn to_state_json(&self, value_type: &Type) -> Result<serde_json::Value> {
+        to_state_json(self, value_type)
+    }
+
+    /// Render this value as plain JSON for display. Unknown values render
+    /// as the string `(known after apply)`.
+    #[must_use]
+    pub fn to_display_json(&self) -> serde_json::Value {
+        use serde_json::Value as Json;
+        match self {
+            Self::Null => Json::Null,
+            Self::Unknown => Json::from("(known after apply)"),
+            Self::Boolean(boolean) => Json::Bool(*boolean),
+            Self::Number(number) => Json::Number(number.clone()),
+            Self::String(text) => Json::String(text.clone()),
+            Self::List(items) => Json::Array(items.iter().map(Self::to_display_json).collect()),
+            Self::Object(attributes) => Json::Object(
+                attributes
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.to_display_json()))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unknown => formatter.write_str("(known after apply)"),
+            Self::Null => formatter.write_str("null"),
+            other => write!(formatter, "{}", other.to_display_json()),
+        }
+    }
+}
+
+/// Compare two values of type `value_type`, treating set elements as unordered.
+///
+/// Providers may return set elements in any order, so positional equality
+/// would report perpetual differences.
+#[must_use]
+pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> bool {
+    match (left, right, value_type) {
+        (Value::Unknown, _, _) | (_, Value::Unknown, _) => false,
+        (Value::List(left_elements), Value::List(right_elements), Type::Set(element_type)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements.iter().all(|element| {
+                    let want = left_elements
+                        .iter()
+                        .filter(|candidate| semantically_equal(candidate, element, element_type))
+                        .count();
+                    let have = right_elements
+                        .iter()
+                        .filter(|candidate| semantically_equal(candidate, element, element_type))
+                        .count();
+                    want == have
+                })
+        }
+        (Value::List(left_elements), Value::List(right_elements), Type::List(element_type)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements
+                    .iter()
+                    .zip(right_elements)
+                    .all(|(left_element, right_element)| {
+                        semantically_equal(left_element, right_element, element_type)
+                    })
+        }
+        (Value::List(left_elements), Value::List(right_elements), Type::Tuple(element_types)) => {
+            left_elements.len() == right_elements.len()
+                && left_elements
+                    .iter()
+                    .zip(right_elements)
+                    .zip(element_types)
+                    .all(|((left_element, right_element), element_type)| {
+                        semantically_equal(left_element, right_element, element_type)
+                    })
+        }
+        (Value::Object(left_entries), Value::Object(right_entries), Type::Map(element_type)) => {
+            left_entries.len() == right_entries.len()
+                && left_entries.iter().all(|(key, left_element)| {
+                    right_entries.get(key).is_some_and(|right_element| {
+                        semantically_equal(left_element, right_element, element_type)
+                    })
+                })
+        }
+        (
+            Value::Object(left_entries),
+            Value::Object(right_entries),
+            Type::Object(attribute_types),
+        ) => attribute_types.iter().all(|(name, attribute_type)| {
+            semantically_equal(
+                left_entries.get(name).unwrap_or(&Value::Null),
+                right_entries.get(name).unwrap_or(&Value::Null),
+                attribute_type,
+            )
+        }),
+        (Value::Number(left_number), Value::Number(right_number), _) => {
+            left_number == right_number
+                || left_number.as_f64().zip(right_number.as_f64()).is_some_and(
+                    |(left_float, right_float)| left_float.total_cmp(&right_float).is_eq(),
+                )
+        }
+        (left, right, Type::Dynamic) => {
+            let value_type = infer_type(left);
+            value_type == infer_type(right) && semantically_equal(left, right, &value_type)
+        }
+        (left, right, _) => left == right,
+    }
+}
+
+fn path_string(path: &[String]) -> String {
+    if path.is_empty() {
+        "<root>".to_string()
+    } else {
+        path.join(".")
+    }
+}
+
+fn from_configuration_json(
+    json: &serde_json::Value,
+    value_type: &Type,
+    path: &mut Vec<String>,
+) -> Result<Value> {
+    use serde_json::Value as Json;
+    if json.is_null() {
+        return Ok(Value::Null);
+    }
+    let mismatch = |expected: &str, path: &[String]| {
+        InfrastructureError::configuration(format!(
+            "{}: expected {expected}, got {json}",
+            path_string(path)
+        ))
+    };
+    match value_type {
+        Type::Dynamic => Ok(infer_from_json(json)),
+        Type::Boolean => match json {
+            Json::Bool(boolean) => Ok(Value::Boolean(*boolean)),
+            Json::String(text) if text == "true" => Ok(Value::Boolean(true)),
+            Json::String(text) if text == "false" => Ok(Value::Boolean(false)),
+            _ => Err(mismatch("bool", path)),
+        },
+        Type::Number => match json {
+            Json::Number(number) => Ok(Value::Number(number.clone())),
+            Json::String(text) => text
+                .parse::<Number>()
+                .map(Value::Number)
+                .map_err(|_| mismatch("number", path)),
+            _ => Err(mismatch("number", path)),
+        },
+        Type::String => match json {
+            Json::String(text) => Ok(Value::String(text.clone())),
+            Json::Number(number) => Ok(Value::String(number.to_string())),
+            Json::Bool(boolean) => Ok(Value::String(boolean.to_string())),
+            _ => Err(mismatch("string", path)),
+        },
+        Type::List(element_type) | Type::Set(element_type) => {
+            let items = json.as_array().ok_or_else(|| mismatch("list", path))?;
+            let mut converted = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                path.push(index.to_string());
+                converted.push(from_configuration_json(item, element_type, path)?);
+                path.pop();
+            }
+            Ok(Value::List(converted))
+        }
+        Type::Tuple(element_types) => {
+            let items = json.as_array().ok_or_else(|| mismatch("tuple", path))?;
+            if items.len() != element_types.len() {
+                return Err(mismatch(
+                    &format!("tuple of {} elements", element_types.len()),
+                    path,
+                ));
+            }
+            let mut converted = Vec::with_capacity(items.len());
+            for (index, (item, element_type)) in items.iter().zip(element_types).enumerate() {
+                path.push(index.to_string());
+                converted.push(from_configuration_json(item, element_type, path)?);
+                path.pop();
+            }
+            Ok(Value::List(converted))
+        }
+        Type::Map(element_type) => {
+            let object = json.as_object().ok_or_else(|| mismatch("map", path))?;
+            let mut converted = BTreeMap::new();
+            for (key, element_json) in object {
+                path.push(key.clone());
+                converted.insert(
+                    key.clone(),
+                    from_configuration_json(element_json, element_type, path)?,
+                );
+                path.pop();
+            }
+            Ok(Value::Object(converted))
+        }
+        Type::Object(attributes) => {
+            let object = json.as_object().ok_or_else(|| mismatch("object", path))?;
+            if let Some(extra) = object.keys().find(|key| !attributes.contains_key(*key)) {
+                return Err(InfrastructureError::configuration(format!(
+                    "{}: unsupported argument '{extra}'",
+                    path_string(path)
+                )));
+            }
+            let mut converted = BTreeMap::new();
+            for (name, attribute_type) in attributes {
+                let value = match object.get(name) {
+                    Some(attribute_json) => {
+                        path.push(name.clone());
+                        let value = from_configuration_json(attribute_json, attribute_type, path)?;
+                        path.pop();
+                        value
+                    }
+                    None => Value::Null,
+                };
+                converted.insert(name.clone(), value);
+            }
+            Ok(Value::Object(converted))
+        }
+    }
+}
+
+fn infer_from_json(json: &serde_json::Value) -> Value {
+    use serde_json::Value as Json;
+    match json {
+        Json::Null => Value::Null,
+        Json::Bool(boolean) => Value::Boolean(*boolean),
+        Json::Number(number) => Value::Number(number.clone()),
+        Json::String(text) => Value::String(text.clone()),
+        Json::Array(items) => Value::List(items.iter().map(infer_from_json).collect()),
+        Json::Object(object) => Value::Object(
+            object
+                .iter()
+                .map(|(key, element_json)| (key.clone(), infer_from_json(element_json)))
+                .collect(),
+        ),
+    }
+}
+
+/// Infer the concrete type of a value held in a `dynamic` slot.
+fn infer_type(value: &Value) -> Type {
+    match value {
+        Value::Null | Value::Unknown => Type::Dynamic,
+        Value::Boolean(_) => Type::Boolean,
+        Value::Number(_) => Type::Number,
+        Value::String(_) => Type::String,
+        Value::List(items) => Type::Tuple(items.iter().map(infer_type).collect()),
+        Value::Object(attributes) => Type::Object(
+            attributes
+                .iter()
+                .map(|(key, element)| (key.clone(), infer_type(element)))
+                .collect(),
+        ),
+    }
+}
+
+fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> {
+    use serde_json::Value as Json;
+    match (value, value_type) {
+        (Value::Null, _) => Ok(Json::Null),
+        (Value::Unknown, _) => Err(InfrastructureError::codec(
+            "cannot persist a value that is unknown after apply",
+        )),
+        (dynamic_value, Type::Dynamic) => {
+            let concrete = infer_type(dynamic_value);
+            Ok(serde_json::json!({
+                "value": to_state_json(dynamic_value, &concrete)?,
+                "type": concrete.to_json(),
+            }))
+        }
+        (Value::Boolean(boolean), _) => Ok(Json::Bool(*boolean)),
+        (Value::Number(number), _) => Ok(Json::Number(number.clone())),
+        (Value::String(text), _) => Ok(Json::String(text.clone())),
+        (Value::List(items), Type::List(element_type) | Type::Set(element_type)) => {
+            Ok(Json::Array(
+                items
+                    .iter()
+                    .map(|item| to_state_json(item, element_type))
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (Value::List(items), Type::Tuple(element_types)) => Ok(Json::Array(
+            items
+                .iter()
+                .zip(element_types)
+                .map(|(item, element_type)| to_state_json(item, element_type))
+                .collect::<Result<_>>()?,
+        )),
+        (Value::Object(attributes), Type::Map(element_type)) => Ok(Json::Object(
+            attributes
+                .iter()
+                .map(|(key, element)| Ok((key.clone(), to_state_json(element, element_type)?)))
+                .collect::<Result<_>>()?,
+        )),
+        (Value::Object(attributes), Type::Object(attribute_types)) => Ok(Json::Object(
+            attribute_types
+                .iter()
+                .map(|(name, attribute_type)| {
+                    let attribute = attributes.get(name).unwrap_or(&Value::Null);
+                    Ok((name.clone(), to_state_json(attribute, attribute_type)?))
+                })
+                .collect::<Result<_>>()?,
+        )),
+        (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
+            "value {mismatched} does not conform to type {}",
+            expected_type.to_json()
+        ))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MessagePack
+// ---------------------------------------------------------------------------
+
+/// Encode a value as cty MessagePack against `value_type`.
+///
+/// # Errors
+///
+/// Returns [`InfrastructureError::Codec`] if the value does not conform to the type.
+pub fn to_message_pack(value: &Value, value_type: &Type) -> Result<Vec<u8>> {
+    let encoded = encode(value, value_type)?;
+    let mut buffer = Vec::new();
+    rmpv::encode::write_value(&mut buffer, &encoded).map_err(|error| {
+        InfrastructureError::codec(format!("MessagePack encode failed: {error}"))
+    })?;
+    Ok(buffer)
+}
+
+/// Decode cty MessagePack against `value_type`. Empty input decodes to null.
+///
+/// # Errors
+///
+/// Returns [`InfrastructureError::Codec`] if the bytes are not valid for the type.
+pub fn from_message_pack(bytes: &[u8], value_type: &Type) -> Result<Value> {
+    if bytes.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut cursor = bytes;
+    let raw = rmpv::decode::read_value(&mut cursor).map_err(|error| {
+        InfrastructureError::codec(format!("MessagePack decode failed: {error}"))
+    })?;
+    decode(&raw, value_type)
+}
+
+fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
+    use rmpv::Value as MessagePack;
+    match (value, value_type) {
+        (Value::Null, _) => Ok(MessagePack::Nil),
+        (Value::Unknown, _) => Ok(MessagePack::Ext(UNKNOWN_EXTENSION, Vec::new())),
+        (dynamic_value, Type::Dynamic) => {
+            let concrete = infer_type(dynamic_value);
+            let type_json = serde_json::to_vec(&concrete.to_json()).map_err(|error| {
+                InfrastructureError::codec(format!("encode dynamic type: {error}"))
+            })?;
+            Ok(MessagePack::Array(vec![
+                MessagePack::Binary(type_json),
+                encode(dynamic_value, &concrete)?,
+            ]))
+        }
+        (Value::Boolean(boolean), Type::Boolean) => Ok(MessagePack::Boolean(*boolean)),
+        (Value::Number(number), Type::Number) => Ok(encode_number(number)),
+        (Value::String(text), Type::String) => Ok(MessagePack::String(text.clone().into())),
+        (Value::List(items), Type::List(element_type) | Type::Set(element_type)) => {
+            Ok(MessagePack::Array(
+                items
+                    .iter()
+                    .map(|item| encode(item, element_type))
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (Value::List(items), Type::Tuple(element_types)) if items.len() == element_types.len() => {
+            Ok(MessagePack::Array(
+                items
+                    .iter()
+                    .zip(element_types)
+                    .map(|(item, element_type)| encode(item, element_type))
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (Value::Object(attributes), Type::Map(element_type)) => Ok(MessagePack::Map(
+            attributes
+                .iter()
+                .map(|(key, element)| {
+                    Ok((
+                        MessagePack::String(key.clone().into()),
+                        encode(element, element_type)?,
+                    ))
+                })
+                .collect::<Result<_>>()?,
+        )),
+        (Value::Object(attributes), Type::Object(attribute_types)) => {
+            if let Some(extra) = attributes
+                .keys()
+                .find(|name| !attribute_types.contains_key(*name))
+            {
+                return Err(InfrastructureError::codec(format!(
+                    "unexpected attribute '{extra}'"
+                )));
+            }
+            Ok(MessagePack::Map(
+                attribute_types
+                    .iter()
+                    .map(|(name, attribute_type)| {
+                        let attribute = attributes.get(name).unwrap_or(&Value::Null);
+                        Ok((
+                            MessagePack::String(name.clone().into()),
+                            encode(attribute, attribute_type)?,
+                        ))
+                    })
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
+            "value {mismatched} does not conform to type {}",
+            expected_type.to_json()
+        ))),
+    }
+}
+
+fn encode_number(number: &Number) -> rmpv::Value {
+    if let Some(signed) = number.as_i64() {
+        rmpv::Value::from(signed)
+    } else if let Some(unsigned) = number.as_u64() {
+        rmpv::Value::from(unsigned)
+    } else if let Some(float) = number.as_f64() {
+        rmpv::Value::F64(float)
+    } else {
+        rmpv::Value::String(number.to_string().into())
+    }
+}
+
+fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
+    use rmpv::Value as MessagePack;
+    match (raw, value_type) {
+        (MessagePack::Nil, _) => Ok(Value::Null),
+        (MessagePack::Ext(..), _) => Ok(Value::Unknown),
+        (MessagePack::Array(parts), Type::Dynamic) if parts.len() == 2 => {
+            let type_bytes: &[u8] = match &parts[0] {
+                MessagePack::Binary(binary) => binary,
+                MessagePack::String(text) => text.as_bytes(),
+                other => {
+                    return Err(InfrastructureError::codec(format!(
+                        "dynamic value type must be bytes, got {other}"
+                    )));
+                }
+            };
+            let concrete = Type::from_json_bytes(type_bytes)?;
+            decode(&parts[1], &concrete)
+        }
+        (MessagePack::Boolean(boolean), Type::Boolean) => Ok(Value::Boolean(*boolean)),
+        (MessagePack::Integer(integer), Type::Number) => integer
+            .as_i64()
+            .map(Number::from)
+            .or_else(|| integer.as_u64().map(Number::from))
+            .map(Value::Number)
+            .ok_or_else(|| InfrastructureError::codec("integer out of range")),
+        (MessagePack::F64(float), Type::Number) => float_number(*float),
+        (MessagePack::F32(float), Type::Number) => float_number(f64::from(*float)),
+        (MessagePack::String(text), Type::Number) => text
+            .as_str()
+            .and_then(|string| string.parse::<Number>().ok())
+            .map(Value::Number)
+            .ok_or_else(|| InfrastructureError::codec("invalid number string")),
+        (MessagePack::String(text), Type::String) => text
+            .as_str()
+            .map(|string| Value::String(string.to_string()))
+            .ok_or_else(|| InfrastructureError::codec("string is not valid UTF-8")),
+        (MessagePack::Array(items), Type::List(element_type) | Type::Set(element_type)) => {
+            Ok(Value::List(
+                items
+                    .iter()
+                    .map(|item| decode(item, element_type))
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (MessagePack::Array(items), Type::Tuple(element_types))
+            if items.len() == element_types.len() =>
+        {
+            Ok(Value::List(
+                items
+                    .iter()
+                    .zip(element_types)
+                    .map(|(item, element_type)| decode(item, element_type))
+                    .collect::<Result<_>>()?,
+            ))
+        }
+        (MessagePack::Map(entries), Type::Map(element_type)) => Ok(Value::Object(
+            entries
+                .iter()
+                .map(|(raw_key, raw_element)| {
+                    Ok((map_key(raw_key)?, decode(raw_element, element_type)?))
+                })
+                .collect::<Result<_>>()?,
+        )),
+        (MessagePack::Map(entries), Type::Object(attribute_types)) => {
+            let mut decoded: BTreeMap<String, Value> = attribute_types
+                .keys()
+                .map(|name| (name.clone(), Value::Null))
+                .collect();
+            for (raw_key, raw_attribute) in entries {
+                let key = map_key(raw_key)?;
+                let attribute_type = attribute_types.get(&key).ok_or_else(|| {
+                    InfrastructureError::codec(format!("unexpected attribute '{key}'"))
+                })?;
+                decoded.insert(key, decode(raw_attribute, attribute_type)?);
+            }
+            Ok(Value::Object(decoded))
+        }
+        (other, expected_type) => Err(InfrastructureError::codec(format!(
+            "MessagePack value {other} does not match type {}",
+            expected_type.to_json()
+        ))),
+    }
+}
+
+fn float_number(float: f64) -> Result<Value> {
+    Number::from_f64(float)
+        .map(Value::Number)
+        .ok_or_else(|| InfrastructureError::codec(format!("non-finite number {float}")))
+}
+
+fn map_key(key: &rmpv::Value) -> Result<String> {
+    key.as_str()
+        .map(str::to_string)
+        .ok_or_else(|| InfrastructureError::codec(format!("map key must be a string, got {key}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn object_type() -> Type {
+        Type::from_json(&json!(["object", {
+            "id": "string",
+            "length": "number",
+            "keepers": ["map", "string"],
+            "tags": ["set", "string"],
+            "extra": "dynamic",
+        }]))
+        .unwrap()
+    }
+
+    #[test]
+    fn type_json_round_trips() {
+        let value_type = object_type();
+        assert_eq!(Type::from_json(&value_type.to_json()).unwrap(), value_type);
+    }
+
+    #[test]
+    fn configuration_json_fills_missing_attributes_with_null() {
+        let value = Value::from_configuration_json(&json!({"length": 2}), &object_type()).unwrap();
+        assert_eq!(value.attribute("length"), Some(&Value::Number(2.into())));
+        assert_eq!(value.attribute("id"), Some(&Value::Null));
+        assert_eq!(value.attribute("keepers"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn configuration_json_rejects_unknown_arguments() {
+        let error =
+            Value::from_configuration_json(&json!({"nope": 1}), &object_type()).unwrap_err();
+        assert!(
+            error.to_string().contains("unsupported argument 'nope'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn configuration_json_converts_primitives_like_terraform() {
+        let value =
+            Value::from_configuration_json(&json!({"id": 5, "length": "3"}), &object_type())
+                .unwrap();
+        assert_eq!(value.attribute("id"), Some(&Value::String("5".into())));
+        assert_eq!(value.attribute("length"), Some(&Value::Number(3.into())));
+    }
+
+    #[test]
+    fn message_pack_round_trips_including_dynamic_and_unknown() {
+        let value_type = object_type();
+        let value = Value::from_configuration_json(
+            &json!({
+                "id": "abc",
+                "length": 2.5,
+                "keepers": {"owner": "platform"},
+                "tags": ["blue", "green"],
+                "extra": {"nested": [1, true]},
+            }),
+            &value_type,
+        )
+        .unwrap();
+        let bytes = to_message_pack(&value, &value_type).unwrap();
+        assert_eq!(from_message_pack(&bytes, &value_type).unwrap(), value);
+
+        let mut with_unknown = value;
+        if let Value::Object(attributes) = &mut with_unknown {
+            attributes.insert("id".into(), Value::Unknown);
+        }
+        let bytes = to_message_pack(&with_unknown, &value_type).unwrap();
+        let decoded = from_message_pack(&bytes, &value_type).unwrap();
+        assert!(decoded.contains_unknown());
+        assert_eq!(decoded, with_unknown);
+    }
+
+    #[test]
+    fn message_pack_objects_encode_every_attribute_in_sorted_order() {
+        let value_type =
+            Type::from_json(&json!(["object", {"beta": "string", "alpha": "string"}])).unwrap();
+        let bytes = to_message_pack(&Value::Object(BTreeMap::new()), &value_type).unwrap();
+        // fixmap(2), fixstr(5) "alpha" -> nil, fixstr(4) "beta" -> nil
+        let expected: Vec<u8> =
+            [&[0x82, 0xa5][..], b"alpha", &[0xc0, 0xa4], b"beta", &[0xc0]].concat();
+        assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn semantic_equality_ignores_set_order_but_not_list_order() {
+        let value_type = Type::from_json(&json!(["object", {
+            "tags": ["set", "string"],
+            "order": ["list", "string"],
+            "count": "number",
+        }]))
+        .unwrap();
+        let original = Value::from_configuration_json(
+            &json!({"tags": ["blue", "green", "green"], "order": ["first", "second"], "count": 1}),
+            &value_type,
+        )
+        .unwrap();
+        let reordered_set = Value::from_configuration_json(
+            &json!({"tags": ["green", "blue", "green"], "order": ["first", "second"], "count": 1.0}),
+            &value_type,
+        )
+        .unwrap();
+        let reordered_list = Value::from_configuration_json(
+            &json!({"tags": ["blue", "green", "green"], "order": ["second", "first"], "count": 1}),
+            &value_type,
+        )
+        .unwrap();
+        let different_multiset = Value::from_configuration_json(
+            &json!({"tags": ["blue", "blue", "green"], "order": ["first", "second"], "count": 1}),
+            &value_type,
+        )
+        .unwrap();
+        assert!(semantically_equal(&original, &reordered_set, &value_type));
+        assert!(!semantically_equal(&original, &reordered_list, &value_type));
+        assert!(!semantically_equal(
+            &original,
+            &different_multiset,
+            &value_type
+        ));
+        assert!(!semantically_equal(
+            &Value::Unknown,
+            &Value::Unknown,
+            &value_type
+        ));
+    }
+
+    #[test]
+    fn empty_message_pack_is_null() {
+        assert_eq!(from_message_pack(&[], &Type::String).unwrap(), Value::Null);
+    }
+
+    #[test]
+    fn state_json_wraps_dynamic_values() {
+        let value_type = object_type();
+        let value = Value::from_configuration_json(
+            &json!({"id": "example", "extra": "hello"}),
+            &value_type,
+        )
+        .unwrap();
+        let state = value.to_state_json(&value_type).unwrap();
+        assert_eq!(state["extra"], json!({"value": "hello", "type": "string"}));
+        assert_eq!(state["length"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn state_json_refuses_unknowns() {
+        assert!(Value::Unknown.to_state_json(&Type::String).is_err());
+    }
+}

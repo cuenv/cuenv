@@ -157,18 +157,18 @@ async fn execute_service_command(
                     .map_err(|e| CliError::eval(format!("Logs command failed: {e}"))),
             )
         }
-        Command::Infra {
+        Command::Infrastructure {
             path,
             package,
             action,
         } => {
-            let options = commands::infra::InfraOptions {
+            let options = commands::infrastructure::InfrastructureOptions {
                 path: path.clone(),
                 package: package.clone(),
                 action: *action,
             };
             Some(
-                commands::infra::execute_infra(&options, executor)
+                commands::infrastructure::execute_infrastructure(&options, executor)
                     .await
                     .map_err(CliError::from),
             )

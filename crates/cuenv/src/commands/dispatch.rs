@@ -52,7 +52,7 @@ impl CommandExecutor {
             | Command::Logs { .. }
             | Command::Ps { .. }
             | Command::Restart { .. }
-            | Command::Infra { .. } => Ok(()),
+            | Command::Infrastructure { .. } => Ok(()),
         }
     }
 

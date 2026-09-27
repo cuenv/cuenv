@@ -344,17 +344,17 @@ in. See [status](/reference/schema/status/).
 
 ## Infrastructure
 
-[`examples/infra-random`](https://github.com/cuenv/cuenv/tree/main/examples/infra-random)
+[`examples/infrastructure-random`](https://github.com/cuenv/cuenv/tree/main/examples/infrastructure-random)
 manages `hashicorp/random` resources with state in a Turso/libSQL database.
 
 ```bash
 sqld --http-listen-addr 127.0.0.1:8080
-cuenv infra plan  --path examples/infra-random --package examples
-cuenv infra apply --path examples/infra-random --package examples
+cuenv infrastructure plan  --path examples/infrastructure-random --package examples
+cuenv infrastructure apply --path examples/infrastructure-random --package examples
 ```
 
 Resources are ordered with `dependsOn`; attribute references between
-resources are not supported yet. See [Manage infrastructure](/how-to/infra/).
+resources are not supported yet. See [Manage infrastructure](/how-to/infrastructure/).
 
 ## Container images
 

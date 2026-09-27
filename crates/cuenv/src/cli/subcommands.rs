@@ -189,7 +189,7 @@ pub enum SecretsCommands {
 
 /// Infrastructure subcommands (Terraform provider plugins + Turso state).
 #[derive(Subcommand, Debug, Clone)]
-pub enum InfraCommands {
+pub enum InfrastructureCommands {
     /// Show the changes `apply` would make.
     #[command(about = "Show the changes `apply` would make")]
     Plan {
@@ -293,7 +293,7 @@ pub enum InfraCommands {
     },
 }
 
-impl InfraCommands {
+impl InfrastructureCommands {
     /// CUE package the subcommand evaluates.
     #[must_use]
     pub fn package(&self) -> &str {

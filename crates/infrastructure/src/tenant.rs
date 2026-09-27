@@ -7,7 +7,7 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::error::{InfraError, Result};
+use crate::error::{InfrastructureError, Result};
 
 /// The owner of a set of managed resources.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,18 +24,18 @@ impl TenantKey {
     ///
     /// # Errors
     ///
-    /// Returns [`InfraError::Config`] when either component is empty.
+    /// Returns [`InfrastructureError::Configuration`] when either component is empty.
     pub fn new(module_path: impl AsRef<str>, project: impl Into<String>) -> Result<Self> {
         let module_path = strip_major_version(module_path.as_ref().trim()).to_string();
         let project = project.into();
         if module_path.is_empty() {
-            return Err(InfraError::config(
-                "infra state requires a CUE module path; set `module:` in cue.mod/module.cue",
+            return Err(InfrastructureError::configuration(
+                "infrastructure state requires a CUE module path; set `module:` in cue.mod/module.cue",
             ));
         }
         if project.trim().is_empty() {
-            return Err(InfraError::config(
-                "infra state requires a project name; set `name:` on the project",
+            return Err(InfrastructureError::configuration(
+                "infrastructure state requires a project name; set `name:` on the project",
             ));
         }
         Ok(Self {
@@ -58,8 +58,8 @@ impl TenantKey {
 }
 
 impl fmt::Display for TenantKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}#{}", self.module_path, self.project)
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}#{}", self.module_path, self.project)
     }
 }
 
@@ -71,15 +71,15 @@ fn strip_major_version(path: &str) -> &str {
 ///
 /// # Errors
 ///
-/// Returns [`InfraError::Config`] when the file is missing or declares no
+/// Returns [`InfrastructureError::Configuration`] when the file is missing or declares no
 /// module path.
 pub fn read_module_path(module_root: &Path) -> Result<String> {
     let file = module_root.join("cue.mod").join("module.cue");
     let contents = std::fs::read_to_string(&file)
-        .map_err(|e| InfraError::io(format!("read {}", file.display()), e))?;
+        .map_err(|error| InfrastructureError::io(format!("read {}", file.display()), error))?;
     parse_module_path(&contents).ok_or_else(|| {
-        InfraError::config(format!(
-            "{} does not declare a `module:` path; infra state is keyed by it",
+        InfrastructureError::configuration(format!(
+            "{} does not declare a `module:` path; infrastructure state is keyed by it",
             file.display()
         ))
     })
@@ -102,11 +102,10 @@ mod tests {
 
     #[test]
     fn parses_module_path_from_module_cue() {
-        let contents =
-            "module: \"github.com/acme/infra@v0\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n";
+        let contents = "module: \"github.com/acme/infrastructure@v0\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n";
         assert_eq!(
             parse_module_path(contents).as_deref(),
-            Some("github.com/acme/infra@v0")
+            Some("github.com/acme/infrastructure@v0")
         );
     }
 
@@ -118,27 +117,30 @@ mod tests {
 
     #[test]
     fn tenant_strips_major_version_suffix() {
-        let tenant = TenantKey::new("github.com/acme/infra@v1", "web").unwrap();
-        assert_eq!(tenant.module_path(), "github.com/acme/infra");
-        assert_eq!(tenant.to_string(), "github.com/acme/infra#web");
+        let tenant = TenantKey::new("github.com/acme/infrastructure@v1", "web").unwrap();
+        assert_eq!(tenant.module_path(), "github.com/acme/infrastructure");
+        assert_eq!(tenant.to_string(), "github.com/acme/infrastructure#web");
     }
 
     #[test]
     fn tenant_requires_both_components() {
         assert!(TenantKey::new("", "web").is_err());
-        assert!(TenantKey::new("github.com/acme/infra", " ").is_err());
+        assert!(TenantKey::new("github.com/acme/infrastructure", " ").is_err());
     }
 
     #[test]
     fn reads_module_path_from_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("cue.mod")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("cue.mod")).unwrap();
         std::fs::write(
-            dir.path().join("cue.mod/module.cue"),
+            directory.path().join("cue.mod/module.cue"),
             "module: \"example.com/app\"\n",
         )
         .unwrap();
-        assert_eq!(read_module_path(dir.path()).unwrap(), "example.com/app");
-        assert!(read_module_path(&dir.path().join("missing")).is_err());
+        assert_eq!(
+            read_module_path(directory.path()).unwrap(),
+            "example.com/app"
+        );
+        assert!(read_module_path(&directory.path().join("missing")).is_err());
     }
 }

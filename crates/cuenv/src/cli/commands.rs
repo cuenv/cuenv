@@ -1,6 +1,6 @@
 use super::{
-    ChangesetCommands, EnvCommands, InfraCommands, OutputFormat, ReleaseCommands, RuntimeCommands,
-    SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
+    ChangesetCommands, EnvCommands, InfrastructureCommands, OutputFormat, ReleaseCommands,
+    RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::completions::task_completer;
 use clap::Subcommand;
@@ -368,11 +368,14 @@ pub enum Commands {
         subcommand: SecretsCommands,
     },
     /// Infrastructure as code through Terraform provider plugins.
-    #[command(about = "Infrastructure as code through Terraform provider plugins")]
-    Infra {
-        /// Infra subcommand to execute.
+    #[command(
+        about = "Infrastructure as code through Terraform provider plugins",
+        visible_alias = "i"
+    )]
+    Infrastructure {
+        /// Infrastructure subcommand to execute.
         #[command(subcommand)]
-        subcommand: InfraCommands,
+        subcommand: InfrastructureCommands,
     },
     /// Runtime management commands.
     #[command(about = "Runtime management commands")]
@@ -607,7 +610,7 @@ impl Commands {
                 Some(_) | None => package,
             },
 
-            Self::Infra { subcommand } => subcommand.package(),
+            Self::Infrastructure { subcommand } => subcommand.package(),
 
             // Commands that don't use CUE evaluation or have no package param
             Self::Version { .. }

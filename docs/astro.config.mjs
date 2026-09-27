@@ -39,7 +39,7 @@ export default defineConfig({
 						{ label: 'Configure a project', slug: 'how-to/configure-a-project' },
 						{ label: 'Run tasks', slug: 'how-to/run-tasks' },
 						{ label: 'Run services', slug: 'how-to/services' },
-						{ label: 'Manage infrastructure', slug: 'how-to/infra' },
+						{ label: 'Manage infrastructure', slug: 'how-to/infrastructure' },
 						{ label: 'Task scripts', slug: 'how-to/task-scripts' },
 						{ label: 'CI', slug: 'how-to/ci' },
 						{ label: 'Codegen', slug: 'how-to/codegen' },

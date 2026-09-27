@@ -1268,7 +1268,7 @@ dependencies = [
  "cuenv-hooks",
  "cuenv-ignore",
  "cuenv-infisical",
- "cuenv-infra",
+ "cuenv-infrastructure",
  "cuenv-manifest",
  "cuenv-release",
  "cuenv-secrets",
@@ -1669,7 +1669,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cuenv-infra"
+name = "cuenv-infrastructure"
 version = "0.56.6"
 dependencies = [
  "async-trait",

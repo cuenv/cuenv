@@ -7,24 +7,24 @@ use std::collections::BTreeMap;
 
 /// Infrastructure managed through Terraform provider plugins.
 ///
-/// Based on `#Infra` in schema/infra.cue.
+/// Based on `#Infrastructure` in schema/infrastructure.cue.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Infra {
+pub struct Infrastructure {
     /// Where managed resource state is stored.
-    pub state: InfraState,
+    pub state: InfrastructureState,
 
     /// Provider plugins, keyed by local provider name (e.g. `random`).
     #[serde(default)]
-    pub providers: BTreeMap<String, InfraProvider>,
+    pub providers: BTreeMap<String, InfrastructureProvider>,
 
     /// Managed resources, keyed by resource name.
     #[serde(default)]
-    pub resources: BTreeMap<String, ManagedResourceSpec>,
+    pub resources: BTreeMap<String, ManagedResourceDeclaration>,
 }
 
 /// State backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InfraState {
+pub struct InfrastructureState {
     /// Remote Turso (libSQL) database.
     pub turso: TursoState,
 }
@@ -36,18 +36,18 @@ pub struct TursoState {
     /// Database URL (`libsql://`, `https://`, or `http://` for local sqld).
     pub url: String,
 
-    /// Environment variable holding the database auth token.
-    #[serde(default = "default_turso_token_env")]
-    pub auth_token_env: String,
+    /// Environment variable holding the database authentication token.
+    #[serde(default = "default_turso_authentication_token_environment_variable")]
+    pub authentication_token_environment_variable: String,
 }
 
-fn default_turso_token_env() -> String {
+fn default_turso_authentication_token_environment_variable() -> String {
     "TURSO_AUTH_TOKEN".to_string()
 }
 
 /// A Terraform provider plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct InfraProvider {
+pub struct InfrastructureProvider {
     /// Registry source address, e.g. `hashicorp/random`.
     pub source: String,
 
@@ -61,13 +61,13 @@ pub struct InfraProvider {
 
     /// Provider configuration block.
     #[serde(default)]
-    pub config: serde_json::Map<String, serde_json::Value>,
+    pub configuration: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A managed resource declaration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagedResourceSpec {
+pub struct ManagedResourceDeclaration {
     /// Resource type, e.g. `random_pet`.
     #[serde(rename = "type")]
     pub resource_type: String,
@@ -82,10 +82,10 @@ pub struct ManagedResourceSpec {
 
     /// Resource configuration arguments.
     #[serde(default)]
-    pub config: serde_json::Map<String, serde_json::Value>,
+    pub configuration: serde_json::Map<String, serde_json::Value>,
 }
 
-impl ManagedResourceSpec {
+impl ManagedResourceDeclaration {
     /// Local provider name: explicit `provider`, otherwise the resource
     /// type up to the first underscore (Terraform's convention).
     #[must_use]
@@ -103,29 +103,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deserializes_infra_block() {
-        let infra: Infra = serde_json::from_value(serde_json::json!({
+    fn deserializes_infrastructure_block() {
+        let infrastructure: Infrastructure = serde_json::from_value(serde_json::json!({
             "state": {"turso": {"url": "libsql://db.turso.io"}},
             "providers": {"random": {"source": "hashicorp/random", "version": "3.7.2"}},
             "resources": {
-                "pet": {"type": "random_pet", "config": {"length": 2}},
-                "id": {"type": "random_id", "provider": "random", "dependsOn": ["pet"], "config": {}},
+                "pet": {"type": "random_pet", "configuration": {"length": 2}},
+                "identifier": {"type": "random_id", "provider": "random", "dependsOn": ["pet"], "configuration": {}},
             },
         }))
         .unwrap();
-        assert_eq!(infra.state.turso.auth_token_env, "TURSO_AUTH_TOKEN");
-        assert_eq!(infra.resources["pet"].provider_name(), "random");
-        assert_eq!(infra.resources["id"].depends_on, vec!["pet".to_string()]);
+        assert_eq!(
+            infrastructure
+                .state
+                .turso
+                .authentication_token_environment_variable,
+            "TURSO_AUTH_TOKEN"
+        );
+        assert_eq!(infrastructure.resources["pet"].provider_name(), "random");
+        assert_eq!(
+            infrastructure.resources["identifier"].depends_on,
+            vec!["pet".to_string()]
+        );
     }
 
     #[test]
     fn provider_name_defaults_to_type_prefix() {
-        let spec = ManagedResourceSpec {
+        let declaration = ManagedResourceDeclaration {
             resource_type: "cloudflare_dns_record".into(),
             provider: None,
             depends_on: Vec::new(),
-            config: serde_json::Map::new(),
+            configuration: serde_json::Map::new(),
         };
-        assert_eq!(spec.provider_name(), "cloudflare");
+        assert_eq!(declaration.provider_name(), "cloudflare");
     }
 }

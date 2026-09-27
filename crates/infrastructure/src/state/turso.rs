@@ -1,6 +1,6 @@
 //! Turso (libSQL) state store over the Hrana HTTP protocol.
 //!
-//! Talks to `POST {url}/v2/pipeline` with bearer-token auth, so it works
+//! Talks to `POST {url}/v2/pipeline` with bearer-token authentication, so it works
 //! against Turso Cloud databases and self-hosted `sqld` alike without a
 //! native libSQL dependency.
 
@@ -13,11 +13,11 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
 
 use super::{ManagedResource, ResourceAddress, StateLock, StateStore};
-use crate::error::{InfraError, Result};
+use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
 
 const MIGRATIONS: &[&str] = &[
-    "CREATE TABLE IF NOT EXISTS cuenv_infra_resources (
+    "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_resources (
         module_path TEXT NOT NULL,
         project TEXT NOT NULL,
         resource_type TEXT NOT NULL,
@@ -33,10 +33,10 @@ const MIGRATIONS: &[&str] = &[
         updated_at TEXT NOT NULL,
         PRIMARY KEY (module_path, project, resource_type, resource_name)
     ) WITHOUT ROWID",
-    "CREATE TABLE IF NOT EXISTS cuenv_infra_locks (
+    "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_locks (
         module_path TEXT NOT NULL,
         project TEXT NOT NULL,
-        lock_id TEXT NOT NULL,
+        lock_identifier TEXT NOT NULL,
         holder TEXT NOT NULL,
         acquired_at TEXT NOT NULL,
         PRIMARY KEY (module_path, project)
@@ -45,20 +45,21 @@ const MIGRATIONS: &[&str] = &[
 
 /// Connection settings for a Turso database.
 #[derive(Clone)]
-pub struct TursoConfig {
+pub struct TursoConfiguration {
     /// Database URL: `libsql://`, `https://` or `http://` (local `sqld`).
     pub url: String,
-    /// Database auth token. Optional for unauthenticated local `sqld`.
-    pub auth_token: Option<String>,
+    /// Database authentication token. Optional for unauthenticated local `sqld`.
+    pub authentication_token: Option<String>,
 }
 
-impl fmt::Debug for TursoConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TursoConfig")
+impl fmt::Debug for TursoConfiguration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TursoConfiguration")
             .field("url", &self.url)
             .field(
-                "auth_token",
-                &self.auth_token.as_ref().map(|_| "<redacted>"),
+                "authentication_token",
+                &self.authentication_token.as_ref().map(|_| "<redacted>"),
             )
             .finish()
     }
@@ -69,7 +70,7 @@ impl fmt::Debug for TursoConfig {
 pub struct TursoStateStore {
     client: reqwest::Client,
     pipeline_url: String,
-    auth_token: Option<String>,
+    authentication_token: Option<String>,
 }
 
 impl TursoStateStore {
@@ -77,26 +78,30 @@ impl TursoStateStore {
     ///
     /// # Errors
     ///
-    /// Returns [`InfraError::Config`] for unsupported URL schemes and
-    /// [`InfraError::State`] if the HTTP client cannot be built.
-    pub fn new(config: TursoConfig) -> Result<Self> {
-        crate::ensure_rustls_crypto_provider();
+    /// Returns [`InfrastructureError::Configuration`] for unsupported URL schemes and
+    /// [`InfrastructureError::State`] if the HTTP client cannot be built.
+    pub fn new(configuration: TursoConfiguration) -> Result<Self> {
+        crate::ensure_rustls_cryptography_provider();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
-            .map_err(|e| InfraError::state(format!("failed to build HTTP client: {e}")))?;
+            .map_err(|error| {
+                InfrastructureError::state(format!("failed to build HTTP client: {error}"))
+            })?;
         Ok(Self {
             client,
-            pipeline_url: pipeline_url(&config.url)?,
-            auth_token: config.auth_token.filter(|t| !t.is_empty()),
+            pipeline_url: pipeline_url(&configuration.url)?,
+            authentication_token: configuration
+                .authentication_token
+                .filter(|token| !token.is_empty()),
         })
     }
 
-    async fn pipeline(&self, statements: Vec<Stmt>) -> Result<Vec<ExecuteResult>> {
+    async fn pipeline(&self, statements: Vec<Statement>) -> Result<Vec<ExecuteResult>> {
         let count = statements.len();
         let mut requests: Vec<PipelineRequest> = statements
             .into_iter()
-            .map(|stmt| PipelineRequest::Execute { stmt })
+            .map(|statement| PipelineRequest::Execute { statement })
             .collect();
         requests.push(PipelineRequest::Close);
         let body = PipelineBody {
@@ -105,24 +110,22 @@ impl TursoStateStore {
         };
 
         let mut request = self.client.post(&self.pipeline_url).json(&body);
-        if let Some(token) = &self.auth_token {
+        if let Some(token) = &self.authentication_token {
             request = request.bearer_auth(token);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|e| InfraError::state(format!("Turso request failed: {e}")))?;
+        let response = request.send().await.map_err(|error| {
+            InfrastructureError::state(format!("Turso request failed: {error}"))
+        })?;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
-            return Err(InfraError::state(format!(
+            return Err(InfrastructureError::state(format!(
                 "Turso returned HTTP {status}: {text}"
             )));
         }
-        let parsed: PipelineResponse = response
-            .json()
-            .await
-            .map_err(|e| InfraError::state(format!("invalid Turso response: {e}")))?;
+        let parsed: PipelineResponse = response.json().await.map_err(|error| {
+            InfrastructureError::state(format!("invalid Turso response: {error}"))
+        })?;
 
         let mut results = Vec::with_capacity(count);
         for entry in parsed.results.into_iter().take(count) {
@@ -131,19 +134,22 @@ impl TursoStateStore {
                     response: StreamResponse::Execute { result },
                 } => results.push(result),
                 PipelineResult::Ok { .. } => {
-                    return Err(InfraError::state("unexpected Turso response type"));
+                    return Err(InfrastructureError::state("unexpected Turso response type"));
                 }
                 PipelineResult::Error { error } => {
-                    return Err(InfraError::state(format!(
+                    return Err(InfrastructureError::state(format!(
                         "Turso statement failed: {}{}",
                         error.message,
-                        error.code.map(|c| format!(" ({c})")).unwrap_or_default()
+                        error
+                            .code
+                            .map(|code| format!(" ({code})"))
+                            .unwrap_or_default()
                     )));
                 }
             }
         }
         if results.len() != count {
-            return Err(InfraError::state(format!(
+            return Err(InfrastructureError::state(format!(
                 "Turso returned {} results for {count} statements",
                 results.len()
             )));
@@ -151,12 +157,12 @@ impl TursoStateStore {
         Ok(results)
     }
 
-    async fn execute(&self, stmt: Stmt) -> Result<ExecuteResult> {
-        self.pipeline(vec![stmt])
+    async fn execute(&self, statement: Statement) -> Result<ExecuteResult> {
+        self.pipeline(vec![statement])
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| InfraError::state("Turso returned no result"))
+            .ok_or_else(|| InfrastructureError::state("Turso returned no result"))
     }
 }
 
@@ -172,7 +178,7 @@ fn pipeline_url(url: &str) -> Result<String> {
     } else if url.starts_with("https://") || url.starts_with("http://") {
         url.to_string()
     } else {
-        return Err(InfraError::config(format!(
+        return Err(InfrastructureError::configuration(format!(
             "unsupported Turso URL '{url}'; expected libsql://, https:// or http://"
         )));
     };
@@ -189,7 +195,7 @@ impl StateStore for TursoStateStore {
         self.pipeline(
             MIGRATIONS
                 .iter()
-                .map(|sql| Stmt::new(*sql, Vec::new()))
+                .map(|sql| Statement::new(*sql, Vec::new()))
                 .collect(),
         )
         .await
@@ -198,10 +204,10 @@ impl StateStore for TursoStateStore {
 
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
         let result = self
-            .execute(Stmt::new(
+            .execute(Statement::new(
                 "SELECT resource_type, resource_name, provider, provider_source, \
                  schema_version, state_json, private, dependencies_json \
-                 FROM cuenv_infra_resources WHERE module_path = ? AND project = ? \
+                 FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
                  ORDER BY resource_type, resource_name",
                 vec![
                     HranaValue::text(tenant.module_path()),
@@ -214,12 +220,13 @@ impl StateStore for TursoStateStore {
 
     async fn put(&self, tenant: &TenantKey, resource: &ManagedResource) -> Result<()> {
         let state_json = serde_json::to_string(&resource.state)
-            .map_err(|e| InfraError::state(format!("serialize state: {e}")))?;
-        let dependencies = serde_json::to_string(&resource.dependencies)
-            .map_err(|e| InfraError::state(format!("serialize dependencies: {e}")))?;
-        let ts = now();
-        self.execute(Stmt::new(
-            "INSERT INTO cuenv_infra_resources (module_path, project, resource_type, \
+            .map_err(|error| InfrastructureError::state(format!("serialize state: {error}")))?;
+        let dependencies = serde_json::to_string(&resource.dependencies).map_err(|error| {
+            InfrastructureError::state(format!("serialize dependencies: {error}"))
+        })?;
+        let timestamp = now();
+        self.execute(Statement::new(
+            "INSERT INTO cuenv_infrastructure_resources (module_path, project, resource_type, \
              resource_name, provider, provider_source, schema_version, state_json, private, \
              dependencies_json, serial, created_at, updated_at) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) \
@@ -227,7 +234,7 @@ impl StateStore for TursoStateStore {
              provider = excluded.provider, provider_source = excluded.provider_source, \
              schema_version = excluded.schema_version, state_json = excluded.state_json, \
              private = excluded.private, dependencies_json = excluded.dependencies_json, \
-             serial = cuenv_infra_resources.serial + 1, updated_at = excluded.updated_at",
+             serial = cuenv_infrastructure_resources.serial + 1, updated_at = excluded.updated_at",
             vec![
                 HranaValue::text(tenant.module_path()),
                 HranaValue::text(tenant.project()),
@@ -239,8 +246,8 @@ impl StateStore for TursoStateStore {
                 HranaValue::text(&state_json),
                 HranaValue::blob(&resource.private),
                 HranaValue::text(&dependencies),
-                HranaValue::text(&ts),
-                HranaValue::text(&ts),
+                HranaValue::text(&timestamp),
+                HranaValue::text(&timestamp),
             ],
         ))
         .await
@@ -248,8 +255,8 @@ impl StateStore for TursoStateStore {
     }
 
     async fn delete(&self, tenant: &TenantKey, address: &ResourceAddress) -> Result<()> {
-        self.execute(Stmt::new(
-            "DELETE FROM cuenv_infra_resources WHERE module_path = ? AND project = ? \
+        self.execute(Statement::new(
+            "DELETE FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
              AND resource_type = ? AND resource_name = ?",
             vec![
                 HranaValue::text(tenant.module_path()),
@@ -263,27 +270,27 @@ impl StateStore for TursoStateStore {
     }
 
     async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock> {
-        let lock_id = uuid::Uuid::new_v4().to_string();
+        let lock_identifier = uuid::Uuid::new_v4().to_string();
         let inserted = self
-            .execute(Stmt::new(
-                "INSERT INTO cuenv_infra_locks (module_path, project, lock_id, holder, acquired_at) \
+            .execute(Statement::new(
+                "INSERT INTO cuenv_infrastructure_locks (module_path, project, lock_identifier, holder, acquired_at) \
                  VALUES (?, ?, ?, ?, ?) ON CONFLICT (module_path, project) DO NOTHING",
                 vec![
                     HranaValue::text(tenant.module_path()),
                     HranaValue::text(tenant.project()),
-                    HranaValue::text(&lock_id),
+                    HranaValue::text(&lock_identifier),
                     HranaValue::text(holder),
                     HranaValue::text(&now()),
                 ],
             ))
             .await?;
         if inserted.affected_row_count == 1 {
-            return Ok(StateLock { lock_id });
+            return Ok(StateLock { lock_identifier });
         }
 
         let existing = self
-            .execute(Stmt::new(
-                "SELECT lock_id, holder, acquired_at FROM cuenv_infra_locks \
+            .execute(Statement::new(
+                "SELECT lock_identifier, holder, acquired_at FROM cuenv_infrastructure_locks \
                  WHERE module_path = ? AND project = ?",
                 vec![
                     HranaValue::text(tenant.module_path()),
@@ -292,27 +299,27 @@ impl StateStore for TursoStateStore {
             ))
             .await?;
         let row = existing.rows.into_iter().next().unwrap_or_default();
-        let field = |i: usize| {
-            row.get(i)
+        let field = |index: usize| {
+            row.get(index)
                 .and_then(HranaValue::as_text)
                 .unwrap_or("unknown")
                 .to_string()
         };
-        Err(InfraError::Locked {
+        Err(InfrastructureError::Locked {
             tenant: tenant.to_string(),
-            lock_id: field(0),
+            lock_identifier: field(0),
             holder: field(1),
             acquired_at: field(2),
         })
     }
 
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
-        self.execute(Stmt::new(
-            "DELETE FROM cuenv_infra_locks WHERE module_path = ? AND project = ? AND lock_id = ?",
+        self.execute(Statement::new(
+            "DELETE FROM cuenv_infrastructure_locks WHERE module_path = ? AND project = ? AND lock_identifier = ?",
             vec![
                 HranaValue::text(tenant.module_path()),
                 HranaValue::text(tenant.project()),
-                HranaValue::text(&lock.lock_id),
+                HranaValue::text(&lock.lock_identifier),
             ],
         ))
         .await
@@ -320,8 +327,8 @@ impl StateStore for TursoStateStore {
     }
 
     async fn force_unlock(&self, tenant: &TenantKey) -> Result<()> {
-        self.execute(Stmt::new(
-            "DELETE FROM cuenv_infra_locks WHERE module_path = ? AND project = ?",
+        self.execute(Statement::new(
+            "DELETE FROM cuenv_infrastructure_locks WHERE module_path = ? AND project = ?",
             vec![
                 HranaValue::text(tenant.module_path()),
                 HranaValue::text(tenant.project()),
@@ -333,11 +340,11 @@ impl StateStore for TursoStateStore {
 }
 
 fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
-    let text = |i: usize, name: &str| {
-        row.get(i)
+    let text = |index: usize, name: &str| {
+        row.get(index)
             .and_then(HranaValue::as_text)
             .map(str::to_string)
-            .ok_or_else(|| InfraError::state(format!("state row missing {name}")))
+            .ok_or_else(|| InfrastructureError::state(format!("state row missing {name}")))
     };
     let state_json = text(5, "state_json")?;
     let dependencies_json = text(7, "dependencies_json")?;
@@ -348,17 +355,18 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         schema_version: row
             .get(4)
             .and_then(HranaValue::as_integer)
-            .ok_or_else(|| InfraError::state("state row missing schema_version"))?,
+            .ok_or_else(|| InfrastructureError::state("state row missing schema_version"))?,
         state: serde_json::from_str(&state_json)
-            .map_err(|e| InfraError::state(format!("corrupt state_json: {e}")))?,
+            .map_err(|error| InfrastructureError::state(format!("corrupt state_json: {error}")))?,
         private: row
             .get(6)
             .map(HranaValue::as_blob)
             .transpose()?
             .flatten()
             .unwrap_or_default(),
-        dependencies: serde_json::from_str(&dependencies_json)
-            .map_err(|e| InfraError::state(format!("corrupt dependencies_json: {e}")))?,
+        dependencies: serde_json::from_str(&dependencies_json).map_err(|error| {
+            InfrastructureError::state(format!("corrupt dependencies_json: {error}"))
+        })?,
     })
 }
 
@@ -375,22 +383,26 @@ struct PipelineBody {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PipelineRequest {
-    Execute { stmt: Stmt },
+    Execute {
+        #[serde(rename = "stmt")]
+        statement: Statement,
+    },
     Close,
 }
 
 #[derive(Debug, Serialize)]
-struct Stmt {
+struct Statement {
     sql: String,
-    args: Vec<HranaValue>,
+    #[serde(rename = "args")]
+    arguments: Vec<HranaValue>,
     want_rows: bool,
 }
 
-impl Stmt {
-    fn new(sql: impl Into<String>, args: Vec<HranaValue>) -> Self {
+impl Statement {
+    fn new(sql: impl Into<String>, arguments: Vec<HranaValue>) -> Self {
         Self {
             sql: sql.into(),
-            args,
+            arguments,
             want_rows: true,
         }
     }
@@ -487,7 +499,9 @@ impl HranaValue {
                     .decode(trimmed)
                     .or_else(|_| STANDARD.decode(base64))
                     .map(Some)
-                    .map_err(|e| InfraError::state(format!("corrupt private blob: {e}")))
+                    .map_err(|error| {
+                        InfrastructureError::state(format!("corrupt private blob: {error}"))
+                    })
             }
             _ => Ok(None),
         }
@@ -522,7 +536,7 @@ mod tests {
             baton: None,
             requests: vec![
                 PipelineRequest::Execute {
-                    stmt: Stmt::new(
+                    statement: Statement::new(
                         "SELECT ?",
                         vec![
                             HranaValue::text("a"),
@@ -596,12 +610,12 @@ mod tests {
     }
 
     #[test]
-    fn config_debug_redacts_token() {
-        let config = TursoConfig {
+    fn configuration_debug_redacts_token() {
+        let configuration = TursoConfiguration {
             url: "libsql://db.turso.io".into(),
-            auth_token: Some("secret-token".into()),
+            authentication_token: Some("secret-token".into()),
         };
-        let rendered = format!("{config:?}");
+        let rendered = format!("{configuration:?}");
         assert!(!rendered.contains("secret-token"));
         assert!(rendered.contains("<redacted>"));
     }

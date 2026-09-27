@@ -39,7 +39,7 @@ tasks: {...}
 | `codegen`    | `#Codegen`                    | No       | Code generation configuration        |
 | `release`    | `#Release`                    | No       | Release management configuration     |
 | `vcs`        | `{[#VcsDependencyName]: #VcsDependency}` | No       | Cuenv-managed Git dependencies       |
-| `infra`      | `#Infra`                      | No       | Managed infrastructure (Terraform providers) |
+| `infrastructure`      | `#Infrastructure`                      | No       | Managed infrastructure (Terraform providers) |
 
 ### #Base
 
@@ -847,44 +847,50 @@ lines while the matching `cuenv up` controller is alive.
 
 ## Infrastructure
 
-### #Infra
+### #Infrastructure
 
 Managed resources driven through Terraform provider plugins, with state in
 Turso keyed by CUE module path and project name. Proof of concept: see
-[Manage infrastructure](/how-to/infra/) for limitations.
+[Manage infrastructure](/how-to/infrastructure/) for limitations.
+
+Provider schemas are published as CUE modules at
+`github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`. Unify
+`configuration` with their `#ProviderConfig` and `#Resource_<type>`
+definitions for typed, closed configuration; import them under an alias that
+differs from the provider's local name.
 
 ```cue
-infra: {
+infrastructure: {
     state: turso: url: "libsql://platform-acme.turso.io"
     providers: random: {source: "hashicorp/random", version: "3.7.2"}
     resources: pet: {
         type: "random_pet"
-        config: length: 2
+        configuration: length: 2
     }
 }
 ```
 
 | Field       | Type                               | Required | Description                                  |
 | ----------- | ---------------------------------- | -------- | -------------------------------------------- |
-| `state`     | `#InfraState`                      | Yes      | State backend (`turso`)                      |
-| `providers` | `{[#InfraName]: #InfraProvider}`   | No       | Provider plugins keyed by local name         |
-| `resources` | `{[#InfraName]: #ManagedResource}` | No       | Managed resources keyed by name              |
+| `state`     | `#InfrastructureState`                      | Yes      | State backend (`turso`)                      |
+| `providers` | `{[#InfrastructureName]: #InfrastructureProvider}`   | No       | Provider plugins keyed by local name         |
+| `resources` | `{[#InfrastructureName]: #ManagedResource}` | No       | Managed resources keyed by name              |
 
 ### #TursoState
 
 | Field          | Type     | Required | Description                                                  |
 | -------------- | -------- | -------- | ------------------------------------------------------------ |
 | `url`          | `string` | Yes      | `libsql://`, `https://`, or `http://` (local `sqld`) URL     |
-| `authTokenEnv` | `string` | No       | Env var holding the auth token. Default `TURSO_AUTH_TOKEN`   |
+| `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token. Default `TURSO_AUTH_TOKEN`   |
 
-### #InfraProvider
+### #InfrastructureProvider
 
 | Field     | Type     | Required | Description                                                        |
 | --------- | -------- | -------- | ------------------------------------------------------------------ |
 | `source`  | `string` | Yes      | `namespace/type` or `hostname/namespace/type`                      |
 | `version` | `string` | No*      | Exact version to install from the registry                         |
 | `path`    | `string` | No*      | Local provider binary (absolute or relative to the project)        |
-| `config`  | `{...}`  | No       | Provider block arguments, validated by the provider schema         |
+| `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
 \* One of `version` or `path` is required.
 
@@ -892,10 +898,10 @@ infra: {
 
 | Field       | Type              | Required | Description                                            |
 | ----------- | ----------------- | -------- | ------------------------------------------------------ |
-| `type`      | `string`          | Yes      | Managed resource type, e.g. `random_pet`               |
-| `provider`  | `#InfraName`      | No       | Local provider name. Defaults to the type prefix       |
-| `dependsOn` | `[...#InfraName]` | No       | Resources applied before (and destroyed after) this one |
-| `config`    | `{...}`           | No       | Resource arguments, validated by the provider schema   |
+| `type`      | `string`          | Yes      | Managed resource type, for example `random_pet` |
+| `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix       |
+| `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one |
+| `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
 
 ## Container Images
 

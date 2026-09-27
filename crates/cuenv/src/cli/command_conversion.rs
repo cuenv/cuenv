@@ -1,5 +1,5 @@
 use super::{
-    ChangesetCommands, Commands, EnvCommands, InfraCommands, OciCommands, ReleaseCommands,
+    ChangesetCommands, Commands, EnvCommands, InfrastructureCommands, OciCommands, ReleaseCommands,
     RuntimeCommands, SecretsCommands, ShellCommands, SyncCommands, ToolsCommands,
 };
 use crate::commands::Command;
@@ -29,7 +29,7 @@ impl Commands {
             | Self::Release { .. }
             | Self::Sync { .. }
             | Self::Secrets { .. }
-            | Self::Infra { .. }
+            | Self::Infrastructure { .. }
             | Self::Runtime { .. }
             | Self::Tools { .. }) => command.into_nested_command(environment),
             command @ (Self::Build { .. }
@@ -172,7 +172,7 @@ impl Commands {
                 },
             }),
             Self::Secrets { subcommand } => secrets_command(subcommand),
-            Self::Infra { subcommand } => infra_command(subcommand),
+            Self::Infrastructure { subcommand } => infrastructure_command(subcommand),
             Self::Runtime { subcommand } => runtime_command(subcommand),
             Self::Tools { subcommand } => tools_command(&subcommand),
             _ => unreachable!("nested command conversion called for another command family"),
@@ -579,24 +579,34 @@ fn filter_update_tools(names: Vec<String>) -> Vec<String> {
     names.into_iter().filter(|name| !name.is_empty()).collect()
 }
 
-fn infra_command(subcommand: InfraCommands) -> Command {
-    use crate::commands::infra::InfraAction;
+fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
+    use crate::commands::infrastructure::InfrastructureAction;
     let (path, package, action) = match subcommand {
-        InfraCommands::Plan { path, package } => (path, package, InfraAction::Plan),
-        InfraCommands::Apply {
+        InfrastructureCommands::Plan { path, package } => {
+            (path, package, InfrastructureAction::Plan)
+        }
+        InfrastructureCommands::Apply {
             path,
             package,
             auto_approve,
-        } => (path, package, InfraAction::Apply { auto_approve }),
-        InfraCommands::Destroy {
+        } => (path, package, InfrastructureAction::Apply { auto_approve }),
+        InfrastructureCommands::Destroy {
             path,
             package,
             auto_approve,
-        } => (path, package, InfraAction::Destroy { auto_approve }),
-        InfraCommands::State { path, package } => (path, package, InfraAction::State),
-        InfraCommands::Unlock { path, package } => (path, package, InfraAction::Unlock),
+        } => (
+            path,
+            package,
+            InfrastructureAction::Destroy { auto_approve },
+        ),
+        InfrastructureCommands::State { path, package } => {
+            (path, package, InfrastructureAction::State)
+        }
+        InfrastructureCommands::Unlock { path, package } => {
+            (path, package, InfrastructureAction::Unlock)
+        }
     };
-    Command::Infra {
+    Command::Infrastructure {
         path,
         package,
         action,
