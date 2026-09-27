@@ -880,8 +880,8 @@ infrastructure: {
 
 | Field          | Type     | Required | Description                                                  |
 | -------------- | -------- | -------- | ------------------------------------------------------------ |
-| `url`          | `string` | Yes      | `libsql://`, `https://`, or `http://` (local `sqld`) URL     |
-| `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token. Default `TURSO_AUTH_TOKEN`   |
+| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://`; `http://`/`ws://` only for loopback (local `sqld`) |
+| `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
 
 ### #InfrastructureProvider
 
@@ -892,13 +892,14 @@ infrastructure: {
 | `path`    | `string` | No*      | Local provider binary (absolute or relative to the project)        |
 | `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
-\* One of `version` or `path` is required.
+\* Exactly one of `version` (strict semantic version) or `path` must be set;
+setting both or neither fails evaluation.
 
 ### #ManagedResource
 
 | Field       | Type              | Required | Description                                            |
 | ----------- | ----------------- | -------- | ------------------------------------------------------ |
-| `type`      | `string`          | Yes      | Managed resource type, for example `random_pet` |
+| `type`      | `string`          | Yes      | Managed resource type such as `random_pet` (`<provider>_<name>`) |
 | `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix       |
 | `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one |
 | `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |

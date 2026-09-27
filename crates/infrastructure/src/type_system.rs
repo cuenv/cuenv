@@ -192,6 +192,39 @@ impl Value {
         }
     }
 
+    /// Replace every unknown value with null, as Terraform does before
+    /// saving the result of a failed apply.
+    #[must_use]
+    pub fn unknown_as_null(&self) -> Self {
+        match self {
+            Self::Unknown => Self::Null,
+            Self::List(elements) => {
+                Self::List(elements.iter().map(Self::unknown_as_null).collect())
+            }
+            Self::Object(attributes) => Self::Object(
+                attributes
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.unknown_as_null()))
+                    .collect(),
+            ),
+            other => other.clone(),
+        }
+    }
+
+    /// Name this value's kind without revealing its content.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Null => "null",
+            Self::Unknown => "unknown",
+            Self::Boolean(_) => "boolean",
+            Self::Number(_) => "number",
+            Self::String(_) => "string",
+            Self::List(_) => "list",
+            Self::Object(_) => "object",
+        }
+    }
+
     /// Look up an attribute of an object value.
     #[must_use]
     pub fn attribute(&self, name: &str) -> Option<&Self> {
@@ -348,8 +381,9 @@ fn from_configuration_json(
     }
     let mismatch = |expected: &str, path: &[String]| {
         InfrastructureError::configuration(format!(
-            "{}: expected {expected}, got {json}",
-            path_string(path)
+            "{}: expected {expected}, got {}",
+            path_string(path),
+            json_kind(json)
         ))
     };
     match value_type {
@@ -521,7 +555,8 @@ fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> 
                 .collect::<Result<_>>()?,
         )),
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
-            "value {mismatched} does not conform to type {}",
+            "a {} value does not conform to type {}",
+            mismatched.kind(),
             expected_type.to_json()
         ))),
     }
@@ -630,7 +665,8 @@ fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
             ))
         }
         (mismatched, expected_type) => Err(InfrastructureError::codec(format!(
-            "value {mismatched} does not conform to type {}",
+            "a {} value does not conform to type {}",
+            mismatched.kind(),
             expected_type.to_json()
         ))),
     }
@@ -659,7 +695,8 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
                 MessagePack::String(text) => text.as_bytes(),
                 other => {
                     return Err(InfrastructureError::codec(format!(
-                        "dynamic value type must be bytes, got {other}"
+                        "dynamic value type must be bytes, got {}",
+                        message_pack_kind(other)
                     )));
                 }
             };
@@ -726,10 +763,90 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
             Ok(Value::Object(decoded))
         }
         (other, expected_type) => Err(InfrastructureError::codec(format!(
-            "MessagePack value {other} does not match type {}",
+            "a MessagePack {} does not match type {}",
+            message_pack_kind(other),
             expected_type.to_json()
         ))),
     }
+}
+
+/// Name the kind of a JSON value without revealing it (it may be a secret).
+fn json_kind(json: &serde_json::Value) -> &'static str {
+    match json {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "a list",
+        serde_json::Value::Object(_) => "an object",
+    }
+}
+
+/// Name the kind of a MessagePack value without revealing it.
+const fn message_pack_kind(value: &rmpv::Value) -> &'static str {
+    match value {
+        rmpv::Value::Nil => "nil",
+        rmpv::Value::Boolean(_) => "boolean",
+        rmpv::Value::Integer(_) | rmpv::Value::F32(_) | rmpv::Value::F64(_) => "number",
+        rmpv::Value::String(_) => "string",
+        rmpv::Value::Binary(_) => "binary",
+        rmpv::Value::Array(_) => "array",
+        rmpv::Value::Map(_) => "map",
+        rmpv::Value::Ext(..) => "extension",
+    }
+}
+
+/// One step of an attribute path, as providers report it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathStep {
+    /// Object attribute.
+    Attribute(String),
+    /// Map element.
+    Key(String),
+    /// List or tuple element.
+    Index(i64),
+}
+
+/// Look up a nested value. Returns `None` when the path does not exist, and
+/// `Some(Value::Unknown)` when an unknown value is reached on the way.
+#[must_use]
+pub fn value_at_path<'value>(value: &'value Value, path: &[PathStep]) -> Option<&'value Value> {
+    let Some((first, rest)) = path.split_first() else {
+        return Some(value);
+    };
+    match (value, first) {
+        (Value::Unknown, _) => Some(value),
+        (Value::Object(attributes), PathStep::Attribute(name) | PathStep::Key(name)) => attributes
+            .get(name)
+            .and_then(|next| value_at_path(next, rest)),
+        (Value::List(elements), PathStep::Index(index)) => usize::try_from(*index)
+            .ok()
+            .and_then(|index| elements.get(index))
+            .and_then(|next| value_at_path(next, rest)),
+        _ => None,
+    }
+}
+
+/// Decode a provider value that arrived as JSON rather than MessagePack
+/// (Terraform accepts both encodings).
+///
+/// # Errors
+///
+/// Returns [`InfrastructureError::Codec`] when the JSON does not fit `value_type`.
+pub fn from_json_bytes(bytes: &[u8], value_type: &Type) -> Result<Value> {
+    let json: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| InfrastructureError::codec(format!("invalid JSON value: {error}")))?;
+    from_state_json(&json, value_type)
+}
+
+fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value> {
+    if let (Type::Dynamic, serde_json::Value::Object(wrapper)) = (value_type, json)
+        && let (Some(inner), Some(inner_type)) = (wrapper.get("value"), wrapper.get("type"))
+    {
+        return from_state_json(inner, &Type::from_json(inner_type)?);
+    }
+    Value::from_configuration_json(json, value_type)
+        .map_err(|error| InfrastructureError::codec(error.to_string()))
 }
 
 fn float_number(float: f64) -> Result<Value> {
@@ -739,9 +856,12 @@ fn float_number(float: f64) -> Result<Value> {
 }
 
 fn map_key(key: &rmpv::Value) -> Result<String> {
-    key.as_str()
-        .map(str::to_string)
-        .ok_or_else(|| InfrastructureError::codec(format!("map key must be a string, got {key}")))
+    key.as_str().map(str::to_string).ok_or_else(|| {
+        InfrastructureError::codec(format!(
+            "map key must be a string, got {}",
+            message_pack_kind(key)
+        ))
+    })
 }
 
 #[cfg(test)]

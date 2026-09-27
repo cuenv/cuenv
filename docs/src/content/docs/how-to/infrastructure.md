@@ -6,7 +6,7 @@ description: Declare managed resources in CUE and let cuenv drive Terraform prov
 cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database.
 
 :::caution[Status: proof of concept]
-`#Infrastructure` is **partial**. Create, update, replace, delete, refresh, state upgrades, dependency ordering, state locking and registry installs work against real providers. Resources **cannot reference each other's attributes yet** (no "known after apply" values flowing between resources), and there are no data sources, imports, saved plans, or parallel applies. Check [Schema status](/reference/schema/status/) before relying on a capability.
+`#Infrastructure` is **partial**. Create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. See [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity, and resources with collections of nested objects, are not handled correctly yet.
 :::
 
 ## Commands
@@ -14,12 +14,12 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 | Command | Short form | What it does |
 | --- | --- | --- |
 | `cuenv infrastructure plan` | `cuenv i plan` | Refresh recorded resources and show what `apply` would change |
-| `cuenv infrastructure apply` | `cuenv i apply` | Lock, re-plan, confirm, converge |
+| `cuenv infrastructure apply` | `cuenv i apply` | Plan, confirm, lock, plan again, converge |
 | `cuenv infrastructure destroy` | `cuenv i destroy` | Delete every managed resource the project owns |
 | `cuenv infrastructure state` | `cuenv i state` | List managed resources recorded for the project |
-| `cuenv infrastructure unlock` | `cuenv i unlock` | Release a lock left by an interrupted run |
+| `cuenv infrastructure unlock` | `cuenv i unlock` | Show who holds the lock, or release it by identifier |
 
-`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full.
+`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. `plan` and `state` honour the global `--json` flag.
 
 ## How state is keyed
 
@@ -31,7 +31,7 @@ State is multi-tenant by construction. Every record is keyed by:
 | Discriminator | the project's `name` | `web` |
 | Address | resource `type` and its name in `infrastructure.resources` | `random_pet.server` |
 
-cuenv refuses to plan or apply without a CUE module path. Moving a project to a different module or renaming it starts from empty state.
+cuenv refuses to run without a CUE module path, and refuses to run when another project in the same module uses the same `name` — otherwise the two would share state and each would plan to delete the other's resources. Moving a project to a different module or renaming it starts from empty state.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
 The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database. For isolation between teams or customers, give each tenant its own Turso database and token.
@@ -45,15 +45,19 @@ Every provider listed in [cuenv/terraform](https://github.com/cuenv/terraform) i
 github.com/cuenv/terraform/terraform/<namespace>/<type>@v<provider major version>
 ```
 
-Each module exposes closed definitions: `#ProviderConfig` for the provider block and `#Resource_<type>` for every managed resource (plus `#DataSource_<type>` and others for future use). Unify them with `configuration` and CUE rejects unknown arguments, wrong types, and missing required arguments before any provider is started.
+Each module exposes closed definitions: `#ProviderConfig` for the provider block and `#Resource_<type>` for every managed resource (plus `#DataSource_<type>` and others for future use). Unify them with `configuration` and evaluation fails — naming the field and file position — on unknown arguments, wrong types, missing required arguments and values that are not concrete, before any provider is started.
 
-Add the dependency to `cue.mod/module.cue` (or run `cue mod get github.com/cuenv/terraform/terraform/hashicorp/random@v3`):
+Pin the exact provider release in `cue.mod/module.cue`:
+
+```bash
+cue mod get github.com/cuenv/terraform/terraform/hashicorp/random@v3.9.1
+```
 
 ```cue
 deps: "github.com/cuenv/terraform/terraform/hashicorp/random@v3": v: "v3.9.1"
 ```
 
-Then import it under an alias that does **not** match your provider's local name:
+Then import it under an alias that matches **no** field name in scope — not a provider key, not a resource key, not `state`, `providers`, `resources` or `name`:
 
 ```cue
 package cuenv
@@ -72,7 +76,7 @@ infrastructure: {
 
 	providers: random: {
 		source:        "hashicorp/random"
-		version:       "3.9.1" // same major version as the module import
+		version:       "3.9.1" // same release as the pinned module
 		configuration: randomProvider.#ProviderConfig
 	}
 
@@ -86,11 +90,12 @@ infrastructure: {
 }
 ```
 
-:::danger[Why the alias matters]
-CUE resolves an identifier to the nearest enclosing field of that name before an import. Inside `providers: random: { ... }`, `random.#ProviderConfig` means the field `providers.random.#ProviderConfig`, which does not exist. cuenv currently reports that as `invalid type: null, expected a map` rather than naming the undefined field. Importing as `randomProvider` (or any name that is not a provider key) avoids it.
-:::
+CUE resolves an identifier to the nearest enclosing field of that name before an import, so `random.#ProviderConfig` written inside `providers: random: {...}` refers to the field. cuenv reports that as `infrastructure.providers.random.configuration: undefined field: #ProviderConfig` with its position; an alias ending in `Provider` avoids it.
 
-Keep the provider `version` and the module's major version in step: `hashicorp/random` `3.9.1` pairs with `…/random@v3`. The registry publishes one module version per provider release, so pinning `v3.9.1` in `deps` gives you exactly that release's schema.
+Two more rules:
+
+- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
+- **Versions.** Keep `version` equal to the release pinned in `deps`. Nothing enforces this yet; a mismatch means the schema you typed against is not the one the provider uses.
 
 ## A minimal example without typed schemas
 
@@ -102,7 +107,7 @@ infrastructure: {
 
 	providers: random: {
 		source:  "hashicorp/random"
-		version: "3.7.2"
+		version: "3.9.1"
 	}
 
 	resources: {
@@ -145,7 +150,9 @@ infrastructure: state: turso: {
 }
 ```
 
-The authentication token is read from the named environment variable at run time and never written to CUE or state. Create one with `turso db tokens create <database>`. cuenv creates its two tables (`cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) on first use.
+- `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
+- The authentication token is read from the named environment variable at run time. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
+- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) on first use; transient failures (timeouts, 5xx, 429) are retried with backoff.
 
 :::caution
 Like Terraform state, resource records contain every attribute the provider returns, including values marked sensitive (for example `random_password.result`). Treat the database as secret material and scope its tokens accordingly.
@@ -164,15 +171,14 @@ infrastructure: providers: {
 	cloudflare: {
 		source: "cloudflare/cloudflare"
 		path:   "bin/terraform-provider-cloudflare_v5.26.0"
-		configuration: api_token: "..." // provider block arguments
 	}
 }
 ```
 
 - `source` is `namespace/type` or `hostname/namespace/type`.
-- `version` must be exact; constraints (`~> 3.7`) are not supported.
-- Downloads are verified against the registry's SHA-256 checksum and cached at `$TF_PLUGIN_CACHE_DIR` when set, otherwise `~/.cache/cuenv/infrastructure/providers`, using Terraform's cache layout. The registry's GPG signature is not verified yet.
-- `configuration` is the provider block. Providers also read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the environment `cuenv infrastructure` runs in.
+- Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`.
+- Downloads must be HTTPS, are verified against the registry's SHA-256 checksum, and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. The registry's GPG signature is not verified yet.
+- `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the environment `cuenv infrastructure` runs in. Secret-typed arguments are not supported yet.
 
 ## Declare resources
 
@@ -191,7 +197,7 @@ infrastructure: resources: web_dns: {
 }
 ```
 
-With or without a registry definition, `configuration` is also validated by the provider's own schema at plan time, including nested blocks. Unknown arguments are rejected with the attribute path.
+With or without a registry definition, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
 
 ## Plan and apply
 
@@ -210,15 +216,31 @@ cuenv infrastructure: github.com/cuenv/cuenv#infrastructure-random
 Plan: 1 to create, 0 to update, 1 to replace, 0 to delete, 1 unchanged.
 ```
 
-`cuenv i apply` re-plans under an exclusive lock and asks for confirmation; `--auto-approve` skips the prompt and is required when standard input is not a terminal. Resources removed from `infrastructure.resources` are deleted. State is written after every resource, so a failed apply never loses track of what was created.
+Values that are sensitive anywhere inside an attribute or nested block are shown as `(sensitive)`.
 
-If a run is killed while holding the lock, release it with `cuenv i unlock`.
+`cuenv i apply`:
+
+1. plans and shows the plan without taking the lock;
+2. asks for confirmation (`--yes` skips it and is required when standard input is not a terminal; `--auto-approve` is accepted as an alias);
+3. takes the project's lock, plans again, and refuses to continue if the plan changed since you confirmed;
+4. applies one resource at a time, recording each result immediately. Every write is fenced by the lock, so a run whose lock was released or taken over cannot overwrite newer state.
+
+Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
+
+### When things go wrong
+
+- **Interrupts.** The first Ctrl-C or SIGTERM during an apply finishes and records the resource in flight, then releases the lock and exits. A second one exits immediately and prints the lock identifier.
+- **Partial failures.** If a create fails after the provider made something, the result is recorded as **tainted** and the next plan replaces it. `cuenv i state` marks tainted resources.
+- **State store outages.** If the provider changed a resource but the change cannot be recorded (after retries), cuenv writes the new state to `.cuenv/infrastructure/unrecorded-<time>-<address>.json` in the project directory (readable only by you) and tells you, instead of silently forgetting a real resource.
+- **Stale locks.** `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock.
+- **Exit codes.** `2` configuration, `3` evaluation, `4` locked by another run (retry later), `5` other infrastructure failures.
 
 ## Current limitations
 
-- No references between resources: a resource cannot consume another's computed attributes. Use `dependsOn` for ordering only.
-- No data sources, imports, `moved` blocks, or saved plan files.
-- Replacement is always destroy-then-create.
-- Resources apply one at a time.
-- Provider version constraints and GPG signature verification are not implemented.
-- Proposed-state computation is a simplified port of Terraform's: computed attributes are carried from prior state through single nested blocks; collections of nested blocks are taken from configuration verbatim.
+- **No references between resources.** A resource cannot consume another's computed attributes; use `dependsOn` for ordering only.
+- **Resource identity is not supported.** Plugin Framework resources that declare an identity (recent AWS, Google and Azure resources) fail on update with "Missing Resource Identity After Update".
+- **Collections of nested objects.** Proposed new state does not yet merge computed values inside list, set and map nested blocks or nested attributes, so such resources can show a perpetual update.
+- **Dynamic-typed attributes** round-trip as tuples and objects rather than their original list, set or map types.
+- No data sources, imports, `moved` blocks, saved plan files, `--target`, or `state rm`.
+- Replacement is always destroy-then-create; resources apply one at a time.
+- Provider version constraints, lockfile pinning and GPG signature verification are not implemented.

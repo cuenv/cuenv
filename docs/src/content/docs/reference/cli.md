@@ -485,30 +485,40 @@ See [Manage infrastructure](/how-to/infrastructure/).
 
 ```bash
 cuenv infrastructure plan    [OPTIONS]
-cuenv infrastructure apply   [OPTIONS] [--auto-approve]
-cuenv infrastructure destroy [OPTIONS] [--auto-approve]
+cuenv infrastructure apply   [OPTIONS] [--yes]
+cuenv infrastructure destroy [OPTIONS] [--yes]
 cuenv infrastructure state   [OPTIONS]
-cuenv infrastructure unlock  [OPTIONS]
+cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 ```
 
 - `plan`: refresh recorded resources and show the changes `apply` would make.
-- `apply`: take the project's state lock, re-plan, confirm, and converge.
-  Resources removed from `infrastructure.resources` are deleted.
-- `destroy`: delete every managed resource recorded for the project.
-- `state`: list managed resources recorded for the project.
-- `unlock`: force-release the project's state lock after an interrupted run.
+- `apply`: plan, confirm, take the project's state lock, plan again (refusing
+  to continue if the plan changed), and converge. Resources removed from
+  `infrastructure.resources` are deleted.
+- `destroy`: the same flow, deleting every managed resource recorded for the
+  project.
+- `state`: list managed resources recorded for the project, marking tainted
+  ones.
+- `unlock`: without an identifier, show who holds the lock and since when;
+  with one, release exactly that lock.
 
 **Options:**
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
-- `--auto-approve` (`apply`, `destroy`): Skip the confirmation prompt.
-  Required when standard input is not a terminal.
+- `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
+  when standard input is not a terminal. `--auto-approve` is accepted as an
+  alias.
+- Global `--json` makes `plan` and `state` print JSON (addresses, actions and
+  summary counts; never attribute values).
+
+**Exit codes:** `2` configuration error, `3` evaluation error, `4` the state
+is locked by another run, `5` any other infrastructure failure.
 
 The Turso authentication token is read from the environment variable named by
 `infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default
-`TURSO_AUTH_TOKEN`). Provider
-downloads are cached in `TF_PLUGIN_CACHE_DIR` when set.
+`TURSO_AUTH_TOKEN`) and withheld from provider processes. Provider downloads
+are cached in `TF_PLUGIN_CACHE_DIR` when set.
 
 ### `cuenv shell`
 

@@ -240,6 +240,11 @@ pub struct ModuleEvalOptions {
     /// Use this to evaluate a specific subdirectory without loading the entire module.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_dir: Option<String>,
+    /// Top-level fields that must be fully concrete when present. Their
+    /// undefined references, missing required fields and non-concrete values
+    /// fail evaluation instead of being exported as null.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concrete_paths: Vec<String>,
 }
 
 /// Source location metadata for a single field
@@ -784,6 +789,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         recursive: false,
         package_name: None,
         target_dir: None, // Use module root
+        concrete_paths: Vec::new(),
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;

@@ -118,7 +118,7 @@ pub struct StopResponse {
 
 /// `ValidateProviderConfig.Request` (protocol 6) / `PrepareProviderConfig.Request` (protocol 5).
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct ValidateProviderConfigRequest {
+pub struct ValidateProviderConfigurationRequest {
     #[prost(message, optional, tag = "1")]
     pub configuration: Option<DynamicValue>,
 }
@@ -127,7 +127,7 @@ pub struct ValidateProviderConfigRequest {
 ///
 /// Protocol 5 additionally returns `prepared_config` at tag 1, which cuenv ignores.
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct ValidateProviderConfigResponse {
+pub struct ValidateProviderConfigurationResponse {
     #[prost(message, repeated, tag = "2")]
     pub diagnostics: Vec<Diagnostic>,
 }
@@ -152,7 +152,7 @@ pub struct DiagnosticsResponse {
 
 /// `ValidateResourceConfig.Request` (protocol 6) / `ValidateResourceTypeConfig.Request` (protocol 5).
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct ValidateResourceConfigRequest {
+pub struct ValidateResourceConfigurationRequest {
     #[prost(string, tag = "1")]
     pub type_name: String,
     #[prost(message, optional, tag = "2")]
@@ -194,6 +194,14 @@ pub struct ReadResourceRequest {
     pub client_capabilities: Option<ClientCapabilities>,
 }
 
+/// `Deferred`: the provider could not act yet and asks the client to retry
+/// later. cuenv advertises no deferral support, so any deferral is an error.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct Deferred {
+    #[prost(int32, tag = "1")]
+    pub reason: i32,
+}
+
 /// `ReadResource.Response`.
 #[derive(Clone, PartialEq, prost::Message)]
 pub struct ReadResourceResponse {
@@ -203,6 +211,8 @@ pub struct ReadResourceResponse {
     pub diagnostics: Vec<Diagnostic>,
     #[prost(bytes = "vec", tag = "3")]
     pub private: Vec<u8>,
+    #[prost(message, optional, tag = "4")]
+    pub deferred: Option<Deferred>,
 }
 
 /// `PlanResourceChange.Request`.
@@ -235,6 +245,8 @@ pub struct PlanResourceChangeResponse {
     pub diagnostics: Vec<Diagnostic>,
     #[prost(bool, tag = "5")]
     pub legacy_type_system: bool,
+    #[prost(message, optional, tag = "6")]
+    pub deferred: Option<Deferred>,
 }
 
 /// `ApplyResourceChange.Request`.

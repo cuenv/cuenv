@@ -228,8 +228,13 @@ pub enum InfrastructureCommands {
         )]
         package: String,
         /// Apply without an interactive confirmation.
-        #[arg(long, help = "Apply without an interactive confirmation")]
-        auto_approve: bool,
+        #[arg(
+            long,
+            short = 'y',
+            alias = "auto-approve",
+            help = "Apply without an interactive confirmation"
+        )]
+        yes: bool,
     },
     /// Delete every managed resource the project owns.
     #[command(about = "Delete every managed resource the project owns")]
@@ -250,8 +255,13 @@ pub enum InfrastructureCommands {
         )]
         package: String,
         /// Destroy without an interactive confirmation.
-        #[arg(long, help = "Destroy without an interactive confirmation")]
-        auto_approve: bool,
+        #[arg(
+            long,
+            short = 'y',
+            alias = "auto-approve",
+            help = "Destroy without an interactive confirmation"
+        )]
+        yes: bool,
     },
     /// List managed resources recorded in state.
     #[command(about = "List managed resources recorded in state")]
@@ -272,9 +282,12 @@ pub enum InfrastructureCommands {
         )]
         package: String,
     },
-    /// Force-release the project's state lock.
-    #[command(about = "Force-release the project's state lock")]
+    /// Show the project's state lock, or release it by identifier.
+    #[command(about = "Show the project's state lock, or release it by identifier")]
     Unlock {
+        /// Identifier of the lock to release; omit it to see who holds the lock.
+        #[arg(help = "Identifier of the lock to release; omit it to see who holds the lock")]
+        lock_identifier: Option<String>,
         /// Path to directory containing CUE files.
         #[arg(
             long,

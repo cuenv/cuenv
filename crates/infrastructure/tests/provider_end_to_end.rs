@@ -16,8 +16,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use cuenv_infrastructure::{
-    Action, EngineOptions, InfrastructureEngine, MemoryStateStore, Plan, PlanMode, StateStore,
-    TenantKey, TursoConfiguration, TursoStateStore,
+    Action, ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
+    MemoryStateStore, Plan, PlanMode, StateStore, TenantKey, TursoConfiguration, TursoStateStore,
 };
 use cuenv_manifest::manifest::Infrastructure;
 use serde_json::json;
@@ -74,18 +74,24 @@ async fn plan_and_apply(
     desired: &Desired<'_>,
     mode: PlanMode,
 ) -> TestResult<Plan> {
-    let mut engine = InfrastructureEngine::new(
-        tenant.clone(),
-        Arc::clone(store),
-        infrastructure(desired)?,
-        EngineOptions {
+    let mut engine = InfrastructureEngine::new(EngineSetup {
+        tenant: tenant.clone(),
+        store: Arc::clone(store),
+        infrastructure: infrastructure(desired)?,
+        options: EngineOptions {
             project_directory: std::env::temp_dir(),
             plugin_cache_directory: None,
+            withheld_environment_variables: vec!["TURSO_AUTH_TOKEN".to_string()],
         },
-    );
+    });
     let lock = store.lock(tenant, "provider_end_to_end").await?;
     let plan = engine.plan(mode).await?;
-    engine.apply(&plan, &mut |_| {}).await?;
+    let cancellation = Cancellation::default();
+    let context = ApplyContext {
+        lock: &lock,
+        cancellation: &cancellation,
+    };
+    engine.apply(&plan, context, &mut |_| {}).await?;
     store.unlock(tenant, &lock).await?;
     engine.shutdown().await;
     Ok(plan)
@@ -183,9 +189,14 @@ async fn managed_resource_lifecycle() -> TestResult {
 #[ignore = "requires a protocol 6 provider binary (CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER)"]
 async fn protocol_6_provider_schema() {
     let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_TFE_PROVIDER").unwrap();
-    let client = cuenv_infrastructure::plugin::ProviderClient::launch(Path::new(&binary))
-        .await
-        .unwrap();
+    let client = cuenv_infrastructure::plugin::ProviderClient::launch(
+        &cuenv_infrastructure::plugin::LaunchOptions {
+            binary: Path::new(&binary),
+            withheld_environment_variables: &[],
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(
         client.protocol(),
         cuenv_infrastructure::plugin::Protocol::Version6
@@ -210,9 +221,14 @@ async fn installs_provider_from_registry() {
     assert!(binary.starts_with(cache.path()));
     // Second call is served from the cache.
     assert_eq!(installer.ensure(&source, "3.7.2").await.unwrap(), binary);
-    let client = cuenv_infrastructure::plugin::ProviderClient::launch(&binary)
-        .await
-        .unwrap();
+    let client = cuenv_infrastructure::plugin::ProviderClient::launch(
+        &cuenv_infrastructure::plugin::LaunchOptions {
+            binary: &binary,
+            withheld_environment_variables: &[],
+        },
+    )
+    .await
+    .unwrap();
     assert_eq!(
         client.protocol(),
         cuenv_infrastructure::plugin::Protocol::Version5
@@ -242,12 +258,23 @@ async fn turso_store_round_trips_records() {
         // Lengths 1..=3 exercise every base64 padding case.
         private: vec![0, 255, 7, 42, 1],
         dependencies: vec!["other".into()],
+        tainted: true,
+        identity: Some(json!({"name": "a-b"})),
     };
-    store.put(&tenant, &record).await.unwrap();
+    let lock = store.lock(&tenant, "round trip").await.unwrap();
+    store.put(&tenant, &lock, &record).await.unwrap();
     let mut updated = record.clone();
     updated.private = vec![9];
-    store.put(&tenant, &updated).await.unwrap();
+    store.put(&tenant, &lock, &updated).await.unwrap();
     assert_eq!(store.list(&tenant).await.unwrap(), vec![updated.clone()]);
-    store.delete(&tenant, &updated.address).await.unwrap();
+    store
+        .delete(&tenant, &lock, &updated.address)
+        .await
+        .unwrap();
+    store.unlock(&tenant, &lock).await.unwrap();
+    assert!(matches!(
+        store.put(&tenant, &lock, &updated).await,
+        Err(cuenv_infrastructure::InfrastructureError::LockLost { .. })
+    ));
     assert!(store.list(&tenant).await.unwrap().is_empty());
 }

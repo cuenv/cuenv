@@ -37,6 +37,21 @@ pub async fn execute_command_safe(
         return result;
     }
 
+    if let Command::Infrastructure {
+        path,
+        package,
+        action,
+    } = &command
+    {
+        let options = commands::infrastructure::InfrastructureOptions {
+            path: path.clone(),
+            package: package.clone(),
+            action: action.clone(),
+            output: json_format,
+        };
+        return commands::infrastructure::execute_infrastructure(&options, executor).await;
+    }
+
     if let Some(result) = execute_service_command(&command, executor).await {
         return result;
     }
@@ -155,22 +170,6 @@ async fn execute_service_command(
                 commands::logs::execute_logs(&options)
                     .map(|_| ())
                     .map_err(|e| CliError::eval(format!("Logs command failed: {e}"))),
-            )
-        }
-        Command::Infrastructure {
-            path,
-            package,
-            action,
-        } => {
-            let options = commands::infrastructure::InfrastructureOptions {
-                path: path.clone(),
-                package: package.clone(),
-                action: *action,
-            };
-            Some(
-                commands::infrastructure::execute_infrastructure(&options, executor)
-                    .await
-                    .map_err(CliError::from),
             )
         }
         Command::Ps {

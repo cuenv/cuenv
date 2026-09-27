@@ -2,9 +2,36 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 
 	"cuelang.org/go/cue"
+	cueerrors "cuelang.org/go/cue/errors"
 )
+
+// validateConcretePaths requires each listed top-level field, when present,
+// to be fully concrete before the instance is exported.
+//
+// buildValueClean exports whatever it can decode: an undefined reference, a
+// non-concrete value, and a required field missing from a definition all
+// become JSON null. Callers name the fields where that would be dangerous
+// (for example configuration that drives external side effects) and those
+// subtrees are validated with concreteness and finality. cue.All() is
+// deliberately not used: it would also demand concrete definitions and
+// hidden fields. Fields not listed keep the lenient export.
+func validateConcretePaths(v cue.Value, paths []string) error {
+	for _, path := range paths {
+		field := v.LookupPath(cue.MakePath(cue.Str(path)))
+		if !field.Exists() {
+			continue
+		}
+		if err := field.Validate(cue.Concrete(true), cue.Final()); err != nil {
+			details := strings.TrimSpace(cueerrors.Details(err, nil))
+			return fmt.Errorf("%s: %s", path, details)
+		}
+	}
+	return nil
+}
 
 // buildJSONClean builds a JSON representation without any _meta injection.
 // This returns clean JSON that can be correlated with the separate meta map.

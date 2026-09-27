@@ -87,6 +87,18 @@ impl Presence {
     }
 }
 
+impl Attribute {
+    /// Whether this attribute, or any nested attribute, is sensitive.
+    #[must_use]
+    pub fn contains_sensitive(&self) -> bool {
+        self.sensitive
+            || self
+                .nested
+                .as_ref()
+                .is_some_and(|nested| nested.attributes.values().any(Self::contains_sensitive))
+    }
+}
+
 /// Nested attributes of a protocol 6 attribute.
 #[derive(Debug, Clone)]
 pub struct NestedAttributes {
@@ -159,14 +171,31 @@ impl Block {
         Type::Object(attributes)
     }
 
-    /// Top-level attribute names flagged sensitive.
+    /// Top-level attribute and block names whose values contain anything
+    /// sensitive, at any depth. Rendering masks the whole top-level value.
     #[must_use]
     pub fn sensitive_attributes(&self) -> Vec<String> {
-        self.attributes
+        let attributes = self
+            .attributes
             .iter()
-            .filter(|(_, attribute)| attribute.sensitive)
-            .map(|(name, _)| name.clone())
-            .collect()
+            .filter(|(_, attribute)| attribute.contains_sensitive())
+            .map(|(name, _)| name.clone());
+        let blocks = self
+            .blocks
+            .iter()
+            .filter(|(_, nested)| nested.block.contains_sensitive())
+            .map(|(name, _)| name.clone());
+        attributes.chain(blocks).collect()
+    }
+
+    /// Whether any attribute in this block, at any depth, is sensitive.
+    #[must_use]
+    pub fn contains_sensitive(&self) -> bool {
+        self.attributes.values().any(Attribute::contains_sensitive)
+            || self
+                .blocks
+                .values()
+                .any(|nested| nested.block.contains_sensitive())
     }
 
     /// Normalize a decoded configuration value the way Terraform does:
@@ -527,6 +556,45 @@ mod tests {
         );
         let proposed = block.proposed_new(&Value::Null, &configuration);
         assert_eq!(proposed.attribute("id"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn nested_sensitive_values_mark_their_top_level_attribute() {
+        let mut credentials = Block::default();
+        credentials.attributes.insert(
+            "client_key".into(),
+            Attribute {
+                sensitive: true,
+                ..attribute(Type::String, Presence::Computed)
+            },
+        );
+        let mut block = sample_block();
+        block.blocks.insert(
+            "master_auth".into(),
+            NestedBlock {
+                block: credentials,
+                nesting: Nesting::List,
+            },
+        );
+        let mut nested_secret = attribute(Type::String, Presence::Optional);
+        nested_secret.sensitive = true;
+        block.attributes.insert(
+            "settings".into(),
+            Attribute {
+                nested: Some(NestedAttributes {
+                    attributes: BTreeMap::from([("password".to_string(), nested_secret)]),
+                    nesting: Nesting::Single,
+                }),
+                ..attribute(Type::Dynamic, Presence::Optional)
+            },
+        );
+        let sensitive = block.sensitive_attributes();
+        assert!(
+            sensitive.contains(&"master_auth".to_string()),
+            "{sensitive:?}"
+        );
+        assert!(sensitive.contains(&"settings".to_string()), "{sensitive:?}");
+        assert!(!sensitive.contains(&"name".to_string()), "{sensitive:?}");
     }
 
     #[test]

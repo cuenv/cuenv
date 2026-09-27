@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use super::{CodegenConfig, ContainerImage, Formatters, Infrastructure, Runtime, Service, VcsDependency};
+use super::{
+    CodegenConfig, ContainerImage, Formatters, Infrastructure, Runtime, Service, VcsDependency,
+};
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;

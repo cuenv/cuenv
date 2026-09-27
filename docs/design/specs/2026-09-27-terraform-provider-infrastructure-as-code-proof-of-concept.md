@@ -124,6 +124,34 @@ security engineer, platform operator, Terraform protocol specialist, CUE and
 schema designer, cuenv maintainer — with each finding verified before it is
 acted on. The persona briefs live in `.agents/skills/cuenv-infrastructure/SKILL.md`.
 
+### Milestone 1 review (proof of concept) and the hardening it drove
+
+About fifty findings, most reproduced. Resolved in milestone 2:
+
+- Security: version and source validation with cache containment (a crafted
+  version could delete directories outside the cache); cached binaries
+  re-verified from a manifest; HTTPS-only downloads; extraction permission
+  and size limits; the state token withheld from providers, redacted
+  everywhere and refused over non-loopback plaintext; errors name value kinds,
+  never values; nested sensitive values masked.
+- Operations: duplicate project names refused (two projects could delete each
+  other's resources); lock-fenced writes; unlock by identifier; retries with
+  lock-acquisition recovery; versioned migrations; unrecordable changes saved
+  locally; failed creates tainted; plan, confirm, lock, re-plan; interrupts
+  finish the resource in flight and release the lock; provider logs attached
+  to failures; per-provider socket directories removed; graceful provider
+  shutdown; dedicated error category and exit codes.
+- Protocol: failed applies saved with unknowns as null; refreshed state kept
+  current for unchanged resources; `requires_replace` filtered to changed
+  paths; basic plan validity checks (null plans, non-computed attribute
+  drift) honouring `legacy_type_system`; JSON-encoded values decoded;
+  deferrals rejected; replacement creates receive the first plan's private
+  data; unknown values from refresh rejected.
+- Schema: exactly one of `version`/`path`, strict version, loopback-only
+  plaintext URLs, valid token variable names, well-formed resource types; the
+  `infrastructure` block must be concrete (generic `concretePaths` bridge
+  option).
+
 ## Validation
 
 - Unit tests: `cty` codec and set equality, schema conversion, normalization
@@ -142,18 +170,27 @@ acted on. The persona briefs live in `.agents/skills/cuenv-infrastructure/SKILL.
    configuration reference another's attributes, propagate unknowns through
    planning, and resolve them during apply in dependency order. Derive
    `dependsOn` from references.
-2. Make cuenv's Go bridge fail evaluation when a field is an error instead of
-   exporting it as `null` (`crates/cuengine/values.go`, `buildValueClean`).
-   This changes evaluation for every project, so it needs its own change.
-3. Data sources (`ReadDataSource`) and imports (`ImportResourceState`).
-4. Parallel apply across independent resources.
-5. Provider version constraints, lock file entries in `cuenv.lock`, and GPG
+2. Protocol fidelity (milestone 3): resource identity (`GetResourceIdentitySchemas`
+   and identity on read, plan and apply); a full port of `objchange.ProposedNew`
+   for list, set and map nested collections and `optionalValueNotComputable`;
+   typed values so dynamic attributes keep list, set and map types and
+   numbers keep full precision; `AssertObjectCompatible` on apply results;
+   honouring `plan_destroy`; masking by sensitive path rather than whole
+   top-level attribute.
+3. Tests that run in continuous integration: an in-process fake provider and
+   a mock Hrana server so the lifecycle suite no longer needs real binaries.
+4. A typed provider binding from github.com/cuenv/terraform (for example a
+   generated `#Provider` carrying `source`, `version` and a resource-type to
+   definition map) so `type`, `version` and `configuration` cannot disagree.
+   Needs a decision across both repositories.
+5. Data sources (`ReadDataSource`) and imports (`ImportResourceState`),
+   `state rm`, `--target`.
+6. Parallel apply across independent resources.
+7. Provider version constraints, lock file entries in `cuenv.lock`, and GPG
    verification of `SHA256SUMS`.
-6. Secret-typed provider and resource arguments resolved through cuenv's
+8. Secret-typed provider and resource arguments resolved through cuenv's
    secret resolvers instead of plaintext CUE or ambient environment.
-7. Full `objchange.ProposedNew` semantics for nested block collections and
-   write-only attributes.
-8. Lock leases with expiry instead of manual `cuenv i unlock`.
-9. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
-   "configuration"; renaming it to `#ProviderConfiguration` would bring the
-   generated modules in line with the no-abbreviation rule.
+9. Lock leases with expiry and heartbeat instead of manual release.
+10. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
+    "configuration"; renaming it to `#ProviderConfiguration` would bring the
+    generated modules in line with the no-abbreviation rule.

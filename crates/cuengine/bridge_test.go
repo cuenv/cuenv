@@ -1,5 +1,3 @@
-//go:build cgo
-
 package main
 
 import (
@@ -9,585 +7,447 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"unsafe"
 )
 
-/*
-#include <stdlib.h>
-*/
-import "C"
+// Tests call the Go-string implementations behind the exported cgo symbols
+// (evaluateModuleResponse, moduleDependencyVersionResponse) because Go does
+// not allow cgo in test files.
 
-// Test data structure for validation
-type TestCueData struct {
-	Env map[string]interface{} `json:"env"`
-}
+const testModulePath = "example.com/bridge"
 
-// Helper function to create a temporary directory with CUE files
-func createTestCueDir(t *testing.T, packageName string, content string) (string, func()) {
-	// Validate package name to prevent path traversal
-	if strings.Contains(packageName, "..") || strings.Contains(packageName, "/") || strings.Contains(packageName, "\\") {
-		t.Fatalf("Invalid package name: %s (contains path traversal characters)", packageName)
+// writeCueModule creates a CUE module in a temporary directory. files maps a
+// slash-separated path relative to the module root to its contents.
+func writeCueModule(t *testing.T, files map[string]string) string {
+	t.Helper()
+	moduleRoot := t.TempDir()
+	allFiles := map[string]string{
+		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.14.1\"\n", testModulePath+"@v0"),
 	}
-
-	// Validate content size to prevent resource exhaustion
-	if len(content) > 1024*1024 { // 1MB limit
-		t.Fatalf("Content too large: %d bytes (max 1MB)", len(content))
+	for name, contents := range files {
+		allFiles[name] = contents
 	}
-
-	tempDir, err := os.MkdirTemp("", "cuenv-test-*")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-
-	// Create env.cue file with safe filename
-	cueFile := filepath.Join(tempDir, "env.cue")
-
-	// Validate final path is within temp directory
-	if !strings.HasPrefix(cueFile, tempDir) {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Path traversal detected in file path")
-	}
-
-	fullContent := "package " + packageName + "\n\n" + content
-	if err := os.WriteFile(cueFile, []byte(fullContent), 0644); err != nil {
-		os.RemoveAll(tempDir)
-		t.Fatalf("Failed to write CUE file: %v", err)
-	}
-
-	cleanup := func() {
-		os.RemoveAll(tempDir)
-	}
-
-	return tempDir, cleanup
-}
-
-// Helper to call FFI function safely
-func callCueEvalPackage(dirPath, packageName string) string {
-	cDirPath := C.CString(dirPath)
-	cPackageName := C.CString(packageName)
-	defer C.free(unsafe.Pointer(cDirPath))
-	defer C.free(unsafe.Pointer(cPackageName))
-
-	result := cue_eval_package(cDirPath, cPackageName)
-	defer cue_free_string(result)
-
-	return C.GoString(result)
-}
-
-func TestCueFreeString(t *testing.T) {
-	// Test that cue_free_string doesn't crash
-	testStr := C.CString("test string")
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("cue_free_string panicked: %v", r)
+	for name, contents := range allFiles {
+		filename := filepath.Join(moduleRoot, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+			t.Fatalf("create directory for %s: %v", name, err)
 		}
-	}()
-	cue_free_string(testStr)
+		if err := os.WriteFile(filename, []byte(contents), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	return moduleRoot
 }
 
-func TestCueEvalPackage_ValidInput(t *testing.T) {
-	cueContent := `
+// writeProject creates a module whose root holds a single `cuenv` package.
+func writeProject(t *testing.T, contents string) string {
+	t.Helper()
+	return writeCueModule(t, map[string]string{"env.cue": "package cuenv\n\n" + contents})
+}
+
+// testEnvelope mirrors BridgeResponse with the success payload decoded.
+type testEnvelope struct {
+	Version string          `json:"version"`
+	Ok      json.RawMessage `json:"ok"`
+	Error   *BridgeError    `json:"error"`
+}
+
+// evaluateModule runs a non-recursive evaluation of the `cuenv` package in
+// targetDirectory (relative to moduleRoot), requiring `infrastructure` to be
+// concrete as cuenv does, and decodes the envelope.
+func evaluateModule(t *testing.T, moduleRoot string, targetDirectory string) testEnvelope {
+	t.Helper()
+	return evaluateModuleWith(t, moduleRoot, targetDirectory, []string{"infrastructure"})
+}
+
+// evaluateModuleWith is evaluateModule with explicit concrete paths.
+func evaluateModuleWith(t *testing.T, moduleRoot string, targetDirectory string, concretePaths []string) testEnvelope {
+	t.Helper()
+	options, err := json.Marshal(map[string]interface{}{
+		"packageName":   "cuenv",
+		"targetDir":     filepath.Join(moduleRoot, filepath.FromSlash(targetDirectory)),
+		"concretePaths": concretePaths,
+	})
+	if err != nil {
+		t.Fatalf("marshal options: %v", err)
+	}
+	response := evaluateModuleResponse(moduleRoot, "", string(options))
+	var envelope testEnvelope
+	if err := json.Unmarshal([]byte(response), &envelope); err != nil {
+		t.Fatalf("parse bridge response: %v\nresponse: %s", err, response)
+	}
+	if envelope.Version != BridgeVersion {
+		t.Fatalf("expected bridge version %q, got %q", BridgeVersion, envelope.Version)
+	}
+	return envelope
+}
+
+// evaluateInstance evaluates the module and returns the JSON of the instance
+// at targetDirectory, failing the test on a bridge error.
+func evaluateInstance(t *testing.T, moduleRoot string, targetDirectory string) map[string]interface{} {
+	t.Helper()
+	envelope := evaluateModule(t, moduleRoot, targetDirectory)
+	if envelope.Error != nil {
+		t.Fatalf("unexpected bridge error: %+v (hint: %s)", envelope.Error, errorHint(envelope.Error))
+	}
+	var result ModuleResult
+	if err := json.Unmarshal(envelope.Ok, &result); err != nil {
+		t.Fatalf("parse module result: %v\nresult: %s", err, envelope.Ok)
+	}
+	instance, ok := result.Instances[targetDirectory]
+	if !ok {
+		t.Fatalf("instance %q missing from result: %s", targetDirectory, envelope.Ok)
+	}
+	var value map[string]interface{}
+	if err := json.Unmarshal(instance, &value); err != nil {
+		t.Fatalf("parse instance: %v\ninstance: %s", err, instance)
+	}
+	return value
+}
+
+// evaluateFailure evaluates the module and returns the bridge error message
+// and hint, failing the test when evaluation succeeds.
+func evaluateFailure(t *testing.T, moduleRoot string, targetDirectory string) string {
+	t.Helper()
+	envelope := evaluateModule(t, moduleRoot, targetDirectory)
+	if envelope.Error == nil {
+		t.Fatalf("expected a bridge error, got: %s", envelope.Ok)
+	}
+	failure := envelope.Error.Message + "\n" + errorHint(envelope.Error)
+	t.Logf("bridge error: %s", failure)
+	return failure
+}
+
+func errorHint(bridgeError *BridgeError) string {
+	if bridgeError.Hint == nil {
+		return ""
+	}
+	return *bridgeError.Hint
+}
+
+func assertContains(t *testing.T, text string, fragments ...string) {
+	t.Helper()
+	for _, fragment := range fragments {
+		if !strings.Contains(text, fragment) {
+			t.Errorf("expected %q in:\n%s", fragment, text)
+		}
+	}
+}
+
+func TestEvaluateModule_ValidInput(t *testing.T) {
+	moduleRoot := writeProject(t, `
 env: {
 	DATABASE_URL: "postgres://localhost/mydb"
-	API_KEY: "test-key"
 	PORT: 3000
 	DEBUG: true
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse result
-	var data TestCueData
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		t.Fatalf("Failed to parse JSON result: %v\nResult: %s", err, result)
+}`)
+	value := evaluateInstance(t, moduleRoot, ".")
+	env, ok := value["env"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected env object, got %T", value["env"])
 	}
-
-	// Verify expected values
-	if data.Env["DATABASE_URL"] != "postgres://localhost/mydb" {
-		t.Errorf("Expected DATABASE_URL to be 'postgres://localhost/mydb', got %v", data.Env["DATABASE_URL"])
+	if env["DATABASE_URL"] != "postgres://localhost/mydb" {
+		t.Errorf("unexpected DATABASE_URL: %v", env["DATABASE_URL"])
 	}
-
-	if data.Env["API_KEY"] != "test-key" {
-		t.Errorf("Expected API_KEY to be 'test-key', got %v", data.Env["API_KEY"])
+	if port, ok := env["PORT"].(float64); !ok || port != 3000 {
+		t.Errorf("expected PORT 3000, got %v (%T)", env["PORT"], env["PORT"])
 	}
-
-	// PORT should be parsed as number
-	if port, ok := data.Env["PORT"].(float64); !ok || port != 3000 {
-		t.Errorf("Expected PORT to be 3000 (number), got %v (%T)", data.Env["PORT"], data.Env["PORT"])
-	}
-
-	// DEBUG should be parsed as boolean
-	if debug, ok := data.Env["DEBUG"].(bool); !ok || debug != true {
-		t.Errorf("Expected DEBUG to be true (boolean), got %v (%T)", data.Env["DEBUG"], data.Env["DEBUG"])
+	if debug, ok := env["DEBUG"].(bool); !ok || !debug {
+		t.Errorf("expected DEBUG true, got %v (%T)", env["DEBUG"], env["DEBUG"])
 	}
 }
 
-func TestCueEvalPackage_EmptyDirectory(t *testing.T) {
-	result := callCueEvalPackage("", "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	if errorResponse["error"] != "Directory path cannot be empty" {
-		t.Errorf("Expected specific error message, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_EmptyPackageName(t *testing.T) {
-	tempDir, cleanup := createTestCueDir(t, "cuenv", "env: {}")
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	if errorResponse["error"] != "Package name cannot be empty" {
-		t.Errorf("Expected specific error message, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_NonexistentDirectory(t *testing.T) {
-	result := callCueEvalPackage("/nonexistent/path", "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// When loading from a nonexistent directory, CUE fails to load the instance
-	if !strings.Contains(errorResponse["error"], "Failed to load CUE instance") {
-		t.Errorf("Expected CUE load error for nonexistent directory, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_InvalidCueSyntax(t *testing.T) {
-	invalidCueContent := `
-env: {
-	INVALID_SYNTAX: "missing closing brace"
-`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", invalidCueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Should return error JSON
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// Should contain some indication of CUE error
-	if !strings.Contains(errorResponse["error"], "Failed to") {
-		t.Errorf("Expected CUE parsing error, got: %s", errorResponse["error"])
-	}
-}
-
-func TestCueEvalPackage_WrongPackageName(t *testing.T) {
-	cueContent := `env: { TEST_VAR: "value" }`
-	tempDir, cleanup := createTestCueDir(t, "wrongpackage", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Should return error JSON since package name doesn't match
-	var errorResponse map[string]string
-	if err := json.Unmarshal([]byte(result), &errorResponse); err != nil {
-		t.Fatalf("Failed to parse error JSON: %v\nResult: %s", err, result)
-	}
-
-	// Should indicate that no instances were found or there was a loading error
-	errorMsg := errorResponse["error"]
-	if !strings.Contains(errorMsg, "No CUE instances found") && !strings.Contains(errorMsg, "Failed to load CUE instance") {
-		t.Errorf("Expected package loading error, got: %s", errorMsg)
-	}
-}
-
-func TestCueEvalPackage_ComplexNestedStructure(t *testing.T) {
-	cueContent := `
+func TestEvaluateModule_ComplexNestedStructure(t *testing.T) {
+	moduleRoot := writeProject(t, `
 env: {
 	DATABASE: {
 		HOST: "localhost"
 		PORT: 5432
-		NAME: "myapp"
-	}
-	FEATURES: {
-		CACHE_ENABLED: true
-		MAX_CONNECTIONS: 100
 	}
 	TAGS: ["production", "web", "api"]
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse result
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		t.Fatalf("Failed to parse JSON result: %v\nResult: %s", err, result)
-	}
-
-	// Verify nested structure exists
-	env, ok := data["env"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected env to be an object, got %T", data["env"])
-	}
-
-	// Check DATABASE nested object
+	EMPTY: []
+}`)
+	value := evaluateInstance(t, moduleRoot, ".")
+	env := value["env"].(map[string]interface{})
 	database, ok := env["DATABASE"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("Expected DATABASE to be an object, got %T", env["DATABASE"])
+		t.Fatalf("expected DATABASE object, got %T", env["DATABASE"])
 	}
-
 	if database["HOST"] != "localhost" {
-		t.Errorf("Expected DATABASE.HOST to be 'localhost', got %v", database["HOST"])
+		t.Errorf("unexpected DATABASE.HOST: %v", database["HOST"])
 	}
-
-	if port, ok := database["PORT"].(float64); !ok || port != 5432 {
-		t.Errorf("Expected DATABASE.PORT to be 5432, got %v (%T)", database["PORT"], database["PORT"])
-	}
-
-	// Check TAGS array
 	tags, ok := env["TAGS"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected TAGS to be an array, got %T", env["TAGS"])
+	if !ok || len(tags) != 3 || tags[0] != "production" {
+		t.Errorf("unexpected TAGS: %v", env["TAGS"])
 	}
-
-	if len(tags) != 3 {
-		t.Errorf("Expected 3 tags, got %d", len(tags))
-	}
-
-	if tags[0] != "production" {
-		t.Errorf("Expected first tag to be 'production', got %v", tags[0])
+	if empty, ok := env["EMPTY"].([]interface{}); !ok || len(empty) != 0 {
+		t.Errorf("expected EMPTY to export as [], got %v (%T)", env["EMPTY"], env["EMPTY"])
 	}
 }
 
-func TestCueEvalPackage_MemoryManagement(t *testing.T) {
-	// Test that multiple calls don't leak memory or cause crashes
-	cueContent := `env: { TEST_VAR: "value" }`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
+func TestEvaluateModule_EmptyModuleRoot(t *testing.T) {
+	var envelope testEnvelope
+	if err := json.Unmarshal([]byte(evaluateModuleResponse("", "cuenv", "")), &envelope); err != nil {
+		t.Fatalf("parse bridge response: %v", err)
+	}
+	if envelope.Error == nil || envelope.Error.Code != ErrorCodeInvalidInput {
+		t.Fatalf("expected %s error, got %+v", ErrorCodeInvalidInput, envelope.Error)
+	}
+	assertContains(t, envelope.Error.Message, "Module root path cannot be empty")
+}
 
-	// Make multiple calls to ensure no memory leaks
-	for i := 0; i < 10; i++ {
-		result := callCueEvalPackage(tempDir, "cuenv")
-
-		// Basic validation that it returns valid JSON
-		var data map[string]interface{}
-		if err := json.Unmarshal([]byte(result), &data); err != nil {
-			t.Fatalf("Call %d failed to parse JSON: %v", i, err)
-		}
-
-		// Verify expected structure
-		if env, ok := data["env"].(map[string]interface{}); !ok {
-			t.Fatalf("Call %d: expected env object", i)
-		} else if env["TEST_VAR"] != "value" {
-			t.Errorf("Call %d: expected TEST_VAR='value', got %v", i, env["TEST_VAR"])
-		}
+func TestEvaluateModule_InvalidOptions(t *testing.T) {
+	var envelope testEnvelope
+	if err := json.Unmarshal([]byte(evaluateModuleResponse(t.TempDir(), "cuenv", "{")), &envelope); err != nil {
+		t.Fatalf("parse bridge response: %v", err)
+	}
+	if envelope.Error == nil || envelope.Error.Code != ErrorCodeInvalidInput {
+		t.Fatalf("expected %s error, got %+v", ErrorCodeInvalidInput, envelope.Error)
 	}
 }
 
-func TestCueEvalPackage_ConcurrentAccess(t *testing.T) {
-	// Test concurrent calls to ensure thread safety
-	cueContent := `env: { CONCURRENT_VAR: "test" }`
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	const numGoroutines = 5
-	results := make(chan string, numGoroutines)
-	errors := make(chan error, numGoroutines)
-
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer func() {
-				if r := recover(); r != nil {
-					errors <- fmt.Errorf("goroutine %d panicked: %v", id, r)
-					return
-				}
-			}()
-
-			result := callCueEvalPackage(tempDir, "cuenv")
-			results <- result
-		}(i)
-	}
-
-	// Collect results
-	for i := 0; i < numGoroutines; i++ {
-		select {
-		case result := <-results:
-			var data map[string]interface{}
-			if err := json.Unmarshal([]byte(result), &data); err != nil {
-				t.Errorf("Concurrent call %d failed to parse JSON: %v", i, err)
-				continue
-			}
-
-			env, ok := data["env"].(map[string]interface{})
-			if !ok {
-				t.Errorf("Concurrent call %d: expected env object", i)
-				continue
-			}
-
-			if env["CONCURRENT_VAR"] != "test" {
-				t.Errorf("Concurrent call %d: expected CONCURRENT_VAR='test', got %v", i, env["CONCURRENT_VAR"])
-			}
-
-		case err := <-errors:
-			t.Errorf("Concurrent access error: %v", err)
-		}
+func TestEvaluateModule_InvalidCueSyntax(t *testing.T) {
+	moduleRoot := writeProject(t, `
+env: {
+	INVALID_SYNTAX: "missing closing brace"
+`)
+	envelope := evaluateModule(t, moduleRoot, ".")
+	if envelope.Error == nil {
+		t.Fatalf("expected a syntax error, got: %s", envelope.Ok)
 	}
 }
 
-func TestFieldOrderingPreservation(t *testing.T) {
-	// Create a CUE file with tasks in a specific order
-	cueContent := `
+func TestEvaluateModule_WrongPackageNameIsAbsent(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"env.cue": "package other\n\nenv: TEST_VAR: \"value\"\n",
+	})
+	envelope := evaluateModule(t, moduleRoot, ".")
+	if envelope.Error != nil {
+		t.Fatalf("expected empty success for a package mismatch, got %+v", envelope.Error)
+	}
+	var result ModuleResult
+	if err := json.Unmarshal(envelope.Ok, &result); err != nil {
+		t.Fatalf("parse module result: %v", err)
+	}
+	if len(result.Instances) != 0 {
+		t.Errorf("expected no instances, got %s", envelope.Ok)
+	}
+}
+
+func TestEvaluateModule_RepeatedCallsAreConsistent(t *testing.T) {
+	moduleRoot := writeProject(t, `
 tasks: {
-	ordered_group: {
-		description: "Test field ordering"
-		mode: "sequential"
-		
-		// These should appear in this exact order in JSON
-		first: {
-			command: "echo first"
+	zebra: { command: "echo zebra" }
+	alpha: { command: "echo alpha" }
+}
+env: TEST_VAR: "value"`)
+	options := fmt.Sprintf(`{"packageName":"cuenv","targetDir":%q}`, moduleRoot)
+	first := evaluateModuleResponse(moduleRoot, "", options)
+	for iteration := 0; iteration < 5; iteration++ {
+		if next := evaluateModuleResponse(moduleRoot, "", options); next != first {
+			t.Fatalf("iteration %d differs:\nfirst: %s\nnext:  %s", iteration, first, next)
 		}
-		second: {
-			command: "echo second"
-		}
-		third: {
-			command: "echo third"
-		}
-		fourth: {
-			command: "echo fourth"
-		}
-	}
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse the JSON to check for errors
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		if strings.Contains(result, "error") {
-			t.Fatalf("CUE evaluation failed: %s", result)
-		}
-		t.Fatalf("Failed to parse JSON result: %v", err)
-	}
-
-	// Navigate to tasks.ordered_group
-	tasks, ok := data["tasks"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected tasks to be a map, got: %T", data["tasks"])
-	}
-
-	orderedGroup, ok := tasks["ordered_group"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected ordered_group to be a map, got: %T", tasks["ordered_group"])
-	}
-
-	// The critical test: check if the JSON string contains the fields in the right order
-	// Since Go maps are unordered, we need to check the JSON string directly
-	expectedOrder := []string{"first", "second", "third", "fourth"}
-
-	// Find the positions of each field name in the JSON string
-	positions := make(map[string]int)
-	for _, field := range expectedOrder {
-		// Look for the field as a JSON key (with quotes and colon)
-		searchStr := `"` + field + `":`
-		pos := strings.Index(result, searchStr)
-		if pos == -1 {
-			t.Fatalf("Field %s not found in JSON", field)
-		}
-		positions[field] = pos
-	}
-
-	// Verify the positions are in ascending order (matching CUE definition order)
-	for i := 1; i < len(expectedOrder); i++ {
-		prevField := expectedOrder[i-1]
-		currField := expectedOrder[i]
-
-		if positions[prevField] >= positions[currField] {
-			t.Errorf("Field ordering incorrect: %s (pos %d) should come before %s (pos %d)",
-				prevField, positions[prevField], currField, positions[currField])
-			t.Logf("Full JSON result: %s", result)
-		}
-	}
-
-	// Also verify all expected fields are present in the ordered_group
-	for _, field := range expectedOrder {
-		if _, exists := orderedGroup[field]; !exists {
-			t.Errorf("Expected field %s not found in ordered_group", field)
-		}
-	}
-
-	if t.Failed() {
-		t.Logf("Field ordering test failed. JSON positions: %v", positions)
-	} else {
-		t.Logf("✓ Field ordering test passed. JSON positions: %v", positions)
 	}
 }
 
-func TestConsistentOrdering(t *testing.T) {
-	cueContent := `
-tasks: {
-	consistency_test: {
-		mode: "sequential"
-		zebra: { command: "echo zebra" }
-		alpha: { command: "echo alpha" }
-		omega: { command: "echo omega" }
-		beta: { command: "echo beta" }
+func TestEvaluateModule_ConcurrentAccess(t *testing.T) {
+	moduleRoot := writeProject(t, `env: CONCURRENT_VAR: "test"`)
+	options := fmt.Sprintf(`{"packageName":"cuenv","targetDir":%q}`, moduleRoot)
+	const goroutineCount = 5
+	responses := make(chan string, goroutineCount)
+	for index := 0; index < goroutineCount; index++ {
+		go func() {
+			responses <- evaluateModuleResponse(moduleRoot, "", options)
+		}()
 	}
-}`
-
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
-
-	// Parse the same content multiple times and ensure consistent ordering
-	var allResults []string
-
-	for i := 0; i < 5; i++ {
-		result := callCueEvalPackage(tempDir, "cuenv")
-		allResults = append(allResults, result)
-	}
-
-	// All results should be identical (same field ordering)
-	for i := 1; i < len(allResults); i++ {
-		if allResults[i] != allResults[0] {
-			t.Errorf("Inconsistent result on iteration %d", i+1)
-			t.Logf("First result: %s", allResults[0])
-			t.Logf("Different result: %s", allResults[i])
-
-			// Show where they differ
-			if len(allResults[0]) == len(allResults[i]) {
-				for j := 0; j < len(allResults[0]); j++ {
-					if allResults[0][j] != allResults[i][j] {
-						t.Logf("First difference at position %d: %c vs %c", j, allResults[0][j], allResults[i][j])
-						break
-					}
-				}
-			}
-		}
-	}
-
-	if !t.Failed() {
-		t.Logf("✓ Consistency test passed across %d iterations", len(allResults))
+	for index := 0; index < goroutineCount; index++ {
+		response := <-responses
+		assertContains(t, response, `"CONCURRENT_VAR":"test"`)
 	}
 }
 
-func TestTaskSourceMetadata(t *testing.T) {
-	// Create a CUE file with tasks to verify _source metadata is injected
-	cueContent := `
-tasks: {
-	build: {
-		command: "cargo"
-		args: ["build"]
+func TestModuleDependencyVersion(t *testing.T) {
+	moduleRoot := t.TempDir()
+	moduleFile := filepath.Join(moduleRoot, "cue.mod", "module.cue")
+	if err := os.MkdirAll(filepath.Dir(moduleFile), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	test: {
-		command: "cargo"
-		args: ["test"]
+	contents := "module: \"example.com/bridge@v0\"\nlanguage: version: \"v0.14.1\"\n" +
+		"deps: \"github.com/cuenv/cuenv@v0\": v: \"v0.53.1\"\n"
+	if err := os.WriteFile(moduleFile, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	nested: {
-		tasks: {
-			child1: {
-				command: "echo"
-				args: ["child1"]
-			}
-			child2: {
-				command: "echo"
-				args: ["child2"]
-			}
-		}
+	response := moduleDependencyVersionResponse(moduleRoot, "github.com/cuenv/cuenv")
+	assertContains(t, response, `"ok":{"version":"v0.53.1"}`)
+
+	missing := moduleDependencyVersionResponse(t.TempDir(), "github.com/cuenv/cuenv")
+	assertContains(t, missing, ErrorCodeInvalidInput)
+}
+
+// Infrastructure concreteness ------------------------------------------------
+
+// randomProviderPackage stands in for a github.com/cuenv/terraform provider
+// module: typed, closed provider and resource definitions.
+const randomProviderPackage = `package random
+
+#ProviderConfig: close({})
+
+#Resource_random_password: close({
+	length!:  int
+	special?: bool
+	upper?:   bool
+})
+`
+
+// infrastructureProject returns a project importing the local random provider
+// package as importName with the given infrastructure block body.
+func infrastructureProject(importName string, infrastructure string) string {
+	return fmt.Sprintf(`package cuenv
+
+import %s "%s/random"
+
+name: "infrastructure-project"
+
+infrastructure: {
+	state: turso: url: "http://127.0.0.1:8080"
+%s
+}
+`, importName, testModulePath, infrastructure)
+}
+
+func writeInfrastructureModule(t *testing.T, importName string, infrastructure string) string {
+	t.Helper()
+	return writeCueModule(t, map[string]string{
+		"random/random.cue": randomProviderPackage,
+		"app/env.cue":       infrastructureProject(importName, infrastructure),
+	})
+}
+
+func TestInfrastructure_ShadowedImportIsReported(t *testing.T) {
+	// `random` inside `providers: random: {...}` resolves to that field, not
+	// the imported package, so `random.#ProviderConfig` is undefined.
+	moduleRoot := writeInfrastructureModule(t, "random", `
+	providers: random: {
+		source:        "hashicorp/random"
+		version:       "3.7.2"
+		configuration: random.#ProviderConfig
 	}
-}`
+	resources: password: {
+		type:          "random_password"
+		configuration: random.#Resource_random_password & {length: 16}
+	}`)
+	failure := evaluateFailure(t, moduleRoot, "app")
+	assertContains(t, failure,
+		"app: infrastructure:",
+		"infrastructure.providers.random.configuration",
+		"undefined field: #ProviderConfig",
+		"env.cue:",
+	)
+}
 
-	tempDir, cleanup := createTestCueDir(t, "cuenv", cueContent)
-	defer cleanup()
+func TestInfrastructure_MissingRequiredFieldIsReported(t *testing.T) {
+	moduleRoot := writeInfrastructureModule(t, "randomProvider", `
+	resources: password: {
+		type:          "random_password"
+		configuration: randomProvider.#Resource_random_password & {special: false}
+	}`)
+	failure := evaluateFailure(t, moduleRoot, "app")
+	assertContains(t, failure,
+		"app: infrastructure:",
+		"infrastructure.resources.password.configuration.length",
+		"field is required but not present",
+	)
+}
 
-	result := callCueEvalPackage(tempDir, "cuenv")
-
-	// Parse the JSON to check for _source fields
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(result), &data); err != nil {
-		if strings.Contains(result, "error") {
-			t.Fatalf("CUE evaluation failed: %s", result)
+func TestInfrastructure_NonConcreteValueIsReported(t *testing.T) {
+	moduleRoot := writeInfrastructureModule(t, "randomProvider", `
+	resources: password: {
+		type:          "random_password"
+		configuration: randomProvider.#Resource_random_password & {
+			length:  16
+			special: bool
 		}
-		t.Fatalf("Failed to parse JSON result: %v", err)
+	}`)
+	failure := evaluateFailure(t, moduleRoot, "app")
+	assertContains(t, failure,
+		"app: infrastructure:",
+		"infrastructure.resources.password.configuration.special",
+		"incomplete value bool",
+	)
+}
+
+func TestInfrastructure_ConcreteBlockIsExportedUnchanged(t *testing.T) {
+	moduleRoot := writeInfrastructureModule(t, "randomProvider", `
+	state: turso: authenticationTokenEnvironmentVariable: string | *"TURSO_AUTH_TOKEN"
+	providers: random: {
+		source:        "hashicorp/random"
+		version:       "3.7.2"
+		configuration: randomProvider.#ProviderConfig
 	}
-
-	tasks, ok := data["tasks"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("Expected tasks to be a map, got: %T", data["tasks"])
+	resources: password: {
+		type:          "random_password"
+		dependsOn: []
+		configuration: randomProvider.#Resource_random_password & {
+			length:  16
+			special: false
+		}
+	}`)
+	value := evaluateInstance(t, moduleRoot, "app")
+	exported, err := json.Marshal(value["infrastructure"])
+	if err != nil {
+		t.Fatal(err)
 	}
+	expected := `{"providers":{"random":{"configuration":{},"source":"hashicorp/random","version":"3.7.2"}},` +
+		`"resources":{"password":{"configuration":{"length":16,"special":false},"dependsOn":[],"type":"random_password"}},` +
+		`"state":{"turso":{"authenticationTokenEnvironmentVariable":"TURSO_AUTH_TOKEN","url":"http://127.0.0.1:8080"}}}`
+	if string(exported) != expected {
+		t.Errorf("unexpected infrastructure export:\n got: %s\nwant: %s", exported, expected)
+	}
+}
 
-	// Check that each task has _source metadata
-	for taskName, taskDef := range tasks {
-		taskMap, ok := taskDef.(map[string]interface{})
-		if !ok {
-			t.Errorf("Task %s is not a map: %T", taskName, taskDef)
-			continue
-		}
+func TestInfrastructure_ProjectsWithoutInfrastructureKeepLenientExport(t *testing.T) {
+	// Validation is scoped to `infrastructure`: elsewhere a non-concrete
+	// value and a missing required field still export as null, exactly as
+	// before.
+	moduleRoot := writeProject(t, `
+#Settings: close({
+	required!: string
+	optional?: int
+})
 
-		source, hasSource := taskMap["_source"]
-		if !hasSource {
-			t.Errorf("Task %s is missing _source metadata", taskName)
-			continue
-		}
+name: "plain-project"
+env: {
+	PORT:  int
+	HOST:  "localhost"
+}
+settings: #Settings & {optional: 1}`)
+	value := evaluateInstance(t, moduleRoot, ".")
+	env := value["env"].(map[string]interface{})
+	port, present := env["PORT"]
+	if !present || port != nil {
+		t.Errorf("expected PORT to export as null, got %v (present: %t)", port, present)
+	}
+	if env["HOST"] != "localhost" {
+		t.Errorf("unexpected HOST: %v", env["HOST"])
+	}
+	settings := value["settings"].(map[string]interface{})
+	if required, present := settings["required"]; !present || required != nil {
+		t.Errorf("expected missing required field to export as null, got %v", settings)
+	}
+	if settings["optional"] != float64(1) {
+		t.Errorf("unexpected settings.optional: %v", settings["optional"])
+	}
+}
 
-		sourceMap, ok := source.(map[string]interface{})
-		if !ok {
-			t.Errorf("Task %s _source is not a map: %T", taskName, source)
-			continue
-		}
-
-		// Verify _source has expected fields
-		file, hasFile := sourceMap["file"]
-		if !hasFile {
-			t.Errorf("Task %s _source is missing 'file' field", taskName)
-		} else {
-			t.Logf("Task %s: file=%v", taskName, file)
-		}
-
-		line, hasLine := sourceMap["line"]
-		if !hasLine {
-			t.Errorf("Task %s _source is missing 'line' field", taskName)
-		} else {
-			t.Logf("Task %s: line=%v", taskName, line)
-		}
-
-		column, hasColumn := sourceMap["column"]
-		if !hasColumn {
-			t.Errorf("Task %s _source is missing 'column' field", taskName)
-		} else {
-			t.Logf("Task %s: column=%v", taskName, column)
-		}
-
-		// For nested tasks, check that children also have _source
-		if nestedTasks, hasNested := taskMap["tasks"].(map[string]interface{}); hasNested {
-			for childName, childDef := range nestedTasks {
-				childMap, ok := childDef.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				childSource, hasChildSource := childMap["_source"]
-				if !hasChildSource {
-					t.Errorf("Nested task %s.%s is missing _source metadata", taskName, childName)
-				} else {
-					t.Logf("Nested task %s.%s has _source: %v", taskName, childName, childSource)
-				}
-			}
-		}
+func TestConcretePaths_AreOptIn(t *testing.T) {
+	// Without concretePaths the bridge keeps its lenient export, so the check
+	// only applies where a caller asks for it.
+	moduleRoot := writeInfrastructureModule(t, "randomProvider", `
+	resources: password: {
+		type:          "random_password"
+		configuration: randomProvider.#Resource_random_password & {special: false}
+	}`)
+	envelope := evaluateModuleWith(t, moduleRoot, "app", nil)
+	if envelope.Error != nil {
+		t.Fatalf("expected lenient export without concretePaths, got error: %+v", envelope.Error)
 	}
 }

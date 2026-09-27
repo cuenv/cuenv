@@ -6,16 +6,22 @@
 //!
 //! ```text
 //! CORE-PROTOCOL-VERSION|APP-PROTOCOL-VERSION|NETWORK|ADDRESS|PROTOCOL|SERVER-CERT
-//! 1|6|unix|/temporary/plugin123|grpc|
+//! 1|6|unix|/tmp/cuenv-plugin-1a2b/plugin123|grpc|
 //! ```
 //!
 //! cuenv offers protocol versions 5 and 6 and speaks whichever the provider
 //! selects. It does not request AutoMTLS, so providers serve plaintext gRPC
 //! on a private unix socket, the same as Terraform with
 //! `TF_DISABLE_PLUGIN_TLS`.
+//!
+//! Each provider gets a private, short socket directory (unix socket paths
+//! are limited to about 108 bytes) that is removed when the provider stops,
+//! and never inherits the state store's credentials.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
@@ -43,6 +49,18 @@ const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
 /// How long to wait for a provider's handshake line.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Longest handshake line accepted; real ones are well under 200 bytes.
+const MAXIMUM_HANDSHAKE_BYTES: usize = 4096;
+
+/// How long a stopping provider gets for each shutdown step.
+const SHUTDOWN_STEP_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Provider log lines kept for error reports.
+const RETAINED_LOG_LINES: usize = 40;
+
+/// go-plugin's controller service, used for a graceful shutdown.
+const CONTROLLER_SHUTDOWN_PATH: &str = "/plugin.GRPCController/Shutdown";
+
 /// Plugin protocol major version negotiated with a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
@@ -56,9 +74,9 @@ pub enum Protocol {
 #[derive(Debug, Clone, Copy)]
 enum RemoteProcedure {
     GetSchema,
-    ValidateProviderConfig,
+    ValidateProviderConfiguration,
     Configure,
-    ValidateResourceConfig,
+    ValidateResourceConfiguration,
     UpgradeResourceState,
     ReadResource,
     PlanResourceChange,
@@ -70,11 +88,11 @@ impl RemoteProcedure {
     const fn path(self, protocol: Protocol) -> &'static str {
         match (protocol, self) {
             (Protocol::Version5, Self::GetSchema) => "/tfplugin5.Provider/GetSchema",
-            (Protocol::Version5, Self::ValidateProviderConfig) => {
+            (Protocol::Version5, Self::ValidateProviderConfiguration) => {
                 "/tfplugin5.Provider/PrepareProviderConfig"
             }
             (Protocol::Version5, Self::Configure) => "/tfplugin5.Provider/Configure",
-            (Protocol::Version5, Self::ValidateResourceConfig) => {
+            (Protocol::Version5, Self::ValidateResourceConfiguration) => {
                 "/tfplugin5.Provider/ValidateResourceTypeConfig"
             }
             (Protocol::Version5, Self::UpgradeResourceState) => {
@@ -89,11 +107,11 @@ impl RemoteProcedure {
             }
             (Protocol::Version5, Self::Stop) => "/tfplugin5.Provider/Stop",
             (Protocol::Version6, Self::GetSchema) => "/tfplugin6.Provider/GetProviderSchema",
-            (Protocol::Version6, Self::ValidateProviderConfig) => {
+            (Protocol::Version6, Self::ValidateProviderConfiguration) => {
                 "/tfplugin6.Provider/ValidateProviderConfig"
             }
             (Protocol::Version6, Self::Configure) => "/tfplugin6.Provider/ConfigureProvider",
-            (Protocol::Version6, Self::ValidateResourceConfig) => {
+            (Protocol::Version6, Self::ValidateResourceConfiguration) => {
                 "/tfplugin6.Provider/ValidateResourceConfig"
             }
             (Protocol::Version6, Self::UpgradeResourceState) => {
@@ -173,13 +191,93 @@ impl Handshake {
     }
 }
 
+/// How to start a provider.
+#[derive(Debug, Clone, Copy)]
+pub struct LaunchOptions<'launch> {
+    /// Provider executable.
+    pub binary: &'launch Path,
+    /// Environment variables the provider must not inherit, such as the
+    /// state store's authentication token.
+    pub withheld_environment_variables: &'launch [String],
+}
+
+/// Recent provider log lines, attached to errors so failures are diagnosable.
+#[derive(Debug, Clone, Default)]
+struct ProviderLog {
+    lines: Arc<Mutex<VecDeque<String>>>,
+}
+
+impl ProviderLog {
+    fn record(&self, line: String) {
+        if let Ok(mut lines) = self.lines.lock() {
+            if lines.len() == RETAINED_LOG_LINES {
+                lines.pop_front();
+            }
+            lines.push_back(line);
+        }
+    }
+
+    fn render(&self) -> String {
+        self.lines
+            .lock()
+            .map(|lines| {
+                if lines.is_empty() {
+                    String::new()
+                } else {
+                    let joined = lines.iter().cloned().collect::<Vec<_>>().join("\n  ");
+                    format!("\nrecent provider log:\n  {joined}")
+                }
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// A private directory for the provider's unix socket, removed on drop.
+#[derive(Debug)]
+struct SocketDirectory {
+    path: PathBuf,
+}
+
+impl SocketDirectory {
+    fn create() -> Result<Self> {
+        let base = if cfg!(unix) && Path::new("/tmp").is_dir() {
+            PathBuf::from("/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let path = base.join(format!("cuenv-plugin-{}", &suffix[..12]));
+        std::fs::create_dir(&path).map_err(|error| {
+            InfrastructureError::input_output("create provider socket directory", error)
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
+                |error| {
+                    InfrastructureError::input_output("protect provider socket directory", error)
+                },
+            )?;
+        }
+        Ok(Self { path })
+    }
+}
+
+impl Drop for SocketDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// A running provider plugin and a gRPC client connected to it.
 #[derive(Debug)]
 pub struct ProviderClient {
-    binary: PathBuf,
+    name: String,
     protocol: Protocol,
     channel: Channel,
     child: Child,
+    log: ProviderLog,
+    _socket_directory: SocketDirectory,
 }
 
 impl ProviderClient {
@@ -188,11 +286,21 @@ impl ProviderClient {
     /// # Errors
     ///
     /// Returns [`InfrastructureError::Plugin`] if the binary cannot be started, does
-    /// not complete the handshake in time, or cannot be dialed.
-    pub async fn launch(binary: &Path) -> Result<Self> {
-        let mut child = Command::new(binary)
+    /// not complete the handshake in time, or cannot be dialed. Errors include
+    /// the provider's recent log output.
+    #[tracing::instrument(skip_all, fields(binary = %options.binary.display()))]
+    pub async fn launch(options: &LaunchOptions<'_>) -> Result<Self> {
+        let binary = options.binary;
+        let socket_directory = SocketDirectory::create()?;
+        let mut command = Command::new(binary);
+        for name in options.withheld_environment_variables {
+            command.env_remove(name);
+        }
+        let mut child = command
             .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
             .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
+            .env("PLUGIN_UNIX_SOCKET_DIR", &socket_directory.path)
+            .env("TMPDIR", &socket_directory.path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -216,30 +324,44 @@ impl ProviderClient {
             || "provider".to_string(),
             |file_name| file_name.to_string_lossy().into_owned(),
         );
-        spawn_log_drain(name.clone(), standard_error);
+        let log = ProviderLog::default();
+        spawn_log_drain(name.clone(), standard_error, log.clone());
 
-        let mut lines = BufReader::new(standard_output).lines();
-        let line = tokio::time::timeout(HANDSHAKE_TIMEOUT, lines.next_line())
+        let mut reader = BufReader::new(standard_output);
+        let line = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_bounded_line(&mut reader))
             .await
             .map_err(|_| {
-                InfrastructureError::plugin(format!("{name} did not complete the plugin handshake"))
-            })?
-            .map_err(|error| InfrastructureError::io("read provider handshake", error))?
-            .ok_or_else(|| {
-                InfrastructureError::plugin(format!("{name} exited before the plugin handshake"))
-            })?;
+                InfrastructureError::plugin(format!(
+                    "{name} did not complete the plugin handshake within {} seconds{}",
+                    HANDSHAKE_TIMEOUT.as_secs(),
+                    log.render()
+                ))
+            })??;
+        let Some(line) = line else {
+            // Give the log drain a moment to capture why the provider exited.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            return Err(InfrastructureError::plugin(format!(
+                "{name} exited before the plugin handshake{}",
+                log.render()
+            )));
+        };
         let handshake = Handshake::parse(&line)?;
         tracing::debug!(provider = %name, ?handshake, "provider handshake");
 
         // Keep draining standard output so the plugin never blocks on a full pipe.
+        let mut lines = reader.lines();
         tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
 
-        let channel = connect(&handshake).await?;
+        let channel = connect(&handshake)
+            .await
+            .map_err(|error| InfrastructureError::plugin(format!("{error}{}", log.render())))?;
         Ok(Self {
-            binary: binary.to_path_buf(),
+            name,
             protocol: handshake.protocol,
             channel,
             child,
+            log,
+            _socket_directory: socket_directory,
         })
     }
 
@@ -247,12 +369,6 @@ impl ProviderClient {
     #[must_use]
     pub const fn protocol(&self) -> Protocol {
         self.protocol
-    }
-
-    /// Path of the running provider binary.
-    #[must_use]
-    pub fn binary(&self) -> &Path {
-        &self.binary
     }
 
     async fn call<RequestMessage, ResponseMessage>(
@@ -281,9 +397,23 @@ impl ProviderClient {
         )
         .await
         .map(tonic::Response::into_inner)
-        .map_err(|status| InfrastructureError::RemoteProcedure {
-            method: path.to_string(),
-            status: Box::new(status),
+        .map_err(|status| {
+            let transport_failure = matches!(
+                status.code(),
+                tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
+            );
+            let status = if transport_failure {
+                tonic::Status::new(
+                    status.code(),
+                    format!("{}{}", status.message(), self.log.render()),
+                )
+            } else {
+                status
+            };
+            InfrastructureError::RemoteProcedure {
+                method: path.to_string(),
+                status: Box::new(status),
+            }
         })
     }
 
@@ -320,10 +450,10 @@ impl ProviderClient {
         &self,
         configuration: Vec<u8>,
     ) -> Result<Vec<Diagnostic>> {
-        let response: protocol::ValidateProviderConfigResponse = self
+        let response: protocol::ValidateProviderConfigurationResponse = self
             .call(
-                RemoteProcedure::ValidateProviderConfig,
-                protocol::ValidateProviderConfigRequest {
+                RemoteProcedure::ValidateProviderConfiguration,
+                protocol::ValidateProviderConfigurationRequest {
                     configuration: Some(message_pack_value(configuration)),
                 },
             )
@@ -362,8 +492,8 @@ impl ProviderClient {
     ) -> Result<Vec<Diagnostic>> {
         let response: protocol::DiagnosticsResponse = self
             .call(
-                RemoteProcedure::ValidateResourceConfig,
-                protocol::ValidateResourceConfigRequest {
+                RemoteProcedure::ValidateResourceConfiguration,
+                protocol::ValidateResourceConfigurationRequest {
                     type_name: type_name.to_string(),
                     configuration: Some(message_pack_value(configuration)),
                     client_capabilities: Some(client_capabilities()),
@@ -476,13 +606,40 @@ impl ProviderClient {
 
     /// Ask the provider to stop gracefully, then terminate the process.
     pub async fn shutdown(mut self) {
-        let stop: Result<protocol::StopResponse> =
-            self.call(RemoteProcedure::Stop, protocol::Empty {}).await;
-        if let Err(error) = stop {
-            tracing::debug!(error = %error, "provider stop RPC failed");
+        // Ask the provider to cancel in-flight work, then let go-plugin shut
+        // down cleanly (it removes its socket), and only then kill it.
+        let stop = tokio::time::timeout(
+            SHUTDOWN_STEP_TIMEOUT,
+            self.call::<_, protocol::StopResponse>(RemoteProcedure::Stop, protocol::Empty {}),
+        )
+        .await;
+        if !matches!(stop, Ok(Ok(_))) {
+            tracing::debug!(provider = %self.name, "provider stop procedure did not complete");
         }
-        let _ = self.child.start_kill();
-        let _ = tokio::time::timeout(Duration::from_secs(5), self.child.wait()).await;
+        let _ = tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.controller_shutdown()).await;
+        if tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.start_kill();
+            let _ = tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.child.wait()).await;
+        }
+    }
+
+    async fn controller_shutdown(&self) -> Result<()> {
+        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
+        grpc.ready()
+            .await
+            .map_err(|error| InfrastructureError::plugin(error.to_string()))?;
+        let codec = tonic_prost::ProstCodec::<protocol::Empty, protocol::Empty>::default();
+        grpc.unary(
+            tonic::Request::new(protocol::Empty {}),
+            PathAndQuery::from_static(CONTROLLER_SHUTDOWN_PATH),
+            codec,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|status| InfrastructureError::plugin(status.to_string()))
     }
 }
 
@@ -531,13 +688,64 @@ const fn client_capabilities() -> protocol::ClientCapabilities {
     }
 }
 
-fn spawn_log_drain(name: String, standard_error: tokio::process::ChildStderr) {
+fn spawn_log_drain(name: String, standard_error: tokio::process::ChildStderr, log: ProviderLog) {
     tokio::spawn(async move {
         let mut lines = BufReader::new(standard_error).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            tracing::debug!(provider = %name, "{line}");
+            if provider_log_is_serious(&line) {
+                tracing::warn!(provider = %name, "{line}");
+            } else {
+                tracing::debug!(provider = %name, "{line}");
+            }
+            log.record(line);
         }
     });
+}
+
+/// go-plugin forwards provider logs as hclog JSON lines with an `@level`.
+fn provider_log_is_serious(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("@level")
+                .and_then(|level| level.as_str().map(str::to_owned))
+        })
+        .map_or_else(
+            || line.contains("panic:") || line.contains("[ERROR]"),
+            |level| matches!(level.as_str(), "error" | "warn"),
+        )
+}
+
+/// Read one line of at most [`MAXIMUM_HANDSHAKE_BYTES`], or `None` at end of
+/// output.
+async fn read_bounded_line(
+    reader: &mut BufReader<tokio::process::ChildStdout>,
+) -> Result<Option<String>> {
+    let mut line = Vec::new();
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .await
+            .map_err(|error| InfrastructureError::input_output("read provider handshake", error))?;
+        if buffer.is_empty() {
+            return Ok((!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned()));
+        }
+        let (consumed, finished) = buffer
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or((buffer.len(), false), |index| (index + 1, true));
+        line.extend_from_slice(&buffer[..consumed]);
+        reader.consume(consumed);
+        if line.len() > MAXIMUM_HANDSHAKE_BYTES {
+            return Err(InfrastructureError::plugin(
+                "provider handshake line is too long; is this a Terraform provider?",
+            ));
+        }
+        if finished {
+            return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+        }
+    }
 }
 
 async fn connect(handshake: &Handshake) -> Result<Channel> {
@@ -591,10 +799,10 @@ mod tests {
 
     #[test]
     fn parses_protocol_5_unix_handshake() {
-        let handshake = Handshake::parse("1|5|unix|/temporary/plugin1|grpc|\n").unwrap();
+        let handshake = Handshake::parse("1|5|unix|/tmp/plugin1|grpc|\n").unwrap();
         assert_eq!(handshake.protocol, Protocol::Version5);
         assert_eq!(handshake.network, "unix");
-        assert_eq!(handshake.address, "/temporary/plugin1");
+        assert_eq!(handshake.address, "/tmp/plugin1");
     }
 
     #[test]
@@ -606,10 +814,10 @@ mod tests {
 
     #[test]
     fn rejects_netrpc_tls_and_unknown_versions() {
-        assert!(Handshake::parse("1|5|unix|/temporary/plugin|netrpc|").is_err());
-        assert!(Handshake::parse("1|6|unix|/temporary/plugin|grpc|MIIC...").is_err());
-        assert!(Handshake::parse("1|4|unix|/temporary/plugin|grpc|").is_err());
-        assert!(Handshake::parse("2|6|unix|/temporary/plugin|grpc|").is_err());
+        assert!(Handshake::parse("1|5|unix|/tmp/plugin|netrpc|").is_err());
+        assert!(Handshake::parse("1|6|unix|/tmp/plugin|grpc|MIIC...").is_err());
+        assert!(Handshake::parse("1|4|unix|/tmp/plugin|grpc|").is_err());
+        assert!(Handshake::parse("2|6|unix|/tmp/plugin|grpc|").is_err());
         assert!(Handshake::parse("garbage").is_err());
     }
 
@@ -624,7 +832,7 @@ mod tests {
             "/tfplugin6.Provider/GetProviderSchema"
         );
         assert_eq!(
-            RemoteProcedure::ValidateResourceConfig.path(Protocol::Version5),
+            RemoteProcedure::ValidateResourceConfiguration.path(Protocol::Version5),
             "/tfplugin5.Provider/ValidateResourceTypeConfig"
         );
         assert_eq!(

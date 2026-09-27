@@ -11,6 +11,19 @@ pub const EXIT_OK: i32 = 0;
 pub const EXIT_CLI: i32 = 2;
 /// CUE evaluation or FFI error exit code
 pub const EXIT_EVAL: i32 = 3;
+/// Infrastructure state is locked by another run; retrying later can succeed
+pub const EXIT_LOCKED: i32 = 4;
+/// Infrastructure provider, state store, or apply failure
+pub const EXIT_INFRASTRUCTURE: i32 = 5;
+
+/// Whether an infrastructure failure was caused by another run's lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfrastructureLockState {
+    /// Another run holds the lock; retrying later can succeed.
+    HeldElsewhere,
+    /// The failure is unrelated to locking.
+    NotLocked,
+}
 
 /// CLI-specific error types with proper exit code mapping
 #[derive(Error, Debug, Clone, Diagnostic)]
@@ -34,6 +47,18 @@ pub enum CliError {
         /// Optional help text
         #[help]
         help: Option<String>,
+    },
+    /// Infrastructure failure (exit code 4 when locked, otherwise 5)
+    #[error("Infrastructure error: {message}")]
+    #[diagnostic(code(cuenv::cli::infrastructure))]
+    Infrastructure {
+        /// The error message
+        message: String,
+        /// Optional help text
+        #[help]
+        help: Option<String>,
+        /// Whether another run holds the state lock
+        locked: InfrastructureLockState,
     },
     /// Other unexpected error (exit code 3)
     #[error("Unexpected error: {message}")]
@@ -84,6 +109,20 @@ impl CliError {
         }
     }
 
+    /// Create a new infrastructure error
+    #[must_use]
+    pub fn infrastructure(
+        message: impl Into<String>,
+        help: Option<String>,
+        locked: InfrastructureLockState,
+    ) -> Self {
+        Self::Infrastructure {
+            message: message.into(),
+            help,
+            locked,
+        }
+    }
+
     /// Create a new other error
     #[must_use]
     pub fn other(message: impl Into<String>) -> Self {
@@ -110,6 +149,13 @@ impl CliError {
             Self::Config { message, .. } => Self::Config { message, help },
             Self::Eval { message, .. } => Self::Eval { message, help },
             Self::Other { message, .. } => Self::Other { message, help },
+            Self::Infrastructure {
+                message, locked, ..
+            } => Self::Infrastructure {
+                message,
+                help,
+                locked,
+            },
         }
     }
 }
@@ -213,6 +259,11 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
     match err {
         CliError::Config { .. } => EXIT_CLI,
         CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
+        CliError::Infrastructure {
+            locked: InfrastructureLockState::HeldElsewhere,
+            ..
+        } => EXIT_LOCKED,
+        CliError::Infrastructure { .. } => EXIT_INFRASTRUCTURE,
     }
 }
 
@@ -224,6 +275,11 @@ pub fn render_error(err: &CliError, format: OutputFormat) {
                 CliError::Config { .. } => "config",
                 CliError::Eval { .. } => "eval",
                 CliError::Other { .. } => "other",
+                CliError::Infrastructure {
+                    locked: InfrastructureLockState::HeldElsewhere,
+                    ..
+                } => "infrastructure_locked",
+                CliError::Infrastructure { .. } => "infrastructure",
             },
             "message": err.to_string()
         }));

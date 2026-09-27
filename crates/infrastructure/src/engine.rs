@@ -4,7 +4,7 @@
 //! resource at a time:
 //!
 //! 1. **Refresh** stored state: `UpgradeResourceState` then `ReadResource`.
-//! 2. **Plan**: `ValidateResourceConfig`, then `PlanResourceChange` with the
+//! 2. **Plan**: `ValidateResourceConfiguration`, then `PlanResourceChange` with the
 //!    proposed new state. A non-empty `requires_replace` turns an update into
 //!    a destroy-then-create replacement.
 //! 3. **Apply**: `ApplyResourceChange` with the planned state, persisting
@@ -19,19 +19,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
 };
 
 use crate::error::{InfrastructureError, Result};
-use crate::plugin::{ApplyRequest, PlanRequest, ProviderClient};
+use crate::plugin::{ApplyRequest, LaunchOptions, PlanRequest, ProviderClient};
 use crate::protocol::{self, Diagnostic, Severity};
 use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
-use crate::schema::{ProviderSchema, Schema};
-use crate::state::{ManagedResource, ResourceAddress, StateStore};
+use crate::schema::{Block, ProviderSchema, Schema};
+use crate::state::{ManagedResource, ResourceAddress, StateLock, StateStore};
 use crate::tenant::TenantKey;
-use crate::type_system::{self, Value};
+use crate::type_system::{self, PathStep, Value};
 
 /// MessagePack encoding of null, used for absent prior/planned states.
 const NULL_MESSAGE_PACK: [u8; 1] = [0xc0];
@@ -74,9 +75,19 @@ impl Action {
     }
 }
 
+/// What a provider call does to the resource, which decides how failures
+/// are recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepKind {
+    Create,
+    Update,
+    Delete,
+}
+
 /// One provider call needed to realize a change.
 #[derive(Debug, Clone)]
 struct ApplyStep {
+    kind: StepKind,
     prior: Vec<u8>,
     planned: Vec<u8>,
     configuration: Vec<u8>,
@@ -96,12 +107,16 @@ pub struct ResourceChange {
     pub before: Value,
     /// Planned new state (null when deleted); may contain unknowns.
     pub after: Value,
-    /// Top-level attributes to mask when rendering.
+    /// Top-level attributes whose values contain anything sensitive; they
+    /// are masked when rendering.
     pub sensitive: Vec<String>,
     /// Attribute paths forcing replacement.
     pub requires_replace: Vec<String>,
     dependencies: Vec<String>,
     steps: Vec<ApplyStep>,
+    /// For unchanged resources: the refreshed record, when it differs from
+    /// what is stored, so apply keeps state current.
+    refreshed_record: Option<ManagedResource>,
 }
 
 /// A full plan for one tenant.
@@ -154,6 +169,17 @@ impl Plan {
             .iter()
             .any(|change| change.action != Action::NoOp)
     }
+
+    /// The addresses and actions of every change, for comparing a plan
+    /// shown to an operator with a plan made again under the lock.
+    #[must_use]
+    pub fn intent(&self) -> Vec<(ResourceAddress, Action)> {
+        self.changes
+            .iter()
+            .filter(|change| change.action != Action::NoOp)
+            .map(|change| (change.address.clone(), change.action))
+            .collect()
+    }
 }
 
 /// Progress reported while applying a plan.
@@ -177,13 +203,55 @@ pub enum ApplyEvent {
     Warning(String),
 }
 
+/// A request to stop between resources, shared with signal handlers.
+#[derive(Debug, Clone, Default)]
+pub struct Cancellation(Arc<AtomicBool>);
+
+impl Cancellation {
+    /// Ask the run to stop after the resource in flight.
+    pub fn request(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a stop was requested.
+    #[must_use]
+    pub fn is_requested(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+/// What an apply needs besides the plan.
+#[derive(Debug, Clone, Copy)]
+pub struct ApplyContext<'apply> {
+    /// The tenant's lock; every state write presents it.
+    pub lock: &'apply StateLock,
+    /// Checked between resources.
+    pub cancellation: &'apply Cancellation,
+}
+
 /// Options for [`InfrastructureEngine::new`].
 #[derive(Debug, Clone)]
 pub struct EngineOptions {
-    /// Directory relative provider `path`s resolve against.
+    /// Directory relative provider `path`s resolve against, and where state
+    /// that could not be recorded is saved.
     pub project_directory: PathBuf,
     /// Provider plugin cache; defaults to [`default_cache_directory`].
     pub plugin_cache_directory: Option<PathBuf>,
+    /// Environment variables providers must not inherit, such as the state
+    /// store's authentication token.
+    pub withheld_environment_variables: Vec<String>,
+}
+
+/// Everything an engine needs.
+pub struct EngineSetup {
+    /// Tenant whose state the engine reads and writes.
+    pub tenant: TenantKey,
+    /// State store.
+    pub store: Arc<dyn StateStore>,
+    /// Evaluated `infrastructure` block.
+    pub infrastructure: Infrastructure,
+    /// Engine options.
+    pub options: EngineOptions,
 }
 
 struct LoadedProvider {
@@ -201,28 +269,37 @@ pub struct InfrastructureEngine {
     providers: BTreeMap<String, LoadedProvider>,
 }
 
+impl std::fmt::Debug for InfrastructureEngine {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InfrastructureEngine")
+            .field("tenant", &self.tenant)
+            .field(
+                "loaded_providers",
+                &self.providers.keys().collect::<Vec<_>>(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+/// Inputs for planning one declared resource.
+struct ResourcePlanInput<'input> {
+    name: &'input str,
+    declaration: &'input ManagedResourceDeclaration,
+    stored: Option<&'input ManagedResource>,
+}
+
 impl InfrastructureEngine {
     /// Create an engine. Providers are launched lazily while planning.
     #[must_use]
-    pub fn new(
-        tenant: TenantKey,
-        store: Arc<dyn StateStore>,
-        infrastructure: Infrastructure,
-        options: EngineOptions,
-    ) -> Self {
+    pub fn new(setup: EngineSetup) -> Self {
         Self {
-            tenant,
-            store,
-            infrastructure,
-            options,
+            tenant: setup.tenant,
+            store: setup.store,
+            infrastructure: setup.infrastructure,
+            options: setup.options,
             providers: BTreeMap::new(),
         }
-    }
-
-    /// Tenant this engine operates on.
-    #[must_use]
-    pub const fn tenant(&self) -> &TenantKey {
-        &self.tenant
     }
 
     /// Compute a plan.
@@ -230,7 +307,9 @@ impl InfrastructureEngine {
     /// # Errors
     ///
     /// Returns an error for invalid configuration, provider failures,
-    /// provider error diagnostics, or state store failures.
+    /// provider error diagnostics, invalid provider plans, or state store
+    /// failures.
+    #[tracing::instrument(skip(self), fields(tenant = %self.tenant))]
     pub async fn plan(&mut self, mode: PlanMode) -> Result<Plan> {
         let stored: BTreeMap<ResourceAddress, ManagedResource> = self
             .store
@@ -274,10 +353,12 @@ impl InfrastructureEngine {
                 continue;
             };
             let address = ResourceAddress::new(&declaration.resource_type, &name);
-            let change = self
-                .plan_resource(&name, declaration, stored.get(&address), &mut warnings)
-                .await?;
-            changes.push(change);
+            let input = ResourcePlanInput {
+                name: &name,
+                declaration,
+                stored: stored.get(&address),
+            };
+            changes.push(self.plan_resource(&input, &mut warnings).await?);
         }
 
         Ok(Plan {
@@ -289,15 +370,19 @@ impl InfrastructureEngine {
 
     /// Apply a plan produced by [`InfrastructureEngine::plan`] on this engine.
     ///
-    /// State is persisted after every resource. On failure, resources
-    /// already applied stay recorded and the error is returned.
+    /// State is persisted after every resource and every write is fenced by
+    /// the lock. Cancellation is honoured between resources.
     ///
     /// # Errors
     ///
-    /// Returns the first provider or state store failure.
+    /// Returns the first provider or state store failure,
+    /// [`InfrastructureError::UnrecordedChange`] when a provider change
+    /// could not be recorded, or [`InfrastructureError::Interrupted`].
+    #[tracing::instrument(skip_all, fields(tenant = %self.tenant))]
     pub async fn apply(
         &mut self,
         plan: &Plan,
+        context: ApplyContext<'_>,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
     ) -> Result<PlanSummary> {
         if plan.tenant != self.tenant {
@@ -308,16 +393,24 @@ impl InfrastructureEngine {
         for warning in &plan.warnings {
             on_event(ApplyEvent::Warning(warning.clone()));
         }
-        for change in plan
-            .changes
-            .iter()
-            .filter(|change| change.action != Action::NoOp)
-        {
+        let total = plan.intent().len();
+        let mut completed = 0;
+        for change in &plan.changes {
+            if change.action == Action::NoOp {
+                if let Some(record) = &change.refreshed_record {
+                    self.record(context.lock, record).await?;
+                }
+                continue;
+            }
+            if context.cancellation.is_requested() {
+                return Err(InfrastructureError::Interrupted { completed, total });
+            }
             on_event(ApplyEvent::Started {
                 address: change.address.clone(),
                 action: change.action,
             });
-            self.apply_change(change, on_event).await?;
+            self.apply_change(change, context.lock, on_event).await?;
+            completed += 1;
             on_event(ApplyEvent::Finished {
                 address: change.address.clone(),
                 action: change.action,
@@ -336,6 +429,7 @@ impl InfrastructureEngine {
     async fn apply_change(
         &self,
         change: &ResourceChange,
+        lock: &StateLock,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
     ) -> Result<()> {
         let provider = self.loaded(&change.provider)?;
@@ -353,38 +447,34 @@ impl InfrastructureEngine {
                     planned_private: step.planned_private.clone(),
                 })
                 .await?;
-            let new_state = type_system::from_message_pack(
-                response
-                    .new_state
-                    .as_ref()
-                    .map_or(&[][..], |dynamic_value| &dynamic_value.message_pack),
-                &value_type,
-            )?;
-
-            // Persist what the provider reports before surfacing errors so a
-            // partially-created resource stays tracked. A null (or still
-            // unknown) result alongside errors means the change did not
-            // happen: keep whatever was recorded, as Terraform does.
             let failed = response.diagnostics.iter().any(is_error);
+            let returned = decode_dynamic(response.new_state.as_ref(), &value_type)?;
+            let unknown_after_apply = !failed && returned.contains_unknown();
+            // Terraform saves whatever the provider returns, with unknown
+            // values turned into nulls, so partial results stay tracked.
+            let new_state = returned.unknown_as_null();
+
             if new_state.is_null() {
+                // A null result alongside errors means the change did not
+                // happen; keep whatever was recorded.
                 if !failed {
-                    self.store.delete(&self.tenant, &change.address).await?;
+                    self.forget(lock, &change.address).await?;
                 }
-            } else if !(failed && new_state.contains_unknown()) {
-                self.store
-                    .put(
-                        &self.tenant,
-                        &ManagedResource {
-                            address: change.address.clone(),
-                            provider: change.provider.clone(),
-                            provider_source: provider.source.clone(),
-                            schema_version: schema.version,
-                            state: new_state.to_state_json(&value_type)?,
-                            private: response.private.clone(),
-                            dependencies: change.dependencies.clone(),
-                        },
-                    )
-                    .await?;
+            } else {
+                let record = ManagedResource {
+                    address: change.address.clone(),
+                    provider: change.provider.clone(),
+                    provider_source: provider.source.clone(),
+                    schema_version: schema.version,
+                    state: new_state.to_state_json(&value_type)?,
+                    private: response.private.clone(),
+                    dependencies: change.dependencies.clone(),
+                    // A create that failed part way left something behind
+                    // that must be replaced, not trusted.
+                    tainted: failed && step.kind == StepKind::Create,
+                    identity: None,
+                };
+                self.record(lock, &record).await?;
             }
 
             let mut warnings = Vec::new();
@@ -396,26 +486,83 @@ impl InfrastructureEngine {
             for warning in warnings {
                 on_event(ApplyEvent::Warning(warning));
             }
+            if unknown_after_apply {
+                return Err(InfrastructureError::plugin(format!(
+                    "provider returned unknown values for {} after apply; they were recorded as null",
+                    change.address
+                )));
+            }
         }
 
         if change.action == Action::Delete {
             // Also covers resources already gone during refresh (no steps).
-            self.store.delete(&self.tenant, &change.address).await?;
+            self.forget(lock, &change.address).await?;
         }
         Ok(())
     }
 
+    /// Write a record. If the write fails, save it locally so a resource the
+    /// provider already changed is never silently lost.
+    async fn record(&self, lock: &StateLock, record: &ManagedResource) -> Result<()> {
+        match self.store.put(&self.tenant, lock, record).await {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.save_unrecorded(record, &error)),
+        }
+    }
+
+    async fn forget(&self, lock: &StateLock, address: &ResourceAddress) -> Result<()> {
+        self.store.delete(&self.tenant, lock, address).await
+    }
+
+    fn save_unrecorded(
+        &self,
+        record: &ManagedResource,
+        error: &InfrastructureError,
+    ) -> InfrastructureError {
+        let directory = self
+            .options
+            .project_directory
+            .join(".cuenv")
+            .join("infrastructure");
+        let file = directory.join(format!(
+            "unrecorded-{}-{}.json",
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
+            record.address
+        ));
+        let document = serde_json::json!({
+            "tenant": self.tenant.to_string(),
+            "resource": record,
+        });
+        let saved = std::fs::create_dir_all(&directory)
+            .and_then(|()| {
+                serde_json::to_vec_pretty(&document)
+                    .map_err(|serialize| std::io::Error::other(serialize.to_string()))
+            })
+            .and_then(|bytes| write_private_file(&file, &bytes));
+        let saved_to = match saved {
+            Ok(()) => file.display().to_string(),
+            Err(write_error) => format!("nowhere ({write_error}); state JSON: {}", record.state),
+        };
+        InfrastructureError::UnrecordedChange {
+            address: record.address.to_string(),
+            reason: error.to_string(),
+            saved_to,
+        }
+    }
+
     async fn plan_resource(
         &mut self,
-        name: &str,
-        declaration: &ManagedResourceDeclaration,
-        stored: Option<&ManagedResource>,
+        input: &ResourcePlanInput<'_>,
         warnings: &mut Vec<String>,
     ) -> Result<ResourceChange> {
+        let declaration = input.declaration;
         let provider_name = declaration.provider_name().to_string();
-        let address = ResourceAddress::new(&declaration.resource_type, name);
+        let address = ResourceAddress::new(&declaration.resource_type, input.name);
         self.ensure_provider(&provider_name, warnings).await?;
         let provider = self.loaded(&provider_name)?;
+        if let Some(row) = input.stored {
+            require_same_source(row, provider)?;
+        }
         let schema = resource_schema(provider, &provider_name, &declaration.resource_type)?;
         let block = &schema.block;
         let value_type = block.implied_type();
@@ -437,8 +584,8 @@ impl InfrastructureEngine {
             .await?;
         check_diagnostics(&format!("validate {address}"), &diagnostics, warnings)?;
 
-        let prior = match stored {
-            Some(row) => refresh(provider, schema, row, warnings).await?,
+        let prior = match input.stored {
+            Some(row) => refresh(provider, row, warnings).await?,
             None => None,
         };
 
@@ -452,23 +599,38 @@ impl InfrastructureEngine {
             requires_replace: Vec::new(),
             dependencies: declaration.depends_on.clone(),
             steps: Vec::new(),
+            refreshed_record: None,
+        };
+        let create = CreatePlanInput {
+            provider,
+            resource_type: &declaration.resource_type,
+            schema,
+            configuration: &configuration,
+            configuration_bytes: &configuration_bytes,
         };
 
         let Some(prior) = prior else {
-            let create = plan_create(
-                provider,
-                declaration,
-                schema,
-                &configuration,
-                &configuration_bytes,
-                warnings,
-            )
-            .await?;
+            let (planned, step) = plan_create(&create, Vec::new(), warnings).await?;
             change.action = Action::Create;
-            change.after = create.0;
-            change.steps.push(create.1);
+            change.after = planned;
+            change.steps.push(step);
             return Ok(change);
         };
+        change.before = prior.value.clone();
+
+        let tainted = input.stored.is_some_and(|row| row.tainted);
+        if tainted {
+            warnings.push(format!(
+                "{address} is tainted by an earlier failed create and will be replaced"
+            ));
+            change.action = Action::Replace;
+            change.requires_replace.push("(tainted)".to_string());
+            change.steps.push(delete_step(&prior));
+            let (planned, step) = plan_create(&create, Vec::new(), warnings).await?;
+            change.after = planned;
+            change.steps.push(step);
+            return Ok(change);
+        }
 
         let proposed = block.proposed_new(&prior.value, &configuration);
         let response = provider
@@ -482,19 +644,55 @@ impl InfrastructureEngine {
             })
             .await?;
         check_diagnostics(&format!("plan {address}"), &response.diagnostics, warnings)?;
+        reject_deferral(&address, response.deferred.as_ref())?;
         let planned_bytes = dynamic_bytes(response.planned_state.as_ref());
-        let planned = type_system::from_message_pack(&planned_bytes, &value_type)?;
-        change.before = prior.value.clone();
+        let planned = decode_dynamic(response.planned_state.as_ref(), &value_type)?;
+        let validity = PlanValidity {
+            address: &address,
+            block,
+            configuration: &configuration,
+            planned: &planned,
+            legacy_type_system: response.legacy_type_system,
+        };
+        validity.check(warnings)?;
 
         if type_system::semantically_equal(&planned, &prior.value, &value_type) {
             change.after = planned;
+            // Keep state current even when nothing changes: refreshed computed
+            // values, provider private data, schema version and dependencies.
+            if let Some(row) = input.stored {
+                let record = ManagedResource {
+                    address: row.address.clone(),
+                    provider: change.provider.clone(),
+                    provider_source: row.provider_source.clone(),
+                    schema_version: schema.version,
+                    state: prior.value.to_state_json(&value_type)?,
+                    private: prior.private.clone(),
+                    dependencies: change.dependencies.clone(),
+                    tainted: false,
+                    identity: row.identity.clone(),
+                };
+                if record != *row {
+                    change.refreshed_record = Some(record);
+                }
+            }
             return Ok(change);
         }
 
-        if response.requires_replace.is_empty() {
+        // Terraform only honours replacement paths whose value actually
+        // changes (or is not yet known); SDKv2 providers report spurious ones.
+        let requires_replace: Vec<String> = response
+            .requires_replace
+            .iter()
+            .filter(|path| path_changes(path, &prior.value, &planned))
+            .map(render_path)
+            .collect();
+
+        if requires_replace.is_empty() {
             change.action = Action::Update;
             change.after = planned;
             change.steps.push(ApplyStep {
+                kind: StepKind::Update,
                 prior: prior.bytes,
                 planned: planned_bytes,
                 configuration: configuration_bytes,
@@ -504,24 +702,11 @@ impl InfrastructureEngine {
         }
 
         change.action = Action::Replace;
-        change.requires_replace = response.requires_replace.iter().map(render_path).collect();
-        change.steps.push(ApplyStep {
-            prior: prior.bytes,
-            planned: NULL_MESSAGE_PACK.to_vec(),
-            configuration: NULL_MESSAGE_PACK.to_vec(),
-            planned_private: prior.private,
-        });
-        let create = plan_create(
-            provider,
-            declaration,
-            schema,
-            &configuration,
-            &configuration_bytes,
-            warnings,
-        )
-        .await?;
-        change.after = create.0;
-        change.steps.push(create.1);
+        change.requires_replace = requires_replace;
+        change.steps.push(delete_step(&prior));
+        let (planned, step) = plan_create(&create, response.planned_private, warnings).await?;
+        change.after = planned;
+        change.steps.push(step);
         Ok(change)
     }
 
@@ -539,8 +724,9 @@ impl InfrastructureEngine {
                 ))
             })?;
         let provider = self.loaded(&row.provider)?;
+        require_same_source(row, provider)?;
         let schema = resource_schema(provider, &row.provider, &row.address.resource_type)?;
-        let prior = refresh(provider, schema, row, warnings).await?;
+        let prior = refresh(provider, row, warnings).await?;
 
         let mut change = ResourceChange {
             address: row.address.clone(),
@@ -552,15 +738,11 @@ impl InfrastructureEngine {
             requires_replace: Vec::new(),
             dependencies: row.dependencies.clone(),
             steps: Vec::new(),
+            refreshed_record: None,
         };
         if let Some(prior) = prior {
+            change.steps.push(delete_step(&prior));
             change.before = prior.value;
-            change.steps.push(ApplyStep {
-                prior: prior.bytes,
-                planned: NULL_MESSAGE_PACK.to_vec(),
-                configuration: NULL_MESSAGE_PACK.to_vec(),
-                planned_private: prior.private,
-            });
         }
         Ok(change)
     }
@@ -588,7 +770,11 @@ impl InfrastructureEngine {
         let source = ProviderSource::parse(&declaration.source)?;
         let binary = self.resolve_binary(name, &declaration, &source).await?;
 
-        let client = ProviderClient::launch(&binary).await?;
+        let client = ProviderClient::launch(&LaunchOptions {
+            binary: &binary,
+            withheld_environment_variables: &self.options.withheld_environment_variables,
+        })
+        .await?;
         let (schema, diagnostics) = client.schema().await?;
         check_diagnostics(
             &format!("load provider '{name}' schema"),
@@ -641,6 +827,11 @@ impl InfrastructureEngine {
         source: &ProviderSource,
     ) -> Result<PathBuf> {
         if let Some(path) = &declaration.path {
+            if declaration.version.is_some() {
+                return Err(InfrastructureError::configuration(format!(
+                    "provider '{name}' sets both `path` and `version`; choose one"
+                )));
+            }
             let path = Path::new(path);
             return Ok(if path.is_absolute() {
                 path.to_path_buf()
@@ -662,19 +853,55 @@ impl InfrastructureEngine {
     }
 }
 
+/// Stored state must only ever be handed back to the provider that wrote it.
+fn require_same_source(row: &ManagedResource, provider: &LoadedProvider) -> Result<()> {
+    if row.provider_source == provider.source {
+        Ok(())
+    } else {
+        Err(InfrastructureError::configuration(format!(
+            "{} was created by {} but provider '{}' is now {}; refusing to hand its state to a \
+             different provider",
+            row.address, row.provider_source, row.provider, provider.source
+        )))
+    }
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    std::io::Write::write_all(&mut file, bytes)
+}
+
 struct Refreshed {
     value: Value,
     bytes: Vec<u8>,
     private: Vec<u8>,
 }
 
+fn delete_step(prior: &Refreshed) -> ApplyStep {
+    ApplyStep {
+        kind: StepKind::Delete,
+        prior: prior.bytes.clone(),
+        planned: NULL_MESSAGE_PACK.to_vec(),
+        configuration: NULL_MESSAGE_PACK.to_vec(),
+        planned_private: prior.private.clone(),
+    }
+}
+
 async fn refresh(
     provider: &LoadedProvider,
-    schema: &Schema,
     row: &ManagedResource,
     warnings: &mut Vec<String>,
 ) -> Result<Option<Refreshed>> {
     let type_name = &row.address.resource_type;
+    let schema = resource_schema(provider, &row.provider, type_name)?;
+    let value_type = schema.block.implied_type();
     let state_json = serde_json::to_vec(&row.state)
         .map_err(|error| InfrastructureError::state(format!("serialize stored state: {error}")))?;
     let (upgraded, diagnostics) = provider
@@ -696,54 +923,159 @@ async fn refresh(
         &response.diagnostics,
         warnings,
     )?;
-    let bytes = dynamic_bytes(response.new_state.as_ref());
-    let value = type_system::from_message_pack(&bytes, &schema.block.implied_type())?;
+    reject_deferral(&row.address, response.deferred.as_ref())?;
+    let value = decode_dynamic(response.new_state.as_ref(), &value_type)?;
     if value.is_null() {
         return Ok(None);
     }
+    if value.contains_unknown() {
+        return Err(InfrastructureError::plugin(format!(
+            "provider returned unknown values while refreshing {}",
+            row.address
+        )));
+    }
     Ok(Some(Refreshed {
+        bytes: type_system::to_message_pack(&value, &value_type)?,
         value,
-        bytes,
         private: response.private,
     }))
 }
 
+/// Inputs for planning a create.
+struct CreatePlanInput<'input> {
+    provider: &'input LoadedProvider,
+    resource_type: &'input str,
+    schema: &'input Schema,
+    configuration: &'input Value,
+    configuration_bytes: &'input [u8],
+}
+
 async fn plan_create(
-    provider: &LoadedProvider,
-    declaration: &ManagedResourceDeclaration,
-    schema: &Schema,
-    configuration: &Value,
-    configuration_bytes: &[u8],
+    input: &CreatePlanInput<'_>,
+    prior_private: Vec<u8>,
     warnings: &mut Vec<String>,
 ) -> Result<(Value, ApplyStep)> {
-    let value_type = schema.block.implied_type();
-    let proposed = schema.block.proposed_new(&Value::Null, configuration);
-    let response = provider
+    let value_type = input.schema.block.implied_type();
+    let proposed = input
+        .schema
+        .block
+        .proposed_new(&Value::Null, input.configuration);
+    let response = input
+        .provider
         .client
         .plan_resource_change(PlanRequest {
-            type_name: &declaration.resource_type,
+            type_name: input.resource_type,
             prior_state: NULL_MESSAGE_PACK.to_vec(),
             proposed_new_state: type_system::to_message_pack(&proposed, &value_type)?,
-            configuration: configuration_bytes.to_vec(),
-            prior_private: Vec::new(),
+            configuration: input.configuration_bytes.to_vec(),
+            prior_private,
         })
         .await?;
-    check_diagnostics(
-        &format!("plan create of {}", declaration.resource_type),
-        &response.diagnostics,
-        warnings,
-    )?;
-    let planned_bytes = dynamic_bytes(response.planned_state.as_ref());
-    let planned = type_system::from_message_pack(&planned_bytes, &value_type)?;
+    let context = format!("plan create of {}", input.resource_type);
+    check_diagnostics(&context, &response.diagnostics, warnings)?;
+    let address = ResourceAddress::new(input.resource_type, "(new)");
+    reject_deferral(&address, response.deferred.as_ref())?;
+    let planned = decode_dynamic(response.planned_state.as_ref(), &value_type)?;
+    PlanValidity {
+        address: &address,
+        block: &input.schema.block,
+        configuration: input.configuration,
+        planned: &planned,
+        legacy_type_system: response.legacy_type_system,
+    }
+    .check(warnings)?;
     Ok((
         planned,
         ApplyStep {
+            kind: StepKind::Create,
             prior: NULL_MESSAGE_PACK.to_vec(),
-            planned: planned_bytes,
-            configuration: configuration_bytes.to_vec(),
+            planned: dynamic_bytes(response.planned_state.as_ref()),
+            configuration: input.configuration_bytes.to_vec(),
             planned_private: response.planned_private,
         },
     ))
+}
+
+/// The subset of Terraform's `AssertPlanValid` that catches plans that
+/// would silently do something other than what the configuration says.
+struct PlanValidity<'check> {
+    address: &'check ResourceAddress,
+    block: &'check Block,
+    configuration: &'check Value,
+    planned: &'check Value,
+    legacy_type_system: bool,
+}
+
+impl PlanValidity<'_> {
+    fn check(&self, warnings: &mut Vec<String>) -> Result<()> {
+        if self.planned.is_null() {
+            return Err(InfrastructureError::plugin(format!(
+                "provider produced an invalid plan for {}: planned state is null although the \
+                 resource is configured",
+                self.address
+            )));
+        }
+        let mut problems = Vec::new();
+        for (name, attribute) in &self.block.attributes {
+            if attribute.presence.is_computed() {
+                continue;
+            }
+            let configured = self.configuration.attribute(name).unwrap_or(&Value::Null);
+            let planned = self.planned.attribute(name).unwrap_or(&Value::Null);
+            if !type_system::semantically_equal(configured, planned, &attribute.value_type) {
+                problems.push(format!(
+                    "planned value for non-computed attribute `{name}` does not match the \
+                     configuration"
+                ));
+            }
+        }
+        if problems.is_empty() {
+            return Ok(());
+        }
+        if self.legacy_type_system {
+            // SDKv2 providers are allowed these inconsistencies, as in Terraform.
+            warnings.extend(
+                problems
+                    .into_iter()
+                    .map(|problem| format!("{}: {problem}", self.address)),
+            );
+            return Ok(());
+        }
+        Err(InfrastructureError::plugin(format!(
+            "provider produced an invalid plan for {}: {}",
+            self.address,
+            problems.join("; ")
+        )))
+    }
+}
+
+fn reject_deferral(address: &ResourceAddress, deferred: Option<&protocol::Deferred>) -> Result<()> {
+    deferred.map_or(Ok(()), |deferred| {
+        Err(InfrastructureError::plugin(format!(
+            "provider deferred {address} (reason {}); cuenv does not support deferred changes",
+            deferred.reason
+        )))
+    })
+}
+
+/// Whether the value at a requires-replace path differs between prior and
+/// planned state (or is not yet known).
+fn path_changes(path: &protocol::AttributePath, prior: &Value, planned: &Value) -> bool {
+    let steps: Vec<PathStep> = path
+        .steps
+        .iter()
+        .filter_map(|step| match &step.selector {
+            Some(protocol::Selector::AttributeName(name)) => {
+                Some(PathStep::Attribute(name.clone()))
+            }
+            Some(protocol::Selector::ElementKeyString(key)) => Some(PathStep::Key(key.clone())),
+            Some(protocol::Selector::ElementKeyInt(index)) => Some(PathStep::Index(*index)),
+            None => None,
+        })
+        .collect();
+    let before = type_system::value_at_path(prior, &steps);
+    let after = type_system::value_at_path(planned, &steps);
+    matches!(after, Some(Value::Unknown)) || before != after
 }
 
 fn resource_schema<'provider>(
@@ -756,6 +1088,23 @@ fn resource_schema<'provider>(
             "provider '{provider_name}' has no managed resource type '{resource_type}'"
         ))
     })
+}
+
+/// Decode a provider value from MessagePack or, when a provider sends it
+/// that way, JSON. An empty value is null.
+fn decode_dynamic(
+    value: Option<&protocol::DynamicValue>,
+    value_type: &type_system::Type,
+) -> Result<Value> {
+    match value {
+        Some(dynamic_value) if !dynamic_value.message_pack.is_empty() => {
+            type_system::from_message_pack(&dynamic_value.message_pack, value_type)
+        }
+        Some(dynamic_value) if !dynamic_value.json.is_empty() => {
+            type_system::from_json_bytes(&dynamic_value.json, value_type)
+        }
+        _ => Ok(Value::Null),
+    }
 }
 
 fn dynamic_bytes(value: Option<&protocol::DynamicValue>) -> Vec<u8> {
@@ -1040,6 +1389,8 @@ mod tests {
                 .iter()
                 .map(|dependency| (*dependency).to_owned())
                 .collect(),
+            tainted: false,
+            identity: None,
         }
     }
 
@@ -1118,6 +1469,7 @@ mod tests {
                 requires_replace: Vec::new(),
                 dependencies: Vec::new(),
                 steps: Vec::new(),
+                refreshed_record: None,
             }],
             warnings: Vec::new(),
         };

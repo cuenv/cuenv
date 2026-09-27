@@ -7,6 +7,13 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Project fields that drive external side effects and so must evaluate to
+/// concrete values: an undefined reference or missing required argument
+/// there must fail evaluation, not silently become null.
+fn concrete_paths() -> Vec<String> {
+    vec!["infrastructure".to_string()]
+}
+
 impl CommandExecutor {
     pub(super) fn evaluate_path_module(&self, target_path: &Path) -> Result<ModuleEvaluation> {
         let module_root = env_file::find_cue_module_root(target_path).ok_or_else(|| {
@@ -23,6 +30,7 @@ impl CommandExecutor {
             with_meta: true,
             with_references: true,
             target_dir: Some(target_path.to_string_lossy().to_string()),
+            concrete_paths: concrete_paths(),
             ..Default::default()
         };
 
@@ -108,6 +116,7 @@ impl CommandExecutor {
             recursive: true,
             with_meta: true,
             with_references: true,
+            concrete_paths: concrete_paths(),
             ..Default::default()
         };
 
@@ -167,6 +176,7 @@ impl CommandExecutor {
                     with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
+                    concrete_paths: concrete_paths(),
                     ..Default::default()
                 };
                 let dir_rel_path = compute_relative_path(dir, module_root);

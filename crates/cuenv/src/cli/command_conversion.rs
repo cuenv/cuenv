@@ -580,31 +580,45 @@ fn filter_update_tools(names: Vec<String>) -> Vec<String> {
 }
 
 fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
-    use crate::commands::infrastructure::InfrastructureAction;
+    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction};
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
         }
-        InfrastructureCommands::Apply {
+        InfrastructureCommands::Apply { path, package, yes } => (
             path,
             package,
-            auto_approve,
-        } => (path, package, InfrastructureAction::Apply { auto_approve }),
-        InfrastructureCommands::Destroy {
+            InfrastructureAction::Apply {
+                confirmation: if yes {
+                    ConfirmationPolicy::AssumeYes
+                } else {
+                    ConfirmationPolicy::Prompt
+                },
+            },
+        ),
+        InfrastructureCommands::Destroy { path, package, yes } => (
             path,
             package,
-            auto_approve,
-        } => (
-            path,
-            package,
-            InfrastructureAction::Destroy { auto_approve },
+            InfrastructureAction::Destroy {
+                confirmation: if yes {
+                    ConfirmationPolicy::AssumeYes
+                } else {
+                    ConfirmationPolicy::Prompt
+                },
+            },
         ),
         InfrastructureCommands::State { path, package } => {
             (path, package, InfrastructureAction::State)
         }
-        InfrastructureCommands::Unlock { path, package } => {
-            (path, package, InfrastructureAction::Unlock)
-        }
+        InfrastructureCommands::Unlock {
+            path,
+            package,
+            lock_identifier,
+        } => (
+            path,
+            package,
+            InfrastructureAction::Unlock { lock_identifier },
+        ),
     };
     Command::Infrastructure {
         path,

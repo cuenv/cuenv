@@ -75,8 +75,9 @@ fn strip_major_version(path: &str) -> &str {
 /// module path.
 pub fn read_module_path(module_root: &Path) -> Result<String> {
     let file = module_root.join("cue.mod").join("module.cue");
-    let contents = std::fs::read_to_string(&file)
-        .map_err(|error| InfrastructureError::io(format!("read {}", file.display()), error))?;
+    let contents = std::fs::read_to_string(&file).map_err(|error| {
+        InfrastructureError::input_output(format!("read {}", file.display()), error)
+    })?;
     parse_module_path(&contents).ok_or_else(|| {
         InfrastructureError::configuration(format!(
             "{} does not declare a `module:` path; infrastructure state is keyed by it",

@@ -144,7 +144,7 @@ func invalidInstanceDeclaresPackage(inst *build.Instance, packageName string) bo
 	return false
 }
 
-func createErrorResponse(code, message string, hint *string) *C.char {
+func createErrorResponse(code, message string, hint *string) string {
 	error := &BridgeError{
 		Code:    code,
 		Message: message,
@@ -157,14 +157,13 @@ func createErrorResponse(code, message string, hint *string) *C.char {
 	responseBytes, err := json.Marshal(response)
 	if err != nil {
 		// Fallback error response if JSON marshaling fails
-		fallbackResponse := fmt.Sprintf(`{"version":"%s","error":{"code":"%s","message":"Failed to marshal error response: %s"}}`, BridgeVersion, ErrorCodeJSONMarshal, err.Error())
-		return C.CString(fallbackResponse)
+		return fmt.Sprintf(`{"version":"%s","error":{"code":"%s","message":"Failed to marshal error response: %s"}}`, BridgeVersion, ErrorCodeJSONMarshal, err.Error())
 	}
-	return C.CString(string(responseBytes))
+	return string(responseBytes)
 }
 
 // Helper function to create success response
-func createSuccessResponse(data string) *C.char {
+func createSuccessResponse(data string) string {
 	// Convert string to RawMessage to preserve field ordering
 	rawData := json.RawMessage(data)
 	response := &BridgeResponse{
@@ -177,7 +176,7 @@ func createSuccessResponse(data string) *C.char {
 		msg := fmt.Sprintf("Failed to marshal success response: %s", err.Error())
 		return createErrorResponse(ErrorCodeJSONMarshal, msg, nil)
 	}
-	return C.CString(string(responseBytes))
+	return string(responseBytes)
 }
 
 type moduleDependencyVersion struct {
@@ -210,7 +209,12 @@ func parseModuleFile(moduleRoot string) (*modfile.File, string, error) {
 
 //export cue_module_dependency_version
 func cue_module_dependency_version(moduleRootPath *C.char, dependencyPath *C.char) *C.char {
-	var result *C.char
+	return C.CString(moduleDependencyVersionResponse(C.GoString(moduleRootPath), C.GoString(dependencyPath)))
+}
+
+// moduleDependencyVersionResponse implements cue_module_dependency_version
+// on Go strings so it can be exercised without cgo.
+func moduleDependencyVersionResponse(moduleRoot string, dependencyBasePath string) (result string) {
 	defer func() {
 		if r := recover(); r != nil {
 			panicMsg := fmt.Sprintf("Internal panic: %v", r)
@@ -218,8 +222,6 @@ func cue_module_dependency_version(moduleRootPath *C.char, dependencyPath *C.cha
 		}
 	}()
 
-	moduleRoot := C.GoString(moduleRootPath)
-	dependencyBasePath := C.GoString(dependencyPath)
 	file, moduleFile, err := parseModuleFile(moduleRoot)
 	if err != nil {
 		hint := "Ensure path contains a valid cue.mod/module.cue file"
@@ -271,27 +273,33 @@ type ModuleResult struct {
 
 // ModuleEvalOptions controls how module evaluation behaves
 type ModuleEvalOptions struct {
-	WithMeta       bool    `json:"withMeta"`       // Extract source positions into separate Meta map
-	WithReferences bool    `json:"withReferences"` // Extract reference paths (requires WithMeta)
-	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
-	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
-	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
+	WithMeta       bool     `json:"withMeta"`       // Extract source positions into separate Meta map
+	WithReferences bool     `json:"withReferences"` // Extract reference paths (requires WithMeta)
+	Recursive      bool     `json:"recursive"`      // true: cue eval ./..., false: cue eval .
+	PackageName    *string  `json:"packageName"`    // Filter to specific package, nil = all packages
+	TargetDir      *string  `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
+	ConcretePaths  []string `json:"concretePaths"`  // Top-level fields that must be fully concrete when present
 }
 
 //export cue_eval_module
 func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C.char) *C.char {
-	// Add recover to catch any panics
-	var result *C.char
+	return C.CString(evaluateModuleResponse(C.GoString(moduleRootPath), C.GoString(packageName), C.GoString(optionsJSON)))
+}
+
+// evaluateModuleResponse implements cue_eval_module on Go strings and returns
+// the JSON bridge envelope. Keeping the C boundary in the exported wrapper
+// lets Go tests exercise evaluation without cgo in test files.
+//
+// goPackageName is the legacy package parameter kept for backwards
+// compatibility; options.packageName takes precedence over it.
+func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptionsJSON string) (result string) {
+	// Recover from panics so the caller always receives a bridge envelope.
 	defer func() {
 		if r := recover(); r != nil {
-			panic_msg := fmt.Sprintf("Internal panic: %v", r)
-			result = createErrorResponse(ErrorCodePanicRecover, panic_msg, nil)
+			panicMessage := fmt.Sprintf("Internal panic: %v", r)
+			result = createErrorResponse(ErrorCodePanicRecover, panicMessage, nil)
 		}
 	}()
-
-	goModuleRoot := C.GoString(moduleRootPath)
-	goPackageName := C.GoString(packageName) // Legacy parameter for backwards compatibility
-	goOptionsJSON := C.GoString(optionsJSON)
 
 	// Parse options (with defaults)
 	options := ModuleEvalOptions{
@@ -490,6 +498,12 @@ func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C
 		if v.Err() != nil {
 			// Collect build errors so they can be reported if no instances succeed
 			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, v.Err()))
+			continue
+		}
+
+		// Caller-named fields must be concrete; see validateConcretePaths.
+		if err := validateConcretePaths(v, options.ConcretePaths); err != nil {
+			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, err))
 			continue
 		}
 

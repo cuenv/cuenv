@@ -38,23 +38,24 @@ package schema
 })
 
 #TursoState: close({
-	// Database URL: libsql://<database>-<organization>.turso.io, https://, or
-	// http:// for a local sqld server.
-	url!: string & =~"^(libsql|https?|wss?)://"
+	// Database URL: libsql://<database>-<organization>.turso.io, https:// or
+	// wss://. Plain http:// and ws:// are accepted only for a local sqld
+	// server on a loopback address, so the token never travels in cleartext.
+	url!: string & (=~"^(libsql|https|wss)://[^/\\s?#@]+" | =~"^(http|ws)://(localhost|127\\.[0-9]+\\.[0-9]+\\.[0-9]+|\\[::1\\])(:[0-9]+)?(/[^?#]*)?$")
 
 	// Environment variable holding the database authentication token. The
 	// default matches the name the Turso command line tool documents.
-	authenticationTokenEnvironmentVariable: string | *"TURSO_AUTH_TOKEN"
+	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
 })
 
-#InfrastructureProvider: close({
+#InfrastructureProvider: matchN(1, [{version!: _}, {path!: _}]) & close({
 	// Registry source address: "namespace/type" or "hostname/namespace/type".
 	source!: string & =~"^([a-zA-Z0-9.-]+/)?[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$"
 
-	// Exact version to install from the registry. Required unless `path`
-	// is set; version constraints are not supported. When `configuration`
+	// Exact version to install from the registry. Exactly one of `version`
+	// and `path` must be set; version constraints are not supported. When `configuration`
 	// uses a github.com/cuenv/terraform module, its `@v<major>` must match.
-	version?: string & =~"^[0-9]+\\.[0-9]+\\.[0-9]+([-+].*)?$"
+	version?: string & =~"^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
 
 	// Local provider binary, absolute or relative to the project directory.
 	path?: string
@@ -66,7 +67,7 @@ package schema
 
 #ManagedResource: close({
 	// Managed resource type, for example "random_pet".
-	type!: string & =~"^[a-z0-9]+_[a-z0-9_]+$"
+	type!: string & =~"^[a-z][a-z0-9]*(_[a-z0-9]+)+$"
 
 	// Local provider name; defaults to the type prefix.
 	provider?: #InfrastructureName

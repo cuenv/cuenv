@@ -27,13 +27,13 @@ pub mod tenant;
 pub mod type_system;
 
 pub use engine::{
-    Action, ApplyEvent, EngineOptions, InfrastructureEngine, Plan, PlanMode, PlanSummary,
-    ResourceChange, render_plan,
+    Action, ApplyContext, ApplyEvent, Cancellation, EngineOptions, EngineSetup,
+    InfrastructureEngine, Plan, PlanMode, PlanSummary, ResourceChange, render_plan,
 };
 pub use error::{InfrastructureError, Result};
 pub use state::{
-    ManagedResource, MemoryStateStore, ResourceAddress, StateLock, StateStore, TursoConfiguration,
-    TursoStateStore,
+    LockInformation, ManagedResource, MemoryStateStore, ResourceAddress, StateLock, StateStore,
+    TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{TenantKey, read_module_path};
 

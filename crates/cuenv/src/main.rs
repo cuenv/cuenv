@@ -350,29 +350,39 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
 async fn run() -> i32 {
     // Use biased select to prefer signal handling over normal completion
     // This ensures cleanup runs even if the child process exits simultaneously
-    tokio::select! {
-        biased;
+    let main_future = real_main();
+    tokio::pin!(main_future);
+    loop {
+        tokio::select! {
+                biased;
 
-        _ = tokio::signal::ctrl_c() => {
-            // Terminate all child processes gracefully before exiting
-            let registry = cuenv_task_exec::global_registry();
-            registry.terminate_all(std::time::Duration::from_secs(5)).await;
+                _ = tokio::signal::ctrl_c() => {
+                    // A converging infrastructure run stops cleanly on its own
+                    // (finishing the resource in flight and releasing its lock);
+                    // abandoning it here would leak both.
+                    if cuenv::commands::infrastructure::command_owns_interrupts() {
+                        continue;
+                    }
+                    // Terminate all child processes gracefully before exiting
+                    let registry = cuenv_task_exec::global_registry();
+                    registry.terminate_all(std::time::Duration::from_secs(5)).await;
 
-            // Clean up terminal state to prevent escape sequence garbage
-            cleanup_terminal();
-            EXIT_SIGINT
-        }
-        result = real_main() => {
-            match result {
-                Ok(()) => EXIT_OK,
-                Err(err) => {
-                    // Try to determine if JSON mode was requested
-                    let args: Vec<String> = std::env::args().collect();
-                    let json_mode = args.iter().any(|arg| arg == "--json");
-
-                    render_error(&err, OutputFormat::from_json_flag(json_mode));
-                    exit_code_for(&err)
+                    // Clean up terminal state to prevent escape sequence garbage
+                    cleanup_terminal();
+                    return EXIT_SIGINT;
                 }
+                result = &mut main_future => {
+                return match result {
+                    Ok(()) => EXIT_OK,
+                    Err(err) => {
+                        // Try to determine if JSON mode was requested
+                        let args: Vec<String> = std::env::args().collect();
+                        let json_mode = args.iter().any(|arg| arg == "--json");
+
+                        render_error(&err, OutputFormat::from_json_flag(json_mode));
+                        exit_code_for(&err)
+                    }
+                };
             }
         }
     }

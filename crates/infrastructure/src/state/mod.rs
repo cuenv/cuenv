@@ -63,13 +63,32 @@ pub struct ManagedResource {
     pub private: Vec<u8>,
     /// Names of resources this one depends on, used to order destroys.
     pub dependencies: Vec<String>,
+    /// The resource exists but its creation failed part way; the next plan
+    /// must replace it.
+    #[serde(default)]
+    pub tainted: bool,
+    /// Resource identity data as cty JSON, for providers that declare an
+    /// identity schema.
+    #[serde(default)]
+    pub identity: Option<serde_json::Value>,
 }
 
-/// An acquired state lock.
+/// An acquired state lock. Every write must present it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateLock {
-    /// Lock identifier, needed to release it.
+    /// Lock identifier, needed to write and to release it.
     pub lock_identifier: String,
+}
+
+/// Who holds a tenant's lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockInformation {
+    /// Lock identifier.
+    pub lock_identifier: String,
+    /// Description of the holder (command, user, host, process).
+    pub holder: String,
+    /// When the lock was acquired (RFC 3339).
+    pub acquired_at: String,
 }
 
 /// Storage backend for managed resource state.
@@ -85,10 +104,23 @@ pub trait StateStore: Send + Sync {
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>>;
 
     /// Insert or replace a managed resource.
-    async fn put(&self, tenant: &TenantKey, resource: &ManagedResource) -> Result<()>;
+    ///
+    /// Fails with [`crate::InfrastructureError::LockLost`] unless `lock` is
+    /// still the tenant's current lock; the check and the write are atomic.
+    async fn put(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        resource: &ManagedResource,
+    ) -> Result<()>;
 
-    /// Remove a managed resource.
-    async fn delete(&self, tenant: &TenantKey, address: &ResourceAddress) -> Result<()>;
+    /// Remove a managed resource. Fenced by `lock` like [`StateStore::put`].
+    async fn delete(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        address: &ResourceAddress,
+    ) -> Result<()>;
 
     /// Acquire the tenant's exclusive lock.
     ///
@@ -98,8 +130,13 @@ pub trait StateStore: Send + Sync {
     /// Release a lock acquired with [`StateStore::lock`].
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()>;
 
-    /// Release the tenant's lock regardless of holder.
-    async fn force_unlock(&self, tenant: &TenantKey) -> Result<()>;
+    /// Describe the tenant's current lock, if any.
+    async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>>;
+
+    /// Release the tenant's lock only if its identifier is `lock_identifier`.
+    ///
+    /// Returns `false` when no lock with that identifier is held.
+    async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool>;
 }
 
 mod base64_bytes {
