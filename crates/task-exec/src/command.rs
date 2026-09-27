@@ -1,5 +1,7 @@
 use cuenv_core::environment::Environment;
 use cuenv_core::{Error, Result};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -29,7 +31,7 @@ pub async fn execute_command_with_redaction(
     let mut cmd = Command::new(command);
     cmd.args(args);
 
-    let env_vars = environment.merge_with_system_hermetic();
+    let env_vars = hermetic_exec_environment(environment)?;
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
@@ -102,4 +104,96 @@ pub async fn execute_command_with_redaction(
     let _ = stderr_task.await;
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// Build a hermetic `cuenv exec` environment with a writable, persistent home.
+///
+/// `HOME` is deliberately isolated from the caller, but commands such as
+/// `cuenv secrets setup` still need somewhere writable for their caches. The
+/// home normally lives under cuenv's cache root so it survives separate
+/// `cuenv exec` invocations. Sandboxed builds can make that root unwritable;
+/// in that case, fall back to a private directory under the system temp root.
+fn hermetic_exec_environment(environment: &Environment) -> Result<HashMap<String, String>> {
+    let mut merged = environment.merge_with_system_hermetic();
+    let home = match environment.get("HOME") {
+        Some(value) => PathBuf::from(value),
+        None => {
+            let path = default_exec_home()?;
+            merged.insert("HOME".to_string(), path.to_string_lossy().into_owned());
+            path
+        }
+    };
+
+    for (name, relative_path) in [
+        ("XDG_CONFIG_HOME", ".config"),
+        ("XDG_CACHE_HOME", ".cache"),
+        ("XDG_DATA_HOME", ".local/share"),
+        ("XDG_STATE_HOME", ".local/state"),
+    ] {
+        if environment.get(name).is_none() {
+            let path = home.join(relative_path);
+            create_directory(&path)?;
+            merged.insert(name.to_string(), path.to_string_lossy().into_owned());
+        }
+    }
+
+    Ok(merged)
+}
+
+fn default_exec_home() -> Result<PathBuf> {
+    if let Ok(cache_root) = cuenv_core::paths::cache_dir() {
+        let home = cache_root.join("exec-home");
+        match create_private_directory(&home) {
+            Ok(()) => return Ok(home),
+            Err(error) => tracing::debug!(
+                path = %home.display(),
+                %error,
+                "cuenv cache directory is unavailable for hermetic exec home"
+            ),
+        }
+    }
+
+    let home = temporary_exec_home();
+    create_private_directory(&home)?;
+    Ok(home)
+}
+
+#[cfg(unix)]
+fn temporary_exec_home() -> PathBuf {
+    // SAFETY: `geteuid` reads the current process identity and has no preconditions.
+    let uid = unsafe { libc::geteuid() };
+    std::env::temp_dir()
+        .join(format!("cuenv-{uid}"))
+        .join("exec-home")
+}
+
+#[cfg(not(unix))]
+fn temporary_exec_home() -> PathBuf {
+    std::env::temp_dir().join("cuenv").join("exec-home")
+}
+
+fn create_private_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(path)
+            .map_err(|error| {
+                Error::io_with_path("create hermetic exec home", path.to_path_buf(), error)
+            })?;
+    }
+
+    #[cfg(not(unix))]
+    create_directory(path)?;
+
+    Ok(())
+}
+
+fn create_directory(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).map_err(|error| {
+        Error::io_with_path("create hermetic exec directory", path.to_path_buf(), error)
+    })?;
+    Ok(())
 }
