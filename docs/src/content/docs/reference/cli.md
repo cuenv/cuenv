@@ -258,6 +258,12 @@ cuenv exec [OPTIONS] -- <COMMAND> [ARGS]...
 Use the global `-e` flag to apply environment-specific overrides: `cuenv -e production exec -- npm start`.
 :::
 
+`cuenv exec` does not inherit the caller's `HOME`. It uses a private, writable
+home under cuenv's cache directory when that location is writable, and falls
+back to a per-user directory under the system temporary directory in sandboxed
+builds. Its default XDG config, cache, data, and state directories are placed
+beneath that home. Values declared in the project environment take precedence.
+
 ### `cuenv fmt`
 
 Format code based on your project's formatters configuration.
