@@ -409,7 +409,11 @@ do not present it as a finished pipeline.
   full tracked tree is preserved, including public `contrib/` packages and
   symlinks. Registry authentication is written under the runner's `HOME`, which
   `publish.cue` explicitly passes along with `XDG_CONFIG_HOME`; its CUE cache
-  and temporary directories stay inside the task workspace. `docs.deploy`
+  and temporary directories stay inside the task workspace. The `cargo.build`
+  and `cross.linux` tasks invoke Nix with task-local `HOME`, `XDG_CACHE_HOME`,
+  and temporary directories, then remove them on exit. Nix therefore has a
+  writable fetcher cache while the host `HOME` remains excluded from hermetic
+  tasks. `docs.deploy`
   consumes the `docs.build` output, declares Wrangler's config and locked Bun
   workspace files, and installs from `bun.lock` before using the local
   Wrangler binary. Build tasks should list every workspace manifest and source

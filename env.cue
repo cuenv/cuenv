@@ -413,6 +413,15 @@ schema.#Project & {
 					#!/usr/bin/env bash
 					set -euo pipefail
 
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
 					echo "Building release artifact from flake output..."
 					nix build .#cuenv -L --accept-flake-config
 					mkdir -p target/release
@@ -441,8 +450,20 @@ schema.#Project & {
 
 			linux: schema.#Task & {
 				hermetic: {passthrough: ["PATH"]}
-				command: "nix"
-				args: ["build", ".#cuenv", "-L", "--accept-flake-config"]
+				command: "bash"
+				args: ["-c", """
+					set -euo pipefail
+					mkdir -p .cuenv-home .cuenv-cache .cuenv-tmp
+					task_root="$PWD"
+					trap 'rm -rf "$task_root/.cuenv-home" "$task_root/.cuenv-cache" "$task_root/.cuenv-tmp"' EXIT
+					export HOME="$task_root/.cuenv-home"
+					export XDG_CACHE_HOME="$task_root/.cuenv-cache"
+					export TMPDIR="$task_root/.cuenv-tmp"
+					export TMP="$TMPDIR"
+					export TEMP="$TMPDIR"
+
+					nix build .#cuenv -L --accept-flake-config
+					"""]
 				inputs: list.Concat([_baseInputs, ["flake.nix", "flake.lock"]])
 				outputs: ["result/bin/cuenv"]
 			}

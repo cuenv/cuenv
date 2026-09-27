@@ -31,6 +31,10 @@ CLI-only note: module evaluation waits `CUENV_EVAL_TIMEOUT` seconds (default
 variable. Invalid values are configuration errors; the variable has no schema
 definition.
 
+CI note: Release tasks that invoke Nix create task-local writable `HOME`,
+`XDG_CACHE_HOME`, and temporary directories, and remove them on exit. Host
+`HOME` remains excluded from hermetic tasks.
+
 CI note: `schema.#GitHubConfig.trustedPublishing` supports `cratesIo` and
 `cueRegistry`. The CUE Registry path is implemented by the GitHub contributor
 and generated workflow action; it requires `id-token: write` and is intended
