@@ -33,7 +33,8 @@ pub struct InfrastructureState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct TursoState {
-    /// Database URL (`libsql://`, `https://`, or `http://` for local sqld).
+    /// Database URL: `libsql://`, `https://` or `wss://`; `http://` and
+    /// `ws://` only for a loopback host (a local `sqld`).
     pub url: String,
 
     /// Environment variable holding the database authentication token.
@@ -88,10 +89,11 @@ pub struct ManagedResourceDeclaration {
 /// Deserializes a `configuration` block.
 ///
 /// A missing field is an empty configuration (through `#[serde(default)]`).
-/// An explicit `null` is rejected with an actionable message: the CUE export
-/// produces `null` for an unresolved reference, and the usual cause is an
-/// import alias shadowed by a provider or resource key of the same name
-/// (`providers: random: configuration: random.#ProviderConfig`).
+/// An explicit `null` is rejected rather than treated as empty. CUE
+/// evaluation of the `infrastructure` block requires concrete values, so an
+/// unresolved reference (such as a shadowed import alias) fails there with
+/// its own error and never reaches this point as `null`; a `null` here means
+/// the value itself is `null`.
 fn deserialize_configuration<'de, D>(
     deserializer: D,
 ) -> Result<serde_json::Map<String, serde_json::Value>, D::Error>
@@ -101,10 +103,8 @@ where
     Option::<serde_json::Map<String, serde_json::Value>>::deserialize(deserializer)?.ok_or_else(
         || {
             serde::de::Error::custom(
-                "`configuration` must be an object, found null; a null configuration usually \
-                 means an import alias is shadowed by a provider or resource key of the same \
-                 name (for example `providers: random: configuration: random.#ProviderConfig`), \
-                 so rename the import",
+                "`configuration` must be an object, found null; leave it out for an empty \
+                 configuration",
             )
         },
     )
@@ -131,7 +131,7 @@ mod tests {
     fn deserializes_infrastructure_block() {
         let infrastructure: Infrastructure = serde_json::from_value(serde_json::json!({
             "state": {"turso": {"url": "libsql://db.turso.io"}},
-            "providers": {"random": {"source": "hashicorp/random", "version": "3.7.2"}},
+            "providers": {"random": {"source": "hashicorp/random", "version": "3.9.1"}},
             "resources": {
                 "pet": {"type": "random_pet", "configuration": {"length": 2}},
                 "identifier": {"type": "random_id", "provider": "random", "dependsOn": ["pet"], "configuration": {}},
@@ -174,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn null_provider_configuration_explains_shadowed_import() {
+    fn null_provider_configuration_is_rejected() {
         let error = serde_json::from_value::<InfrastructureProvider>(serde_json::json!({
             "source": "hashicorp/random",
             "configuration": null,
@@ -182,14 +182,14 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("`configuration` must be an object"),
+            error.contains("`configuration` must be an object, found null"),
             "{error}"
         );
-        assert!(error.contains("import alias is shadowed"), "{error}");
+        assert!(error.contains("leave it out"), "{error}");
     }
 
     #[test]
-    fn null_resource_configuration_explains_shadowed_import() {
+    fn null_resource_configuration_is_rejected() {
         let error = serde_json::from_value::<Infrastructure>(serde_json::json!({
             "state": {"turso": {"url": "libsql://db.turso.io"}},
             "resources": {"pet": {"type": "random_pet", "configuration": null}},
@@ -197,11 +197,7 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(
-            error.contains("`configuration` must be an object"),
-            "{error}"
-        );
-        assert!(
-            error.contains("provider or resource key of the same name"),
+            error.contains("`configuration` must be an object, found null"),
             "{error}"
         );
     }

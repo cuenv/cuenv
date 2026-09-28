@@ -856,13 +856,26 @@ Turso keyed by CUE module path and project name. Proof of concept: see
 Provider schemas are published as CUE modules at
 `github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`. Unify
 `configuration` with their `#ProviderConfig` and `#Resource_<type>`
-definitions for typed, closed configuration; import them under an alias that
-differs from the provider's local name.
+definitions for typed, closed configuration.
+
+- **Import alias.** CUE resolves a name to the nearest enclosing field before
+  an import, so use an alias that matches no field name on the path to where
+  you use it: not a provider or resource key, and not `infrastructure`,
+  `state`, `providers`, `resources` or `name` (for example `randomProvider`).
+  A shadowed alias fails evaluation with `undefined field: #ProviderConfig`,
+  or with `imported and not used` when every use of the import is shadowed.
+- **Package qualifier.** A provider type that is not a valid CUE identifier
+  needs an explicit package qualifier in the import path, for example
+  `"github.com/cuenv/terraform/terraform/hashicorp/google-beta@v<major>:google_beta"`
+  (see [Manage infrastructure](/how-to/infrastructure/) for the naming rule).
+- **Errors.** Evaluation fails before any provider starts. Errors name the
+  field path (`infrastructure.resources.pet.configuration.length`); most also
+  carry a file position, but not all of them do, so search by field path.
 
 ```cue
 infrastructure: {
     state: turso: url: "libsql://platform-acme.turso.io"
-    providers: random: {source: "hashicorp/random", version: "3.7.2"}
+    providers: random: {source: "hashicorp/random", version: "3.9.1"}
     resources: pet: {
         type: "random_pet"
         configuration: length: 2
@@ -880,7 +893,7 @@ infrastructure: {
 
 | Field          | Type     | Required | Description                                                  |
 | -------------- | -------- | -------- | ------------------------------------------------------------ |
-| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://`; `http://`/`ws://` only for loopback (local `sqld`) |
+| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://`; `http://`/`ws://` only for loopback (local `sqld`). No credentials, query or fragment |
 | `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
 
 ### #InfrastructureProvider
@@ -892,17 +905,24 @@ infrastructure: {
 | `path`    | `string` | No*      | Local provider binary (absolute or relative to the project)        |
 | `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
-\* Exactly one of `version` (strict semantic version) or `path` must be set;
-setting both or neither fails evaluation.
+\* Exactly one of `version` (strict semantic version) or `path` must be set.
+Setting neither fails with `version: field is required but not present`;
+setting both fails with the message "set exactly one of `version` and
+`path`, not both".
 
 ### #ManagedResource
 
 | Field       | Type              | Required | Description                                            |
 | ----------- | ----------------- | -------- | ------------------------------------------------------ |
 | `type`      | `string`          | Yes      | Managed resource type such as `random_pet` (`<provider>_<name>`) |
-| `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix       |
-| `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one |
+| `provider`  | `#InfrastructureName`      | No       | Local provider name. Defaults to the type prefix; either way it must be a key of `providers` |
+| `dependsOn` | `[...#InfrastructureName]` | No       | Resources applied before (and destroyed after) this one; each must be a key of `resources` |
 | `configuration` | `{...}` | No | Resource arguments, validated by the provider schema |
+
+Evaluation rejects a `dependsOn` entry that names no resource (`no resource
+named "…" in infrastructure.resources`) and a resource whose provider is not
+declared (`no provider named "…" in infrastructure.providers`). Dependency
+cycles pass the schema and are reported by `cuenv infrastructure` itself.
 
 ## Container Images
 

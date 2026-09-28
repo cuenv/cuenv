@@ -12,8 +12,10 @@
 //! cache directory.
 //!
 //! Integrity: the archive's SHA-256 is checked against the checksum the
-//! registry reports. The registry's GPG signature over `SHA256SUMS` is not
-//! verified yet, and provider hashes are not yet pinned in `cuenv.lock`.
+//! registry reports in the same response that names the download, so a
+//! registry (or anyone able to answer as it) vouches for itself. The
+//! registry's GPG signature over `SHA256SUMS` is not verified yet, and
+//! provider hashes are not yet pinned in `cuenv.lock`; both are planned.
 //!
 //! On install cuenv writes a sidecar manifest (`.cuenv-provider.json`) into
 //! the install directory recording the exact provider executable name, its
@@ -24,16 +26,32 @@
 //! `TF_PLUGIN_CACHE_DIR`) carry no manifest, so cuenv reinstalls them once,
 //! after which Terraform and cuenv share the result.
 //!
-//! Resource limits: downloads are streamed to a staging file while hashing
-//! and capped at 1 GiB; extraction is capped at 2 GiB per entry and in total.
-//! Extracted files never keep special permission bits: the provider
-//! executable is `0o755` and every other file is `0o644`.
+//! Known limitations of the cache check, until hashes are pinned in the lock
+//! file:
+//!
+//! - The manifest vouches for itself. It lives beside the executable, so
+//!   anyone who can write the cache directory can replace both and have the
+//!   replacement accepted. It detects corruption and foreign installs, not
+//!   tampering; keep the cache (and any shared `TF_PLUGIN_CACHE_DIR`)
+//!   writable only by users you trust to run code as you.
+//! - Time of check to time of use: the executable is verified by path and
+//!   later started by the same path. Verification refuses symbolic links and
+//!   hashes the very file it inspected, but the file can still be replaced
+//!   between verification and start by someone with write access to the
+//!   cache.
+//!
+//! Resource limits: registry JSON documents are capped at 1 MiB; downloads
+//! are streamed to a staging file while hashing and capped at 1 GiB;
+//! extraction is capped at 2 GiB per entry and in total. Extracted files
+//! never keep special permission bits: the provider executable is `0o755` and
+//! every other file is `0o644`.
 
 use std::fmt;
 use std::io::{Read, Seek, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
@@ -64,6 +82,10 @@ const MAXIMUM_EXTRACTED_BYTES: u64 = 2 << 30;
 /// Largest sidecar manifest cuenv reads.
 const MAXIMUM_MANIFEST_BYTES: u64 = 64 * 1024;
 
+/// Largest registry JSON document (service discovery, download metadata)
+/// cuenv reads (1 MiB).
+const MAXIMUM_REGISTRY_DOCUMENT_BYTES: u64 = 1024 * 1024;
+
 /// Permissions applied to the provider executable.
 #[cfg(unix)]
 const EXECUTABLE_MODE: u32 = 0o755;
@@ -77,9 +99,9 @@ const REGULAR_FILE_MODE: u32 = 0o644;
 pub struct ProviderSource {
     /// Registry hostname.
     pub hostname: String,
-    /// Registry namespace, e.g. `hashicorp`.
+    /// Registry namespace, for example `hashicorp`.
     pub namespace: String,
-    /// Provider type, e.g. `random`.
+    /// Provider type, for example `random`.
     pub type_name: String,
 }
 
@@ -247,9 +269,9 @@ fn ensure_within(root: &Path, candidate: &Path) -> Result<()> {
 /// Terraform platform a provider build targets.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Platform {
-    /// Terraform operating system name, e.g. `linux` or `darwin`.
+    /// Terraform operating system name, for example `linux` or `darwin`.
     pub operating_system: String,
-    /// Terraform architecture name, e.g. `amd64` or `arm64`.
+    /// Terraform architecture name, for example `amd64` or `arm64`.
     pub architecture: String,
 }
 
@@ -259,7 +281,7 @@ impl fmt::Display for Platform {
     }
 }
 
-/// Terraform platform of the running host, displayed as e.g. `linux_amd64`.
+/// Terraform platform of the running host, displayed as, for example, `linux_amd64`.
 ///
 /// # Errors
 ///
@@ -527,13 +549,8 @@ impl ProviderInstaller {
             source.namespace, source.type_name, platform.operating_system, platform.architecture
         );
         let download: DownloadInformation = self
-            .get(&download_metadata_url)
-            .await?
-            .json()
-            .await
-            .map_err(|error| {
-                InfrastructureError::install(format!("invalid download metadata: {error}"))
-            })?;
+            .get_document(&download_metadata_url, "download metadata")
+            .await?;
 
         if !download.download_url.starts_with("https://") {
             return Err(InfrastructureError::install(format!(
@@ -651,16 +668,9 @@ impl ProviderInstaller {
 
     async fn providers_base_url(&self, hostname: &str) -> Result<String> {
         let discovery_url = format!("https://{hostname}/.well-known/terraform.json");
-        let discovery: ServiceDiscovery =
-            self.get(&discovery_url)
-                .await?
-                .json()
-                .await
-                .map_err(|error| {
-                    InfrastructureError::install(format!(
-                        "invalid service discovery document: {error}"
-                    ))
-                })?;
+        let discovery: ServiceDiscovery = self
+            .get_document(&discovery_url, "service discovery document")
+            .await?;
         let path = discovery.providers_v1.ok_or_else(|| {
             InfrastructureError::install(format!("{hostname} does not offer a provider registry"))
         })?;
@@ -689,14 +699,114 @@ impl ProviderInstaller {
         }
         Ok(response)
     }
+
+    /// GET a JSON document of at most [`MAXIMUM_REGISTRY_DOCUMENT_BYTES`]
+    /// and decode it; `description` names it in errors.
+    async fn get_document<Document: DeserializeOwned>(
+        &self,
+        url: &str,
+        description: &str,
+    ) -> Result<Document> {
+        let mut response = self.get(url).await?;
+        let bytes = read_limited_body(&mut response, MAXIMUM_REGISTRY_DOCUMENT_BYTES)
+            .await
+            .map_err(|error| match error {
+                LimitedBodyError::TooLarge => InfrastructureError::install(format!(
+                    "{description} at {url} exceeds the {MAXIMUM_REGISTRY_DOCUMENT_BYTES}-byte limit"
+                )),
+                LimitedBodyError::Transport(error) => InfrastructureError::install(format!(
+                    "GET {url} failed while reading the {description}: {error}"
+                )),
+            })?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            InfrastructureError::install(format!("invalid {description}: {error}"))
+        })
+    }
 }
 
-/// Hex SHA-256 of the file at `path`, streamed.
-fn hash_file(path: &Path) -> std::io::Result<String> {
-    let mut file = std::fs::File::open(path)?;
+/// Why a size-limited body could not be read.
+#[derive(Debug)]
+enum LimitedBodyError {
+    /// The body is larger than the limit.
+    TooLarge,
+    /// The connection failed while reading.
+    Transport(reqwest::Error),
+}
+
+/// Read a whole response body, failing as soon as it exceeds `limit` bytes.
+async fn read_limited_body(
+    response: &mut reqwest::Response,
+    limit: u64,
+) -> std::result::Result<Vec<u8>, LimitedBodyError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit)
+    {
+        return Err(LimitedBodyError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(LimitedBodyError::Transport)?
+    {
+        let received = u64::try_from(bytes.len().saturating_add(chunk.len())).unwrap_or(u64::MAX);
+        if received > limit {
+            return Err(LimitedBodyError::TooLarge);
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+/// Hex SHA-256 of the rest of an open file, streamed.
+fn hash_open_file(mut file: std::fs::File) -> std::io::Result<String> {
     let mut writer = HashingWriter::new(std::io::sink());
     std::io::copy(&mut file, &mut writer)?;
     Ok(writer.finish().1)
+}
+
+/// Open `path` for hashing only if it is a regular file, not a symbolic
+/// link, and the file opened is the same one inspected (no swap between the
+/// inspection and the open).
+fn open_regular_file(path: &Path) -> Result<std::fs::File> {
+    let not_regular = || {
+        InfrastructureError::install(format!(
+            "provider executable {} is not a regular file",
+            path.display()
+        ))
+    };
+    let inspected = std::fs::symlink_metadata(path)
+        .map_err(|error| InfrastructureError::input_output("inspect provider executable", error))?;
+    if !inspected.file_type().is_file() {
+        return Err(not_regular());
+    }
+    let file = std::fs::File::open(path)
+        .map_err(|error| InfrastructureError::input_output("open provider executable", error))?;
+    let opened = file
+        .metadata()
+        .map_err(|error| InfrastructureError::input_output("inspect provider executable", error))?;
+    if !opened.file_type().is_file() || !same_file(&inspected, &opened) {
+        return Err(InfrastructureError::install(format!(
+            "provider executable {} changed while it was being verified",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+/// Whether two metadata snapshots describe the same file.
+#[cfg(unix)]
+fn same_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    first.dev() == second.dev() && first.ino() == second.ino()
+}
+
+/// Whether two metadata snapshots describe the same file. Without inode
+/// numbers, compare what the platform offers.
+#[cfg(not(unix))]
+fn same_file(first: &std::fs::Metadata, second: &std::fs::Metadata) -> bool {
+    first.len() == second.len() && first.modified().ok() == second.modified().ok()
 }
 
 /// Check `filename` is a single plain file name for the `type_name` provider.
@@ -742,15 +852,7 @@ fn verify_installation(
     }
     let binary = directory.join(&manifest.filename);
     ensure_within(cache_directory, &binary)?;
-    let metadata = std::fs::symlink_metadata(&binary)
-        .map_err(|error| InfrastructureError::input_output("inspect provider executable", error))?;
-    if !metadata.file_type().is_file() {
-        return Err(InfrastructureError::install(format!(
-            "provider executable {} is not a regular file",
-            binary.display()
-        )));
-    }
-    let actual = hash_file(&binary)
+    let actual = hash_open_file(open_regular_file(&binary)?)
         .map_err(|error| InfrastructureError::input_output("hash provider executable", error))?;
     if !actual.eq_ignore_ascii_case(&manifest.sha256) {
         return Err(InfrastructureError::install(format!(
@@ -928,6 +1030,11 @@ mod tests {
     use super::*;
 
     const PROVIDER_FILE: &str = "terraform-provider-random_v3.7.2_x5";
+
+    /// Hex SHA-256 of the file at `path`, streamed.
+    fn hash_file(path: &Path) -> std::io::Result<String> {
+        hash_open_file(std::fs::File::open(path)?)
+    }
 
     fn random_source() -> ProviderSource {
         ProviderSource::parse("hashicorp/random").unwrap()
@@ -1177,6 +1284,78 @@ mod tests {
         let binary = write_installation(&directory, b"#!/bin/sh\n");
         std::fs::write(&binary, b"#!/bin/sh\nrm -rf /\n").unwrap();
         assert!(verify_installation(cache.path(), &directory, &release("3.7.2")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symbolic_link_executable_is_not_accepted() {
+        let cache = tempfile::tempdir().unwrap();
+        let directory = cache.path().join("provider");
+        let binary = write_installation(&directory, b"#!/bin/sh\n");
+        // Same contents, so only the link itself can be the reason.
+        let target = cache.path().join("elsewhere");
+        std::fs::write(&target, b"#!/bin/sh\n").unwrap();
+        std::fs::remove_file(&binary).unwrap();
+        std::os::unix::fs::symlink(&target, &binary).unwrap();
+        let error = verify_installation(cache.path(), &directory, &release("3.7.2")).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"), "{error}");
+    }
+
+    /// Serve `body` once per connection to any GET, with a `content-length`
+    /// header only when `declared_length` is set.
+    async fn document_server(body: String, declared_length: Option<usize>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/document.json", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).await.unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                }
+                let length = declared_length
+                    .map(|length| format!("content-length: {length}\r\n"))
+                    .unwrap_or_default();
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n{length}\
+                     connection: close\r\n\r\n{body}"
+                );
+                // The client may hang up early on an oversized declaration.
+                let _ = stream.write_all(reply.as_bytes()).await;
+                let _ = stream.shutdown().await;
+            }
+        });
+        url
+    }
+
+    #[tokio::test]
+    async fn registry_documents_are_bounded() {
+        let installer = ProviderInstaller::new(PathBuf::from("/cache")).unwrap();
+        let small = r#"{"providers.v1": "/v1/providers/"}"#.to_string();
+        let url = document_server(small.clone(), Some(small.len())).await;
+        let discovery: ServiceDiscovery = installer.get_document(&url, "document").await.unwrap();
+        assert_eq!(discovery.providers_v1.as_deref(), Some("/v1/providers/"));
+
+        let limit = usize::try_from(MAXIMUM_REGISTRY_DOCUMENT_BYTES).unwrap();
+        let oversized = format!(r#"{{"providers.v1": "{}"}}"#, "x".repeat(limit));
+        for declared_length in [Some(oversized.len()), None] {
+            let url = document_server(oversized.clone(), declared_length).await;
+            let error = installer
+                .get_document::<ServiceDiscovery>(&url, "document")
+                .await
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("exceeds the {limit}-byte limit")),
+                "{declared_length:?}: {error}"
+            );
+        }
     }
 
     #[test]
