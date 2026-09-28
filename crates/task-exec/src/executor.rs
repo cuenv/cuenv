@@ -251,6 +251,7 @@ impl TaskExecutor {
         }
 
         self.validate_backend_sandbox(name, task)?;
+        let task_environment = self.task_environment(task)?;
 
         // Dagger currently mounts the full project rather than the resolved
         // input root, so its results are not described by the action key.
@@ -289,7 +290,7 @@ impl TaskExecutor {
             let outcome = super::cache::build_action(BuildActionInput {
                 task,
                 task_name: name,
-                environment: &self.config.environment,
+                environment: &task_environment,
                 cache: &cache,
                 workdir: &workdir,
                 project_root: self.project_root_for_task(task),
@@ -448,7 +449,7 @@ impl TaskExecutor {
         // always did.
         let start = std::time::Instant::now();
         let result = self
-            .execute_task_with_retries(name, task, cache_handle.as_mut())
+            .execute_task_with_retries(name, task, cache_handle.as_mut(), &task_environment)
             .await?;
         let duration_ms = start.elapsed().as_millis();
 
@@ -521,6 +522,21 @@ impl TaskExecutor {
         Ok(())
     }
 
+    fn task_environment(&self, task: &Task) -> Result<Environment> {
+        let mut environment = self.config.environment.clone();
+        if !task.is_hermetic()
+            || self.backend.name() == "dagger"
+            || environment.get("HOME").is_some()
+            || task.env.contains_key("HOME")
+        {
+            return Ok(environment);
+        }
+
+        let home = super::hermetic_home::writable_task_home()?;
+        environment.set("HOME".to_string(), home.to_string_lossy().into_owned());
+        Ok(environment)
+    }
+
     /// Materialize the exec root a sandboxed task runs in.
     ///
     /// Returns `None` for a task that opted out of isolation. A task that
@@ -585,6 +601,7 @@ impl TaskExecutor {
         name: &str,
         task: &Task,
         mut cache_handle: Option<&mut CacheHandle>,
+        environment: &Environment,
     ) -> Result<TaskResult> {
         // Timeout on the dagger backend would drop the future without tearing
         // down the remote container, leaking the running task. Reject it
@@ -615,7 +632,10 @@ impl TaskExecutor {
             // A timeout is a hard policy violation, not a transient failure:
             // retrying would re-incur the full timeout each attempt, so a
             // timed-out attempt ends the task immediately.
-            let result = match self.execute_task_once(name, task, workdir).await? {
+            let result = match self
+                .execute_task_once(name, task, workdir, environment)
+                .await?
+            {
                 TaskAttempt::TimedOut(result) => return Ok(result),
                 TaskAttempt::Completed(result) => result,
             };
@@ -639,6 +659,7 @@ impl TaskExecutor {
         name: &str,
         task: &Task,
         workdir: Option<&Path>,
+        environment: &Environment,
     ) -> Result<TaskAttempt> {
         if self.backend.name() == "dagger" {
             // Dagger has no host timeout (rejected in `execute_task_with_retries`),
@@ -646,13 +667,14 @@ impl TaskExecutor {
             let ctx = super::backend::TaskExecutionContext {
                 name,
                 task,
-                environment: &self.config.environment,
+                environment,
                 project_root: &self.config.project_root,
                 capture_output: self.config.capture_output,
             };
             Ok(TaskAttempt::Completed(self.backend.execute(&ctx).await?))
         } else {
-            self.execute_task_non_hermetic(name, task, workdir).await
+            self.execute_task_non_hermetic(name, task, workdir, environment)
+                .await
         }
     }
 
@@ -821,6 +843,7 @@ impl TaskExecutor {
         name: &str,
         task: &Task,
         workdir_override: Option<&Path>,
+        environment: &Environment,
     ) -> Result<TaskAttempt> {
         // Check if this is an unresolved TaskRef (should have been resolved before execution)
         if task.is_task_ref() && task.project_root.is_none() {
@@ -867,8 +890,7 @@ impl TaskExecutor {
         cuenv_events::emit_task_started!(name, cmd_str, false);
 
         // Build command - handle script mode vs command mode
-        let command_spec =
-            task.command_spec(|command| self.config.environment.resolve_command(command))?;
+        let command_spec = task.command_spec(|command| environment.resolve_command(command))?;
         let mut cmd = Command::new(&command_spec.program);
         cmd.args(&command_spec.args);
 
@@ -878,13 +900,12 @@ impl TaskExecutor {
         cmd.current_dir(&workdir);
         let env_vars = if task.is_hermetic() {
             cmd.env_clear();
-            self.config
-                .environment
+            environment
                 .execution_environment(task.env_passthrough())
                 .into_iter()
                 .collect::<std::collections::HashMap<_, _>>()
         } else {
-            self.config.environment.merge_with_system()
+            environment.merge_with_system()
         };
         for (k, v) in &env_vars {
             cmd.env(k, v);

@@ -132,12 +132,12 @@ async fn a_sandboxed_task_cannot_read_an_undeclared_file() {
 }
 
 #[tokio::test]
-async fn a_hermetic_task_does_not_inherit_undeclared_host_environment() {
+async fn a_hermetic_task_uses_a_writable_home_without_inheriting_host_identity() {
     let workspace = TempDir::new().unwrap();
     let cache_root = TempDir::new().unwrap();
     let executor = build_executor(workspace.path(), cache_root.path());
     let task = sandboxed(
-        r#"test "$HOME" = "/home/builder" && test "$USER" = "builder" && test "$LOGNAME" = "builder""#,
+        r#"test -n "$HOME" && test "$USER" = "builder" && test "$LOGNAME" = "builder" && probe="$HOME/.cuenv-home-write-test-$$" && mkdir "$probe" && rmdir "$probe""#,
         &[],
         &[],
     );
