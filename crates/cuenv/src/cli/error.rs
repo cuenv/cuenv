@@ -7,18 +7,22 @@ use thiserror::Error;
 
 /// Exit codes for the CLI application
 pub const EXIT_OK: i32 = 0;
+/// An infrastructure change was not confirmed at the prompt (declined, or
+/// no answer could be read); nothing was applied
+pub const EXIT_CANCELLED: i32 = 1;
 /// CLI or configuration error exit code
 pub const EXIT_CLI: i32 = 2;
 /// CUE evaluation or FFI error exit code
 pub const EXIT_EVAL: i32 = 3;
 /// Infrastructure run collided with concurrent activity (the state is locked
-/// by another run, or the plan changed after it was confirmed); retrying
-/// later can succeed
+/// by another run, or `unlock` named a lock that is not the current one);
+/// retrying later can succeed
 pub const EXIT_LOCKED: i32 = 4;
 /// Infrastructure provider, state store, or apply failure
 pub const EXIT_INFRASTRUCTURE: i32 = 5;
-/// Infrastructure run stopped by SIGINT or SIGTERM after cleaning up
-/// (128 + SIGINT, the shell convention for an interrupted command)
+/// Interrupted: 128 + SIGINT, the shell convention for an interrupted
+/// command. Every command stopped by Ctrl-C exits with it, and
+/// `cuenv infrastructure` also when stopped by SIGTERM, SIGHUP or SIGQUIT
 pub const EXIT_INTERRUPTED: i32 = 130;
 
 /// What kind of infrastructure failure occurred; decides the exit code and
@@ -28,16 +32,29 @@ pub enum InfrastructureFailureKind {
     /// Another run holds the project's lock, or a lock other than the one
     /// named. Exit code 4, JSON code `infrastructure_locked`.
     Locked,
-    /// The plan made under the lock differs from the one confirmed; nothing
-    /// was applied. Exit code 4, JSON code `infrastructure_plan_changed`.
-    PlanChanged,
-    /// The run was interrupted by SIGINT or SIGTERM and stopped cleanly:
-    /// what was applied is recorded and the lock released. Exit code 130,
-    /// JSON code `infrastructure_interrupted`.
+    /// The plan was not confirmed at the prompt (declined, or no answer
+    /// could be read); nothing was applied. Exit code 1, JSON code
+    /// `infrastructure_cancelled`.
+    Cancelled,
+    /// The run was stopped by a signal: whatever was applied is recorded.
+    /// The error's [`LockStatus`] says whether the lock was released. Exit
+    /// code 130, JSON code `infrastructure_interrupted`.
     Interrupted,
     /// Any other provider, state store or apply failure. Exit code 5, JSON
     /// code `infrastructure`.
     Failed,
+}
+
+/// The state lock an infrastructure error concerns and whether it is
+/// released now; `lockIdentifier` and `lockReleased` in the JSON error
+/// envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockStatus {
+    /// Identifier of the lock, as `cuenv infrastructure unlock` takes it.
+    pub identifier: String,
+    /// Whether the lock is known to be released: `false` when it is still
+    /// held or when that is not known.
+    pub released: bool,
 }
 
 /// CLI-specific error types with proper exit code mapping
@@ -63,7 +80,8 @@ pub enum CliError {
         #[help]
         help: Option<String>,
     },
-    /// Infrastructure failure (exit code 4 for concurrent activity, otherwise 5)
+    /// Infrastructure failure (exit code 1 when cancelled, 4 for concurrent
+    /// activity, 130 when interrupted, otherwise 5)
     #[error("Infrastructure error: {message}")]
     #[diagnostic(code(cuenv::cli::infrastructure))]
     Infrastructure {
@@ -74,6 +92,8 @@ pub enum CliError {
         help: Option<String>,
         /// What kind of failure it is
         kind: InfrastructureFailureKind,
+        /// The state lock the failure concerns, when there is one
+        lock: Option<LockStatus>,
     },
     /// Other unexpected error (exit code 3)
     #[error("Unexpected error: {message}")]
@@ -135,6 +155,49 @@ impl CliError {
             message: message.into(),
             help,
             kind,
+            lock: None,
+        }
+    }
+
+    /// Attach the state lock an infrastructure error concerns; any other
+    /// error is returned unchanged.
+    #[must_use]
+    pub fn with_lock(self, status: LockStatus) -> Self {
+        match self {
+            Self::Infrastructure {
+                message,
+                help,
+                kind,
+                ..
+            } => Self::Infrastructure {
+                message,
+                help,
+                kind,
+                lock: Some(status),
+            },
+            other => other,
+        }
+    }
+
+    /// The message, without the category prefix of its display.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Config { message, .. }
+            | Self::Eval { message, .. }
+            | Self::Infrastructure { message, .. }
+            | Self::Other { message, .. } => message,
+        }
+    }
+
+    /// The help text, when there is one.
+    #[must_use]
+    pub fn help(&self) -> Option<&str> {
+        match self {
+            Self::Config { help, .. }
+            | Self::Eval { help, .. }
+            | Self::Infrastructure { help, .. }
+            | Self::Other { help, .. } => help.as_deref(),
         }
     }
 
@@ -164,10 +227,16 @@ impl CliError {
             Self::Config { message, .. } => Self::Config { message, help },
             Self::Eval { message, .. } => Self::Eval { message, help },
             Self::Other { message, .. } => Self::Other { message, help },
-            Self::Infrastructure { message, kind, .. } => Self::Infrastructure {
+            Self::Infrastructure {
+                message,
+                kind,
+                lock,
+                ..
+            } => Self::Infrastructure {
                 message,
                 help,
                 kind,
+                lock,
             },
         }
     }
@@ -273,7 +342,11 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
         CliError::Config { .. } => EXIT_CLI,
         CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
         CliError::Infrastructure {
-            kind: InfrastructureFailureKind::Locked | InfrastructureFailureKind::PlanChanged,
+            kind: InfrastructureFailureKind::Cancelled,
+            ..
+        } => EXIT_CANCELLED,
+        CliError::Infrastructure {
+            kind: InfrastructureFailureKind::Locked,
             ..
         } => EXIT_LOCKED,
         CliError::Infrastructure {
@@ -296,20 +369,38 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
         CliError::Other { .. } => "other",
         CliError::Infrastructure { kind, .. } => match kind {
             InfrastructureFailureKind::Locked => "infrastructure_locked",
-            InfrastructureFailureKind::PlanChanged => "infrastructure_plan_changed",
+            InfrastructureFailureKind::Cancelled => "infrastructure_cancelled",
             InfrastructureFailureKind::Interrupted => "infrastructure_interrupted",
             InfrastructureFailureKind::Failed => "infrastructure",
         },
     }
 }
 
+/// The JSON error envelope of an error: `code`, `message`, `help` when there
+/// is help text, and `lockIdentifier` and `lockReleased` when an
+/// infrastructure error concerns a state lock.
+#[must_use]
+pub fn error_envelope(err: &CliError) -> ErrorEnvelope<serde_json::Value> {
+    let mut error = serde_json::Map::new();
+    error.insert("code".to_string(), error_code_for(err).into());
+    error.insert("message".to_string(), err.to_string().into());
+    if let Some(help) = err.help() {
+        error.insert("help".to_string(), help.into());
+    }
+    if let CliError::Infrastructure {
+        lock: Some(lock), ..
+    } = err
+    {
+        error.insert("lockIdentifier".to_string(), lock.identifier.clone().into());
+        error.insert("lockReleased".to_string(), lock.released.into());
+    }
+    ErrorEnvelope::new(serde_json::Value::Object(error))
+}
+
 /// Render error appropriately based on output format
 pub fn render_error(err: &CliError, format: OutputFormat) {
     if format.is_json() {
-        let error_envelope = ErrorEnvelope::new(serde_json::json!({
-            "code": error_code_for(err),
-            "message": err.to_string()
-        }));
+        let error_envelope = error_envelope(err);
 
         match serde_json::to_string(&error_envelope) {
             Ok(json) => cuenv_events::println_redacted(&json),

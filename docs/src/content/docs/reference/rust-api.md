@@ -567,18 +567,29 @@ Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` a
 ## cuenv-infrastructure
 
 `cuenv infrastructure` is a thin command over the `cuenv-infrastructure` crate,
-which other tools can drive the same way:
+which other tools can drive the same way. The lock is released and the
+providers are stopped whatever the outcome, so no `?` may leave them behind:
 
 ```rust
 use cuenv_infrastructure::{
-    ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine, PlanMode,
+    ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
+    InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, PlanMode, ProjectInstance,
+    StateLock,
 };
 
 let cancellation = Cancellation::default(); // shared with signal handling
+let instance = ProjectInstance::new("services/api", "cuenv")?; // directory and package
+store.migrate().await?; // writes need current tables; reads never create them
+// Choose the identifier first and register it with signal handling, so a
+// forced exit during acquisition can name the lock it may hold.
+let lock = StateLock::generate();
+store
+    .acquire_lock(&tenant, &LockRequest { lock: &lock, holder: "my tool" })
+    .await?;
 let mut engine = InfrastructureEngine::new(EngineSetup {
-    tenant,         // TenantKey: CUE module path and project name
+    tenant: tenant.clone(), // TenantKey: CUE module path and project name
     store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore
-    infrastructure, // the evaluated `infrastructure` block
+    infrastructure,            // the evaluated `infrastructure` block
     options: EngineOptions {
         project_directory,
         plugin_cache_directory: None,
@@ -587,48 +598,81 @@ let mut engine = InfrastructureEngine::new(EngineSetup {
         cancellation: cancellation.clone(),
     },
 });
-let lock = store.lock(&tenant, "my tool").await?;
-let plan = engine.plan(PlanMode::Apply).await?;
-if plan.has_work() {
-    engine.apply(&plan, ApplyContext { lock: &lock }, &mut |_event| {}).await?;
+let outcome = async {
+    // The first lock records the owning instance; another instance is refused.
+    store
+        .claim_owner(&tenant, &lock, &OwnerClaim { instance: &instance, mode: OwnerClaimMode::IfUnowned })
+        .await?
+        .require(&tenant, &instance)?;
+    let plan = engine.plan(PlanMode::Apply).await?;
+    // Show the plan and ask for confirmation here, still holding the lock.
+    if plan.has_work() {
+        engine.apply(&plan, ApplyContext { lock: &lock }, &mut |_event| {}).await?;
+    }
+    Ok::<_, InfrastructureError>(plan)
 }
-store.unlock(&tenant, &lock).await?;
+.await;
+let released = store.unlock(&tenant, &lock).await;
 engine.shutdown().await;
+let plan = outcome?;
+released?;
 ```
 
 - `Cancellation::stop()` is the first interrupt: no new resource is started and
-  every provider the engine launched is asked to stop; `terminate_providers()`
-  is the second and kills them. The command calls them from its SIGINT and
-  SIGTERM handler, which it installs before taking the lock.
+  every provider the engine launched is asked to stop.
+  `terminate_providers()` is the second: it kills them (with their process
+  groups) and removes their socket directories; then
+  `wait_for_recordings(bound)` lets a record being written finish before the
+  lock is released. The command calls them from its SIGINT, SIGTERM, SIGHUP
+  and SIGQUIT handling, which it installs before evaluating anything.
 - `Plan::has_work()` is true when applying would change infrastructure or
-  rewrite stored records (`PlanSummary::refresh`); `Plan::digest()` identifies
-  everything a plan would do, so a plan confirmed without the lock can be
-  compared with one made under it.
+  rewrite stored records (`PlanSummary::refresh`). `engine.apply()` refuses a
+  plan whose stored records changed since it was made
+  (`InfrastructureError::PlanOutdated`); `Plan::digest()` identifies
+  everything a plan would do. The command plans and confirms while holding
+  the lock, as Terraform does, so it applies exactly the plan shown.
+- `StateStore::owner()` names the CUE instance (`ProjectInstance`,
+  `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
+  `OwnerClaimMode::IfUnowned` records it under the first lock, and
+  `OwnerClaimMode::Transfer` is an explicit adoption
+  (`cuenv infrastructure state adopt`). `TenantOwner::require()` refuses any
+  other instance (`InfrastructureError::OwnedByAnotherInstance`).
 - A change the store could not record is saved by `UnrecordedStore` in the
   user state directory; `engine.plan()` refuses to run until
   `UnrecordedStore::recover` has recorded it under the lock
-  (`cuenv infrastructure state recover`).
+  (`cuenv infrastructure state recover`). `has_pending()` checks without a
+  lock; `RecoverOverwrite::IfUnchanged` refuses to overwrite a stored record
+  that changed since the change was saved (`InfrastructureError::StateChanged`),
+  and `RecoverOverwrite::Always` (`state recover --force`) overwrites it.
 
 ## CLI Exit Codes
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Constant              | Description                                                                                                                                         | JSON `code`                                            |
-| ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| 0    | `EXIT_OK`             | Command completed successfully                                                                                                                      | (success envelope)                                     |
-| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                        | `config`                                               |
-| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                                     | `eval` / `other`                                       |
-| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` or `PlanChanged` kind) | `infrastructure_locked` / `infrastructure_plan_changed` |
-| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store or apply (`CliError::Infrastructure` with `Failed` kind)                                 | `infrastructure`                                       |
-| 130  | `EXIT_INTERRUPTED`    | Infrastructure run stopped cleanly by SIGINT or SIGTERM (`CliError::Infrastructure` with `Interrupted` kind)                                      | `infrastructure_interrupted`                           |
+| Code | Constant              | Description                                                                                                                                  | JSON `code`                  |
+| ---- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| 0    | `EXIT_OK`             | Command completed successfully                                                                                                               | (success envelope)           |
+| 1    | `EXIT_CANCELLED`      | Infrastructure change not confirmed at the prompt; nothing was applied (`CliError::Infrastructure` with `Cancelled` kind)                     | `infrastructure_cancelled`   |
+| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                 | `config`                     |
+| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                              | `eval` / `other`             |
+| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` kind)              | `infrastructure_locked`      |
+| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store, apply, ownership or unrecorded changes (`CliError::Infrastructure` with `Failed` kind) | `infrastructure`             |
+| 130  | `EXIT_INTERRUPTED`    | Interrupted: Ctrl-C for every command; for `cuenv infrastructure` also SIGTERM, SIGHUP or SIGQUIT (`CliError::Infrastructure` with `Interrupted` kind) | `infrastructure_interrupted` |
 
 `exit_code_for` and `error_code_for` in `cuenv::cli` map a `CliError` to its
-exit code and to the `code` field of the JSON error envelope
-(`{"status":"error","error":{"code":…,"message":…}}`). Codes 4, 5 and 130 are
-only produced by `cuenv infrastructure`; they extend the taxonomy of ADR-0005.
-`InfrastructureFailureKind` (`Locked`, `PlanChanged`, `Interrupted`, `Failed`)
-selects between them. Other commands interrupted by Ctrl-C also exit with 130,
-without an envelope.
+exit code and to the `code` field of the JSON error envelope, which
+`error_envelope` builds:
+`{"status":"error","error":{"code":…,"message":…,"help":…,"lockIdentifier":…,"lockReleased":…}}`.
+`help` is present when the error has help text; `lockIdentifier` and
+`lockReleased` are present when an infrastructure error concerns a state lock
+(`CliError::with_lock` and `LockStatus`), and `lockReleased` is `false`
+whenever the release failed or is unknown. Codes 1, 4, 5 and 130 with an
+envelope are only produced by `cuenv infrastructure`; they extend the taxonomy
+of ADR-0005. `InfrastructureFailureKind` (`Locked`, `Cancelled`,
+`Interrupted`, `Failed`) selects between them. `cuenv infrastructure` itself
+exits with 3 only for CUE evaluation errors (`eval`). `EXIT_INTERRUPTED` is
+the single constant for 130: other commands interrupted by Ctrl-C exit with
+it too, without an envelope.
 
 ## See Also
 
