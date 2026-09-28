@@ -96,7 +96,7 @@ CUE resolves an identifier to the nearest enclosing field of that name before an
 
 Two more rules:
 
-- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`, which differs from the last path element, so the import needs the qualifier: `googleBetaProvider "github.com/cuenv/terraform/terraform/hashicorp/google-beta@v6:google_beta"`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
+- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`, which differs from the last path element, so the import needs the qualifier: `googleBetaProvider "github.com/cuenv/terraform/terraform/hashicorp/google-beta@v8:google_beta"`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
 - **Versions.** Keep `version` equal to the release pinned in `deps`. Nothing enforces this yet; a mismatch means the schema you typed against is not the one the provider uses.
 
 ## A minimal example without typed schemas

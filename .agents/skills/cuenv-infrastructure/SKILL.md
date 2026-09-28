@@ -26,7 +26,7 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - The `infrastructure` block must be concrete: the infrastructure command (and only it) passes `concretePaths: ["infrastructure"]` to the cuengine bridge when evaluating its target instance (a generic option; cuengine itself stays free of cuenv-specific names), so undefined references, missing required arguments and non-concrete values fail evaluation. Other commands never evaluate with that option.
 - Provider `version` and the module major version must match.
 - The schema checks references by name: every `dependsOn` entry must be a declared resource, and every resource's provider (explicit `provider` or the `type` prefix) must be declared. Cycles pass the schema and are reported by the engine.
-- When the package name differs from the last import path element (`hashicorp/google-beta` → `google_beta`), the import needs an explicit qualifier: `…/google-beta@v6:google_beta`.
+- When the package name differs from the last import path element (`hashicorp/google-beta` → `google_beta`), the import needs an explicit qualifier: `…/google-beta@v8:google_beta`.
 - CUE errors usually, but not always, carry a file position; do not promise one.
 - In-repository examples stay untyped so they evaluate without network access in the Nix sandbox.
 
