@@ -551,6 +551,10 @@ as a preview URL).
 
 ```cue
 // Captures are defined on the task; refs go on the CI pipeline.
+// Inside a pipeline, `tasks` names the pipeline's own list, so the pipeline
+// reaches the project's tasks through a file-level alias.
+let _t = tasks
+
 tasks: {
     deploy: schema.#Task & {
         command: "deploy"
@@ -564,7 +568,7 @@ ci: {
     providers: ["github"]
     pipelines: {
         default: {
-            tasks: [tasks.deploy]
+            tasks: [_t.deploy]
             annotations: {
                 "Preview URL": schema.#TaskCaptureRef & {
                     cuenvTask:    "deploy"
@@ -868,9 +872,19 @@ definitions for typed, closed configuration.
   needs an explicit package qualifier in the import path, for example
   `"github.com/cuenv/terraform/terraform/hashicorp/google-beta@v<major>:google_beta"`
   (see [Manage infrastructure](/how-to/infrastructure/) for the naming rule).
-- **Errors.** Evaluation fails before any provider starts. Errors name the
-  field path (`infrastructure.resources.pet.configuration.length`); most also
-  carry a file position, but not all of them do, so search by field path.
+- **Closed at every level.** Every infrastructure definition is closed, also
+  when the project embeds `schema.#Project` at file level: a misspelled field
+  such as `resource:`, `sourcee:` or `authTokenEnv:` fails with
+  `field not allowed` and the position of the typo. cuenv's Rust types reject
+  unknown fields as well.
+- **Errors.** Evaluation fails before any provider starts, and every error is
+  listed, each with its field path
+  (`infrastructure.resources.pet.configuration.length`) and file positions
+  relative to the module root. Errors raised by the schema's own checks
+  (missing references, `version`/`path`, the database URL) point at
+  `schema/infrastructure.cue` rather than your file; the message names the
+  field, so search for that. A required field that is missing entirely has
+  only the schema's position.
 
 ```cue
 infrastructure: {
@@ -893,22 +907,40 @@ infrastructure: {
 
 | Field          | Type     | Required | Description                                                  |
 | -------------- | -------- | -------- | ------------------------------------------------------------ |
-| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://`; `http://`/`ws://` only for loopback (local `sqld`). No credentials, query or fragment |
+| `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://` with a host name or address; `http://`/`ws://` only for a loopback host (local `sqld`). Optional port and path; no credentials, query, fragment or whitespace. See the URL contract below |
 | `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
+
+URL contract, shared with the Rust state store (which must accept exactly the
+same set):
+
+- Scheme `libsql`, `https`, `wss`, `http` or `ws`, in any letter case.
+- Encrypted schemes (`libsql`, `https`, `wss`): a DNS name (letters, digits,
+  `.` and `-`, starting and ending with a letter or digit), a dotted IPv4
+  address, or a bracketed IPv6 address.
+- Plaintext schemes (`http`, `ws`): only a loopback host — `localhost` (any
+  case), a dotted IPv4 address in `127.0.0.0/8` with four decimal octets,
+  `[::1]`, or `[::ffff:127.x.y.z]` — so the token never crosses the network
+  unencrypted.
+- An optional port from 1 to 65535, then an optional path of URL path
+  characters. No user information, query, fragment or whitespace anywhere.
+
+An invalid URL fails with ``infrastructure.state.turso._invalidUrl: `url`
+must be …`` and the URL itself is not repeated, because it may carry a token.
 
 ### #InfrastructureProvider
 
 | Field     | Type     | Required | Description                                                        |
 | --------- | -------- | -------- | ------------------------------------------------------------------ |
-| `source`  | `string` | Yes      | `namespace/type` or `hostname/namespace/type`                      |
+| `source`  | `string` | Yes      | `namespace/type` or `hostname[:port]/namespace/type`               |
 | `version` | `string` | No*      | Exact version to install from the registry                         |
-| `path`    | `string` | No*      | Local provider binary (absolute or relative to the project)        |
+| `path`    | `string` | No*      | Local provider binary (absolute or relative to the project); not empty |
 | `configuration` | `{...}` | No | Provider block arguments, validated by the provider schema |
 
 \* Exactly one of `version` (strict semantic version) or `path` must be set.
-Setting neither fails with `version: field is required but not present`;
-setting both fails with the message "set exactly one of `version` and
-`path`, not both".
+Setting neither fails with "set `version` (an exact registry release) or
+`path` (a local provider binary)"; setting both fails with "set exactly one of
+`version` and `path`, not both". Both errors are reported under
+`providers.<name>._versionOrPath`.
 
 ### #ManagedResource
 
@@ -921,8 +953,13 @@ setting both fails with the message "set exactly one of `version` and
 
 Evaluation rejects a `dependsOn` entry that names no resource (`no resource
 named "…" in infrastructure.resources`) and a resource whose provider is not
-declared (`no provider named "…" in infrastructure.providers`). Dependency
-cycles pass the schema and are reported by `cuenv infrastructure` itself.
+declared (`no provider named "…" in infrastructure.providers`). Each error is
+reported under `infrastructure._unresolved` with the path of the offending
+field as its key, for example
+`infrastructure._unresolved."resources.pet.dependsOn[0]": no resource named "db" in infrastructure.resources`.
+The checks compare names only and take time linear in the number of
+resources. Dependency cycles pass the schema and are reported by
+`cuenv infrastructure` itself.
 
 ## Container Images
 

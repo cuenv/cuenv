@@ -256,6 +256,75 @@ pub struct ModuleEvalOptions {
     /// Which packages are evaluated, and so how instances are keyed.
     #[serde(default)]
     pub package_scope: PackageScope,
+    /// When not empty, export only these paths of each instance instead of
+    /// the whole value. Paths use CUE path syntax with regular fields only
+    /// (`name`, `config.database`, `"quoted-label".items`); list indices,
+    /// definitions and hidden fields are a configuration error. The exported
+    /// object keeps the nesting (`config.database` exports
+    /// `{"config": {"database": …}}`), and a path an instance lacks is left
+    /// out. Loading, building, `concrete_paths` and `instance_failures` are
+    /// unchanged, so failures are still reported; only the export (and the
+    /// memory it takes) shrinks. Use this for module-wide checks that read a
+    /// few fields of every instance.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub export_paths: Vec<String>,
+    /// Paths (same syntax as `export_paths`) whose existence is reported per
+    /// instance in [`ModuleResult::present`], without exporting their values.
+    /// A path exists when the instance has a regular field there; a field
+    /// that is only declared optional (`field?:`) does not exist.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presence_paths: Vec<String>,
+    /// Whether a recursive evaluation reports the directories it does not
+    /// load.
+    #[serde(default)]
+    pub skipped_directories: SkippedDirectories,
+}
+
+/// Whether a recursive evaluation reports the directories it leaves out.
+///
+/// A recursive evaluation follows the rules of CUE's `./...` pattern: below
+/// the evaluated directory, directories whose name starts with `.` or `_`,
+/// directories named `testdata`, and directories holding their own
+/// `cue.mod` (nested modules) are not loaded, and neither are directories
+/// that cannot be read. The evaluated directory itself is always loaded,
+/// whatever its name.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkippedDirectories {
+    /// Leave them out silently.
+    #[default]
+    Ignore,
+    /// Leave them out and list each one that holds a `.cue` file (at any
+    /// depth) in [`ModuleResult::skipped_directories`], so a caller that
+    /// must see every instance can refuse to proceed. Only the topmost
+    /// left-out directory of a tree is listed. Reporting walks into the
+    /// left-out trees, which costs a directory walk of each.
+    Report,
+}
+
+/// A directory a recursive evaluation did not load.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SkippedDirectory {
+    /// Directory relative to the module root, with `/` separators.
+    pub path: String,
+    /// Why it was not loaded.
+    pub reason: SkippedReason,
+}
+
+/// Why a recursive evaluation did not load a directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkippedReason {
+    /// Its name starts with `.`.
+    Dot,
+    /// Its name starts with `_`.
+    Underscore,
+    /// It is named `testdata`.
+    Testdata,
+    /// It holds its own `cue.mod`: another CUE module.
+    NestedModule,
+    /// It could not be read.
+    Unreadable,
 }
 
 /// Which CUE packages an evaluation covers.
@@ -273,9 +342,13 @@ pub enum PackageScope {
     /// entries are keyed as `"<directory>:<package>"` (`".:app"`,
     /// `"services/api:worker"`); files without a package clause appear under
     /// CUE's anonymous package as `"<directory>:_"`. CUE package names are
-    /// identifiers, so a key splits unambiguously at its last `:`. No package
-    /// name may be given: both `package_name` and the legacy parameter must
-    /// be empty, or evaluation fails with a configuration error.
+    /// identifiers, so a key splits unambiguously at its last `:`. `meta`
+    /// keys are `"<instance key>/<field path>"`. These keys are not
+    /// directory paths: do not hand them to consumers that expect the
+    /// directory keys of [`PackageScope::Named`] (such as
+    /// `cuenv_core::ModuleEvaluation::from_raw`). No package name may be
+    /// given: both `package_name` and the legacy parameter must be empty, or
+    /// evaluation fails with a configuration error.
     All,
 }
 
@@ -290,9 +363,14 @@ pub enum InstanceFailures {
     #[default]
     Skip,
     /// Fail the whole evaluation when any instance fails, with an error
-    /// naming every failed instance by its path relative to the module root.
-    /// Use this where a partial result would be unsafe, for example a check
-    /// that must see every instance.
+    /// listing every failed instance as `<key>: <errors>`, where each CUE
+    /// error carries its field path and file positions relative to the
+    /// module root. The key is the instance key (see [`PackageScope`]); a
+    /// failure the loader reports before it knows the package is keyed by
+    /// its directory alone, or by the load pattern (`./...`) when it has no
+    /// directory, so under [`PackageScope::All`] a bare directory in the
+    /// message is not a package key. Use this where a partial result would
+    /// be unsafe, for example a check that must see every instance.
     Fail,
 }
 
@@ -323,7 +401,7 @@ pub struct FieldMeta {
 }
 
 /// Result of evaluating an entire CUE module
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct ModuleResult {
     /// Map of relative path to evaluated JSON value
     pub instances: std::collections::HashMap<String, serde_json::Value>,
@@ -333,6 +411,16 @@ pub struct ModuleResult {
     /// Map of "path/field" to source location (only populated when `with_meta`: true)
     #[serde(default)]
     pub meta: std::collections::HashMap<String, FieldMeta>,
+    /// For each exported instance key, the entries of
+    /// [`ModuleEvalOptions::presence_paths`] that exist in it, as written in
+    /// the options. Empty when no presence paths were requested.
+    #[serde(default)]
+    pub present: std::collections::HashMap<String, Vec<String>>,
+    /// Directories a recursive evaluation did not load although they hold
+    /// CUE files, sorted by path. Only filled with
+    /// [`SkippedDirectories::Report`].
+    #[serde(default, rename = "skippedDirectories")]
+    pub skipped_directories: Vec<SkippedDirectory>,
 }
 
 /// CUE module dependency metadata extracted from `cue.mod/module.cue`.
@@ -370,6 +458,15 @@ struct ModuleEvalWorker {
 ///   - `instance_failures`: Skip failed instances (default) or fail the evaluation
 ///   - `package_scope`: The named package (default) or every package, keyed
 ///     as `"<directory>:<package>"`
+///   - `export_paths`: Export only these fields of each instance
+///   - `presence_paths`: Report which of these fields exist in each instance
+///   - `skipped_directories`: Report the directories a recursive evaluation
+///     did not load
+///
+/// A recursive evaluation loads the evaluated directory whatever its name,
+/// and below it follows CUE's `./...` rules (see [`SkippedDirectories`]).
+/// Each instance is built in its own CUE context and exported before the
+/// next is built, so memory does not grow with the whole module.
 ///
 /// # Returns
 /// A `ModuleResult` containing:
@@ -646,20 +743,28 @@ fn handle_bridge_error(bridge_error: BridgeError, module_root: &Path) -> Error {
         "Module evaluation failed"
     );
 
-    let full_message = bridge_error
-        .hint
-        .map(|hint| format!("{} (Hint: {})", bridge_error.message, hint))
-        .unwrap_or(bridge_error.message);
+    // A hint explains how to call the bridge correctly (option names and
+    // values), so it belongs with configuration errors only. Evaluation
+    // errors carry every CUE error with its position in the message; their
+    // hints are logged above, not shown to the end user.
+    let with_hint = |bridge_error: BridgeError| {
+        bridge_error
+            .hint
+            .map(|hint| format!("{}. {hint}", bridge_error.message))
+            .unwrap_or(bridge_error.message)
+    };
 
     match bridge_error.code.as_str() {
-        ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => Error::configuration(full_message),
+        ERROR_CODE_INVALID_INPUT | ERROR_CODE_REGISTRY_INIT => {
+            Error::configuration(with_hint(bridge_error))
+        }
         ERROR_CODE_LOAD_INSTANCE | ERROR_CODE_BUILD_VALUE | ERROR_CODE_DEPENDENCY_RES => {
-            Error::cue_parse(module_root, full_message)
+            Error::cue_parse(module_root, bridge_error.message)
         }
         ERROR_CODE_ORDERED_JSON | ERROR_CODE_PANIC_RECOVER | ERROR_CODE_JSON_MARSHAL => {
-            Error::ffi("cue_eval_module", full_message)
+            Error::ffi("cue_eval_module", with_hint(bridge_error))
         }
-        _ => Error::ffi("cue_eval_module", full_message),
+        _ => Error::ffi("cue_eval_module", with_hint(bridge_error)),
     }
 }
 
@@ -851,6 +956,9 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         concrete_paths: Vec::new(),
         instance_failures: InstanceFailures::Skip,
         package_scope: PackageScope::Named,
+        export_paths: Vec::new(),
+        presence_paths: Vec::new(),
+        skipped_directories: SkippedDirectories::Ignore,
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;

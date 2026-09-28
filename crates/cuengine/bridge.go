@@ -270,6 +270,13 @@ type ModuleResult struct {
 	Instances map[string]json.RawMessage `json:"instances"`
 	Projects  []string                   `json:"projects"`       // paths that conform to schema.#Project
 	Meta      map[string]ValueMeta       `json:"meta,omitempty"` // "path/field" -> source location
+	// Present maps each exported instance key to the presencePaths that
+	// exist in it (only when presencePaths is set).
+	Present map[string][]string `json:"present,omitempty"`
+	// SkippedDirectories lists the directories a recursive evaluation left
+	// out although they hold CUE files (only with skippedDirectories
+	// "report").
+	SkippedDirectories []SkippedDirectory `json:"skippedDirectories,omitempty"`
 }
 
 // ModuleEvalOptions controls how module evaluation behaves
@@ -301,6 +308,21 @@ type ModuleEvalOptions struct {
 	// (for example ".:app" or "services/api:worker"); no package name may be
 	// given with it. Meta and projects entries use the same keys.
 	PackageScope string `json:"packageScope"`
+	// ExportPaths, when not empty, limits each exported instance to these
+	// regular-field paths (CUE path syntax), nested as in the instance; a
+	// path an instance lacks is left out. Loading, building, concretePaths
+	// and instanceFailures are unchanged: only the export is smaller.
+	ExportPaths []string `json:"exportPaths"`
+	// PresencePaths lists regular-field paths whose existence is reported
+	// per instance in ModuleResult.Present, without exporting their values.
+	PresencePaths []string `json:"presencePaths"`
+	// SkippedDirectories decides whether a recursive evaluation reports the
+	// directories it leaves out (SkippedDirectoriesReport) or not
+	// (SkippedDirectoriesIgnore, the default, also selected by an empty
+	// value). The rules follow CUE's "./..." walk: below the walk root,
+	// directories whose name starts with "." or "_", directories named
+	// "testdata", and directories holding their own cue.mod are not loaded.
+	SkippedDirectories string `json:"skippedDirectories"`
 }
 
 // Values accepted by ModuleEvalOptions.PackageScope.
@@ -360,6 +382,25 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	if err != nil {
 		hint := "concretePaths entries use CUE path syntax, for example \"config\" or \"config.database\""
 		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &hint)
+		return result
+	}
+	projectionHint := "exportPaths and presencePaths entries use CUE path syntax with regular fields, for example \"name\" or \"config.database\""
+	exportPaths, err := parseProjectionPaths("exportPaths", options.ExportPaths)
+	if err != nil {
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &projectionHint)
+		return result
+	}
+	presencePaths, err := parseProjectionPaths("presencePaths", options.PresencePaths)
+	if err != nil {
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &projectionHint)
+		return result
+	}
+
+	switch options.SkippedDirectories {
+	case "", SkippedDirectoriesIgnore, SkippedDirectoriesReport:
+	default:
+		hint := fmt.Sprintf("skippedDirectories must be %q or %q", SkippedDirectoriesIgnore, SkippedDirectoriesReport)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown skippedDirectories value %q", options.SkippedDirectories), &hint)
 		return result
 	}
 
@@ -469,11 +510,16 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		Overlay:    packageOverlay,
 	}
 
-	var loadPattern string
+	// A recursive load walks the directories itself (with CUE's "./..." rules,
+	// see recursiveDirectories) and hands the loader the explicit list, so a
+	// root directory named ".x" or "_x" loads like any other root. loadPattern
+	// names the request in errors.
+	loadPattern := "."
+	loadPatterns := []string{loadPattern}
+	var skippedDirectories []SkippedDirectory
 	if options.Recursive {
 		loadPattern = "./..."
-	} else {
-		loadPattern = "."
+		loadPatterns, skippedDirectories = recursiveDirectories(evalDir, goModuleRoot, options.SkippedDirectories)
 	}
 
 	// NOTE: We intentionally do NOT append ":packageName" to the load pattern.
@@ -483,18 +529,29 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	// unifying ancestor package files, not just directories with .cue files.
 
 	// Load CUE instances using native CUE loader
-	loadedInstances := load.Instances([]string{loadPattern}, cfg)
+	var loadedInstances []*build.Instance
+	if len(loadPatterns) > 0 {
+		loadedInstances = load.Instances(loadPatterns, cfg)
+	}
+	if options.Recursive || allPackages {
+		// Instances without files of their own (see withoutEmptyInstances)
+		// are not packages anyone wrote.
+		loadedInstances = withoutEmptyInstances(loadedInstances)
+	}
 	if len(loadedInstances) == 0 {
 		// A package-filtered query is also a presence query for callers such as
 		// Cuetty. No files in the exact target directory means the requested
 		// package is absent, not that CUE evaluation itself failed. Returning an
 		// empty result keeps absence distinct from syntax/build errors below.
 		if effectivePackageName != "" {
-			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			result = emptyResultResponse(skippedDirectories)
 			return result
 		}
-		hint := "No CUE files found matching the load pattern"
-		result = createErrorResponse(ErrorCodeLoadInstance, "No CUE instances found", &hint)
+		message := fmt.Sprintf("No CUE instances found in %s", evalDir)
+		for _, skipped := range skippedDirectories {
+			message += fmt.Sprintf("\nnot loaded: %s (%s)", skipped.Path, skipped.Reason)
+		}
+		result = createErrorResponse(ErrorCodeLoadInstance, message, nil)
 		return result
 	}
 
@@ -528,7 +585,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 			if inst.Dir != "" {
 				failedInstance = instanceKey(goModuleRoot, inst, allPackages)
 			}
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", failedInstance, inst.Err))
+			loadErrors = append(loadErrors, instanceFailure(failedInstance, inst.Err, goModuleRoot))
 			continue
 		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
@@ -542,70 +599,43 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	instances := make(map[string]json.RawMessage)
 	projects := []string{} // Use empty slice, not nil, so JSON serializes as [] instead of null
 	allMeta := make(map[string]ValueMeta)
+	present := make(map[string][]string)
 	var buildErrors []string
 
-	// Build CUE values SEQUENTIALLY to avoid race conditions.
-	// CUE's build.Instance objects share internal state (file caches, parsed ASTs),
-	// so concurrent BuildInstance calls on different instances can race.
+	// Build and export CUE values SEQUENTIALLY to avoid race conditions.
+	// CUE's build.Instance objects share internal state (file caches, parsed
+	// ASTs), so concurrent BuildInstance calls on different instances can
+	// race; read-looking APIs such as Fields, Decode, and ReferencePath can
+	// mutate evaluator state. Each instance is built in its own context and
+	// exported right after it is built, then dropped, so the evaluated values
+	// of a large module are not all held in memory at once.
 	type builtInstance struct {
 		relPath   string
 		value     cue.Value
 		isProject bool
 		inst      *build.Instance // Needed for meta extraction
 	}
-	var builtInstances []builtInstance
-
-	ctx := cuecontext.New()
-	for _, inst := range validInstances {
-		relPath := instanceKey(goModuleRoot, inst, allPackages)
-
-		// Build the CUE value (must be sequential)
-		v := ctx.BuildInstance(inst)
-		if v.Err() != nil {
-			// Collect build errors so they can be reported if no instances succeed
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, v.Err()))
-			continue
-		}
-
-		// Caller-named fields must be concrete; see validateConcretePaths.
-		if err := validateConcretePaths(v, concretePaths); err != nil {
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, err))
-			continue
-		}
-
-		// Inject sequence item _name fields so that computed output ref fields
-		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
-		v = injectTaskNames(v)
-
-		// Check if this is a Project (has required "name" field) vs Base (no name)
-		isProject := false
-		nameField := v.LookupPath(cue.ParsePath("name"))
-		if nameField.Exists() && nameField.Err() == nil {
-			isProject = true
-		}
-
-		builtInstances = append(builtInstances, builtInstance{
-			relPath:   relPath,
-			value:     v,
-			isProject: isProject,
-			inst:      inst,
-		})
-	}
 
 	moduleRoot := goModuleRoot
 	withMeta := options.WithMeta
 	withReferences := options.WithReferences
 
-	// Walk built CUE values sequentially. Values from one cue.Context share
-	// evaluator caches; read-looking APIs such as Fields, Decode, and
-	// ReferencePath can mutate that state and must not run concurrently.
-	for _, built := range builtInstances {
-		jsonBytes, err := buildJSONClean(built.value)
-		if err != nil {
-			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", built.relPath, err))
-			continue // Skip failed instances
+	exportInstance := func(built builtInstance) {
+		var jsonBytes []byte
+		var exportErr error
+		if len(exportPaths) > 0 {
+			jsonBytes, exportErr = buildProjectedJSON(built.value, exportPaths)
+		} else {
+			jsonBytes, exportErr = buildJSONClean(built.value)
+		}
+		if exportErr != nil {
+			buildErrors = append(buildErrors, instanceFailure(built.relPath, exportErr, goModuleRoot))
+			return // Skip failed instances
 		}
 		instances[built.relPath] = json.RawMessage(jsonBytes)
+		if len(presencePaths) > 0 {
+			present[built.relPath] = presentPaths(built.value, presencePaths)
+		}
 		if built.isProject {
 			projects = append(projects, built.relPath)
 		}
@@ -651,12 +681,56 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		}
 	}
 
+	for _, inst := range validInstances {
+		relPath := instanceKey(goModuleRoot, inst, allPackages)
+
+		// Build the CUE value (must be sequential). Each instance gets its
+		// own context: a context keeps every instance built with it alive,
+		// so one shared context grows with the whole module (about 200 MB
+		// per instance of 200 schema-checked tasks), while imported
+		// packages are cheap to rebuild. Values of different instances are
+		// never combined.
+		ctx := cuecontext.New()
+		v := ctx.BuildInstance(inst)
+		if v.Err() != nil {
+			// Collect build errors so they can be reported if no instances succeed
+			buildErrors = append(buildErrors, instanceFailure(relPath, allErrors(v), goModuleRoot))
+			continue
+		}
+
+		// Caller-named fields must be concrete; see validateConcretePaths.
+		if err := validateConcretePaths(v, concretePaths, goModuleRoot); err != nil {
+			buildErrors = append(buildErrors, instanceFailure(relPath, err, goModuleRoot))
+			continue
+		}
+
+		// Inject sequence item _name fields so that computed output ref fields
+		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
+		// A projection that exports no tasks does not need them.
+		if exportsTasks(exportPaths) {
+			v = injectTaskNames(v)
+		}
+
+		// Check if this is a Project (has required "name" field) vs Base (no name)
+		isProject := false
+		nameField := v.LookupPath(cue.ParsePath("name"))
+		if nameField.Exists() && nameField.Err() == nil {
+			isProject = true
+		}
+
+		exportInstance(builtInstance{
+			relPath:   relPath,
+			value:     v,
+			isProject: isProject,
+			inst:      inst,
+		})
+	}
+
 	if options.InstanceFailures == InstanceFailuresFail && (len(loadErrors) > 0 || len(buildErrors) > 0) {
 		failures := append(append([]string{}, loadErrors...), buildErrors...)
 		sort.Strings(failures)
 		message := fmt.Sprintf("%d instance(s) could not be evaluated:\n%s", len(failures), strings.Join(failures, "\n"))
-		hint := "instanceFailures is \"fail\", so every loaded instance must evaluate"
-		result = createErrorResponse(ErrorCodeBuildValue, message, &hint)
+		result = createErrorResponse(ErrorCodeBuildValue, message, nil)
 		return result
 	}
 
@@ -665,20 +739,29 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		// directory contains only another package (or no package declaration).
 		// Preserve that as an empty success; load/build errors remain failures.
 		if effectivePackageName != "" && len(loadErrors) == 0 && len(buildErrors) == 0 {
-			result = createSuccessResponse(`{"instances":{},"projects":[]}`)
+			result = emptyResultResponse(skippedDirectories)
 			return result
 		}
-		allErrors := append(loadErrors, buildErrors...)
-		hint := fmt.Sprintf("evalDir=%s, moduleRoot=%s, loadPattern=%s, package=%s, loadedInstances=%d, validInstances=%d, builtInstances=%d, errors=%v, packageMismatches=%v",
-			evalDir, goModuleRoot, loadPattern, effectivePackageName, len(loadedInstances), len(validInstances), len(builtInstances), allErrors, packageMismatches)
-		result = createErrorResponse(ErrorCodeBuildValue, "No instances could be evaluated", &hint)
+		failures := append(append([]string{}, loadErrors...), buildErrors...)
+		sort.Strings(failures)
+		message := "No instances could be evaluated"
+		if len(failures) > 0 {
+			message = fmt.Sprintf("No instances could be evaluated:\n%s", strings.Join(failures, "\n"))
+		} else if len(packageMismatches) > 0 {
+			message = fmt.Sprintf("No instances could be evaluated: %s", strings.Join(packageMismatches, "; "))
+		}
+		result = createErrorResponse(ErrorCodeBuildValue, message, nil)
 		return result
 	}
 
 	// Marshal the result
 	moduleResult := ModuleResult{
-		Instances: instances,
-		Projects:  projects,
+		Instances:          instances,
+		Projects:           projects,
+		SkippedDirectories: skippedDirectories,
+	}
+	if len(presencePaths) > 0 {
+		moduleResult.Present = present
 	}
 	if (options.WithMeta || options.WithReferences) && len(allMeta) > 0 {
 		moduleResult.Meta = allMeta

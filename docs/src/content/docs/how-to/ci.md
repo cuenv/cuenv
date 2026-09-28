@@ -345,8 +345,10 @@ strings or resolved from task captures.
 ### Literal annotations
 
 ```cue
+let _t = tasks // inside the pipeline, `tasks` is the pipeline's own list
+
 ci: pipelines: default: {
-    tasks: [tasks.deploy]
+    tasks: [_t.deploy]
     annotations: {
         "Deployed to": "production"
         "Region":      "us-east-1"
@@ -378,8 +380,10 @@ tasks: {
 Then reference those captures in the pipeline's `annotations` map:
 
 ```cue
+let _t = tasks // inside the pipeline, `tasks` is the pipeline's own list
+
 ci: pipelines: default: {
-    tasks: [tasks.build]
+    tasks: [_t.build]
     annotations: {
         "Build version": schema.#TaskCaptureRef & {
             cuenvTask:    "build"

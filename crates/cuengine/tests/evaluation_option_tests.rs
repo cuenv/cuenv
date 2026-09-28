@@ -3,7 +3,7 @@
 
 use cuengine::{
     CueEngineError, InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope,
-    evaluate_module,
+    SkippedDirectories, SkippedDirectory, SkippedReason, evaluate_module,
 };
 use std::error::Error;
 use std::fs;
@@ -282,5 +282,130 @@ fn named_scope_keeps_directory_keys() -> TestResult {
     };
     let result = evaluate_module(module.path(), PACKAGE, Some(&options))?;
     assert_eq!(result.instances.keys().collect::<Vec<_>>(), vec!["."]);
+    Ok(())
+}
+
+#[test]
+fn export_paths_and_presence_paths_project_every_instance() -> TestResult {
+    let module = create_module(&[
+        (
+            "a/values.cue",
+            "name: \"a\"\ninfrastructure: url: \"libsql://a\"\ntasks: build: command: \"make\"",
+        ),
+        ("b/values.cue", "name: \"b\""),
+    ])?;
+    let options = ModuleEvalOptions {
+        export_paths: vec!["name".to_string()],
+        presence_paths: vec!["infrastructure".to_string()],
+        ..all_packages()
+    };
+    let result = evaluate_module(module.path(), "", Some(&options))?;
+
+    assert_eq!(result.instances["a:app"], serde_json::json!({"name": "a"}));
+    assert_eq!(result.instances["b:app"], serde_json::json!({"name": "b"}));
+    assert_eq!(result.present["a:app"], vec!["infrastructure".to_string()]);
+    assert!(result.present["b:app"].is_empty());
+    Ok(())
+}
+
+#[test]
+fn invalid_export_path_is_a_configuration_error() -> TestResult {
+    let module = create_multiple_package_module(None)?;
+    let options = ModuleEvalOptions {
+        export_paths: vec!["tasks[0]".to_string()],
+        ..all_packages()
+    };
+    let error = expect_error(evaluate_module(module.path(), "", Some(&options)))?;
+    assert!(
+        matches!(error, CueEngineError::Configuration { .. }),
+        "expected a configuration error, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn skipped_directories_are_reported_on_request() -> TestResult {
+    let module = create_module(&[
+        ("values.cue", "name: \"root\""),
+        ("_drafts/values.cue", "name: \"draft\""),
+        ("tools/testdata/values.cue", "name: \"fixture\""),
+    ])?;
+    let report = ModuleEvalOptions {
+        skipped_directories: SkippedDirectories::Report,
+        ..all_packages()
+    };
+    let result = evaluate_module(module.path(), "", Some(&report))?;
+    assert_eq!(result.instances.keys().collect::<Vec<_>>(), vec![".:app"]);
+    assert_eq!(
+        result.skipped_directories,
+        vec![
+            SkippedDirectory {
+                path: "_drafts".to_string(),
+                reason: SkippedReason::Underscore,
+            },
+            SkippedDirectory {
+                path: "tools/testdata".to_string(),
+                reason: SkippedReason::Testdata,
+            },
+        ]
+    );
+
+    let silent = evaluate_module(module.path(), "", Some(&all_packages()))?;
+    assert!(silent.skipped_directories.is_empty());
+    Ok(())
+}
+
+#[test]
+fn module_root_named_like_a_skipped_directory_is_evaluated() -> TestResult {
+    for name in [".hidden-module", "_module"] {
+        let parent = tempfile::Builder::new()
+            .prefix("cuengine-root-name-")
+            .tempdir()?;
+        let root = parent.path().join(name);
+        fs::create_dir_all(root.join("cue.mod"))?;
+        fs::create_dir_all(root.join("child"))?;
+        fs::write(
+            root.join("cue.mod/module.cue"),
+            "module: \"example.com/root-name@v0\"\nlanguage: version: \"v0.14.1\"\n",
+        )?;
+        fs::write(
+            root.join("values.cue"),
+            format!("package {PACKAGE}\n\nkind: \"root\"\n"),
+        )?;
+        fs::write(
+            root.join("child/values.cue"),
+            format!("package {PACKAGE}\n\nchild: true\n"),
+        )?;
+
+        let result = evaluate_module(&root, "", Some(&all_packages()))?;
+        let mut keys: Vec<&str> = result.instances.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![".:app", "child:app"], "root {name}");
+    }
+    Ok(())
+}
+
+#[test]
+fn evaluation_errors_list_every_error_without_option_hints() -> TestResult {
+    let module = create_module(&[(
+        "broken/values.cue",
+        "#Config: close({size: int, name: string})\nconfig: #Config & {sise: 1, nmae: \"x\"}",
+    )])?;
+    let error = expect_error(evaluate_module(module.path(), "", Some(&all_packages())))?;
+    let message = error.to_string();
+    assert!(
+        message.starts_with("CUE evaluation failed at "),
+        "unexpected error: {message}"
+    );
+    for fragment in [
+        "config.sise: field not allowed",
+        "config.nmae: field not allowed",
+        "./broken/values.cue:4:",
+    ] {
+        assert!(message.contains(fragment), "{fragment} missing: {message}");
+    }
+    for leaked in ["Hint", "instanceFailures", "evalDir="] {
+        assert!(!message.contains(leaked), "{leaked} leaked: {message}");
+    }
     Ok(())
 }

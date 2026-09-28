@@ -78,7 +78,7 @@ fn test_error_ffi_with_help() {
 fn test_error_cue_parse() {
     let path = Path::new("/test/path.cue");
     let err = Error::cue_parse(path, "parsing failed");
-    assert_eq!(err.to_string(), "CUE parsing failed: parsing failed");
+    assert_eq!(err.to_string(), "CUE evaluation failed: parsing failed");
 
     if let Error::Eval(EvalError::CueParse {
         path: p, message, ..
@@ -218,7 +218,7 @@ fn test_error_display() {
         ),
         (
             Error::cue_parse(Path::new("/test"), "msg"),
-            "CUE parsing failed: msg",
+            "CUE evaluation failed: msg",
         ),
         (Error::validation("msg"), "Validation failed: msg"),
         (Error::timeout(10), "Operation timed out after 10 seconds"),

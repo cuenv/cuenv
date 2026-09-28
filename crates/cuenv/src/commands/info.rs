@@ -100,6 +100,7 @@ impl DiscoveredModuleResults {
             instances: self.instances,
             projects: self.projects,
             meta: self.meta,
+            ..Default::default()
         }
     }
 }
