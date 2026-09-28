@@ -213,6 +213,8 @@ infrastructure: resources: {
 
 With or without a registry definition, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
 
+The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation with `field not allowed` and its position, instead of being ignored (which would otherwise plan the deletion of everything under the real field). A `dependsOn` entry or provider that is not declared fails with a message naming it, for example `no resource named "pett" in infrastructure.resources`.
+
 ## Plan and apply
 
 `cuenv i plan` refreshes every recorded resource from the real world, then asks each provider to plan:
