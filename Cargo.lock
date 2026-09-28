@@ -1679,6 +1679,7 @@ dependencies = [
  "dirs 6.0.0",
  "hex",
  "hyper-util",
+ "libc",
  "prost",
  "reqwest 0.13.3",
  "rmpv",

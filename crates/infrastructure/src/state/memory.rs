@@ -5,7 +5,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use async_trait::async_trait;
 
-use super::{LockInformation, ManagedResource, ResourceAddress, StateLock, StateStore};
+use super::{
+    ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
+    RecordVersion, ResourceAddress, StateLock, StateStore, TenantOwner,
+};
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
 
@@ -15,6 +18,32 @@ type Rows = HashMap<TenantKey, BTreeMap<ResourceAddress, ManagedResource>>;
 struct Contents {
     rows: Rows,
     locks: HashMap<TenantKey, LockInformation>,
+    owners: HashMap<TenantKey, TenantOwner>,
+}
+
+impl Contents {
+    fn version(&self, tenant: &TenantKey, address: &ResourceAddress) -> RecordVersion {
+        RecordVersion::of(
+            self.rows
+                .get(tenant)
+                .and_then(|resources| resources.get(address)),
+        )
+    }
+
+    /// Write `resource`, advancing its serial as the Turso store does.
+    fn write(&mut self, tenant: &TenantKey, resource: &ManagedResource) {
+        let serial = match self.version(tenant, &resource.address).after_write() {
+            RecordVersion::Serial(serial) => serial,
+            RecordVersion::Absent => 1,
+        };
+        self.rows.entry(tenant.clone()).or_default().insert(
+            resource.address.clone(),
+            ManagedResource {
+                serial,
+                ..resource.clone()
+            },
+        );
+    }
 }
 
 /// A [`StateStore`] held in process memory.
@@ -75,11 +104,27 @@ impl StateStore for MemoryStateStore {
     ) -> Result<()> {
         let mut contents = self.contents()?;
         require_lock(&contents, tenant, lock)?;
-        contents
-            .rows
-            .entry(tenant.clone())
-            .or_default()
-            .insert(resource.address.clone(), resource.clone());
+        contents.write(tenant, resource);
+        Ok(())
+    }
+
+    async fn put_if_unchanged(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        put: &ConditionalPut<'_>,
+    ) -> Result<()> {
+        let mut contents = self.contents()?;
+        require_lock(&contents, tenant, lock)?;
+        let found = contents.version(tenant, &put.resource.address);
+        if found != put.expected {
+            return Err(InfrastructureError::StateChanged {
+                address: put.resource.address.to_string(),
+                expected: put.expected.to_string(),
+                found: found.to_string(),
+            });
+        }
+        contents.write(tenant, put.resource);
         Ok(())
     }
 
@@ -97,9 +142,17 @@ impl StateStore for MemoryStateStore {
         Ok(())
     }
 
-    async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock> {
+    async fn acquire_lock(
+        &self,
+        tenant: &TenantKey,
+        request: &LockRequest<'_>,
+    ) -> Result<StateLock> {
+        request.lock.validate()?;
         let mut contents = self.contents()?;
         if let Some(existing) = contents.locks.get(tenant) {
+            if existing.lock_identifier == request.lock.lock_identifier {
+                return Ok(request.lock.clone());
+            }
             return Err(InfrastructureError::Locked {
                 tenant: tenant.to_string(),
                 lock_identifier: existing.lock_identifier.clone(),
@@ -107,16 +160,15 @@ impl StateStore for MemoryStateStore {
                 acquired_at: existing.acquired_at.clone(),
             });
         }
-        let lock_identifier = uuid::Uuid::new_v4().to_string();
         contents.locks.insert(
             tenant.clone(),
             LockInformation {
-                lock_identifier: lock_identifier.clone(),
-                holder: holder.to_string(),
+                lock_identifier: request.lock.lock_identifier.clone(),
+                holder: request.holder.to_string(),
                 acquired_at: chrono::Utc::now().to_rfc3339(),
             },
         );
-        Ok(StateLock { lock_identifier })
+        Ok(request.lock.clone())
     }
 
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
@@ -140,11 +192,37 @@ impl StateStore for MemoryStateStore {
         }
         Ok(matches)
     }
+
+    async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+        Ok(self.contents()?.owners.get(tenant).cloned())
+    }
+
+    async fn claim_owner(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        claim: &OwnerClaim<'_>,
+    ) -> Result<TenantOwner> {
+        let mut contents = self.contents()?;
+        require_lock(&contents, tenant, lock)?;
+        if claim.mode == OwnerClaimMode::IfUnowned
+            && let Some(existing) = contents.owners.get(tenant)
+        {
+            return Ok(existing.clone());
+        }
+        let owner = TenantOwner {
+            instance: claim.instance.clone(),
+            claimed_at: chrono::Utc::now().to_rfc3339(),
+        };
+        contents.owners.insert(tenant.clone(), owner.clone());
+        Ok(owner)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tenant::ProjectInstance;
 
     fn resource(name: &str) -> ManagedResource {
         ManagedResource {
@@ -157,6 +235,7 @@ mod tests {
             dependencies: Vec::new(),
             tainted: false,
             identity: None,
+            serial: 0,
         }
     }
 
@@ -210,5 +289,139 @@ mod tests {
         store.unlock(&tenant, &lock).await.unwrap();
         assert!(store.current_lock(&tenant).await.unwrap().is_none());
         store.lock(&tenant, "third").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn caller_chosen_lock_identifiers_are_used_and_checked() {
+        let store = MemoryStateStore::new();
+        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let chosen = StateLock::generate();
+        let acquired = store
+            .acquire_lock(
+                &tenant,
+                &LockRequest {
+                    lock: &chosen,
+                    holder: "test",
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(acquired, chosen);
+        assert_eq!(
+            store
+                .current_lock(&tenant)
+                .await
+                .unwrap()
+                .unwrap()
+                .lock_identifier,
+            chosen.lock_identifier
+        );
+        let invalid = StateLock {
+            lock_identifier: "no spaces".into(),
+        };
+        assert!(
+            store
+                .acquire_lock(
+                    &TenantKey::new("example.com/b", "web").unwrap(),
+                    &LockRequest {
+                        lock: &invalid,
+                        holder: "test",
+                    },
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn serials_advance_and_conditional_writes_compare_them() {
+        let store = MemoryStateStore::new();
+        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let lock = store.lock(&tenant, "test").await.unwrap();
+        let record = resource("one");
+        store
+            .put_if_unchanged(
+                &tenant,
+                &lock,
+                &ConditionalPut {
+                    resource: &record,
+                    expected: RecordVersion::Absent,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.list(&tenant).await.unwrap()[0].serial, 1);
+        store.put(&tenant, &lock, &record).await.unwrap();
+        assert_eq!(store.list(&tenant).await.unwrap()[0].serial, 2);
+
+        let stale = store
+            .put_if_unchanged(
+                &tenant,
+                &lock,
+                &ConditionalPut {
+                    resource: &record,
+                    expected: RecordVersion::Serial(1),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&stale, InfrastructureError::StateChanged { address, .. } if address == "random_pet.one"),
+            "{stale}"
+        );
+        assert!(stale.to_string().contains("serial 2"), "{stale}");
+        store
+            .put_if_unchanged(
+                &tenant,
+                &lock,
+                &ConditionalPut {
+                    resource: &record,
+                    expected: RecordVersion::Serial(2),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.list(&tenant).await.unwrap()[0].serial, 3);
+    }
+
+    #[tokio::test]
+    async fn owners_are_claimed_once_and_transferred_explicitly_under_the_lock() {
+        let store = MemoryStateStore::new();
+        let tenant = TenantKey::new("example.com/a", "web").unwrap();
+        let root = ProjectInstance::new(".", "web").unwrap();
+        let copy = ProjectInstance::new("_copy", "web").unwrap();
+        assert!(store.owner(&tenant).await.unwrap().is_none());
+        let not_held = StateLock::generate();
+        assert!(matches!(
+            store
+                .claim_owner(
+                    &tenant,
+                    &not_held,
+                    &OwnerClaim {
+                        instance: &root,
+                        mode: OwnerClaimMode::IfUnowned,
+                    },
+                )
+                .await,
+            Err(InfrastructureError::LockLost { .. })
+        ));
+        let lock = store.lock(&tenant, "test").await.unwrap();
+        let claim = |instance, mode| OwnerClaim { instance, mode };
+        let owner = store
+            .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::IfUnowned))
+            .await
+            .unwrap();
+        assert_eq!(owner.instance, root);
+        let kept = store
+            .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::IfUnowned))
+            .await
+            .unwrap();
+        assert_eq!(kept.instance, root);
+        let transferred = store
+            .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::Transfer))
+            .await
+            .unwrap();
+        assert_eq!(transferred.instance, copy);
+        assert_eq!(store.owner(&tenant).await.unwrap().unwrap().instance, copy);
     }
 }

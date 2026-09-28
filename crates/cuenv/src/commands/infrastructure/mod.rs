@@ -171,7 +171,14 @@ fn failure(error: &InfrastructureError) -> CliError {
         | InfrastructureError::RemoteProcedure { .. }
         | InfrastructureError::Diagnostics { .. }
         | InfrastructureError::Install(_)
-        | InfrastructureError::InputOutput { .. } => (InfrastructureFailureKind::Failed, None),
+        | InfrastructureError::InputOutput { .. }
+        | InfrastructureError::UnrecordedFile { .. }
+        | InfrastructureError::StateChanged { .. }
+        | InfrastructureError::PlanOutdated { .. }
+        | InfrastructureError::OwnedByAnotherInstance { .. }
+        | InfrastructureError::StateFromNewerProvider { .. } => {
+            (InfrastructureFailureKind::Failed, None)
+        }
     };
     CliError::infrastructure(error.to_string(), help, kind)
 }
@@ -473,7 +480,14 @@ async fn recover(
     let unrecorded = engine.unrecorded_store().map_err(|error| failure(&error))?;
     under_lock(context, "state recover", |lock| async move {
         let recovered = unrecorded
-            .recover(context.store.as_ref(), context.tenant, &lock)
+            .recover(
+                context.store.as_ref(),
+                context.tenant,
+                &cuenv_infrastructure::RecoverOptions {
+                    lock: &lock,
+                    overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged,
+                },
+            )
             .await
             .map_err(|error| failure(&error))?;
         context.output.recovered(context.tenant, &recovered);

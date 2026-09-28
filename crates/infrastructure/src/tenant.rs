@@ -63,6 +63,81 @@ impl fmt::Display for TenantKey {
     }
 }
 
+/// The CUE instance a project was evaluated from, as
+/// `<directory relative to the module root>:<package>`.
+///
+/// A tenant's state records which instance owns it (see
+/// [`crate::state::TenantOwner`]), so a second instance declaring the same
+/// project name (in a directory the module loader skips, a nested module
+/// with the same module path, or another package) cannot act on it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ProjectInstance(String);
+
+impl ProjectInstance {
+    /// Build the identity of the instance in `directory` (relative to the
+    /// module root, `/`-separated; empty or `.` for the root) with CUE
+    /// package `package`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] when the package is
+    /// empty or contains `:`, or either part contains control characters,
+    /// or the directory is absolute or climbs out of the module.
+    pub fn new(directory: &str, package: &str) -> Result<Self> {
+        let normalized = directory.replace('\\', "/");
+        let trimmed = normalized
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .to_string();
+        let directory = if trimmed.is_empty() {
+            ".".to_string()
+        } else {
+            trimmed
+        };
+        if package.is_empty() || package.contains(':') {
+            return Err(InfrastructureError::configuration(format!(
+                "invalid CUE package name '{}' for an instance identity",
+                crate::error::strip_control_characters(package)
+            )));
+        }
+        if directory.starts_with('/') || directory.split('/').any(|part| part == "..") {
+            return Err(InfrastructureError::configuration(format!(
+                "instance directory '{}' must be relative to the module root",
+                crate::error::strip_control_characters(&directory)
+            )));
+        }
+        if directory
+            .chars()
+            .chain(package.chars())
+            .any(char::is_control)
+        {
+            return Err(InfrastructureError::configuration(
+                "instance directory and package must not contain control characters",
+            ));
+        }
+        Ok(Self(format!("{directory}:{package}")))
+    }
+
+    /// An identity read back from the state store. Control characters are
+    /// removed, since the text is displayed.
+    #[must_use]
+    pub fn from_stored(text: &str) -> Self {
+        Self(crate::error::strip_control_characters(text))
+    }
+
+    /// The identity as stored: `<directory>:<package>`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for ProjectInstance {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
 fn strip_major_version(path: &str) -> &str {
     path.rsplit_once('@').map_or(path, |(base, _)| base)
 }
@@ -127,6 +202,33 @@ mod tests {
     fn tenant_requires_both_components() {
         assert!(TenantKey::new("", "web").is_err());
         assert!(TenantKey::new("github.com/acme/infrastructure", " ").is_err());
+    }
+
+    #[test]
+    fn project_instances_join_directory_and_package() {
+        assert_eq!(
+            ProjectInstance::new("", "infrastructure").unwrap().as_str(),
+            ".:infrastructure"
+        );
+        assert_eq!(
+            ProjectInstance::new("./services/web/", "web")
+                .unwrap()
+                .as_str(),
+            "services/web:web"
+        );
+        assert_eq!(
+            ProjectInstance::new("_hidden", "web").unwrap().to_string(),
+            "_hidden:web"
+        );
+        assert!(ProjectInstance::new(".", "").is_err());
+        assert!(ProjectInstance::new(".", "a:b").is_err());
+        assert!(ProjectInstance::new("/absolute", "web").is_err());
+        assert!(ProjectInstance::new("../outside", "web").is_err());
+        assert!(ProjectInstance::new("a\u{1b}b", "web").is_err());
+        assert_eq!(
+            ProjectInstance::from_stored("a\u{1b}[2J:web").as_str(),
+            "a[2J:web"
+        );
     }
 
     #[test]

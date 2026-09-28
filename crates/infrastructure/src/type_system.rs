@@ -156,6 +156,12 @@ impl Type {
 /// A cty value. Collections are untyped here; the [`Type`] they are
 /// encoded against supplies the distinction between list, set and tuple,
 /// and between map and object.
+///
+/// The one exception is a value held in a `dynamic` slot: a provider sends
+/// it with its concrete type, and that type must travel back unchanged (a
+/// `list(string)` must not come back as a `tuple`). Such values are
+/// [`Value::Typed`]. Values from CUE configuration carry no type; theirs is
+/// inferred when they are encoded.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     /// A null value of any type.
@@ -172,13 +178,45 @@ pub enum Value {
     List(Vec<Self>),
     /// A map or object.
     Object(BTreeMap<String, Self>),
+    /// A value of a `dynamic` slot with the concrete type it arrived with.
+    Typed(Box<TypedValue>),
+}
+
+/// A value together with its concrete cty type; see [`Value::Typed`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedValue {
+    /// The concrete type.
+    pub value_type: Type,
+    /// The value, conforming to `value_type`.
+    pub value: Value,
 }
 
 impl Value {
+    /// A value of a `dynamic` slot with its concrete type.
+    #[must_use]
+    pub fn typed(value_type: Type, value: Self) -> Self {
+        Self::Typed(Box::new(TypedValue { value_type, value }))
+    }
+
+    /// This value without its [`Value::Typed`] wrapper, if any.
+    #[must_use]
+    pub fn untyped(&self) -> &Self {
+        match self {
+            Self::Typed(typed) => typed.value.untyped(),
+            other => other,
+        }
+    }
+
     /// Whether this value is null.
     #[must_use]
-    pub const fn is_null(&self) -> bool {
-        matches!(self, Self::Null)
+    pub fn is_null(&self) -> bool {
+        matches!(self.untyped(), Self::Null)
+    }
+
+    /// Whether this value (not something inside it) is unknown.
+    #[must_use]
+    pub fn is_unknown(&self) -> bool {
+        matches!(self.untyped(), Self::Unknown)
     }
 
     /// Whether this value, or anything nested inside it, is unknown.
@@ -188,6 +226,7 @@ impl Value {
             Self::Unknown => true,
             Self::List(items) => items.iter().any(Self::contains_unknown),
             Self::Object(attributes) => attributes.values().any(Self::contains_unknown),
+            Self::Typed(typed) => typed.value.contains_unknown(),
             _ => false,
         }
     }
@@ -207,28 +246,31 @@ impl Value {
                     .map(|(name, value)| (name.clone(), value.unknown_as_null()))
                     .collect(),
             ),
+            Self::Typed(typed) => {
+                Self::typed(typed.value_type.clone(), typed.value.unknown_as_null())
+            }
             other => other.clone(),
         }
     }
 
     /// Name this value's kind without revealing its content.
     #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        match self {
+    pub fn kind(&self) -> &'static str {
+        match self.untyped() {
             Self::Null => "null",
             Self::Unknown => "unknown",
             Self::Boolean(_) => "boolean",
             Self::Number(_) => "number",
             Self::String(_) => "string",
             Self::List(_) => "list",
-            Self::Object(_) => "object",
+            Self::Object(_) | Self::Typed(_) => "object",
         }
     }
 
     /// Look up an attribute of an object value.
     #[must_use]
     pub fn attribute(&self, name: &str) -> Option<&Self> {
-        match self {
+        match self.untyped() {
             Self::Object(attributes) => attributes.get(name),
             _ => None,
         }
@@ -274,13 +316,14 @@ impl Value {
                     .map(|(key, value)| (key.clone(), value.to_display_json()))
                     .collect(),
             ),
+            Self::Typed(typed) => typed.value.to_display_json(),
         }
     }
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
+        match self.untyped() {
             Self::Unknown => formatter.write_str("(known after apply)"),
             Self::Null => formatter.write_str("null"),
             other => write!(formatter, "{}", other.to_display_json()),
@@ -296,7 +339,10 @@ impl fmt::Display for Value {
 /// would report perpetual differences.
 #[must_use]
 pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> bool {
-    values_equal(left, right, value_type, UnknownComparison::NeverEqual)
+    Equality {
+        unknowns: UnknownComparison::NeverEqual,
+    }
+    .equal(left, right, value_type)
 }
 
 /// Compare two values of type `value_type` the way cty's `RawEquals` does:
@@ -304,10 +350,29 @@ pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> boo
 /// unknown value in the same position.
 #[must_use]
 pub fn raw_equal(left: &Value, right: &Value, value_type: &Type) -> bool {
-    values_equal(left, right, value_type, UnknownComparison::EqualToUnknown)
+    Equality {
+        unknowns: UnknownComparison::EqualToUnknown,
+    }
+    .equal(left, right, value_type)
 }
 
-/// How [`values_equal`] treats unknown values.
+/// `values` without the elements equal (by [`raw_equal`]) to an earlier
+/// one, as a cty set of `element_type` holds them.
+#[must_use]
+pub fn deduplicate(values: Vec<Value>, element_type: &Type) -> Vec<Value> {
+    let mut unique: Vec<Value> = Vec::with_capacity(values.len());
+    for value in values {
+        if !unique
+            .iter()
+            .any(|kept| raw_equal(kept, &value, element_type))
+        {
+            unique.push(value);
+        }
+    }
+    unique
+}
+
+/// How [`Equality`] treats unknown values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnknownComparison {
     /// Unknown values are never equal to anything (cty `Equals`).
@@ -316,81 +381,152 @@ enum UnknownComparison {
     EqualToUnknown,
 }
 
-fn values_equal(
-    left: &Value,
-    right: &Value,
-    value_type: &Type,
+/// The concrete type and value of a value in a `dynamic` slot: its own type
+/// when it carries one, otherwise the type inferred from its shape.
+fn concrete(value: &Value) -> (Type, &Value) {
+    match value {
+        Value::Typed(typed) => (typed.value_type.clone(), &typed.value),
+        other => (infer_type(other), other),
+    }
+}
+
+/// Whether two types describe the same values, treating `dynamic` (a type
+/// not yet known) as matching anything.
+fn types_match(left: &Type, right: &Type) -> bool {
+    match (left, right) {
+        (Type::Dynamic, _) | (_, Type::Dynamic) => true,
+        (Type::List(left), Type::List(right))
+        | (Type::Set(left), Type::Set(right))
+        | (Type::Map(left), Type::Map(right)) => types_match(left, right),
+        (Type::Object(left), Type::Object(right)) => {
+            left.len() == right.len()
+                && left.iter().all(|(name, left_type)| {
+                    right
+                        .get(name)
+                        .is_some_and(|right_type| types_match(left_type, right_type))
+                })
+        }
+        (Type::Tuple(left), Type::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left_type, right_type)| types_match(left_type, right_type))
+        }
+        (left, right) => left == right,
+    }
+}
+
+/// A cty equality: `Equals` or `RawEquals`, by how unknowns compare.
+#[derive(Debug, Clone, Copy)]
+struct Equality {
     unknowns: UnknownComparison,
-) -> bool {
-    let equal = |left: &Value, right: &Value, value_type: &Type| {
-        values_equal(left, right, value_type, unknowns)
-    };
-    match (left, right, value_type) {
-        (Value::Unknown, Value::Unknown, _) => unknowns == UnknownComparison::EqualToUnknown,
-        (Value::Unknown, _, _) | (_, Value::Unknown, _) => false,
-        (Value::List(left_elements), Value::List(right_elements), Type::Set(element_type)) => {
-            left_elements.len() == right_elements.len()
-                && left_elements.iter().all(|element| {
-                    let want = left_elements
+}
+
+impl Equality {
+    fn equal(self, left: &Value, right: &Value, value_type: &Type) -> bool {
+        if *value_type == Type::Dynamic {
+            let (left_type, left_value) = concrete(left);
+            let (right_type, right_value) = concrete(right);
+            // A null's type does not make it differ from another null.
+            if left_value.is_null() || right_value.is_null() {
+                return left_value.is_null() && right_value.is_null();
+            }
+            if !types_match(&left_type, &right_type) {
+                return false;
+            }
+            let comparison_type = if left_type == Type::Dynamic {
+                right_type
+            } else {
+                left_type
+            };
+            if comparison_type == Type::Dynamic {
+                // Only unknowns have no concrete type.
+                return self.equal_untyped(
+                    left_value.untyped(),
+                    right_value.untyped(),
+                    &Type::Dynamic,
+                );
+            }
+            return self.equal(left_value, right_value, &comparison_type);
+        }
+        self.equal_untyped(left.untyped(), right.untyped(), value_type)
+    }
+
+    fn equal_untyped(self, left: &Value, right: &Value, value_type: &Type) -> bool {
+        let unknowns = self.unknowns;
+        let equal =
+            |left: &Value, right: &Value, value_type: &Type| self.equal(left, right, value_type);
+        match (left, right, value_type) {
+            (Value::Unknown, Value::Unknown, _) => unknowns == UnknownComparison::EqualToUnknown,
+            (Value::Unknown, _, _) | (_, Value::Unknown, _) => false,
+            (Value::List(left_elements), Value::List(right_elements), Type::Set(element_type)) => {
+                left_elements.len() == right_elements.len()
+                    && left_elements.iter().all(|element| {
+                        let want = left_elements
+                            .iter()
+                            .filter(|candidate| equal(candidate, element, element_type))
+                            .count();
+                        let have = right_elements
+                            .iter()
+                            .filter(|candidate| equal(candidate, element, element_type))
+                            .count();
+                        want == have
+                    })
+            }
+            (Value::List(left_elements), Value::List(right_elements), Type::List(element_type)) => {
+                left_elements.len() == right_elements.len()
+                    && left_elements.iter().zip(right_elements).all(
+                        |(left_element, right_element)| {
+                            equal(left_element, right_element, element_type)
+                        },
+                    )
+            }
+            (
+                Value::List(left_elements),
+                Value::List(right_elements),
+                Type::Tuple(element_types),
+            ) => {
+                left_elements.len() == right_elements.len()
+                    && left_elements
                         .iter()
-                        .filter(|candidate| equal(candidate, element, element_type))
-                        .count();
-                    let have = right_elements
-                        .iter()
-                        .filter(|candidate| equal(candidate, element, element_type))
-                        .count();
-                    want == have
-                })
-        }
-        (Value::List(left_elements), Value::List(right_elements), Type::List(element_type)) => {
-            left_elements.len() == right_elements.len()
-                && left_elements
-                    .iter()
-                    .zip(right_elements)
-                    .all(|(left_element, right_element)| {
-                        equal(left_element, right_element, element_type)
+                        .zip(right_elements)
+                        .zip(element_types)
+                        .all(|((left_element, right_element), element_type)| {
+                            equal(left_element, right_element, element_type)
+                        })
+            }
+            (
+                Value::Object(left_entries),
+                Value::Object(right_entries),
+                Type::Map(element_type),
+            ) => {
+                left_entries.len() == right_entries.len()
+                    && left_entries.iter().all(|(key, left_element)| {
+                        right_entries.get(key).is_some_and(|right_element| {
+                            equal(left_element, right_element, element_type)
+                        })
                     })
-        }
-        (Value::List(left_elements), Value::List(right_elements), Type::Tuple(element_types)) => {
-            left_elements.len() == right_elements.len()
-                && left_elements
-                    .iter()
-                    .zip(right_elements)
-                    .zip(element_types)
-                    .all(|((left_element, right_element), element_type)| {
-                        equal(left_element, right_element, element_type)
-                    })
-        }
-        (Value::Object(left_entries), Value::Object(right_entries), Type::Map(element_type)) => {
-            left_entries.len() == right_entries.len()
-                && left_entries.iter().all(|(key, left_element)| {
-                    right_entries.get(key).is_some_and(|right_element| {
-                        equal(left_element, right_element, element_type)
-                    })
-                })
-        }
-        (
-            Value::Object(left_entries),
-            Value::Object(right_entries),
-            Type::Object(attribute_types),
-        ) => attribute_types.iter().all(|(name, attribute_type)| {
-            equal(
-                left_entries.get(name).unwrap_or(&Value::Null),
-                right_entries.get(name).unwrap_or(&Value::Null),
-                attribute_type,
-            )
-        }),
-        (Value::Number(left_number), Value::Number(right_number), _) => {
-            left_number == right_number
-                || left_number.as_f64().zip(right_number.as_f64()).is_some_and(
-                    |(left_float, right_float)| left_float.total_cmp(&right_float).is_eq(),
+            }
+            (
+                Value::Object(left_entries),
+                Value::Object(right_entries),
+                Type::Object(attribute_types),
+            ) => attribute_types.iter().all(|(name, attribute_type)| {
+                equal(
+                    left_entries.get(name).unwrap_or(&Value::Null),
+                    right_entries.get(name).unwrap_or(&Value::Null),
+                    attribute_type,
                 )
+            }),
+            (Value::Number(left_number), Value::Number(right_number), _) => {
+                left_number == right_number
+                    || left_number.as_f64().zip(right_number.as_f64()).is_some_and(
+                        |(left_float, right_float)| left_float.total_cmp(&right_float).is_eq(),
+                    )
+            }
+            (left, right, _) => left == right,
         }
-        (left, right, Type::Dynamic) => {
-            let value_type = infer_type(left);
-            value_type == infer_type(right) && equal(left, right, &value_type)
-        }
-        (left, right, _) => left == right,
     }
 }
 
@@ -447,6 +583,11 @@ fn from_configuration_json(
                 path.push(index.to_string());
                 converted.push(from_configuration_json(item, element_type, path)?);
                 path.pop();
+            }
+            // A set holds each distinct value once, as Terraform's
+            // configuration decoding does.
+            if matches!(value_type, Type::Set(_)) {
+                converted = deduplicate(converted, element_type);
             }
             Ok(Value::List(converted))
         }
@@ -522,9 +663,11 @@ fn infer_from_json(json: &serde_json::Value) -> Value {
     }
 }
 
-/// Infer the concrete type of a value held in a `dynamic` slot.
+/// Infer the concrete type of a value held in a `dynamic` slot, from its
+/// own type when it carries one. Only values from configuration have none.
 fn infer_type(value: &Value) -> Type {
     match value {
+        Value::Typed(typed) => typed.value_type.clone(),
         Value::Null | Value::Unknown => Type::Dynamic,
         Value::Boolean(_) => Type::Boolean,
         Value::Number(_) => Type::Number,
@@ -542,6 +685,11 @@ fn infer_type(value: &Value) -> Type {
 fn to_state_json(value: &Value, value_type: &Type) -> Result<serde_json::Value> {
     use serde_json::Value as Json;
     match (value, value_type) {
+        (Value::Typed(typed), Type::Dynamic) => Ok(serde_json::json!({
+            "value": to_state_json(&typed.value, &typed.value_type)?,
+            "type": typed.value_type.to_json(),
+        })),
+        (Value::Typed(typed), _) => to_state_json(&typed.value, value_type),
         (Value::Null, _) => Ok(Json::Null),
         (Value::Unknown, _) => Err(InfrastructureError::codec(
             "cannot persist a value that is unknown after apply",
@@ -630,19 +778,26 @@ pub fn from_message_pack(bytes: &[u8], value_type: &Type) -> Result<Value> {
 
 fn encode(value: &Value, value_type: &Type) -> Result<rmpv::Value> {
     use rmpv::Value as MessagePack;
+    let dynamic = |concrete: &Type, inner: &Value| -> Result<rmpv::Value> {
+        let type_json = serde_json::to_vec(&concrete.to_json()).map_err(|error| {
+            InfrastructureError::codec(format!(
+                "encode dynamic type ({})",
+                crate::error::json_error_category(&error)
+            ))
+        })?;
+        Ok(MessagePack::Array(vec![
+            MessagePack::Binary(type_json),
+            encode(inner, concrete)?,
+        ]))
+    };
     match (value, value_type) {
+        // The type the value arrived with goes back with it, even for a
+        // null or unknown value, as cty encodes them.
+        (Value::Typed(typed), Type::Dynamic) => dynamic(&typed.value_type, &typed.value),
+        (Value::Typed(typed), _) => encode(&typed.value, value_type),
         (Value::Null, _) => Ok(MessagePack::Nil),
         (Value::Unknown, _) => Ok(MessagePack::Ext(UNKNOWN_EXTENSION, Vec::new())),
-        (dynamic_value, Type::Dynamic) => {
-            let concrete = infer_type(dynamic_value);
-            let type_json = serde_json::to_vec(&concrete.to_json()).map_err(|error| {
-                InfrastructureError::codec(format!("encode dynamic type: {error}"))
-            })?;
-            Ok(MessagePack::Array(vec![
-                MessagePack::Binary(type_json),
-                encode(dynamic_value, &concrete)?,
-            ]))
-        }
+        (dynamic_value, Type::Dynamic) => dynamic(&infer_type(dynamic_value), dynamic_value),
         (Value::Boolean(boolean), Type::Boolean) => Ok(MessagePack::Boolean(*boolean)),
         (Value::Number(number), Type::Number) => Ok(encode_number(number)),
         (Value::String(text), Type::String) => Ok(MessagePack::String(text.clone().into())),
@@ -733,7 +888,8 @@ fn decode(raw: &rmpv::Value, value_type: &Type) -> Result<Value> {
                 }
             };
             let concrete = Type::from_json_bytes(type_bytes)?;
-            decode(&parts[1], &concrete)
+            let inner = decode(&parts[1], &concrete)?;
+            Ok(Value::typed(concrete, inner))
         }
         (MessagePack::Boolean(boolean), Type::Boolean) => Ok(Value::Boolean(*boolean)),
         (MessagePack::Integer(integer), Type::Number) => integer
@@ -847,6 +1003,7 @@ pub fn value_at_path<'value>(value: &'value Value, path: &[PathStep]) -> Option<
         return Some(value);
     };
     match (value, first) {
+        (Value::Typed(typed), _) => value_at_path(&typed.value, path),
         (Value::Unknown, _) => Some(value),
         (Value::Object(attributes), PathStep::Attribute(name) | PathStep::Key(name)) => attributes
             .get(name)
@@ -900,7 +1057,9 @@ fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value>
                     "a dynamic value in JSON is missing its value and type wrapper",
                 ));
             };
-            from_state_json(inner, &Type::from_json(inner_type)?)
+            let concrete = Type::from_json(inner_type)?;
+            let value = from_state_json(inner, &concrete)?;
+            Ok(Value::typed(concrete, value))
         }
         (Type::Dynamic, _) => Err(InfrastructureError::codec(
             "a dynamic value in JSON is missing its value and type wrapper",
@@ -1056,9 +1215,13 @@ mod tests {
         )
         .unwrap();
         let bytes = to_message_pack(&value, &value_type).unwrap();
-        assert_eq!(from_message_pack(&bytes, &value_type).unwrap(), value);
+        let decoded = from_message_pack(&bytes, &value_type).unwrap();
+        // Configuration values carry no type; decoded dynamic values do.
+        assert!(raw_equal(&decoded, &value, &value_type));
+        assert!(matches!(decoded.attribute("extra"), Some(Value::Typed(_))));
+        assert_eq!(to_message_pack(&decoded, &value_type).unwrap(), bytes);
 
-        let mut with_unknown = value;
+        let mut with_unknown = decoded;
         if let Value::Object(attributes) = &mut with_unknown {
             attributes.insert("id".into(), Value::Unknown);
         }
@@ -1066,6 +1229,136 @@ mod tests {
         let decoded = from_message_pack(&bytes, &value_type).unwrap();
         assert!(decoded.contains_unknown());
         assert_eq!(decoded, with_unknown);
+    }
+
+    /// cty MessagePack of `value` in a `dynamic` slot holding `concrete`.
+    fn dynamic_message_pack(concrete: &serde_json::Value, value: rmpv::Value) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(
+            &mut bytes,
+            &rmpv::Value::Array(vec![
+                rmpv::Value::Binary(serde_json::to_vec(concrete).unwrap()),
+                value,
+            ]),
+        )
+        .unwrap();
+        bytes
+    }
+
+    #[test]
+    fn dynamic_values_keep_their_concrete_type_through_every_encoding() {
+        let strings = || {
+            rmpv::Value::Array(vec![
+                rmpv::Value::String("a".into()),
+                rmpv::Value::String("b".into()),
+            ])
+        };
+        let cases = [
+            (json!(["list", "string"]), strings()),
+            (json!(["set", "string"]), strings()),
+            (
+                json!(["map", "string"]),
+                rmpv::Value::Map(vec![(
+                    rmpv::Value::String("k".into()),
+                    rmpv::Value::String("v".into()),
+                )]),
+            ),
+            (json!("string"), rmpv::Value::Nil),
+            (
+                json!("number"),
+                rmpv::Value::Ext(UNKNOWN_EXTENSION, Vec::new()),
+            ),
+        ];
+        for (concrete, value) in cases {
+            let bytes = dynamic_message_pack(&concrete, value);
+            let decoded = from_message_pack(&bytes, &Type::Dynamic).unwrap();
+            let Value::Typed(typed) = &decoded else {
+                panic!("{concrete}: not typed: {decoded:?}");
+            };
+            assert_eq!(typed.value_type.to_json(), concrete);
+            // MessagePack goes back byte for byte: a list stays a list.
+            assert_eq!(
+                to_message_pack(&decoded, &Type::Dynamic).unwrap(),
+                bytes,
+                "{concrete}"
+            );
+            if decoded.contains_unknown() {
+                continue;
+            }
+            // State JSON records the same type, and reads back the same.
+            let state = decoded.to_state_json(&Type::Dynamic).unwrap();
+            assert_eq!(state["type"], concrete);
+            let reread =
+                from_json_bytes(&serde_json::to_vec(&state).unwrap(), &Type::Dynamic).unwrap();
+            assert_eq!(reread, decoded, "{concrete}");
+            assert_eq!(
+                to_message_pack(&reread, &Type::Dynamic).unwrap(),
+                bytes,
+                "{concrete}"
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_values_compare_by_type_and_value() {
+        let list = Value::typed(
+            Type::List(Box::new(Type::String)),
+            Value::List(vec![Value::String("a".into())]),
+        );
+        let tuple = Value::typed(
+            Type::Tuple(vec![Type::String]),
+            Value::List(vec![Value::String("a".into())]),
+        );
+        assert!(raw_equal(&list, &list.clone(), &Type::Dynamic));
+        assert!(!raw_equal(&list, &tuple, &Type::Dynamic));
+        // Configuration infers a tuple for a JSON list.
+        let configured = Value::from_configuration_json(&json!(["a"]), &Type::Dynamic).unwrap();
+        assert!(raw_equal(&tuple, &configured, &Type::Dynamic));
+        assert!(!raw_equal(&list, &configured, &Type::Dynamic));
+        // Nulls are equal whatever type they carry.
+        assert!(raw_equal(
+            &Value::typed(Type::String, Value::Null),
+            &Value::Null,
+            &Type::Dynamic
+        ));
+        let unknown = Value::typed(Type::String, Value::Unknown);
+        assert!(raw_equal(&unknown, &unknown.clone(), &Type::Dynamic));
+        assert!(!semantically_equal(
+            &unknown,
+            &unknown.clone(),
+            &Type::Dynamic
+        ));
+        assert!(unknown.is_unknown());
+        assert!(unknown.contains_unknown());
+        assert_eq!(
+            unknown.unknown_as_null(),
+            Value::typed(Type::String, Value::Null)
+        );
+    }
+
+    #[test]
+    fn set_configuration_holds_each_value_once() {
+        let value_type = Type::from_json(&json!(["object", {
+            "tags": ["set", "string"],
+            "order": ["list", "string"],
+        }]))
+        .unwrap();
+        let value = Value::from_configuration_json(
+            &json!({"tags": ["a", "b", "a"], "order": ["a", "b", "a"]}),
+            &value_type,
+        )
+        .unwrap();
+        assert_eq!(
+            value.attribute("tags"),
+            Some(&Value::List(vec![
+                Value::String("a".into()),
+                Value::String("b".into())
+            ]))
+        );
+        let Some(Value::List(order)) = value.attribute("order") else {
+            panic!("order is not a list");
+        };
+        assert_eq!(order.len(), 3);
     }
 
     #[test]
@@ -1102,17 +1395,28 @@ mod tests {
             &value_type,
         )
         .unwrap();
-        let different_multiset = Value::from_configuration_json(
-            &json!({"tags": ["blue", "blue", "green"], "order": ["first", "second"], "count": 1}),
-            &value_type,
-        )
-        .unwrap();
         assert!(semantically_equal(&original, &reordered_set, &value_type));
         assert!(!semantically_equal(&original, &reordered_list, &value_type));
+        // Configuration never holds duplicates in a set, but a provider's
+        // value might: element counts must match.
+        let strings = |items: &[&str]| {
+            Value::List(
+                items
+                    .iter()
+                    .map(|item| Value::String((*item).into()))
+                    .collect(),
+            )
+        };
+        let set_type = Type::Set(Box::new(Type::String));
         assert!(!semantically_equal(
-            &original,
-            &different_multiset,
-            &value_type
+            &strings(&["blue", "green", "green"]),
+            &strings(&["blue", "blue", "green"]),
+            &set_type
+        ));
+        assert!(semantically_equal(
+            &strings(&["blue", "green", "green"]),
+            &strings(&["green", "blue", "green"]),
+            &set_type
         ));
         assert!(!semantically_equal(
             &Value::Unknown,
@@ -1191,7 +1495,8 @@ mod tests {
         assert_eq!(
             decoded
                 .attribute("settings")
-                .and_then(|settings| settings.attribute("extra")),
+                .and_then(|settings| settings.attribute("extra"))
+                .map(Value::untyped),
             Some(&Value::Object(BTreeMap::from([(
                 "a".to_string(),
                 Value::List(vec![Value::Number(1.into()), Value::Boolean(true)])
@@ -1199,7 +1504,10 @@ mod tests {
         );
         assert_eq!(
             decoded.attribute("items"),
-            Some(&Value::List(vec![Value::String("x".into())]))
+            Some(&Value::List(vec![Value::typed(
+                Type::String,
+                Value::String("x".into())
+            )]))
         );
         // Round trip through state JSON, which wraps them again.
         let state = decoded.to_state_json(&value_type).unwrap();

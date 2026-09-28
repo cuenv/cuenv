@@ -11,6 +11,8 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 description = "Infrastructure as code for cuenv: drives Terraform provider plugins over gRPC with multi-tenant Turso state"
+# The Go fake provider only serves the ignored end-to-end tests.
+exclude = ["tests/fake_provider"]
 
 [dependencies]
 cuenv-manifest = { workspace = true }
@@ -36,6 +38,9 @@ tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 zip = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

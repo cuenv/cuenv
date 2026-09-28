@@ -262,6 +262,7 @@ fn managed(address: &str) -> ManagedResource {
         dependencies: Vec::new(),
         tainted: false,
         identity: None,
+        serial: 0,
     }
 }
 
@@ -346,13 +347,41 @@ impl StateStore for FakeStore {
         Ok(())
     }
 
-    async fn lock(
+    async fn put_if_unchanged(
         &self,
         _tenant: &TenantKey,
-        _holder: &str,
+        _lock: &StateLock,
+        _put: &cuenv_infrastructure::ConditionalPut<'_>,
+    ) -> cuenv_infrastructure::Result<()> {
+        Ok(())
+    }
+
+    async fn acquire_lock(
+        &self,
+        _tenant: &TenantKey,
+        _request: &cuenv_infrastructure::LockRequest<'_>,
     ) -> cuenv_infrastructure::Result<StateLock> {
         Ok(StateLock {
             lock_identifier: "lock".to_string(),
+        })
+    }
+
+    async fn owner(
+        &self,
+        _tenant: &TenantKey,
+    ) -> cuenv_infrastructure::Result<Option<cuenv_infrastructure::TenantOwner>> {
+        Ok(None)
+    }
+
+    async fn claim_owner(
+        &self,
+        _tenant: &TenantKey,
+        _lock: &StateLock,
+        claim: &cuenv_infrastructure::OwnerClaim<'_>,
+    ) -> cuenv_infrastructure::Result<cuenv_infrastructure::TenantOwner> {
+        Ok(cuenv_infrastructure::TenantOwner {
+            instance: claim.instance.clone(),
+            claimed_at: "2026-09-28T00:00:00Z".to_string(),
         })
     }
 
@@ -426,7 +455,13 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
     let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
     let unrecorded = UnrecordedStore::at(directory.path().join("unrecorded"));
     unrecorded
-        .save(&tenant, &managed("random_pet.pet"))
+        .save(
+            &tenant,
+            &cuenv_infrastructure::ConditionalPut {
+                resource: &managed("random_pet.pet"),
+                expected: cuenv_infrastructure::RecordVersion::Absent,
+            },
+        )
         .unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let interrupts = Interrupts::claim().unwrap();

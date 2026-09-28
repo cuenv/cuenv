@@ -8,13 +8,18 @@
 //!    operations (the plugin protocol's `Stop` procedure). Whatever those
 //!    operations return is still recorded before the run ends.
 //! 2. The second interrupt ([`Cancellation::terminate_providers`]) kills every
-//!    provider process synchronously, so the command can exit at once.
+//!    provider process (and its process group) synchronously and removes
+//!    their socket directories, so the command can exit at once. Before
+//!    exiting, the command can wait briefly for a record being written
+//!    ([`Cancellation::wait_for_recordings`]).
 //!
 //! Providers run in their own process group, so a Ctrl-C typed at the
 //! terminal reaches cuenv only and cuenv decides what the providers see.
 
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, PoisonError, Weak};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, Weak};
+use std::time::{Duration, Instant};
 
 use crate::plugin::ProviderProcess;
 
@@ -33,6 +38,30 @@ struct Shared {
     stop_requested: AtomicBool,
     terminated: AtomicBool,
     providers: Mutex<Vec<Weak<ProviderProcess>>>,
+    socket_directories: Mutex<Vec<PathBuf>>,
+    /// Records being written (to the state store or saved locally).
+    recordings: Mutex<usize>,
+    recording_finished: Condvar,
+}
+
+/// Marks a record being written; see [`Cancellation::begin_recording`].
+/// Dropping it ends the recording.
+#[derive(Debug)]
+#[must_use = "the recording ends when the guard is dropped"]
+pub struct RecordingGuard {
+    shared: Arc<Shared>,
+}
+
+impl Drop for RecordingGuard {
+    fn drop(&mut self) {
+        let mut recordings = self
+            .shared
+            .recordings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *recordings = recordings.saturating_sub(1);
+        self.shared.recording_finished.notify_all();
+    }
 }
 
 impl Cancellation {
@@ -47,6 +76,10 @@ impl Cancellation {
             return;
         }
         let providers = self.live_providers();
+        tracing::info!(
+            providers = providers.len(),
+            "stop requested: no new resource starts and providers are asked to stop"
+        );
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             tracing::debug!(
                 providers = providers.len(),
@@ -65,7 +98,8 @@ impl Cancellation {
         self.shared.stop_requested.load(Ordering::SeqCst)
     }
 
-    /// Second interrupt: kill every provider process now.
+    /// Second interrupt: kill every provider process (with its process
+    /// group) now, and remove their socket directories.
     ///
     /// Synchronous and safe to call from any thread, including a signal
     /// handling path that is about to exit the process. Providers launched
@@ -74,15 +108,91 @@ impl Cancellation {
     pub fn terminate_providers(&self) {
         self.shared.stop_requested.store(true, Ordering::SeqCst);
         self.shared.terminated.store(true, Ordering::SeqCst);
-        for provider in self.live_providers() {
+        let providers = self.live_providers();
+        tracing::info!(providers = providers.len(), "terminating providers");
+        for provider in providers {
             provider.kill();
         }
+        self.remove_socket_directories();
     }
 
     /// Whether [`Cancellation::terminate_providers`] was called.
     #[must_use]
     pub fn is_terminated(&self) -> bool {
         self.shared.terminated.load(Ordering::SeqCst)
+    }
+
+    /// Remove every provider socket directory still registered. Called by
+    /// [`Cancellation::terminate_providers`]; a normal exit removes each
+    /// directory when its provider stops.
+    pub fn remove_socket_directories(&self) {
+        let directories = std::mem::take(
+            &mut *self
+                .shared
+                .socket_directories
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        for directory in directories {
+            if let Err(error) = std::fs::remove_dir_all(&directory)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::debug!(directory = %directory.display(), %error, "socket directory not removed");
+            }
+        }
+    }
+
+    /// Number of provider socket directories still registered.
+    #[must_use]
+    pub fn socket_directory_count(&self) -> usize {
+        self.shared
+            .socket_directories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// Mark a record as being written until the returned guard is dropped,
+    /// so a forced exit can wait for it ([`Cancellation::wait_for_recordings`]).
+    pub fn begin_recording(&self) -> RecordingGuard {
+        *self
+            .shared
+            .recordings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += 1;
+        RecordingGuard {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
+    /// Block up to `bound` until no record is being written. Returns whether
+    /// none is. Meant for a forced exit, before releasing the lock: a write
+    /// in flight finishes (or is saved locally) instead of being cut off.
+    #[must_use]
+    pub fn wait_for_recordings(&self, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        let mut recordings = self
+            .shared
+            .recordings
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        while *recordings > 0 {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                tracing::warn!(
+                    recordings = *recordings,
+                    "records still being written when the wait ended"
+                );
+                return false;
+            }
+            recordings = self
+                .shared
+                .recording_finished
+                .wait_timeout(recordings, remaining)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+        true
     }
 
     /// Track a provider process so both stages can reach it. Called as soon
@@ -100,6 +210,24 @@ impl Cancellation {
         if self.is_terminated() {
             provider.kill();
         }
+    }
+
+    /// Track a provider's socket directory so a forced exit removes it.
+    pub(crate) fn register_socket_directory(&self, directory: &Path) {
+        self.shared
+            .socket_directories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(directory.to_path_buf());
+    }
+
+    /// Stop tracking a socket directory its owner removed.
+    pub(crate) fn unregister_socket_directory(&self, directory: &Path) {
+        self.shared
+            .socket_directories
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|registered| registered != directory);
     }
 
     /// Number of provider processes still running and tracked.
@@ -141,5 +269,42 @@ mod tests {
         let cancellation = Cancellation::default();
         cancellation.terminate_providers();
         assert!(cancellation.is_stop_requested());
+    }
+
+    #[test]
+    fn terminate_removes_registered_socket_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("cuenv-plugin-test");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("plugin.sock"), b"").unwrap();
+        let cancellation = Cancellation::default();
+        cancellation.register_socket_directory(&directory);
+        assert_eq!(cancellation.socket_directory_count(), 1);
+        cancellation.terminate_providers();
+        assert!(!directory.exists());
+        assert_eq!(cancellation.socket_directory_count(), 0);
+
+        let kept = root.path().join("kept");
+        std::fs::create_dir(&kept).unwrap();
+        cancellation.register_socket_directory(&kept);
+        cancellation.unregister_socket_directory(&kept);
+        cancellation.remove_socket_directories();
+        assert!(kept.exists());
+    }
+
+    #[test]
+    fn a_forced_exit_waits_for_a_record_in_flight() {
+        let cancellation = Cancellation::default();
+        assert!(cancellation.wait_for_recordings(Duration::ZERO));
+        let guard = cancellation.begin_recording();
+        assert!(!cancellation.wait_for_recordings(Duration::from_millis(20)));
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(guard);
+        });
+        let started = Instant::now();
+        assert!(cancellation.wait_for_recordings(Duration::from_secs(5)));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        finisher.join().unwrap();
     }
 }

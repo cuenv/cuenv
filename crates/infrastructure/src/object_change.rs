@@ -260,18 +260,20 @@ fn optional_value_not_computable(attribute: &Attribute, value: &Value) -> bool {
         .is_some_and(|nested| holds_non_computed(nested, value))
 }
 
+/// Terraform walks the value and asks `AttributeByPath` for each non-null
+/// part; that finds only leaf attributes, so a nested attribute counts
+/// through its children alone, never by being set itself.
 fn holds_non_computed(nested: &NestedAttributes, value: &Value) -> bool {
     let object_holds = |object: &Value| {
         nested.attributes.iter().any(|(name, attribute)| {
             let member_value = member(object, name);
-            if member_value.is_null() || matches!(member_value, Value::Unknown) {
+            if member_value.is_null() {
                 return false;
             }
-            !attribute.presence.is_computed()
-                || attribute
-                    .nested
-                    .as_ref()
-                    .is_some_and(|inner| holds_non_computed(inner, member_value))
+            match &attribute.nested {
+                Some(inner) => holds_non_computed(inner, member_value),
+                None => !attribute.presence.is_computed(),
+            }
         })
     };
     match (nested.nesting, value) {
@@ -331,8 +333,10 @@ fn attribute_derives_from(attribute: &Attribute, prior: &Value, configuration: &
     }
     match &attribute.nested {
         Some(nested) => collection_derives_from(
-            ElementSchema::Object(&nested.attributes),
-            nested.nesting,
+            Collection {
+                schema: ElementSchema::Object(&nested.attributes),
+                nesting: nested.nesting,
+            },
             prior,
             configuration,
         ),
@@ -350,19 +354,28 @@ fn block_derives_from(nested: &NestedBlock, prior: &Value, configuration: &Value
         return false;
     }
     collection_derives_from(
-        ElementSchema::Block(&nested.block),
-        nested.nesting,
+        Collection {
+            schema: ElementSchema::Block(&nested.block),
+            nesting: nested.nesting,
+        },
         prior,
         configuration,
     )
 }
 
-fn collection_derives_from(
-    schema: ElementSchema<'_>,
+/// A nested collection's element schema and nesting mode.
+#[derive(Debug, Clone, Copy)]
+struct Collection<'schema> {
+    schema: ElementSchema<'schema>,
     nesting: Nesting,
+}
+
+fn collection_derives_from(
+    collection: Collection<'_>,
     prior: &Value,
     configuration: &Value,
 ) -> bool {
+    let Collection { schema, nesting } = collection;
     let element_type = schema.element_type();
     let element_derives = |prior_element: &Value, configured: Option<&Value>| {
         configured.is_some_and(|configured| {
@@ -422,34 +435,29 @@ impl fmt::Display for PlanProblem {
     }
 }
 
-/// Terraform's `AssertPlanValid`: every way `planned` departs from what a
-/// provider may plan for `configuration` given `prior` (null for a create).
+/// Terraform's `AssertPlanValid`: every way `values.planned` departs from
+/// what a provider may plan for `values.configuration` given
+/// `values.prior` (null for a create).
 #[must_use]
-pub fn plan_problems(
-    block: &Block,
-    prior: &Value,
-    configuration: &Value,
-    planned: &Value,
-) -> Vec<PlanProblem> {
+pub fn plan_problems(block: &Block, values: PlanValues<'_>) -> Vec<PlanProblem> {
     let mut check = PlanCheck::default();
-    check.block(
-        block,
-        Values {
-            prior,
-            configuration,
-            planned,
-        },
-    );
+    check.block(block, values);
     check.problems
 }
 
-/// The prior, configured and planned values at one point of the walk.
+/// The prior, configured and planned values of a resource (or, during the
+/// walk, of one part of it).
 #[derive(Debug, Clone, Copy)]
-struct Values<'value> {
-    prior: &'value Value,
-    configuration: &'value Value,
-    planned: &'value Value,
+pub struct PlanValues<'value> {
+    /// Prior state; null for a create.
+    pub prior: &'value Value,
+    /// Configuration.
+    pub configuration: &'value Value,
+    /// The provider's planned state.
+    pub planned: &'value Value,
 }
+
+type Values<'value> = PlanValues<'value>;
 
 impl Values<'_> {
     fn member(self, name: &str) -> Self {
@@ -758,6 +766,11 @@ impl PlanCheck {
                 else {
                     return;
                 };
+                // A configured set holding unknowns has an unknown length,
+                // which Terraform cannot compare.
+                if configuration.contains_unknown() {
+                    return;
+                }
                 // cty knows a set's length exactly unless unknown elements
                 // might coalesce; then it lies between one and the count.
                 let planned_count = planned_elements.len();
@@ -781,6 +794,398 @@ impl PlanCheck {
 
 const UNKNOWN_BLOCK_ELEMENT: &str = "element representing a nested block must not be unknown \
      itself; set nested attribute values to unknown instead";
+
+// ---------------------------------------------------------------------------
+// Apply result compatibility
+// ---------------------------------------------------------------------------
+
+/// Terraform's `AssertObjectCompatible`: every way `actual` is not a valid
+/// completion of `planned`.
+///
+/// `actual` is the state a provider returned from applying a change and
+/// `planned` the state it planned. Every known planned value must be kept;
+/// unknown ones may become anything of their type.
+///
+/// Unlike Terraform, problems never quote values (they may be secrets);
+/// they name the path and what changed.
+#[must_use]
+pub fn compatibility_problems(block: &Block, planned: &Value, actual: &Value) -> Vec<PlanProblem> {
+    let mut check = PlanCheck::default();
+    check.compatible_object(block, planned, actual);
+    check.problems
+}
+
+impl PlanCheck {
+    fn compatible_object(&mut self, block: &Block, planned: &Value, actual: &Value) {
+        let root = if self.path.is_empty() {
+            "root object "
+        } else {
+            ""
+        };
+        if planned.is_null() && !actual.is_null() {
+            self.problem(format!("{root}was absent, but now present"));
+            return;
+        }
+        if actual.is_null() && !planned.is_null() {
+            self.problem(format!("{root}was present, but now absent"));
+            return;
+        }
+        if planned.is_null() {
+            return;
+        }
+        for (name, attribute) in &block.attributes {
+            self.within(PathStep::Attribute(name.clone()), |check| {
+                let mut inner = Self {
+                    path: check.path.clone(),
+                    problems: Vec::new(),
+                };
+                inner.compatible_value(
+                    &attribute.value_type,
+                    member(planned, name),
+                    member(actual, name),
+                );
+                if attribute.contains_sensitive() && !inner.problems.is_empty() {
+                    check.problem("inconsistent values for sensitive attribute");
+                } else {
+                    check.problems.extend(inner.problems);
+                }
+            });
+        }
+        for (name, nested) in &block.blocks {
+            let planned_blocks = member(planned, name);
+            let actual_blocks = member(actual, name);
+            self.within(PathStep::Attribute(name.clone()), |check| {
+                check.compatible_blocks(nested, planned_blocks, actual_blocks);
+            });
+        }
+    }
+
+    fn compatible_blocks(&mut self, nested: &NestedBlock, planned: &Value, actual: &Value) {
+        let block = &nested.block;
+        let unusable = |value: &Value| value.is_unknown() || value.is_null();
+        match nested.nesting {
+            Nesting::Single | Nesting::Group => {
+                // An unknown block placeholder may have become no block.
+                if planned.is_unknown() && actual.is_null() {
+                    return;
+                }
+                self.compatible_object(block, planned, actual);
+            }
+            Nesting::List => {
+                if unusable(planned) || unusable(actual) {
+                    return;
+                }
+                let (planned_elements, actual_elements) =
+                    (list_elements(planned), list_elements(actual));
+                if planned_elements.len() != actual_elements.len() {
+                    self.problem(format!(
+                        "block count changed from {} to {}",
+                        planned_elements.len(),
+                        actual_elements.len()
+                    ));
+                    return;
+                }
+                for (index, (planned_element, actual_element)) in
+                    planned_elements.iter().zip(actual_elements).enumerate()
+                {
+                    self.within(path_index(index), |check| {
+                        check.compatible_object(block, planned_element, actual_element);
+                    });
+                }
+            }
+            Nesting::Map if type_contains_dynamic(&block.implied_type()) => {
+                // Terraform holds these as objects: keys must match.
+                let (planned_entries, actual_entries) = (map_entries(planned), map_entries(actual));
+                for (key, planned_element) in &planned_entries {
+                    let Some(actual_element) = actual_entries.get(key) else {
+                        self.problem(format!("block key {key:?} has vanished"));
+                        continue;
+                    };
+                    self.within(PathStep::Key((*key).clone()), |check| {
+                        check.compatible_object(block, planned_element, actual_element);
+                    });
+                }
+                if !planned.is_unknown() {
+                    for key in actual_entries.keys() {
+                        if !planned_entries.contains_key(key) {
+                            self.problem(format!("new block key {key:?} has appeared"));
+                        }
+                    }
+                }
+            }
+            Nesting::Map => {
+                if planned.is_unknown() || planned.is_null() || actual.is_null() {
+                    return;
+                }
+                let (planned_entries, actual_entries) = (map_entries(planned), map_entries(actual));
+                if planned_entries.len() != actual_entries.len() {
+                    self.problem(format!(
+                        "block count changed from {} to {}",
+                        planned_entries.len(),
+                        actual_entries.len()
+                    ));
+                    return;
+                }
+                for (key, planned_element) in &planned_entries {
+                    if let Some(actual_element) = actual_entries.get(key) {
+                        self.within(PathStep::Key((*key).clone()), |check| {
+                            check.compatible_object(block, planned_element, actual_element);
+                        });
+                    }
+                }
+            }
+            Nesting::Set => {
+                if unusable(planned) || unusable(actual) {
+                    return;
+                }
+                let (planned_elements, actual_elements) =
+                    (list_elements(planned), list_elements(actual));
+                let path = self.path.clone();
+                let problems = set_correlation_problems(
+                    planned_elements,
+                    actual_elements,
+                    |planned_element, actual_element| {
+                        let mut inner = Self {
+                            path: path.clone(),
+                            problems: Vec::new(),
+                        };
+                        inner.compatible_object(block, planned_element, actual_element);
+                        inner.problems.is_empty()
+                    },
+                );
+                for problem in problems {
+                    self.problem(problem);
+                }
+                // Equal elements may coalesce once known, but a set never
+                // grows.
+                if planned_elements.len() < actual_elements.len() {
+                    self.problem(format!(
+                        "block set length changed from {} to {}",
+                        planned_elements.len(),
+                        actual_elements.len()
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Terraform's `assertValueCompatible`.
+    fn compatible_value(&mut self, value_type: &Type, planned: &Value, actual: &Value) {
+        let value_type = if *value_type == Type::Dynamic {
+            // A dynamic value is checked against the type it was planned
+            // with; with none (an unknown or null of no type), anything goes.
+            let Value::Typed(typed) = planned else {
+                return;
+            };
+            if let Value::Typed(actual_typed) = actual
+                && !type_conforms(&actual_typed.value_type, &typed.value_type)
+            {
+                self.problem("wrong final value type");
+                return;
+            }
+            return self.compatible_value(&typed.value_type, &typed.value, actual.untyped());
+        } else {
+            value_type
+        };
+        let (planned, actual) = (planned.untyped(), actual.untyped());
+        if planned.is_unknown() {
+            // Anything of the right type completes an unknown value.
+            return;
+        }
+        if actual.is_null() {
+            if !planned.is_null() {
+                self.problem("was known, but now null");
+            }
+            return;
+        }
+        if planned.is_null() {
+            self.problem("was null, but now has a value");
+            return;
+        }
+        if actual.is_unknown() {
+            self.problem("was known, but now unknown");
+            return;
+        }
+        match value_type {
+            Type::Boolean | Type::Number | Type::String => {
+                if !raw_equal(planned, actual, value_type) {
+                    self.problem("planned value changed after apply");
+                }
+            }
+            Type::List(element_type) => {
+                let (planned_elements, actual_elements) =
+                    (list_elements(planned), list_elements(actual));
+                self.compatible_sequence(|_| element_type, planned_elements, actual_elements);
+            }
+            Type::Tuple(element_types) => {
+                let (planned_elements, actual_elements) =
+                    (list_elements(planned), list_elements(actual));
+                self.compatible_sequence(
+                    |index| element_types.get(index).unwrap_or(&Type::Dynamic),
+                    planned_elements,
+                    actual_elements,
+                );
+            }
+            Type::Map(element_type) => {
+                let (planned_entries, actual_entries) = (map_entries(planned), map_entries(actual));
+                for (key, planned_element) in &planned_entries {
+                    let Some(actual_element) = actual_entries.get(key) else {
+                        self.problem(format!("element {key:?} has vanished"));
+                        continue;
+                    };
+                    self.within(PathStep::Key((*key).clone()), |check| {
+                        check.compatible_value(element_type, planned_element, actual_element);
+                    });
+                }
+                for key in actual_entries.keys() {
+                    if !planned_entries.contains_key(key) {
+                        self.problem(format!("new element {key:?} has appeared"));
+                    }
+                }
+            }
+            Type::Object(attribute_types) => {
+                for (name, attribute_type) in attribute_types {
+                    self.within(PathStep::Attribute(name.clone()), |check| {
+                        check.compatible_value(
+                            attribute_type,
+                            member(planned, name),
+                            member(actual, name),
+                        );
+                    });
+                }
+            }
+            Type::Set(element_type) => {
+                let (planned_elements, actual_elements) =
+                    (list_elements(planned), list_elements(actual));
+                let path = self.path.clone();
+                let problems = set_correlation_problems(
+                    planned_elements,
+                    actual_elements,
+                    |planned_element, actual_element| {
+                        let mut inner = Self {
+                            path: path.clone(),
+                            problems: Vec::new(),
+                        };
+                        inner.compatible_value(element_type, planned_element, actual_element);
+                        inner.problems.is_empty()
+                    },
+                );
+                for problem in problems {
+                    self.problem(problem);
+                }
+                if planned_elements.len() < actual_elements.len() {
+                    self.problem(format!(
+                        "length changed from {} to {}",
+                        planned_elements.len(),
+                        actual_elements.len()
+                    ));
+                }
+            }
+            Type::Dynamic => {}
+        }
+    }
+
+    /// Lists and tuples: every planned element kept, none added.
+    fn compatible_sequence<'types>(
+        &mut self,
+        element_type: impl Fn(usize) -> &'types Type,
+        planned: &[Value],
+        actual: &[Value],
+    ) {
+        for (index, planned_element) in planned.iter().enumerate() {
+            let Some(actual_element) = actual.get(index) else {
+                self.problem(format!("element {index} has vanished"));
+                continue;
+            };
+            self.within(path_index(index), |check| {
+                check.compatible_value(element_type(index), planned_element, actual_element);
+            });
+        }
+        for index in planned.len()..actual.len() {
+            self.problem(format!("new element {index} has appeared"));
+        }
+    }
+}
+
+/// Terraform's `assertSetValuesCompatible`: every planned element must
+/// correlate with some actual element and the other way round. Elements
+/// are named by position, never by value.
+fn set_correlation_problems(
+    planned: &[Value],
+    actual: &[Value],
+    correlates: impl Fn(&Value, &Value) -> bool,
+) -> Vec<String> {
+    let mut planned_matched = vec![false; planned.len()];
+    let mut actual_matched = vec![false; actual.len()];
+    for (planned_index, planned_element) in planned.iter().enumerate() {
+        for (actual_index, actual_element) in actual.iter().enumerate() {
+            if planned_matched[planned_index] && actual_matched[actual_index] {
+                continue;
+            }
+            if correlates(planned_element, actual_element) {
+                planned_matched[planned_index] = true;
+                actual_matched[actual_index] = true;
+            }
+        }
+    }
+    let unmatched = |matched: &[bool], side: &str, other: &str| {
+        matched
+            .iter()
+            .enumerate()
+            .filter(|(_, matched)| !**matched)
+            .map(|(index, _)| {
+                format!("{side} set element {index} does not correlate with any element in {other}")
+            })
+            .collect::<Vec<_>>()
+    };
+    let problems = unmatched(&planned_matched, "planned", "actual");
+    if problems.is_empty() {
+        unmatched(&actual_matched, "actual", "plan")
+    } else {
+        problems
+    }
+}
+
+/// Whether `actual` conforms to `planned` (cty `TestConformance`), where a
+/// `dynamic` part of the planned type accepts anything.
+fn type_conforms(actual: &Type, planned: &Type) -> bool {
+    match (actual, planned) {
+        (_, Type::Dynamic) => true,
+        (Type::List(actual), Type::List(planned))
+        | (Type::Set(actual), Type::Set(planned))
+        | (Type::Map(actual), Type::Map(planned)) => type_conforms(actual, planned),
+        (Type::Object(actual), Type::Object(planned)) => {
+            actual.len() == planned.len()
+                && planned.iter().all(|(name, planned_type)| {
+                    actual
+                        .get(name)
+                        .is_some_and(|actual_type| type_conforms(actual_type, planned_type))
+                })
+        }
+        (Type::Tuple(actual), Type::Tuple(planned)) => {
+            actual.len() == planned.len()
+                && actual
+                    .iter()
+                    .zip(planned)
+                    .all(|(actual_type, planned_type)| type_conforms(actual_type, planned_type))
+        }
+        (actual, planned) => actual == planned,
+    }
+}
+
+/// Whether a type has a `dynamic` part, which makes Terraform hold map
+/// blocks as objects.
+fn type_contains_dynamic(value_type: &Type) -> bool {
+    match value_type {
+        Type::Dynamic => true,
+        Type::List(element) | Type::Set(element) | Type::Map(element) => {
+            type_contains_dynamic(element)
+        }
+        Type::Object(attributes) => attributes.values().any(type_contains_dynamic),
+        Type::Tuple(elements) => elements.iter().any(type_contains_dynamic),
+        Type::Boolean | Type::Number | Type::String => false,
+    }
+}
 
 const fn nesting_name(nesting: Nesting) -> &'static str {
     match nesting {

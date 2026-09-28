@@ -31,9 +31,14 @@ use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 use serde::{Deserialize, Serialize};
 
-use super::{LockInformation, ManagedResource, ResourceAddress, StateLock, StateStore};
-use crate::error::{InfrastructureError, Result};
-use crate::tenant::TenantKey;
+use super::{
+    ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
+    RecordVersion, ResourceAddress, StateLock, StateStore, TenantOwner,
+};
+use crate::error::{
+    InfrastructureError, Result, describe_json_error, json_error_category, strip_control_characters,
+};
+use crate::tenant::{ProjectInstance, TenantKey};
 
 /// One schema migration: the statements that move the database to `version`.
 struct Migration {
@@ -82,6 +87,17 @@ const MIGRATIONS: &[Migration] = &[
             "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN identity_json TEXT",
         ],
     },
+    // Version 3 records which CUE instance owns each tenant's state.
+    Migration {
+        version: 3,
+        statements: &["CREATE TABLE IF NOT EXISTS cuenv_infrastructure_owners (
+                module_path TEXT NOT NULL,
+                project TEXT NOT NULL,
+                instance TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                PRIMARY KEY (module_path, project)
+            ) WITHOUT ROWID"],
+    },
 ];
 
 /// Newest schema version this build knows.
@@ -93,6 +109,7 @@ const TAINT_AND_IDENTITY_SCHEMA_VERSION: i64 = 2;
 const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
 const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
 const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
+const OWNERS_TABLE: &str = "cuenv_infrastructure_owners";
 
 const CREATE_SCHEMA_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_schema (version INTEGER NOT NULL)";
@@ -101,18 +118,28 @@ const SELECT_SCHEMA_VERSION: &str =
     "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_schema";
 
 const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, tainted, identity_json \
+     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial \
      FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
      ORDER BY resource_type, resource_name";
 
 /// [`SELECT_RESOURCES`] for schemas older than
 /// [`TAINT_AND_IDENTITY_SCHEMA_VERSION`], which a read does not migrate.
 const SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, 0, NULL \
+     schema_version, state_json, private, dependencies_json, 0, NULL, serial \
      FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
      ORDER BY resource_type, resource_name";
 
-/// Longest HTTP error body quoted in an error message, in bytes.
+/// One record of a tenant, with the columns of [`SELECT_RESOURCES`].
+const SELECT_RESOURCE: &str = "SELECT resource_type, resource_name, provider, provider_source, \
+     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial \
+     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
+     AND resource_type = ? AND resource_name = ?";
+
+const SELECT_OWNER: &str = "SELECT instance, claimed_at FROM cuenv_infrastructure_owners \
+     WHERE module_path = ? AND project = ?";
+
+/// Largest HTTP error body read (and then only parsed for an error code,
+/// never quoted), in bytes.
 const MAXIMUM_ERROR_BODY_BYTES: usize = 4096;
 
 /// Largest successful Turso response read, in bytes (64 MiB).
@@ -237,7 +264,15 @@ impl TursoStateStore {
     }
 
     /// Send one pipeline request, without retrying.
-    async fn send(&self, body: &PipelineBody<'_>) -> Attempted<PipelineResponse> {
+    ///
+    /// An error response is described by its HTTP status and Hrana error
+    /// code; its body is quoted only when `disclosure` allows it, because a
+    /// server may echo the request (and the state it carries) back.
+    async fn send(
+        &self,
+        body: &PipelineBody<'_>,
+        disclosure: Disclosure,
+    ) -> Attempted<PipelineResponse> {
         let mut request = self.client.post(self.pipeline_url.clone()).json(body);
         if let Some(token) = &self.authentication_token {
             request = request.bearer_auth(token);
@@ -256,16 +291,18 @@ impl TursoStateStore {
                 } else {
                     FailureKind::Permanent
                 },
-                message: format!(
-                    "Turso returned HTTP {status}: {}",
-                    describe_error_body(&body, total_bytes)
-                ),
+                message: describe_http_error(&HttpError {
+                    status,
+                    body: &body,
+                    total_bytes,
+                    disclosure,
+                }),
             });
         }
         let bytes = read_whole_body(&mut response, self.maximum_response_bytes).await?;
         serde_json::from_slice(&bytes).map_err(|error| Failure {
             kind: FailureKind::Permanent,
-            message: format!("invalid Turso response: {error}"),
+            message: format!("invalid Turso response ({})", describe_json_error(&error)),
         })
     }
 
@@ -274,16 +311,20 @@ impl TursoStateStore {
     /// Statements run in order, each in its own implicit transaction.
     async fn pipeline_once(&self, statements: &[Statement]) -> Attempted<Vec<ExecuteResult>> {
         let count = statements.len();
+        let disclosure = Disclosure::of(statements);
         let requests = statements
             .iter()
             .map(|statement| PipelineRequest::Execute { statement })
             .chain(iter::once(PipelineRequest::Close))
             .collect();
         let response = self
-            .send(&PipelineBody {
-                baton: None,
-                requests,
-            })
+            .send(
+                &PipelineBody {
+                    baton: None,
+                    requests,
+                },
+                disclosure,
+            )
             .await?;
 
         let mut results = Vec::with_capacity(count);
@@ -295,7 +336,9 @@ impl TursoStateStore {
                 PipelineResult::Ok { .. } => {
                     return Err(Failure::permanent("unexpected Turso response type"));
                 }
-                PipelineResult::Error { error } => return Err(statement_failure(&error)),
+                PipelineResult::Error { error } => {
+                    return Err(statement_failure(&error, disclosure));
+                }
             }
         }
         if results.len() != count {
@@ -309,22 +352,33 @@ impl TursoStateStore {
 
     /// Execute a conditional batch in one pipeline request, without retrying.
     async fn batch_once(&self, steps: Vec<BatchStep<'_>>) -> Attempted<BatchResult> {
+        let disclosure = if steps
+            .iter()
+            .all(|step| step.statement.disclosure == Disclosure::Full)
+        {
+            Disclosure::Full
+        } else {
+            Disclosure::CodeOnly
+        };
         let response = self
-            .send(&PipelineBody {
-                baton: None,
-                requests: vec![
-                    PipelineRequest::Batch {
-                        batch: Batch { steps },
-                    },
-                    PipelineRequest::Close,
-                ],
-            })
+            .send(
+                &PipelineBody {
+                    baton: None,
+                    requests: vec![
+                        PipelineRequest::Batch {
+                            batch: Batch { steps },
+                        },
+                        PipelineRequest::Close,
+                    ],
+                },
+                disclosure,
+            )
             .await?;
         match response.results.into_iter().next() {
             Some(PipelineResult::Ok {
                 response: StreamResponse::Batch { result },
             }) => Ok(result),
-            Some(PipelineResult::Error { error }) => Err(statement_failure(&error)),
+            Some(PipelineResult::Error { error }) => Err(statement_failure(&error, disclosure)),
             Some(PipelineResult::Ok { .. }) | None => {
                 Err(Failure::permanent("unexpected Turso response to a batch"))
             }
@@ -420,8 +474,8 @@ impl TursoStateStore {
     async fn stored_schema(&self) -> Result<StoredSchema> {
         let tables = self
             .execute(Statement::new(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
-                [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE]
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
+                [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE, OWNERS_TABLE]
                     .into_iter()
                     .map(HranaValue::text)
                     .collect(),
@@ -451,7 +505,51 @@ impl TursoStateStore {
             version,
             resources_table: present(RESOURCES_TABLE),
             locks_table: present(LOCKS_TABLE),
+            owners_table: present(OWNERS_TABLE),
         })
+    }
+
+    /// Read one record of the tenant, with retries.
+    async fn read_resource(
+        &self,
+        tenant: &TenantKey,
+        address: &ResourceAddress,
+    ) -> Result<Option<ManagedResource>> {
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(&address.resource_type));
+        arguments.push(HranaValue::text(&address.name));
+        self.execute(Statement::new(SELECT_RESOURCE, arguments))
+            .await?
+            .rows
+            .first()
+            .map(|row| row_to_resource(row))
+            .transpose()
+    }
+
+    /// Read the tenant's owner row, with retries.
+    async fn read_owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+        let result = self
+            .execute(Statement::new(SELECT_OWNER, tenant_arguments(tenant)))
+            .await?;
+        Ok(result.rows.first().map(|row| {
+            let field = |index: usize| {
+                row.get(index)
+                    .and_then(HranaValue::as_text)
+                    .unwrap_or("unknown")
+            };
+            TenantOwner {
+                instance: ProjectInstance::from_stored(field(0)),
+                claimed_at: strip_control_characters(field(1)),
+            }
+        }))
+    }
+
+    /// Whether `lock` is still the tenant's lock.
+    async fn holds(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+        Ok(self
+            .read_lock(tenant)
+            .await?
+            .is_some_and(|information| information.lock_identifier == lock.lock_identifier))
     }
 
     /// Apply one migration and record its version, atomically.
@@ -505,11 +603,13 @@ impl TursoStateStore {
             ))
             .await?;
         Ok(result.rows.first().map(|row| {
+            // Anyone with the token can write these; they are displayed.
             let field = |index: usize| {
-                row.get(index)
-                    .and_then(HranaValue::as_text)
-                    .unwrap_or("unknown")
-                    .to_string()
+                strip_control_characters(
+                    row.get(index)
+                        .and_then(HranaValue::as_text)
+                        .unwrap_or("unknown"),
+                )
             };
             LockInformation {
                 lock_identifier: field(0),
@@ -677,59 +777,97 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         resource: &ManagedResource,
     ) -> Result<()> {
-        let state_json = serde_json::to_string(&resource.state)
-            .map_err(|error| InfrastructureError::state(format!("serialize state: {error}")))?;
-        let dependencies = serde_json::to_string(&resource.dependencies).map_err(|error| {
-            InfrastructureError::state(format!("serialize dependencies: {error}"))
-        })?;
-        let identity_json = resource
-            .identity
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .map_err(|error| InfrastructureError::state(format!("serialize identity: {error}")))?;
-        let timestamp = now();
+        let columns = RecordColumns::of(resource)?;
+        let mut arguments = columns.insert_arguments(tenant, resource);
+        arguments.extend(lock_arguments(tenant, lock));
         // The row is written only while this run still holds the lock; the
         // check and the write are one statement, so they are atomic.
         let written = self
-            .execute(Statement::new(
-                "INSERT INTO cuenv_infrastructure_resources (module_path, project, resource_type, \
-                 resource_name, provider, provider_source, schema_version, state_json, private, \
-                 dependencies_json, tainted, identity_json, serial, created_at, updated_at) \
-                 SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ? \
-                 WHERE EXISTS (SELECT 1 FROM cuenv_infrastructure_locks \
-                 WHERE module_path = ? AND project = ? AND lock_identifier = ?) \
-                 ON CONFLICT (module_path, project, resource_type, resource_name) DO UPDATE SET \
-                 provider = excluded.provider, provider_source = excluded.provider_source, \
-                 schema_version = excluded.schema_version, state_json = excluded.state_json, \
-                 private = excluded.private, dependencies_json = excluded.dependencies_json, \
-                 tainted = excluded.tainted, identity_json = excluded.identity_json, \
-                 serial = cuenv_infrastructure_resources.serial + 1, updated_at = excluded.updated_at",
-                vec![
-                    HranaValue::text(tenant.module_path()),
-                    HranaValue::text(tenant.project()),
-                    HranaValue::text(&resource.address.resource_type),
-                    HranaValue::text(&resource.address.name),
-                    HranaValue::text(&resource.provider),
-                    HranaValue::text(&resource.provider_source),
-                    HranaValue::integer(resource.schema_version),
-                    HranaValue::text(&state_json),
-                    HranaValue::blob(&resource.private),
-                    HranaValue::text(&dependencies),
-                    HranaValue::integer(i64::from(resource.tainted)),
-                    HranaValue::optional_text(identity_json.as_deref()),
-                    HranaValue::text(&timestamp),
-                    HranaValue::text(&timestamp),
-                    HranaValue::text(tenant.module_path()),
-                    HranaValue::text(tenant.project()),
-                    HranaValue::text(&lock.lock_identifier),
-                ],
+            .execute(Statement::carrying_state(
+                format!(
+                    "{INSERT_RESOURCE} WHERE {LOCK_HELD} \
+                     ON CONFLICT (module_path, project, resource_type, resource_name) DO UPDATE SET \
+                     provider = excluded.provider, provider_source = excluded.provider_source, \
+                     schema_version = excluded.schema_version, state_json = excluded.state_json, \
+                     private = excluded.private, dependencies_json = excluded.dependencies_json, \
+                     tainted = excluded.tainted, identity_json = excluded.identity_json, \
+                     serial = cuenv_infrastructure_resources.serial + 1, \
+                     updated_at = excluded.updated_at"
+                ),
+                arguments,
             ))
             .await?;
         if written.affected_row_count == 0 {
             return Err(lock_lost(tenant, lock));
         }
         Ok(())
+    }
+
+    #[tracing::instrument(
+        skip_all,
+        fields(tenant = %tenant, address = %put.resource.address, expected = %put.expected)
+    )]
+    async fn put_if_unchanged(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        put: &ConditionalPut<'_>,
+    ) -> Result<()> {
+        let resource = put.resource;
+        let columns = RecordColumns::of(resource)?;
+        let statement = match put.expected {
+            RecordVersion::Absent => {
+                let mut arguments = columns.insert_arguments(tenant, resource);
+                arguments.extend(lock_arguments(tenant, lock));
+                Statement::carrying_state(
+                    format!(
+                        "{INSERT_RESOURCE} WHERE {LOCK_HELD} \
+                         ON CONFLICT (module_path, project, resource_type, resource_name) \
+                         DO NOTHING"
+                    ),
+                    arguments,
+                )
+            }
+            RecordVersion::Serial(serial) => {
+                let mut arguments = columns.update_arguments(resource);
+                arguments.extend(tenant_arguments(tenant));
+                arguments.push(HranaValue::text(&resource.address.resource_type));
+                arguments.push(HranaValue::text(&resource.address.name));
+                arguments.push(HranaValue::integer(serial));
+                arguments.extend(lock_arguments(tenant, lock));
+                Statement::carrying_state(
+                    format!(
+                        "UPDATE cuenv_infrastructure_resources SET provider = ?, \
+                         provider_source = ?, schema_version = ?, state_json = ?, private = ?, \
+                         dependencies_json = ?, tainted = ?, identity_json = ?, \
+                         serial = serial + 1, updated_at = ? \
+                         WHERE module_path = ? AND project = ? AND resource_type = ? \
+                         AND resource_name = ? AND serial = ? AND {LOCK_HELD}"
+                    ),
+                    arguments,
+                )
+            }
+        };
+        if self.execute(statement).await?.affected_row_count > 0 {
+            return Ok(());
+        }
+        if !self.holds(tenant, lock).await? {
+            return Err(lock_lost(tenant, lock));
+        }
+        let current = self.read_resource(tenant, &resource.address).await?;
+        let found = RecordVersion::of(current.as_ref());
+        // A retried attempt finds the write of an earlier attempt whose
+        // response was lost: that is this write, already done.
+        if found == put.expected.after_write()
+            && current.is_some_and(|current| current.same_content(resource))
+        {
+            return Ok(());
+        }
+        Err(InfrastructureError::StateChanged {
+            address: resource.address.to_string(),
+            expected: put.expected.to_string(),
+            found: found.to_string(),
+        })
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, address = %address))]
@@ -759,24 +897,30 @@ impl StateStore for TursoStateStore {
         // Nothing deleted means the row was already gone (possibly by an
         // earlier attempt of this same call) or the lock was lost; only the
         // second is an error.
-        if deleted.affected_row_count == 0 {
-            let held = self
-                .read_lock(tenant)
-                .await?
-                .is_some_and(|information| information.lock_identifier == lock.lock_identifier);
-            if !held {
-                return Err(lock_lost(tenant, lock));
-            }
+        if deleted.affected_row_count == 0 && !self.holds(tenant, lock).await? {
+            return Err(lock_lost(tenant, lock));
         }
         Ok(())
     }
 
-    #[tracing::instrument(skip_all, fields(tenant = %tenant, holder = %holder))]
-    async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock> {
+    #[tracing::instrument(
+        skip_all,
+        fields(tenant = %tenant, holder = %request.holder, lock_identifier = %request.lock.lock_identifier)
+    )]
+    async fn acquire_lock(
+        &self,
+        tenant: &TenantKey,
+        request: &LockRequest<'_>,
+    ) -> Result<StateLock> {
+        request.lock.validate()?;
+        let holder = request.holder;
         // Every write needs the lock, so this is where writes fail closed on
         // a schema this build has not migrated to.
         let schema = self.stored_schema().await?;
-        if schema.version != LATEST_SCHEMA_VERSION || !schema.resources_table || !schema.locks_table
+        if schema.version != LATEST_SCHEMA_VERSION
+            || !schema.resources_table
+            || !schema.locks_table
+            || !schema.owners_table
         {
             return Err(InfrastructureError::state(format!(
                 "Turso state schema is at version {} but this cuenv writes version \
@@ -784,7 +928,7 @@ impl StateStore for TursoStateStore {
                 schema.version
             )));
         }
-        let lock_identifier = uuid::Uuid::new_v4().to_string();
+        let lock_identifier = request.lock.lock_identifier.clone();
         let insert = Statement::new(
             "INSERT INTO cuenv_infrastructure_locks (module_path, project, lock_identifier, holder, acquired_at) \
              VALUES (?, ?, ?, ?, ?) ON CONFLICT (module_path, project) DO NOTHING",
@@ -863,11 +1007,7 @@ impl StateStore for TursoStateStore {
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
         self.execute(Statement::new(
             "DELETE FROM cuenv_infrastructure_locks WHERE module_path = ? AND project = ? AND lock_identifier = ?",
-            vec![
-                HranaValue::text(tenant.module_path()),
-                HranaValue::text(tenant.project()),
-                HranaValue::text(&lock.lock_identifier),
-            ],
+            lock_arguments(tenant, lock),
         ))
         .await
         .map(|_| ())
@@ -900,6 +1040,130 @@ impl StateStore for TursoStateStore {
             .await?;
         Ok(released.affected_row_count > 0)
     }
+
+    #[tracing::instrument(skip_all, fields(tenant = %tenant))]
+    async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+        if !self.stored_schema().await?.owners_table {
+            // Never migrated, or migrated by a cuenv without owner records.
+            return Ok(None);
+        }
+        self.read_owner(tenant).await
+    }
+
+    #[tracing::instrument(skip_all, fields(tenant = %tenant, instance = %claim.instance, mode = ?claim.mode))]
+    async fn claim_owner(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        claim: &OwnerClaim<'_>,
+    ) -> Result<TenantOwner> {
+        let conflict = match claim.mode {
+            OwnerClaimMode::IfUnowned => "DO NOTHING",
+            OwnerClaimMode::Transfer => {
+                "DO UPDATE SET instance = excluded.instance, claimed_at = excluded.claimed_at"
+            }
+        };
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(claim.instance.as_str()));
+        arguments.push(HranaValue::text(&now()));
+        arguments.extend(lock_arguments(tenant, lock));
+        let written = self
+            .execute(Statement::new(
+                format!(
+                    "INSERT INTO cuenv_infrastructure_owners (module_path, project, instance, \
+                     claimed_at) SELECT ?, ?, ?, ? WHERE {LOCK_HELD} \
+                     ON CONFLICT (module_path, project) {conflict}"
+                ),
+                arguments,
+            ))
+            .await?;
+        if written.affected_row_count == 0 && !self.holds(tenant, lock).await? {
+            return Err(lock_lost(tenant, lock));
+        }
+        self.read_owner(tenant).await?.ok_or_else(|| {
+            InfrastructureError::state(format!("the owner record of {tenant} was not written"))
+        })
+    }
+}
+
+/// Fence clause: the caller still holds the tenant's lock. Takes the
+/// arguments of [`lock_arguments`].
+const LOCK_HELD: &str = "EXISTS (SELECT 1 FROM cuenv_infrastructure_locks \
+     WHERE module_path = ? AND project = ? AND lock_identifier = ?)";
+
+/// Insert of one record from a `SELECT` of the arguments of
+/// [`RecordColumns::insert_arguments`]; append a `WHERE` clause.
+const INSERT_RESOURCE: &str = "INSERT INTO cuenv_infrastructure_resources (module_path, project, \
+     resource_type, resource_name, provider, provider_source, schema_version, state_json, \
+     private, dependencies_json, tainted, identity_json, serial, created_at, updated_at) \
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?";
+
+fn lock_arguments(tenant: &TenantKey, lock: &StateLock) -> Vec<HranaValue> {
+    vec![
+        HranaValue::text(tenant.module_path()),
+        HranaValue::text(tenant.project()),
+        HranaValue::text(&lock.lock_identifier),
+    ]
+}
+
+/// A record's serialized columns.
+struct RecordColumns {
+    state_json: String,
+    dependencies_json: String,
+    identity_json: Option<String>,
+    timestamp: String,
+}
+
+impl RecordColumns {
+    /// Serialize `resource`'s JSON columns. Errors name the column and the
+    /// failure's category, never a value.
+    fn of(resource: &ManagedResource) -> Result<Self> {
+        let failed = |column: &str, error: &serde_json::Error| {
+            InfrastructureError::state(format!(
+                "cannot serialize the {column} of {} ({})",
+                resource.address,
+                json_error_category(error)
+            ))
+        };
+        Ok(Self {
+            state_json: serde_json::to_string(&resource.state)
+                .map_err(|error| failed("state", &error))?,
+            dependencies_json: serde_json::to_string(&resource.dependencies)
+                .map_err(|error| failed("dependencies", &error))?,
+            identity_json: resource
+                .identity
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|error| failed("identity", &error))?,
+            timestamp: now(),
+        })
+    }
+
+    /// Arguments of [`INSERT_RESOURCE`].
+    fn insert_arguments(&self, tenant: &TenantKey, resource: &ManagedResource) -> Vec<HranaValue> {
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(&resource.address.resource_type));
+        arguments.push(HranaValue::text(&resource.address.name));
+        arguments.extend(self.update_arguments(resource));
+        arguments.push(HranaValue::text(&self.timestamp));
+        arguments
+    }
+
+    /// Provider through `identity_json`, then the update timestamp.
+    fn update_arguments(&self, resource: &ManagedResource) -> Vec<HranaValue> {
+        vec![
+            HranaValue::text(&resource.provider),
+            HranaValue::text(&resource.provider_source),
+            HranaValue::integer(resource.schema_version),
+            HranaValue::text(&self.state_json),
+            HranaValue::blob(&resource.private),
+            HranaValue::text(&self.dependencies_json),
+            HranaValue::integer(i64::from(resource.tainted)),
+            HranaValue::optional_text(self.identity_json.as_deref()),
+            HranaValue::text(&self.timestamp),
+        ]
+    }
 }
 
 /// What a read-only inspection of the database found.
@@ -911,6 +1175,8 @@ struct StoredSchema {
     resources_table: bool,
     /// Whether `cuenv_infrastructure_locks` exists.
     locks_table: bool,
+    /// Whether `cuenv_infrastructure_owners` exists.
+    owners_table: bool,
 }
 
 fn newer_schema(version: i64) -> InfrastructureError {
@@ -948,6 +1214,16 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
             .and_then(HranaValue::as_integer)
             .ok_or_else(|| InfrastructureError::state(format!("state row missing {name}")))
     };
+    let address = ResourceAddress::new(text(0, "resource_type")?, text(1, "resource_name")?);
+    // serde messages can quote the value they failed on: report the
+    // column, the category and the position only.
+    let corrupt = |column: &str, error: &serde_json::Error| {
+        InfrastructureError::state(format!(
+            "corrupt {column} of {} ({})",
+            strip_control_characters(&address.to_string()),
+            describe_json_error(error)
+        ))
+    };
     let state_json = text(5, "state_json")?;
     let dependencies_json = text(7, "dependencies_json")?;
     let identity = row
@@ -955,25 +1231,24 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         .and_then(HranaValue::as_text)
         .map(serde_json::from_str)
         .transpose()
-        .map_err(|error| InfrastructureError::state(format!("corrupt identity_json: {error}")))?;
+        .map_err(|error| corrupt("identity_json", &error))?;
     Ok(ManagedResource {
-        address: ResourceAddress::new(text(0, "resource_type")?, text(1, "resource_name")?),
         provider: text(2, "provider")?,
         provider_source: text(3, "provider_source")?,
         schema_version: integer(4, "schema_version")?,
-        state: serde_json::from_str(&state_json)
-            .map_err(|error| InfrastructureError::state(format!("corrupt state_json: {error}")))?,
+        state: serde_json::from_str(&state_json).map_err(|error| corrupt("state_json", &error))?,
         private: row
             .get(6)
             .map(HranaValue::as_blob)
             .transpose()?
             .flatten()
             .unwrap_or_default(),
-        dependencies: serde_json::from_str(&dependencies_json).map_err(|error| {
-            InfrastructureError::state(format!("corrupt dependencies_json: {error}"))
-        })?,
+        dependencies: serde_json::from_str(&dependencies_json)
+            .map_err(|error| corrupt("dependencies_json", &error))?,
         tainted: integer(8, "tainted")? != 0,
         identity,
+        serial: integer(10, "serial")?,
+        address,
     })
 }
 
@@ -1056,19 +1331,95 @@ fn describe_transport_error(error: &reqwest::Error) -> String {
     }
 }
 
-fn statement_failure(error: &HranaError) -> Failure {
+/// Describe a statement error: its code always, its message only when the
+/// statement carried no state (a message may echo the arguments).
+fn statement_failure(error: &HranaError, disclosure: Disclosure) -> Failure {
     let busy = error
         .code
         .as_deref()
         .is_some_and(|code| code == "SQLITE_BUSY");
+    let code = error
+        .code
+        .as_deref()
+        .map_or_else(|| "no code".to_string(), strip_control_characters);
     Failure {
         kind: if busy {
             FailureKind::Transient
         } else {
             FailureKind::Statement
         },
-        message: format!("Turso statement failed: {error}"),
+        message: match disclosure {
+            Disclosure::Full => format!(
+                "Turso statement failed: {} ({code})",
+                strip_control_characters(&error.message)
+            ),
+            Disclosure::CodeOnly => format!(
+                "Turso statement failed with {code} (message withheld: the statement carried \
+                 resource state)"
+            ),
+        },
     }
+}
+
+/// How much of a failed request's response an error may quote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Disclosure {
+    /// The request carried no resource state; messages may be quoted.
+    #[default]
+    Full,
+    /// The request carried resource state, which the server may echo back:
+    /// quote only the HTTP status and error code.
+    CodeOnly,
+}
+
+impl Disclosure {
+    fn of(statements: &[Statement]) -> Self {
+        if statements
+            .iter()
+            .all(|statement| statement.disclosure == Self::Full)
+        {
+            Self::Full
+        } else {
+            Self::CodeOnly
+        }
+    }
+}
+
+/// An HTTP error response to describe.
+struct HttpError<'response> {
+    status: reqwest::StatusCode,
+    body: &'response BodyPrefix,
+    total_bytes: Option<u64>,
+    disclosure: Disclosure,
+}
+
+/// Describe an HTTP error response by its status and Hrana error code; the
+/// body itself is quoted (bounded, without control characters) only when
+/// the request carried no state.
+fn describe_http_error(error: &HttpError<'_>) -> String {
+    let status = error.status;
+    let code = serde_json::from_slice::<HranaErrorBody>(&error.body.bytes)
+        .ok()
+        .and_then(|body| body.code)
+        .map(|code| format!(" ({})", strip_control_characters(&code)))
+        .unwrap_or_default();
+    match error.disclosure {
+        Disclosure::Full => format!(
+            "Turso returned HTTP {status}{code}: {}",
+            strip_control_characters(&describe_error_body(error.body, error.total_bytes))
+        ),
+        Disclosure::CodeOnly => format!(
+            "Turso returned HTTP {status}{code} (response body withheld: the request carried \
+             resource state)"
+        ),
+    }
+}
+
+/// The error body Hrana servers send with an HTTP error status.
+#[derive(Debug, Deserialize)]
+struct HranaErrorBody {
+    #[serde(default)]
+    code: Option<String>,
 }
 
 /// The first bytes of a response body: at most `limit`, plus whether more
@@ -1183,7 +1534,7 @@ fn migration_outcome(result: &BatchResult, commit_index: usize) -> Attempted<Mig
         if error.message.contains("duplicate column name") {
             return Ok(MigrationOutcome::ColumnAlreadyExists);
         }
-        return Err(statement_failure(error));
+        return Err(statement_failure(error, Disclosure::Full));
     }
     if result
         .step_results
@@ -1252,6 +1603,9 @@ struct Statement {
     #[serde(rename = "args")]
     arguments: Vec<HranaValue>,
     want_rows: bool,
+    /// What errors about this statement may quote; never sent.
+    #[serde(skip)]
+    disclosure: Disclosure,
 }
 
 impl Statement {
@@ -1260,6 +1614,16 @@ impl Statement {
             sql: sql.into(),
             arguments,
             want_rows: true,
+            disclosure: Disclosure::Full,
+        }
+    }
+
+    /// A statement whose arguments include resource state: errors about it
+    /// never quote the server's messages.
+    fn carrying_state(sql: impl Into<String>, arguments: Vec<HranaValue>) -> Self {
+        Self {
+            disclosure: Disclosure::CodeOnly,
+            ..Self::new(sql, arguments)
         }
     }
 }
@@ -1310,15 +1674,6 @@ struct HranaError {
     message: String,
     #[serde(default)]
     code: Option<String>,
-}
-
-impl fmt::Display for HranaError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.code {
-            Some(code) => write!(formatter, "{} ({code})", self.message),
-            None => formatter.write_str(&self.message),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1379,8 +1734,9 @@ impl HranaValue {
                     .decode(trimmed)
                     .or_else(|_| STANDARD.decode(base64))
                     .map(Some)
-                    .map_err(|error| {
-                        InfrastructureError::state(format!("corrupt private blob: {error}"))
+                    // The decoder's message quotes the offending byte.
+                    .map_err(|_| {
+                        InfrastructureError::state("corrupt private blob: not valid base64")
                     })
             }
             _ => Ok(None),
@@ -1542,14 +1898,72 @@ mod tests {
             message: "database is locked".into(),
             code: Some("SQLITE_BUSY".into()),
         };
-        assert!(statement_failure(&busy).is_transient());
+        assert!(statement_failure(&busy, Disclosure::Full).is_transient());
         let syntax = HranaError {
             message: "near \"SELEC\": syntax error".into(),
             code: Some("SQLITE_ERROR".into()),
         };
-        let failure = statement_failure(&syntax);
+        let failure = statement_failure(&syntax, Disclosure::Full);
         assert_eq!(failure.kind, FailureKind::Statement);
         assert!(failure.message.contains("syntax error (SQLITE_ERROR)"));
+    }
+
+    #[test]
+    fn errors_about_statements_carrying_state_quote_only_codes() {
+        let echo = HranaError {
+            message: "invalid argument \"hunter2\"\u{1b}[2J".into(),
+            code: Some("SQLITE_TOOBIG".into()),
+        };
+        let withheld = statement_failure(&echo, Disclosure::CodeOnly).message;
+        assert!(withheld.contains("SQLITE_TOOBIG"), "{withheld}");
+        assert!(!withheld.contains("hunter2"), "{withheld}");
+        let quoted = statement_failure(&echo, Disclosure::Full).message;
+        assert!(quoted.contains("hunter2"), "{quoted}");
+        assert!(!quoted.contains('\u{1b}'), "{quoted}");
+
+        let body = BodyPrefix {
+            bytes: br#"{"message": "bad state_json \"hunter2\"", "code": "HTTP_BAD"}"#.to_vec(),
+            truncated: false,
+        };
+        let described = describe_http_error(&HttpError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            body: &body,
+            total_bytes: None,
+            disclosure: Disclosure::CodeOnly,
+        });
+        assert!(described.contains("HTTP 400"), "{described}");
+        assert!(described.contains("(HTTP_BAD)"), "{described}");
+        assert!(!described.contains("hunter2"), "{described}");
+    }
+
+    #[test]
+    fn corrupt_rows_are_reported_without_their_content() {
+        let mut row = vec![
+            HranaValue::text("random_pet"),
+            HranaValue::text("pet"),
+            HranaValue::text("random"),
+            HranaValue::text("registry.terraform.io/hashicorp/random"),
+            HranaValue::integer(1),
+            HranaValue::text("{\"password\": hunter2}"),
+            HranaValue::Null,
+            HranaValue::text("[]"),
+            HranaValue::integer(0),
+            HranaValue::Null,
+            HranaValue::integer(1),
+        ];
+        let message = row_to_resource(&row).unwrap_err().to_string();
+        assert!(
+            message.contains("state_json of random_pet.pet"),
+            "{message}"
+        );
+        assert!(message.contains("line 1"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+        row[5] = HranaValue::text("{}");
+        row[6] = HranaValue::Blob {
+            base64: "!!!!".into(),
+        };
+        let message = row_to_resource(&row).unwrap_err().to_string();
+        assert!(!message.contains('!'), "{message}");
     }
 
     #[test]
@@ -1737,10 +2151,12 @@ mod tests {
                     value: tainted.into(),
                 },
                 identity,
+                HranaValue::integer(7),
             ]
         };
         let resource = row_to_resource(&row("1", HranaValue::text("{\"name\":\"a\"}"))).unwrap();
         assert!(resource.tainted);
+        assert_eq!(resource.serial, 7);
         assert_eq!(resource.identity, Some(json!({"name": "a"})));
         let resource = row_to_resource(&row("0", HranaValue::Null)).unwrap();
         assert!(!resource.tainted);
@@ -1786,7 +2202,7 @@ mod tests {
         })
         .unwrap();
         let drop_tables = || async {
-            for table in [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE] {
+            for table in [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE, OWNERS_TABLE] {
                 store
                     .execute(Statement::new(
                         format!("DROP TABLE IF EXISTS {table}"),
@@ -1800,6 +2216,7 @@ mod tests {
             version: 0,
             resources_table: false,
             locks_table: false,
+            owners_table: false,
         };
         assert_eq!(
             store.stored_schema().await.unwrap(),
@@ -1809,6 +2226,7 @@ mod tests {
 
         assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
         assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
+        assert_eq!(store.owner(&tenant()).await.unwrap(), None);
         assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
         assert!(store.lock(&tenant(), "test").await.is_err());
         assert_eq!(store.stored_schema().await.unwrap(), untouched);
@@ -1830,6 +2248,7 @@ mod tests {
             store.current_lock(&tenant()).await.err(),
             store.lock(&tenant(), "test").await.err(),
             store.force_unlock(&tenant(), "any").await.err(),
+            store.owner(&tenant()).await.err(),
         ];
         drop_tables().await;
         for refusal in refusals {
@@ -1971,6 +2390,7 @@ mod tests {
                 [{"type": "text", "value": SCHEMA_TABLE}],
                 [{"type": "text", "value": RESOURCES_TABLE}],
                 [{"type": "text", "value": LOCKS_TABLE}],
+                [{"type": "text", "value": OWNERS_TABLE}],
             ]))
         } else if sql == SELECT_SCHEMA_VERSION {
             Some(json!([[{"type": "integer", "value": version.to_string()}]]))
@@ -2033,6 +2453,41 @@ mod tests {
             "{}",
             message.len()
         );
+    }
+
+    #[tokio::test]
+    async fn write_errors_never_quote_a_body_echoing_the_state() {
+        let server = fake_server(Arc::new(|_, body| {
+            // Echo the request, state included, as some servers do.
+            Some((
+                400,
+                json!({"message": format!("bad request {body}"), "code": "BAD_REQUEST"})
+                    .to_string(),
+            ))
+        }))
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let record = ManagedResource {
+            address: ResourceAddress::new("random_password", "database"),
+            provider: "random".into(),
+            provider_source: "registry.terraform.io/hashicorp/random".into(),
+            schema_version: 0,
+            state: json!({"result": "hunter2"}),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            tainted: false,
+            identity: None,
+            serial: 0,
+        };
+        let lock = StateLock::generate();
+        let message = store
+            .put(&tenant(), &lock, &record)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("HTTP 400"), "{message}");
+        assert!(message.contains("BAD_REQUEST"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
     }
 
     #[tokio::test]
@@ -2185,8 +2640,9 @@ mod tests {
         assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
         assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
         assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
+        assert_eq!(store.owner(&tenant()).await.unwrap(), None);
         let statements = statements.lock().unwrap().clone();
-        assert_eq!(statements.len(), 3, "{statements:?}");
+        assert_eq!(statements.len(), 4, "{statements:?}");
         assert!(
             statements
                 .iter()
@@ -2216,6 +2672,7 @@ mod tests {
                 .await
                 .unwrap_err()
                 .to_string(),
+            store.owner(&tenant()).await.unwrap_err().to_string(),
         ];
         for message in messages {
             assert!(
@@ -2248,6 +2705,7 @@ mod tests {
             {"type": "text", "value": "[]"},
             {"type": "integer", "value": "0"},
             {"type": "null"},
+            {"type": "integer", "value": "4"},
         ]]);
         let (server, statements) = recording_database(move |sql| {
             schema_rows(sql, 1).or_else(|| {

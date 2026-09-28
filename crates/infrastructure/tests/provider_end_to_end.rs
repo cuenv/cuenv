@@ -28,9 +28,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cuenv_infrastructure::{
-    Action, ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
-    InfrastructureError, MemoryStateStore, Plan, PlanMode, PlanSummary, StateStore, TenantKey,
-    TursoConfiguration, TursoStateStore,
+    Action, ApplyContext, Cancellation, ConditionalPut, EngineOptions, EngineSetup,
+    InfrastructureEngine, InfrastructureError, LockRequest, MemoryStateStore, OwnerClaim,
+    OwnerClaimMode, Plan, PlanMode, PlanSummary, ProjectInstance, RecordVersion, StateLock,
+    StateStore, TenantKey, TursoConfiguration, TursoStateStore,
 };
 use cuenv_manifest::manifest::Infrastructure;
 use serde_json::json;
@@ -91,27 +92,44 @@ fn engine_options(project_directory: &Path, cancellation: &Cancellation) -> Engi
     }
 }
 
-async fn plan_and_apply(
-    store: &Arc<dyn StateStore>,
-    tenant: &TenantKey,
-    desired: &Desired<'_>,
+/// One plan and apply of [`plan_and_apply`].
+struct Convergence<'convergence> {
+    store: &'convergence Arc<dyn StateStore>,
+    tenant: &'convergence TenantKey,
+    desired: &'convergence Desired<'convergence>,
     mode: PlanMode,
-) -> TestResult<Plan> {
+}
+
+async fn plan_and_apply(convergence: &Convergence<'_>) -> TestResult<Plan> {
+    let Convergence {
+        store,
+        tenant,
+        desired,
+        mode,
+    } = convergence;
     let project = tempfile::tempdir()?;
     let mut engine = InfrastructureEngine::new(EngineSetup {
-        tenant: tenant.clone(),
+        tenant: (*tenant).clone(),
         store: Arc::clone(store),
         infrastructure: infrastructure(desired)?,
         options: engine_options(project.path(), &Cancellation::default()),
     });
     let lock = store.lock(tenant, "provider_end_to_end").await?;
-    let plan = engine.plan(mode).await?;
-    // Planning twice against unchanged state yields the same digest, which
-    // is what a confirmed apply relies on.
-    assert_eq!(engine.plan(mode).await?.digest(), plan.digest());
+    let plan = engine.plan(*mode).await?;
+    // Planning twice against unchanged state yields the same digest.
+    assert_eq!(engine.plan(*mode).await?.digest(), plan.digest());
     engine
         .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
         .await?;
+    // Applying the same plan again is refused: its records are stale now.
+    if plan.has_work() {
+        assert!(matches!(
+            engine
+                .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+                .await,
+            Err(InfrastructureError::PlanOutdated { .. })
+        ));
+    }
     store.unlock(tenant, &lock).await?;
     engine.shutdown().await;
     Ok(plan)
@@ -140,7 +158,13 @@ async fn managed_resource_lifecycle() -> TestResult {
     let neighbour = TenantKey::new(format!("example.com/end-to-end-{run}"), "api")?;
 
     // Create both resources, dependency first.
-    let plan = plan_and_apply(&store, &tenant, &desired(Some("hello"), 2), PlanMode::Apply).await?;
+    let plan = plan_and_apply(&Convergence {
+        store: &store,
+        tenant: &tenant,
+        desired: &desired(Some("hello"), 2),
+        mode: PlanMode::Apply,
+    })
+    .await?;
     assert_eq!(
         actions(&plan),
         vec![
@@ -166,11 +190,23 @@ async fn managed_resource_lifecycle() -> TestResult {
     assert!(store.list(&neighbour).await?.is_empty());
 
     // Re-planning unchanged configuration is a no-op with nothing to write.
-    let plan = plan_and_apply(&store, &tenant, &desired(Some("hello"), 2), PlanMode::Apply).await?;
+    let plan = plan_and_apply(&Convergence {
+        store: &store,
+        tenant: &tenant,
+        desired: &desired(Some("hello"), 2),
+        mode: PlanMode::Apply,
+    })
+    .await?;
     assert!(!plan.has_work(), "expected no work: {:?}", actions(&plan));
 
     // Changing file content forces replacement (local_file is immutable).
-    let plan = plan_and_apply(&store, &tenant, &desired(Some("world"), 2), PlanMode::Apply).await?;
+    let plan = plan_and_apply(&Convergence {
+        store: &store,
+        tenant: &tenant,
+        desired: &desired(Some("world"), 2),
+        mode: PlanMode::Apply,
+    })
+    .await?;
     assert_eq!(
         actions(&plan),
         vec![
@@ -181,7 +217,13 @@ async fn managed_resource_lifecycle() -> TestResult {
     assert_eq!(std::fs::read_to_string(&file)?, "world");
 
     // Dropping a resource from configuration deletes it.
-    let plan = plan_and_apply(&store, &tenant, &desired(None, 3), PlanMode::Apply).await?;
+    let plan = plan_and_apply(&Convergence {
+        store: &store,
+        tenant: &tenant,
+        desired: &desired(None, 3),
+        mode: PlanMode::Apply,
+    })
+    .await?;
     assert_eq!(
         actions(&plan),
         vec![
@@ -195,7 +237,13 @@ async fn managed_resource_lifecycle() -> TestResult {
     assert_ne!(rows[0].state["id"].as_str(), Some(pet_identifier.as_str()));
 
     // Destroy removes everything the tenant owns.
-    let plan = plan_and_apply(&store, &tenant, &desired(None, 3), PlanMode::Destroy).await?;
+    let plan = plan_and_apply(&Convergence {
+        store: &store,
+        tenant: &tenant,
+        desired: &desired(None, 3),
+        mode: PlanMode::Destroy,
+    })
+    .await?;
     assert_eq!(
         actions(&plan),
         vec![("random_pet.pet".to_string(), Action::Delete)]
@@ -281,17 +329,133 @@ async fn turso_store_round_trips_records() -> TestResult {
         dependencies: vec!["other".into()],
         tainted: true,
         identity: Some(json!({"name": "a-b"})),
+        serial: 0,
     };
-    let lock = store.lock(&tenant, "round trip").await?;
+    // The caller chooses the lock identifier before acquiring it.
+    let chosen = StateLock::generate();
+    let lock = store
+        .acquire_lock(
+            &tenant,
+            &LockRequest {
+                lock: &chosen,
+                holder: "round trip",
+            },
+        )
+        .await?;
+    assert_eq!(lock, chosen);
+    assert_eq!(
+        store
+            .current_lock(&tenant)
+            .await?
+            .ok_or("no lock")?
+            .lock_identifier,
+        chosen.lock_identifier
+    );
     store.put(&tenant, &lock, &record).await?;
     let mut updated = record.clone();
     updated.private = vec![9];
     store.put(&tenant, &lock, &updated).await?;
-    assert_eq!(store.list(&tenant).await?, vec![updated.clone()]);
+    let stored = store.list(&tenant).await?;
+    assert_eq!(stored.len(), 1);
+    assert!(stored[0].same_content(&updated));
+    assert_eq!(stored[0].serial, 2);
+
+    // Conditional writes compare the serial.
+    let mut newer = updated.clone();
+    newer.private = vec![10];
+    let stale = store
+        .put_if_unchanged(
+            &tenant,
+            &lock,
+            &ConditionalPut {
+                resource: &newer,
+                expected: RecordVersion::Serial(1),
+            },
+        )
+        .await;
+    assert!(
+        matches!(&stale, Err(InfrastructureError::StateChanged { address, .. }) if address == "random_pet.pet"),
+        "{stale:?}"
+    );
+    store
+        .put_if_unchanged(
+            &tenant,
+            &lock,
+            &ConditionalPut {
+                resource: &newer,
+                expected: RecordVersion::Serial(2),
+            },
+        )
+        .await?;
+    assert_eq!(store.list(&tenant).await?[0].serial, 3);
+    let absent = cuenv_infrastructure::ManagedResource {
+        address: cuenv_infrastructure::ResourceAddress::new("random_pet", "other"),
+        ..newer.clone()
+    };
+    let conditional_absent = ConditionalPut {
+        resource: &absent,
+        expected: RecordVersion::Absent,
+    };
+    store
+        .put_if_unchanged(&tenant, &lock, &conditional_absent)
+        .await?;
+    // Repeating the same write (a retry whose response was lost) succeeds;
+    // a different record expecting no record is refused.
+    store
+        .put_if_unchanged(&tenant, &lock, &conditional_absent)
+        .await?;
+    let different = cuenv_infrastructure::ManagedResource {
+        private: vec![11],
+        ..absent.clone()
+    };
+    assert!(matches!(
+        store
+            .put_if_unchanged(
+                &tenant,
+                &lock,
+                &ConditionalPut {
+                    resource: &different,
+                    expected: RecordVersion::Absent,
+                },
+            )
+            .await,
+        Err(InfrastructureError::StateChanged { .. })
+    ));
+    store.delete(&tenant, &lock, &absent.address).await?;
+
+    // The owner record is claimed once and transferred explicitly.
+    let root = ProjectInstance::new(".", "web")?;
+    let copy = ProjectInstance::new("_copy", "web")?;
+    assert_eq!(store.owner(&tenant).await?, None);
+    let claim = |instance, mode| OwnerClaim { instance, mode };
+    let owner = store
+        .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::IfUnowned))
+        .await?;
+    assert_eq!(owner.instance, root);
+    let kept = store
+        .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::IfUnowned))
+        .await?;
+    assert_eq!(kept.instance, root);
+    assert!(kept.require(&tenant, &copy).is_err());
+    let adopted = store
+        .claim_owner(&tenant, &lock, &claim(&copy, OwnerClaimMode::Transfer))
+        .await?;
+    assert_eq!(adopted.instance, copy);
+    assert_eq!(
+        store.owner(&tenant).await?.ok_or("no owner")?.instance,
+        copy
+    );
+
     store.delete(&tenant, &lock, &updated.address).await?;
     store.unlock(&tenant, &lock).await?;
     assert!(matches!(
         store.put(&tenant, &lock, &updated).await,
+        Err(InfrastructureError::LockLost { .. })
+    ));
+    assert!(matches!(
+        store
+            .claim_owner(&tenant, &lock, &claim(&root, OwnerClaimMode::Transfer))
+            .await,
         Err(InfrastructureError::LockLost { .. })
     ));
     assert!(store.list(&tenant).await?.is_empty());
@@ -308,6 +472,8 @@ struct Fake {
     directory: tempfile::TempDir,
     store: Arc<dyn StateStore>,
     tenant: TenantKey,
+    /// The provider executable the engines launch.
+    binary: String,
 }
 
 /// The outcome of one plan and apply.
@@ -323,7 +489,28 @@ impl Fake {
             directory: tempfile::tempdir()?,
             store: store().await?,
             tenant: TenantKey::new(format!("example.com/fake-{run}"), "web")?,
+            binary: environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
         })
+    }
+
+    /// Launch the fake provider through a link named `name` from now on;
+    /// the provider changes behaviour by the name it is started as.
+    #[cfg(unix)]
+    fn launch_as(&mut self, name: &str) -> TestResult {
+        let link = self.directory.path().join(name);
+        if !link.exists() {
+            std::os::unix::fs::symlink(
+                environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
+                &link,
+            )?;
+        }
+        self.binary = link.to_string_lossy().into_owned();
+        Ok(())
+    }
+
+    fn launch_default(&mut self) -> TestResult {
+        self.binary = environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?;
+        Ok(())
     }
 
     fn engine(
@@ -335,7 +522,7 @@ impl Fake {
             "state": {"turso": {"url": "http://unused"}},
             "providers": {"fake": {
                 "source": "example.com/test/fake",
-                "path": environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?,
+                "path": self.binary,
                 "configuration": {"directory": self.directory.path().to_string_lossy()},
             }},
             "resources": resources,
@@ -634,5 +821,237 @@ async fn fake_providers_run_in_their_own_process_group() -> TestResult {
     cancellation.terminate_providers();
     client.shutdown().await;
     assert!(!Path::new(&format!("/proc/{process}")).exists());
+    Ok(())
+}
+
+/// A provider must not outlive cuenv, even one killed with `SIGKILL`: the
+/// kernel kills it when the thread that launched it goes away.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+fn fake_providers_die_with_the_thread_that_launched_them() -> TestResult {
+    let binary = environment_path("CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER")?;
+    let cancellation = Cancellation::default();
+    let launcher = cancellation.clone();
+    let process = std::thread::spawn(move || -> Result<u32, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
+        runtime.block_on(async {
+            let client = cuenv_infrastructure::plugin::ProviderClient::launch(
+                &cuenv_infrastructure::plugin::LaunchOptions {
+                    binary: Path::new(&binary),
+                    withheld_environment_variables: &[],
+                    cancellation: &launcher,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+            let process = client.process_identifier().ok_or("no process")?;
+            // Neither dropped nor shut down: only the kernel can end it.
+            std::mem::forget(client);
+            Ok(process)
+        })
+    })
+    .join()
+    .map_err(|_| "launcher thread panicked")??;
+    let alive = || {
+        std::fs::read_to_string(format!("/proc/{process}/stat")).is_ok_and(|stat| {
+            !stat
+                .rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+        })
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    cancellation.remove_socket_directories();
+    assert!(!alive(), "provider {process} outlived its launcher");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_destroys_are_planned_and_can_be_refused() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({"thing": {"type": "fake_protect", "configuration": {"name": "p"}}});
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+
+    // The provider refuses the destroy plan: nothing is deleted, whether
+    // destroying or dropping the resource from configuration.
+    fake.set_flag("protect")?;
+    for (resources, mode) in [
+        (&resources, PlanMode::Destroy),
+        (&json!({}), PlanMode::Apply),
+    ] {
+        let error = fake
+            .converge(resources, mode)
+            .await
+            .err()
+            .ok_or("a protected destroy must be refused")?;
+        assert!(
+            error.to_string().contains("deletion protection is enabled"),
+            "{error}"
+        );
+    }
+    assert!(!fake.journal().contains("protect: Delete"));
+    assert_eq!(fake.record("thing").await?.state["name"], "p");
+
+    // Allowed: the private data of the destroy plan reaches the delete.
+    fake.clear_flag("protect")?;
+    fake.converge(&resources, PlanMode::Destroy)
+        .await?
+        .applied?;
+    let journal = fake.journal();
+    assert!(
+        journal.contains(r#"protect: Delete name=p private="planned""#),
+        "{journal}"
+    );
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_inconsistent_apply_results_are_errors_and_taint_creates() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({"thing": {"type": "fake_drift", "configuration": {"name": "d"}}});
+    let created = fake.converge(&resources, PlanMode::Apply).await?;
+    let error = created
+        .applied
+        .err()
+        .ok_or("an inconsistent result must fail the apply")?
+        .to_string();
+    assert!(
+        error.contains("inconsistent result after the create of fake_drift.thing"),
+        "{error}"
+    );
+    assert!(error.contains("name: planned value changed"), "{error}");
+    assert!(!error.contains("d-drifted"), "{error}");
+    // What the provider returned is recorded, tainted, so it is replaced.
+    let record = fake.record("thing").await?;
+    assert!(record.tainted);
+    assert_eq!(record.state["name"], "d-drifted");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_dynamic_values_keep_their_type() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources = json!({"thing": {"type": "fake_dyn", "configuration": {"name": "x"}}});
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    // Sent back as the list it is, the value shows no difference.
+    let plan = fake.plan(&resources).await?;
+    assert!(!plan.has_changes(), "{:?}", actions(&plan));
+    let record = fake.record("thing").await?;
+    assert_eq!(record.state["data"]["type"], json!(["list", "string"]));
+    let journal = fake.journal();
+    assert!(
+        journal.contains("received data of type basetypes.ListValue"),
+        "{journal}"
+    );
+    assert!(!journal.contains("TupleValue"), "{journal}");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_state_from_a_newer_schema_version_is_refused() -> TestResult {
+    let mut fake = Fake::new().await?;
+    let resources = json!({"thing": {"type": "fake_version", "configuration": {"name": "v"}}});
+    fake.launch_as("terraform-provider-fake-v1")?;
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    assert_eq!(fake.record("thing").await?.schema_version, 1);
+
+    // An older provider must not be handed (and silently downgrade) it.
+    fake.launch_default()?;
+    let error = fake
+        .plan(&resources)
+        .await
+        .err()
+        .ok_or("state from a newer schema must be refused")?
+        .to_string();
+    assert!(error.contains("resource schema version 1"), "{error}");
+    assert!(error.contains("only knows version 0"), "{error}");
+    assert!(
+        !fake.journal().contains("version: UpgradeResourceState"),
+        "the provider was called"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_set_configuration_holds_each_value_once() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources =
+        json!({"thing": {"type": "fake_tags", "configuration": {"tags": ["a", "b", "a"]}}});
+    fake.converge(&resources, PlanMode::Apply).await?.applied?;
+    assert!(fake.journal().contains("tags: Create with 2 tags"));
+    let plan = fake.plan(&resources).await?;
+    assert!(!plan.has_changes(), "{:?}", actions(&plan));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_stop_between_the_halves_of_a_replacement_skips_the_create() -> TestResult {
+    let fake = Fake::new().await?;
+    let resources =
+        |name: &str| json!({"thing": {"type": "fake_repl", "configuration": {"name": name}}});
+    fake.converge(&resources("a"), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.set_flag("slow-delete")?;
+
+    let cancellation = Cancellation::default();
+    let mut engine = fake.engine(&resources("b"), &cancellation)?;
+    let lock = fake.store.lock(&fake.tenant, "fake").await?;
+    let plan = engine.plan(PlanMode::Apply).await?;
+    assert_eq!(plan.changes[0].action, Action::Replace);
+    let mut warnings = Vec::new();
+    let mut collect = |event| {
+        if let cuenv_infrastructure::ApplyEvent::Warning(warning) = event {
+            warnings.push(warning);
+        }
+    };
+    let (applied, ()) = tokio::join!(
+        engine.apply(&plan, ApplyContext { lock: &lock }, &mut collect),
+        async {
+            // Stop while the delete half is running.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            cancellation.stop();
+        }
+    );
+    assert!(
+        matches!(
+            applied,
+            Err(InfrastructureError::Interrupted {
+                completed: 0,
+                total: 1
+            })
+        ),
+        "{applied:?}"
+    );
+    let journal = fake.journal();
+    assert!(
+        journal.contains("repl: Delete name=a finished"),
+        "{journal}"
+    );
+    assert!(!journal.contains("repl: Create name=b"), "{journal}");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.contains("replacement was not created")),
+        "{warnings:?}"
+    );
+    // The delete is recorded; the next apply creates the replacement.
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    fake.store.unlock(&fake.tenant, &lock).await?;
+    engine.shutdown().await;
     Ok(())
 }

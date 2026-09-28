@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::error::Result;
 use crate::protocol::{self, NestingMode};
-use crate::type_system::{Type, Value};
+use crate::type_system::{Type, Value, deduplicate};
 
 /// A provider's schemas for itself and its managed resources.
 #[derive(Debug, Clone)]
@@ -17,6 +17,25 @@ pub struct ProviderSchema {
     pub provider: Schema,
     /// Managed resource schemas, keyed by resource type name.
     pub resources: HashMap<String, Schema>,
+    /// Optional protocol features the provider supports.
+    pub capabilities: ProviderCapabilities,
+}
+
+/// Optional protocol features a provider reports with its schema.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// The provider expects `PlanResourceChange` (with null configuration
+    /// and proposed state) before every destroy, and may refuse it or add
+    /// private data for the delete.
+    pub plan_destroy: bool,
+}
+
+impl ProviderCapabilities {
+    fn from_protocol(capabilities: Option<&protocol::ServerCapabilities>) -> Self {
+        Self {
+            plan_destroy: capabilities.is_some_and(|capabilities| capabilities.plan_destroy),
+        }
+    }
 }
 
 /// A versioned schema.
@@ -255,12 +274,21 @@ impl Block {
                 (Nesting::Group, Value::Null) => nested
                     .block
                     .normalize_configuration(Value::Object(BTreeMap::new())),
-                (Nesting::List | Nesting::Set, Value::List(items)) => Value::List(
+                (Nesting::List, Value::List(items)) => Value::List(
                     items
                         .into_iter()
                         .map(|item| nested.block.normalize_configuration(item))
                         .collect(),
                 ),
+                // Equal blocks of a set are one block, as in Terraform; only
+                // normalization can make two of them equal.
+                (Nesting::Set, Value::List(items)) => Value::List(deduplicate(
+                    items
+                        .into_iter()
+                        .map(|item| nested.block.normalize_configuration(item))
+                        .collect(),
+                    &nested.block.implied_type(),
+                )),
                 (Nesting::Map, Value::Object(items)) => Value::Object(
                     items
                         .into_iter()
@@ -307,6 +335,9 @@ impl ProviderSchema {
     /// Returns a codec error when an attribute type cannot be parsed.
     pub fn from_version6(response: protocol::version6::GetProviderSchemaResponse) -> Result<Self> {
         Ok(Self {
+            capabilities: ProviderCapabilities::from_protocol(
+                response.server_capabilities.as_ref(),
+            ),
             provider: response
                 .provider
                 .map_or_else(|| Ok(Schema::empty()), version6_schema)?,
@@ -325,6 +356,9 @@ impl ProviderSchema {
     /// Returns a codec error when an attribute type cannot be parsed.
     pub fn from_version5(response: protocol::version5::GetProviderSchemaResponse) -> Result<Self> {
         Ok(Self {
+            capabilities: ProviderCapabilities::from_protocol(
+                response.server_capabilities.as_ref(),
+            ),
             provider: response
                 .provider
                 .map_or_else(|| Ok(Schema::empty()), version5_schema)?,
@@ -582,6 +616,86 @@ mod tests {
         );
         assert!(sensitive.contains(&"settings".to_string()), "{sensitive:?}");
         assert!(!sensitive.contains(&"name".to_string()), "{sensitive:?}");
+    }
+
+    #[test]
+    fn equal_blocks_of_a_set_become_one() {
+        let mut inner = Block::default();
+        inner
+            .attributes
+            .insert("port".into(), attribute(Type::Number, Presence::Optional));
+        inner.blocks.insert(
+            "source".into(),
+            NestedBlock {
+                block: sample_block(),
+                nesting: Nesting::List,
+            },
+        );
+        let mut block = Block::default();
+        block.blocks.insert(
+            "ingress".into(),
+            NestedBlock {
+                block: inner,
+                nesting: Nesting::Set,
+            },
+        );
+        // Equal only once the absent `source` blocks are normalized to an
+        // empty list.
+        let value = Value::from_configuration_json(
+            &json!({"ingress": [{"port": 80}, {"port": 80, "source": []}, {"port": 443}]}),
+            &block.implied_type(),
+        )
+        .unwrap();
+        let Some(Value::List(converted)) = value.attribute("ingress") else {
+            panic!("ingress is not a list: {value:?}");
+        };
+        assert_eq!(converted.len(), 3, "{converted:?}");
+        let normalized = block.normalize_configuration(value);
+        let Some(Value::List(ingress)) = normalized.attribute("ingress") else {
+            panic!("ingress is not a list: {normalized:?}");
+        };
+        assert_eq!(ingress.len(), 2, "{ingress:?}");
+    }
+
+    #[test]
+    fn server_capabilities_are_decoded_in_both_protocols() {
+        use prost::Message;
+        let capabilities = Some(protocol::ServerCapabilities { plan_destroy: true });
+        let version6 = protocol::version6::GetProviderSchemaResponse {
+            server_capabilities: capabilities.clone(),
+            ..Default::default()
+        };
+        let decoded = protocol::version6::GetProviderSchemaResponse::decode(
+            version6.encode_to_vec().as_slice(),
+        )
+        .unwrap();
+        assert!(
+            ProviderSchema::from_version6(decoded)
+                .unwrap()
+                .capabilities
+                .plan_destroy
+        );
+        let version5 = protocol::version5::GetProviderSchemaResponse {
+            server_capabilities: capabilities,
+            ..Default::default()
+        };
+        let decoded = protocol::version5::GetProviderSchemaResponse::decode(
+            version5.encode_to_vec().as_slice(),
+        )
+        .unwrap();
+        assert!(
+            ProviderSchema::from_version5(decoded)
+                .unwrap()
+                .capabilities
+                .plan_destroy
+        );
+        let without = protocol::version5::GetProviderSchemaResponse::default();
+        assert!(
+            !ProviderSchema::from_version5(without)
+                .unwrap()
+                .capabilities
+                .plan_destroy
+        );
     }
 
     #[test]

@@ -46,6 +46,8 @@ fn record(resource_type: &str, name: &str, dependencies: &[&str]) -> ManagedReso
             .collect(),
         tainted: false,
         identity: None,
+        // As stored by the first write.
+        serial: 1,
     }
 }
 
@@ -164,7 +166,7 @@ fn refresh_only(name: &str) -> ResourceChange {
     let stored = record("random_pet", name, &[]);
     let mut refreshed = stored.clone();
     refreshed.state = json!({"id": "refreshed"});
-    let mut unchanged = change(stored.address.clone(), Action::NoOp);
+    let mut unchanged = change(stored.address.clone(), Action::Refresh);
     unchanged.stored = Some(stored);
     unchanged.refreshed_record = Some(refreshed);
     unchanged
@@ -438,11 +440,22 @@ fn engine(store: Arc<dyn StateStore>, unrecorded_directory: &Path) -> Infrastruc
     })
 }
 
+/// Store the record `refresh_only(name)` was planned from.
+async fn store_planned_record(store: &dyn StateStore, name: &str) {
+    let lock = store.lock(&tenant(), "setup").await.unwrap();
+    store
+        .put(&tenant(), &lock, &record("random_pet", name, &[]))
+        .await
+        .unwrap();
+    store.unlock(&tenant(), &lock).await.unwrap();
+}
+
 #[tokio::test]
 async fn apply_writes_refresh_only_records_under_the_lock() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
+    store_planned_record(store.as_ref(), "pet").await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     let plan = plan_of(vec![refresh_only("pet")]);
     let mut events = Vec::new();
@@ -465,6 +478,7 @@ async fn failed_refresh_only_writes_are_plain_state_errors() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
+    store_planned_record(store.as_ref(), "pet").await;
     let stale = StateLock {
         lock_identifier: "not-held".into(),
     };
@@ -495,6 +509,7 @@ async fn apply_stops_between_resources_once_stop_is_requested() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
+    store_planned_record(store.as_ref(), "pet").await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     engine.cancellation().stop();
     let error = engine
@@ -515,7 +530,229 @@ async fn apply_stops_between_resources_once_stop_is_requested() {
         ),
         "{error}"
     );
-    assert!(store.list(&tenant()).await.unwrap().is_empty());
+    assert_eq!(
+        store.list(&tenant()).await.unwrap()[0].state["id"],
+        "stored"
+    );
+}
+
+#[tokio::test]
+async fn stale_plans_are_refused_before_anything_is_written() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    store_planned_record(store.as_ref(), "pet").await;
+    let lock = store.lock(&tenant(), "test").await.unwrap();
+    // Another run rewrote the record after the plan was made: same content,
+    // newer serial.
+    store
+        .put(&tenant(), &lock, &record("random_pet", "pet", &[]))
+        .await
+        .unwrap();
+    let plan = plan_of(vec![refresh_only("pet")]);
+    let error = engine
+        .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&error, InfrastructureError::PlanOutdated { address } if address == "random_pet.pet"),
+        "{error}"
+    );
+    assert_eq!(
+        store.list(&tenant()).await.unwrap()[0].state["id"],
+        "stored"
+    );
+
+    // A record the plan never saw is refused too.
+    let appeared = plan_of(Vec::new());
+    let error = engine
+        .apply(&appeared, ApplyContext { lock: &lock }, &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::PlanOutdated { .. }),
+        "{error}"
+    );
+}
+
+/// A store whose record writes fail with a state error.
+#[derive(Debug, Default)]
+struct FailingWrites {
+    inner: MemoryStateStore,
+}
+
+#[async_trait::async_trait]
+impl StateStore for FailingWrites {
+    async fn migrate(&self) -> Result<()> {
+        self.inner.migrate().await
+    }
+
+    async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
+        self.inner.list(tenant).await
+    }
+
+    async fn put(
+        &self,
+        _tenant: &TenantKey,
+        _lock: &StateLock,
+        _resource: &ManagedResource,
+    ) -> Result<()> {
+        Err(InfrastructureError::state("Turso returned HTTP 503"))
+    }
+
+    async fn put_if_unchanged(
+        &self,
+        _tenant: &TenantKey,
+        _lock: &StateLock,
+        _put: &ConditionalPut<'_>,
+    ) -> Result<()> {
+        Err(InfrastructureError::state("Turso returned HTTP 503"))
+    }
+
+    async fn delete(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        address: &ResourceAddress,
+    ) -> Result<()> {
+        self.inner.delete(tenant, lock, address).await
+    }
+
+    async fn acquire_lock(
+        &self,
+        tenant: &TenantKey,
+        request: &crate::state::LockRequest<'_>,
+    ) -> Result<StateLock> {
+        self.inner.acquire_lock(tenant, request).await
+    }
+
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+        self.inner.unlock(tenant, lock).await
+    }
+
+    async fn current_lock(
+        &self,
+        tenant: &TenantKey,
+    ) -> Result<Option<crate::state::LockInformation>> {
+        self.inner.current_lock(tenant).await
+    }
+
+    async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
+        self.inner.force_unlock(tenant, lock_identifier).await
+    }
+
+    async fn owner(&self, tenant: &TenantKey) -> Result<Option<crate::state::TenantOwner>> {
+        self.inner.owner(tenant).await
+    }
+
+    async fn claim_owner(
+        &self,
+        tenant: &TenantKey,
+        lock: &StateLock,
+        claim: &crate::state::OwnerClaim<'_>,
+    ) -> Result<crate::state::TenantOwner> {
+        self.inner.claim_owner(tenant, lock, claim).await
+    }
+}
+
+#[tokio::test]
+async fn failed_refresh_writes_name_their_address() {
+    let directory = tempfile::tempdir().unwrap();
+    let failing = FailingWrites::default();
+    store_planned_record(&failing.inner, "pet").await;
+    let store: Arc<dyn StateStore> = Arc::new(failing);
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    let lock = store.lock(&tenant(), "test").await.unwrap();
+    let error = engine
+        .apply(
+            &plan_of(vec![refresh_only("pet")]),
+            ApplyContext { lock: &lock },
+            &mut |_| {},
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, InfrastructureError::State(_)), "{error}");
+    assert!(error.to_string().contains("random_pet.pet"), "{error}");
+    assert!(error.to_string().contains("HTTP 503"), "{error}");
+}
+
+#[test]
+fn inconsistent_create_and_update_results_are_provider_errors() {
+    let address = ResourceAddress::new("example_thing", "one");
+    let block = name_block();
+    let step = |kind| ApplyStep {
+        kind,
+        prior: Vec::new(),
+        planned: Vec::new(),
+        configuration: Vec::new(),
+        planned_private: Vec::new(),
+        planned_value: named("planned"),
+    };
+    let check = |step: &ApplyStep, returned: &Value| {
+        inconsistent_result(&InconsistentResultCheck {
+            address: &address,
+            block: &block,
+            step,
+            returned,
+        })
+    };
+    let create = step(StepKind::Create);
+    assert!(check(&create, &named("planned")).is_none());
+    let problem = check(&create, &named("drifted")).unwrap();
+    assert!(problem.contains("inconsistent result after the create of example_thing.one"));
+    assert!(problem.contains("name: planned value changed after apply"));
+    assert!(!problem.contains("drifted"));
+    assert!(check(&step(StepKind::Update), &named("drifted")).is_some());
+    assert!(check(&step(StepKind::Delete), &Value::Null).is_none());
+}
+
+#[test]
+fn undecodable_apply_results_report_the_provider_errors() {
+    let value_type = Type::from_json(&json!(["object", {"id": "string"}])).unwrap();
+    let error_diagnostic = Diagnostic {
+        severity: Severity::Error as i32,
+        summary: "create failed".into(),
+        detail: "quota exceeded".into(),
+        attribute: None,
+    };
+    let response = |diagnostics: Vec<Diagnostic>| protocol::ApplyResourceChangeResponse {
+        // A number where the schema says string: cannot be decoded.
+        new_state: Some(protocol::DynamicValue {
+            message_pack: vec![0x81, 0xa2, b'i', b'd', 0x07],
+            json: Vec::new(),
+        }),
+        private: Vec::new(),
+        diagnostics,
+        legacy_type_system: false,
+    };
+    let error = applied_value(&response(vec![error_diagnostic]), &value_type, "apply x")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("quota exceeded"), "{error}");
+    let error = applied_value(&response(Vec::new()), &value_type, "apply x")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("does not match type"), "{error}");
+}
+
+#[test]
+fn upgraded_states_must_exist_and_be_known() {
+    let address = ResourceAddress::new("example_thing", "one");
+    assert!(check_upgraded(&address, &named("x")).is_ok());
+    assert!(check_upgraded(&address, &Value::Null).is_err());
+    let unknown = Value::Object(BTreeMap::from([("name".to_string(), Value::Unknown)]));
+    let error = check_upgraded(&address, &unknown).unwrap_err().to_string();
+    assert!(error.contains("unknown values while upgrading"), "{error}");
+    assert!(error.contains("example_thing.one"), "{error}");
+}
+
+#[test]
+fn refresh_changes_have_their_own_action_name() {
+    assert_eq!(Action::Refresh.name(), "refresh");
+    assert!(!Action::Refresh.changes_infrastructure());
+    assert!(Action::Delete.changes_infrastructure());
+    let plan = plan_of(vec![refresh_only("pet")]);
+    assert_eq!(plan.changes[0].action.name(), "refresh");
 }
 
 #[tokio::test]
@@ -526,7 +763,13 @@ async fn planning_refuses_while_unrecorded_changes_are_pending() {
     engine
         .unrecorded_store()
         .unwrap()
-        .save(&tenant(), &record("random_pet", "pet", &[]))
+        .save(
+            &tenant(),
+            &ConditionalPut {
+                resource: &record("random_pet", "pet", &[]),
+                expected: RecordVersion::Absent,
+            },
+        )
         .unwrap();
     let error = engine.plan(PlanMode::Apply).await.unwrap_err();
     assert!(
@@ -570,7 +813,12 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = engine(store, directory.path());
     let cause = InfrastructureError::state("connection refused");
-    let saved = engine.save_unrecorded(&record("random_pet", "pet", &[]), &cause);
+    let pet = record("random_pet", "pet", &[]);
+    let put = ConditionalPut {
+        resource: &pet,
+        expected: RecordVersion::Serial(3),
+    };
+    let saved = engine.save_unrecorded(&put, &cause);
     let message = saved.to_string();
     assert!(
         matches!(saved, InfrastructureError::UnrecordedChange { .. }),
@@ -579,29 +827,30 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     assert!(message.contains("random_pet.pet"), "{message}");
     assert!(message.contains("state recover"), "{message}");
     assert!(!message.contains("hunter2"), "{message}");
-    assert_eq!(
-        engine
-            .unrecorded_store()
-            .unwrap()
-            .list(&tenant())
-            .unwrap()
-            .len(),
-        1
-    );
+    let listed = engine.unrecorded_store().unwrap().list(&tenant()).unwrap();
+    assert_eq!(listed.len(), 1);
+    // The saved record remembers which stored version it replaces.
+    assert_eq!(listed[0].expected, RecordVersion::Serial(3));
 
-    // When even the local save fails, the error names the address only.
+    // When even the local save fails, the error names the address and the
+    // kind of local failure only.
     let blocked = tempfile::tempdir().unwrap();
     std::fs::write(blocked.path().join("unrecorded"), b"not a directory").unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = self::engine(store, blocked.path());
-    let lost = engine.save_unrecorded(&record("random_pet", "pet", &[]), &cause);
+    let lost = engine.save_unrecorded(&put, &cause);
     let message = lost.to_string();
     assert!(
         matches!(lost, InfrastructureError::UnrecordedChangeLost { .. }),
         "{message}"
     );
     assert!(message.contains("random_pet.pet"), "{message}");
+    assert!(message.contains("not usable"), "{message}");
     assert!(!message.contains("hunter2"), "{message}");
+    assert!(
+        !message.contains(&blocked.path().display().to_string()),
+        "{message}"
+    );
     assert!(!message.contains("connection refused"), "{message}");
 }
 

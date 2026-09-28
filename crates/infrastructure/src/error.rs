@@ -91,14 +91,87 @@ pub enum InfrastructureError {
 
     /// A provider changed a resource, and neither the state store nor the
     /// local unrecorded-change directory could keep its record. Deliberately
-    /// names nothing but the address.
+    /// names nothing but the address and the category of the local failure.
     #[error(
         "{address} was changed by its provider, but its state could not be recorded or saved \
-         locally; the resource exists and cuenv no longer tracks it"
+         locally ({save_failure}); the resource exists and cuenv no longer tracks it"
     )]
     UnrecordedChangeLost {
         /// Resource address.
         address: String,
+        /// Why saving locally failed, as a category such as `permission
+        /// denied`; never a path or a value.
+        save_failure: String,
+    },
+
+    /// A file (or directory) of unrecorded changes cannot be used: it is
+    /// unreadable, malformed, of another format version or tenant, or not
+    /// safely private to this user. Never a state store problem.
+    #[error("unrecorded change file {path} cannot be used: {problem}")]
+    UnrecordedFile {
+        /// The file or directory.
+        path: String,
+        /// What is wrong with it, without its content.
+        problem: String,
+    },
+
+    /// A conditional write found the stored record changed since the
+    /// caller's view of it, so writing would overwrite a newer record.
+    #[error(
+        "{address} changed in the state store since this record was saved (expected {expected}, \
+         found {found}); writing it would overwrite a newer record. Review the resource, then \
+         recover with force to overwrite it anyway"
+    )]
+    StateChanged {
+        /// Resource address.
+        address: String,
+        /// The record version the caller expected.
+        expected: String,
+        /// The record version found.
+        found: String,
+    },
+
+    /// A plan's view of stored state no longer matches the store, so
+    /// applying it could act on stale records.
+    #[error(
+        "the plan is out of date: the stored record of {address} changed after the plan was \
+         made; plan again"
+    )]
+    PlanOutdated {
+        /// First resource address whose stored record differs.
+        address: String,
+    },
+
+    /// Another CUE instance owns the tenant's state.
+    #[error(
+        "{tenant} is owned by the CUE instance {owner}, not {instance}; refusing to act on its \
+         state. If {instance} is now the right owner, transfer ownership with `cuenv \
+         infrastructure state adopt`"
+    )]
+    OwnedByAnotherInstance {
+        /// Tenant whose state is owned.
+        tenant: String,
+        /// The recorded owner instance.
+        owner: String,
+        /// The instance that tried to act.
+        instance: String,
+    },
+
+    /// A stored record was written with a schema version newer than the
+    /// provider now in use knows; handing it over would silently downgrade
+    /// it.
+    #[error(
+        "{address} was recorded with resource schema version {stored_version}, but the \
+         configured provider only knows version {provider_version}; use the newer provider \
+         version that wrote it"
+    )]
+    StateFromNewerProvider {
+        /// Resource address.
+        address: String,
+        /// Schema version of the stored record.
+        stored_version: i64,
+        /// Newest schema version the provider knows.
+        provider_version: i64,
     },
 
     /// Earlier runs left changes that are not yet in the state store.
@@ -193,5 +266,78 @@ pub(crate) fn json_error_category(error: &serde_json::Error) -> &'static str {
         serde_json::error::Category::Syntax => "syntax error",
         serde_json::error::Category::Data => "data error",
         serde_json::error::Category::Eof => "unexpected end",
+    }
+}
+
+/// Describe a JSON error by category and position only: its message can
+/// quote the value (possibly a secret) it failed on.
+pub(crate) fn describe_json_error(error: &serde_json::Error) -> String {
+    format!(
+        "{} at line {}, column {}",
+        json_error_category(error),
+        error.line(),
+        error.column()
+    )
+}
+
+/// Name the category of an error without any path or value in it, for
+/// reports that must not reveal more than what kind of failure happened.
+#[must_use]
+pub fn failure_category(error: &InfrastructureError) -> String {
+    match error {
+        InfrastructureError::InputOutput { source, .. } => source.kind().to_string(),
+        InfrastructureError::UnrecordedFile { .. } => {
+            "the unrecorded change directory is not usable".to_string()
+        }
+        InfrastructureError::Codec(_) => "the record could not be serialized".to_string(),
+        InfrastructureError::Configuration(_) => "no user state directory is available".to_string(),
+        _ => "unexpected failure".to_string(),
+    }
+}
+
+/// Remove control characters (C0, DEL and C1) from text to display.
+///
+/// Text from a provider or the state store must not move the cursor,
+/// rewrite earlier output or change the terminal's state.
+#[must_use]
+pub fn strip_control_characters(text: &str) -> String {
+    text.chars()
+        .filter(|character| !character.is_control())
+        .collect()
+}
+
+/// [`strip_control_characters`], keeping line breaks, for multi-line text
+/// such as provider diagnostics.
+#[must_use]
+pub fn strip_control_characters_except_newlines(text: &str) -> String {
+    text.chars()
+        .filter(|character| *character == '\n' || !character.is_control())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_characters_are_stripped() {
+        let hostile = "ok\u{1b}[2J\u{7}\u{7f}\u{9b}31m\tend\r\nnext";
+        assert_eq!(strip_control_characters(hostile), "ok[2J31mendnext");
+        assert_eq!(
+            strip_control_characters_except_newlines(hostile),
+            "ok[2J31mend\nnext"
+        );
+        assert_eq!(strip_control_characters("plain text é"), "plain text é");
+    }
+
+    #[test]
+    fn failure_categories_carry_no_detail() {
+        let error = InfrastructureError::input_output(
+            "write /home/secret/path",
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let category = failure_category(&error);
+        assert_eq!(category, "permission denied");
+        assert!(!category.contains("secret"));
     }
 }

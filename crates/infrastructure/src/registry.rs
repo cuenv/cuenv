@@ -336,6 +336,19 @@ pub struct ProviderInstaller {
     cache_directory: PathBuf,
 }
 
+/// Most redirects a registry request follows.
+const MAXIMUM_REDIRECTS: usize = 5;
+
+/// Which schemes a registry client may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RegistryTransport {
+    /// HTTPS only, redirects included.
+    HttpsOnly,
+    /// Plaintext too; only for tests against a local server.
+    #[cfg(test)]
+    PlaintextForTests,
+}
+
 #[derive(Debug, Deserialize)]
 struct ServiceDiscovery {
     #[serde(rename = "providers.v1")]
@@ -493,9 +506,18 @@ impl ProviderInstaller {
     ///
     /// Returns [`InfrastructureError::Install`] if the HTTP client cannot be built.
     pub fn new(cache_directory: PathBuf) -> Result<Self> {
+        Self::with_transport(cache_directory, RegistryTransport::HttpsOnly)
+    }
+
+    /// Every request, and every redirect it follows, must use HTTPS: a
+    /// redirect to plaintext HTTP is refused, and at most
+    /// [`MAXIMUM_REDIRECTS`] redirects are followed.
+    fn with_transport(cache_directory: PathBuf, transport: RegistryTransport) -> Result<Self> {
         crate::ensure_rustls_cryptography_provider();
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(300))
+            .redirect(reqwest::redirect::Policy::limited(MAXIMUM_REDIRECTS))
+            .https_only(transport == RegistryTransport::HttpsOnly)
             .build()
             .map_err(|error| {
                 InfrastructureError::install(format!("failed to build HTTP client: {error}"))
@@ -1334,8 +1356,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registry_documents_are_bounded() {
+    async fn registry_requests_refuse_plaintext_http() {
         let installer = ProviderInstaller::new(PathBuf::from("/cache")).unwrap();
+        let small = r#"{"providers.v1": "/v1/providers/"}"#.to_string();
+        let url = document_server(small.clone(), Some(small.len())).await;
+        let error = installer
+            .get_document::<ServiceDiscovery>(&url, "document")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("failed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn registry_documents_are_bounded() {
+        let installer = ProviderInstaller::with_transport(
+            PathBuf::from("/cache"),
+            RegistryTransport::PlaintextForTests,
+        )
+        .unwrap();
         let small = r#"{"providers.v1": "/v1/providers/"}"#.to_string();
         let url = document_server(small.clone(), Some(small.len())).await;
         let discovery: ServiceDiscovery = installer.get_document(&url, "document").await.unwrap();

@@ -14,7 +14,8 @@
 //!
 //! `required` and `write_only` attribute flags are not decoded: required is
 //! implied by neither optional nor computed, and cuenv advertises no
-//! write-only support.
+//! write-only support. Of the provider's `ServerCapabilities` only
+//! `plan_destroy` is decoded; it makes cuenv plan every destroy.
 
 use std::collections::HashMap;
 
@@ -90,6 +91,15 @@ pub struct ClientCapabilities {
     pub deferral_allowed: bool,
     #[prost(bool, tag = "2")]
     pub write_only_attributes_allowed: bool,
+}
+
+/// Optional protocol features a provider supports, reported with its
+/// schema (tag 6 of `GetProviderSchema.Response` in both protocols).
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct ServerCapabilities {
+    /// The provider expects `PlanResourceChange` for every destroy.
+    #[prost(bool, tag = "1")]
+    pub plan_destroy: bool,
 }
 
 /// Nesting mode shared by nested blocks (protocols 5 and 6) and nested
@@ -279,7 +289,7 @@ pub struct ApplyResourceChangeResponse {
 
 /// Schema messages for protocol 6.
 pub mod version6 {
-    use super::{Diagnostic, NestingMode};
+    use super::{Diagnostic, NestingMode, ServerCapabilities};
     use std::collections::HashMap;
 
     /// `GetProviderSchema.Response`.
@@ -291,6 +301,8 @@ pub mod version6 {
         pub resource_schemas: HashMap<String, Schema>,
         #[prost(message, repeated, tag = "4")]
         pub diagnostics: Vec<Diagnostic>,
+        #[prost(message, optional, tag = "6")]
+        pub server_capabilities: Option<ServerCapabilities>,
     }
 
     /// `Schema`.
@@ -351,7 +363,7 @@ pub mod version6 {
 
 /// Schema messages for protocol 5.
 pub mod version5 {
-    use super::{Diagnostic, NestingMode};
+    use super::{Diagnostic, NestingMode, ServerCapabilities};
     use std::collections::HashMap;
 
     /// `GetProviderSchema.Response`.
@@ -363,6 +375,8 @@ pub mod version5 {
         pub resource_schemas: HashMap<String, Schema>,
         #[prost(message, repeated, tag = "4")]
         pub diagnostics: Vec<Diagnostic>,
+        #[prost(message, optional, tag = "6")]
+        pub server_capabilities: Option<ServerCapabilities>,
     }
 
     /// `Schema`.
