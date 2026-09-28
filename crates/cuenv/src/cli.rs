@@ -9,14 +9,14 @@ use clap_complete::Shell;
 
 pub use commands::Commands;
 pub use error::{
-    CliError, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_LOCKED, EXIT_OK,
-    InfrastructureLockState, exit_code_for, render_error,
+    CliError, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED, EXIT_LOCKED, EXIT_OK,
+    InfrastructureFailureKind, error_code_for, exit_code_for, render_error,
 };
 pub use output::{ErrorEnvelope, OkEnvelope, OutputFormat};
 pub use subcommands::{
-    ChangesetCommands, EnvCommands, InfrastructureCommands, OciCommands, ReleaseCommands,
-    RuntimeCommands, SecretsCommands, SecretsProvider, ShellCommands, ShellType, StatusFormat,
-    SyncCommands, ToolsCommands,
+    ChangesetCommands, EnvCommands, InfrastructureCommands, InfrastructureStateCommands,
+    OciCommands, ReleaseCommands, RuntimeCommands, SecretsCommands, SecretsProvider, ShellCommands,
+    ShellType, StatusFormat, SyncCommands, ToolsCommands,
 };
 
 /// Main CLI entry point for cuenv.

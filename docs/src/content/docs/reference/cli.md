@@ -487,33 +487,114 @@ See [Manage infrastructure](/how-to/infrastructure/).
 cuenv infrastructure plan    [OPTIONS]
 cuenv infrastructure apply   [OPTIONS] [--yes]
 cuenv infrastructure destroy [OPTIONS] [--yes]
-cuenv infrastructure state   [OPTIONS]
+cuenv infrastructure state   [list | remove <ADDRESS> | recover] [OPTIONS]
 cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 ```
 
-- `plan`: refresh recorded resources and show the changes `apply` would make.
-- `apply`: plan, confirm, take the project's state lock, plan again (refusing
-  to continue if the plan changed), and converge. Resources removed from
-  `infrastructure.resources` are deleted.
+- `plan`: refresh recorded resources and show the changes `apply` would make,
+  including records it would refresh ("N to refresh").
+- `apply`: converge on the configuration. Resources removed from
+  `infrastructure.resources` are deleted. With a prompt: plan without the
+  lock, show the plan, ask for confirmation, take the project's state lock,
+  plan again and apply only if the new plan's digest matches the confirmed
+  one (every resource, action, before and after value, replacement path and
+  stored record); otherwise nothing is applied and the exit code is `4`. With
+  `--yes`: take the lock, plan once, show that plan and apply it — there is
+  no preview without the lock. The lock is taken whenever the plan has work,
+  including records that only need refreshing.
 - `destroy`: the same flow, deleting every managed resource recorded for the
   project.
-- `state`: list managed resources recorded for the project, marking tainted
-  ones.
+- `state` or `state list`: list managed resources recorded for the project,
+  marking tainted ones.
+- `state remove <ADDRESS>`: forget one managed resource (such as
+  `random_pet.pet`) under the lock, without touching the real object — the
+  escape hatch when its provider is gone. An address that is not recorded is
+  refused (exit code `2`).
+- `state recover`: under the lock, record every change an earlier run could
+  not record and saved in the user state directory
+  (`$XDG_STATE_HOME/cuenv/infrastructure/unrecorded/`, by default
+  `~/.local/state/…` on Linux), deleting each file once it is recorded.
+  `plan`, `apply` and `destroy` refuse to run (exit code `5`) while such files
+  exist for the project.
 - `unlock`: without an identifier, show who holds the lock and since when;
-  with one, release exactly that lock.
+  with one, release exactly that lock. Naming a lock that is not the current
+  one releases nothing and exits with code `4`.
 
 **Options:**
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
+  (for `state`, accepted before or after its subcommand).
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
-  when standard input is not a terminal. `--auto-approve` is accepted as an
-  alias.
-- Global `--json` makes `plan` and `state` print JSON (addresses, actions and
-  summary counts; never attribute values).
+  when standard input is not a terminal, and with `--json`. `--auto-approve`
+  is accepted as an alias.
 
-**Exit codes:** `2` configuration error, `3` evaluation error, `4` the state
-is locked by another run, `5` any other infrastructure failure.
+**Project name uniqueness:** state is keyed by the CUE module path and the
+project name, so `plan`, `apply` and `destroy` evaluate every instance of every
+CUE package in the module first. They refuse to run when another instance
+declares the same project name together with an `infrastructure` block (exit
+code `2`) or when any instance fails to evaluate (exit code `3`; the error
+names each failing instance as `<directory>:<package>`), because a broken
+instance could hide a duplicate. A directory below a project inherits its
+`name` and `infrastructure` in CUE unless it sets its own, so it counts as a
+duplicate. `state` and `unlock` evaluate only the project, so they keep
+working while a sibling is broken. Only this command requires the
+`infrastructure` block to be concrete; other commands evaluate the same
+project without that requirement.
+
+**Read-only access:** `plan`, `state list` and `unlock` without an identifier
+never create or upgrade the state tables, so they work with a read-only token
+and against a database cuenv has never written. `apply`, `destroy`,
+`state remove`, `state recover` and `unlock` with an identifier create or
+upgrade them first.
+
+**JSON output:** with the global `--json`, every subcommand prints exactly one
+JSON envelope on standard output and nothing else; progress, warnings and
+other events go to standard error as JSON lines. On failure the envelope is
+the error envelope. Payloads never contain attribute values:
+
+- `plan`: `tenant`, `changes` (`address`, `action`, `requiresReplace`) and
+  `summary` (`create`, `update`, `replace`, `delete`, `refresh`, `unchanged`).
+  `action` is one of `no-op`, `create`, `update`, `replace`, `delete`.
+- `apply`, `destroy`: the applied plan in the same shape, plus `operation`
+  (`apply` or `destroy`) and `applied` (the counts applied, or `null` when there
+  was nothing to do). `--json` requires `--yes` because the confirmation
+  prompt cannot share standard output with the result.
+- `state`, `state list`: `tenant` and `resources` (`address`, `provider`,
+  `providerSource`, `schemaVersion`, `tainted`).
+- `state remove`: `tenant` and `removed` (the address).
+- `state recover`: `tenant` and `recovered` (the addresses recorded).
+- `unlock`: `tenant`, `lock` (`lockIdentifier`, `holder`, `acquiredAt`, or
+  `null` when unlocked) and `released`.
+
+**Interrupts:** the command handles Ctrl-C (SIGINT) and SIGTERM itself for its
+whole run, as Terraform does. The first signal starts no new resource and
+asks every running provider to stop, so the operation in flight returns
+early; whatever it returns is recorded (an interrupted create is recorded as
+tainted), the lock is released and the exit code is `130`. Reading state and
+the prompt stop at once; planning stops at the next resource, or right after
+CUE evaluation when the signal arrives during evaluation. If the lock is
+being acquired, acquisition finishes and the lock is released again. A second
+signal kills every provider process, releases the lock if that takes at most
+about two seconds, writes the outcome and the lock identifier directly to
+standard error and exits with code `130`. Provider processes run in their own
+process group, so a terminal Ctrl-C reaches only cuenv.
+
+**Lock holder:** a lock records the subcommand, the user (the account of the
+real user identifier), the host name, the process identifier and, in GitHub
+Actions, the workflow run URL. `unlock` without an identifier shows it.
+
+**Exit codes:**
+
+| Code  | Meaning                                                                                                                     | JSON `code`                   |
+| ----- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `2`   | Configuration error, including a duplicate project name, an unknown `state remove` address or `--json` without `--yes`      | `config`                      |
+| `3`   | Evaluation error, including an instance in the module that fails to evaluate                                                | `eval`                        |
+| `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run (or `unlock` named another lock)         | `infrastructure_locked`       |
+| `4`   | Concurrent activity: the plan changed between confirmation and taking the lock; nothing was applied                          | `infrastructure_plan_changed` |
+| `5`   | Any other infrastructure failure: provider, state store, apply, unrecorded changes pending or a change that was not recorded | `infrastructure`              |
+| `130` | Interrupted by SIGINT or SIGTERM; everything applied is recorded and the lock released (or, after a second signal, the hint printed) | `infrastructure_interrupted`  |
+
 
 The Turso authentication token is read from the environment variable named by
 `infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default

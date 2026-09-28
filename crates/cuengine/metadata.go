@@ -48,11 +48,10 @@ func extractFieldMetaSeparate(inst *build.Instance, moduleRoot, instancePath str
 			relPath = filepath.Base(f.Filename)
 		}
 
-		// Calculate the directory relative to moduleRoot
-		dir := instancePath
-		if dir == "" {
-			dir = "."
-		}
+		// The instance directory relative to moduleRoot. instancePath is the
+		// result key, which also names the package when every package in a
+		// directory is evaluated, so the directory is derived separately.
+		dir := relativeInstancePath(moduleRoot, inst.Dir)
 
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {

@@ -580,7 +580,8 @@ fn filter_update_tools(names: Vec<String>) -> Vec<String> {
 }
 
 fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
-    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction};
+    use super::InfrastructureStateCommands;
+    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
@@ -607,9 +608,21 @@ fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
                 },
             },
         ),
-        InfrastructureCommands::State { path, package } => {
-            (path, package, InfrastructureAction::State)
-        }
+        InfrastructureCommands::State {
+            subcommand,
+            path,
+            package,
+        } => (
+            path,
+            package,
+            InfrastructureAction::State(match subcommand {
+                None | Some(InfrastructureStateCommands::List) => StateAction::List,
+                Some(InfrastructureStateCommands::Remove { address }) => {
+                    StateAction::Remove { address }
+                }
+                Some(InfrastructureStateCommands::Recover) => StateAction::Recover,
+            }),
+        ),
         InfrastructureCommands::Unlock {
             path,
             package,

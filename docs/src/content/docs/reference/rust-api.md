@@ -467,15 +467,71 @@ if let Some(entry) = lookup(&key, None) {
 
 Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` are available when integrating custom executors with cuenv's cache layout.
 
+## cuenv-infrastructure
+
+`cuenv infrastructure` is a thin command over the `cuenv-infrastructure` crate,
+which other tools can drive the same way:
+
+```rust
+use cuenv_infrastructure::{
+    ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine, PlanMode,
+};
+
+let cancellation = Cancellation::default(); // shared with signal handling
+let mut engine = InfrastructureEngine::new(EngineSetup {
+    tenant,         // TenantKey: CUE module path and project name
+    store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore
+    infrastructure, // the evaluated `infrastructure` block
+    options: EngineOptions {
+        project_directory,
+        plugin_cache_directory: None,
+        withheld_environment_variables: vec!["TURSO_AUTH_TOKEN".into()],
+        unrecorded_directory: None, // the user state directory
+        cancellation: cancellation.clone(),
+    },
+});
+let lock = store.lock(&tenant, "my tool").await?;
+let plan = engine.plan(PlanMode::Apply).await?;
+if plan.has_work() {
+    engine.apply(&plan, ApplyContext { lock: &lock }, &mut |_event| {}).await?;
+}
+store.unlock(&tenant, &lock).await?;
+engine.shutdown().await;
+```
+
+- `Cancellation::stop()` is the first interrupt: no new resource is started and
+  every provider the engine launched is asked to stop; `terminate_providers()`
+  is the second and kills them. The command calls them from its SIGINT and
+  SIGTERM handler, which it installs before taking the lock.
+- `Plan::has_work()` is true when applying would change infrastructure or
+  rewrite stored records (`PlanSummary::refresh`); `Plan::digest()` identifies
+  everything a plan would do, so a plan confirmed without the lock can be
+  compared with one made under it.
+- A change the store could not record is saved by `UnrecordedStore` in the
+  user state directory; `engine.plan()` refuses to run until
+  `UnrecordedStore::recover` has recorded it under the lock
+  (`cuenv infrastructure state recover`).
+
 ## CLI Exit Codes
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Name        | Description                                                                     |
-| ---- | ----------- | ------------------------------------------------------------------------------- |
-| 0    | Success     | Command completed successfully                                                  |
-| 2    | ConfigError | CLI/configuration error (`CliError::Config`)                                    |
-| 3    | EvalError   | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`) |
+| Code | Constant              | Description                                                                                                                                         | JSON `code`                                            |
+| ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 0    | `EXIT_OK`             | Command completed successfully                                                                                                                      | (success envelope)                                     |
+| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                        | `config`                                               |
+| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                                     | `eval` / `other`                                       |
+| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` or `PlanChanged` kind) | `infrastructure_locked` / `infrastructure_plan_changed` |
+| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store or apply (`CliError::Infrastructure` with `Failed` kind)                                 | `infrastructure`                                       |
+| 130  | `EXIT_INTERRUPTED`    | Infrastructure run stopped cleanly by SIGINT or SIGTERM (`CliError::Infrastructure` with `Interrupted` kind)                                      | `infrastructure_interrupted`                           |
+
+`exit_code_for` and `error_code_for` in `cuenv::cli` map a `CliError` to its
+exit code and to the `code` field of the JSON error envelope
+(`{"status":"error","error":{"code":…,"message":…}}`). Codes 4, 5 and 130 are
+only produced by `cuenv infrastructure`; they extend the taxonomy of ADR-0005.
+`InfrastructureFailureKind` (`Locked`, `PlanChanged`, `Interrupted`, `Failed`)
+selects between them. Other commands interrupted by Ctrl-C also exit with 130,
+without an envelope.
 
 ## See Also
 
