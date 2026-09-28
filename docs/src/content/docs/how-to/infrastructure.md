@@ -14,11 +14,12 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 | Command | Short form | What it does |
 | --- | --- | --- |
 | `cuenv infrastructure plan` | `cuenv i plan` | Refresh recorded resources and show what `apply` would change |
-| `cuenv infrastructure apply` | `cuenv i apply` | Plan, confirm, lock, plan again, converge |
+| `cuenv infrastructure apply` | `cuenv i apply` | Lock, plan, confirm, apply |
 | `cuenv infrastructure destroy` | `cuenv i destroy` | Delete every managed resource the project owns |
 | `cuenv infrastructure state list` | `cuenv i state` | List managed resources recorded for the project (`list` is the default) |
 | `cuenv infrastructure state remove <address>` | `cuenv i state remove` | Forget one managed resource without deleting it |
 | `cuenv infrastructure state recover` | `cuenv i state recover` | Record changes that could not be recorded earlier |
+| `cuenv infrastructure state adopt` | `cuenv i state adopt` | Make this instance the owner of the project's state |
 | `cuenv infrastructure unlock` | `cuenv i unlock` | Show who holds the lock, or release it by identifier |
 
 `i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
@@ -33,7 +34,9 @@ State is multi-tenant by construction. Every record is keyed by:
 | Discriminator | the project's `name` | `web` |
 | Address | resource `type` and its name in `infrastructure.resources` | `random_pet.server` |
 
-cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy` refuse to run when another instance anywhere in the module — any directory, any CUE package — has the same `name` and an `infrastructure` block; otherwise the two would share state and each would plan to delete the other's resources. CUE instances inherit fields from their parent directories, so a child directory that sets no `name` of its own shares its parent's name and, if it inherits the `infrastructure` block too, is a conflict. The check evaluates every instance in the module and fails closed: if any instance cannot be evaluated, the command stops and names it. `state` and `unlock` skip the check so a broken sibling never blocks recovery. Moving a project to a different module or renaming it starts from empty state.
+cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy` refuse to run when another instance anywhere in the module — any directory, any CUE package — has the same `name` and an `infrastructure` block; otherwise the two would share state and each would plan to delete the other's resources. CUE instances in the same package inherit fields from their parent directories, so a child directory shares its parent's `name` (it cannot set its own) and, if it inherits the `infrastructure` block too, is a conflict; put the child in a different CUE package or move its files. The check evaluates every instance in the module and fails closed: if any instance cannot be evaluated, the command stops and names it, and a target the module walk cannot see (a directory starting with `_` or `.`, a `testdata` directory, a nested module) is refused with the reason.
+
+The state database also records which instance (`<directory>:<package>`) owns each project, claimed by the first `apply` or `destroy`. Any other instance using the same module path and project name — another checkout, a nested module, a copied directory — is refused until you move ownership explicitly with `cuenv i state adopt`, run from the instance that should own it. `state` and `unlock` skip both checks so a broken sibling never blocks recovery. Moving a project to a different module or renaming it starts from empty state.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
 The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database. For isolation between teams or customers, give each tenant its own Turso database and token.
@@ -154,7 +157,7 @@ infrastructure: state: turso: {
 
 - `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
 - The authentication token is read from the named environment variable at run time. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
-- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) the first time it takes a lock. Read-only commands (`plan`, `state list`, `unlock` without an identifier) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database migrated by a newer cuenv is refused rather than misread.
+- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) right before any command takes the lock. Other commands (`plan`, `state list`, `unlock`, `state recover` with nothing to recover) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database migrated by a newer cuenv is refused rather than misread.
 - Transient failures (timeouts, 5xx, 429) are retried with backoff. Redirects are never followed, and plaintext loopback URLs bypass `HTTP_PROXY`.
 
 :::caution
@@ -236,25 +239,26 @@ Values that are sensitive anywhere inside an attribute or nested block are shown
 
 Every plan is checked the way Terraform checks it: a provider that plans a value contradicting your configuration, including inside nested blocks and nested attributes, is reported as a provider error naming the resource and attribute path, and nothing is applied.
 
-`cuenv i apply` interactively:
+`cuenv i apply`, like Terraform:
 
-1. plans and shows the plan without taking the lock;
-2. asks for confirmation;
-3. takes the project's lock, plans again, and refuses to continue (exit code `4`) if anything in the plan differs from what you confirmed — any resource, action, before or after value, or recorded state;
-4. applies one resource at a time, recording each result immediately. Every write is fenced by the lock, so a run whose lock was released or taken over cannot overwrite newer state.
+1. takes the project's lock (creating or upgrading cuenv's tables first if needed);
+2. plans and shows the plan;
+3. asks for confirmation while still holding the lock, so nothing can change between what you approve and what is applied — answering anything but `yes`, closing input or pressing Ctrl-C releases the lock and exits `1` (`130` for an interrupt);
+4. applies that same plan one resource at a time, recording each result immediately. Every write is fenced by the lock, so a run whose lock was released or taken over cannot overwrite newer state.
 
-`cuenv i apply --yes` (required when standard input is not a terminal; `--auto-approve` is accepted as an alias) takes the lock, plans once and applies that plan, so continuous integration never races between a preview and the locked plan. `destroy` behaves the same way.
+`cuenv i apply --yes` (required when standard input is not a terminal; `--auto-approve` is accepted as an alias) does the same without asking. `destroy` behaves the same way.
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
 ### When things go wrong
 
-- **Interrupts.** The first Ctrl-C or SIGTERM asks every running provider to stop, as Terraform does: no new resource is started, the operation in flight returns early, and whatever it returns is recorded (an interrupted create is recorded as tainted); then the lock is released. A second signal kills the providers, releases the lock if it can within two seconds, prints the lock identifier and exits. Continuous integration cancellation (SIGINT, then SIGTERM a few seconds later) therefore still records the resource in flight. Providers run in their own process group, so a terminal Ctrl-C reaches only cuenv.
+- **Interrupts.** The first Ctrl-C, SIGTERM, SIGHUP or SIGQUIT asks every running provider to stop, as Terraform does: no new resource is started, the operation in flight returns early, and whatever it returns is recorded (an interrupted create is recorded as tainted); then the lock is released. A second signal kills the providers, waits up to two seconds for a record being written, releases the lock if it can within two seconds, prints the lock identifier (in JSON mode, as the single error document with `lockIdentifier` and `lockReleased`) and exits `130`. Continuous integration cancellation (SIGINT, then SIGTERM about 7.5 seconds later on GitHub Actions) records the resource in flight when its provider honours the stop within that window; otherwise the second signal kills it and the next plan refreshes whatever exists. Providers run in their own process group, so a terminal Ctrl-C reaches only cuenv; the whole group is killed on a forced exit, and on Linux providers also die if cuenv itself is killed.
 - **Partial failures.** If a create fails after the provider made something, or returns values it never resolved, the result is recorded as **tainted** and the next plan replaces it. A failed update or delete keeps the stored taint. `cuenv i state` marks tainted resources.
 - **State store outages.** If the provider changed a resource but the change cannot be recorded (after retries), cuenv saves the new state under your user state directory (`~/.local/state/cuenv/infrastructure/unrecorded/` on Linux, readable only by you, never inside the project) and tells you, instead of silently forgetting a real resource. `plan`, `apply` and `destroy` refuse to run until `cuenv i state recover` has recorded those files. On an ephemeral continuous integration runner the directory disappears with the runner, so fix the state store and re-run on the same machine where possible. Errors never include state values.
-- **Stale locks.** `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock.
+- **Stale locks.** Every run prints `Acquired lock <identifier>` on standard error. `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock.
+- **Recovery conflicts.** `cuenv i state recover` only records a saved change if the stored record is still the version the change replaced. If another run changed it in the meantime, recovery stops and names the address: inspect both objects, then either move the saved file aside or run `cuenv i state recover --force` to record it anyway.
 - **Removed providers.** `cuenv i state remove <address>` forgets one managed resource without touching the real object — the escape hatch when its provider is gone.
-- **Exit codes.** `2` configuration, `3` evaluation (including any instance in the module that cannot be evaluated), `4` another run holds the lock or changed state since you confirmed (retry later), `5` other infrastructure failures, `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_plan_changed` and `infrastructure_interrupted`.
+- **Exit codes.** `1` you declined the confirmation, `2` configuration (including a project owned by another instance), `3` evaluation (including any instance in the module that cannot be evaluated), `4` another run holds the lock (retry later), `5` other infrastructure failures, `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_cancelled` and `infrastructure_interrupted`; every error document carries `help`, and lock-related ones carry `lockIdentifier` and `lockReleased`.
 
 ## Current limitations
 

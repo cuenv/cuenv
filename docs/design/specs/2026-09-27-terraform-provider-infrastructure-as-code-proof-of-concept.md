@@ -278,7 +278,8 @@ path.
 Decision reversed: interactive `apply` now holds the lock from planning
 through the confirmation prompt, as Terraform does, instead of re-planning
 under the lock and comparing digests. The re-plan could never be both safe and
-stable (volatile attributes changed the digest on every run).
+stable (volatile attributes changed the digest on every run). The plan digest remains in the library, where `apply` uses the plan's
+stored-record basis to refuse a stale or already applied plan.
 
 Deferred: the Nix checks that would run the fake-provider suite and the
 bridge's `go test` in continuous integration (written once the local Nix gate
@@ -337,9 +338,8 @@ every command.
 9. Lock leases with expiry and heartbeat instead of manual release, and a
    `--lock-timeout` that waits for a running apply instead of failing
    immediately.
-10. All-packages evaluation fails with "matched no packages" when the module
-    root directory's own name starts with "." (the CUE loader ignores hidden
-    directories); handle it in the bridge.
+10. Cancellable evaluation: the first interrupt during CUE evaluation
+    currently abandons the evaluation thread rather than stopping it.
 11. A fenced "pending" record written before each create, so a run killed
     outright (SIGKILL, host loss) leaves evidence of what may exist.
 12. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
