@@ -240,11 +240,36 @@ pub struct ModuleEvalOptions {
     /// Use this to evaluate a specific subdirectory without loading the entire module.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_dir: Option<String>,
-    /// Top-level fields that must be fully concrete when present. Their
-    /// undefined references, missing required fields and non-concrete values
-    /// fail evaluation instead of being exported as null.
+    /// CUE paths that must exist and be fully concrete in every evaluated
+    /// instance, written in CUE path syntax (`config`, `config.database`,
+    /// `"quoted-label".items[0]`). Within them, undefined references, missing
+    /// required fields and non-concrete values fail the instance instead of
+    /// being exported as null; a path that does not exist fails the instance
+    /// too. An empty or malformed path fails the whole evaluation as a
+    /// configuration error. Paths not listed keep the lenient export.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub concrete_paths: Vec<String>,
+    /// What happens to a loaded instance that cannot be evaluated (load,
+    /// build, `concrete_paths` or export failure).
+    #[serde(default)]
+    pub instance_failures: InstanceFailures,
+}
+
+/// Policy for loaded instances that cannot be evaluated.
+///
+/// Instances excluded by the package filter are never failures.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstanceFailures {
+    /// Leave failed instances out of the result as long as another instance
+    /// succeeds; evaluation fails only when no instance succeeds.
+    #[default]
+    Skip,
+    /// Fail the whole evaluation when any instance fails, with an error
+    /// naming every failed instance by its path relative to the module root.
+    /// Use this where a partial result would be unsafe, for example a check
+    /// that must see every instance.
+    Fail,
 }
 
 /// Source location metadata for a single field
@@ -317,6 +342,8 @@ struct ModuleEvalWorker {
 ///   - `with_references`: Extract CUE reference paths (e.g., for `dependsOn: [build]`, records that `dependsOn[0]` refers to `tasks.build`)
 ///   - `recursive`: Evaluate entire module tree (./...) or just current directory (.)
 ///   - `package_name`: Filter to specific package (takes precedence over legacy parameter)
+///   - `concrete_paths`: CUE paths that must exist and be fully concrete
+///   - `instance_failures`: Skip failed instances (default) or fail the evaluation
 ///
 /// # Returns
 /// A `ModuleResult` containing:
@@ -328,6 +355,11 @@ struct ModuleEvalWorker {
 /// - The module root path is invalid
 /// - The CUE module cannot be loaded
 /// - All CUE instances fail evaluation
+/// - Any instance fails evaluation with [`InstanceFailures::Fail`]; the
+///   message lists every failed instance by its path relative to the module
+///   root
+/// - A `concrete_paths` entry is empty or not a valid CUE path
+///   ([`CueEngineError::Configuration`])
 ///
 /// A package-filtered evaluation returns an empty `instances` map when the
 /// exact target directory has no matching package. Syntax and build errors
@@ -790,6 +822,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         package_name: None,
         target_dir: None, // Use module root
         concrete_paths: Vec::new(),
+        instance_failures: InstanceFailures::Skip,
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;

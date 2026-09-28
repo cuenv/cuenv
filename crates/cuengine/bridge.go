@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"unsafe"
@@ -273,13 +274,30 @@ type ModuleResult struct {
 
 // ModuleEvalOptions controls how module evaluation behaves
 type ModuleEvalOptions struct {
-	WithMeta       bool     `json:"withMeta"`       // Extract source positions into separate Meta map
-	WithReferences bool     `json:"withReferences"` // Extract reference paths (requires WithMeta)
-	Recursive      bool     `json:"recursive"`      // true: cue eval ./..., false: cue eval .
-	PackageName    *string  `json:"packageName"`    // Filter to specific package, nil = all packages
-	TargetDir      *string  `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
-	ConcretePaths  []string `json:"concretePaths"`  // Top-level fields that must be fully concrete when present
+	WithMeta       bool    `json:"withMeta"`       // Extract source positions into separate Meta map
+	WithReferences bool    `json:"withReferences"` // Extract reference paths (requires WithMeta)
+	Recursive      bool    `json:"recursive"`      // true: cue eval ./..., false: cue eval .
+	PackageName    *string `json:"packageName"`    // Filter to specific package, nil = all packages
+	TargetDir      *string `json:"targetDir"`      // Directory to evaluate (for non-recursive), nil = module root
+	// ConcretePaths lists CUE paths (cue.ParsePath syntax, nested selectors
+	// allowed) that must exist and be fully concrete in every evaluated
+	// instance. A malformed path is an input error; a missing or
+	// non-concrete path fails that instance.
+	ConcretePaths []string `json:"concretePaths"`
+	// InstanceFailures decides what happens to a loaded instance that fails
+	// to load, build, validate or export. InstanceFailuresSkip (the default,
+	// also selected by an empty value) leaves it out of the result as long as
+	// another instance succeeds. InstanceFailuresFail fails the whole
+	// evaluation with an error naming every failed instance. Instances
+	// excluded by the package filter are not failures.
+	InstanceFailures string `json:"instanceFailures"`
 }
+
+// Values accepted by ModuleEvalOptions.InstanceFailures.
+const (
+	InstanceFailuresSkip = "skip"
+	InstanceFailuresFail = "fail"
+)
 
 //export cue_eval_module
 func cue_eval_module(moduleRootPath *C.char, packageName *C.char, optionsJSON *C.char) *C.char {
@@ -312,6 +330,21 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 			result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Failed to parse options: %v", err), &hint)
 			return result
 		}
+	}
+
+	switch options.InstanceFailures {
+	case "", InstanceFailuresSkip, InstanceFailuresFail:
+	default:
+		hint := fmt.Sprintf("instanceFailures must be %q or %q", InstanceFailuresSkip, InstanceFailuresFail)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown instanceFailures value %q", options.InstanceFailures), &hint)
+		return result
+	}
+
+	concretePaths, err := parseConcretePaths(options.ConcretePaths)
+	if err != nil {
+		hint := "concretePaths entries use CUE path syntax, for example \"config\" or \"config.database\""
+		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &hint)
+		return result
 	}
 
 	// PackageName from options takes precedence over legacy parameter
@@ -455,7 +488,14 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 				packageMismatches = append(packageMismatches, fmt.Sprintf("%s has no package '%s'", inst.Dir, effectivePackageName))
 				continue
 			}
-			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", inst.Dir, inst.Err))
+			// A loader-level failure (for example two packages in one
+			// directory of an unfiltered recursive load) has no instance
+			// directory; name the load pattern instead.
+			failedInstance := loadPattern
+			if inst.Dir != "" {
+				failedInstance = relativeInstancePath(goModuleRoot, inst.Dir)
+			}
+			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", failedInstance, inst.Err))
 			continue
 		}
 		if effectivePackageName != "" && inst.PkgName != effectivePackageName {
@@ -484,14 +524,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 
 	ctx := cuecontext.New()
 	for _, inst := range validInstances {
-		// Calculate relative path from module root
-		relPath, err := filepath.Rel(goModuleRoot, inst.Dir)
-		if err != nil {
-			relPath = inst.Dir
-		}
-		if relPath == "" {
-			relPath = "."
-		}
+		relPath := relativeInstancePath(goModuleRoot, inst.Dir)
 
 		// Build the CUE value (must be sequential)
 		v := ctx.BuildInstance(inst)
@@ -502,7 +535,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		}
 
 		// Caller-named fields must be concrete; see validateConcretePaths.
-		if err := validateConcretePaths(v, options.ConcretePaths); err != nil {
+		if err := validateConcretePaths(v, concretePaths); err != nil {
 			buildErrors = append(buildErrors, fmt.Sprintf("%s: %v", relPath, err))
 			continue
 		}
@@ -585,6 +618,15 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		}
 	}
 
+	if options.InstanceFailures == InstanceFailuresFail && (len(loadErrors) > 0 || len(buildErrors) > 0) {
+		failures := append(append([]string{}, loadErrors...), buildErrors...)
+		sort.Strings(failures)
+		message := fmt.Sprintf("%d instance(s) could not be evaluated:\n%s", len(failures), strings.Join(failures, "\n"))
+		hint := "instanceFailures is \"fail\", so every loaded instance must evaluate"
+		result = createErrorResponse(ErrorCodeBuildValue, message, &hint)
+		return result
+	}
+
 	if len(instances) == 0 {
 		// A package filter can legitimately match no instance when the target
 		// directory contains only another package (or no package declaration).
@@ -617,6 +659,20 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 
 	result = createSuccessResponse(string(resultBytes))
 	return result
+}
+
+// relativeInstancePath names an instance by its directory relative to the
+// module root ("." for the root itself), falling back to the absolute
+// directory when it is not below the root.
+func relativeInstancePath(moduleRoot string, directory string) string {
+	relPath, err := filepath.Rel(moduleRoot, directory)
+	if err != nil {
+		return directory
+	}
+	if relPath == "" {
+		return "."
+	}
+	return relPath
 }
 
 // injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
