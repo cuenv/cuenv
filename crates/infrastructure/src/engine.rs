@@ -4,12 +4,18 @@
 //! resource at a time:
 //!
 //! 1. **Refresh** stored state: `UpgradeResourceState` then `ReadResource`.
+//!    State written with a newer resource schema version than the provider
+//!    knows is refused before the provider sees it.
 //! 2. **Plan**: `ValidateResourceConfiguration`, then `PlanResourceChange` with the
 //!    proposed new state. A non-empty `requires_replace` turns an update into
-//!    a destroy-then-create replacement.
+//!    a destroy-then-create replacement. Deletes are planned too
+//!    (`PlanResourceChange` with null configuration) for providers with the
+//!    `plan_destroy` capability, which may refuse them.
 //! 3. **Apply**: `ApplyResourceChange` with the planned state, persisting
 //!    the provider's new state (or deleting the record) after every
-//!    resource so a failed run never loses track of what exists.
+//!    resource so a failed run never loses track of what exists. A create
+//!    or update result must be a valid completion of its plan (Terraform's
+//!    `AssertObjectCompatible`); an inconsistent create is recorded tainted.
 //!
 //! Values travel to providers as MessagePack. A provider's own MessagePack
 //! bytes (refreshed and planned states) are passed back verbatim so
@@ -32,13 +38,18 @@ use cuenv_manifest::manifest::{
 use sha2::{Digest, Sha256};
 
 use crate::cancellation::Cancellation;
-use crate::error::{InfrastructureError, Result, json_error_category};
-use crate::object_change::{PlanProblem, plan_problems};
+use crate::error::{
+    InfrastructureError, Result, failure_category, json_error_category,
+    strip_control_characters_except_newlines,
+};
+use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{ApplyRequest, LaunchOptions, PlanRequest, ProviderClient};
 use crate::protocol::{self, Diagnostic, Severity};
 use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
 use crate::schema::{Block, ProviderSchema, Schema};
-use crate::state::{ManagedResource, ResourceAddress, StateLock, StateStore};
+use crate::state::{
+    ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
+};
 use crate::tenant::TenantKey;
 use crate::type_system::{self, PathStep, Type, Value};
 use crate::unrecorded::UnrecordedStore;
@@ -60,6 +71,10 @@ pub enum PlanMode {
 pub enum Action {
     /// Nothing to do.
     NoOp,
+    /// Nothing changes in the real world, but the stored record is
+    /// rewritten with refreshed state (computed values, private data,
+    /// schema version or dependencies).
+    Refresh,
     /// Create a new resource.
     Create,
     /// Update in place.
@@ -75,7 +90,7 @@ impl Action {
     #[must_use]
     pub const fn symbol(self) -> &'static str {
         match self {
-            Self::NoOp => " ",
+            Self::NoOp | Self::Refresh => " ",
             Self::Create => "+",
             Self::Update => "~",
             Self::Replace => "-/+",
@@ -88,11 +103,18 @@ impl Action {
     pub const fn name(self) -> &'static str {
         match self {
             Self::NoOp => "no-op",
+            Self::Refresh => "refresh",
             Self::Create => "create",
             Self::Update => "update",
             Self::Replace => "replace",
             Self::Delete => "delete",
         }
+    }
+
+    /// Whether the action changes real infrastructure.
+    #[must_use]
+    pub const fn changes_infrastructure(self) -> bool {
+        !matches!(self, Self::NoOp | Self::Refresh)
     }
 }
 
@@ -124,6 +146,9 @@ struct ApplyStep {
     planned: Vec<u8>,
     configuration: Vec<u8>,
     planned_private: Vec<u8>,
+    /// The planned state `planned` encodes, which the provider's result
+    /// must complete; null for a delete.
+    planned_value: Value,
 }
 
 /// Planned change to one managed resource.
@@ -146,8 +171,7 @@ pub struct ResourceChange {
     pub requires_replace: Vec<String>,
     dependencies: Vec<String>,
     steps: Vec<ApplyStep>,
-    /// For unchanged resources: the refreshed record, when it differs from
-    /// what is stored, so apply keeps state current.
+    /// For [`Action::Refresh`]: the refreshed record apply writes.
     refreshed_record: Option<ManagedResource>,
     /// The record stored when the plan was made.
     stored: Option<ManagedResource>,
@@ -159,13 +183,13 @@ impl ResourceChange {
     /// calling the provider.
     #[must_use]
     pub const fn refreshes_state(&self) -> bool {
-        matches!(self.action, Action::NoOp) && self.refreshed_record.is_some()
+        matches!(self.action, Action::Refresh)
     }
 
     /// Whether applying does anything at all for this resource.
     #[must_use]
     pub const fn has_work(&self) -> bool {
-        !matches!(self.action, Action::NoOp) || self.refreshed_record.is_some()
+        !matches!(self.action, Action::NoOp)
     }
 }
 
@@ -234,7 +258,7 @@ impl Plan {
                 Action::Update => summary.update += 1,
                 Action::Replace => summary.replace += 1,
                 Action::Delete => summary.delete += 1,
-                Action::NoOp if change.refreshes_state() => summary.refresh += 1,
+                Action::Refresh => summary.refresh += 1,
                 Action::NoOp => summary.unchanged += 1,
             }
         }
@@ -246,7 +270,7 @@ impl Plan {
     pub fn has_changes(&self) -> bool {
         self.changes
             .iter()
-            .any(|change| change.action != Action::NoOp)
+            .any(|change| change.action.changes_infrastructure())
     }
 
     /// Whether applying the plan would do anything: change infrastructure
@@ -333,6 +357,11 @@ impl DigestWriter {
                     self.field(name.as_bytes());
                     self.value(attribute);
                 }
+            }
+            Value::Typed(typed) => {
+                self.tag(7);
+                self.field(typed.value_type.to_json().to_string().as_bytes());
+                self.value(&typed.value);
             }
         }
     }
@@ -607,14 +636,22 @@ impl InfrastructureEngine {
 
     /// Apply a plan produced by [`InfrastructureEngine::plan`] on this engine.
     ///
+    /// The plan must still describe the store: every record it was made
+    /// from must be stored unchanged (serial included), and no other record
+    /// may have appeared, or the plan is refused as out of date. The caller
+    /// may hold the lock from before planning until after applying (so the
+    /// plan cannot go stale), or plan first and lock only to apply.
+    ///
     /// State is persisted after every resource and every write is fenced by
     /// the lock. Refreshed records of unchanged resources are written too.
-    /// [`Cancellation::stop`] is honoured between resources; an operation
-    /// in flight when it arrives is still recorded.
+    /// [`Cancellation::stop`] is honoured between resources and between the
+    /// delete and the create of a replacement; an operation in flight when
+    /// it arrives is still recorded.
     ///
     /// # Errors
     ///
-    /// Returns the first provider or state store failure,
+    /// Returns [`InfrastructureError::PlanOutdated`] for a stale plan, the
+    /// first provider or state store failure,
     /// [`InfrastructureError::UnrecordedChange`] or
     /// [`InfrastructureError::UnrecordedChangeLost`] when a provider change
     /// could not be recorded, or [`InfrastructureError::Interrupted`].
@@ -630,25 +667,31 @@ impl InfrastructureEngine {
                 "plan belongs to a different tenant",
             ));
         }
+        self.require_current(plan).await?;
         for warning in &plan.warnings {
             on_event(ApplyEvent::Warning(warning.clone()));
         }
-        let total = plan
-            .changes
-            .iter()
-            .filter(|change| change.action != Action::NoOp)
-            .count();
-        let mut completed = 0;
+        let mut progress = Progress {
+            completed: 0,
+            total: plan
+                .changes
+                .iter()
+                .filter(|change| change.action.changes_infrastructure())
+                .count(),
+        };
         for change in plan.changes.iter().filter(|change| change.has_work()) {
             if self.cancellation().is_stop_requested() {
-                return Err(InfrastructureError::Interrupted { completed, total });
+                return Err(progress.interrupted());
             }
             if let Some(record) = &change.refreshed_record
-                && change.action == Action::NoOp
+                && change.action == Action::Refresh
             {
                 // Nothing changed in the real world, so a failed write is a
                 // plain state error, not an unrecorded change.
-                self.store.put(&self.tenant, context.lock, record).await?;
+                self.store
+                    .put(&self.tenant, context.lock, record)
+                    .await
+                    .map_err(|error| naming_address(error, &change.address))?;
                 on_event(ApplyEvent::Refreshed {
                     address: change.address.clone(),
                 });
@@ -658,10 +701,19 @@ impl InfrastructureEngine {
                 address: change.address.clone(),
                 action: change.action,
             });
-            if let Err(error) = self.apply_change(change, context.lock, on_event).await {
-                return Err(self.interrupted_or(error, completed, total, on_event));
+            match self.apply_change(change, context.lock, on_event).await {
+                Ok(ChangeOutcome::Completed) => {}
+                Ok(ChangeOutcome::StoppedAfterDelete) => {
+                    on_event(ApplyEvent::Warning(format!(
+                        "{} was deleted but its replacement was not created because the run \
+                         was interrupted; the next apply creates it",
+                        change.address
+                    )));
+                    return Err(progress.interrupted());
+                }
+                Err(error) => return Err(self.interrupted_or(error, progress, on_event)),
             }
-            completed += 1;
+            progress.completed += 1;
             on_event(ApplyEvent::Finished {
                 address: change.address.clone(),
                 action: change.action,
@@ -670,14 +722,38 @@ impl InfrastructureEngine {
         Ok(plan.summary())
     }
 
+    /// Refuse a plan whose view of stored state no longer matches the store.
+    async fn require_current(&self, plan: &Plan) -> Result<()> {
+        let mut stored: BTreeMap<ResourceAddress, ManagedResource> = self
+            .store
+            .list(&self.tenant)
+            .await?
+            .into_iter()
+            .map(|resource| (resource.address.clone(), resource))
+            .collect();
+        for change in &plan.changes {
+            let current = stored.remove(&change.address);
+            if current != change.stored {
+                return Err(InfrastructureError::PlanOutdated {
+                    address: change.address.to_string(),
+                });
+            }
+        }
+        // A record the plan never saw appeared since.
+        stored.into_keys().next().map_or(Ok(()), |address| {
+            Err(InfrastructureError::PlanOutdated {
+                address: address.to_string(),
+            })
+        })
+    }
+
     /// After a stop request, a provider failure is most likely the stopped
     /// operation returning: report the interrupt, keeping the provider's
     /// message as a warning. Recording failures are never masked.
     fn interrupted_or(
         &self,
         error: InfrastructureError,
-        completed: usize,
-        total: usize,
+        progress: Progress,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
     ) -> InfrastructureError {
         let provider_failure = matches!(
@@ -690,7 +766,7 @@ impl InfrastructureEngine {
             on_event(ApplyEvent::Warning(format!(
                 "the operation in flight when the run was interrupted ended with: {error}"
             )));
-            InfrastructureError::Interrupted { completed, total }
+            progress.interrupted()
         } else {
             error
         }
@@ -708,12 +784,20 @@ impl InfrastructureEngine {
         change: &ResourceChange,
         lock: &StateLock,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
-    ) -> Result<()> {
+    ) -> Result<ChangeOutcome> {
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
         let value_type = schema.block.implied_type();
+        // The stored version every write replaces, for saving a record the
+        // store cannot take.
+        let mut version = RecordVersion::of(change.stored.as_ref());
 
-        for step in &change.steps {
+        for (index, step) in change.steps.iter().enumerate() {
+            // The delete half of a replacement is recorded; stop before the
+            // create half like before any other new work.
+            if index > 0 && self.cancellation().is_stop_requested() {
+                return Ok(ChangeOutcome::StoppedAfterDelete);
+            }
             let response = provider
                 .client
                 .apply_resource_change(ApplyRequest {
@@ -724,13 +808,29 @@ impl InfrastructureEngine {
                     planned_private: step.planned_private.clone(),
                 })
                 .await?;
+            // From here on the change happened: a forced exit waits for it
+            // to be recorded (or saved locally).
+            let _recording = self.cancellation().begin_recording();
+            let context = format!("apply {}", change.address);
             let failed = response.diagnostics.iter().any(is_error);
-            let (returned, _) = provider_value(response.new_state.as_ref(), &value_type)?;
+            let returned = applied_value(&response, &value_type, &context)?;
             let problem = apply_result_problem(&ApplyResult {
                 address: &change.address,
                 kind: step.kind,
                 returned: &returned,
                 failed,
+            })
+            .or_else(|| {
+                (!failed && !response.legacy_type_system)
+                    .then(|| {
+                        inconsistent_result(&InconsistentResultCheck {
+                            address: &change.address,
+                            block: &schema.block,
+                            step,
+                            returned: &returned,
+                        })
+                    })
+                    .flatten()
             });
             let has_errors = failed || problem.is_some();
             // Terraform saves whatever the provider returns, with unknown
@@ -742,6 +842,7 @@ impl InfrastructureEngine {
                 // happen; keep whatever was recorded.
                 if !has_errors {
                     self.forget(lock, &change.address).await?;
+                    version = RecordVersion::Absent;
                 }
             } else {
                 let stored = change.stored.as_ref();
@@ -760,7 +861,8 @@ impl InfrastructureEngine {
                         }
                         _ => change.dependencies.clone(),
                     },
-                    // A create that failed part way left something behind
+                    // A create that failed part way (or returned a result
+                    // inconsistent with its plan) left something behind
                     // that must be replaced, not trusted. Any other failed
                     // step keeps the object's recorded status, so a
                     // tainted object stays tainted when its delete fails.
@@ -771,16 +873,21 @@ impl InfrastructureEngine {
                         }
                     },
                     identity: None,
+                    serial: 0,
                 };
-                self.record_change(lock, &record).await?;
+                self.record_change(
+                    lock,
+                    &ConditionalPut {
+                        resource: &record,
+                        expected: version,
+                    },
+                )
+                .await?;
+                version = version.after_write();
             }
 
             let mut warnings = Vec::new();
-            check_diagnostics(
-                &format!("apply {}", change.address),
-                &response.diagnostics,
-                &mut warnings,
-            )?;
+            check_diagnostics(&context, &response.diagnostics, &mut warnings)?;
             for warning in warnings {
                 on_event(ApplyEvent::Warning(warning));
             }
@@ -791,18 +898,19 @@ impl InfrastructureEngine {
 
         if change.action == Action::Delete {
             // Also covers resources already gone during refresh (no steps).
+            let _recording = self.cancellation().begin_recording();
             self.forget(lock, &change.address).await?;
         }
-        Ok(())
+        Ok(ChangeOutcome::Completed)
     }
 
     /// Write a record the provider's change produced. If the write fails,
-    /// save it locally so a resource the provider already changed is never
-    /// silently lost.
-    async fn record_change(&self, lock: &StateLock, record: &ManagedResource) -> Result<()> {
-        match self.store.put(&self.tenant, lock, record).await {
+    /// save it locally, with the stored version it replaces, so a resource
+    /// the provider already changed is never silently lost.
+    async fn record_change(&self, lock: &StateLock, put: &ConditionalPut<'_>) -> Result<()> {
+        match self.store.put(&self.tenant, lock, put.resource).await {
             Ok(()) => Ok(()),
-            Err(error) => Err(self.save_unrecorded(record, &error)),
+            Err(error) => Err(self.save_unrecorded(put, &error)),
         }
     }
 
@@ -812,27 +920,29 @@ impl InfrastructureEngine {
 
     fn save_unrecorded(
         &self,
-        record: &ManagedResource,
+        put: &ConditionalPut<'_>,
         error: &InfrastructureError,
     ) -> InfrastructureError {
+        let address = &put.resource.address;
         match self
             .unrecorded_store()
-            .and_then(|unrecorded| unrecorded.save(&self.tenant, record))
+            .and_then(|unrecorded| unrecorded.save(&self.tenant, put))
         {
             Ok(file) => InfrastructureError::UnrecordedChange {
-                address: record.address.to_string(),
+                address: address.to_string(),
                 reason: error.to_string(),
                 saved_to: file.display().to_string(),
             },
             Err(save_error) => {
                 tracing::error!(
-                    address = %record.address,
+                    address = %address,
                     store_error = %error,
                     %save_error,
                     "a provider change could be neither recorded nor saved locally"
                 );
                 InfrastructureError::UnrecordedChangeLost {
-                    address: record.address.to_string(),
+                    address: address.to_string(),
+                    save_failure: failure_category(&save_error),
                 }
             }
         }
@@ -961,8 +1071,10 @@ impl InfrastructureEngine {
                     dependencies: change.dependencies.clone(),
                     tainted: false,
                     identity: row.identity.clone(),
+                    serial: row.serial,
                 };
                 if record != *row {
+                    change.action = Action::Refresh;
                     change.refreshed_record = Some(record);
                 }
             }
@@ -979,14 +1091,15 @@ impl InfrastructureEngine {
 
         if requires_replace.is_empty() {
             change.action = Action::Update;
-            change.after = planned;
             change.steps.push(ApplyStep {
                 kind: StepKind::Update,
                 prior: prior.bytes,
                 planned: planned_bytes,
                 configuration: configuration_bytes,
                 planned_private: response.planned_private,
+                planned_value: planned.clone(),
             });
+            change.after = planned;
             return Ok(change);
         }
 
@@ -1031,7 +1144,20 @@ impl InfrastructureEngine {
             stored: Some(row.clone()),
         };
         if let Some(prior) = prior {
-            change.steps.push(delete_step(&prior));
+            let mut step = delete_step(&prior);
+            if provider.schema.capabilities.plan_destroy {
+                step.planned_private = plan_destroy(
+                    &DestroyPlanInput {
+                        provider,
+                        address: &row.address,
+                        value_type: &schema.block.implied_type(),
+                        prior: &prior,
+                    },
+                    warnings,
+                )
+                .await?;
+            }
+            change.steps.push(step);
             change.before = prior.value;
         }
         Ok(change)
@@ -1157,6 +1283,111 @@ fn require_same_source(row: &ManagedResource, provider: &LoadedProvider) -> Resu
     }
 }
 
+/// How far an apply got.
+#[derive(Debug, Clone, Copy)]
+struct Progress {
+    /// Changes applied and recorded.
+    completed: usize,
+    /// Changes to real infrastructure the plan contains.
+    total: usize,
+}
+
+impl Progress {
+    const fn interrupted(self) -> InfrastructureError {
+        InfrastructureError::Interrupted {
+            completed: self.completed,
+            total: self.total,
+        }
+    }
+}
+
+/// How applying one change ended, when no error did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChangeOutcome {
+    /// Every step was applied and recorded.
+    Completed,
+    /// A stop request arrived between the recorded delete of a replacement
+    /// and its create, which was not started.
+    StoppedAfterDelete,
+}
+
+/// Decode the state `ApplyResourceChange` returned. When it cannot be
+/// decoded, the provider's error diagnostics (which usually explain why)
+/// are reported rather than hidden behind the decoding failure.
+fn applied_value(
+    response: &protocol::ApplyResourceChangeResponse,
+    value_type: &Type,
+    context: &str,
+) -> Result<Value> {
+    match provider_value(response.new_state.as_ref(), value_type) {
+        Ok((returned, _)) => Ok(returned),
+        Err(decode_error) => {
+            check_diagnostics(context, &response.diagnostics, &mut Vec::new())?;
+            Err(decode_error)
+        }
+    }
+}
+
+/// Terraform's checks of an upgraded state: it must exist, and nothing in
+/// it may be unknown.
+fn check_upgraded(address: &ResourceAddress, upgraded: &Value) -> Result<()> {
+    if upgraded.is_null() {
+        // Reading a null state would report the resource gone and plan to
+        // create it again; refuse instead.
+        return Err(InfrastructureError::plugin(format!(
+            "provider returned no upgraded state for {address}"
+        )));
+    }
+    if upgraded.contains_unknown() {
+        return Err(InfrastructureError::plugin(format!(
+            "provider returned unknown values while upgrading the state of {address}, which is \
+             a provider bug"
+        )));
+    }
+    Ok(())
+}
+
+/// A state store failure writing the record of `address`, naming it.
+fn naming_address(error: InfrastructureError, address: &ResourceAddress) -> InfrastructureError {
+    match error {
+        InfrastructureError::State(message) => InfrastructureError::State(format!(
+            "recording the refreshed state of {address}: {message}"
+        )),
+        other => other,
+    }
+}
+
+/// Inputs for [`inconsistent_result`].
+struct InconsistentResultCheck<'check> {
+    address: &'check ResourceAddress,
+    block: &'check Block,
+    step: &'check ApplyStep,
+    returned: &'check Value,
+}
+
+/// Terraform's `AssertObjectCompatible` check of a create or update
+/// result: every known planned value must have been kept.
+fn inconsistent_result(check: &InconsistentResultCheck<'_>) -> Option<String> {
+    if check.step.kind == StepKind::Delete {
+        return None;
+    }
+    let problems = compatibility_problems(check.block, &check.step.planned_value, check.returned);
+    if problems.is_empty() {
+        return None;
+    }
+    let rendered = problems
+        .iter()
+        .map(PlanProblem::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!(
+        "provider produced an inconsistent result after the {} of {}, which is a provider bug: \
+         {rendered}",
+        check.step.kind.name(),
+        check.address
+    ))
+}
+
 /// What `ApplyResourceChange` returned for one step.
 struct ApplyResult<'result> {
     address: &'result ResourceAddress,
@@ -1208,7 +1439,48 @@ fn delete_step(prior: &Refreshed) -> ApplyStep {
         planned: NULL_MESSAGE_PACK.to_vec(),
         configuration: NULL_MESSAGE_PACK.to_vec(),
         planned_private: prior.private.clone(),
+        planned_value: Value::Null,
     }
+}
+
+/// Inputs for [`plan_destroy`].
+struct DestroyPlanInput<'input> {
+    provider: &'input LoadedProvider,
+    address: &'input ResourceAddress,
+    value_type: &'input Type,
+    prior: &'input Refreshed,
+}
+
+/// Terraform's destroy plan, for providers with the `plan_destroy`
+/// capability: `PlanResourceChange` with null configuration and proposed
+/// state, which the provider may refuse (deletion protection) or answer
+/// with private data for the delete. Returns that private data.
+async fn plan_destroy(input: &DestroyPlanInput<'_>, warnings: &mut Vec<String>) -> Result<Vec<u8>> {
+    let address = input.address;
+    let response = input
+        .provider
+        .client
+        .plan_resource_change(PlanRequest {
+            type_name: &address.resource_type,
+            prior_state: input.prior.bytes.clone(),
+            proposed_new_state: NULL_MESSAGE_PACK.to_vec(),
+            configuration: NULL_MESSAGE_PACK.to_vec(),
+            prior_private: input.prior.private.clone(),
+        })
+        .await?;
+    check_diagnostics(
+        &format!("plan destroy of {address}"),
+        &response.diagnostics,
+        warnings,
+    )?;
+    reject_deferral(address, response.deferred.as_ref())?;
+    let (planned, _) = provider_value(response.planned_state.as_ref(), input.value_type)?;
+    if !planned.is_null() {
+        return Err(InfrastructureError::plugin(format!(
+            "provider planned a non-null destroy value for {address}, which is a provider bug"
+        )));
+    }
+    Ok(response.planned_private)
 }
 
 async fn refresh(
@@ -1218,6 +1490,15 @@ async fn refresh(
 ) -> Result<Option<Refreshed>> {
     let type_name = &row.address.resource_type;
     let schema = resource_schema(provider, &row.provider, type_name)?;
+    // Handing newer state to an older provider would silently drop what
+    // it does not know; Terraform refuses too.
+    if row.schema_version > schema.version {
+        return Err(InfrastructureError::StateFromNewerProvider {
+            address: row.address.to_string(),
+            stored_version: row.schema_version,
+            provider_version: schema.version,
+        });
+    }
     let value_type = schema.block.implied_type();
     let state_json = serde_json::to_vec(&row.state).map_err(|error| {
         InfrastructureError::state(format!(
@@ -1236,14 +1517,7 @@ async fn refresh(
         warnings,
     )?;
     let (upgraded, upgraded_bytes) = provider_value(upgrade.upgraded_state.as_ref(), &value_type)?;
-    if upgraded.is_null() {
-        // Reading a null state would report the resource gone and plan to
-        // create it again; refuse instead.
-        return Err(InfrastructureError::plugin(format!(
-            "provider returned no upgraded state for {}",
-            row.address
-        )));
-    }
+    check_upgraded(&row.address, &upgraded)?;
 
     let response = provider
         .client
@@ -1320,13 +1594,14 @@ async fn plan_create(
     }
     .check()?;
     Ok((
-        planned,
+        planned.clone(),
         ApplyStep {
             kind: StepKind::Create,
             prior: NULL_MESSAGE_PACK.to_vec(),
             planned: planned_bytes,
             configuration: input.configuration_bytes.to_vec(),
             planned_private: response.planned_private,
+            planned_value: planned,
         },
     ))
 }
@@ -1352,7 +1627,14 @@ impl PlanValidity<'_> {
                 self.address
             )));
         }
-        let problems = plan_problems(self.block, self.prior, self.configuration, self.planned);
+        let problems = plan_problems(
+            self.block,
+            PlanValues {
+                prior: self.prior,
+                configuration: self.configuration,
+                planned: self.planned,
+            },
+        );
         if problems.is_empty() {
             return Ok(());
         }
@@ -1495,12 +1777,15 @@ fn orphan_graph(orphans: &[&ManagedResource]) -> BTreeMap<String, Vec<String>> {
         .collect()
 }
 
-/// Render a diagnostic as a single human-readable string.
+/// Render a diagnostic as a single human-readable string, without the
+/// control characters a provider could use to drive the terminal.
 fn render_diagnostic(diagnostic: &Diagnostic) -> String {
-    let mut rendered = diagnostic.summary.clone();
+    let mut rendered = strip_control_characters_except_newlines(&diagnostic.summary);
     if !diagnostic.detail.is_empty() {
         rendered.push_str(": ");
-        rendered.push_str(&diagnostic.detail);
+        rendered.push_str(&strip_control_characters_except_newlines(
+            &diagnostic.detail,
+        ));
     }
     if let Some(path) = &diagnostic.attribute
         && !path.steps.is_empty()
@@ -1602,7 +1887,7 @@ pub fn render_plan(plan: &Plan) -> String {
     let mut rendered = String::new();
     for change in &plan.changes {
         let label = match change.action {
-            Action::NoOp if change.refreshes_state() => {
+            Action::Refresh => {
                 let _ = writeln!(
                     rendered,
                     "    {} (refresh stored state; no change)",

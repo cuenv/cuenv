@@ -15,13 +15,27 @@
 //! `TF_DISABLE_PLUGIN_TLS`.
 //!
 //! Each provider gets a private, short socket directory (unix socket paths
-//! are limited to about 108 bytes) that is removed when the provider stops,
+//! are limited to about 108 bytes) that is removed when the provider stops
+//! (or by [`crate::Cancellation::terminate_providers`] on a forced exit),
 //! and never inherits the state store's credentials.
 //!
 //! Providers run in their own process group, so an interrupt typed at the
 //! terminal reaches cuenv only; cuenv then asks them to stop or kills them
-//! through [`crate::Cancellation`]. They are also killed whenever their
-//! client is dropped.
+//! through [`crate::Cancellation`]. Killing a provider kills its whole
+//! process group, so processes it started die with it. They are also
+//! killed whenever their client is dropped.
+//!
+//! On Linux each provider also asks the kernel to kill it when its parent
+//! goes away (`PR_SET_PDEATHSIG`), so even a cuenv killed with `SIGKILL`
+//! leaves no provider behind. The kernel sends that signal when the
+//! *thread* that spawned the provider exits, so providers must be launched
+//! from a long-lived async runtime thread (as [`ProviderClient::launch`]
+//! is, being async), never from `spawn_blocking` or `block_in_place`,
+//! whose threads come and go. macOS has no equivalent; there a provider
+//! outlives a cuenv killed with `SIGKILL`.
+//!
+//! Provider log lines go to tracing at debug level only, with control
+//! characters removed; the serious ones are also kept for error reports.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -30,13 +44,15 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::{Child, Command};
 use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Channel, Endpoint, Uri};
 
 use crate::cancellation::Cancellation;
-use crate::error::{InfrastructureError, Result};
+use crate::error::{
+    InfrastructureError, Result, strip_control_characters, strip_control_characters_except_newlines,
+};
 use crate::protocol::{self, Diagnostic, DynamicValue};
 use crate::schema::ProviderSchema;
 
@@ -233,10 +249,16 @@ struct Connection {
 }
 
 impl ProviderProcess {
-    /// Send the process `SIGKILL` (or the platform equivalent) without
-    /// waiting for it to exit.
+    /// Send the process and its process group `SIGKILL` (or the platform
+    /// equivalent) without waiting for it to exit.
     pub(crate) fn kill(&self) {
         let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        // The identifier is known only until the process is reaped, so the
+        // group it leads cannot have been reused by then.
+        #[cfg(unix)]
+        if let Some(leader) = child.id() {
+            kill_process_group(&self.name, leader);
+        }
         if let Err(error) = child.start_kill() {
             tracing::debug!(provider = %self.name, %error, "provider kill failed; it may have exited already");
         }
@@ -284,6 +306,57 @@ impl ProviderProcess {
     }
 }
 
+/// Send `SIGKILL` to the process group led by the provider process
+/// `leader`, which [`ProviderClient::launch`] made a group leader.
+#[cfg(unix)]
+#[expect(unsafe_code, reason = "killpg has no safe standard library wrapper")]
+fn kill_process_group(name: &str, leader: u32) {
+    let Ok(group) = libc::pid_t::try_from(leader) else {
+        return;
+    };
+    // SAFETY: killpg only sends a signal and touches no memory. `group` is
+    // the identifier of a provider spawned as the leader of its own process
+    // group (`process_group(0)`) and not yet reaped (the caller holds its
+    // live identifier), so the group belongs to that provider and the
+    // processes it started, never to an unrelated one.
+    let result = unsafe { libc::killpg(group, libc::SIGKILL) };
+    if result != 0 {
+        tracing::debug!(
+            provider = %name,
+            error = %std::io::Error::last_os_error(),
+            "provider process group kill failed; it may have exited already"
+        );
+    }
+}
+
+/// Ask the kernel to kill the provider when the thread that spawned it
+/// exits (see the module documentation), and fail the spawn if cuenv is
+/// already gone.
+#[cfg(target_os = "linux")]
+#[expect(
+    unsafe_code,
+    reason = "pre_exec and prctl have no safe standard library wrapper"
+)]
+fn kill_with_parent(command: &mut Command) {
+    let parent = libc::pid_t::try_from(std::process::id()).unwrap_or(0);
+    // SAFETY: the closure runs in the child between fork and exec. It only
+    // calls prctl and getppid, both async-signal-safe, and builds errors
+    // from raw codes without allocating, so it cannot deadlock on a lock
+    // held by another thread of the parent at the time of the fork.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The parent died before the request took effect.
+            if libc::getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Recent serious provider log lines (hclog errors and warnings, and
 /// anything that is not hclog JSON, such as a Go panic), attached to errors
 /// so failures are diagnosable. Each line is bounded.
@@ -316,14 +389,17 @@ impl ProviderLog {
     }
 }
 
-/// A private directory for the provider's unix socket, removed on drop.
+/// A private directory for the provider's unix socket, removed on drop,
+/// and registered with the [`Cancellation`] so a forced exit removes it
+/// too.
 #[derive(Debug)]
 struct SocketDirectory {
     path: PathBuf,
+    cancellation: Cancellation,
 }
 
 impl SocketDirectory {
-    fn create() -> Result<Self> {
+    fn create(cancellation: &Cancellation) -> Result<Self> {
         let base = if cfg!(unix) && Path::new("/tmp").is_dir() {
             PathBuf::from("/tmp")
         } else {
@@ -342,13 +418,18 @@ impl SocketDirectory {
         builder.create(&path).map_err(|error| {
             InfrastructureError::input_output("create provider socket directory", error)
         })?;
-        Ok(Self { path })
+        cancellation.register_socket_directory(&path);
+        Ok(Self {
+            path,
+            cancellation: cancellation.clone(),
+        })
     }
 }
 
 impl Drop for SocketDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
+        self.cancellation.unregister_socket_directory(&self.path);
     }
 }
 
@@ -376,7 +457,7 @@ impl ProviderClient {
     #[tracing::instrument(skip_all, fields(binary = %options.binary.display()))]
     pub async fn launch(options: &LaunchOptions<'_>) -> Result<Self> {
         let binary = options.binary;
-        let socket_directory = SocketDirectory::create()?;
+        let socket_directory = SocketDirectory::create(options.cancellation)?;
         let mut command = Command::new(binary);
         for name in options.withheld_environment_variables {
             command.env_remove(name);
@@ -385,6 +466,8 @@ impl ProviderClient {
         // in-flight provider operations are stopped deliberately, not killed.
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(target_os = "linux")]
+        kill_with_parent(&mut command);
         let mut child = command
             .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
             .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
@@ -420,7 +503,8 @@ impl ProviderClient {
         });
         options.cancellation.register(&process);
         let log = ProviderLog::default();
-        spawn_log_drain(name.clone(), standard_error, log.clone());
+        // The drain ends with the provider's standard error.
+        drop(spawn_log_drain(name.clone(), standard_error, log.clone()));
 
         let mut reader = BufReader::new(standard_output);
         let line = tokio::time::timeout(
@@ -506,13 +590,12 @@ impl ProviderClient {
                 status.code(),
                 tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
             );
+            // The message comes from the provider and is displayed.
+            let message = strip_control_characters_except_newlines(status.message());
             let status = if transport_failure {
-                tonic::Status::new(
-                    status.code(),
-                    format!("{}{}", status.message(), self.log.render()),
-                )
+                tonic::Status::new(status.code(), format!("{message}{}", self.log.render()))
             } else {
-                status
+                tonic::Status::new(status.code(), message)
             };
             InfrastructureError::RemoteProcedure {
                 method: path.to_string(),
@@ -799,23 +882,31 @@ const fn client_capabilities() -> protocol::ClientCapabilities {
     }
 }
 
-fn spawn_log_drain(name: String, standard_error: tokio::process::ChildStderr, log: ProviderLog) {
+fn spawn_log_drain(
+    name: String,
+    standard_error: impl AsyncRead + Unpin + Send + 'static,
+    log: ProviderLog,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut reader = BufReader::new(standard_error);
         while let Ok(Some(line)) = read_bounded_line(&mut reader, MAXIMUM_LOG_LINE_BYTES).await {
+            // Classify the raw line, then keep only printable text: a
+            // provider must not drive the terminal cuenv writes to.
+            let serious = provider_log_is_serious(&line.text);
+            let printable = strip_control_characters(line.text.trim_end());
             let text = if line.truncated {
-                format!("{} [line truncated]", line.text.trim_end())
+                format!("{printable} [line truncated]")
             } else {
-                line.text.trim_end().to_string()
+                printable
             };
-            if provider_log_is_serious(&text) {
-                tracing::warn!(provider = %name, "{text}");
+            // Provider logs can hold values; they reach tracing only at
+            // debug level, which no default configuration shows.
+            tracing::debug!(provider = %name, serious, "{text}");
+            if serious {
                 log.record(text);
-            } else {
-                tracing::debug!(provider = %name, "{text}");
             }
         }
-    });
+    })
 }
 
 /// go-plugin forwards provider logs as hclog JSON lines with an `@level`;
@@ -992,15 +1083,87 @@ mod tests {
     #[test]
     fn socket_directory_is_private_from_creation() {
         use std::os::unix::fs::PermissionsExt;
-        let directory = SocketDirectory::create().unwrap();
+        let cancellation = Cancellation::default();
+        let directory = SocketDirectory::create(&cancellation).unwrap();
         let mode = std::fs::metadata(&directory.path)
             .unwrap()
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o700);
+        assert_eq!(cancellation.socket_directory_count(), 1);
         let path = directory.path.clone();
         drop(directory);
         assert!(!path.exists());
+        assert_eq!(cancellation.socket_directory_count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_forced_exit_removes_socket_directories_still_in_use() {
+        let cancellation = Cancellation::default();
+        let directory = SocketDirectory::create(&cancellation).unwrap();
+        let path = directory.path.clone();
+        cancellation.terminate_providers();
+        assert!(!path.exists());
+        drop(directory);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn killing_a_provider_kills_its_process_group() {
+        // A stand-in provider that starts a grandchild in its own group.
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "sleep 300 & echo $!; wait"])
+            .stdout(Stdio::piped())
+            .process_group(0)
+            .kill_on_drop(true);
+        let mut child = command.spawn().unwrap();
+        let mut output = BufReader::new(child.stdout.take().unwrap());
+        let mut grandchild = String::new();
+        output.read_line(&mut grandchild).await.unwrap();
+        let grandchild = grandchild.trim().to_string();
+        let process = ProviderProcess {
+            name: "stand-in".into(),
+            child: Mutex::new(child),
+            connection: OnceLock::new(),
+        };
+        assert!(
+            Path::new(&format!("/proc/{grandchild}")).exists() || cfg!(not(target_os = "linux"))
+        );
+        process.kill();
+        assert!(process.wait_for_exit(Duration::from_secs(5)).await);
+        #[cfg(target_os = "linux")]
+        {
+            // The grandchild is killed too (it may linger as a zombie of
+            // init for a moment).
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let alive = || {
+                std::fs::read_to_string(format!("/proc/{grandchild}/stat")).is_ok_and(|stat| {
+                    !stat
+                        .rsplit_once(')')
+                        .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+                })
+            };
+            while alive() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(!alive(), "grandchild {grandchild} survived");
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_log_lines_lose_control_characters() {
+        let log = ProviderLog::default();
+        let output: &'static [u8] =
+            b"panic: \x1b]0;owned\x07boom\n{\"@level\":\"debug\",\"@message\":\"quiet\"}\n";
+        spawn_log_drain("stand-in".into(), output, log.clone())
+            .await
+            .unwrap();
+        let rendered = log.render();
+        assert!(!rendered.contains('\u{1b}'), "{rendered}");
+        assert!(rendered.contains("panic: ]0;ownedboom"), "{rendered}");
+        assert!(!rendered.contains("quiet"), "{rendered}");
     }
 
     #[test]

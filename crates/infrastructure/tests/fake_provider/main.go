@@ -14,6 +14,8 @@
 //	create-ok     fake_taintdel creates succeed (otherwise they fail part way)
 //	fail-delete   fake_taintdel deletes fail
 //	upgrade-json  fake_plain upgraded states are sent as JSON
+//	protect       fake_protect refuses destroy plans
+//	slow-delete   fake_repl deletes take four seconds
 //
 // Resource types:
 //
@@ -24,6 +26,12 @@
 //	fake_plain     upgraded states optionally sent as JSON
 //	fake_undead    deletes that return the object instead of null, without errors
 //	fake_slow      creates that wait until the provider is asked to stop
+//	fake_protect   destroy plans that can be refused and carry private data
+//	fake_drift     creates whose result contradicts the plan
+//	fake_version   resource schema version 1 when started as *-v1, else 0
+//	fake_repl      a name that forces replacement; deletes that can be slow
+//	fake_dyn       a computed dynamic attribute holding list(string)
+//	fake_tags      an optional set of strings
 package main
 
 import (
@@ -126,6 +134,12 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &simple{kind: "plain"} },
 		func() resource.Resource { return &simple{kind: "undead"} },
 		func() resource.Resource { return &simple{kind: "slow"} },
+		func() resource.Resource { return &basic{kind: "protect"} },
+		func() resource.Resource { return &basic{kind: "drift"} },
+		func() resource.Resource { return &basic{kind: "version"} },
+		func() resource.Resource { return &basic{kind: "repl"} },
+		func() resource.Resource { return &dynamic{} },
+		func() resource.Resource { return &tags{} },
 	}
 }
 
@@ -305,6 +319,186 @@ func (r *simple) Delete(ctx context.Context, request resource.DeleteRequest, res
 	}
 }
 
+// basic resources: id and name, each kind with one behaviour.
+type basic struct{ kind string }
+
+type basicModel struct {
+	ID   types.String `tfsdk:"id"`
+	Name types.String `tfsdk:"name"`
+}
+
+// schemaVersionOne reports whether this binary serves resource schema
+// version 1 for fake_version: it does when started through a name ending
+// in -v1, so a test can run two schema versions of one provider.
+func schemaVersionOne() bool {
+	return strings.HasSuffix(os.Args[0], "-v1")
+}
+
+func (r *basic) Metadata(_ context.Context, _ resource.MetadataRequest, response *resource.MetadataResponse) {
+	response.TypeName = "fake_" + r.kind
+}
+
+func (r *basic) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+	name := schema.StringAttribute{Required: true}
+	if r.kind == "repl" {
+		name.PlanModifiers = []planmodifier.String{stringplanmodifier.RequiresReplace()}
+	}
+	response.Schema = schema.Schema{Attributes: map[string]schema.Attribute{
+		"id":   identifierAttribute,
+		"name": name,
+	}}
+	if r.kind == "version" && schemaVersionOne() {
+		response.Schema.Version = 1
+	}
+}
+
+// ModifyPlan of fake_protect runs for destroys too (the Plugin Framework
+// advertises plan_destroy): it refuses them while the `protect` flag is
+// set, and otherwise hands the delete private data.
+func (r *basic) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if r.kind != "protect" || !request.Plan.Raw.IsNull() {
+		return
+	}
+	journal("protect: PlanResourceChange called for destroy")
+	if flag("protect") {
+		response.Diagnostics.AddError("deletion protection is enabled", "refusing to plan the destroy of this object")
+		return
+	}
+	response.Diagnostics.Append(response.Private.SetKey(ctx, "destroy", []byte(`"planned"`))...)
+}
+
+func (r *basic) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var model basicModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	journal("%s: Create name=%s", r.kind, model.Name.ValueString())
+	model.ID = types.StringValue(r.kind + "-1")
+	if r.kind == "drift" {
+		// A provider bug: the result disagrees with the known planned name.
+		model.Name = types.StringValue(model.Name.ValueString() + "-drifted")
+	}
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *basic) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var model basicModel
+	response.Diagnostics.Append(request.State.Get(ctx, &model)...)
+	journal("%s: Read name=%s", r.kind, model.Name.ValueString())
+}
+
+func (r *basic) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var model basicModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	journal("%s: Update name=%s", r.kind, model.Name.ValueString())
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *basic) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
+	var model basicModel
+	response.Diagnostics.Append(request.State.Get(ctx, &model)...)
+	private, _ := request.Private.GetKey(ctx, "destroy")
+	journal("%s: Delete name=%s private=%s", r.kind, model.Name.ValueString(), string(private))
+	if r.kind == "repl" && flag("slow-delete") {
+		time.Sleep(4 * time.Second)
+		journal("repl: Delete name=%s finished", model.Name.ValueString())
+	}
+}
+
+// dynamic: a computed dynamic attribute holding a list of strings.
+type dynamic struct{}
+
+type dynamicModel struct {
+	ID   types.String  `tfsdk:"id"`
+	Name types.String  `tfsdk:"name"`
+	Data types.Dynamic `tfsdk:"data"`
+}
+
+func (r *dynamic) Metadata(_ context.Context, _ resource.MetadataRequest, response *resource.MetadataResponse) {
+	response.TypeName = "fake_dyn"
+}
+
+func (r *dynamic) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{Attributes: map[string]schema.Attribute{
+		// Without UseStateForUnknown: the Plugin Framework marks computed
+		// values unknown whenever the proposed new state differs from the
+		// prior state, so a dynamic value sent back with another type
+		// shows as a perpetual change.
+		"id":   schema.StringAttribute{Computed: true},
+		"name": schema.StringAttribute{Required: true},
+		"data": schema.DynamicAttribute{Computed: true},
+	}}
+}
+
+func remoteData() types.Dynamic {
+	return types.DynamicValue(types.ListValueMust(types.StringType, []attr.Value{types.StringValue("a"), types.StringValue("b")}))
+}
+
+func (r *dynamic) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var model dynamicModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	journal("dyn: Create")
+	model.ID = types.StringValue("dyn-1")
+	model.Data = remoteData()
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *dynamic) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
+	var model dynamicModel
+	response.Diagnostics.Append(request.State.Get(ctx, &model)...)
+	journal("dyn: Read received data of type %T", model.Data.UnderlyingValue())
+	model.Data = remoteData()
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *dynamic) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var model dynamicModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	journal("dyn: Update")
+	model.ID = types.StringValue("dyn-1")
+	model.Data = remoteData()
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *dynamic) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {
+	journal("dyn: Delete")
+}
+
+// tags: an optional set of strings.
+type tags struct{}
+
+type tagsModel struct {
+	ID   types.String `tfsdk:"id"`
+	Tags types.Set    `tfsdk:"tags"`
+}
+
+func (r *tags) Metadata(_ context.Context, _ resource.MetadataRequest, response *resource.MetadataResponse) {
+	response.TypeName = "fake_tags"
+}
+
+func (r *tags) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+	response.Schema = schema.Schema{Attributes: map[string]schema.Attribute{
+		"id":   identifierAttribute,
+		"tags": schema.SetAttribute{Optional: true, ElementType: types.StringType},
+	}}
+}
+
+func (r *tags) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	var model tagsModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	journal("tags: Create with %d tags", len(model.Tags.Elements()))
+	model.ID = types.StringValue("tags-1")
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *tags) Read(context.Context, resource.ReadRequest, *resource.ReadResponse) {}
+
+func (r *tags) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	var model tagsModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &model)...)
+	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+}
+
+func (r *tags) Delete(context.Context, resource.DeleteRequest, *resource.DeleteResponse) {}
+
 // wrap adjusts protocol messages the Plugin Framework never produces.
 type wrap struct{ tfprotov6.ProviderServer }
 
@@ -364,6 +558,16 @@ func (w *wrap) ApplyResourceChange(ctx context.Context, request *tfprotov6.Apply
 }
 
 func (w *wrap) UpgradeResourceState(ctx context.Context, request *tfprotov6.UpgradeResourceStateRequest) (*tfprotov6.UpgradeResourceStateResponse, error) {
+	if request.TypeName == "fake_version" && request.Version > 0 && !schemaVersionOne() {
+		// SDKv2 behaviour for a state version newer than the schema: no
+		// upgrader matches, and the JSON passes through, decoded against
+		// the older schema, silently dropping what it does not know.
+		journal("version: UpgradeResourceState from version %d with schema version 0", request.Version)
+		var stored map[string]any
+		_ = json.Unmarshal(request.RawState.JSON, &stored)
+		passed, _ := json.Marshal(map[string]any{"id": stored["id"], "name": stored["name"]})
+		return &tfprotov6.UpgradeResourceStateResponse{UpgradedState: &tfprotov6.DynamicValue{JSON: passed}}, nil
+	}
 	response, err := w.ProviderServer.UpgradeResourceState(ctx, request)
 	if err == nil && request.TypeName == "fake_plain" && flag("upgrade-json") {
 		var converted bool
