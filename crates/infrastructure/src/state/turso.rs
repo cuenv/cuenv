@@ -23,7 +23,6 @@
 use std::fmt;
 use std::future::Future;
 use std::iter;
-use std::net::IpAddr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -625,8 +624,18 @@ impl TursoStateStore {
 /// Plaintext schemes (`http://`, `ws://`) are accepted only for loopback hosts,
 /// because the bearer token would otherwise cross the network unencrypted.
 /// Error messages never quote the full URL, which may carry secrets.
+///
+/// The accepted set is exactly the schema's (`#TursoState.url` in
+/// `schema/infrastructure.cue`): the URL text is checked against that
+/// contract before it is parsed, so the parser's own leniency (trimming,
+/// percent-decoding, international names, numeric host forms such as
+/// `127.1`) can never widen it.
 fn pipeline_url(url: &str) -> Result<reqwest::Url> {
-    let url = url.trim();
+    if url.chars().any(char::is_whitespace) {
+        return Err(InfrastructureError::configuration(
+            "invalid Turso URL: it must not contain whitespace",
+        ));
+    }
     let (scheme, remainder) = url.split_once("://").ok_or_else(|| {
         InfrastructureError::configuration(
             "invalid Turso URL: expected libsql://, https:// or wss:// \
@@ -639,36 +648,29 @@ fn pipeline_url(url: &str) -> Result<reqwest::Url> {
         "http" | "ws" => ("http", Transport::Plaintext),
         _ => {
             return Err(InfrastructureError::configuration(format!(
-                "unsupported Turso URL scheme '{scheme}://'; expected libsql://, https:// or \
-                 wss:// (http:// and ws:// only for a loopback host)"
+                "unsupported Turso URL scheme '{}://'; expected libsql://, https:// or \
+                 wss:// (http:// and ws:// only for a loopback host)",
+                crate::error::strip_control_characters(&scheme)
             )));
         }
     };
+    let parts = UrlParts::split(remainder)?;
+    if transport == Transport::Plaintext && !is_loopback_host(parts.host) {
+        return Err(InfrastructureError::configuration(format!(
+            "Turso URL uses plaintext {scheme}:// for non-loopback host '{}', which would \
+             send the authentication token unencrypted; non-loopback URLs must use libsql://, \
+             https:// or wss://",
+            parts.host
+        )));
+    }
     let mut parsed =
         reqwest::Url::parse(&format!("{http_scheme}://{remainder}")).map_err(|error| {
             InfrastructureError::configuration(format!("invalid Turso URL: {error}"))
         })?;
-    let host = parsed
-        .host_str()
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| InfrastructureError::configuration("invalid Turso URL: missing host"))?
-        .to_string();
-    if !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        return Err(InfrastructureError::configuration(format!(
-            "Turso URL for host '{host}' must not contain credentials, a query or a fragment; \
-             pass the token as the authentication token instead"
-        )));
-    }
-    if transport == Transport::Plaintext && !is_loopback_host(&host) {
-        return Err(InfrastructureError::configuration(format!(
-            "Turso URL uses plaintext {scheme}:// for non-loopback host '{host}', which would \
-             send the authentication token unencrypted; non-loopback URLs must use libsql://, \
-             https:// or wss://"
-        )));
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(InfrastructureError::configuration(
+            "invalid Turso URL: missing host",
+        ));
     }
     let path = format!("{}/v2/pipeline", parsed.path().trim_end_matches('/'));
     parsed.set_path(&path);
@@ -681,22 +683,135 @@ enum Transport {
     Plaintext,
 }
 
-/// `localhost`, `127.0.0.0/8`, `::1`, or an IPv4-mapped loopback address.
-fn is_loopback_host(host: &str) -> bool {
-    let unbracketed = host
-        .strip_prefix('[')
-        .and_then(|inner| inner.strip_suffix(']'))
-        .unwrap_or(host);
-    match unbracketed.parse::<IpAddr>() {
-        Ok(IpAddr::V4(address)) => address.is_loopback(),
-        Ok(IpAddr::V6(address)) => {
-            address.is_loopback()
-                || address
-                    .to_ipv4_mapped()
-                    .is_some_and(|mapped| mapped.is_loopback())
+/// The authority and path of a Turso URL after `scheme://`, checked
+/// against the schema's URL contract: a host, an optional port from 1 to
+/// 65535 and a path of URL path characters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UrlParts<'url> {
+    /// A DNS name, dotted IPv4 address or bracketed IPv6 address.
+    host: &'url str,
+}
+
+impl<'url> UrlParts<'url> {
+    /// Split and check `remainder`. Errors never quote it, since it may
+    /// carry a token.
+    fn split(remainder: &'url str) -> Result<Self> {
+        let (authority, path) = remainder
+            .find('/')
+            .map_or((remainder, ""), |index| remainder.split_at(index));
+        if authority.contains('@') || remainder.contains(['?', '#']) {
+            return Err(InfrastructureError::configuration(
+                "Turso URL must not contain credentials, a query or a fragment; pass the token \
+                 as the authentication token instead",
+            ));
         }
-        Err(_) => unbracketed.eq_ignore_ascii_case("localhost"),
+        let (host, port) = if authority.starts_with('[') {
+            let end = authority.find(']').ok_or_else(|| {
+                InfrastructureError::configuration("invalid Turso URL: unclosed IPv6 address")
+            })?;
+            let (host, rest) = authority.split_at(end + 1);
+            (host, rest)
+        } else {
+            authority
+                .find(':')
+                .map_or((authority, ""), |index| authority.split_at(index))
+        };
+        if host.is_empty() {
+            return Err(InfrastructureError::configuration(
+                "invalid Turso URL: missing host",
+            ));
+        }
+        if !is_valid_host(host) {
+            return Err(InfrastructureError::configuration(
+                "invalid Turso URL: the host must be a DNS name (letters, digits, '.' and '-', \
+                 starting and ending with a letter or digit), a dotted IPv4 address or a \
+                 bracketed IPv6 address",
+            ));
+        }
+        let port_valid = port.is_empty() || port.strip_prefix(':').is_some_and(is_valid_port);
+        if !port_valid {
+            return Err(InfrastructureError::configuration(
+                "invalid Turso URL: the port must be a number from 1 to 65535",
+            ));
+        }
+        if !path.chars().all(is_path_character) {
+            return Err(InfrastructureError::configuration(
+                "invalid Turso URL: the path may hold only letters, digits and \
+                 ._~!$&'()*+,;=:@%/-",
+            ));
+        }
+        Ok(Self { host })
     }
+}
+
+/// A DNS name `[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?` (which covers a
+/// dotted IPv4 address) or a bracketed IPv6 address `[` hex, `:`, `.` `]`.
+/// International names, `_` and percent-encoding are refused.
+fn is_valid_host(host: &str) -> bool {
+    if let Some(inner) = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
+        return !inner.is_empty()
+            && inner
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() || ":.".contains(character));
+    }
+    let bytes = host.as_bytes();
+    let alphanumeric_edge = |byte: Option<&u8>| byte.is_some_and(u8::is_ascii_alphanumeric);
+    alphanumeric_edge(bytes.first())
+        && alphanumeric_edge(bytes.last())
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-')
+}
+
+/// A port from 1 to 65535 in plain decimal, without a leading zero.
+fn is_valid_port(digits: &str) -> bool {
+    !digits.is_empty()
+        && digits.len() <= 5
+        && !digits.starts_with('0')
+        && digits.bytes().all(|byte| byte.is_ascii_digit())
+        && digits
+            .parse::<u32>()
+            .is_ok_and(|port| (1..=65_535).contains(&port))
+}
+
+fn is_path_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || "._~!$&'()*+,;=:@%/-".contains(character)
+}
+
+/// Loopback, decided from the host text alone: `localhost` in any case,
+/// `127.a.b.c` in dotted decimal, exactly `[::1]`, or `[::ffff:127.a.b.c]`.
+/// Other spellings that resolve to loopback (`127.1`, `0x7f.1`,
+/// `2130706433`, `[0:0:0:0:0:0:0:1]`, `[::ffff:7f00:1]`) are refused, as
+/// the schema refuses them.
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host == "[::1]" {
+        return true;
+    }
+    let mapped_prefix = "[::ffff:";
+    if host.len() > mapped_prefix.len()
+        && host.is_char_boundary(mapped_prefix.len())
+        && host[..mapped_prefix.len()].eq_ignore_ascii_case(mapped_prefix)
+        && let Some(address) = host[mapped_prefix.len()..].strip_suffix(']')
+    {
+        return is_loopback_ipv4_text(address);
+    }
+    is_loopback_ipv4_text(host)
+}
+
+/// `127.a.b.c` with decimal octets from 0 to 255 and no leading zeros.
+fn is_loopback_ipv4_text(text: &str) -> bool {
+    let octets: Vec<&str> = text.split('.').collect();
+    octets.len() == 4
+        && octets[0] == "127"
+        && octets.iter().all(|octet| {
+            (1..=3).contains(&octet.len())
+                && octet.bytes().all(|byte| byte.is_ascii_digit())
+                && (octet.len() == 1 || !octet.starts_with('0'))
+                && octet.parse::<u16>().is_ok_and(|value| value <= 255)
+        })
 }
 
 fn now() -> String {
@@ -1796,6 +1911,94 @@ mod tests {
         }
         assert!(configuration_error("postgres://nope").contains("unsupported"));
         assert!(configuration_error("db.turso.io").contains("expected libsql://"));
+    }
+
+    /// The same cases as `turso_url_contract` in
+    /// `crates/cuengine/tests/repository_tests.rs`: the schema and this
+    /// parser must accept exactly the same URLs.
+    #[test]
+    fn urls_follow_the_schema_contract() {
+        let accepted = [
+            "libsql://db-acme.turso.io",
+            "LIBSQL://DB-ACME.TURSO.IO/",
+            "https://db.turso.io/prefix/",
+            "wss://db.turso.io",
+            "https://10.0.0.1:8443",
+            "https://[2001:db8::1]:8443/path",
+            "ws://localhost:8080",
+            "http://LOCALHOST",
+            "http://127.0.0.1:8080/",
+            "http://127.255.255.255:65535",
+            "http://[::1]:8080",
+            "http://[::ffff:127.0.0.1]:8080",
+            "HTTP://127.0.0.1:1",
+        ];
+        let rejected = [
+            "postgres://db.turso.io",
+            "db.turso.io",
+            "https://",
+            "http://:8080",
+            " libsql://db.turso.io",
+            "libsql://db.turso.io\u{a0}",
+            "libsql://db.turso.io/a b",
+            "http://db.turso.io",
+            "http://10.0.0.1:8080",
+            "http://[2001:db8::1]:8080",
+            "http://localhost.example.com",
+            "http://127.0.0.1.example.com",
+            "http://127.1",
+            "http://127.0.0.256",
+            "http://[::ffff:7f00:1]",
+            "http://[0:0:0:0:0:0:0:1]",
+            "http://127.0.0.1:0",
+            "http://127.0.0.1:",
+            "https://db.turso.io:65536",
+            "https://-db.turso.io",
+        ];
+        for url in accepted {
+            assert!(pipeline_url(url).is_ok(), "{url:?} must be accepted");
+        }
+        for url in rejected {
+            configuration_error(url);
+        }
+    }
+
+    #[test]
+    fn host_spellings_beyond_the_contract_are_rejected() {
+        for url in [
+            // Numeric forms the URL parser would read as loopback.
+            "http://0x7f.1",
+            "http://2130706433",
+            "http://127.00.0.1",
+            "http://[0:0:0:0:0:0:0:1]:8080",
+            // International names, `_` and percent-encoding.
+            "https://dé.turso.io",
+            "https://db_1.turso.io",
+            "https://d%62.turso.io",
+            // Ports with leading zeros or no digits; bad path characters.
+            "https://db.turso.io:08443",
+            "https://db.turso.io:x",
+            "https://db.turso.io/a\"b",
+            "https://db.turso.io/a<b",
+            // Whitespace anywhere, trimmed or not.
+            "libsql://db.turso.io\n",
+            "libsql://db.turso.io\t/x",
+        ] {
+            configuration_error(url);
+        }
+        for url in [
+            "http://127.0.0.1",
+            "http://[::FFFF:127.0.0.1]",
+            "http://LocalHost:1",
+        ] {
+            assert_eq!(pipeline_url(url).unwrap().scheme(), "http", "{url}");
+        }
+        assert_eq!(
+            pipeline_url("https://db.turso.io/a%20b;c=d@e")
+                .unwrap()
+                .path(),
+            "/a%20b;c=d@e/v2/pipeline"
+        );
     }
 
     #[test]
