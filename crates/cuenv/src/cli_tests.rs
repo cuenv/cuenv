@@ -92,7 +92,7 @@ fn test_command_conversion() {
 
 #[test]
 fn test_infrastructure_command_conversion() {
-    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction};
+    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
 
     let cli = Cli::try_parse_from(["cuenv", "i", "destroy", "--yes", "-p", "infra"]).unwrap();
     let command = cli.command.unwrap().into_command(None);
@@ -105,6 +105,50 @@ fn test_infrastructure_command_conversion() {
         InfrastructureAction::Destroy {
             confirmation: ConfirmationPolicy::AssumeYes
         }
+    );
+
+    let state_action = |arguments: &[&str]| {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        let Command::Infrastructure { path, action, .. } = cli.command.unwrap().into_command(None)
+        else {
+            panic!("Expected Command::Infrastructure");
+        };
+        (path, action)
+    };
+    assert_eq!(
+        state_action(&["cuenv", "i", "state"]),
+        (
+            ".".to_string(),
+            InfrastructureAction::State(StateAction::List)
+        )
+    );
+    assert_eq!(
+        state_action(&["cuenv", "i", "state", "list", "-p", "infra"]),
+        (
+            "infra".to_string(),
+            InfrastructureAction::State(StateAction::List)
+        )
+    );
+    assert_eq!(
+        state_action(&[
+            "cuenv",
+            "i",
+            "state",
+            "-p",
+            "infra",
+            "remove",
+            "random_pet.pet"
+        ]),
+        (
+            "infra".to_string(),
+            InfrastructureAction::State(StateAction::Remove {
+                address: "random_pet.pet".to_string()
+            })
+        )
+    );
+    assert_eq!(
+        state_action(&["cuenv", "i", "state", "recover"]).1,
+        InfrastructureAction::State(StateAction::Recover)
     );
 
     let cli = Cli::try_parse_from(["cuenv", "infrastructure", "unlock", "abc"]).unwrap();
@@ -404,6 +448,12 @@ fn test_infrastructure_error_exit_codes_and_json_codes() {
     );
     assert_eq!(exit_code_for(&plan_changed), EXIT_LOCKED);
     assert_eq!(error_code_for(&plan_changed), "infrastructure_plan_changed");
+
+    let interrupted =
+        CliError::infrastructure("interrupted", None, InfrastructureFailureKind::Interrupted);
+    assert_eq!(EXIT_INTERRUPTED, 130);
+    assert_eq!(exit_code_for(&interrupted), EXIT_INTERRUPTED);
+    assert_eq!(error_code_for(&interrupted), "infrastructure_interrupted");
 
     let failed = CliError::infrastructure("provider", None, InfrastructureFailureKind::Failed);
     assert_eq!(exit_code_for(&failed), EXIT_INFRASTRUCTURE);

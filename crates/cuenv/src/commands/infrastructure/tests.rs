@@ -5,14 +5,17 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use cuenv_infrastructure::{
-    Action, InfrastructureError, LockInformation, ManagedResource, ResourceAddress, StateLock,
-    StateStore, TenantKey,
+    EngineOptions, EngineSetup, InfrastructureEngine, InfrastructureError, LockInformation,
+    ManagedResource, MemoryStateStore, ResourceAddress, StateLock, StateStore, TenantKey,
+    UnrecordedStore,
 };
 
 use super::evaluation::{self, NameCheck, TargetRequest};
-use super::output::{Output, action_name};
+use super::interrupts::Interrupts;
+use super::output::Output;
 use super::{
-    ConfirmationPolicy, InfrastructureAction, StoreAccess, UnlockRequest, release, unlock,
+    CommandContext, ConfirmationPolicy, InfrastructureAction, StateAction, StoreAccess,
+    UnlockRequest, recover, release, remove_resource, unlock,
 };
 use crate::cli::{
     CliError, EXIT_CLI, EXIT_EVAL, EXIT_LOCKED, OutputFormat, error_code_for, exit_code_for,
@@ -157,7 +160,7 @@ fn state_and_unlock_skip_the_module_check() {
     );
     assert!(evaluate(module.path(), NameCheck::TargetOnly).is_ok());
     assert_eq!(
-        InfrastructureAction::State.name_check(),
+        InfrastructureAction::State(StateAction::Recover).name_check(),
         NameCheck::TargetOnly
     );
     assert_eq!(
@@ -207,7 +210,7 @@ fn reads_never_migrate() {
         StoreAccess::ReadOnly
     );
     assert_eq!(
-        InfrastructureAction::State.store_access(),
+        InfrastructureAction::State(StateAction::List).store_access(),
         StoreAccess::ReadOnly
     );
     assert_eq!(
@@ -234,12 +237,74 @@ fn reads_never_migrate() {
 }
 
 #[test]
-fn json_action_names_are_explicit() {
-    assert_eq!(action_name(Action::NoOp), "no-op");
-    assert_eq!(action_name(Action::Create), "create");
-    assert_eq!(action_name(Action::Update), "update");
-    assert_eq!(action_name(Action::Replace), "replace");
-    assert_eq!(action_name(Action::Delete), "delete");
+fn state_repairs_write_and_skip_the_module_check() {
+    for action in [
+        StateAction::Remove {
+            address: "random_pet.pet".to_string(),
+        },
+        StateAction::Recover,
+    ] {
+        let action = InfrastructureAction::State(action);
+        assert_eq!(action.store_access(), StoreAccess::ReadWrite);
+        assert_eq!(action.name_check(), NameCheck::TargetOnly);
+    }
+}
+
+fn managed(address: &str) -> ManagedResource {
+    let (resource_type, name) = address.split_once('.').unwrap();
+    ManagedResource {
+        address: ResourceAddress::new(resource_type, name),
+        provider: "random".to_string(),
+        provider_source: "registry.terraform.io/hashicorp/random".to_string(),
+        schema_version: 0,
+        state: serde_json::json!({"id": "x"}),
+        private: Vec::new(),
+        dependencies: Vec::new(),
+        tainted: false,
+        identity: None,
+    }
+}
+
+#[tokio::test]
+async fn state_remove_forgets_one_resource_under_the_lock() {
+    let memory = MemoryStateStore::new();
+    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let lock = memory.lock(&tenant, "test").await.unwrap();
+    memory
+        .put(&tenant, &lock, &managed("random_pet.pet"))
+        .await
+        .unwrap();
+    memory
+        .put(&tenant, &lock, &managed("random_integer.port"))
+        .await
+        .unwrap();
+    memory.unlock(&tenant, &lock).await.unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(memory);
+    let interrupts = Interrupts::claim().unwrap();
+    let context = CommandContext {
+        store: &store,
+        tenant: &tenant,
+        output: Output::new(OutputFormat::Json),
+        interrupts: &interrupts,
+    };
+
+    remove_resource(&context, "random_pet.pet").await.unwrap();
+    let remaining: Vec<String> = store
+        .list(&tenant)
+        .await
+        .unwrap()
+        .iter()
+        .map(|resource| resource.address.to_string())
+        .collect();
+    assert_eq!(remaining, vec!["random_integer.port".to_string()]);
+    assert!(store.current_lock(&tenant).await.unwrap().is_none());
+
+    let error = remove_resource(&context, "random_pet.missing")
+        .await
+        .unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert!(error.to_string().contains("random_pet.missing"), "{error}");
+    assert!(store.current_lock(&tenant).await.unwrap().is_none());
 }
 
 /// A store whose unlock always fails (counting attempts) and whose lock is
@@ -353,4 +418,53 @@ async fn unlock_with_another_identifier_is_a_lock_failure() {
     .unwrap_err();
     assert_eq!(exit_code_for(&error), EXIT_LOCKED);
     assert_eq!(error_code_for(&error), "infrastructure_locked");
+}
+
+#[tokio::test]
+async fn state_recover_records_and_deletes_unrecorded_files() {
+    let directory = module_directory();
+    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let unrecorded = UnrecordedStore::at(directory.path().join("unrecorded"));
+    unrecorded
+        .save(&tenant, &managed("random_pet.pet"))
+        .unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let interrupts = Interrupts::claim().unwrap();
+    let infrastructure: cuenv_manifest::manifest::Infrastructure =
+        serde_json::from_value(serde_json::json!({
+            "state": {"turso": {"url": "http://127.0.0.1:1"}}
+        }))
+        .unwrap();
+    let engine = InfrastructureEngine::new(EngineSetup {
+        tenant: tenant.clone(),
+        store: Arc::clone(&store),
+        infrastructure,
+        options: EngineOptions {
+            project_directory: directory.path().to_path_buf(),
+            plugin_cache_directory: None,
+            withheld_environment_variables: Vec::new(),
+            unrecorded_directory: Some(directory.path().join("unrecorded")),
+            cancellation: interrupts.cancellation().clone(),
+        },
+    });
+    let context = CommandContext {
+        store: &store,
+        tenant: &tenant,
+        output: Output::new(OutputFormat::Json),
+        interrupts: &interrupts,
+    };
+
+    recover(&context, &engine).await.unwrap();
+    engine.shutdown().await;
+
+    let recorded: Vec<String> = store
+        .list(&tenant)
+        .await
+        .unwrap()
+        .iter()
+        .map(|resource| resource.address.to_string())
+        .collect();
+    assert_eq!(recorded, vec!["random_pet.pet".to_string()]);
+    assert!(unrecorded.list(&tenant).unwrap().is_empty());
+    assert!(store.current_lock(&tenant).await.unwrap().is_none());
 }

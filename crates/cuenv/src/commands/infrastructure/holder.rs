@@ -1,16 +1,10 @@
 //! Description of the run that holds a state lock, shown to whoever finds
 //! the project locked.
 
-use cuenv_infrastructure::PlanMode;
-
-/// Describe this run: command, user, host, process and, in GitHub Actions,
-/// the workflow run.
+/// Describe this run: the subcommand (`apply`, `state remove`, ...), user,
+/// host, process and, in GitHub Actions, the workflow run.
 #[must_use]
-pub(super) fn describe(mode: PlanMode) -> String {
-    let command = match mode {
-        PlanMode::Apply => "apply",
-        PlanMode::Destroy => "destroy",
-    };
+pub(super) fn describe(command: &str) -> String {
     let continuous_integration = match (
         std::env::var("GITHUB_SERVER_URL"),
         std::env::var("GITHUB_REPOSITORY"),
@@ -153,7 +147,7 @@ mod tests {
 
     #[test]
     fn describes_command_user_host_and_process() {
-        let description = describe(PlanMode::Destroy);
+        let description = describe("destroy");
         assert!(description.starts_with("cuenv infrastructure destroy by "));
         assert!(!description.contains("unknown user"));
         assert!(!description.contains("unknown host"));

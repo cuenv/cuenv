@@ -5,16 +5,18 @@
 //! and stores each managed resource in the configured Turso database. State
 //! is keyed by the CUE module path and the project name.
 //!
-//! Converging runs plan without the lock, ask for confirmation, then take the
-//! lock and plan again; they refuse to apply if the second plan differs from
-//! the one the operator confirmed. The command owns interrupt handling for
-//! its whole run (see [`interrupts`]).
+//! `apply` and `destroy` with `--yes` take the lock, plan once and apply that
+//! plan. With a prompt they plan without the lock, ask for confirmation, then
+//! take the lock, plan again and refuse to apply unless the new plan's digest
+//! matches the one the operator confirmed. The command owns interrupt
+//! handling for its whole run (see [`interrupts`]).
 
 mod evaluation;
 mod holder;
 mod interrupts;
 mod output;
 
+use std::future::Future;
 use std::io::IsTerminal;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +42,20 @@ pub enum ConfirmationPolicy {
     AssumeYes,
 }
 
+/// What `cuenv infrastructure state` should do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateAction {
+    /// List managed resources recorded in state.
+    List,
+    /// Forget one managed resource without touching the real object.
+    Remove {
+        /// Address of the resource (`type.name`).
+        address: String,
+    },
+    /// Record changes an earlier run could not record and saved locally.
+    Recover,
+}
+
 /// What `cuenv infrastructure` should do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InfrastructureAction {
@@ -55,8 +71,8 @@ pub enum InfrastructureAction {
         /// Whether to ask before destroying.
         confirmation: ConfirmationPolicy,
     },
-    /// List managed resources recorded in state.
-    State,
+    /// Inspect or repair recorded state.
+    State(StateAction),
     /// Show the project's state lock, or release it when its identifier is given.
     Unlock {
         /// Identifier of the lock to release.
@@ -66,12 +82,12 @@ pub enum InfrastructureAction {
 
 impl InfrastructureAction {
     /// Plans and changes check the project name across the whole module;
-    /// inspecting and unlocking state must keep working when a sibling
-    /// instance is broken.
+    /// inspecting and repairing state and unlocking must keep working when a
+    /// sibling instance is broken.
     const fn name_check(&self) -> NameCheck {
         match self {
             Self::Plan | Self::Apply { .. } | Self::Destroy { .. } => NameCheck::WholeModule,
-            Self::State | Self::Unlock { .. } => NameCheck::TargetOnly,
+            Self::State(_) | Self::Unlock { .. } => NameCheck::TargetOnly,
         }
     }
 
@@ -82,11 +98,12 @@ impl InfrastructureAction {
         match self {
             Self::Apply { .. }
             | Self::Destroy { .. }
+            | Self::State(StateAction::Remove { .. } | StateAction::Recover)
             | Self::Unlock {
                 lock_identifier: Some(_),
             } => StoreAccess::ReadWrite,
             Self::Plan
-            | Self::State
+            | Self::State(StateAction::List)
             | Self::Unlock {
                 lock_identifier: None,
             } => StoreAccess::ReadOnly,
@@ -117,35 +134,44 @@ enum StoreAccess {
 }
 
 fn failure(error: &InfrastructureError) -> CliError {
-    let help = match error {
-        InfrastructureError::Locked {
-            lock_identifier, ..
-        } => Some(format!(
-            "Wait for the other run to finish. If it is gone, release it with \
-             `cuenv infrastructure unlock {lock_identifier}`."
-        )),
-        InfrastructureError::LockLost { .. } => Some(
-            "Another run released or took this project's lock. Review `cuenv infrastructure plan` \
-             before applying again."
-                .to_string(),
+    let (kind, help) = match error {
+        InfrastructureError::Configuration(_) => return CliError::config(error.to_string()),
+        InfrastructureError::Locked { .. } => (
+            InfrastructureFailureKind::Locked,
+            Some("Wait for the other run to finish, then run the command again.".to_string()),
         ),
-        InfrastructureError::UnrecordedChange { .. } => Some(
-            "The resource exists but is not in state. Restore connectivity to the state store and \
-             re-record it before applying again."
-                .to_string(),
+        InfrastructureError::LockLost { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(
+                "Another run released or took this project's lock. Review `cuenv infrastructure \
+                 plan` before applying again."
+                    .to_string(),
+            ),
         ),
-        InfrastructureError::State(_) => {
-            Some("Check the Turso URL, the authentication token and network access.".to_string())
+        InfrastructureError::UnrecordedChangeLost { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(
+                "cuenv cannot import resources yet: find the resource with the provider's own \
+                 tools and delete it, then plan again (the next apply creates it anew)."
+                    .to_string(),
+            ),
+        ),
+        InfrastructureError::Interrupted { .. } | InfrastructureError::InterruptedWhilePlanning => {
+            (InfrastructureFailureKind::Interrupted, None)
         }
-        InfrastructureError::Configuration(_) => {
-            return CliError::config(error.to_string());
-        }
-        _ => None,
-    };
-    let kind = if matches!(error, InfrastructureError::Locked { .. }) {
-        InfrastructureFailureKind::Locked
-    } else {
-        InfrastructureFailureKind::Failed
+        InfrastructureError::State(_) => (
+            InfrastructureFailureKind::Failed,
+            Some("Check the Turso URL, the authentication token and network access.".to_string()),
+        ),
+        // The messages of these name the command to run next.
+        InfrastructureError::UnrecordedChange { .. }
+        | InfrastructureError::UnrecordedChangesPending { .. }
+        | InfrastructureError::Codec(_)
+        | InfrastructureError::Plugin(_)
+        | InfrastructureError::RemoteProcedure { .. }
+        | InfrastructureError::Diagnostics { .. }
+        | InfrastructureError::Install(_)
+        | InfrastructureError::InputOutput { .. } => (InfrastructureFailureKind::Failed, None),
     };
     CliError::infrastructure(error.to_string(), help, kind)
 }
@@ -211,61 +237,84 @@ async fn run(options: &InfrastructureOptions, interrupts: &Interrupts) -> Result
         ))
         .await?
         .map_err(|error| failure(&error))?;
+    let tenant = target.tenant.clone();
+    let context = CommandContext {
+        store: &store,
+        tenant: &tenant,
+        output,
+        interrupts,
+    };
 
     match &options.action {
-        InfrastructureAction::State => {
+        InfrastructureAction::State(StateAction::List) => {
             let resources = interrupts
-                .until_interrupted(store.list(&target.tenant))
+                .until_interrupted(store.list(&tenant))
                 .await?
                 .map_err(|error| failure(&error))?;
-            output.state(&target.tenant, &resources);
+            output.state(&tenant, &resources);
             Ok(())
+        }
+        InfrastructureAction::State(StateAction::Remove { address }) => {
+            remove_resource(&context, address).await
+        }
+        InfrastructureAction::State(StateAction::Recover) => {
+            let engine = InfrastructureEngine::new(engine_setup(target, store.clone(), interrupts));
+            let result = recover(&context, &engine).await;
+            engine.shutdown().await;
+            result
         }
         InfrastructureAction::Unlock { lock_identifier } => {
             interrupts
                 .until_interrupted(unlock(&UnlockRequest {
                     store: store.as_ref(),
-                    tenant: &target.tenant,
+                    tenant: &tenant,
                     lock_identifier: lock_identifier.as_deref(),
                     output,
                 }))
                 .await?
         }
         InfrastructureAction::Plan => {
-            let mut engine = InfrastructureEngine::new(engine_setup(target, store, interrupts));
-            let result = interrupts
-                .until_interrupted(engine.plan(PlanMode::Apply))
-                .await;
+            let mut engine =
+                InfrastructureEngine::new(engine_setup(target, store.clone(), interrupts));
+            // Planning honours the interrupt itself: providers are asked to
+            // stop and the next resource is not planned.
+            let result = engine.plan(PlanMode::Apply).await;
             engine.shutdown().await;
-            let plan = result?.map_err(|error| failure(&error))?;
+            let plan = result.map_err(|error| failure(&error))?;
             output.plan(&plan);
             Ok(())
         }
         InfrastructureAction::Apply { confirmation } => {
             converge(
-                engine_setup(target, store, interrupts),
+                engine_setup(target, store.clone(), interrupts),
                 &Convergence {
                     mode: PlanMode::Apply,
                     confirmation: *confirmation,
-                    output,
-                    interrupts,
+                    context: &context,
                 },
             )
             .await
         }
         InfrastructureAction::Destroy { confirmation } => {
             converge(
-                engine_setup(target, store, interrupts),
+                engine_setup(target, store.clone(), interrupts),
                 &Convergence {
                     mode: PlanMode::Destroy,
                     confirmation: *confirmation,
-                    output,
-                    interrupts,
+                    context: &context,
                 },
             )
             .await
         }
     }
+}
+
+/// What every stateful subcommand works with.
+struct CommandContext<'context> {
+    store: &'context Arc<dyn StateStore>,
+    tenant: &'context TenantKey,
+    output: Output,
+    interrupts: &'context Interrupts,
 }
 
 fn engine_setup(
@@ -289,7 +338,10 @@ fn engine_setup(
             project_directory: target.project_directory,
             plugin_cache_directory: None,
             withheld_environment_variables,
+            // The user state directory (see `UnrecordedStore`).
             unrecorded_directory: None,
+            // Every provider the engine launches is registered with the
+            // command's interrupt handling.
             cancellation: interrupts.cancellation().clone(),
         },
     }
@@ -320,6 +372,114 @@ async fn open_store(
         store.migrate().await?;
     }
     Ok(store)
+}
+
+/// Take the project's lock, run `work` with it, and release it.
+///
+/// Acquisition is never abandoned half way: an interrupt while it runs is
+/// honoured once it returns, by releasing the lock again. While the lock is
+/// held, a second interrupt can release it before the process exits.
+async fn under_lock<Outcome, Work>(
+    context: &CommandContext<'_>,
+    operation: &str,
+    work: impl FnOnce(StateLock) -> Work,
+) -> Result<Outcome, CliError>
+where
+    Work: Future<Output = Result<Outcome, CliError>>,
+{
+    let lock = context
+        .store
+        .lock(context.tenant, &holder::describe(operation))
+        .await
+        .map_err(|error| failure(&error))?;
+    context.interrupts.hold(HeldLock {
+        store: Arc::clone(context.store),
+        tenant: context.tenant.clone(),
+        lock: lock.clone(),
+    });
+    let result = match context.interrupts.check() {
+        Ok(()) => work(lock.clone()).await,
+        Err(interrupted) => Err(interrupted),
+    };
+    let released = release(context.store.as_ref(), context.tenant, &lock).await;
+    context.interrupts.released();
+    match (result, released) {
+        (Ok(output), Ok(())) => Ok(output),
+        (Ok(_), Err(release_error)) => Err(CliError::infrastructure(
+            format!("{operation} succeeded but the lock was NOT released: {release_error}"),
+            Some(format!(
+                "Release it with `cuenv infrastructure unlock {}`.",
+                lock.lock_identifier
+            )),
+            InfrastructureFailureKind::Failed,
+        )),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(release_error)) => {
+            cuenv_events::emit_stderr!(format!(
+                "error: the lock was NOT released ({release_error}); release it with \
+                 `cuenv infrastructure unlock {}`",
+                lock.lock_identifier
+            ));
+            Err(error)
+        }
+    }
+}
+
+/// `state remove`: forget one resource under the lock (a fenced delete).
+async fn remove_resource(context: &CommandContext<'_>, address: &str) -> Result<(), CliError> {
+    under_lock(context, "state remove", |lock| async move {
+        let resources = context
+            .store
+            .list(context.tenant)
+            .await
+            .map_err(|error| failure(&error))?;
+        let Some(resource) = resources
+            .iter()
+            .find(|resource| resource.address.to_string() == address)
+        else {
+            let known: Vec<String> = resources
+                .iter()
+                .map(|resource| resource.address.to_string())
+                .collect();
+            return Err(CliError::config_with_help(
+                format!(
+                    "{} has no managed resource {address} in state",
+                    context.tenant
+                ),
+                if known.is_empty() {
+                    "No resources are recorded for this project.".to_string()
+                } else {
+                    format!("Recorded resources: {}.", known.join(", "))
+                },
+            ));
+        };
+        context
+            .store
+            .delete(context.tenant, &lock, &resource.address)
+            .await
+            .map_err(|error| failure(&error))?;
+        context.output.removed(context.tenant, &resource.address);
+        Ok(())
+    })
+    .await
+}
+
+/// `state recover`: record every unrecorded change of the tenant under the
+/// lock, deleting each saved file once it is recorded.
+async fn recover(
+    context: &CommandContext<'_>,
+    engine: &InfrastructureEngine,
+) -> Result<(), CliError> {
+    let unrecorded = engine.unrecorded_store().map_err(|error| failure(&error))?;
+    under_lock(context, "state recover", |lock| async move {
+        let recovered = unrecorded
+            .recover(context.store.as_ref(), context.tenant, &lock)
+            .await
+            .map_err(|error| failure(&error))?;
+        context.output.recovered(context.tenant, &recovered);
+        Ok(())
+    })
+    .await
 }
 
 /// Inputs for [`unlock`].
@@ -378,155 +538,100 @@ async fn unlock(request: &UnlockRequest<'_>) -> Result<(), CliError> {
 struct Convergence<'run> {
     mode: PlanMode,
     confirmation: ConfirmationPolicy,
-    output: Output,
-    interrupts: &'run Interrupts,
+    context: &'run CommandContext<'run>,
 }
 
 async fn converge(setup: EngineSetup, convergence: &Convergence<'_>) -> Result<(), CliError> {
-    let tenant = setup.tenant.clone();
-    let store = Arc::clone(&setup.store);
     let mut engine = InfrastructureEngine::new(setup);
-    let result = converge_with(
-        &mut engine,
-        &ConvergeTarget {
-            tenant: &tenant,
-            store: &store,
-        },
-        convergence,
-    )
-    .await;
+    let result = match convergence.confirmation {
+        ConfirmationPolicy::AssumeYes => converge_unattended(&mut engine, convergence).await,
+        ConfirmationPolicy::Prompt => converge_confirmed(&mut engine, convergence).await,
+    };
     engine.shutdown().await;
     result
 }
 
-/// Where a converging command writes.
-struct ConvergeTarget<'target> {
-    tenant: &'target TenantKey,
-    store: &'target Arc<dyn StateStore>,
-}
-
-async fn converge_with(
+/// `--yes`: take the lock, plan once, apply that plan. There is no preview
+/// without the lock, so nothing can change between planning and applying.
+async fn converge_unattended(
     engine: &mut InfrastructureEngine,
-    target: &ConvergeTarget<'_>,
     convergence: &Convergence<'_>,
 ) -> Result<(), CliError> {
-    let Convergence {
-        mode,
-        confirmation,
-        output,
-        interrupts,
-    } = *convergence;
-    // Plan and confirm without holding the lock, so an unanswered prompt
-    // never blocks other runs.
-    let preview = interrupts
-        .until_interrupted(engine.plan(mode))
-        .await?
-        .map_err(|error| failure(&error))?;
-    output.preview(&preview);
-    if !preview.has_changes() {
-        output.converged(&Converged {
+    let operation = output::operation_name(convergence.mode);
+    under_lock(convergence.context, operation, |lock| async move {
+        let plan = engine
+            .plan(convergence.mode)
+            .await
+            .map_err(|error| failure(&error))?;
+        convergence.context.output.preview(&plan);
+        apply_plan(engine, &plan, &lock, convergence).await
+    })
+    .await
+}
+
+/// With a prompt: plan and confirm without holding the lock, so an
+/// unanswered prompt never blocks other runs; then lock, plan again and
+/// apply only if the new plan is exactly the confirmed one.
+async fn converge_confirmed(
+    engine: &mut InfrastructureEngine,
+    convergence: &Convergence<'_>,
+) -> Result<(), CliError> {
+    let Convergence { mode, context, .. } = *convergence;
+    let preview = engine.plan(mode).await.map_err(|error| failure(&error))?;
+    context.output.preview(&preview);
+    if !preview.has_work() {
+        context.output.converged(&Converged {
             mode,
             plan: &preview,
             applied: None,
         });
         return Ok(());
     }
-    if confirmation == ConfirmationPolicy::Prompt
-        && confirm(mode, interrupts).await? == Answer::Declined
-    {
-        output.text(match mode {
+    if confirm(mode, context.interrupts).await? == Answer::Declined {
+        context.output.text(match mode {
             PlanMode::Apply => "Apply cancelled.",
             PlanMode::Destroy => "Destroy cancelled.",
         });
         return Ok(());
     }
 
-    // Lock acquisition is never abandoned half way: an interrupt while it
-    // runs is honoured once it returns, by releasing the lock again.
-    let lock = target
-        .store
-        .lock(target.tenant, &holder::describe(mode))
-        .await
-        .map_err(|error| failure(&error))?;
-    interrupts.hold(HeldLock {
-        store: Arc::clone(target.store),
-        tenant: target.tenant.clone(),
-        lock: lock.clone(),
-    });
-    let applied = match interrupts.check() {
-        Ok(()) => {
-            apply_locked(
-                engine,
-                &LockedRun {
-                    preview: &preview,
-                    lock: &lock,
-                    convergence,
-                },
-            )
-            .await
-        }
-        Err(interrupted) => Err(interrupted),
-    };
-    let released = release(target.store.as_ref(), target.tenant, &lock).await;
-    interrupts.released();
-    match (applied, released) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Ok(()), Err(release_error)) => Err(CliError::infrastructure(
-            format!(
-                "{} succeeded but the lock was NOT released: {release_error}",
-                output::operation_name(mode)
-            ),
-            Some(format!(
-                "Release it with `cuenv infrastructure unlock {}`.",
-                lock.lock_identifier
-            )),
-            InfrastructureFailureKind::Failed,
-        )),
-        (Err(apply_error), Ok(())) => Err(apply_error),
-        (Err(apply_error), Err(release_error)) => {
-            cuenv_events::emit_stderr!(format!(
-                "error: the lock was NOT released ({release_error}); release it with \
-                 `cuenv infrastructure unlock {}`",
-                lock.lock_identifier
+    let confirmed = preview.digest();
+    under_lock(context, output::operation_name(mode), |lock| async move {
+        // State or infrastructure may have moved since the preview.
+        let plan = engine.plan(mode).await.map_err(|error| failure(&error))?;
+        if plan.digest() != confirmed {
+            context.output.preview(&plan);
+            return Err(CliError::infrastructure(
+                "the plan changed after it was confirmed; nothing was applied",
+                Some(if context.output.is_json() {
+                    "Review `cuenv infrastructure plan` and run the command again.".to_string()
+                } else {
+                    "Review the new plan above and run the command again.".to_string()
+                }),
+                InfrastructureFailureKind::PlanChanged,
             ));
-            Err(apply_error)
         }
-    }
+        apply_plan(engine, &plan, &lock, convergence).await
+    })
+    .await
 }
 
-/// A confirmed plan about to be applied under the lock.
-struct LockedRun<'run> {
-    preview: &'run Plan,
-    lock: &'run StateLock,
-    convergence: &'run Convergence<'run>,
-}
-
-async fn apply_locked(
+/// Apply a plan made under `lock`, when it has any work.
+async fn apply_plan(
     engine: &mut InfrastructureEngine,
-    run: &LockedRun<'_>,
+    plan: &Plan,
+    lock: &StateLock,
+    convergence: &Convergence<'_>,
 ) -> Result<(), CliError> {
-    let Convergence {
-        mode,
-        output,
-        interrupts,
-        ..
-    } = *run.convergence;
-    // State may have moved between the preview and taking the lock.
-    let plan = interrupts
-        .until_interrupted(engine.plan(mode))
-        .await?
-        .map_err(|error| failure(&error))?;
-    if plan.digest() != run.preview.digest() {
-        output.preview(&plan);
-        return Err(CliError::infrastructure(
-            "the plan changed after it was confirmed; nothing was applied",
-            Some(if output.is_json() {
-                "Review `cuenv infrastructure plan` and run the command again.".to_string()
-            } else {
-                "Review the new plan above and run the command again.".to_string()
-            }),
-            InfrastructureFailureKind::PlanChanged,
-        ));
+    let Convergence { mode, context, .. } = *convergence;
+    let output = context.output;
+    if !plan.has_work() {
+        output.converged(&Converged {
+            mode,
+            plan,
+            applied: None,
+        });
+        return Ok(());
     }
     let mut on_event = |event: ApplyEvent| match event {
         ApplyEvent::Started { address, action } => {
@@ -541,12 +646,12 @@ async fn apply_locked(
         }
     };
     let applied = engine
-        .apply(&plan, ApplyContext { lock: run.lock }, &mut on_event)
+        .apply(plan, ApplyContext { lock }, &mut on_event)
         .await
         .map_err(|error| failure(&error))?;
     output.converged(&Converged {
         mode,
-        plan: &plan,
+        plan,
         applied: Some(applied),
     });
     Ok(())

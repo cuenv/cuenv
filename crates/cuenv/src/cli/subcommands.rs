@@ -263,22 +263,27 @@ pub enum InfrastructureCommands {
         )]
         yes: bool,
     },
-    /// List managed resources recorded in state.
-    #[command(about = "List managed resources recorded in state")]
+    /// Inspect and repair recorded state (`list` when no subcommand is given).
+    #[command(about = "Inspect and repair recorded state (`list` when no subcommand is given)")]
     State {
+        /// State subcommand; `list` when omitted.
+        #[command(subcommand)]
+        subcommand: Option<InfrastructureStateCommands>,
         /// Path to directory containing CUE files.
         #[arg(
             long,
             short = 'p',
             help = "Path to directory containing CUE files",
-            default_value = "."
+            default_value = ".",
+            global = true
         )]
         path: String,
         /// Name of the CUE package to evaluate.
         #[arg(
             long,
             help = "Name of the CUE package to evaluate",
-            default_value = "cuenv"
+            default_value = "cuenv",
+            global = true
         )]
         package: String,
     },
@@ -304,6 +309,24 @@ pub enum InfrastructureCommands {
         )]
         package: String,
     },
+}
+
+/// `cuenv infrastructure state` subcommands.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum InfrastructureStateCommands {
+    /// List managed resources recorded in state (the default).
+    #[command(about = "List managed resources recorded in state (the default)")]
+    List,
+    /// Forget one managed resource without touching the real object.
+    #[command(about = "Forget one managed resource without touching the real object")]
+    Remove {
+        /// Address of the resource, such as `random_pet.pet`.
+        #[arg(help = "Address of the resource, such as `random_pet.pet`")]
+        address: String,
+    },
+    /// Record changes an earlier run could not record and saved locally.
+    #[command(about = "Record changes an earlier run could not record and saved locally")]
+    Recover,
 }
 
 impl InfrastructureCommands {

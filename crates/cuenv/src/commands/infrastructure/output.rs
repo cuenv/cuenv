@@ -7,24 +7,11 @@
 
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
-    Action, LockInformation, ManagedResource, Plan, PlanMode, PlanSummary, TenantKey,
+    LockInformation, ManagedResource, Plan, PlanMode, PlanSummary, ResourceAddress, TenantKey,
 };
 use serde_json::{Value, json};
 
 use crate::cli::OutputFormat;
-
-/// The JSON name of a planned action. An explicit mapping, so renaming a
-/// Rust variant never changes the JSON contract.
-#[must_use]
-pub(super) const fn action_name(action: Action) -> &'static str {
-    match action {
-        Action::NoOp => "no-op",
-        Action::Create => "create",
-        Action::Update => "update",
-        Action::Replace => "replace",
-        Action::Delete => "delete",
-    }
-}
 
 /// The JSON name of what a converging command does.
 #[must_use]
@@ -111,13 +98,50 @@ impl Output {
         };
         match result.mode {
             PlanMode::Apply => emit_stdout!(format!(
-                "Apply complete: {} created, {} updated, {} replaced, {} deleted.",
-                applied.create, applied.update, applied.replace, applied.delete
+                "Apply complete: {} created, {} updated, {} replaced, {} deleted, {} refreshed.",
+                applied.create, applied.update, applied.replace, applied.delete, applied.refresh
             )),
             PlanMode::Destroy => {
                 emit_stdout!(format!("Destroy complete: {} destroyed.", applied.delete));
             }
         }
+    }
+
+    /// A resource forgotten by `state remove`.
+    pub(super) fn removed(self, tenant: &TenantKey, address: &ResourceAddress) {
+        if self.is_json() {
+            print_envelope(&json!({
+                "tenant": tenant.to_string(),
+                "removed": address.to_string(),
+            }));
+        } else {
+            emit_stdout!(format!(
+                "Removed {address} from the state of {tenant}. The real object was not touched."
+            ));
+        }
+    }
+
+    /// Records written by `state recover`.
+    pub(super) fn recovered(self, tenant: &TenantKey, addresses: &[ResourceAddress]) {
+        if self.is_json() {
+            let recovered: Vec<String> = addresses.iter().map(ToString::to_string).collect();
+            print_envelope(&json!({
+                "tenant": tenant.to_string(),
+                "recovered": recovered,
+            }));
+            return;
+        }
+        if addresses.is_empty() {
+            emit_stdout!(format!("No unrecorded changes for {tenant}."));
+            return;
+        }
+        for address in addresses {
+            emit_stdout!(format!("Recorded {address}"));
+        }
+        emit_stdout!(format!(
+            "Recovered {} unrecorded change(s) for {tenant}.",
+            addresses.len()
+        ));
     }
 
     /// Managed resources recorded for a tenant.
@@ -224,7 +248,7 @@ fn warnings(plan: &Plan) {
 
 fn render_plan_text(plan: &Plan) {
     emit_stdout!(format!("cuenv infrastructure: {}", plan.tenant));
-    if plan.has_changes() {
+    if plan.has_work() {
         emit_stdout!(cuenv_infrastructure::render_plan(plan));
     } else {
         emit_stdout!("No changes. Infrastructure matches the configuration.");
@@ -251,7 +275,7 @@ pub(super) fn plan_json(plan: &Plan) -> Value {
         .map(|change| {
             json!({
                 "address": change.address.to_string(),
-                "action": action_name(change.action),
+                "action": change.action.name(),
                 "requiresReplace": change.requires_replace,
             })
         })

@@ -17,6 +17,9 @@ pub const EXIT_EVAL: i32 = 3;
 pub const EXIT_LOCKED: i32 = 4;
 /// Infrastructure provider, state store, or apply failure
 pub const EXIT_INFRASTRUCTURE: i32 = 5;
+/// Infrastructure run stopped by SIGINT or SIGTERM after cleaning up
+/// (128 + SIGINT, the shell convention for an interrupted command)
+pub const EXIT_INTERRUPTED: i32 = 130;
 
 /// What kind of infrastructure failure occurred; decides the exit code and
 /// the JSON error code.
@@ -28,6 +31,10 @@ pub enum InfrastructureFailureKind {
     /// The plan made under the lock differs from the one confirmed; nothing
     /// was applied. Exit code 4, JSON code `infrastructure_plan_changed`.
     PlanChanged,
+    /// The run was interrupted by SIGINT or SIGTERM and stopped cleanly:
+    /// what was applied is recorded and the lock released. Exit code 130,
+    /// JSON code `infrastructure_interrupted`.
+    Interrupted,
     /// Any other provider, state store or apply failure. Exit code 5, JSON
     /// code `infrastructure`.
     Failed,
@@ -270,6 +277,10 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
             ..
         } => EXIT_LOCKED,
         CliError::Infrastructure {
+            kind: InfrastructureFailureKind::Interrupted,
+            ..
+        } => EXIT_INTERRUPTED,
+        CliError::Infrastructure {
             kind: InfrastructureFailureKind::Failed,
             ..
         } => EXIT_INFRASTRUCTURE,
@@ -286,6 +297,7 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
         CliError::Infrastructure { kind, .. } => match kind {
             InfrastructureFailureKind::Locked => "infrastructure_locked",
             InfrastructureFailureKind::PlanChanged => "infrastructure_plan_changed",
+            InfrastructureFailureKind::Interrupted => "infrastructure_interrupted",
             InfrastructureFailureKind::Failed => "infrastructure",
         },
     }
