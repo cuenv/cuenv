@@ -23,7 +23,12 @@ const (
 // slash-separated path relative to the module root to its contents.
 func writeCueModule(t *testing.T, files map[string]string) string {
 	t.Helper()
-	moduleRoot := t.TempDir()
+	return writeCueModuleAt(t, t.TempDir(), files)
+}
+
+// writeCueModuleAt creates a CUE module rooted at moduleRoot.
+func writeCueModuleAt(t *testing.T, moduleRoot string, files map[string]string) string {
+	t.Helper()
 	allFiles := map[string]string{
 		"cue.mod/module.cue": fmt.Sprintf("module: %q\nlanguage: version: \"v0.14.1\"\n", testModulePath+"@v0"),
 	}
@@ -64,13 +69,16 @@ type testEnvelope struct {
 type evaluation struct {
 	moduleRoot string
 	// targetDirectory is relative to moduleRoot; empty means the root.
-	targetDirectory  string
-	packageName      *string
-	recursive        bool
-	withMeta         bool
-	concretePaths    []string
-	instanceFailures string
-	packageScope     string
+	targetDirectory    string
+	packageName        *string
+	recursive          bool
+	withMeta           bool
+	concretePaths      []string
+	instanceFailures   string
+	packageScope       string
+	exportPaths        []string
+	presencePaths      []string
+	skippedDirectories string
 }
 
 func packageNamed(name string) *string {
@@ -80,11 +88,14 @@ func packageNamed(name string) *string {
 func (e evaluation) optionsJSON(t *testing.T) string {
 	t.Helper()
 	options := map[string]interface{}{
-		"recursive":        e.recursive,
-		"withMeta":         e.withMeta,
-		"concretePaths":    e.concretePaths,
-		"instanceFailures": e.instanceFailures,
-		"packageScope":     e.packageScope,
+		"recursive":          e.recursive,
+		"withMeta":           e.withMeta,
+		"concretePaths":      e.concretePaths,
+		"instanceFailures":   e.instanceFailures,
+		"packageScope":       e.packageScope,
+		"exportPaths":        e.exportPaths,
+		"presencePaths":      e.presencePaths,
+		"skippedDirectories": e.skippedDirectories,
 	}
 	if e.packageName != nil {
 		options["packageName"] = *e.packageName

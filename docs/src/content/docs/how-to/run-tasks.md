@@ -625,11 +625,15 @@ tasks: {
 Captured values are not available as cross-task input refs (use `tasks.build.stdout` for whole-stream dependencies). Their primary surface is **CI pipeline annotations**: a `#TaskCaptureRef` names the producing task and capture key, and the resolved value appears in the GitHub job summary table.
 
 ```cue
+// Inside a pipeline, `tasks` names the pipeline's own list; reach the
+// project's tasks through a file-level alias.
+let _t = tasks
+
 ci: {
     providers: ["github"]
     pipelines: {
         default: {
-            tasks: [tasks.build]
+            tasks: [_t.build]
             annotations: {
                 "Preview URL": schema.#TaskCaptureRef & {
                     cuenvTask:    "build"

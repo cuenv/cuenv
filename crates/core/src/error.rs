@@ -77,13 +77,13 @@ pub enum EvalError {
         help: Option<String>,
     },
 
-    #[error("CUE parsing failed: {message}")]
+    #[error("CUE evaluation failed: {message}")]
     #[diagnostic(code(cuenv::cue::parse_error))]
     CueParse {
         path: Box<Path>,
         #[source_code]
         src: Option<String>,
-        #[label("parsing failed here")]
+        #[label("evaluation failed here")]
         span: Option<SourceSpan>,
         message: String,
         suggestions: Option<Vec<String>>,

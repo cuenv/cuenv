@@ -26,7 +26,7 @@ pub enum CueEngineError {
     },
 
     /// CUE parsing or evaluation failed
-    #[error("CUE parsing failed at {}: {message}", path.display())]
+    #[error("CUE evaluation failed at {}: {message}", path.display())]
     CueParse {
         /// Path to the CUE file that failed to parse
         path: Box<Path>,
@@ -119,7 +119,7 @@ mod tests {
     fn test_cue_parse_error() {
         let path = Path::new("/some/path");
         let err = CueEngineError::cue_parse(path, "syntax error");
-        assert!(err.to_string().contains("CUE parsing failed"));
+        assert!(err.to_string().contains("CUE evaluation failed"));
         assert!(err.to_string().contains("/some/path"));
         assert!(err.to_string().contains("syntax error"));
     }

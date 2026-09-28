@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
-	cueerrors "cuelang.org/go/cue/errors"
 )
 
 // concretePath is a caller-named path that must evaluate to a fully concrete
@@ -48,19 +47,17 @@ func parseConcretePaths(texts []string) ([]concretePath, error) {
 //
 // The check fails closed: a listed path that does not exist is an error,
 // because a caller that names a path relies on it being validated.
-func validateConcretePaths(v cue.Value, paths []concretePath) error {
+func validateConcretePaths(v cue.Value, paths []concretePath, moduleRoot string) error {
 	for _, concrete := range paths {
 		field := v.LookupPath(concrete.path)
 		if !field.Exists() {
 			if err := field.Err(); err != nil {
-				details := strings.TrimSpace(cueerrors.Details(err, nil))
-				return fmt.Errorf("%s: concrete path does not exist: %s", concrete.text, details)
+				return fmt.Errorf("%s: concrete path does not exist: %s", concrete.text, errorDetails(err, moduleRoot))
 			}
 			return fmt.Errorf("%s: concrete path does not exist", concrete.text)
 		}
 		if err := field.Validate(cue.Concrete(true), cue.Final()); err != nil {
-			details := strings.TrimSpace(cueerrors.Details(err, nil))
-			return fmt.Errorf("%s: %s", concrete.text, details)
+			return fmt.Errorf("%s: %s", concrete.text, errorDetails(err, moduleRoot))
 		}
 	}
 	return nil

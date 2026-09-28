@@ -8,7 +8,15 @@ use std::collections::BTreeMap;
 /// Infrastructure managed through Terraform provider plugins.
 ///
 /// Based on `#Infrastructure` in schema/infrastructure.cue.
+///
+/// Every infrastructure type rejects unknown fields. The schema closes these
+/// definitions too, but a project that does not unify with `#Project` (or a
+/// caller that builds the JSON itself) would otherwise have a misspelled
+/// field silently ignored: `resource:` for `resources:` would read as "no
+/// resources" and plan the deletion of everything. Hidden fields, definitions
+/// and `let` bindings are never exported, so they are unaffected.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Infrastructure {
     /// Where managed resource state is stored.
     pub state: InfrastructureState,
@@ -24,6 +32,7 @@ pub struct Infrastructure {
 
 /// State backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct InfrastructureState {
     /// Remote Turso (libSQL) database.
     pub turso: TursoState,
@@ -31,7 +40,7 @@ pub struct InfrastructureState {
 
 /// Turso database connection settings.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TursoState {
     /// Database URL: `libsql://`, `https://` or `wss://`; `http://` and
     /// `ws://` only for a loopback host (a local `sqld`).
@@ -48,6 +57,7 @@ fn default_turso_authentication_token_environment_variable() -> String {
 
 /// A Terraform provider plugin.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct InfrastructureProvider {
     /// Registry source address, for example `hashicorp/random`.
     pub source: String,
@@ -67,7 +77,7 @@ pub struct InfrastructureProvider {
 
 /// A managed resource declaration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedResourceDeclaration {
     /// Resource type, for example `random_pet`.
     #[serde(rename = "type")]
@@ -211,6 +221,39 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("expected a map"), "{error}");
+    }
+
+    #[test]
+    fn unknown_fields_are_rejected_at_every_level() {
+        let valid = serde_json::json!({
+            "state": {"turso": {"url": "libsql://db.turso.io"}},
+            "providers": {"random": {"source": "hashicorp/random", "version": "3.9.1"}},
+            "resources": {"pet": {"type": "random_pet"}},
+        });
+        serde_json::from_value::<Infrastructure>(valid.clone()).unwrap();
+
+        let typos: [(&[&str], &str); 6] = [
+            (&[], "resource"),
+            (&["state"], "tursoo"),
+            (&["state", "turso"], "authTokenEnv"),
+            (&["providers", "random"], "sourcee"),
+            (&["providers", "random"], "versions"),
+            (&["resources", "pet"], "configurations"),
+        ];
+        for (path, field) in typos {
+            let mut document = valid.clone();
+            let target = path
+                .iter()
+                .fold(&mut document, |value, key| &mut value[*key]);
+            target[field] = serde_json::json!({});
+            let error = serde_json::from_value::<Infrastructure>(document)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!("unknown field `{field}`")),
+                "{field}: {error}"
+            );
+        }
     }
 
     #[test]
