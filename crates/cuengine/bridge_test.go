@@ -70,6 +70,7 @@ type evaluation struct {
 	withMeta         bool
 	concretePaths    []string
 	instanceFailures string
+	packageScope     string
 }
 
 func packageNamed(name string) *string {
@@ -83,6 +84,7 @@ func (e evaluation) optionsJSON(t *testing.T) string {
 		"withMeta":         e.withMeta,
 		"concretePaths":    e.concretePaths,
 		"instanceFailures": e.instanceFailures,
+		"packageScope":     e.packageScope,
 	}
 	if e.packageName != nil {
 		options["packageName"] = *e.packageName
@@ -818,4 +820,174 @@ func TestUnfilteredRecursiveEvaluation(t *testing.T) {
 	})
 	bridgeError := evaluation{moduleRoot: mixed, recursive: true, instanceFailures: InstanceFailuresFail}.failure(t)
 	assertContains(t, bridgeError.Message, `./...: found packages "alpha"`)
+}
+
+// Every package ------------------------------------------------------------------
+
+// writeMultiplePackageModule writes a module with the test package at the
+// root and in a subdirectory, a directory holding two packages, and a file
+// without a package clause.
+func writeMultiplePackageModule(t *testing.T, extraFiles map[string]string) string {
+	t.Helper()
+	files := map[string]string{
+		"values.cue":        packageSource(`name: "root"`),
+		"child/values.cue":  packageSource(`child: true`),
+		"mixed/alpha.cue":   "package alpha\n\nname: \"alpha\"\n",
+		"mixed/beta.cue":    "package beta\n\nname: \"beta\"\n",
+		"unnamed/data.cue":  "value: 1\n",
+		"single/values.cue": "package single\n\nname: \"single\"\n",
+	}
+	for name, contents := range extraFiles {
+		files[name] = contents
+	}
+	return writeCueModule(t, files)
+}
+
+func allPackages(moduleRoot string) evaluation {
+	return evaluation{moduleRoot: moduleRoot, recursive: true, packageScope: PackageScopeAll}
+}
+
+func assertInstanceKeys(t *testing.T, result ModuleResult, expected ...string) {
+	t.Helper()
+	if len(result.Instances) != len(expected) {
+		t.Errorf("expected instances %v, got %v", expected, instanceNames(result))
+	}
+	for _, key := range expected {
+		if _, ok := result.Instances[key]; !ok {
+			t.Errorf("instance %q missing from %v", key, instanceNames(result))
+		}
+	}
+}
+
+func TestPackageScopeAll_KeysEveryPackageByDirectoryAndPackage(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	result := allPackages(moduleRoot).result(t)
+	assertInstanceKeys(t, result,
+		".:app", "child:app", "mixed:alpha", "mixed:beta", "single:single", "unnamed:_")
+
+	// Both packages of the shared directory are evaluated on their own.
+	var alpha, beta map[string]interface{}
+	if err := json.Unmarshal(result.Instances["mixed:alpha"], &alpha); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(result.Instances["mixed:beta"], &beta); err != nil {
+		t.Fatal(err)
+	}
+	if alpha["name"] != "alpha" || beta["name"] != "beta" {
+		t.Errorf("unexpected package values: alpha=%v beta=%v", alpha, beta)
+	}
+
+	// Package instances in subdirectories include the same package's files
+	// from ancestor directories, as in any CUE load.
+	var child map[string]interface{}
+	if err := json.Unmarshal(result.Instances["child:app"], &child); err != nil {
+		t.Fatal(err)
+	}
+	if child["name"] != "root" || child["child"] != true {
+		t.Errorf("unexpected child instance: %v", child)
+	}
+
+	// Projects use the same keys.
+	projects := strings.Join(result.Projects, ",")
+	assertContains(t, projects, ".:app", "mixed:alpha", "mixed:beta")
+}
+
+func TestPackageScopeAll_ExactDirectory(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	exact := evaluation{moduleRoot: moduleRoot, targetDirectory: "mixed", packageScope: PackageScopeAll}
+	assertInstanceKeys(t, exact.result(t), "mixed:alpha", "mixed:beta")
+
+	root := evaluation{moduleRoot: moduleRoot, packageScope: PackageScopeAll}
+	assertInstanceKeys(t, root.result(t), ".:app")
+}
+
+func TestPackageScopeAll_MetadataUsesInstanceKeys(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	withMeta := allPackages(moduleRoot)
+	withMeta.withMeta = true
+	meta := withMeta.result(t).Meta
+	entry, ok := meta["mixed:beta/name"]
+	if !ok {
+		t.Fatalf("meta entry mixed:beta/name missing")
+	}
+	if entry.Directory != "mixed" || entry.Filename != "mixed/beta.cue" || entry.Line != 3 {
+		t.Errorf("unexpected meta entry: %+v", entry)
+	}
+	if rootEntry, ok := meta[".:app/name"]; !ok || rootEntry.Directory != "." {
+		t.Errorf("unexpected root meta entry: %+v (present: %t)", rootEntry, ok)
+	}
+}
+
+func TestPackageScopeAll_FailPolicyNamesFailedPackages(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, map[string]string{
+		"mixed/broken.cue": "package broken\n\nname: 1 & 2\n",
+	})
+
+	// With the default policy the broken package is left out.
+	assertInstanceKeys(t, allPackages(moduleRoot).result(t),
+		".:app", "child:app", "mixed:alpha", "mixed:beta", "single:single", "unnamed:_")
+
+	strict := allPackages(moduleRoot)
+	strict.instanceFailures = InstanceFailuresFail
+	bridgeError := strict.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeBuildValue)
+	assertContains(t, bridgeError.Message,
+		"1 instance(s) could not be evaluated",
+		"mixed:broken: name: conflicting values",
+	)
+}
+
+func TestPackageScopeAll_ComposesWithConcretePaths(t *testing.T) {
+	moduleRoot := writeCueModule(t, map[string]string{
+		"mixed/alpha.cue": "package alpha\n\nname: \"alpha\"\n",
+		"mixed/beta.cue":  "package beta\n\nname: string\n",
+	})
+	strict := allPackages(moduleRoot)
+	strict.concretePaths = []string{"name"}
+	strict.instanceFailures = InstanceFailuresFail
+	bridgeError := strict.failure(t)
+	assertContains(t, bridgeError.Message, "mixed:beta: name: name: incomplete value string")
+	if strings.Contains(bridgeError.Message, "mixed:alpha") {
+		t.Errorf("only the failed package should be named: %s", bridgeError.Message)
+	}
+}
+
+func TestPackageScopeAll_RejectsPackageName(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	withName := allPackages(moduleRoot)
+	withName.packageName = packageNamed(testPackageName)
+	bridgeError := withName.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+	assertContains(t, bridgeError.Message, "cannot be combined with package")
+
+	// The legacy positional package parameter is rejected the same way.
+	options := allPackages(moduleRoot).optionsJSON(t)
+	envelope := decodeEnvelope(t, evaluateModuleResponse(moduleRoot, testPackageName, options))
+	if envelope.Error == nil {
+		t.Fatalf("expected an error, got: %s", envelope.Ok)
+	}
+	assertErrorCode(t, envelope.Error, ErrorCodeInvalidInput)
+}
+
+func TestPackageScope_UnknownValueIsInvalidInput(t *testing.T) {
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	unknown := allPackages(moduleRoot)
+	unknown.packageScope = "every"
+	bridgeError := unknown.failure(t)
+	assertErrorCode(t, bridgeError, ErrorCodeInvalidInput)
+	assertContains(t, bridgeError.Message, `Unknown packageScope value "every"`)
+}
+
+func TestPackageScope_NamedKeepsDirectoryKeys(t *testing.T) {
+	// The default and the explicit "named" scope keep plain directory keys.
+	moduleRoot := writeMultiplePackageModule(t, nil)
+	for _, scope := range []string{"", PackageScopeNamed} {
+		named := evaluation{
+			moduleRoot:   moduleRoot,
+			recursive:    true,
+			packageName:  packageNamed(testPackageName),
+			packageScope: scope,
+		}
+		assertInstanceKeys(t, named.result(t), ".", "child")
+	}
 }

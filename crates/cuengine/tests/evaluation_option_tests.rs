@@ -1,8 +1,9 @@
-//! Tests for the `concrete_paths` and `instance_failures` evaluation
-//! options across the FFI boundary.
+//! Tests for the `concrete_paths`, `instance_failures` and `package_scope`
+//! evaluation options across the FFI boundary.
 
 use cuengine::{
-    CueEngineError, InstanceFailures, ModuleEvalOptions, ModuleResult, evaluate_module,
+    CueEngineError, InstanceFailures, ModuleEvalOptions, ModuleResult, PackageScope,
+    evaluate_module,
 };
 use std::error::Error;
 use std::fs;
@@ -15,6 +16,15 @@ const PACKAGE: &str = "app";
 
 /// Creates a module; `files` maps a relative path to the package body.
 fn create_module(files: &[(&str, &str)]) -> TestResult<TempDir> {
+    let sources: Vec<(&str, String)> = files
+        .iter()
+        .map(|(name, contents)| (*name, format!("package {PACKAGE}\n\n{contents}\n")))
+        .collect();
+    create_module_from_sources(&sources)
+}
+
+/// Creates a module; `files` maps a relative path to its complete source.
+fn create_module_from_sources(files: &[(&str, String)]) -> TestResult<TempDir> {
     let temp_dir = tempfile::Builder::new()
         .prefix("cuengine-evaluation-options-")
         .tempdir()?;
@@ -29,7 +39,7 @@ fn create_module(files: &[(&str, &str)]) -> TestResult<TempDir> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, format!("package {PACKAGE}\n\n{contents}\n"))?;
+        fs::write(path, contents)?;
     }
     Ok(temp_dir)
 }
@@ -164,5 +174,113 @@ fn failing_instance_policy_names_every_failed_instance() -> TestResult {
         !message.contains("valid:"),
         "unexpected instance in {message}"
     );
+    Ok(())
+}
+
+/// A module with the test package at the root, a directory holding two
+/// packages and, when `broken` is given, a failing third package there.
+fn create_multiple_package_module(broken: Option<&str>) -> TestResult<TempDir> {
+    let mut files = vec![
+        (
+            "values.cue",
+            format!("package {PACKAGE}\n\nname: \"root\"\n"),
+        ),
+        (
+            "mixed/alpha.cue",
+            "package alpha\n\nname: \"alpha\"\n".to_string(),
+        ),
+        (
+            "mixed/beta.cue",
+            "package beta\n\nname: \"beta\"\n".to_string(),
+        ),
+    ];
+    if let Some(source) = broken {
+        files.push(("mixed/broken.cue", source.to_string()));
+    }
+    create_module_from_sources(&files)
+}
+
+fn all_packages() -> ModuleEvalOptions {
+    ModuleEvalOptions {
+        recursive: true,
+        package_scope: PackageScope::All,
+        instance_failures: InstanceFailures::Fail,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn all_packages_keys_instances_by_directory_and_package() -> TestResult {
+    let module = create_multiple_package_module(None)?;
+    let result = evaluate_module(module.path(), "", Some(&all_packages()))?;
+
+    let mut keys: Vec<&str> = result.instances.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec![".:app", "mixed:alpha", "mixed:beta"]);
+    assert_eq!(result.instances["mixed:alpha"]["name"], "alpha");
+    assert_eq!(result.instances["mixed:beta"]["name"], "beta");
+
+    let mut projects = result.projects.clone();
+    projects.sort_unstable();
+    assert_eq!(projects, vec![".:app", "mixed:alpha", "mixed:beta"]);
+    Ok(())
+}
+
+#[test]
+fn all_packages_with_failing_policy_fails_on_any_package() -> TestResult {
+    let module = create_multiple_package_module(Some("package broken\n\nname: 1 & 2\n"))?;
+    let root = module.path();
+
+    let lenient = ModuleEvalOptions {
+        instance_failures: InstanceFailures::Skip,
+        ..all_packages()
+    };
+    let result = evaluate_module(root, "", Some(&lenient))?;
+    assert!(!result.instances.contains_key("mixed:broken"));
+    assert_eq!(result.instances.len(), 3);
+
+    let error = expect_error(evaluate_module(root, "", Some(&all_packages())))?;
+    let message = error.to_string();
+    assert!(
+        message.contains("1 instance(s) could not be evaluated")
+            && message.contains("mixed:broken: name: conflicting values"),
+        "unexpected error: {message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn all_packages_rejects_a_package_name() -> TestResult {
+    let module = create_multiple_package_module(None)?;
+    let root = module.path();
+
+    let error = expect_error(evaluate_module(root, PACKAGE, Some(&all_packages())))?;
+    assert!(
+        matches!(error, CueEngineError::Configuration { .. }),
+        "expected a configuration error, got {error:?}"
+    );
+
+    let named = ModuleEvalOptions {
+        package_name: Some(PACKAGE.to_string()),
+        ..all_packages()
+    };
+    let error = expect_error(evaluate_module(root, "", Some(&named)))?;
+    assert!(
+        matches!(error, CueEngineError::Configuration { .. }),
+        "expected a configuration error, got {error:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn named_scope_keeps_directory_keys() -> TestResult {
+    let module = create_multiple_package_module(None)?;
+    let options = ModuleEvalOptions {
+        recursive: true,
+        package_name: Some(PACKAGE.to_string()),
+        ..Default::default()
+    };
+    let result = evaluate_module(module.path(), PACKAGE, Some(&options))?;
+    assert_eq!(result.instances.keys().collect::<Vec<_>>(), vec!["."]);
     Ok(())
 }

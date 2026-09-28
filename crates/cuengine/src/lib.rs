@@ -253,6 +253,30 @@ pub struct ModuleEvalOptions {
     /// build, `concrete_paths` or export failure).
     #[serde(default)]
     pub instance_failures: InstanceFailures,
+    /// Which packages are evaluated, and so how instances are keyed.
+    #[serde(default)]
+    pub package_scope: PackageScope,
+}
+
+/// Which CUE packages an evaluation covers.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackageScope {
+    /// Evaluate the package named by `package_name` (or the legacy
+    /// parameter), or the single package of each directory when no name is
+    /// given. Instances are keyed by their directory relative to the module
+    /// root (`"."`, `"services/api"`).
+    #[default]
+    Named,
+    /// Evaluate every package in every loaded directory, including
+    /// directories holding several packages. Instances, `projects` and `meta`
+    /// entries are keyed as `"<directory>:<package>"` (`".:app"`,
+    /// `"services/api:worker"`); files without a package clause appear under
+    /// CUE's anonymous package as `"<directory>:_"`. CUE package names are
+    /// identifiers, so a key splits unambiguously at its last `:`. No package
+    /// name may be given: both `package_name` and the legacy parameter must
+    /// be empty, or evaluation fails with a configuration error.
+    All,
 }
 
 /// Policy for loaded instances that cannot be evaluated.
@@ -344,6 +368,8 @@ struct ModuleEvalWorker {
 ///   - `package_name`: Filter to specific package (takes precedence over legacy parameter)
 ///   - `concrete_paths`: CUE paths that must exist and be fully concrete
 ///   - `instance_failures`: Skip failed instances (default) or fail the evaluation
+///   - `package_scope`: The named package (default) or every package, keyed
+///     as `"<directory>:<package>"`
 ///
 /// # Returns
 /// A `ModuleResult` containing:
@@ -358,7 +384,8 @@ struct ModuleEvalWorker {
 /// - Any instance fails evaluation with [`InstanceFailures::Fail`]; the
 ///   message lists every failed instance by its path relative to the module
 ///   root
-/// - A `concrete_paths` entry is empty or not a valid CUE path
+/// - A `concrete_paths` entry is empty or not a valid CUE path, or
+///   [`PackageScope::All`] is combined with a package name
 ///   ([`CueEngineError::Configuration`])
 ///
 /// A package-filtered evaluation returns an empty `instances` map when the
@@ -823,6 +850,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         target_dir: None, // Use module root
         concrete_paths: Vec::new(),
         instance_failures: InstanceFailures::Skip,
+        package_scope: PackageScope::Named,
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;

@@ -291,7 +291,23 @@ type ModuleEvalOptions struct {
 	// evaluation with an error naming every failed instance. Instances
 	// excluded by the package filter are not failures.
 	InstanceFailures string `json:"instanceFailures"`
+	// PackageScope selects which packages are evaluated. PackageScopeNamed
+	// (the default, also selected by an empty value) evaluates the package
+	// named by PackageName or the legacy parameter, or the single package of
+	// each directory when no name is given; instances are keyed by their
+	// directory relative to the module root. PackageScopeAll evaluates every
+	// package in every loaded directory, including directories holding
+	// several packages, and keys each instance as "<directory>:<package>"
+	// (for example ".:app" or "services/api:worker"); no package name may be
+	// given with it. Meta and projects entries use the same keys.
+	PackageScope string `json:"packageScope"`
 }
+
+// Values accepted by ModuleEvalOptions.PackageScope.
+const (
+	PackageScopeNamed = "named"
+	PackageScopeAll   = "all"
+)
 
 // Values accepted by ModuleEvalOptions.InstanceFailures.
 const (
@@ -351,6 +367,23 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	effectivePackageName := goPackageName
 	if options.PackageName != nil {
 		effectivePackageName = *options.PackageName
+	}
+
+	allPackages := false
+	switch options.PackageScope {
+	case "", PackageScopeNamed:
+	case PackageScopeAll:
+		if effectivePackageName != "" {
+			hint := fmt.Sprintf("Pass an empty package name with packageScope %q", PackageScopeAll)
+			result = createErrorResponse(ErrorCodeInvalidInput,
+				fmt.Sprintf("packageScope %q evaluates every package and cannot be combined with package %q", PackageScopeAll, effectivePackageName), &hint)
+			return result
+		}
+		allPackages = true
+	default:
+		hint := fmt.Sprintf("packageScope must be %q or %q", PackageScopeNamed, PackageScopeAll)
+		result = createErrorResponse(ErrorCodeInvalidInput, fmt.Sprintf("Unknown packageScope value %q", options.PackageScope), &hint)
+		return result
 	}
 
 	// Validate inputs
@@ -414,7 +447,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	// keeps a malformed unrelated file from poisoning a valid requested package
 	// while preserving syntax/build errors in matching files.
 	loaderPackage := effectivePackageName
-	if effectivePackageName != "" && options.Recursive {
+	if (effectivePackageName != "" && options.Recursive) || allPackages {
 		loaderPackage = "*"
 	}
 	packageOverlay, packageMatched, err := packageFilterOverlay(evalDir, effectivePackageName, options.Recursive)
@@ -493,7 +526,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 			// directory; name the load pattern instead.
 			failedInstance := loadPattern
 			if inst.Dir != "" {
-				failedInstance = relativeInstancePath(goModuleRoot, inst.Dir)
+				failedInstance = instanceKey(goModuleRoot, inst, allPackages)
 			}
 			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", failedInstance, inst.Err))
 			continue
@@ -524,7 +557,7 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 
 	ctx := cuecontext.New()
 	for _, inst := range validInstances {
-		relPath := relativeInstancePath(goModuleRoot, inst.Dir)
+		relPath := instanceKey(goModuleRoot, inst, allPackages)
 
 		// Build the CUE value (must be sequential)
 		v := ctx.BuildInstance(inst)
@@ -673,6 +706,19 @@ func relativeInstancePath(moduleRoot string, directory string) string {
 		return "."
 	}
 	return relPath
+}
+
+// instanceKey is the result key of an instance: its directory relative to
+// the module root, qualified as "<directory>:<package>" when every package is
+// evaluated (a directory can then hold several instances). CUE package names
+// are identifiers, so the key splits unambiguously at its last colon.
+func instanceKey(moduleRoot string, inst *build.Instance, allPackages bool) string {
+	directory := relativeInstancePath(moduleRoot, inst.Dir)
+	if !allPackages || inst.PkgName == "" {
+		// A load failure may not know its package; name the directory.
+		return directory
+	}
+	return directory + ":" + inst.PkgName
 }
 
 // injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
