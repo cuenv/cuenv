@@ -6,9 +6,19 @@
 //!
 //! The schema is versioned: `cuenv_infrastructure_schema` records the newest
 //! migration applied, and [`StateStore::migrate`] applies only newer ones, each
-//! in its own transaction. Transient failures (connection errors, timeouts,
-//! HTTP 429 and 5xx, `SQLITE_BUSY`) are retried with exponential backoff; every
-//! statement issued here is safe to repeat.
+//! in its own transaction. Every operation refuses a database whose schema is
+//! newer than this build knows. Reads ([`StateStore::list`] and
+//! [`StateStore::current_lock`]) never migrate: on a database without cuenv's
+//! tables they return nothing, so a read-only token can plan and inspect
+//! state. Taking the lock requires the current schema.
+//!
+//! Transient failures (connection errors, timeouts, HTTP 429 and 5xx,
+//! `SQLITE_BUSY`) are retried with exponential backoff; every statement issued
+//! here is safe to repeat.
+//!
+//! Transport: redirects are never followed, response bodies are read only up
+//! to a fixed size, and a plaintext loopback URL (a local `sqld`) is always
+//! contacted directly, never through an `HTTP_PROXY` that would see the token.
 
 use std::fmt;
 use std::future::Future;
@@ -74,11 +84,39 @@ const MIGRATIONS: &[Migration] = &[
     },
 ];
 
+/// Newest schema version this build knows.
+const LATEST_SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
+
+/// First schema version with the `tainted` and `identity_json` columns.
+const TAINT_AND_IDENTITY_SCHEMA_VERSION: i64 = 2;
+
+const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
+const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
+const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
+
 const CREATE_SCHEMA_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_schema (version INTEGER NOT NULL)";
 
+const SELECT_SCHEMA_VERSION: &str =
+    "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_schema";
+
+const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
+     schema_version, state_json, private, dependencies_json, tainted, identity_json \
+     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
+     ORDER BY resource_type, resource_name";
+
+/// [`SELECT_RESOURCES`] for schemas older than
+/// [`TAINT_AND_IDENTITY_SCHEMA_VERSION`], which a read does not migrate.
+const SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY: &str = "SELECT resource_type, resource_name, provider, provider_source, \
+     schema_version, state_json, private, dependencies_json, 0, NULL \
+     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
+     ORDER BY resource_type, resource_name";
+
 /// Longest HTTP error body quoted in an error message, in bytes.
 const MAXIMUM_ERROR_BODY_BYTES: usize = 4096;
+
+/// Largest successful Turso response read, in bytes (64 MiB).
+const MAXIMUM_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Per-request timeout for Turso calls.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -135,6 +173,8 @@ pub struct TursoStateStore {
     pipeline_url: reqwest::Url,
     authentication_token: Option<String>,
     retry_policy: RetryPolicy,
+    /// Largest successful response body read, in bytes.
+    maximum_response_bytes: usize,
 }
 
 impl fmt::Debug for TursoStateStore {
@@ -147,6 +187,7 @@ impl fmt::Debug for TursoStateStore {
                 &self.authentication_token.as_ref().map(|_| "<redacted>"),
             )
             .field("retry_policy", &self.retry_policy)
+            .field("maximum_response_bytes", &self.maximum_response_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -167,15 +208,23 @@ impl TursoStateStore {
     fn with_timeout(configuration: TursoConfiguration, timeout: Duration) -> Result<Self> {
         let pipeline_url = pipeline_url(&configuration.url)?;
         crate::ensure_rustls_cryptography_provider();
-        let client = reqwest::Client::builder()
+        let builder = reqwest::Client::builder()
             .timeout(timeout)
-            .build()
-            .map_err(|error| {
-                InfrastructureError::state(format!(
-                    "failed to build HTTP client: {}",
-                    describe_transport_error(&error)
-                ))
-            })?;
+            // A redirect could carry the request, and its token, elsewhere.
+            .redirect(reqwest::redirect::Policy::none());
+        // `pipeline_url` produces `http` only for a loopback host: talk to it
+        // directly, never through a proxy that would see the token in clear.
+        let builder = if pipeline_url.scheme() == "http" {
+            builder.no_proxy()
+        } else {
+            builder
+        };
+        let client = builder.build().map_err(|error| {
+            InfrastructureError::state(format!(
+                "failed to build HTTP client: {}",
+                describe_transport_error(&error)
+            ))
+        })?;
         Ok(Self {
             client,
             pipeline_url,
@@ -183,6 +232,7 @@ impl TursoStateStore {
                 .authentication_token
                 .filter(|token| !token.is_empty()),
             retry_policy: RetryPolicy::DEFAULT,
+            maximum_response_bytes: MAXIMUM_RESPONSE_BYTES,
         })
     }
 
@@ -192,17 +242,14 @@ impl TursoStateStore {
         if let Some(token) = &self.authentication_token {
             request = request.bearer_auth(token);
         }
-        let response = request
+        let mut response = request
             .send()
             .await
             .map_err(|error| transport_failure(&error))?;
         let status = response.status();
         if !status.is_success() {
-            let body = response
-                .bytes()
-                .await
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_default();
+            let total_bytes = response.content_length();
+            let body = read_body_prefix(&mut response, MAXIMUM_ERROR_BODY_BYTES).await;
             return Err(Failure {
                 kind: if status_is_transient(status) {
                     FailureKind::Transient
@@ -211,14 +258,11 @@ impl TursoStateStore {
                 },
                 message: format!(
                     "Turso returned HTTP {status}: {}",
-                    truncate_error_body(&body)
+                    describe_error_body(&body, total_bytes)
                 ),
             });
         }
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|error| transport_failure(&error))?;
+        let bytes = read_whole_body(&mut response, self.maximum_response_bytes).await?;
         serde_json::from_slice(&bytes).map_err(|error| Failure {
             kind: FailureKind::Permanent,
             message: format!("invalid Turso response: {error}"),
@@ -358,10 +402,7 @@ impl TursoStateStore {
         let results = self
             .pipeline(&[
                 Statement::new(CREATE_SCHEMA_TABLE, Vec::new()),
-                Statement::new(
-                    "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_schema",
-                    Vec::new(),
-                ),
+                Statement::new(SELECT_SCHEMA_VERSION, Vec::new()),
             ])
             .await?;
         results
@@ -370,6 +411,47 @@ impl TursoStateStore {
             .and_then(|row| row.first())
             .and_then(HranaValue::as_integer)
             .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))
+    }
+
+    /// Inspect the schema without creating or changing anything.
+    ///
+    /// Fails closed on a schema newer than this build knows, so an older
+    /// cuenv never reads or writes rows whose meaning may have changed.
+    async fn stored_schema(&self) -> Result<StoredSchema> {
+        let tables = self
+            .execute(Statement::new(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+                [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE]
+                    .into_iter()
+                    .map(HranaValue::text)
+                    .collect(),
+            ))
+            .await?;
+        let present = |table: &str| {
+            tables
+                .rows
+                .iter()
+                .any(|row| row.first().and_then(HranaValue::as_text) == Some(table))
+        };
+        let version = if present(SCHEMA_TABLE) {
+            self.execute(Statement::new(SELECT_SCHEMA_VERSION, Vec::new()))
+                .await?
+                .rows
+                .first()
+                .and_then(|row| row.first())
+                .and_then(HranaValue::as_integer)
+                .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))?
+        } else {
+            0
+        };
+        if version > LATEST_SCHEMA_VERSION {
+            return Err(newer_schema(version));
+        }
+        Ok(StoredSchema {
+            version,
+            resources_table: present(RESOURCES_TABLE),
+            locks_table: present(LOCKS_TABLE),
+        })
     }
 
     /// Apply one migration and record its version, atomically.
@@ -532,13 +614,9 @@ fn tenant_arguments(tenant: &TenantKey) -> Vec<HranaValue> {
 impl StateStore for TursoStateStore {
     #[tracing::instrument(skip_all)]
     async fn migrate(&self) -> Result<()> {
-        let latest = MIGRATIONS.last().map_or(0, |migration| migration.version);
         let current = self.schema_version().await?;
-        if current > latest {
-            return Err(InfrastructureError::state(format!(
-                "Turso state schema version {current} is newer than this cuenv supports \
-                 ({latest}); upgrade cuenv"
-            )));
+        if current > LATEST_SCHEMA_VERSION {
+            return Err(newer_schema(current));
         }
         for migration in MIGRATIONS
             .iter()
@@ -574,14 +652,20 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
+        let schema = self.stored_schema().await?;
+        if !schema.resources_table {
+            // Never migrated: nothing has been recorded yet.
+            return Ok(Vec::new());
+        }
+        // Version 0 is a table created before the schema was versioned, which
+        // has the version 1 layout.
+        let query = if schema.version >= TAINT_AND_IDENTITY_SCHEMA_VERSION {
+            SELECT_RESOURCES
+        } else {
+            SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY
+        };
         let result = self
-            .execute(Statement::new(
-                "SELECT resource_type, resource_name, provider, provider_source, \
-                 schema_version, state_json, private, dependencies_json, tainted, identity_json \
-                 FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
-                 ORDER BY resource_type, resource_name",
-                tenant_arguments(tenant),
-            ))
+            .execute(Statement::new(query, tenant_arguments(tenant)))
             .await?;
         result.rows.iter().map(|row| row_to_resource(row)).collect()
     }
@@ -689,6 +773,17 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, holder = %holder))]
     async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock> {
+        // Every write needs the lock, so this is where writes fail closed on
+        // a schema this build has not migrated to.
+        let schema = self.stored_schema().await?;
+        if schema.version != LATEST_SCHEMA_VERSION || !schema.resources_table || !schema.locks_table
+        {
+            return Err(InfrastructureError::state(format!(
+                "Turso state schema is at version {} but this cuenv writes version \
+                 {LATEST_SCHEMA_VERSION}; migrate the state store before taking the lock",
+                schema.version
+            )));
+        }
         let lock_identifier = uuid::Uuid::new_v4().to_string();
         let insert = Statement::new(
             "INSERT INTO cuenv_infrastructure_locks (module_path, project, lock_identifier, holder, acquired_at) \
@@ -780,11 +875,18 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
+        if !self.stored_schema().await?.locks_table {
+            // Never migrated: nobody can have taken the lock.
+            return Ok(None);
+        }
         self.read_lock(tenant).await
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, lock_identifier = %lock_identifier))]
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
+        if !self.stored_schema().await?.locks_table {
+            return Ok(false);
+        }
         let released = self
             .execute(Statement::new(
                 "DELETE FROM cuenv_infrastructure_locks \
@@ -798,6 +900,24 @@ impl StateStore for TursoStateStore {
             .await?;
         Ok(released.affected_row_count > 0)
     }
+}
+
+/// What a read-only inspection of the database found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StoredSchema {
+    /// Recorded schema version; 0 when nothing is recorded.
+    version: i64,
+    /// Whether `cuenv_infrastructure_resources` exists.
+    resources_table: bool,
+    /// Whether `cuenv_infrastructure_locks` exists.
+    locks_table: bool,
+}
+
+fn newer_schema(version: i64) -> InfrastructureError {
+    InfrastructureError::state(format!(
+        "Turso state schema version {version} is newer than this cuenv supports \
+         ({LATEST_SCHEMA_VERSION}); upgrade cuenv"
+    ))
 }
 
 fn locked(tenant: &TenantKey, information: LockInformation) -> InfrastructureError {
@@ -951,21 +1071,72 @@ fn statement_failure(error: &HranaError) -> Failure {
     }
 }
 
-/// Truncate an HTTP error body to [`MAXIMUM_ERROR_BODY_BYTES`] on a character
-/// boundary.
-fn truncate_error_body(body: &str) -> String {
-    if body.len() <= MAXIMUM_ERROR_BODY_BYTES {
-        return body.to_string();
+/// The first bytes of a response body: at most `limit`, plus whether more
+/// followed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct BodyPrefix {
+    bytes: Vec<u8>,
+    truncated: bool,
+}
+
+/// Read at most `limit` bytes of an error response body, stopping there.
+///
+/// A body that fails part way keeps what arrived: it only decorates an error.
+async fn read_body_prefix(response: &mut reqwest::Response, limit: usize) -> BodyPrefix {
+    let mut prefix = BodyPrefix::default();
+    while let Ok(Some(chunk)) = response.chunk().await {
+        let room = limit - prefix.bytes.len();
+        if chunk.len() > room {
+            prefix.bytes.extend_from_slice(&chunk[..room]);
+            prefix.truncated = true;
+            break;
+        }
+        prefix.bytes.extend_from_slice(&chunk);
     }
-    let end = (0..=MAXIMUM_ERROR_BODY_BYTES)
-        .rev()
-        .find(|index| body.is_char_boundary(*index))
-        .unwrap_or(0);
-    format!(
-        "{}… (truncated, {} bytes in total)",
-        &body[..end],
-        body.len()
-    )
+    prefix
+}
+
+/// Read a successful response body, failing once it exceeds `limit` bytes.
+async fn read_whole_body(response: &mut reqwest::Response, limit: usize) -> Attempted<Vec<u8>> {
+    let too_large = || {
+        Failure::permanent(format!(
+            "Turso response exceeds the {limit}-byte limit; the tenant's state is too large to \
+             read in one response"
+        ))
+    };
+    if response
+        .content_length()
+        .is_some_and(|length| usize::try_from(length).map_or(true, |length| length > limit))
+    {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| transport_failure(&error))?
+    {
+        if chunk.len() > limit - bytes.len() {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+/// Render an error body prefix for a message, cut on a character boundary.
+fn describe_error_body(body: &BodyPrefix, total_bytes: Option<u64>) -> String {
+    let text = String::from_utf8_lossy(&body.bytes);
+    if !body.truncated {
+        return text.into_owned();
+    }
+    // A multi-byte character cut at the limit decodes as a replacement
+    // character; drop it.
+    let text = text.trim_end_matches(char::REPLACEMENT_CHARACTER);
+    match total_bytes {
+        Some(total) => format!("{text}… (truncated, {total} bytes in total)"),
+        None => format!("{text}… (truncated)"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1382,14 +1553,24 @@ mod tests {
     }
 
     #[test]
-    fn truncates_error_bodies() {
-        assert_eq!(truncate_error_body("short"), "short");
-        let long = "é".repeat(3000);
-        let truncated = truncate_error_body(&long);
-        let kept = truncated.split('…').next().unwrap();
-        assert!(kept.len() <= MAXIMUM_ERROR_BODY_BYTES);
-        assert!(kept.len() >= MAXIMUM_ERROR_BODY_BYTES - 1);
-        assert!(truncated.contains("truncated, 6000 bytes in total"));
+    fn describes_error_body_prefixes() {
+        let complete = BodyPrefix {
+            bytes: b"short".to_vec(),
+            truncated: false,
+        };
+        assert_eq!(describe_error_body(&complete, Some(5)), "short");
+        // A two-byte character cut in half at the limit is dropped.
+        let mut bytes = "é".repeat(2048).into_bytes();
+        bytes.truncate(MAXIMUM_ERROR_BODY_BYTES - 1);
+        let cut = BodyPrefix {
+            bytes,
+            truncated: true,
+        };
+        let described = describe_error_body(&cut, Some(6000));
+        let kept = described.split('…').next().unwrap();
+        assert_eq!(kept, "é".repeat(2047));
+        assert!(described.ends_with("(truncated, 6000 bytes in total)"));
+        assert!(describe_error_body(&cut, None).ends_with("… (truncated)"));
     }
 
     #[test]
@@ -1591,6 +1772,72 @@ mod tests {
         assert_eq!(store.schema_version().await.unwrap(), latest);
     }
 
+    /// Against a real server: reads on a database cuenv never touched are
+    /// empty and create nothing, and a schema newer than this build is
+    /// refused everywhere. The database must be one nothing else uses; the
+    /// test drops cuenv's tables at the end so it can run again.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "requires an otherwise unused libSQL database (CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL)"]
+    async fn fresh_database_reads_and_newer_schema_against_a_server() {
+        let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL").unwrap();
+        let store = TursoStateStore::new(TursoConfiguration {
+            url,
+            authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+        })
+        .unwrap();
+        let drop_tables = || async {
+            for table in [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE] {
+                store
+                    .execute(Statement::new(
+                        format!("DROP TABLE IF EXISTS {table}"),
+                        Vec::new(),
+                    ))
+                    .await
+                    .unwrap();
+            }
+        };
+        let untouched = StoredSchema {
+            version: 0,
+            resources_table: false,
+            locks_table: false,
+        };
+        assert_eq!(
+            store.stored_schema().await.unwrap(),
+            untouched,
+            "the database must start without cuenv tables"
+        );
+
+        assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
+        assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
+        assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
+        assert!(store.lock(&tenant(), "test").await.is_err());
+        assert_eq!(store.stored_schema().await.unwrap(), untouched);
+
+        store.migrate().await.unwrap();
+        let lock = store.lock(&tenant(), "test").await.unwrap();
+        store.unlock(&tenant(), &lock).await.unwrap();
+
+        store
+            .execute(Statement::new(
+                "INSERT INTO cuenv_infrastructure_schema (version) VALUES (?)",
+                vec![HranaValue::integer(LATEST_SCHEMA_VERSION + 1)],
+            ))
+            .await
+            .unwrap();
+        let refusals = [
+            store.migrate().await.err(),
+            store.list(&tenant()).await.err(),
+            store.current_lock(&tenant()).await.err(),
+            store.lock(&tenant(), "test").await.err(),
+            store.force_unlock(&tenant(), "any").await.err(),
+        ];
+        drop_tables().await;
+        for refusal in refusals {
+            let message = refusal.expect("a newer schema must be refused").to_string();
+            assert!(message.contains("newer than this cuenv supports"), "{message}");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // A minimal HTTP server standing in for Turso.
     // -----------------------------------------------------------------------
@@ -1604,21 +1851,34 @@ mod tests {
     }
 
     async fn fake_server(responder: Arc<Responder>) -> FakeServer {
+        fake_server_with_headers(responder, String::new()).await
+    }
+
+    /// A fake server whose every reply also carries `headers` (each line
+    /// ending in `\r\n`).
+    async fn fake_server_with_headers(responder: Arc<Responder>, headers: String) -> FakeServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(AtomicUsize::new(0));
         let counter = Arc::clone(&requests);
+        let replies = Arc::new(Replies { responder, headers });
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let index = counter.fetch_add(1, Ordering::SeqCst);
-                let responder = Arc::clone(&responder);
-                tokio::spawn(answer(stream, index, responder));
+                tokio::spawn(answer(stream, index, Arc::clone(&replies)));
             }
         });
         FakeServer { url, requests }
     }
 
-    async fn answer(mut stream: TcpStream, index: usize, responder: Arc<Responder>) {
+    /// How a fake server replies.
+    struct Replies {
+        responder: Arc<Responder>,
+        headers: String,
+    }
+
+    async fn answer(mut stream: TcpStream, index: usize, replies: Arc<Replies>) {
+        let Replies { responder, headers } = replies.as_ref();
         let mut buffer = Vec::new();
         let mut chunk = [0_u8; 4096];
         let header_end = loop {
@@ -1631,8 +1891,8 @@ mod tests {
                 break position + 4;
             }
         };
-        let headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
-        let length: usize = headers
+        let request_headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
+        let length: usize = request_headers
             .lines()
             .find_map(|line| line.strip_prefix("content-length:"))
             .map_or(0, |value| value.trim().parse().unwrap());
@@ -1648,7 +1908,7 @@ mod tests {
             return;
         };
         let reply = format!(
-            "HTTP/1.1 {status} Status\r\ncontent-type: application/json\r\n\
+            "HTTP/1.1 {status} Status\r\ncontent-type: application/json\r\n{headers}\
              content-length: {}\r\nconnection: close\r\n\r\n{response}",
             response.len()
         );
@@ -1668,6 +1928,59 @@ mod tests {
             ],
         })
         .to_string()
+    }
+
+    /// Answer every statement of a pipeline with `rows_for(sql)`; `None` is
+    /// a statement error.
+    fn pipeline_response(body: &Value, rows_for: impl Fn(&str) -> Option<Value>) -> String {
+        let results: Vec<Value> = body["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|request| match request["type"].as_str().unwrap() {
+                "execute" => {
+                    let sql = request["stmt"]["sql"].as_str().unwrap();
+                    rows_for(sql).map_or_else(
+                        || {
+                            json!({"type": "error", "error": {
+                                "message": format!("unexpected statement: {sql}"),
+                                "code": "SQLITE_ERROR",
+                            }})
+                        },
+                        |rows| {
+                            json!({"type": "ok", "response": {"type": "execute", "result": {
+                                "cols": [], "rows": rows, "affected_row_count": 1,
+                            }}})
+                        },
+                    )
+                }
+                _ => json!({"type": "ok", "response": {"type": "close"}}),
+            })
+            .collect();
+        json!({"baton": null, "base_url": null, "results": results}).to_string()
+    }
+
+    /// Rows a database at schema `version` with every cuenv table returns
+    /// for the store's schema inspection; `None` for any other statement.
+    fn schema_rows(sql: &str, version: i64) -> Option<Value> {
+        if sql.starts_with("SELECT name FROM sqlite_master") {
+            Some(json!([
+                [{"type": "text", "value": SCHEMA_TABLE}],
+                [{"type": "text", "value": RESOURCES_TABLE}],
+                [{"type": "text", "value": LOCKS_TABLE}],
+            ]))
+        } else if sql == SELECT_SCHEMA_VERSION {
+            Some(json!([[{"type": "integer", "value": version.to_string()}]]))
+        } else {
+            None
+        }
+    }
+
+    fn first_statement(body: &Value) -> String {
+        body["requests"][0]["stmt"]["sql"]
+            .as_str()
+            .unwrap()
+            .to_string()
     }
 
     fn fast_store(url: &str, timeout: Duration) -> TursoStateStore {
@@ -1764,12 +2077,18 @@ mod tests {
     async fn lock_insert_with_lost_response_is_recovered_from_the_lock_row() {
         let inserted = Arc::new(Mutex::new(None::<String>));
         let recorded = Arc::clone(&inserted);
+        let inserts = Arc::new(AtomicUsize::new(0));
+        let insert_counter = Arc::clone(&inserts);
         let server = fake_server(Arc::new(move |_, body| {
-            let sql = body["requests"][0]["stmt"]["sql"]
-                .as_str()
-                .unwrap()
-                .to_string();
+            let sql = first_statement(&body);
+            if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
+                return Some((
+                    200,
+                    pipeline_response(&body, |sql| schema_rows(sql, LATEST_SCHEMA_VERSION)),
+                ));
+            }
             if sql.starts_with("INSERT INTO cuenv_infrastructure_locks") {
+                insert_counter.fetch_add(1, Ordering::SeqCst);
                 // Commit the lock, then lose the response.
                 let identifier = body["requests"][0]["stmt"]["args"][2]["value"]
                     .as_str()
@@ -1795,18 +2114,22 @@ mod tests {
         let store = fast_store(&server.url, Duration::from_secs(5));
         let lock = store.lock(&tenant(), "test").await.unwrap();
         assert_eq!(Some(lock.lock_identifier), inserted.lock().unwrap().clone());
-        // One insert and one read: no blind retry of the insert.
-        assert_eq!(server.requests.load(Ordering::SeqCst), 2);
+        // One insert and one read after the schema check: no blind retry of
+        // the insert.
+        assert_eq!(inserts.load(Ordering::SeqCst), 1);
+        assert_eq!(server.requests.load(Ordering::SeqCst), 4);
     }
 
     #[tokio::test]
     async fn lock_held_by_another_run_is_reported() {
         let server = fake_server(Arc::new(|_, body| {
-            let sql = body["requests"][0]["stmt"]["sql"]
-                .as_str()
-                .unwrap()
-                .to_string();
-            Some(if sql.starts_with("INSERT") {
+            let sql = first_statement(&body);
+            Some(if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
+                (
+                    200,
+                    pipeline_response(&body, |sql| schema_rows(sql, LATEST_SCHEMA_VERSION)),
+                )
+            } else if sql.starts_with("INSERT") {
                 (200, execute_response(&json!([]), 0))
             } else {
                 let rows = json!([[
@@ -1825,5 +2148,218 @@ mod tests {
                 if lock_identifier == "other-lock" && holder == "someone else"),
             "{error:?}"
         );
+    }
+
+    /// A fake database that answers with `rows_for` and records every
+    /// statement it receives.
+    async fn recording_database(
+        rows_for: impl Fn(&str) -> Option<Value> + Send + Sync + 'static,
+    ) -> (FakeServer, Arc<Mutex<Vec<String>>>) {
+        let statements = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&statements);
+        let server = fake_server(Arc::new(move |_, body| {
+            let requests = body["requests"].as_array().unwrap();
+            recorded.lock().unwrap().extend(
+                requests
+                    .iter()
+                    .filter_map(|request| request["stmt"]["sql"].as_str())
+                    .map(str::to_string),
+            );
+            Some((200, pipeline_response(&body, &rows_for)))
+        }))
+        .await;
+        (server, statements)
+    }
+
+    #[tokio::test]
+    async fn reads_on_a_database_without_cuenv_tables_are_empty_and_change_nothing() {
+        let (server, statements) = recording_database(|sql| {
+            sql.starts_with("SELECT name FROM sqlite_master")
+                .then(|| json!([]))
+        })
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
+        assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
+        assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
+        let statements = statements.lock().unwrap().clone();
+        assert_eq!(statements.len(), 3, "{statements:?}");
+        assert!(
+            statements
+                .iter()
+                .all(|sql| sql.starts_with("SELECT name FROM sqlite_master")),
+            "{statements:?}"
+        );
+        // Taking the lock needs a migrated schema.
+        let message = store.lock(&tenant(), "test").await.unwrap_err().to_string();
+        assert!(message.contains("migrate the state store"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn every_operation_refuses_a_newer_schema() {
+        let newer = LATEST_SCHEMA_VERSION + 1;
+        let (server, statements) = recording_database(move |sql| {
+            schema_rows(sql, newer).or_else(|| (sql == CREATE_SCHEMA_TABLE).then(|| json!([])))
+        })
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let messages = [
+            store.migrate().await.unwrap_err().to_string(),
+            store.list(&tenant()).await.unwrap_err().to_string(),
+            store.current_lock(&tenant()).await.unwrap_err().to_string(),
+            store.lock(&tenant(), "test").await.unwrap_err().to_string(),
+            store
+                .force_unlock(&tenant(), "lock")
+                .await
+                .unwrap_err()
+                .to_string(),
+        ];
+        for message in messages {
+            assert!(
+                message.contains(&format!(
+                    "schema version {newer} is newer than this cuenv supports"
+                )),
+                "{message}"
+            );
+        }
+        // Nothing but schema inspection reached the database.
+        let statements = statements.lock().unwrap().clone();
+        assert!(
+            statements.iter().all(|sql| sql == CREATE_SCHEMA_TABLE
+                || sql == SELECT_SCHEMA_VERSION
+                || sql.starts_with("SELECT name FROM sqlite_master")),
+            "{statements:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_an_older_schema_without_migrating_it() {
+        let row = json!([[
+            {"type": "text", "value": "random_pet"},
+            {"type": "text", "value": "pet"},
+            {"type": "text", "value": "random"},
+            {"type": "text", "value": "registry.terraform.io/hashicorp/random"},
+            {"type": "integer", "value": "0"},
+            {"type": "text", "value": "{\"id\":\"x\"}"},
+            {"type": "null"},
+            {"type": "text", "value": "[]"},
+            {"type": "integer", "value": "0"},
+            {"type": "null"},
+        ]]);
+        let (server, statements) = recording_database(move |sql| {
+            schema_rows(sql, 1).or_else(|| {
+                (sql == SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY).then(|| row.clone())
+            })
+        })
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let resources = store.list(&tenant()).await.unwrap();
+        assert_eq!(resources.len(), 1);
+        assert!(!resources[0].tainted);
+        assert_eq!(resources[0].identity, None);
+        let message = store.lock(&tenant(), "test").await.unwrap_err().to_string();
+        assert!(message.contains("version 1"), "{message}");
+        assert!(
+            statements
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|sql| !sql.starts_with("ALTER") && !sql.starts_with("CREATE")),
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_are_not_followed() {
+        let elsewhere = fake_server(Arc::new(|_, _| {
+            Some((200, execute_response(&json!([]), 0)))
+        }))
+        .await;
+        let redirecting = fake_server_with_headers(
+            Arc::new(|_, _| Some((307, String::new()))),
+            format!("location: {}/v2/pipeline\r\n", elsewhere.url),
+        )
+        .await;
+        let store = fast_store(&redirecting.url, Duration::from_secs(5));
+        let message = store.list(&tenant()).await.unwrap_err().to_string();
+        assert!(message.contains("HTTP 307"), "{message}");
+        assert_eq!(redirecting.requests.load(Ordering::SeqCst), 1);
+        assert_eq!(elsewhere.requests.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn oversized_responses_are_refused_without_retrying() {
+        let server = fake_server(Arc::new(|_, body| {
+            Some((
+                200,
+                pipeline_response(&body, |_| {
+                    Some(json!([[{"type": "text", "value": "x".repeat(1_000)}]]))
+                }),
+            ))
+        }))
+        .await;
+        let mut store = fast_store(&server.url, Duration::from_secs(5));
+        store.maximum_response_bytes = 512;
+        let message = store.list(&tenant()).await.unwrap_err().to_string();
+        assert!(message.contains("exceeds the 512-byte limit"), "{message}");
+        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+    }
+
+    /// Set in the child process of
+    /// [`plaintext_loopback_requests_bypass_proxy_environment`].
+    const PROXY_CHILD_VARIABLE: &str = "CUENV_INFRASTRUCTURE_TEST_PROXY_CHILD";
+
+    /// A plaintext URL is always loopback; its requests (and the token) must
+    /// never go to a proxy named in the environment. The proxy variables are
+    /// process-wide, so the check runs in a child process of this test binary.
+    #[tokio::test]
+    async fn plaintext_loopback_requests_bypass_proxy_environment() {
+        if std::env::var_os(PROXY_CHILD_VARIABLE).is_some() {
+            let server = fake_server(Arc::new(|_, body| {
+                Some((200, pipeline_response(&body, |_| Some(json!([])))))
+            }))
+            .await;
+            let store = fast_store(&server.url, Duration::from_secs(5));
+            assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
+            assert_eq!(server.requests.load(Ordering::SeqCst), 1);
+            return;
+        }
+        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
+        let proxied = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&proxied);
+        tokio::spawn(async move {
+            // Accept and drop: a request sent here fails.
+            while let Ok((stream, _)) = proxy.accept().await {
+                counter.fetch_add(1, Ordering::SeqCst);
+                drop(stream);
+            }
+        });
+        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state::turso::tests::plaintext_loopback_requests_bypass_proxy_environment",
+                "--test-threads=1",
+            ])
+            .env(PROXY_CHILD_VARIABLE, "1")
+            .env("HTTP_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env("ALL_PROXY", &proxy_url)
+            .env("all_proxy", &proxy_url)
+            .env_remove("NO_PROXY")
+            .env_remove("no_proxy")
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "the child did not run the test"
+        );
+        assert_eq!(proxied.load(Ordering::SeqCst), 0);
     }
 }
