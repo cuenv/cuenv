@@ -20,6 +20,7 @@ pub mod exec_root;
 pub mod executor;
 pub mod graph;
 pub mod graph_walk;
+mod hermetic_home;
 /// Task lookup and resolution across workspaces
 pub mod index;
 pub mod output_refs;
