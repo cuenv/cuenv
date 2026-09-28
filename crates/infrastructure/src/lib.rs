@@ -16,8 +16,10 @@
 //!                     └──► StateStore (Turso) ── one row per managed resource
 //! ```
 
+pub mod cancellation;
 pub mod engine;
 pub mod error;
+pub mod object_change;
 pub mod plugin;
 mod protocol;
 pub mod registry;
@@ -25,10 +27,12 @@ pub mod schema;
 pub mod state;
 pub mod tenant;
 pub mod type_system;
+pub mod unrecorded;
 
+pub use cancellation::Cancellation;
 pub use engine::{
-    Action, ApplyContext, ApplyEvent, Cancellation, EngineOptions, EngineSetup,
-    InfrastructureEngine, Plan, PlanMode, PlanSummary, ResourceChange, render_plan,
+    Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
+    PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan,
 };
 pub use error::{InfrastructureError, Result};
 pub use state::{
@@ -36,6 +40,7 @@ pub use state::{
     TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{TenantKey, read_module_path};
+pub use unrecorded::{UnrecordedRecord, UnrecordedStore};
 
 /// Install the process-wide rustls cryptography provider reqwest needs.
 ///

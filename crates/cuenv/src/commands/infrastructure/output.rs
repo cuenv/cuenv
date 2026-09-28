@@ -237,6 +237,7 @@ fn summary_json(summary: &PlanSummary) -> Value {
         "update": summary.update,
         "replace": summary.replace,
         "delete": summary.delete,
+        "refresh": summary.refresh,
         "unchanged": summary.unchanged,
     })
 }

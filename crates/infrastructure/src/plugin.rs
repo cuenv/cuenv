@@ -17,19 +17,25 @@
 //! Each provider gets a private, short socket directory (unix socket paths
 //! are limited to about 108 bytes) that is removed when the provider stops,
 //! and never inherits the state store's credentials.
+//!
+//! Providers run in their own process group, so an interrupt typed at the
+//! terminal reaches cuenv only; cuenv then asks them to stop or kills them
+//! through [`crate::Cancellation`]. They are also killed whenever their
+//! client is dropped.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use hyper_util::rt::TokioIo;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tonic::codegen::http::uri::PathAndQuery;
 use tonic::transport::{Channel, Endpoint, Uri};
 
+use crate::cancellation::Cancellation;
 use crate::error::{InfrastructureError, Result};
 use crate::protocol::{self, Diagnostic, DynamicValue};
 use crate::schema::ProviderSchema;
@@ -57,6 +63,12 @@ const SHUTDOWN_STEP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Provider log lines kept for error reports.
 const RETAINED_LOG_LINES: usize = 40;
+
+/// Longest provider log line kept; the rest of a longer line is dropped.
+const MAXIMUM_LOG_LINE_BYTES: usize = 2048;
+
+/// How often a stopping provider is checked for exit.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// go-plugin's controller service, used for a graceful shutdown.
 const CONTROLLER_SHUTDOWN_PATH: &str = "/plugin.GRPCController/Shutdown";
@@ -199,9 +211,82 @@ pub struct LaunchOptions<'launch> {
     /// Environment variables the provider must not inherit, such as the
     /// state store's authentication token.
     pub withheld_environment_variables: &'launch [String],
+    /// Interruption the provider process is registered with, so a stop
+    /// request reaches it and termination kills it.
+    pub cancellation: &'launch Cancellation,
 }
 
-/// Recent provider log lines, attached to errors so failures are diagnosable.
+/// A running provider process, shared with [`Cancellation`] so an
+/// interrupt can ask it to stop or kill it from any thread.
+#[derive(Debug)]
+pub struct ProviderProcess {
+    name: String,
+    child: Mutex<Child>,
+    connection: OnceLock<Connection>,
+}
+
+/// The gRPC connection to a provider, known once its handshake completes.
+#[derive(Debug, Clone)]
+struct Connection {
+    protocol: Protocol,
+    channel: Channel,
+}
+
+impl ProviderProcess {
+    /// Send the process `SIGKILL` (or the platform equivalent) without
+    /// waiting for it to exit.
+    pub(crate) fn kill(&self) {
+        let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Err(error) = child.start_kill() {
+            tracing::debug!(provider = %self.name, %error, "provider kill failed; it may have exited already");
+        }
+    }
+
+    /// Ask the provider to stop its in-flight operations.
+    pub(crate) async fn request_stop(&self) {
+        let Some(connection) = self.connection.get() else {
+            return;
+        };
+        let stop = tokio::time::timeout(
+            SHUTDOWN_STEP_TIMEOUT,
+            unary::<_, protocol::StopResponse>(
+                &connection.channel,
+                RemoteProcedure::Stop.path(connection.protocol),
+                protocol::Empty {},
+            ),
+        )
+        .await;
+        match stop {
+            Ok(Ok(response)) if response.error.is_empty() => {
+                tracing::debug!(provider = %self.name, "provider stopped its operations");
+            }
+            Ok(Ok(response)) => {
+                tracing::debug!(provider = %self.name, error = %response.error, "provider stop reported an error");
+            }
+            _ => tracing::debug!(provider = %self.name, "provider stop procedure did not complete"),
+        }
+    }
+
+    fn has_exited(&self) -> bool {
+        let mut child = self.child.lock().unwrap_or_else(PoisonError::into_inner);
+        matches!(child.try_wait(), Ok(Some(_)) | Err(_))
+    }
+
+    /// Wait up to `timeout` for the process to exit.
+    async fn wait_for_exit(&self, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            while !self.has_exited() {
+                tokio::time::sleep(EXIT_POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+}
+
+/// Recent serious provider log lines (hclog errors and warnings, and
+/// anything that is not hclog JSON, such as a Go panic), attached to errors
+/// so failures are diagnosable. Each line is bounded.
 #[derive(Debug, Clone, Default)]
 struct ProviderLog {
     lines: Arc<Mutex<VecDeque<String>>>,
@@ -209,12 +294,11 @@ struct ProviderLog {
 
 impl ProviderLog {
     fn record(&self, line: String) {
-        if let Ok(mut lines) = self.lines.lock() {
-            if lines.len() == RETAINED_LOG_LINES {
-                lines.pop_front();
-            }
-            lines.push_back(line);
+        let mut lines = self.lines.lock().unwrap_or_else(PoisonError::into_inner);
+        if lines.len() == RETAINED_LOG_LINES {
+            lines.pop_front();
         }
+        lines.push_back(line);
     }
 
     fn render(&self) -> String {
@@ -247,18 +331,17 @@ impl SocketDirectory {
         };
         let suffix = uuid::Uuid::new_v4().simple().to_string();
         let path = base.join(format!("cuenv-plugin-{}", &suffix[..12]));
-        std::fs::create_dir(&path).map_err(|error| {
-            InfrastructureError::input_output("create provider socket directory", error)
-        })?;
+        // Created private in one step: there is no moment in which another
+        // user could open it, and an existing path is never reused.
+        let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).map_err(
-                |error| {
-                    InfrastructureError::input_output("protect provider socket directory", error)
-                },
-            )?;
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
         }
+        builder.create(&path).map_err(|error| {
+            InfrastructureError::input_output("create provider socket directory", error)
+        })?;
         Ok(Self { path })
     }
 }
@@ -270,12 +353,14 @@ impl Drop for SocketDirectory {
 }
 
 /// A running provider plugin and a gRPC client connected to it.
+///
+/// Dropping the client kills the provider process.
 #[derive(Debug)]
 pub struct ProviderClient {
     name: String,
     protocol: Protocol,
     channel: Channel,
-    child: Child,
+    process: Arc<ProviderProcess>,
     log: ProviderLog,
     _socket_directory: SocketDirectory,
 }
@@ -296,6 +381,10 @@ impl ProviderClient {
         for name in options.withheld_environment_variables {
             command.env_remove(name);
         }
+        // Own process group: a terminal interrupt must reach cuenv only, so
+        // in-flight provider operations are stopped deliberately, not killed.
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command
             .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
             .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
@@ -324,20 +413,35 @@ impl ProviderClient {
             || "provider".to_string(),
             |file_name| file_name.to_string_lossy().into_owned(),
         );
+        let process = Arc::new(ProviderProcess {
+            name: name.clone(),
+            child: Mutex::new(child),
+            connection: OnceLock::new(),
+        });
+        options.cancellation.register(&process);
         let log = ProviderLog::default();
         spawn_log_drain(name.clone(), standard_error, log.clone());
 
         let mut reader = BufReader::new(standard_output);
-        let line = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_bounded_line(&mut reader))
-            .await
-            .map_err(|_| {
-                InfrastructureError::plugin(format!(
-                    "{name} did not complete the plugin handshake within {} seconds{}",
-                    HANDSHAKE_TIMEOUT.as_secs(),
-                    log.render()
-                ))
-            })??;
-        let Some(line) = line else {
+        let line = tokio::time::timeout(
+            HANDSHAKE_TIMEOUT,
+            read_bounded_line(&mut reader, MAXIMUM_HANDSHAKE_BYTES),
+        )
+        .await
+        .map_err(|_| {
+            InfrastructureError::plugin(format!(
+                "{name} did not complete the plugin handshake within {} seconds{}",
+                HANDSHAKE_TIMEOUT.as_secs(),
+                log.render()
+            ))
+        })?
+        .map_err(|error| InfrastructureError::input_output("read provider handshake", error))?;
+        if line.as_ref().is_some_and(|line| line.truncated) {
+            return Err(InfrastructureError::plugin(
+                "provider handshake line is too long; is this a Terraform provider?",
+            ));
+        }
+        let Some(BoundedLine { text: line, .. }) = line else {
             // Give the log drain a moment to capture why the provider exited.
             tokio::time::sleep(Duration::from_millis(200)).await;
             return Err(InfrastructureError::plugin(format!(
@@ -348,18 +452,24 @@ impl ProviderClient {
         let handshake = Handshake::parse(&line)?;
         tracing::debug!(provider = %name, ?handshake, "provider handshake");
 
-        // Keep draining standard output so the plugin never blocks on a full pipe.
-        let mut lines = reader.lines();
-        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+        // Keep draining standard output so the plugin never blocks on a full
+        // pipe; nothing after the handshake is meaningful, so discard it.
+        tokio::spawn(async move {
+            let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
+        });
 
         let channel = connect(&handshake)
             .await
             .map_err(|error| InfrastructureError::plugin(format!("{error}{}", log.render())))?;
+        let _ = process.connection.set(Connection {
+            protocol: handshake.protocol,
+            channel: channel.clone(),
+        });
         Ok(Self {
             name,
             protocol: handshake.protocol,
             channel,
-            child,
+            process,
             log,
             _socket_directory: socket_directory,
         })
@@ -369,6 +479,16 @@ impl ProviderClient {
     #[must_use]
     pub const fn protocol(&self) -> Protocol {
         self.protocol
+    }
+
+    /// Operating system process identifier of the provider, while it runs.
+    #[must_use]
+    pub fn process_identifier(&self) -> Option<u32> {
+        self.process
+            .child
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .id()
     }
 
     async fn call<RequestMessage, ResponseMessage>(
@@ -381,23 +501,7 @@ impl ProviderClient {
         ResponseMessage: prost::Message + Default + Send + Sync + 'static,
     {
         let path = rpc.path(self.protocol);
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone())
-            .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        grpc.ready().await.map_err(|error| {
-            InfrastructureError::plugin(format!(
-                "provider connection not ready for {path}: {error}"
-            ))
-        })?;
-        let codec = tonic_prost::ProstCodec::<RequestMessage, ResponseMessage>::default();
-        grpc.unary(
-            tonic::Request::new(request),
-            PathAndQuery::from_static(path),
-            codec,
-        )
-        .await
-        .map(tonic::Response::into_inner)
-        .map_err(|status| {
+        unary(&self.channel, path, request).await.map_err(|status| {
             let transport_failure = matches!(
                 status.code(),
                 tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
@@ -503,7 +607,9 @@ impl ProviderClient {
         Ok(response.diagnostics)
     }
 
-    /// Upgrade stored JSON state to the provider's current schema.
+    /// Upgrade stored JSON state to the provider's current schema. The
+    /// upgraded state comes back as the provider sent it, MessagePack or
+    /// JSON.
     ///
     /// # Errors
     ///
@@ -513,27 +619,19 @@ impl ProviderClient {
         type_name: &str,
         version: i64,
         state_json: Vec<u8>,
-    ) -> Result<(Vec<u8>, Vec<Diagnostic>)> {
-        let response: protocol::UpgradeResourceStateResponse = self
-            .call(
-                RemoteProcedure::UpgradeResourceState,
-                protocol::UpgradeResourceStateRequest {
-                    type_name: type_name.to_string(),
-                    version,
-                    raw_state: Some(protocol::RawState {
-                        json: state_json,
-                        flatmap: std::collections::HashMap::new(),
-                    }),
-                },
-            )
-            .await?;
-        Ok((
-            response
-                .upgraded_state
-                .map(|dynamic_value| dynamic_value.message_pack)
-                .unwrap_or_default(),
-            response.diagnostics,
-        ))
+    ) -> Result<protocol::UpgradeResourceStateResponse> {
+        self.call(
+            RemoteProcedure::UpgradeResourceState,
+            protocol::UpgradeResourceStateRequest {
+                type_name: type_name.to_string(),
+                version,
+                raw_state: Some(protocol::RawState {
+                    json: state_json,
+                    flatmap: std::collections::HashMap::new(),
+                }),
+            },
+        )
+        .await
     }
 
     /// Refresh a managed resource from the real world.
@@ -605,42 +703,55 @@ impl ProviderClient {
     }
 
     /// Ask the provider to stop gracefully, then terminate the process.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(self) {
         // Ask the provider to cancel in-flight work, then let go-plugin shut
         // down cleanly (it removes its socket), and only then kill it.
-        let stop = tokio::time::timeout(
-            SHUTDOWN_STEP_TIMEOUT,
-            self.call::<_, protocol::StopResponse>(RemoteProcedure::Stop, protocol::Empty {}),
-        )
-        .await;
-        if !matches!(stop, Ok(Ok(_))) {
-            tracing::debug!(provider = %self.name, "provider stop procedure did not complete");
+        if !self.process.has_exited() {
+            self.process.request_stop().await;
+            let controller = tokio::time::timeout(
+                SHUTDOWN_STEP_TIMEOUT,
+                unary::<_, protocol::Empty>(
+                    &self.channel,
+                    CONTROLLER_SHUTDOWN_PATH,
+                    protocol::Empty {},
+                ),
+            )
+            .await;
+            if !matches!(controller, Ok(Ok(_))) {
+                tracing::debug!(provider = %self.name, "provider controller shutdown did not complete");
+            }
         }
-        let _ = tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.controller_shutdown()).await;
-        if tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.child.wait())
-            .await
-            .is_err()
-        {
-            let _ = self.child.start_kill();
-            let _ = tokio::time::timeout(SHUTDOWN_STEP_TIMEOUT, self.child.wait()).await;
+        if !self.process.wait_for_exit(SHUTDOWN_STEP_TIMEOUT).await {
+            self.process.kill();
+            let _ = self.process.wait_for_exit(SHUTDOWN_STEP_TIMEOUT).await;
         }
     }
+}
 
-    async fn controller_shutdown(&self) -> Result<()> {
-        let mut grpc = tonic::client::Grpc::new(self.channel.clone());
-        grpc.ready()
-            .await
-            .map_err(|error| InfrastructureError::plugin(error.to_string()))?;
-        let codec = tonic_prost::ProstCodec::<protocol::Empty, protocol::Empty>::default();
-        grpc.unary(
-            tonic::Request::new(protocol::Empty {}),
-            PathAndQuery::from_static(CONTROLLER_SHUTDOWN_PATH),
-            codec,
-        )
-        .await
-        .map(|_| ())
-        .map_err(|status| InfrastructureError::plugin(status.to_string()))
-    }
+/// Issue one unary gRPC call with Terraform's message size limits.
+async fn unary<RequestMessage, ResponseMessage>(
+    channel: &Channel,
+    path: &'static str,
+    request: RequestMessage,
+) -> std::result::Result<ResponseMessage, tonic::Status>
+where
+    RequestMessage: prost::Message + Send + Sync + 'static,
+    ResponseMessage: prost::Message + Default + Send + Sync + 'static,
+{
+    let mut grpc = tonic::client::Grpc::new(channel.clone())
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
+    grpc.ready().await.map_err(|error| {
+        tonic::Status::unavailable(format!("provider connection not ready for {path}: {error}"))
+    })?;
+    let codec = tonic_prost::ProstCodec::<RequestMessage, ResponseMessage>::default();
+    grpc.unary(
+        tonic::Request::new(request),
+        PathAndQuery::from_static(path),
+        codec,
+    )
+    .await
+    .map(tonic::Response::into_inner)
 }
 
 /// Arguments for [`ProviderClient::plan_resource_change`]. All values are
@@ -690,60 +801,81 @@ const fn client_capabilities() -> protocol::ClientCapabilities {
 
 fn spawn_log_drain(name: String, standard_error: tokio::process::ChildStderr, log: ProviderLog) {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(standard_error).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if provider_log_is_serious(&line) {
-                tracing::warn!(provider = %name, "{line}");
+        let mut reader = BufReader::new(standard_error);
+        while let Ok(Some(line)) = read_bounded_line(&mut reader, MAXIMUM_LOG_LINE_BYTES).await {
+            let text = if line.truncated {
+                format!("{} [line truncated]", line.text.trim_end())
             } else {
-                tracing::debug!(provider = %name, "{line}");
+                line.text.trim_end().to_string()
+            };
+            if provider_log_is_serious(&text) {
+                tracing::warn!(provider = %name, "{text}");
+                log.record(text);
+            } else {
+                tracing::debug!(provider = %name, "{text}");
             }
-            log.record(line);
         }
     });
 }
 
-/// go-plugin forwards provider logs as hclog JSON lines with an `@level`.
+/// go-plugin forwards provider logs as hclog JSON lines with an `@level`;
+/// only errors and warnings are serious. Anything that is not hclog JSON
+/// (a Go panic and its stack, or raw output) is kept too.
 fn provider_log_is_serious(line: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(line)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("@level")
-                .and_then(|level| level.as_str().map(str::to_owned))
-        })
-        .map_or_else(
-            || line.contains("panic:") || line.contains("[ERROR]"),
-            |level| matches!(level.as_str(), "error" | "warn"),
-        )
+    if line.trim().is_empty() {
+        return false;
+    }
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(serde_json::Value::Object(entry)) => entry
+            .get("@level")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|level| matches!(level, "error" | "warn")),
+        _ => true,
+    }
 }
 
-/// Read one line of at most [`MAXIMUM_HANDSHAKE_BYTES`], or `None` at end of
-/// output.
+/// One line read by [`read_bounded_line`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoundedLine {
+    /// The line, including its newline when present, cut at the limit.
+    text: String,
+    /// Whether bytes beyond the limit were discarded.
+    truncated: bool,
+}
+
+/// Read one line, keeping at most `limit` bytes of it and discarding the
+/// rest, or `None` at end of output. Memory stays bounded however long the
+/// line is.
 async fn read_bounded_line(
-    reader: &mut BufReader<tokio::process::ChildStdout>,
-) -> Result<Option<String>> {
+    reader: &mut (impl AsyncBufRead + Unpin),
+    limit: usize,
+) -> std::io::Result<Option<BoundedLine>> {
     let mut line = Vec::new();
+    let mut truncated = false;
+    let mut read_anything = false;
     loop {
-        let buffer = reader
-            .fill_buf()
-            .await
-            .map_err(|error| InfrastructureError::input_output("read provider handshake", error))?;
+        let buffer = reader.fill_buf().await?;
         if buffer.is_empty() {
-            return Ok((!line.is_empty()).then(|| String::from_utf8_lossy(&line).into_owned()));
+            return Ok(read_anything.then(|| BoundedLine {
+                text: String::from_utf8_lossy(&line).into_owned(),
+                truncated,
+            }));
         }
+        read_anything = true;
         let (consumed, finished) = buffer
             .iter()
             .position(|byte| *byte == b'\n')
             .map_or((buffer.len(), false), |index| (index + 1, true));
-        line.extend_from_slice(&buffer[..consumed]);
+        let room = limit.saturating_sub(line.len());
+        let kept = consumed.min(room);
+        line.extend_from_slice(&buffer[..kept]);
+        truncated |= kept < consumed;
         reader.consume(consumed);
-        if line.len() > MAXIMUM_HANDSHAKE_BYTES {
-            return Err(InfrastructureError::plugin(
-                "provider handshake line is too long; is this a Terraform provider?",
-            ));
-        }
         if finished {
-            return Ok(Some(String::from_utf8_lossy(&line).into_owned()));
+            return Ok(Some(BoundedLine {
+                text: String::from_utf8_lossy(&line).into_owned(),
+                truncated,
+            }));
         }
     }
 }
@@ -819,6 +951,56 @@ mod tests {
         assert!(Handshake::parse("1|4|unix|/tmp/plugin|grpc|").is_err());
         assert!(Handshake::parse("2|6|unix|/tmp/plugin|grpc|").is_err());
         assert!(Handshake::parse("garbage").is_err());
+    }
+
+    #[tokio::test]
+    async fn bounded_lines_discard_what_exceeds_the_limit() {
+        let input: &[u8] = b"short\nthis line is far too long\ntail";
+        let mut reader = BufReader::new(input);
+        let first = read_bounded_line(&mut reader, 8).await.unwrap().unwrap();
+        assert_eq!(first.text, "short\n");
+        assert!(!first.truncated);
+        let second = read_bounded_line(&mut reader, 8).await.unwrap().unwrap();
+        assert_eq!(second.text, "this lin");
+        assert!(second.truncated);
+        let third = read_bounded_line(&mut reader, 8).await.unwrap().unwrap();
+        assert_eq!(third.text, "tail");
+        assert!(!third.truncated);
+        assert!(read_bounded_line(&mut reader, 8).await.unwrap().is_none());
+    }
+
+    #[test]
+    fn only_errors_warnings_and_raw_output_are_serious() {
+        assert!(provider_log_is_serious(
+            r#"{"@level":"error","@message":"failed"}"#
+        ));
+        assert!(provider_log_is_serious(
+            r#"{"@level":"warn","@message":"careful"}"#
+        ));
+        assert!(!provider_log_is_serious(
+            r#"{"@level":"debug","@message":"state value"}"#
+        ));
+        assert!(!provider_log_is_serious(
+            r#"{"@level":"trace","@message":"[ERROR] inside a trace line"}"#
+        ));
+        assert!(provider_log_is_serious("panic: runtime error"));
+        assert!(provider_log_is_serious("goroutine 1 [running]:"));
+        assert!(!provider_log_is_serious("   "));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn socket_directory_is_private_from_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = SocketDirectory::create().unwrap();
+        let mode = std::fs::metadata(&directory.path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let path = directory.path.clone();
+        drop(directory);
+        assert!(!path.exists());
     }
 
     #[test]

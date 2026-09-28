@@ -108,6 +108,19 @@ pub struct NestedAttributes {
     pub nesting: Nesting,
 }
 
+impl NestedAttributes {
+    /// The object type of one nested object with these attributes.
+    #[must_use]
+    pub fn object_type_of(attributes: &BTreeMap<String, Attribute>) -> Type {
+        Type::Object(
+            attributes
+                .iter()
+                .map(|(name, attribute)| (name.clone(), attribute.value_type.clone()))
+                .collect(),
+        )
+    }
+}
+
 /// A nested block type.
 #[derive(Debug, Clone)]
 pub struct NestedBlock {
@@ -115,6 +128,14 @@ pub struct NestedBlock {
     pub block: Block,
     /// How nested blocks are collected.
     pub nesting: Nesting,
+}
+
+impl NestedBlock {
+    /// The type of the attribute that holds these nested blocks.
+    #[must_use]
+    pub fn implied_type(&self) -> Type {
+        self.nesting.wrap(self.block.implied_type())
+    }
 }
 
 /// Nesting mode for nested blocks and nested attributes.
@@ -163,12 +184,32 @@ impl Block {
             .map(|(name, attribute)| (name.clone(), attribute.value_type.clone()))
             .collect();
         for (name, nested) in &self.blocks {
-            attributes.insert(
-                name.clone(),
-                nested.nesting.wrap(nested.block.implied_type()),
-            );
+            attributes.insert(name.clone(), nested.implied_type());
         }
         Type::Object(attributes)
+    }
+
+    /// Terraform's `Block.EmptyValue`: what an empty configuration block
+    /// decodes to. Attributes and single blocks are null, list and set
+    /// blocks are empty lists, map blocks empty maps, and group blocks empty
+    /// objects of their own.
+    #[must_use]
+    pub fn empty_value(&self) -> Value {
+        let mut attributes: BTreeMap<String, Value> = self
+            .attributes
+            .keys()
+            .map(|name| (name.clone(), Value::Null))
+            .collect();
+        for (name, nested) in &self.blocks {
+            let empty = match nested.nesting {
+                Nesting::Single => Value::Null,
+                Nesting::Group => nested.block.empty_value(),
+                Nesting::List | Nesting::Set => Value::List(Vec::new()),
+                Nesting::Map => Value::Object(BTreeMap::new()),
+            };
+            attributes.insert(name.clone(), empty);
+        }
+        Value::Object(attributes)
     }
 
     /// Top-level attribute and block names whose values contain anything
@@ -241,60 +282,12 @@ impl Block {
 
     /// Compute the proposed new state Terraform hands to
     /// `PlanResourceChange`: configuration values, with computed attributes
-    /// the configuration leaves null carried over from prior state.
-    ///
-    /// This is a simplified port of Terraform's `objchange.ProposedNew`:
-    /// it recurses through single/group blocks and single nested attributes
-    /// and takes collections of nested blocks from configuration verbatim.
+    /// the configuration leaves null carried over from prior state, through
+    /// every nested attribute and block. See
+    /// [`crate::object_change::proposed_new`].
     #[must_use]
     pub fn proposed_new(&self, prior: &Value, configuration: &Value) -> Value {
-        if configuration.is_null() {
-            return Value::Null;
-        }
-        let empty = Value::Object(BTreeMap::new());
-        let prior = if matches!(prior, Value::Object(_)) {
-            prior
-        } else {
-            &empty
-        };
-        let (Value::Object(configuration_attributes), Value::Object(prior_attributes)) =
-            (configuration, prior)
-        else {
-            return configuration.clone();
-        };
-
-        let mut proposed = BTreeMap::new();
-        for (name, attribute) in &self.attributes {
-            let configured = configuration_attributes.get(name).unwrap_or(&Value::Null);
-            let prior_value = prior_attributes.get(name).unwrap_or(&Value::Null);
-            let value = if attribute.presence.is_computed() && configured.is_null() {
-                prior_value.clone()
-            } else if let Some(nested) = &attribute.nested
-                && nested.nesting == Nesting::Single
-                && !prior_value.is_null()
-            {
-                let block = Self {
-                    attributes: nested.attributes.clone(),
-                    blocks: BTreeMap::new(),
-                };
-                block.proposed_new(prior_value, configured)
-            } else {
-                configured.clone()
-            };
-            proposed.insert(name.clone(), value);
-        }
-        for (name, nested) in &self.blocks {
-            let configured = configuration_attributes.get(name).unwrap_or(&Value::Null);
-            let prior_value = prior_attributes.get(name).unwrap_or(&Value::Null);
-            let value = match nested.nesting {
-                Nesting::Single | Nesting::Group if !configured.is_null() => {
-                    nested.block.proposed_new(prior_value, configured)
-                }
-                _ => configured.clone(),
-            };
-            proposed.insert(name.clone(), value);
-        }
-        Value::Object(proposed)
+        crate::object_change::proposed_new(self, prior, configuration)
     }
 }
 
@@ -303,13 +296,7 @@ impl Block {
 // ---------------------------------------------------------------------------
 
 fn nested_object_type(attributes: &BTreeMap<String, Attribute>, nesting: Nesting) -> Type {
-    let object = Type::Object(
-        attributes
-            .iter()
-            .map(|(name, attribute)| (name.clone(), attribute.value_type.clone()))
-            .collect(),
-    );
-    nesting.wrap(object)
+    nesting.wrap(NestedAttributes::object_type_of(attributes))
 }
 
 impl ProviderSchema {

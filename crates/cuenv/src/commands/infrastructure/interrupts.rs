@@ -115,7 +115,7 @@ impl Interrupts {
     /// Whether an interrupt was received.
     #[must_use]
     pub(super) fn is_requested(&self) -> bool {
-        self.cancellation.is_requested()
+        self.cancellation.is_stop_requested()
     }
 
     /// Fail with [`interrupted`] when an interrupt was received.
@@ -196,7 +196,7 @@ async fn watch_signals(mut watcher: Watcher) {
     }
     // Pass 2 (Terraform semantics): ask running providers to stop their
     // in-flight operations here as well, once the engine offers it.
-    watcher.cancellation.request();
+    watcher.cancellation.stop();
     watcher.sender.send_replace(true);
     if watcher.shared.held().is_some() {
         emit_stderr!(

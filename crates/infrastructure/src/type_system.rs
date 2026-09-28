@@ -288,24 +288,56 @@ impl fmt::Display for Value {
     }
 }
 
-/// Compare two values of type `value_type`, treating set elements as unordered.
+/// Compare two values of type `value_type` the way cty's `Equals` does:
+/// set elements are unordered, numbers compare numerically, and anything
+/// unknown is never equal to anything.
 ///
 /// Providers may return set elements in any order, so positional equality
 /// would report perpetual differences.
 #[must_use]
 pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> bool {
+    values_equal(left, right, value_type, UnknownComparison::NeverEqual)
+}
+
+/// Compare two values of type `value_type` the way cty's `RawEquals` does:
+/// like [`semantically_equal`], except that an unknown value equals another
+/// unknown value in the same position.
+#[must_use]
+pub fn raw_equal(left: &Value, right: &Value, value_type: &Type) -> bool {
+    values_equal(left, right, value_type, UnknownComparison::EqualToUnknown)
+}
+
+/// How [`values_equal`] treats unknown values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnknownComparison {
+    /// Unknown values are never equal to anything (cty `Equals`).
+    NeverEqual,
+    /// Two unknown values are equal to each other (cty `RawEquals`).
+    EqualToUnknown,
+}
+
+fn values_equal(
+    left: &Value,
+    right: &Value,
+    value_type: &Type,
+    unknowns: UnknownComparison,
+) -> bool {
+    let equal = |left: &Value, right: &Value, value_type: &Type| {
+        values_equal(left, right, value_type, unknowns)
+    };
     match (left, right, value_type) {
+        (Value::Unknown, Value::Unknown, _) => unknowns == UnknownComparison::EqualToUnknown,
         (Value::Unknown, _, _) | (_, Value::Unknown, _) => false,
         (Value::List(left_elements), Value::List(right_elements), Type::Set(element_type)) => {
             left_elements.len() == right_elements.len()
                 && left_elements.iter().all(|element| {
                     let want = left_elements
                         .iter()
-                        .filter(|candidate| semantically_equal(candidate, element, element_type))
+                        .filter(|candidate| equal(candidate, element, element_type))
                         .count();
                     let have = right_elements
                         .iter()
-                        .filter(|candidate| semantically_equal(candidate, element, element_type))
+                        .filter(|candidate| equal(candidate, element, element_type))
                         .count();
                     want == have
                 })
@@ -316,7 +348,7 @@ pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> boo
                     .iter()
                     .zip(right_elements)
                     .all(|(left_element, right_element)| {
-                        semantically_equal(left_element, right_element, element_type)
+                        equal(left_element, right_element, element_type)
                     })
         }
         (Value::List(left_elements), Value::List(right_elements), Type::Tuple(element_types)) => {
@@ -326,14 +358,14 @@ pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> boo
                     .zip(right_elements)
                     .zip(element_types)
                     .all(|((left_element, right_element), element_type)| {
-                        semantically_equal(left_element, right_element, element_type)
+                        equal(left_element, right_element, element_type)
                     })
         }
         (Value::Object(left_entries), Value::Object(right_entries), Type::Map(element_type)) => {
             left_entries.len() == right_entries.len()
                 && left_entries.iter().all(|(key, left_element)| {
                     right_entries.get(key).is_some_and(|right_element| {
-                        semantically_equal(left_element, right_element, element_type)
+                        equal(left_element, right_element, element_type)
                     })
                 })
         }
@@ -342,7 +374,7 @@ pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> boo
             Value::Object(right_entries),
             Type::Object(attribute_types),
         ) => attribute_types.iter().all(|(name, attribute_type)| {
-            semantically_equal(
+            equal(
                 left_entries.get(name).unwrap_or(&Value::Null),
                 right_entries.get(name).unwrap_or(&Value::Null),
                 attribute_type,
@@ -356,7 +388,7 @@ pub fn semantically_equal(left: &Value, right: &Value, value_type: &Type) -> boo
         }
         (left, right, Type::Dynamic) => {
             let value_type = infer_type(left);
-            value_type == infer_type(right) && semantically_equal(left, right, &value_type)
+            value_type == infer_type(right) && equal(left, right, &value_type)
         }
         (left, right, _) => left == right,
     }
@@ -834,19 +866,115 @@ pub fn value_at_path<'value>(value: &'value Value, path: &[PathStep]) -> Option<
 ///
 /// Returns [`InfrastructureError::Codec`] when the JSON does not fit `value_type`.
 pub fn from_json_bytes(bytes: &[u8], value_type: &Type) -> Result<Value> {
-    let json: serde_json::Value = serde_json::from_slice(bytes)
-        .map_err(|error| InfrastructureError::codec(format!("invalid JSON value: {error}")))?;
+    let json: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
+        InfrastructureError::codec(format!(
+            "invalid JSON value ({} at line {}, column {})",
+            crate::error::json_error_category(&error),
+            error.line(),
+            error.column()
+        ))
+    })?;
     from_state_json(&json, value_type)
 }
 
+/// Decode cty JSON (the state format) against `value_type`, unwrapping the
+/// `{"value": ..., "type": ...}` wrapper of every `dynamic` value at any
+/// depth.
 fn from_state_json(json: &serde_json::Value, value_type: &Type) -> Result<Value> {
-    if let (Type::Dynamic, serde_json::Value::Object(wrapper)) = (value_type, json)
-        && let (Some(inner), Some(inner_type)) = (wrapper.get("value"), wrapper.get("type"))
-    {
-        return from_state_json(inner, &Type::from_json(inner_type)?);
+    use serde_json::Value as Json;
+    if json.is_null() {
+        return Ok(Value::Null);
     }
-    Value::from_configuration_json(json, value_type)
-        .map_err(|error| InfrastructureError::codec(error.to_string()))
+    let mismatch = || {
+        InfrastructureError::codec(format!(
+            "found {} in JSON where type {} was expected",
+            json_kind(json),
+            value_type.to_json()
+        ))
+    };
+    match (value_type, json) {
+        (Type::Dynamic, Json::Object(wrapper)) => {
+            let (Some(inner), Some(inner_type)) = (wrapper.get("value"), wrapper.get("type"))
+            else {
+                return Err(InfrastructureError::codec(
+                    "a dynamic value in JSON is missing its value and type wrapper",
+                ));
+            };
+            from_state_json(inner, &Type::from_json(inner_type)?)
+        }
+        (Type::Dynamic, _) => Err(InfrastructureError::codec(
+            "a dynamic value in JSON is missing its value and type wrapper",
+        )),
+        (Type::List(element_type) | Type::Set(element_type), Json::Array(items)) => items
+            .iter()
+            .map(|item| from_state_json(item, element_type))
+            .collect::<Result<_>>()
+            .map(Value::List),
+        (Type::Tuple(element_types), Json::Array(items)) if items.len() == element_types.len() => {
+            items
+                .iter()
+                .zip(element_types)
+                .map(|(item, element_type)| from_state_json(item, element_type))
+                .collect::<Result<_>>()
+                .map(Value::List)
+        }
+        (Type::Map(element_type), Json::Object(entries)) => entries
+            .iter()
+            .map(|(key, element)| Ok((key.clone(), from_state_json(element, element_type)?)))
+            .collect::<Result<_>>()
+            .map(Value::Object),
+        (Type::Object(attribute_types), Json::Object(entries)) => {
+            if let Some(extra) = entries
+                .keys()
+                .find(|key| !attribute_types.contains_key(*key))
+            {
+                return Err(InfrastructureError::codec(format!(
+                    "unexpected attribute '{extra}'"
+                )));
+            }
+            attribute_types
+                .iter()
+                .map(|(name, attribute_type)| {
+                    let value = entries.get(name).map_or(Ok(Value::Null), |attribute| {
+                        from_state_json(attribute, attribute_type)
+                    })?;
+                    Ok((name.clone(), value))
+                })
+                .collect::<Result<_>>()
+                .map(Value::Object)
+        }
+        (Type::Boolean | Type::Number | Type::String, _) => {
+            from_configuration_json(json, value_type, &mut Vec::new()).map_err(|_| mismatch())
+        }
+        _ => Err(mismatch()),
+    }
+}
+
+impl Type {
+    /// The type found by following `path` into a value of this type, or
+    /// `None` when the path does not fit the type. Paths into `dynamic`
+    /// values stay `dynamic`.
+    #[must_use]
+    pub fn at_path(&self, path: &[PathStep]) -> Option<Self> {
+        let Some((first, rest)) = path.split_first() else {
+            return Some(self.clone());
+        };
+        match (self, first) {
+            (Self::Dynamic, _) => Some(Self::Dynamic),
+            (Self::Object(attributes), PathStep::Attribute(name) | PathStep::Key(name)) => {
+                attributes.get(name).and_then(|next| next.at_path(rest))
+            }
+            (Self::Map(element_type), PathStep::Key(_)) => element_type.at_path(rest),
+            (Self::List(element_type) | Self::Set(element_type), PathStep::Index(_)) => {
+                element_type.at_path(rest)
+            }
+            (Self::Tuple(element_types), PathStep::Index(index)) => usize::try_from(*index)
+                .ok()
+                .and_then(|index| element_types.get(index))
+                .and_then(|next| next.at_path(rest)),
+            _ => None,
+        }
+    }
 }
 
 fn float_number(float: f64) -> Result<Value> {
@@ -1014,5 +1142,105 @@ mod tests {
     #[test]
     fn state_json_refuses_unknowns() {
         assert!(Value::Unknown.to_state_json(&Type::String).is_err());
+    }
+
+    #[test]
+    fn raw_equality_matches_unknowns_that_semantic_equality_does_not() {
+        let value_type = Type::from_json(&json!(["object", {
+            "id": "string",
+            "tags": ["set", "number"],
+        }]))
+        .unwrap();
+        let left = Value::Object(BTreeMap::from([
+            ("id".to_string(), Value::Unknown),
+            (
+                "tags".to_string(),
+                Value::List(vec![Value::Number(1.into()), Value::Number(2.into())]),
+            ),
+        ]));
+        let right = Value::Object(BTreeMap::from([
+            ("id".to_string(), Value::Unknown),
+            (
+                "tags".to_string(),
+                Value::List(vec![
+                    Value::Number(2.into()),
+                    Value::Number(Number::from_f64(1.0).unwrap()),
+                ]),
+            ),
+        ]));
+        assert!(raw_equal(&left, &right, &value_type));
+        assert!(!semantically_equal(&left, &right, &value_type));
+        assert!(!raw_equal(&Value::Unknown, &Value::Null, &Type::String));
+    }
+
+    #[test]
+    fn json_values_unwrap_dynamic_wrappers_at_any_depth() {
+        let value_type = Type::from_json(&json!(["object", {
+            "settings": ["object", {"extra": "dynamic"}],
+            "items": ["list", "dynamic"],
+        }]))
+        .unwrap();
+        let decoded = from_json_bytes(
+            br#"{
+                "settings": {"extra": {"value": {"a": [1, true]}, "type": ["object", {"a": ["tuple", ["number", "bool"]]}]}},
+                "items": [{"value": "x", "type": "string"}]
+            }"#,
+            &value_type,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded
+                .attribute("settings")
+                .and_then(|settings| settings.attribute("extra")),
+            Some(&Value::Object(BTreeMap::from([(
+                "a".to_string(),
+                Value::List(vec![Value::Number(1.into()), Value::Boolean(true)])
+            )])))
+        );
+        assert_eq!(
+            decoded.attribute("items"),
+            Some(&Value::List(vec![Value::String("x".into())]))
+        );
+        // Round trip through state JSON, which wraps them again.
+        let state = decoded.to_state_json(&value_type).unwrap();
+        let bytes = serde_json::to_vec(&state).unwrap();
+        assert_eq!(from_json_bytes(&bytes, &value_type).unwrap(), decoded);
+    }
+
+    #[test]
+    fn json_values_without_a_dynamic_wrapper_are_refused_without_their_content() {
+        let error = from_json_bytes(br#"{"extra": "hunter2"}"#, &object_type())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("wrapper"), "{error}");
+        assert!(!error.contains("hunter2"), "{error}");
+        let error = from_json_bytes(br#"{"length": "hunter2"}"#, &object_type())
+            .unwrap_err()
+            .to_string();
+        assert!(!error.contains("hunter2"), "{error}");
+    }
+
+    #[test]
+    fn types_resolve_along_attribute_paths() {
+        let value_type = object_type();
+        assert_eq!(
+            value_type.at_path(&[PathStep::Attribute("tags".into()), PathStep::Index(0)]),
+            Some(Type::String)
+        );
+        assert_eq!(
+            value_type.at_path(&[
+                PathStep::Attribute("keepers".into()),
+                PathStep::Key("a".into())
+            ]),
+            Some(Type::String)
+        );
+        assert_eq!(
+            value_type.at_path(&[PathStep::Attribute("extra".into()), PathStep::Index(3)]),
+            Some(Type::Dynamic)
+        );
+        assert_eq!(
+            value_type.at_path(&[PathStep::Attribute("nope".into())]),
+            None
+        );
     }
 }

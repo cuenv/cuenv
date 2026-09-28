@@ -77,16 +77,42 @@ pub enum InfrastructureError {
     /// A provider changed a resource but its new state could not be recorded.
     #[error(
         "{address} was changed by its provider, but recording its state failed: {reason}. \
-         The new state was saved to {saved_to}; record it before applying again, or the \
-         resource will be created a second time"
+         The record was saved to {saved_to}; run `cuenv infrastructure state recover` before \
+         planning again, or the resource will be created a second time"
     )]
     UnrecordedChange {
         /// Resource address.
         address: String,
         /// Why recording failed.
         reason: String,
-        /// Local file holding the unrecorded state.
+        /// Local file holding the unrecorded record.
         saved_to: String,
+    },
+
+    /// A provider changed a resource, and neither the state store nor the
+    /// local unrecorded-change directory could keep its record. Deliberately
+    /// names nothing but the address.
+    #[error(
+        "{address} was changed by its provider, but its state could not be recorded or saved \
+         locally; the resource exists and cuenv no longer tracks it"
+    )]
+    UnrecordedChangeLost {
+        /// Resource address.
+        address: String,
+    },
+
+    /// Earlier runs left changes that are not yet in the state store.
+    #[error(
+        "{tenant} has {count} unrecorded change(s) from an earlier run, saved in {directory}; \
+         run `cuenv infrastructure state recover` to record them before planning"
+    )]
+    UnrecordedChangesPending {
+        /// Tenant with unrecorded changes.
+        tenant: String,
+        /// Number of unrecorded records.
+        count: usize,
+        /// Directory holding them.
+        directory: String,
     },
 
     /// The run was interrupted between resources.
@@ -99,6 +125,10 @@ pub enum InfrastructureError {
         /// Changes the plan contained.
         total: usize,
     },
+
+    /// Planning was interrupted; nothing was changed or recorded.
+    #[error("interrupted while planning; nothing was changed")]
+    InterruptedWhilePlanning,
 
     /// Input or output failure.
     #[error("{context}: {source}")]
@@ -143,11 +173,25 @@ impl InfrastructureError {
     }
 
     /// Build an input or output error with context.
+    ///
+    /// Never pass a `serde_json` error's message into any error: it can
+    /// quote the value it failed on. Use [`json_error_category`] instead.
     #[must_use]
     pub fn input_output(context: impl Into<String>, source: std::io::Error) -> Self {
         Self::InputOutput {
             context: context.into(),
             source,
         }
+    }
+}
+
+/// Name a JSON error's category without its message, which can quote the
+/// value (possibly a secret) it failed on.
+pub(crate) fn json_error_category(error: &serde_json::Error) -> &'static str {
+    match error.classify() {
+        serde_json::error::Category::Io => "input or output error",
+        serde_json::error::Category::Syntax => "syntax error",
+        serde_json::error::Category::Data => "data error",
+        serde_json::error::Category::Eof => "unexpected end",
     }
 }

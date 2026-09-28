@@ -1,5 +1,10 @@
 package schema
 
+import (
+	"list"
+	"strings"
+)
+
 // =============================================================================
 // Infrastructure — infrastructure as code through Terraform provider plugins
 // =============================================================================
@@ -28,7 +33,31 @@ package schema
 	providers?: [#InfrastructureName]: #InfrastructureProvider
 
 	// Managed resources keyed by name. The state address is `type.name`.
-	resources?: [#InfrastructureName]: #ManagedResource
+	// Every `dependsOn` entry must name a resource here, and the resource's
+	// provider (explicit, or the type prefix) must be declared in `providers`.
+	//
+	// The checks compare names only: looking a name up by value would
+	// evaluate the target, turning a dependency cycle (which cuenv reports
+	// itself) or an unrelated error in the target into a misleading "no
+	// resource named" error.
+	resources?: [#InfrastructureName]: Resource={
+		#ManagedResource
+
+		if Resource.dependsOn != _|_ for dependency in Resource.dependsOn if !list.Contains([for name, _ in resources {name}], dependency) {
+			dependsOn: "no resource named \"\(dependency)\" in infrastructure.resources"
+		}
+		if Resource.provider != _|_ if !list.Contains(providerNames, Resource.provider) {
+			provider: "no provider named \"\(Resource.provider)\" in infrastructure.providers"
+		}
+		if Resource.provider == _|_ if Resource.type != _|_ {
+			let defaultProvider = strings.SplitN(Resource.type, "_", 2)[0]
+			if !list.Contains(providerNames, defaultProvider) {
+				type: "no provider named \"\(defaultProvider)\" (the prefix of type \"\(Resource.type)\") in infrastructure.providers; declare it or set `provider`"
+			}
+		}
+	}
+
+	let providerNames = [if providers != _|_ for name, _ in providers {name}]
 })
 
 #InfrastructureName: string & =~"^[a-zA-Z][a-zA-Z0-9_-]*$"
@@ -41,14 +70,15 @@ package schema
 	// Database URL: libsql://<database>-<organization>.turso.io, https:// or
 	// wss://. Plain http:// and ws:// are accepted only for a local sqld
 	// server on a loopback address, so the token never travels in cleartext.
-	url!: string & (=~"^(libsql|https|wss)://[^/\\s?#@]+" | =~"^(http|ws)://(localhost|127\\.[0-9]+\\.[0-9]+\\.[0-9]+|\\[::1\\])(:[0-9]+)?(/[^?#]*)?$")
+	// The URL must not carry credentials, a query or a fragment.
+	url!: string & (=~"^(libsql|https|wss)://[^/\\s?#@:][^/\\s?#@]*(/[^\\s?#]*)?$" | =~"^(http|ws)://(localhost|127\\.[0-9]+\\.[0-9]+\\.[0-9]+|\\[::1\\])(:[0-9]+)?(/[^\\s?#]*)?$")
 
 	// Environment variable holding the database authentication token. The
 	// default matches the name the Turso command line tool documents.
 	authenticationTokenEnvironmentVariable: *"TURSO_AUTH_TOKEN" | (string & =~"^[A-Za-z_][A-Za-z0-9_]*$")
 })
 
-#InfrastructureProvider: matchN(1, [{version!: _}, {path!: _}]) & close({
+#InfrastructureProvider: close({
 	// Registry source address: "namespace/type" or "hostname/namespace/type".
 	source!: string & =~"^([a-zA-Z0-9.-]+/)?[a-zA-Z0-9-]+/[a-zA-Z0-9-]+$"
 
@@ -63,6 +93,14 @@ package schema
 	// Provider configuration block, validated by the provider's schema.
 	// Unify with the provider module's `#ProviderConfig` for typing.
 	configuration?: {...}
+
+	// Exactly one of `version` and `path`.
+	if version == _|_ if path == _|_ {
+		version!: _
+	}
+	if version != _|_ if path != _|_ {
+		path: "set exactly one of `version` and `path`, not both"
+	}
 })
 
 #ManagedResource: close({

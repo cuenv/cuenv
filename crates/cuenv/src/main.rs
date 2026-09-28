@@ -369,7 +369,7 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
 #[instrument(name = "cuenv_run")]
 async fn run(interrupts: InterruptPolicy) -> i32 {
     let result = match interrupts {
-        InterruptPolicy::Command => real_main().await,
+        InterruptPolicy::Command => Box::pin(real_main()).await,
         // Use biased select to prefer signal handling over normal completion
         // This ensures cleanup runs even if the child process exits simultaneously
         InterruptPolicy::Process => tokio::select! {

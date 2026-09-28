@@ -23,7 +23,7 @@ pub use turso::{TursoConfiguration, TursoStateStore};
 /// Address of a managed resource within a tenant: `type.name`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ResourceAddress {
-    /// Resource type, e.g. `random_pet`.
+    /// Resource type, for example `random_pet`.
     pub resource_type: String,
     /// Resource name from the `infrastructure.resources` map.
     pub name: String,
@@ -31,6 +31,7 @@ pub struct ResourceAddress {
 
 impl ResourceAddress {
     /// Build an address.
+    #[must_use]
     pub fn new(resource_type: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
             resource_type: resource_type.into(),
@@ -52,7 +53,7 @@ pub struct ManagedResource {
     pub address: ResourceAddress,
     /// Local provider name from `infrastructure.providers`.
     pub provider: String,
-    /// Provider source address, e.g. `registry.terraform.io/hashicorp/random`.
+    /// Provider source address, for example `registry.terraform.io/hashicorp/random`.
     pub provider_source: String,
     /// Resource schema version the state was written with.
     pub schema_version: i64,
@@ -97,10 +98,15 @@ pub struct LockInformation {
 /// read or write rows belonging to another tenant.
 #[async_trait]
 pub trait StateStore: Send + Sync {
-    /// Create tables and indexes if they do not exist.
+    /// Create tables and indexes if they do not exist, and bring the schema
+    /// up to date.
+    ///
+    /// Fails when the stored schema is newer than this build knows.
     async fn migrate(&self) -> Result<()>;
 
     /// List all managed resources of a tenant.
+    ///
+    /// Never migrates: a store that was never migrated has no resources.
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>>;
 
     /// Insert or replace a managed resource.
@@ -124,13 +130,15 @@ pub trait StateStore: Send + Sync {
 
     /// Acquire the tenant's exclusive lock.
     ///
-    /// Fails with [`crate::InfrastructureError::Locked`] if another run holds it.
+    /// Fails with [`crate::InfrastructureError::Locked`] if another run holds
+    /// it, and fails unless [`StateStore::migrate`] brought the store to the
+    /// schema this build writes.
     async fn lock(&self, tenant: &TenantKey, holder: &str) -> Result<StateLock>;
 
     /// Release a lock acquired with [`StateStore::lock`].
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()>;
 
-    /// Describe the tenant's current lock, if any.
+    /// Describe the tenant's current lock, if any. Never migrates.
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>>;
 
     /// Release the tenant's lock only if its identifier is `lock_identifier`.

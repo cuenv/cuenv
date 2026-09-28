@@ -232,7 +232,7 @@ async fn run(options: &InfrastructureOptions, interrupts: &Interrupts) -> Result
                 .await?
         }
         InfrastructureAction::Plan => {
-            let mut engine = InfrastructureEngine::new(engine_setup(target, store));
+            let mut engine = InfrastructureEngine::new(engine_setup(target, store, interrupts));
             let result = interrupts
                 .until_interrupted(engine.plan(PlanMode::Apply))
                 .await;
@@ -243,7 +243,7 @@ async fn run(options: &InfrastructureOptions, interrupts: &Interrupts) -> Result
         }
         InfrastructureAction::Apply { confirmation } => {
             converge(
-                engine_setup(target, store),
+                engine_setup(target, store, interrupts),
                 &Convergence {
                     mode: PlanMode::Apply,
                     confirmation: *confirmation,
@@ -255,7 +255,7 @@ async fn run(options: &InfrastructureOptions, interrupts: &Interrupts) -> Result
         }
         InfrastructureAction::Destroy { confirmation } => {
             converge(
-                engine_setup(target, store),
+                engine_setup(target, store, interrupts),
                 &Convergence {
                     mode: PlanMode::Destroy,
                     confirmation: *confirmation,
@@ -268,7 +268,11 @@ async fn run(options: &InfrastructureOptions, interrupts: &Interrupts) -> Result
     }
 }
 
-fn engine_setup(target: Target, store: Arc<dyn StateStore>) -> EngineSetup {
+fn engine_setup(
+    target: Target,
+    store: Arc<dyn StateStore>,
+    interrupts: &Interrupts,
+) -> EngineSetup {
     let withheld_environment_variables = vec![
         target
             .infrastructure
@@ -285,6 +289,8 @@ fn engine_setup(target: Target, store: Arc<dyn StateStore>) -> EngineSetup {
             project_directory: target.project_directory,
             plugin_cache_directory: None,
             withheld_environment_variables,
+            unrecorded_directory: None,
+            cancellation: interrupts.cancellation().clone(),
         },
     }
 }
@@ -510,7 +516,7 @@ async fn apply_locked(
         .until_interrupted(engine.plan(mode))
         .await?
         .map_err(|error| failure(&error))?;
-    if plan.intent() != run.preview.intent() {
+    if plan.digest() != run.preview.digest() {
         output.preview(&plan);
         return Err(CliError::infrastructure(
             "the plan changed after it was confirmed; nothing was applied",
@@ -527,19 +533,15 @@ async fn apply_locked(
             output.progress(format!("{} {address}: applying...", action.symbol()));
         }
         ApplyEvent::Finished { address, .. } => output.progress(format!("  {address}: done")),
+        ApplyEvent::Refreshed { address } => {
+            output.progress(format!("  {address}: stored state refreshed"));
+        }
         ApplyEvent::Warning(warning) => {
             cuenv_events::emit_stderr!(format!("warning: {warning}"));
         }
     };
     let applied = engine
-        .apply(
-            &plan,
-            ApplyContext {
-                lock: run.lock,
-                cancellation: interrupts.cancellation(),
-            },
-            &mut on_event,
-        )
+        .apply(&plan, ApplyContext { lock: run.lock }, &mut on_event)
         .await
         .map_err(|error| failure(&error))?;
     output.converged(&Converged {
