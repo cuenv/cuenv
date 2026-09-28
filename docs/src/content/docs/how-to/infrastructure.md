@@ -45,7 +45,7 @@ Every provider listed in [cuenv/terraform](https://github.com/cuenv/terraform) i
 github.com/cuenv/terraform/terraform/<namespace>/<type>@v<provider major version>
 ```
 
-Each module exposes closed definitions: `#ProviderConfig` for the provider block and `#Resource_<type>` for every managed resource (plus `#DataSource_<type>` and others for future use). Unify them with `configuration` and evaluation fails — naming the field and file position — on unknown arguments, wrong types, missing required arguments and values that are not concrete, before any provider is started.
+Each module exposes closed definitions: `#ProviderConfig` for the provider block and `#Resource_<type>` for every managed resource (plus `#DataSource_<type>` and others for future use). Unify them with `configuration` and evaluation fails — naming the field, and usually its file position — on unknown arguments, wrong types, missing required arguments and values that are not concrete, before any provider is started.
 
 Pin the exact provider release in `cue.mod/module.cue`:
 
@@ -94,7 +94,7 @@ CUE resolves an identifier to the nearest enclosing field of that name before an
 
 Two more rules:
 
-- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
+- **Package names.** The module's package is the provider type with characters that are not letters, digits or `_` replaced by `_`, and the result prefixed with `provider_` when it is a reserved CUE word or does not start with a letter. `hashicorp/google-beta` is package `google_beta`, which differs from the last path element, so the import needs the qualifier: `googleBetaProvider "github.com/cuenv/terraform/terraform/hashicorp/google-beta@v6:google_beta"`; `hashicorp/null` is package `provider_null`, so import it with an explicit qualifier: `nullProvider "github.com/cuenv/terraform/terraform/hashicorp/null@v3:provider_null"`.
 - **Versions.** Keep `version` equal to the release pinned in `deps`. Nothing enforces this yet; a mismatch means the schema you typed against is not the one the provider uses.
 
 ## A minimal example without typed schemas
@@ -152,7 +152,8 @@ infrastructure: state: turso: {
 
 - `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
 - The authentication token is read from the named environment variable at run time. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
-- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) on first use; transient failures (timeouts, 5xx, 429) are retried with backoff.
+- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) the first time it takes a lock. Read-only commands (`plan`, `state list`, `unlock` without an identifier) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database migrated by a newer cuenv is refused rather than misread.
+- Transient failures (timeouts, 5xx, 429) are retried with backoff. Redirects are never followed, and plaintext loopback URLs bypass `HTTP_PROXY`.
 
 :::caution
 Like Terraform state, resource records contain every attribute the provider returns, including values marked sensitive (for example `random_password.result`). Treat the database as secret material and scope its tokens accordingly.
@@ -176,23 +177,34 @@ infrastructure: providers: {
 ```
 
 - `source` is `namespace/type` or `hostname/namespace/type`.
+- Every resource's provider — its explicit `provider`, or the prefix of its `type` — must be declared here; evaluation fails otherwise. `dependsOn` entries must name declared resources.
 - Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`.
-- Downloads must be HTTPS, are verified against the registry's SHA-256 checksum, and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. The registry's GPG signature is not verified yet.
+- Downloads must be HTTPS, are verified against the registry's SHA-256 checksum, and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. That manifest only detects accidental corruption: anyone who can write to the cache can replace a binary and its manifest together, so never share a writable plugin cache between trust boundaries. The registry's GPG signature and lockfile hashes are not verified yet.
 - `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the environment `cuenv infrastructure` runs in. Secret-typed arguments are not supported yet.
 
 ## Declare resources
 
 ```cue
-infrastructure: resources: web_dns: {
-	type:      "cloudflare_dns_record"
-	provider:  "cloudflare"     // defaults to the type prefix
-	dependsOn: ["zone_settings"] // apply after, destroy before
-	configuration: cloudflareProvider.#Resource_cloudflare_dns_record & {
-		zone_id: "..."
-		name:    "www"
-		type:    "CNAME"
-		content: "example.pages.dev"
-		ttl:     1
+infrastructure: resources: {
+	zone_settings: {
+		type: "cloudflare_zone_setting"
+		configuration: cloudflareProvider.#Resource_cloudflare_zone_setting & {
+			zone_id:    "..."
+			setting_id: "always_use_https"
+			value:      "on"
+		}
+	}
+	web_dns: {
+		type:      "cloudflare_dns_record"
+		provider:  "cloudflare"     // defaults to the type prefix
+		dependsOn: ["zone_settings"] // must be declared; apply after, destroy before
+		configuration: cloudflareProvider.#Resource_cloudflare_dns_record & {
+			zone_id: "..."
+			name:    "www"
+			type:    "CNAME"
+			content: "example.pages.dev"
+			ttl:     1
+		}
 	}
 }
 ```
