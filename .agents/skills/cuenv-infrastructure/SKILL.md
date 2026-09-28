@@ -23,16 +23,17 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - Modules live at `github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`; the package name is `<type>`; definitions are `#ProviderConfig`, `#Resource_<type>`, `#DataSource_<type>` and friends. They are closed, so unknown arguments fail evaluation.
 - Always recommend an import alias that matches no field name in scope — not a provider key, resource key, `state`, `providers`, `resources` or `name` (for example `randomProvider`). A shadowed import fails evaluation with `undefined field`.
 - Package names follow the generator: characters outside letters, digits and `_` become `_`, and reserved CUE words or names not starting with a letter get a `provider_` prefix (`hashicorp/null` → `provider_null`, imported with an explicit `:provider_null` qualifier).
-- The `infrastructure` block must be concrete: cuenv passes `concretePaths: ["infrastructure"]` to the cuengine bridge (a generic option; cuengine itself stays free of cuenv-specific names), so undefined references, missing required arguments and non-concrete values fail evaluation.
+- The `infrastructure` block must be concrete: the infrastructure command (and only it) passes `concretePaths: ["infrastructure"]` to the cuengine bridge when evaluating its target instance (a generic option; cuengine itself stays free of cuenv-specific names), so undefined references, missing required arguments and non-concrete values fail evaluation. Other commands never evaluate with that option.
 - Provider `version` and the module major version must match.
 - In-repository examples stay untyped so they evaluate without network access in the Nix sandbox.
 
 ## Status guardrails
 
 - `#Infrastructure` is a partial proof of concept. Do not present it as a Terraform replacement.
-- State is always keyed by CUE module path (tenant) and project name (discriminator). Never suggest a way to write state without both; `TenantKey` enforces it, and duplicate project names within a module are refused. Tenancy is a naming boundary, not a security boundary: anyone with the database token can reach every tenant.
-- Every state write is fenced by the caller's lock (`StateStore::put`/`delete` take the `StateLock`); never add an unfenced write path. Failed creates are recorded as tainted; unrecordable changes are saved to `.cuenv/infrastructure/unrecorded-*.json`.
+- State is always keyed by CUE module path (tenant) and project name (discriminator). Never suggest a way to write state without both; `TenantKey` enforces it, and duplicate project names anywhere in the module (every CUE package) are refused, failing closed when an instance cannot be evaluated. Tenancy is a naming boundary, not a security boundary: anyone with the database token can reach every tenant.
+- Every state write is fenced by the caller's lock (`StateStore::put`/`delete` take the `StateLock`); never add an unfenced write path. Failed creates are recorded as tainted. Changes that cannot be recorded are saved under the user state directory (`cuenv/infrastructure/unrecorded/`, never the project tree) and re-recorded with `cuenv i state recover`; `plan`, `apply` and `destroy` refuse to run while such files exist. Errors never carry state values.
 - Provider processes must not inherit the state token (`LaunchOptions::withheld_environment_variables`).
+- Interrupts follow Terraform: the first SIGINT or SIGTERM asks running providers to stop and records what they return; the second kills providers, releases the lock within a bound and prints the lock identifier. Never add an exit path that skips recording or leaves providers running.
 - Each managed resource is one row in `cuenv_infrastructure_resources`; state is `cty` JSON so `UpgradeResourceState` can migrate it. Do not store MessagePack or re-encode planned states before `ApplyResourceChange`.
 - Resources cannot reference other resources' attributes. Use `dependsOn` strings for ordering only.
 - Provider `version` must be exact; `path` bypasses the registry. No version constraints, lockfile entries, or GPG verification.

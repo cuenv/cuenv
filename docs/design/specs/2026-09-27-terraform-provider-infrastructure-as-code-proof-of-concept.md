@@ -47,8 +47,11 @@ primitive conversions), MessagePack encoding and decoding including unknown
 values (extension 0) and `dynamic` wrappers, set-order-insensitive equality,
 and `cty` JSON for state.
 
-Planned states are passed back to `ApplyResourceChange` as the provider's
-original bytes, never re-encoded, so unknown-value refinements survive.
+Planned states returned as MessagePack are passed back to `ApplyResourceChange`
+as the provider's original bytes, so unknown-value refinements survive; prior
+states from `ReadResource` are likewise passed to `PlanResourceChange` as
+returned. Only values cuenv builds itself (configuration and proposed new
+state) are encoded by cuenv.
 
 ### Terraform core lifecycle, per resource
 
@@ -152,6 +155,55 @@ About fifty findings, most reproduced. Resolved in milestone 2:
   `infrastructure` block must be concrete (generic `concretePaths` bridge
   option).
 
+### Milestone 2 review (hardening) and the decisions it drove
+
+The five personas re-ran against the hardened build with fault-injecting proxies,
+a fake provider and signal scripts. Half of the milestone 1 findings were fully
+fixed; the rest were partly fixed, and new findings clustered in four places:
+
+- **Interrupts.** The first interrupt only stopped between resources, so a
+  continuous-integration cancel (SIGINT, then SIGTERM about 7.5 seconds later)
+  force-exited while a create was in flight: the provider kept running, the
+  resource went unrecorded and the lock leaked. Decision: follow Terraform. The
+  first SIGINT or SIGTERM asks every running provider to stop and records what
+  comes back; the second kills providers synchronously, releases the lock within
+  a bound and prints the lock identifier with a direct write. The command owns
+  interrupts from before it takes the lock.
+- **Unrecorded changes.** The fallback file lived in the project tree (where
+  continuous-integration workspaces are uploaded or discarded), nothing read it
+  back, and when it could not be written the error printed the full state,
+  secrets included. Decision: the file moves to the user state directory, errors
+  never carry state, `cuenv i state recover` records it under the lock, and
+  `plan`, `apply` and `destroy` refuse to run while such files exist.
+- **Tenancy.** The duplicate-name check covered only the selected CUE package and
+  skipped instances that failed to evaluate, so a same-named project in another
+  package planned to delete the first project's resources. The generic
+  `concretePaths` option was also applied to every command's workspace
+  evaluation, silently dropping instances for other commands. Decision: check
+  every package and fail closed; apply `concretePaths` only to the
+  infrastructure command's own evaluation.
+- **Protocol fidelity.** Plan validity rejected valid Plugin Framework plans for
+  nested attributes with computed children; a JSON-encoded planned state became
+  a null (turning an update into a delete); taint was lost when the delete half
+  of a tainted replacement failed; the prior state was re-encoded lossily.
+
+Also decided: `apply --yes` applies the plan made under the lock (no preview);
+interactive confirmation compares a digest of every change rather than address
+and action; refresh-only records count as work; JSON mode emits exactly one
+envelope on standard output; `state` gains `list`, `remove` and `recover`.
+
+Rejected, with reasons:
+
+- Adding the CUE package to the tenant key. The tenant is the module path and the
+  discriminator is the project, by requirement; the fail-closed duplicate check is
+  the fence.
+- Database triggers that fence older cuenv binaries out of upgraded tables. No
+  released binary has written these tables; revisit with the first release.
+- Treating the new public `concrete_paths` field as a semantic-versioning break.
+  Workspace crates are versioned together.
+- Removing the always-empty `identity` column. It is reserved for resource
+  identity (next step 2).
+
 ## Validation
 
 - Unit tests: `cty` codec and set equality, schema conversion, normalization
@@ -187,10 +239,17 @@ About fifty findings, most reproduced. Resolved in milestone 2:
    `state rm`, `--target`.
 6. Parallel apply across independent resources.
 7. Provider version constraints, lock file entries in `cuenv.lock`, and GPG
-   verification of `SHA256SUMS`.
+   verification of `SHA256SUMS`. Until then the cache manifest only detects
+   accidental corruption: anyone who can write to the plugin cache can replace
+   both a binary and its manifest.
 8. Secret-typed provider and resource arguments resolved through cuenv's
-   secret resolvers instead of plaintext CUE or ambient environment.
-9. Lock leases with expiry and heartbeat instead of manual release.
-10. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
+   secret resolvers instead of plaintext CUE or ambient environment, including
+   the state token itself (`#Secret` instead of an environment variable name).
+9. Lock leases with expiry and heartbeat instead of manual release, and a
+   `--lock-timeout` that waits for a running apply instead of failing
+   immediately.
+10. A fenced "pending" record written before each create, so a run killed
+    outright (SIGKILL, host loss) leaves evidence of what may exist.
+11. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
     "configuration"; renaming it to `#ProviderConfiguration` would bring the
     generated modules in line with the no-abbreviation rule.
