@@ -148,7 +148,22 @@ fn test_infrastructure_command_conversion() {
     );
     assert_eq!(
         state_action(&["cuenv", "i", "state", "recover"]).1,
-        InfrastructureAction::State(StateAction::Recover)
+        InfrastructureAction::State(StateAction::Recover {
+            overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged
+        })
+    );
+    assert_eq!(
+        state_action(&["cuenv", "i", "state", "recover", "--force"]).1,
+        InfrastructureAction::State(StateAction::Recover {
+            overwrite: cuenv_infrastructure::RecoverOverwrite::Always
+        })
+    );
+    assert_eq!(
+        state_action(&["cuenv", "i", "state", "adopt", "-p", "infra"]),
+        (
+            "infra".to_string(),
+            InfrastructureAction::State(StateAction::Adopt)
+        )
     );
 
     let cli = Cli::try_parse_from(["cuenv", "infrastructure", "unlock", "abc"]).unwrap();
@@ -441,13 +456,14 @@ fn test_infrastructure_error_exit_codes_and_json_codes() {
     assert_eq!(exit_code_for(&locked), EXIT_LOCKED);
     assert_eq!(error_code_for(&locked), "infrastructure_locked");
 
-    let plan_changed = CliError::infrastructure(
-        "the plan changed",
+    let cancelled = CliError::infrastructure(
+        "apply cancelled",
         None,
-        InfrastructureFailureKind::PlanChanged,
+        InfrastructureFailureKind::Cancelled,
     );
-    assert_eq!(exit_code_for(&plan_changed), EXIT_LOCKED);
-    assert_eq!(error_code_for(&plan_changed), "infrastructure_plan_changed");
+    assert_eq!(EXIT_CANCELLED, 1);
+    assert_eq!(exit_code_for(&cancelled), EXIT_CANCELLED);
+    assert_eq!(error_code_for(&cancelled), "infrastructure_cancelled");
 
     let interrupted =
         CliError::infrastructure("interrupted", None, InfrastructureFailureKind::Interrupted);
@@ -472,6 +488,7 @@ fn test_infrastructure_error_with_help_keeps_its_kind() {
         message,
         help,
         kind,
+        lock,
     } = &error
     else {
         panic!("Expected Infrastructure error");
@@ -479,8 +496,43 @@ fn test_infrastructure_error_with_help_keeps_its_kind() {
     assert_eq!(message, "held");
     assert_eq!(help.as_deref(), Some("wait for the other run"));
     assert_eq!(*kind, InfrastructureFailureKind::Locked);
+    assert!(lock.is_none());
     assert_eq!(exit_code_for(&error), EXIT_LOCKED);
     assert!(format!("{error}").contains("Infrastructure error: held"));
+}
+
+#[test]
+fn test_error_envelope_carries_help_and_lock() {
+    let error = CliError::infrastructure(
+        "interrupted",
+        Some("release it with `cuenv infrastructure unlock abc`".to_string()),
+        InfrastructureFailureKind::Interrupted,
+    )
+    .with_lock(LockStatus {
+        identifier: "abc".to_string(),
+        released: false,
+    })
+    .with_help("release it with `cuenv infrastructure unlock abc`");
+    let envelope = serde_json::to_value(error_envelope(&error)).unwrap();
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["error"]["code"], "infrastructure_interrupted");
+    assert_eq!(
+        envelope["error"]["help"],
+        "release it with `cuenv infrastructure unlock abc`"
+    );
+    assert_eq!(envelope["error"]["lockIdentifier"], "abc");
+    assert_eq!(envelope["error"]["lockReleased"], false);
+
+    let plain = serde_json::to_value(error_envelope(&CliError::config("bad"))).unwrap();
+    assert_eq!(plain["error"]["code"], "config");
+    assert!(plain["error"].get("help").is_none());
+    assert!(plain["error"].get("lockIdentifier").is_none());
+    // A lock only attaches to infrastructure errors.
+    let config = CliError::config("bad").with_lock(LockStatus {
+        identifier: "abc".to_string(),
+        released: true,
+    });
+    assert!(matches!(config, CliError::Config { .. }));
 }
 
 #[test]

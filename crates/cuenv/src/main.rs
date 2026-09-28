@@ -5,7 +5,9 @@
 
 // Import everything from the library
 use crossterm::ExecutableCommand;
-use cuenv::cli::{self, CliError, EXIT_OK, OutputFormat, exit_code_for, parse, render_error};
+use cuenv::cli::{
+    self, CliError, EXIT_INTERRUPTED, EXIT_OK, OutputFormat, exit_code_for, parse, render_error,
+};
 use cuenv::commands::{self, Command, CommandExecutor};
 use cuenv::coordinator;
 use cuenv::tracing::{self, Level, TracingConfig, TracingFormat};
@@ -23,9 +25,6 @@ use hook_supervisor::run_hook_supervisor;
 use oci_activate::activate_lockfile_artifacts;
 use oci_activate::run_oci_activate;
 use sync_dispatch::execute_sync_command;
-
-/// Exit code for SIGINT (128 + signal number 2)
-const EXIT_SIGINT: i32 = 130;
 
 /// LLM context content (llms.txt + CUE schemas concatenated at build time)
 const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt"));
@@ -120,7 +119,7 @@ fn main() {
     }
 }
 
-/// Who handles SIGINT (and, for commands that own them, SIGTERM).
+/// Who handles SIGINT (and, for commands that own them, SIGTERM, SIGHUP and SIGQUIT).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InterruptPolicy {
     /// The process: the first Ctrl-C terminates child processes and exits.
@@ -245,7 +244,7 @@ fn run_sync(cli: cli::Cli) -> i32 {
         }
 
         cleanup_terminal();
-        std::process::exit(EXIT_SIGINT);
+        std::process::exit(EXIT_INTERRUPTED);
     });
 
     // Initialize tracing for sync path (simpler than async path, no event bus needed)
@@ -382,7 +381,7 @@ async fn run(interrupts: InterruptPolicy) -> i32 {
 
                 // Clean up terminal state to prevent escape sequence garbage
                 cleanup_terminal();
-                return EXIT_SIGINT;
+                return EXIT_INTERRUPTED;
             }
             result = real_main() => result,
         },

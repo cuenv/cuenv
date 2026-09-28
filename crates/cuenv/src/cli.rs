@@ -9,8 +9,9 @@ use clap_complete::Shell;
 
 pub use commands::Commands;
 pub use error::{
-    CliError, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED, EXIT_LOCKED, EXIT_OK,
-    InfrastructureFailureKind, error_code_for, exit_code_for, render_error,
+    CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
+    EXIT_LOCKED, EXIT_OK, InfrastructureFailureKind, LockStatus, error_code_for, error_envelope,
+    exit_code_for, render_error,
 };
 pub use output::{ErrorEnvelope, OkEnvelope, OutputFormat};
 pub use subcommands::{

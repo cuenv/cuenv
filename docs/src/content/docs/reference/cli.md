@@ -477,7 +477,8 @@ supervisor consumes that request to stop and re-spawn the service.
 
 Plan and apply infrastructure declared in the project's `infrastructure` block by
 driving Terraform provider plugins over gRPC. State is stored in the
-configured Turso database, keyed by the CUE module path and project name.
+configured Turso database, keyed by the CUE module path and project name, and
+owned by one CUE instance (the project's directory and package).
 See [Manage infrastructure](/how-to/infrastructure/).
 
 `cuenv i` is the short form of `cuenv infrastructure` (for example
@@ -487,21 +488,22 @@ See [Manage infrastructure](/how-to/infrastructure/).
 cuenv infrastructure plan    [OPTIONS]
 cuenv infrastructure apply   [OPTIONS] [--yes]
 cuenv infrastructure destroy [OPTIONS] [--yes]
-cuenv infrastructure state   [list | remove <ADDRESS> | recover] [OPTIONS]
+cuenv infrastructure state   [list | remove <ADDRESS> | recover [--force] | adopt] [OPTIONS]
 cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 ```
 
 - `plan`: refresh recorded resources and show the changes `apply` would make,
-  including records it would refresh ("N to refresh").
+  including records it would refresh ("N to refresh"). It takes no lock.
 - `apply`: converge on the configuration. Resources removed from
-  `infrastructure.resources` are deleted. With a prompt: plan without the
-  lock, show the plan, ask for confirmation, take the project's state lock,
-  plan again and apply only if the new plan's digest matches the confirmed
-  one (every resource, action, before and after value, replacement path and
-  stored record); otherwise nothing is applied and the exit code is `4`. With
-  `--yes`: take the lock, plan once, show that plan and apply it — there is
-  no preview without the lock. The lock is taken whenever the plan has work,
-  including records that only need refreshing.
+  `infrastructure.resources` are deleted. As in Terraform, `apply` takes the
+  project's state lock, plans, shows the plan and asks for confirmation
+  **while holding the lock**, then applies exactly the plan it showed; there
+  is no second plan. Answering anything but `yes`, or closing standard input,
+  cancels (exit code `1`, nothing applied) and releases the lock; so does an
+  interrupt at the prompt (exit code `130`). With `--yes` there is no prompt:
+  lock, plan, show the plan, apply. A plan with nothing to do asks nothing.
+  The lock is taken whenever the plan has work, including records that only
+  need refreshing.
 - `destroy`: the same flow, deleting every managed resource recorded for the
   project.
 - `state` or `state list`: list managed resources recorded for the project,
@@ -510,15 +512,26 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
   `random_pet.pet`) under the lock, without touching the real object — the
   escape hatch when its provider is gone. An address that is not recorded is
   refused (exit code `2`).
-- `state recover`: under the lock, record every change an earlier run could
-  not record and saved in the user state directory
+- `state recover`: record every change an earlier run could not record and
+  saved in the user state directory
   (`$XDG_STATE_HOME/cuenv/infrastructure/unrecorded/`, by default
-  `~/.local/state/…` on Linux), deleting each file once it is recorded.
-  `plan`, `apply` and `destroy` refuse to run (exit code `5`) while such files
-  exist for the project.
+  `~/.local/state/…` on Linux), under the lock, deleting each file once it is
+  recorded. With nothing to recover it takes no lock. A saved change is
+  written only while the stored record is still the one it replaced; if
+  another run changed the stored record since, recovery stops (exit code `5`)
+  and says so. Then either run `state recover --force`, which writes the
+  saved record over the newer one, or move the saved file out of that
+  directory to keep the stored record. `plan`, `apply` and `destroy` refuse to
+  run (exit code `5`) while such files exist for the project. A file that
+  cannot be used (unreadable, malformed, another tenant's, not private to you)
+  is named in the error, which says to move it aside.
+- `state adopt`: make this project's CUE instance (`<directory>:<package>`)
+  the owner of its state, under the lock, and print the previous and the new
+  owner. Use it after moving a project to another directory or package.
 - `unlock`: without an identifier, show who holds the lock and since when;
-  with one, release exactly that lock. Naming a lock that is not the current
-  one releases nothing and exits with code `4`.
+  with one, release exactly that lock. When no lock is held it says so and
+  exits with `0`, whatever identifier was given; naming a lock that is not the
+  current one releases nothing and exits with code `4`.
 
 **Options:**
 
@@ -528,34 +541,61 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
   when standard input is not a terminal, and with `--json`. `--auto-approve`
   is accepted as an alias.
+- `--force` (`state recover`): write saved records even over stored records
+  that changed since they were saved.
 
 **Project name uniqueness:** state is keyed by the CUE module path and the
-project name, so `plan`, `apply` and `destroy` evaluate every instance of every
-CUE package in the module first. They refuse to run when another instance
-declares the same project name together with an `infrastructure` block (exit
-code `2`) or when any instance fails to evaluate (exit code `3`; the error
-names each failing instance as `<directory>:<package>`), because a broken
-instance could hide a duplicate. A directory below a project inherits its
-`name` and `infrastructure` in CUE unless it sets its own, so it counts as a
-duplicate. `state` and `unlock` evaluate only the project, so they keep
-working while a sibling is broken. Only this command requires the
+project name, so `plan`, `apply`, `destroy` and `state adopt` evaluate every
+instance of every CUE package in the module first (exporting only each
+instance's `name` and whether it has an `infrastructure` block). They refuse
+to run when another instance declares the same project name together with an
+`infrastructure` block (exit code `2`), when any instance fails to evaluate
+(exit code `3`; the error names each failing instance as
+`<directory>:<package>`), because a broken instance could hide a duplicate,
+and when the module-wide evaluation does not include the project itself
+(exit code `2`). CUE's `./...` pattern leaves out directories whose name
+starts with `.` or `_`, directories named `testdata` and nested modules, so a
+project inside one of them could not be checked; the error names the
+directory and why it is left out. A directory below a project inherits its
+`name` and `infrastructure` in CUE and cannot set another `name` in the same
+package, so it counts as a duplicate: put its files in a different CUE
+package or move them out from under the project. `state list`,
+`state remove`, `state recover` and `unlock` evaluate only the project, so
+they keep working while a sibling is broken. Only this command requires the
 `infrastructure` block to be concrete; other commands evaluate the same
 project without that requirement.
 
-**Read-only access:** `plan`, `state list` and `unlock` without an identifier
-never create or upgrade the state tables, so they work with a read-only token
-and against a database cuenv has never written. `apply`, `destroy`,
-`state remove`, `state recover` and `unlock` with an identifier create or
-upgrade them first.
+**Ownership:** the first `apply` or `destroy` records the project's CUE
+instance as the owner of its state, under the lock. `plan`, `apply` and
+`destroy` from any other instance with the same module path and project name
+(for example a nested module declaring the same module path) are refused
+(exit code `5`); the error points at `state adopt`. `state list`,
+`state remove`, `state recover` and `unlock` do not check the owner.
+
+**Tables and read-only access:** every write happens under the lock, and the
+state tables are created or upgraded right before the lock is taken. `plan`,
+`state list`, `unlock` (with or without an identifier) and a `state recover`
+with nothing to recover never create or upgrade them, so they work with a
+read-only token (except for releasing a lock) and against a database cuenv
+has never written.
 
 **JSON output:** with the global `--json`, every subcommand prints exactly one
-JSON envelope on standard output and nothing else; progress, warnings and
-other events go to standard error as JSON lines. On failure the envelope is
-the error envelope. Payloads never contain attribute values:
+JSON document on standard output and nothing else, once the command is over
+(after the lock is released); progress, warnings and other events, including
+the `Acquired lock …` and `Released lock …` lines, go to standard error as
+JSON lines. On failure the document is the error envelope
+`{"status":"error","error":{"code","message","help","lockIdentifier","lockReleased"}}`:
+`help` is present when there is help text; `lockIdentifier` and
+`lockReleased` are present when the failure concerns a state lock (this run's
+lock, or the one that blocked it), and `lockReleased` is `false` whenever the
+release failed or is not known. A run that succeeded but could not release
+its lock reports that as an error, not as success. Payloads never contain
+attribute values:
 
 - `plan`: `tenant`, `changes` (`address`, `action`, `requiresReplace`) and
   `summary` (`create`, `update`, `replace`, `delete`, `refresh`, `unchanged`).
-  `action` is one of `no-op`, `create`, `update`, `replace`, `delete`.
+  `action` is one of `no-op`, `refresh`, `create`, `update`, `replace`,
+  `delete`.
 - `apply`, `destroy`: the applied plan in the same shape, plus `operation`
   (`apply` or `destroy`) and `applied` (the counts applied, or `null` when there
   was nothing to do). `--json` requires `--yes` because the confirmation
@@ -564,42 +604,53 @@ the error envelope. Payloads never contain attribute values:
   `providerSource`, `schemaVersion`, `tainted`).
 - `state remove`: `tenant` and `removed` (the address).
 - `state recover`: `tenant` and `recovered` (the addresses recorded).
+- `state adopt`: `tenant`, `previousOwner` (`instance`, `claimedAt`, or `null`)
+  and `owner` (`instance`, `claimedAt`).
 - `unlock`: `tenant`, `lock` (`lockIdentifier`, `holder`, `acquiredAt`, or
   `null` when unlocked) and `released`.
 
-**Interrupts:** the command handles Ctrl-C (SIGINT) and SIGTERM itself for its
-whole run, as Terraform does. The first signal starts no new resource and
-asks every running provider to stop, so the operation in flight returns
-early; whatever it returns is recorded (an interrupted create is recorded as
-tainted), the lock is released and the exit code is `130`. Reading state and
-the prompt stop at once; planning stops at the next resource, or right after
-CUE evaluation when the signal arrives during evaluation. If the lock is
-being acquired, acquisition finishes and the lock is released again. A second
-signal kills every provider process, releases the lock if that takes at most
-about two seconds, writes the outcome and the lock identifier directly to
-standard error and exits with code `130`. Provider processes run in their own
-process group, so a terminal Ctrl-C reaches only cuenv.
+**Interrupts:** the command handles Ctrl-C (SIGINT), SIGTERM, SIGHUP (the
+terminal closing) and SIGQUIT itself for its whole run, as Terraform does.
+The first signal starts no new resource and asks every running provider to
+stop, so the operation in flight returns early; whatever it returns is
+recorded (an interrupted create is recorded as tainted), the lock is released
+and the exit code is `130`. CUE evaluation, reading state and the prompt are
+abandoned at once; planning stops at the next resource. If the lock is being
+acquired, acquisition finishes and the lock is released again. A second
+signal kills every provider process, gives a record being written up to about
+two seconds, releases the lock if that takes at most about two seconds, and
+exits with code `130` after writing the outcome and the lock identifier
+directly to standard error (in JSON mode as a JSON event line, plus the one
+error envelope on standard output, with `lockIdentifier` and
+`lockReleased`). If the second signal arrives while the lock is being
+acquired, the message says the lock may have been acquired and how to release
+it. The lock identifier is chosen before it is requested, and each run prints
+`Acquired lock <identifier>` on standard error when it gets the lock.
+Provider processes run in their own process group, so a terminal Ctrl-C
+reaches only cuenv.
 
 **Lock holder:** a lock records the subcommand, the user (the account of the
 real user identifier), the host name, the process identifier and, in GitHub
-Actions, the workflow run URL. `unlock` without an identifier shows it.
+Actions, the workflow run URL. `unlock` without an identifier shows it, with
+control characters removed.
 
 **Exit codes:**
 
-| Code  | Meaning                                                                                                                     | JSON `code`                   |
-| ----- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| `2`   | Configuration error, including a duplicate project name, an unknown `state remove` address or `--json` without `--yes`      | `config`                      |
-| `3`   | Evaluation error, including an instance in the module that fails to evaluate                                                | `eval`                        |
-| `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run (or `unlock` named another lock)         | `infrastructure_locked`       |
-| `4`   | Concurrent activity: the plan changed between confirmation and taking the lock; nothing was applied                          | `infrastructure_plan_changed` |
-| `5`   | Any other infrastructure failure: provider, state store, apply, unrecorded changes pending or a change that was not recorded | `infrastructure`              |
-| `130` | Interrupted by SIGINT or SIGTERM; everything applied is recorded and the lock released (or, after a second signal, the hint printed) | `infrastructure_interrupted`  |
-
+| Code  | Meaning                                                                                                                                                              | JSON `code`                  |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `0`   | Success, including `unlock` when no lock is held                                                                                                                     | (success envelope)           |
+| `1`   | The plan was not confirmed at the prompt (declined, or standard input ended or could not be read); nothing was applied and the lock was released                     | `infrastructure_cancelled`   |
+| `2`   | Configuration error: a duplicate project name, a project the module-wide evaluation leaves out, an unknown `state remove` address, `--json` without `--yes`, a prompt without a terminal | `config`                     |
+| `3`   | CUE evaluation error, including an instance in the module that fails to evaluate                                                                                     | `eval`                       |
+| `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run, or `unlock` named a lock that is not the current one                             | `infrastructure_locked`      |
+| `5`   | Any other infrastructure failure: provider, state store, apply, another instance owning the state, unrecorded changes pending or unusable, a recovery that would overwrite a newer record, a change that was not recorded, a lock that could not be released | `infrastructure`             |
+| `130` | Interrupted by a signal; everything applied is recorded. The lock is released, or the error says it was not and how to release it                                    | `infrastructure_interrupted` |
 
 The Turso authentication token is read from the environment variable named by
 `infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default
 `TURSO_AUTH_TOKEN`) and withheld from provider processes. Provider downloads
-are cached in `TF_PLUGIN_CACHE_DIR` when set.
+are cached in `TF_PLUGIN_CACHE_DIR` when set. Logs of the infrastructure
+engine follow `--level` like the rest of cuenv.
 
 ### `cuenv shell`
 

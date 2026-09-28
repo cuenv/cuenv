@@ -582,6 +582,7 @@ fn filter_update_tools(names: Vec<String>) -> Vec<String> {
 fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
     use super::InfrastructureStateCommands;
     use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
+    use cuenv_infrastructure::RecoverOverwrite;
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
@@ -620,7 +621,14 @@ fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
                 Some(InfrastructureStateCommands::Remove { address }) => {
                     StateAction::Remove { address }
                 }
-                Some(InfrastructureStateCommands::Recover) => StateAction::Recover,
+                Some(InfrastructureStateCommands::Recover { force }) => StateAction::Recover {
+                    overwrite: if force {
+                        RecoverOverwrite::Always
+                    } else {
+                        RecoverOverwrite::IfUnchanged
+                    },
+                },
+                Some(InfrastructureStateCommands::Adopt) => StateAction::Adopt,
             }),
         ),
         InfrastructureCommands::Unlock {

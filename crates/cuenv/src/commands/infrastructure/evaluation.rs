@@ -4,16 +4,23 @@
 //! projects with the same name anywhere in one module would share state and
 //! delete each other's resources. Commands that change or plan changes check
 //! every instance of every CUE package in the module first, and refuse to run
-//! when any instance cannot be evaluated: an instance that does not evaluate
-//! could hide a project with the same name.
+//! when any instance cannot be evaluated (it could hide a project with the
+//! same name) or when the module-wide evaluation does not include the target
+//! itself (the CUE loader skips some directories, and a project there would
+//! escape the check). The state store's owner record is the second fence:
+//! it names the one instance allowed to act on the state.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use cuengine::{InstanceFailures, ModuleEvalOptions, PackageScope};
+use cuengine::{
+    InstanceFailures, ModuleEvalOptions, PackageScope, SkippedDirectories, SkippedDirectory,
+    SkippedReason,
+};
 use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
 use cuenv_core::manifest::Project;
-use cuenv_infrastructure::TenantKey;
+use cuenv_infrastructure::{ProjectInstance, TenantKey};
 use cuenv_manifest::manifest::Infrastructure;
 
 use crate::cli::CliError;
@@ -28,11 +35,13 @@ const CONCRETE_PATH: &str = "infrastructure";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NameCheck {
     /// Evaluate every instance of every package in the module and refuse a
-    /// duplicate name or an instance that does not evaluate (`plan`, `apply`,
-    /// `destroy`).
+    /// duplicate name, an instance that does not evaluate, or a target the
+    /// module-wide evaluation leaves out (`plan`, `apply`, `destroy`,
+    /// `state adopt`).
     WholeModule,
-    /// Evaluate only the target (`state`, `unlock`), so a broken sibling
-    /// never blocks inspecting or unlocking state.
+    /// Evaluate only the target (`state list`, `state remove`,
+    /// `state recover`, `unlock`), so a broken sibling never blocks
+    /// inspecting, repairing or unlocking state.
     TargetOnly,
 }
 
@@ -52,6 +61,8 @@ pub(super) struct TargetRequest<'request> {
 pub(super) struct Target {
     /// Module path and project name.
     pub(super) tenant: TenantKey,
+    /// The CUE instance (directory and package) the project comes from.
+    pub(super) instance: ProjectInstance,
     /// The project's `infrastructure` block.
     pub(super) infrastructure: Infrastructure,
     /// Canonical project directory.
@@ -64,7 +75,8 @@ pub(super) struct Target {
 ///
 /// Returns an error when the path does not resolve, evaluation fails, the
 /// project has no `infrastructure` block, another instance in the module uses
-/// the same project name, or an instance in the module cannot be evaluated.
+/// the same project name, an instance in the module cannot be evaluated, or
+/// the module-wide evaluation does not include the target.
 pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     let target_path = Path::new(request.path).canonicalize().map_err(|error| {
         CliError::config(format!("cannot resolve path {}: {error}", request.path))
@@ -81,15 +93,14 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         .infrastructure
         .clone()
         .ok_or_else(|| missing_infrastructure(&project.name))?;
+    let instance = ProjectInstance::new(&relative_path, request.package)
+        .map_err(|error| super::failure(&error))?;
 
     if request.name_check == NameCheck::WholeModule {
         check_unique_name(&UniquenessCheck {
             module_root: &module.root,
             project_name: &project.name,
-            target: InstanceIdentity {
-                directory: relative_path,
-                package: request.package.to_string(),
-            },
+            target: &instance,
         })?;
     }
 
@@ -99,6 +110,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         TenantKey::new(module_path, project.name).map_err(|error| super::failure(&error))?;
     Ok(Target {
         tenant,
+        instance,
         infrastructure,
         project_directory: target_path,
     })
@@ -143,103 +155,282 @@ fn explain_concrete_failure(
     }
 }
 
-/// One CUE instance: a directory and a package.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct InstanceIdentity {
-    /// Directory relative to the module root (`.` for the root).
-    directory: String,
-    /// Package name (`_` for files without a package clause).
-    package: String,
+/// The only fields of each instance the uniqueness check reads.
+const NAME_PATH: &str = "name";
+const INFRASTRUCTURE_PATH: &str = "infrastructure";
+
+/// What the uniqueness check needs to know about one instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstanceSummary {
+    /// The instance's `name`, when it is a string.
+    name: Option<String>,
+    /// Whether it has an `infrastructure` block (a regular field, not only
+    /// an optional declaration).
+    has_infrastructure: bool,
 }
 
-impl InstanceIdentity {
-    /// Parse a `"<directory>:<package>"` key of an all-packages evaluation.
-    /// Package names are identifiers, so the key splits at its last colon.
-    fn from_key(key: &str) -> Self {
-        key.rsplit_once(':').map_or_else(
-            || Self {
-                directory: key.to_string(),
-                package: String::new(),
-            },
-            |(directory, package)| Self {
-                directory: directory.to_string(),
-                package: package.to_string(),
-            },
-        )
+impl InstanceSummary {
+    /// Whether the instance would share the target's state: it declares
+    /// the same project name and an `infrastructure` block. A child
+    /// directory inherits its ancestors' fields in CUE, so a child without
+    /// its own `name` shares its parent's; that only matters for state when
+    /// the `infrastructure` block is present too, and then it is a real
+    /// conflict.
+    fn shares_state_with(&self, project_name: &str) -> bool {
+        self.has_infrastructure && self.name.as_deref() == Some(project_name)
     }
 }
 
-impl std::fmt::Display for InstanceIdentity {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} (package {})", self.directory, self.package)
-    }
+/// Every instance of every package in the module, keyed by its normalized
+/// `<directory>:<package>` identity, and the directories the evaluation
+/// left out.
+#[derive(Debug, Default)]
+struct ModuleInstances {
+    instances: BTreeMap<String, InstanceSummary>,
+    skipped: Vec<SkippedDirectory>,
+}
+
+/// Normalize a `<directory>:<package>` key of an all-packages evaluation
+/// to the form [`ProjectInstance`] uses. Package names are identifiers, so
+/// the key splits at its last colon.
+fn normalized_key(key: &str) -> String {
+    key.rsplit_once(':')
+        .and_then(|(directory, package)| ProjectInstance::new(directory, package).ok())
+        .map_or_else(|| key.to_string(), |instance| instance.as_str().to_string())
+}
+
+/// Evaluate every instance of every package, recursively, exporting only
+/// `name` and whether `infrastructure` exists. Any instance that fails to
+/// load, build or export fails the whole call, so nothing that could
+/// declare the same project is silently left out; the directories the
+/// loader does not visit are reported. No concrete paths: other instances
+/// only need to evaluate, not to be complete infrastructure.
+fn module_instances(module_root: &Path) -> Result<ModuleInstances, cuengine::CueEngineError> {
+    let options = ModuleEvalOptions {
+        recursive: true,
+        package_scope: PackageScope::All,
+        instance_failures: InstanceFailures::Fail,
+        export_paths: vec![NAME_PATH.to_string()],
+        presence_paths: vec![INFRASTRUCTURE_PATH.to_string()],
+        skipped_directories: SkippedDirectories::Report,
+        ..Default::default()
+    };
+    let evaluation = cuengine::evaluate_module(module_root, "", Some(&options))?;
+    let instances = evaluation
+        .instances
+        .iter()
+        .map(|(key, value)| {
+            let has_infrastructure = evaluation
+                .present
+                .get(key)
+                .is_some_and(|present| present.iter().any(|path| path == INFRASTRUCTURE_PATH));
+            let summary = InstanceSummary {
+                name: value
+                    .get(NAME_PATH)
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToString::to_string),
+                has_infrastructure,
+            };
+            (normalized_key(key), summary)
+        })
+        .collect();
+    Ok(ModuleInstances {
+        instances,
+        skipped: evaluation.skipped_directories,
+    })
 }
 
 /// Inputs for [`check_unique_name`].
 struct UniquenessCheck<'check> {
     module_root: &'check Path,
     project_name: &'check str,
-    target: InstanceIdentity,
+    target: &'check ProjectInstance,
 }
 
-/// Whether an evaluated instance would share the target's state: it
-/// declares the same project name and an `infrastructure` block. A child
-/// directory inherits its ancestors' fields in CUE, so a child without its
-/// own `name` shares its parent's; that only matters for state when the
-/// `infrastructure` block is present too, and then it is a real conflict.
-fn shares_state(value: &serde_json::Value, project_name: &str) -> bool {
-    value.get("name").and_then(serde_json::Value::as_str) == Some(project_name)
-        && value
-            .get("infrastructure")
-            .is_some_and(|infrastructure| !infrastructure.is_null())
+/// The directory part of an instance identity.
+fn instance_directory(instance: &ProjectInstance) -> &str {
+    instance
+        .as_str()
+        .rsplit_once(':')
+        .map_or(".", |(directory, _)| directory)
+}
+
+/// Why the loader left out `skipped`, and what to do about it.
+fn skipped_help(skipped: &SkippedDirectory) -> String {
+    let path = &skipped.path;
+    let why = match skipped.reason {
+        SkippedReason::Dot => format!("its directory '{path}' starts with '.'"),
+        SkippedReason::Underscore => format!("its directory '{path}' starts with '_'"),
+        SkippedReason::Testdata => format!("it is inside '{path}', a 'testdata' directory"),
+        SkippedReason::NestedModule => {
+            format!("it is inside '{path}', which holds its own cue.mod (another CUE module)")
+        }
+        SkippedReason::Unreadable => format!("its directory '{path}' cannot be read"),
+    };
+    format!(
+        "The CUE loader leaves this project out when it loads every package of the module: \
+         {why}. A project the loader leaves out cannot be checked for a duplicate name, so it \
+         cannot manage infrastructure. Move it to a directory whose path has no component \
+         starting with '.' or '_', no 'testdata' and no nested CUE module{}.",
+        if skipped.reason == SkippedReason::Unreadable {
+            ", or make the directory readable"
+        } else {
+            ""
+        }
+    )
+}
+
+/// The skipped directory that holds the target, if any.
+fn skipped_target<'module>(
+    module: &'module ModuleInstances,
+    target: &ProjectInstance,
+) -> Option<&'module SkippedDirectory> {
+    let directory = instance_directory(target);
+    module.skipped.iter().find(|skipped| {
+        directory == skipped.path
+            || directory
+                .strip_prefix(skipped.path.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
+/// The first directory on the target's path that the loader skips by its
+/// name, for when the evaluation reported none (it failed outright).
+fn skipped_by_name(target: &ProjectInstance) -> Option<SkippedDirectory> {
+    let directory = instance_directory(target);
+    let mut path = String::new();
+    for component in directory.split('/').filter(|component| *component != ".") {
+        if !path.is_empty() {
+            path.push('/');
+        }
+        path.push_str(component);
+        let reason = if component.starts_with('.') {
+            Some(SkippedReason::Dot)
+        } else if component.starts_with('_') {
+            Some(SkippedReason::Underscore)
+        } else if component == "testdata" {
+            Some(SkippedReason::Testdata)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Some(SkippedDirectory { path, reason });
+        }
+    }
+    None
 }
 
 fn check_unique_name(check: &UniquenessCheck<'_>) -> Result<(), CliError> {
-    // Every instance of every package, recursively; any instance that fails
-    // to load, build or export fails the whole call, so nothing that could
-    // declare the same project is silently left out. No concrete paths here:
-    // siblings only need to evaluate, not to be complete infrastructure.
-    let options = ModuleEvalOptions {
-        recursive: true,
-        package_scope: PackageScope::All,
-        instance_failures: InstanceFailures::Fail,
-        ..Default::default()
-    };
-    let evaluation =
-        cuengine::evaluate_module(check.module_root, "", Some(&options)).map_err(|error| {
-            CliError::eval_with_help(
-                format!(
-                    "cannot confirm that project name '{}' is unique in this CUE module: {error}",
-                    check.project_name
-                ),
-                "Infrastructure state is keyed by module path and project name, and an \
-                 instance that does not evaluate could declare a project with the same name. \
-                 Fix or remove the instances listed above; `state` and `unlock` still work \
-                 meanwhile.",
-            )
-        })?;
+    let module = module_instances(check.module_root).map_err(|error| {
+        CliError::eval_with_help(
+            format!(
+                "cannot confirm that project name '{}' is unique in this CUE module: {error}",
+                check.project_name
+            ),
+            skipped_by_name(check.target).map_or_else(
+                || {
+                    "Infrastructure state is keyed by module path and project name, and an \
+                     instance that does not evaluate could declare a project with the same \
+                     name. Fix or remove the instances listed above; `state list` and \
+                     `unlock` still work meanwhile."
+                        .to_string()
+                },
+                |skipped| skipped_help(&skipped),
+            ),
+        )
+    })?;
 
-    let mut duplicates: Vec<InstanceIdentity> = evaluation
+    // Fail closed when the evaluation did not include the target itself:
+    // the loader skipped its directory, so it would skip a duplicate there
+    // as well.
+    if !module.instances.contains_key(check.target.as_str()) {
+        return Err(CliError::config_with_help(
+            format!(
+                "cannot confirm that project name '{}' is unique in this CUE module: the \
+                 module-wide evaluation does not include this project's instance {}",
+                check.project_name, check.target
+            ),
+            skipped_target(&module, check.target)
+                .cloned()
+                .or_else(|| skipped_by_name(check.target))
+                .map_or_else(
+                    || {
+                        "The module-wide evaluation loads every package with CUE's `./...` \
+                         pattern and did not produce this instance. Check that --path names \
+                         the project directory and --package the package that declares the \
+                         project."
+                            .to_string()
+                    },
+                    |skipped| skipped_help(&skipped),
+                ),
+        ));
+    }
+
+    let duplicates: Vec<&str> = module
         .instances
         .iter()
-        .filter(|(_, value)| shares_state(value, check.project_name))
-        .map(|(key, _)| InstanceIdentity::from_key(key))
-        .filter(|identity| *identity != check.target)
+        .filter(|(key, summary)| {
+            key.as_str() != check.target.as_str() && summary.shares_state_with(check.project_name)
+        })
+        .map(|(key, _)| key.as_str())
         .collect();
     if duplicates.is_empty() {
         return Ok(());
     }
-    duplicates.sort();
-    let names: Vec<String> = duplicates.iter().map(ToString::to_string).collect();
     Err(CliError::config_with_help(
         format!(
             "project name '{}' with an `infrastructure` block is also declared by {} in this \
              CUE module; infrastructure state is keyed by module path and project name, so \
              they would share state",
             check.project_name,
-            names.join(", ")
+            duplicates.join(", ")
         ),
-        "Give each project in the module a unique `name`. A directory below a project \
-         inherits its `name` and `infrastructure` unless it sets its own.",
+        "Give each project in the module a unique `name`. A directory below a project inherits \
+         the project's `name` and `infrastructure`, and cannot declare another `name` in the \
+         same package (the two values conflict): put the files of that directory in a \
+         different CUE package, or move them out from under the project.",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_normalize_like_instances() {
+        assert_eq!(normalized_key("./app:cuenv"), "app:cuenv");
+        assert_eq!(normalized_key(".:cuenv"), ".:cuenv");
+        assert_eq!(normalized_key("broken"), "broken");
+    }
+
+    #[test]
+    fn the_skipped_directory_holding_the_target_explains_it() {
+        let module = ModuleInstances {
+            instances: BTreeMap::new(),
+            skipped: vec![
+                SkippedDirectory {
+                    path: "deploy/_staging".to_string(),
+                    reason: SkippedReason::Underscore,
+                },
+                SkippedDirectory {
+                    path: "deploy/_stag".to_string(),
+                    reason: SkippedReason::Underscore,
+                },
+            ],
+        };
+        let inside = ProjectInstance::new("deploy/_staging/app", "cuenv").unwrap();
+        let skipped = skipped_target(&module, &inside).unwrap();
+        assert_eq!(skipped.path, "deploy/_staging");
+        let help = skipped_help(skipped);
+        assert!(help.contains("'deploy/_staging' starts with '_'"), "{help}");
+
+        let exact = ProjectInstance::new("deploy/_stag", "cuenv").unwrap();
+        assert_eq!(
+            skipped_target(&module, &exact).unwrap().path,
+            "deploy/_stag"
+        );
+
+        let elsewhere = ProjectInstance::new("deploy/app", "cuenv").unwrap();
+        assert!(skipped_target(&module, &elsewhere).is_none());
+    }
 }
