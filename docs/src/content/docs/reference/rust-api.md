@@ -471,11 +471,20 @@ Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` a
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Name        | Description                                                                     |
-| ---- | ----------- | ------------------------------------------------------------------------------- |
-| 0    | Success     | Command completed successfully                                                  |
-| 2    | ConfigError | CLI/configuration error (`CliError::Config`)                                    |
-| 3    | EvalError   | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`) |
+| Code | Constant              | Description                                                                                                                                         | JSON `code`                                            |
+| ---- | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| 0    | `EXIT_OK`             | Command completed successfully                                                                                                                      | (success envelope)                                     |
+| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                        | `config`                                               |
+| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                                     | `eval` / `other`                                       |
+| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` or `PlanChanged` kind) | `infrastructure_locked` / `infrastructure_plan_changed` |
+| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store or apply (`CliError::Infrastructure` with `Failed` kind)                                 | `infrastructure`                                       |
+
+`exit_code_for` and `error_code_for` in `cuenv::cli` map a `CliError` to its
+exit code and to the `code` field of the JSON error envelope
+(`{"status":"error","error":{"code":…,"message":…}}`). Codes 4 and 5 are only
+produced by `cuenv infrastructure`; they extend the taxonomy of ADR-0005.
+`InfrastructureFailureKind` (`Locked`, `PlanChanged`, `Failed`) selects between
+them.
 
 ## See Also
 

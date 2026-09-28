@@ -500,20 +500,71 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 - `state`: list managed resources recorded for the project, marking tainted
   ones.
 - `unlock`: without an identifier, show who holds the lock and since when;
-  with one, release exactly that lock.
+  with one, release exactly that lock. Naming a lock that is not the current
+  one releases nothing and exits with code `4`.
 
 **Options:**
 
 - `-p, --path <PATH>`: Path to directory containing CUE files. Default: `.`
 - `--package <PACKAGE>`: Name of the CUE package to evaluate. Default: `cuenv`
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
-  when standard input is not a terminal. `--auto-approve` is accepted as an
-  alias.
-- Global `--json` makes `plan` and `state` print JSON (addresses, actions and
-  summary counts; never attribute values).
+  when standard input is not a terminal, and with `--json`. `--auto-approve`
+  is accepted as an alias.
 
-**Exit codes:** `2` configuration error, `3` evaluation error, `4` the state
-is locked by another run, `5` any other infrastructure failure.
+**Project name uniqueness:** state is keyed by the CUE module path and the
+project name, so `plan`, `apply` and `destroy` evaluate every instance of every
+CUE package in the module first. They refuse to run when another instance
+declares a project with the same name (exit code `2`) or when any instance
+fails to evaluate (exit code `3`; the error names each failing directory and
+package), because a broken instance could hide a duplicate. `state` and
+`unlock` evaluate only the project, so they keep working while a sibling is
+broken. Only this command requires the `infrastructure` block to be concrete;
+other commands evaluate the same project without that requirement.
+
+**Read-only access:** `plan`, `state` and `unlock` without an identifier never
+create or upgrade the state tables, so they work with a read-only token and
+against a database cuenv has never written. `apply`, `destroy` and `unlock`
+with an identifier create or upgrade them first.
+
+**JSON output:** with the global `--json`, every subcommand prints exactly one
+JSON envelope on standard output and nothing else; progress, warnings and
+other events go to standard error as JSON lines. On failure the envelope is
+the error envelope. Payloads never contain attribute values:
+
+- `plan`: `tenant`, `changes` (`address`, `action`, `requiresReplace`) and
+  `summary` (`create`, `update`, `replace`, `delete`, `unchanged`). `action` is
+  one of `no-op`, `create`, `update`, `replace`, `delete`.
+- `apply`, `destroy`: the applied plan in the same shape, plus `operation`
+  (`apply` or `destroy`) and `applied` (the counts applied, or `null` when there
+  was nothing to do). `--json` requires `--yes` because the confirmation
+  prompt cannot share standard output with the result.
+- `state`: `tenant` and `resources` (`address`, `provider`, `providerSource`,
+  `schemaVersion`, `tainted`).
+- `unlock`: `tenant`, `lock` (`lockIdentifier`, `holder`, `acquiredAt`, or
+  `null` when unlocked) and `released`.
+
+**Interrupts:** the command handles Ctrl-C (SIGINT) and SIGTERM itself for its
+whole run. The first one stops work that has not changed anything (planning,
+reading state, the prompt) at once, or right after CUE evaluation when it
+arrives during evaluation; during an apply it starts no new resource,
+records what the resource in flight returns and releases the lock. If the lock
+is being acquired, acquisition finishes and the lock is released again. A
+second interrupt exits immediately with code `130`, after trying for about two
+seconds to release the lock and printing its identifier when it could not.
+
+**Lock holder:** a lock records the command, the user (the account of the real
+user identifier), the host name, the process identifier and, in GitHub
+Actions, the workflow run URL. `unlock` without an identifier shows it.
+
+**Exit codes:**
+
+| Code | Meaning | JSON `code` |
+| ---- | ------- | ----------- |
+| `2` | Configuration error, including a duplicate project name or `--json` without `--yes` | `config` |
+| `3` | Evaluation error, including an instance in the module that fails to evaluate | `eval` |
+| `4` | Concurrent activity; retrying later can succeed: the state is locked by another run (or `unlock` named another lock) | `infrastructure_locked` |
+| `4` | Concurrent activity: the plan changed between confirmation and taking the lock; nothing was applied | `infrastructure_plan_changed` |
+| `5` | Any other infrastructure failure (provider, state store, apply, interrupted run) | `infrastructure` |
 
 The Turso authentication token is read from the environment variable named by
 `infrastructure.state.turso.authenticationTokenEnvironmentVariable` (default

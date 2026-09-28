@@ -103,7 +103,7 @@ fn main() {
         }
 
         // These internal commands always need tokio
-        let exit_code = run_with_tokio();
+        let exit_code = run_with_tokio(InterruptPolicy::Process);
         std::process::exit(exit_code);
     }
 
@@ -112,7 +112,7 @@ fn main() {
 
     // Check if command needs async runtime
     if requires_async_runtime(&cli) {
-        let exit_code = run_with_tokio();
+        let exit_code = run_with_tokio(interrupt_policy(&cli));
         std::process::exit(exit_code);
     } else {
         let exit_code = run_sync(cli);
@@ -120,8 +120,28 @@ fn main() {
     }
 }
 
+/// Who handles SIGINT (and, for commands that own them, SIGTERM).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InterruptPolicy {
+    /// The process: the first Ctrl-C terminates child processes and exits.
+    Process,
+    /// The command itself, for its whole run. `cuenv infrastructure` must
+    /// finish recording the resource in flight and release its state lock,
+    /// so abandoning it on Ctrl-C would leak both.
+    Command,
+}
+
+/// Decide from the parsed command line, before the runtime starts, who
+/// owns interrupts.
+const fn interrupt_policy(cli: &cli::Cli) -> InterruptPolicy {
+    match &cli.command {
+        Some(cli::Commands::Infrastructure { .. }) => InterruptPolicy::Command,
+        _ => InterruptPolicy::Process,
+    }
+}
+
 /// Create tokio runtime and run async path
-fn run_with_tokio() -> i32 {
+fn run_with_tokio(interrupts: InterruptPolicy) -> i32 {
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -137,7 +157,7 @@ fn run_with_tokio() -> i32 {
         }
     };
 
-    rt.block_on(run())
+    rt.block_on(run(interrupts))
 }
 
 /// Determine if a command requires the async runtime
@@ -347,43 +367,35 @@ fn cue_module_command_path(command: &Command) -> Option<&str> {
 
 /// Main CLI runner that handles errors properly and returns exit codes
 #[instrument(name = "cuenv_run")]
-async fn run() -> i32 {
-    // Use biased select to prefer signal handling over normal completion
-    // This ensures cleanup runs even if the child process exits simultaneously
-    let main_future = real_main();
-    tokio::pin!(main_future);
-    loop {
-        tokio::select! {
-                biased;
+async fn run(interrupts: InterruptPolicy) -> i32 {
+    let result = match interrupts {
+        InterruptPolicy::Command => real_main().await,
+        // Use biased select to prefer signal handling over normal completion
+        // This ensures cleanup runs even if the child process exits simultaneously
+        InterruptPolicy::Process => tokio::select! {
+            biased;
 
-                _ = tokio::signal::ctrl_c() => {
-                    // A converging infrastructure run stops cleanly on its own
-                    // (finishing the resource in flight and releasing its lock);
-                    // abandoning it here would leak both.
-                    if cuenv::commands::infrastructure::command_owns_interrupts() {
-                        continue;
-                    }
-                    // Terminate all child processes gracefully before exiting
-                    let registry = cuenv_task_exec::global_registry();
-                    registry.terminate_all(std::time::Duration::from_secs(5)).await;
+            _ = tokio::signal::ctrl_c() => {
+                // Terminate all child processes gracefully before exiting
+                let registry = cuenv_task_exec::global_registry();
+                registry.terminate_all(std::time::Duration::from_secs(5)).await;
 
-                    // Clean up terminal state to prevent escape sequence garbage
-                    cleanup_terminal();
-                    return EXIT_SIGINT;
-                }
-                result = &mut main_future => {
-                return match result {
-                    Ok(()) => EXIT_OK,
-                    Err(err) => {
-                        // Try to determine if JSON mode was requested
-                        let args: Vec<String> = std::env::args().collect();
-                        let json_mode = args.iter().any(|arg| arg == "--json");
-
-                        render_error(&err, OutputFormat::from_json_flag(json_mode));
-                        exit_code_for(&err)
-                    }
-                };
+                // Clean up terminal state to prevent escape sequence garbage
+                cleanup_terminal();
+                return EXIT_SIGINT;
             }
+            result = real_main() => result,
+        },
+    };
+    match result {
+        Ok(()) => EXIT_OK,
+        Err(err) => {
+            // Try to determine if JSON mode was requested
+            let args: Vec<String> = std::env::args().collect();
+            let json_mode = args.iter().any(|arg| arg == "--json");
+
+            render_error(&err, OutputFormat::from_json_flag(json_mode));
+            exit_code_for(&err)
         }
     }
 }
@@ -578,9 +590,14 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
     let renderer_handle = if cli.json {
         // JSON mode: output structured JSON events
         let renderer = JsonRenderer::new();
-        Some(tokio::spawn(async move {
-            renderer.run(receiver).await;
-        }))
+        Some(match json_event_stream(&cli) {
+            JsonEventStream::StandardOutput => tokio::spawn(async move {
+                renderer.run(receiver).await;
+            }),
+            JsonEventStream::StandardError => {
+                tokio::spawn(render_json_events_to_standard_error(renderer, receiver))
+            }
+        })
     } else if tui_mode {
         // TUI mode: don't spawn CLI renderer, TUI subscribes to events directly
         // Drop the receiver to avoid memory buildup
@@ -598,6 +615,41 @@ async fn initialize_cli_and_tracing() -> Result<InitResult, CliError> {
         cli,
         renderer_handle,
     })
+}
+
+/// Where JSON events go in `--json` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonEventStream {
+    /// Interleaved with the result on standard output.
+    StandardOutput,
+    /// Standard error, for commands whose standard output is exactly one
+    /// JSON envelope (`cuenv infrastructure`).
+    StandardError,
+}
+
+const fn json_event_stream(cli: &cli::Cli) -> JsonEventStream {
+    match &cli.command {
+        Some(cli::Commands::Infrastructure { .. }) => JsonEventStream::StandardError,
+        _ => JsonEventStream::StandardOutput,
+    }
+}
+
+/// Render JSON events to standard error until the shutdown event.
+async fn render_json_events_to_standard_error(
+    renderer: JsonRenderer,
+    mut receiver: cuenv_events::EventReceiver,
+) {
+    while let Some(event) = receiver.recv().await {
+        if let Err(error) = renderer.render_to_writer(&event, std::io::stderr().lock()) {
+            ::tracing::debug!(%error, "failed to write JSON event");
+        }
+        if matches!(
+            event.category,
+            cuenv_events::EventCategory::System(cuenv_events::SystemEvent::Shutdown)
+        ) {
+            break;
+        }
+    }
 }
 
 /// Run as the coordinator server (internal - spawned by discovery)

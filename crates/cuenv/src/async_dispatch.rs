@@ -49,7 +49,7 @@ pub async fn execute_command_safe(
             action: action.clone(),
             output: json_format,
         };
-        return commands::infrastructure::execute_infrastructure(&options, executor).await;
+        return commands::infrastructure::execute_infrastructure(&options).await;
     }
 
     if let Some(result) = execute_service_command(&command, executor).await {

@@ -91,6 +91,35 @@ fn test_command_conversion() {
 }
 
 #[test]
+fn test_infrastructure_command_conversion() {
+    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction};
+
+    let cli = Cli::try_parse_from(["cuenv", "i", "destroy", "--yes", "-p", "infra"]).unwrap();
+    let command = cli.command.unwrap().into_command(None);
+    let Command::Infrastructure { path, action, .. } = command else {
+        panic!("Expected Command::Infrastructure");
+    };
+    assert_eq!(path, "infra");
+    assert_eq!(
+        action,
+        InfrastructureAction::Destroy {
+            confirmation: ConfirmationPolicy::AssumeYes
+        }
+    );
+
+    let cli = Cli::try_parse_from(["cuenv", "infrastructure", "unlock", "abc"]).unwrap();
+    let Command::Infrastructure { action, .. } = cli.command.unwrap().into_command(None) else {
+        panic!("Expected Command::Infrastructure");
+    };
+    assert_eq!(
+        action,
+        InfrastructureAction::Unlock {
+            lock_identifier: Some("abc".to_string())
+        }
+    );
+}
+
+#[test]
 fn test_invalid_log_level() {
     let result = Cli::try_parse_from(["cuenv", "--level", "invalid", "version"]);
     assert!(result.is_err());
@@ -357,6 +386,51 @@ fn test_exit_codes() {
 
     let other_err = CliError::other("test");
     assert_eq!(exit_code_for(&other_err), 3);
+}
+
+#[test]
+fn test_infrastructure_error_exit_codes_and_json_codes() {
+    assert_eq!(EXIT_LOCKED, 4);
+    assert_eq!(EXIT_INFRASTRUCTURE, 5);
+
+    let locked = CliError::infrastructure("held", None, InfrastructureFailureKind::Locked);
+    assert_eq!(exit_code_for(&locked), EXIT_LOCKED);
+    assert_eq!(error_code_for(&locked), "infrastructure_locked");
+
+    let plan_changed = CliError::infrastructure(
+        "the plan changed",
+        None,
+        InfrastructureFailureKind::PlanChanged,
+    );
+    assert_eq!(exit_code_for(&plan_changed), EXIT_LOCKED);
+    assert_eq!(error_code_for(&plan_changed), "infrastructure_plan_changed");
+
+    let failed = CliError::infrastructure("provider", None, InfrastructureFailureKind::Failed);
+    assert_eq!(exit_code_for(&failed), EXIT_INFRASTRUCTURE);
+    assert_eq!(error_code_for(&failed), "infrastructure");
+
+    assert_eq!(error_code_for(&CliError::config("c")), "config");
+    assert_eq!(error_code_for(&CliError::eval("e")), "eval");
+    assert_eq!(error_code_for(&CliError::other("o")), "other");
+}
+
+#[test]
+fn test_infrastructure_error_with_help_keeps_its_kind() {
+    let error = CliError::infrastructure("held", None, InfrastructureFailureKind::Locked)
+        .with_help("wait for the other run");
+    let CliError::Infrastructure {
+        message,
+        help,
+        kind,
+    } = &error
+    else {
+        panic!("Expected Infrastructure error");
+    };
+    assert_eq!(message, "held");
+    assert_eq!(help.as_deref(), Some("wait for the other run"));
+    assert_eq!(*kind, InfrastructureFailureKind::Locked);
+    assert_eq!(exit_code_for(&error), EXIT_LOCKED);
+    assert!(format!("{error}").contains("Infrastructure error: held"));
 }
 
 #[test]

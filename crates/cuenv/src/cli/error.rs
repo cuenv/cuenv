@@ -11,18 +11,26 @@ pub const EXIT_OK: i32 = 0;
 pub const EXIT_CLI: i32 = 2;
 /// CUE evaluation or FFI error exit code
 pub const EXIT_EVAL: i32 = 3;
-/// Infrastructure state is locked by another run; retrying later can succeed
+/// Infrastructure run collided with concurrent activity (the state is locked
+/// by another run, or the plan changed after it was confirmed); retrying
+/// later can succeed
 pub const EXIT_LOCKED: i32 = 4;
 /// Infrastructure provider, state store, or apply failure
 pub const EXIT_INFRASTRUCTURE: i32 = 5;
 
-/// Whether an infrastructure failure was caused by another run's lock.
+/// What kind of infrastructure failure occurred; decides the exit code and
+/// the JSON error code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InfrastructureLockState {
-    /// Another run holds the lock; retrying later can succeed.
-    HeldElsewhere,
-    /// The failure is unrelated to locking.
-    NotLocked,
+pub enum InfrastructureFailureKind {
+    /// Another run holds the project's lock, or a lock other than the one
+    /// named. Exit code 4, JSON code `infrastructure_locked`.
+    Locked,
+    /// The plan made under the lock differs from the one confirmed; nothing
+    /// was applied. Exit code 4, JSON code `infrastructure_plan_changed`.
+    PlanChanged,
+    /// Any other provider, state store or apply failure. Exit code 5, JSON
+    /// code `infrastructure`.
+    Failed,
 }
 
 /// CLI-specific error types with proper exit code mapping
@@ -48,7 +56,7 @@ pub enum CliError {
         #[help]
         help: Option<String>,
     },
-    /// Infrastructure failure (exit code 4 when locked, otherwise 5)
+    /// Infrastructure failure (exit code 4 for concurrent activity, otherwise 5)
     #[error("Infrastructure error: {message}")]
     #[diagnostic(code(cuenv::cli::infrastructure))]
     Infrastructure {
@@ -57,8 +65,8 @@ pub enum CliError {
         /// Optional help text
         #[help]
         help: Option<String>,
-        /// Whether another run holds the state lock
-        locked: InfrastructureLockState,
+        /// What kind of failure it is
+        kind: InfrastructureFailureKind,
     },
     /// Other unexpected error (exit code 3)
     #[error("Unexpected error: {message}")]
@@ -114,12 +122,12 @@ impl CliError {
     pub fn infrastructure(
         message: impl Into<String>,
         help: Option<String>,
-        locked: InfrastructureLockState,
+        kind: InfrastructureFailureKind,
     ) -> Self {
         Self::Infrastructure {
             message: message.into(),
             help,
-            locked,
+            kind,
         }
     }
 
@@ -149,12 +157,10 @@ impl CliError {
             Self::Config { message, .. } => Self::Config { message, help },
             Self::Eval { message, .. } => Self::Eval { message, help },
             Self::Other { message, .. } => Self::Other { message, help },
-            Self::Infrastructure {
-                message, locked, ..
-            } => Self::Infrastructure {
+            Self::Infrastructure { message, kind, .. } => Self::Infrastructure {
                 message,
                 help,
-                locked,
+                kind,
             },
         }
     }
@@ -260,10 +266,28 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
         CliError::Config { .. } => EXIT_CLI,
         CliError::Eval { .. } | CliError::Other { .. } => EXIT_EVAL,
         CliError::Infrastructure {
-            locked: InfrastructureLockState::HeldElsewhere,
+            kind: InfrastructureFailureKind::Locked | InfrastructureFailureKind::PlanChanged,
             ..
         } => EXIT_LOCKED,
-        CliError::Infrastructure { .. } => EXIT_INFRASTRUCTURE,
+        CliError::Infrastructure {
+            kind: InfrastructureFailureKind::Failed,
+            ..
+        } => EXIT_INFRASTRUCTURE,
+    }
+}
+
+/// The `code` of an error in the JSON error envelope.
+#[must_use]
+pub const fn error_code_for(err: &CliError) -> &'static str {
+    match err {
+        CliError::Config { .. } => "config",
+        CliError::Eval { .. } => "eval",
+        CliError::Other { .. } => "other",
+        CliError::Infrastructure { kind, .. } => match kind {
+            InfrastructureFailureKind::Locked => "infrastructure_locked",
+            InfrastructureFailureKind::PlanChanged => "infrastructure_plan_changed",
+            InfrastructureFailureKind::Failed => "infrastructure",
+        },
     }
 }
 
@@ -271,16 +295,7 @@ pub const fn exit_code_for(err: &CliError) -> i32 {
 pub fn render_error(err: &CliError, format: OutputFormat) {
     if format.is_json() {
         let error_envelope = ErrorEnvelope::new(serde_json::json!({
-            "code": match err {
-                CliError::Config { .. } => "config",
-                CliError::Eval { .. } => "eval",
-                CliError::Other { .. } => "other",
-                CliError::Infrastructure {
-                    locked: InfrastructureLockState::HeldElsewhere,
-                    ..
-                } => "infrastructure_locked",
-                CliError::Infrastructure { .. } => "infrastructure",
-            },
+            "code": error_code_for(err),
             "message": err.to_string()
         }));
 
