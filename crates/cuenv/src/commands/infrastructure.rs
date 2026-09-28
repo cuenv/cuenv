@@ -153,6 +153,8 @@ pub async fn execute_infrastructure(
                 .authentication_token_environment_variable
                 .clone(),
         ],
+        unrecorded_directory: None,
+        cancellation: Cancellation::default(),
     };
     let setup = EngineSetup {
         tenant: target.tenant.clone(),
@@ -449,7 +451,7 @@ fn watch_interrupts(cancellation: Cancellation, lock_identifier: String) {
             }
             received += 1;
             if received == 1 {
-                cancellation.request();
+                cancellation.stop();
                 emit_stderr!(
                     "Interrupted: finishing the resource in flight, recording it and releasing \
                      the lock. Interrupt again to exit immediately."
@@ -544,7 +546,7 @@ async fn converge_with(
         .await
         .map_err(|error| failure(&error))?;
     let _ownership = InterruptOwnership::claim();
-    let cancellation = Cancellation::default();
+    let cancellation = engine.cancellation().clone();
     watch_interrupts(cancellation.clone(), lock.lock_identifier.clone());
 
     let applied = apply_locked(
@@ -553,7 +555,6 @@ async fn converge_with(
             preview: &preview,
             mode: request.mode,
             lock: &lock,
-            cancellation: &cancellation,
         },
     )
     .await;
@@ -585,7 +586,6 @@ struct LockedRun<'run> {
     preview: &'run Plan,
     mode: PlanMode,
     lock: &'run StateLock,
-    cancellation: &'run Cancellation,
 }
 
 async fn apply_locked(
@@ -596,11 +596,10 @@ async fn apply_locked(
         preview,
         mode,
         lock,
-        cancellation,
     } = run;
     // State may have moved between the preview and taking the lock.
     let plan = engine.plan(mode).await.map_err(|error| failure(&error))?;
-    if plan.intent() != preview.intent() {
+    if plan.digest() != preview.digest() {
         print_plan(&plan, OutputFormat::from_json_flag(false));
         return Err(CliError::infrastructure(
             "the plan changed after it was confirmed; nothing was applied",
@@ -613,10 +612,13 @@ async fn apply_locked(
             emit_stdout!(format!("{} {address}: applying...", action.symbol()));
         }
         ApplyEvent::Finished { address, .. } => emit_stdout!(format!("  {address}: done")),
+        ApplyEvent::Refreshed { address } => {
+            emit_stdout!(format!("  {address}: stored state refreshed"));
+        }
         ApplyEvent::Warning(warning) => emit_stderr!(format!("warning: {warning}")),
     };
     let summary = engine
-        .apply(&plan, ApplyContext { lock, cancellation }, &mut on_event)
+        .apply(&plan, ApplyContext { lock }, &mut on_event)
         .await
         .map_err(|error| failure(&error))?;
     emit_stdout!(format!(
