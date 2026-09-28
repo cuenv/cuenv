@@ -55,14 +55,29 @@ state) are encoded by cuenv.
 
 ### Terraform core lifecycle, per resource
 
-1. Refresh: `UpgradeResourceState` (stored JSON and schema version) then
-   `ReadResource`.
+1. Refresh: `UpgradeResourceState` (stored JSON and schema version; the
+   upgraded JSON form is used and a null upgraded state is refused) then
+   `ReadResource`, whose MessagePack bytes become the prior state for plan and
+   delete.
 2. Plan: `ValidateResourceConfig`, then `PlanResourceChange` with a proposed
-   new state (simplified `objchange.ProposedNew`). Non-empty
-   `requires_replace` becomes destroy-then-create.
-3. Apply: `ApplyResourceChange`; the resulting state is written immediately,
-   including partial state returned alongside error diagnostics. A null or
-   unknown result alongside errors keeps whatever was recorded.
+   new state from a port of Terraform's `objchange.ProposedNew` (nested
+   collections, set matching, `optionalValueNotComputable`). The planned state
+   is checked by a port of `AssertPlanValid` (`crates/infrastructure/src/object_change.rs`),
+   recursing through nested attributes and blocks; a null planned state is
+   always refused. Legacy SDK providers get Terraform's tolerance, logged at
+   debug level only. `requires_replace` paths are kept only when the value at
+   that path differs by schema type; a path found in neither value is a
+   provider error. Non-empty results become destroy-then-create.
+3. Apply: `ApplyResourceChange`; the resulting state is written immediately.
+   Following Terraform's apply-result rules: a failed step that returns an
+   object keeps the stored taint and dependencies; a create that fails or
+   returns unknown values is tainted; a delete that returns an object without
+   errors is an error and the object stays recorded; a create or update that
+   returns null without errors is an error and leaves state untouched.
+
+Values a provider returns as JSON are converted to MessagePack (lossless,
+since JSON cannot carry unknown values); `dynamic` wrappers are unwrapped at
+any depth.
 
 Declared resources are ordered by `dependsOn`; orphans (recorded but no
 longer declared) are deleted first in reverse dependency order.
@@ -215,6 +230,14 @@ Rejected, with reasons:
   orphan delete, destroy, tenant isolation — against real `hashicorp/random`
   and `hashicorp/local` binaries with both the in-memory store and `sqld`; load
   a protocol 6 schema from `hashicorp/tfe`; and install from the live registry.
+- A Plugin Framework fake provider (`crates/infrastructure/tests/fake_provider`,
+  Go; `go build -o terraform-provider-fake .`, then set
+  `CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER`) reproduces the milestone 2
+  protocol findings: nested computed children, JSON-encoded planned state,
+  taint on failed replacements, a delete that returns an object, semantic
+  equality, nested `dynamic` wrappers, and slow creates for stop, kill and
+  process-group checks. Each test was confirmed to fail against the old
+  behaviour.
 
 ## Next steps
 
@@ -223,14 +246,14 @@ Rejected, with reasons:
    planning, and resolve them during apply in dependency order. Derive
    `dependsOn` from references.
 2. Protocol fidelity (milestone 3): resource identity (`GetResourceIdentitySchemas`
-   and identity on read, plan and apply); a full port of `objchange.ProposedNew`
-   for list, set and map nested collections and `optionalValueNotComputable`;
-   typed values so dynamic attributes keep list, set and map types and
+   and identity on read, plan and apply); typed values so dynamic attributes keep list, set and map types and
    numbers keep full precision; `AssertObjectCompatible` on apply results;
    honouring `plan_destroy`; masking by sensitive path rather than whole
    top-level attribute.
-3. Tests that run in continuous integration: an in-process fake provider and
-   a mock Hrana server so the lifecycle suite no longer needs real binaries.
+3. Tests that run in continuous integration: build the fake provider and run
+   it with a mock Hrana server in a Nix check, so the lifecycle suite no longer
+   needs real binaries or is ignored; add `go test` for the cuengine bridge,
+   which no check runs today.
 4. A typed provider binding from github.com/cuenv/terraform (for example a
    generated `#Provider` carrying `source`, `version` and a resource-type to
    definition map) so `type`, `version` and `configuration` cannot disagree.

@@ -38,6 +38,7 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - Provider processes must not inherit the state token (`LaunchOptions::withheld_environment_variables`).
 - Interrupts follow Terraform: the first SIGINT or SIGTERM asks running providers to stop and records what they return; the second kills providers, releases the lock within a bound and prints the lock identifier. Never add an exit path that skips recording or leaves providers running.
 - Each managed resource is one row in `cuenv_infrastructure_resources`; state is `cty` JSON so `UpgradeResourceState` can migrate it. Do not store MessagePack or re-encode planned states before `ApplyResourceChange`.
+- Planned states pass through the ports of Terraform's `ProposedNew` and `AssertPlanValid` in `object_change.rs`; never relax those checks to make a provider pass — report the provider bug instead.
 - Resources cannot reference other resources' attributes. Use `dependsOn` strings for ordering only.
 - Provider `version` must be exact; `path` bypasses the registry. No version constraints, lockfile entries, or GPG verification.
 - Protocols 5 and 6 are both supported; schema `Attribute` tag 10 differs between them, so schema messages stay per protocol.
@@ -58,6 +59,7 @@ Record confirmed findings and their resolution in the pull request; findings tha
 
 - `cuenv exec -- cargo test -p cuenv-infrastructure` for unit tests (plain `cargo test` inside the development shell is equivalent), and `go test ./...` in `crates/cuengine` for the bridge.
 - For lifecycle changes, run the ignored `crates/infrastructure/tests/provider_end_to_end.rs` suite against real provider binaries and a local `sqld` (environment variables are documented at the top of that file).
+- For protocol changes, also build the Plugin Framework fake provider (`cd crates/infrastructure/tests/fake_provider && go build -o terraform-provider-fake .`) and set `CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER`; its tests reproduce nested plan validity, JSON planned state, taint, semantic equality, dynamic wrappers and interrupt handling. Check that a new test fails against the old behaviour before trusting it.
 
 ## Adversarial prompts
 

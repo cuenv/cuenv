@@ -6,7 +6,7 @@ description: Declare managed resources in CUE and let cuenv drive Terraform prov
 cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database.
 
 :::caution[Status: proof of concept]
-`#Infrastructure` is **partial**. Create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. See [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity, and resources with collections of nested objects, are not handled correctly yet.
+`#Infrastructure` is **partial**. Create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. See [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet.
 :::
 
 ## Commands
@@ -16,7 +16,9 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 | `cuenv infrastructure plan` | `cuenv i plan` | Refresh recorded resources and show what `apply` would change |
 | `cuenv infrastructure apply` | `cuenv i apply` | Plan, confirm, lock, plan again, converge |
 | `cuenv infrastructure destroy` | `cuenv i destroy` | Delete every managed resource the project owns |
-| `cuenv infrastructure state` | `cuenv i state` | List managed resources recorded for the project |
+| `cuenv infrastructure state list` | `cuenv i state` | List managed resources recorded for the project (`list` is the default) |
+| `cuenv infrastructure state remove <address>` | `cuenv i state remove` | Forget one managed resource without deleting it |
+| `cuenv infrastructure state recover` | `cuenv i state recover` | Record changes that could not be recorded earlier |
 | `cuenv infrastructure unlock` | `cuenv i unlock` | Show who holds the lock, or release it by identifier |
 
 `i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. `plan` and `state` honour the global `--json` flag.
@@ -225,34 +227,38 @@ cuenv infrastructure: github.com/cuenv/cuenv#infrastructure-random
       # forced by: keepers
       ~ keepers: {"pet":"a"} -> {"pet":"b"}
 
-Plan: 1 to create, 0 to update, 1 to replace, 0 to delete, 1 unchanged.
+Plan: 1 to create, 0 to update, 1 to replace, 0 to delete, 0 to refresh, 1 unchanged.
 ```
 
-Values that are sensitive anywhere inside an attribute or nested block are shown as `(sensitive)`.
+Values that are sensitive anywhere inside an attribute or nested block are shown as `(sensitive)`. "To refresh" counts resources whose provider-reported state or recorded metadata (dependencies, schema version) changed without any change to the resource itself; `apply` records them under the lock.
 
-`cuenv i apply`:
+Every plan is checked the way Terraform checks it: a provider that plans a value contradicting your configuration, including inside nested blocks and nested attributes, is reported as a provider error naming the resource and attribute path, and nothing is applied.
+
+`cuenv i apply` interactively:
 
 1. plans and shows the plan without taking the lock;
-2. asks for confirmation (`--yes` skips it and is required when standard input is not a terminal; `--auto-approve` is accepted as an alias);
-3. takes the project's lock, plans again, and refuses to continue if the plan changed since you confirmed;
+2. asks for confirmation;
+3. takes the project's lock, plans again, and refuses to continue (exit code `4`) if anything in the plan differs from what you confirmed — any resource, action, before or after value, or recorded state;
 4. applies one resource at a time, recording each result immediately. Every write is fenced by the lock, so a run whose lock was released or taken over cannot overwrite newer state.
+
+`cuenv i apply --yes` (required when standard input is not a terminal; `--auto-approve` is accepted as an alias) takes the lock, plans once and applies that plan, so continuous integration never races between a preview and the locked plan. `destroy` behaves the same way.
 
 Resources removed from `infrastructure.resources` are deleted. Stored state is only ever handed back to the provider source that created it.
 
 ### When things go wrong
 
-- **Interrupts.** The first Ctrl-C or SIGTERM during an apply finishes and records the resource in flight, then releases the lock and exits. A second one exits immediately and prints the lock identifier.
-- **Partial failures.** If a create fails after the provider made something, the result is recorded as **tainted** and the next plan replaces it. `cuenv i state` marks tainted resources.
-- **State store outages.** If the provider changed a resource but the change cannot be recorded (after retries), cuenv writes the new state to `.cuenv/infrastructure/unrecorded-<time>-<address>.json` in the project directory (readable only by you) and tells you, instead of silently forgetting a real resource.
+- **Interrupts.** The first Ctrl-C or SIGTERM asks every running provider to stop, as Terraform does: no new resource is started, the operation in flight returns early, and whatever it returns is recorded (an interrupted create is recorded as tainted); then the lock is released. A second signal kills the providers, releases the lock if it can within two seconds, prints the lock identifier and exits. Continuous integration cancellation (SIGINT, then SIGTERM a few seconds later) therefore still records the resource in flight. Providers run in their own process group, so a terminal Ctrl-C reaches only cuenv.
+- **Partial failures.** If a create fails after the provider made something, or returns values it never resolved, the result is recorded as **tainted** and the next plan replaces it. A failed update or delete keeps the stored taint. `cuenv i state` marks tainted resources.
+- **State store outages.** If the provider changed a resource but the change cannot be recorded (after retries), cuenv saves the new state under your user state directory (`~/.local/state/cuenv/infrastructure/unrecorded/` on Linux, readable only by you, never inside the project) and tells you, instead of silently forgetting a real resource. `plan`, `apply` and `destroy` refuse to run until `cuenv i state recover` has recorded those files. On an ephemeral continuous integration runner the directory disappears with the runner, so fix the state store and re-run on the same machine where possible. Errors never include state values.
 - **Stale locks.** `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock.
-- **Exit codes.** `2` configuration, `3` evaluation, `4` locked by another run (retry later), `5` other infrastructure failures.
+- **Removed providers.** `cuenv i state remove <address>` forgets one managed resource without touching the real object — the escape hatch when its provider is gone.
+- **Exit codes.** `2` configuration, `3` evaluation, `4` another run holds the lock or changed state since you confirmed (retry later), `5` other infrastructure failures.
 
 ## Current limitations
 
 - **No references between resources.** A resource cannot consume another's computed attributes; use `dependsOn` for ordering only.
 - **Resource identity is not supported.** Plugin Framework resources that declare an identity (recent AWS, Google and Azure resources) fail on update with "Missing Resource Identity After Update".
-- **Collections of nested objects.** Proposed new state does not yet merge computed values inside list, set and map nested blocks or nested attributes, so such resources can show a perpetual update.
 - **Dynamic-typed attributes** round-trip as tuples and objects rather than their original list, set or map types.
-- No data sources, imports, `moved` blocks, saved plan files, `--target`, or `state rm`.
+- No data sources, imports, `moved` blocks, saved plan files or `--target`.
 - Replacement is always destroy-then-create; resources apply one at a time.
 - Provider version constraints, lockfile pinning and GPG signature verification are not implemented.
