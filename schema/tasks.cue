@@ -91,8 +91,9 @@ package schema
 	//
 	// Their host values are folded into the cache key. HOME is deliberately
 	// excluded: use hermetic: false when a host task must use the caller's home.
-	// Hermetic tasks otherwise get fixed HOME=/home/builder,
-	// USER=builder, and LOGNAME=builder values; these defaults enter the key.
+	// Hermetic tasks default to HOME=/home/builder, USER=builder, and
+	// LOGNAME=builder. The host executor uses a Cuenv-managed writable HOME
+	// if the fixed path is unavailable, and keys the action on the selected path.
 	// Host values of names not listed here never enter the key: cuenv will not
 	// silently key a result on the machine it was computed on. Omit the field
 	// when a task's result does not depend on the host environment, which is
