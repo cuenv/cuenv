@@ -1834,7 +1834,10 @@ mod tests {
         drop_tables().await;
         for refusal in refusals {
             let message = refusal.expect("a newer schema must be refused").to_string();
-            assert!(message.contains("newer than this cuenv supports"), "{message}");
+            assert!(
+                message.contains("newer than this cuenv supports"),
+                "{message}"
+            );
         }
     }
 

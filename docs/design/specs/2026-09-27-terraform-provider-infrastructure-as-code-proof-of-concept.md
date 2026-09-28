@@ -168,7 +168,8 @@ About fifty findings, most reproduced. Resolved in milestone 2:
 - Schema: exactly one of `version`/`path`, strict version, loopback-only
   plaintext URLs, valid token variable names, well-formed resource types; the
   `infrastructure` block must be concrete (generic `concretePaths` bridge
-  option).
+  option, which fails closed on a missing or malformed path and is applied
+  only by the infrastructure command).
 
 ### Milestone 2 review (hardening) and the decisions it drove
 
@@ -271,8 +272,11 @@ Rejected, with reasons:
 9. Lock leases with expiry and heartbeat instead of manual release, and a
    `--lock-timeout` that waits for a running apply instead of failing
    immediately.
-10. A fenced "pending" record written before each create, so a run killed
+10. All-packages evaluation fails with "matched no packages" when the module
+    root directory's own name starts with "." (the CUE loader ignores hidden
+    directories); handle it in the bridge.
+11. A fenced "pending" record written before each create, so a run killed
     outright (SIGKILL, host loss) leaves evidence of what may exist.
-11. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
+12. In github.com/cuenv/terraform, `#ProviderConfig` abbreviates
     "configuration"; renaming it to `#ProviderConfiguration` would bring the
     generated modules in line with the no-abbreviation rule.

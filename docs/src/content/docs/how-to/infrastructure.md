@@ -21,7 +21,7 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 | `cuenv infrastructure state recover` | `cuenv i state recover` | Record changes that could not be recorded earlier |
 | `cuenv infrastructure unlock` | `cuenv i unlock` | Show who holds the lock, or release it by identifier |
 
-`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. `plan` and `state` honour the global `--json` flag.
+`i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
 
 ## How state is keyed
 
@@ -33,7 +33,7 @@ State is multi-tenant by construction. Every record is keyed by:
 | Discriminator | the project's `name` | `web` |
 | Address | resource `type` and its name in `infrastructure.resources` | `random_pet.server` |
 
-cuenv refuses to run without a CUE module path, and refuses to run when another project in the same module uses the same `name` — otherwise the two would share state and each would plan to delete the other's resources. Moving a project to a different module or renaming it starts from empty state.
+cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy` refuse to run when another instance anywhere in the module — any directory, any CUE package — has the same `name` and an `infrastructure` block; otherwise the two would share state and each would plan to delete the other's resources. CUE instances inherit fields from their parent directories, so a child directory that sets no `name` of its own shares its parent's name and, if it inherits the `infrastructure` block too, is a conflict. The check evaluates every instance in the module and fails closed: if any instance cannot be evaluated, the command stops and names it. `state` and `unlock` skip the check so a broken sibling never blocks recovery. Moving a project to a different module or renaming it starts from empty state.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
 The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database. For isolation between teams or customers, give each tenant its own Turso database and token.
@@ -252,7 +252,7 @@ Resources removed from `infrastructure.resources` are deleted. Stored state is o
 - **State store outages.** If the provider changed a resource but the change cannot be recorded (after retries), cuenv saves the new state under your user state directory (`~/.local/state/cuenv/infrastructure/unrecorded/` on Linux, readable only by you, never inside the project) and tells you, instead of silently forgetting a real resource. `plan`, `apply` and `destroy` refuse to run until `cuenv i state recover` has recorded those files. On an ephemeral continuous integration runner the directory disappears with the runner, so fix the state store and re-run on the same machine where possible. Errors never include state values.
 - **Stale locks.** `cuenv i unlock` shows who holds the lock and since when; `cuenv i unlock <lock identifier>` releases exactly that lock.
 - **Removed providers.** `cuenv i state remove <address>` forgets one managed resource without touching the real object — the escape hatch when its provider is gone.
-- **Exit codes.** `2` configuration, `3` evaluation, `4` another run holds the lock or changed state since you confirmed (retry later), `5` other infrastructure failures.
+- **Exit codes.** `2` configuration, `3` evaluation (including any instance in the module that cannot be evaluated), `4` another run holds the lock or changed state since you confirmed (retry later), `5` other infrastructure failures, `130` interrupted. JSON error codes are `infrastructure`, `infrastructure_locked`, `infrastructure_plan_changed` and `infrastructure_interrupted`.
 
 ## Current limitations
 
