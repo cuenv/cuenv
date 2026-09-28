@@ -73,11 +73,24 @@ state) are encoded by cuenv.
    object keeps the stored taint and dependencies; a create that fails or
    returns unknown values is tainted; a delete that returns an object without
    errors is an error and the object stays recorded; a create or update that
-   returns null without errors is an error and leaves state untouched.
+   returns null without errors is an error and leaves state untouched. Create
+   and update results without errors are checked against the plan by a port
+   of `AssertObjectCompatible`; an inconsistent result is an error, and a
+   create is recorded tainted.
+4. Delete: providers that advertise the `plan_destroy` capability are asked
+   to plan every delete (destroy mode and orphans) with a null configuration;
+   their errors, deferrals and non-null plans refuse the delete, and the
+   planned private data reaches `ApplyResourceChange`. This is how provider
+   deletion protection works.
 
-Values a provider returns as JSON are converted to MessagePack (lossless,
-since JSON cannot carry unknown values); `dynamic` wrappers are unwrapped at
-any depth.
+Stored state whose schema version is newer than the provider's is refused
+before the provider sees it (a downgraded provider would silently drop
+attributes). Values a provider returns as JSON are converted to MessagePack
+(lossless, since JSON cannot carry unknown values); values in `dynamic`
+slots keep their concrete type through MessagePack, JSON and stored state, and
+types are inferred only for CUE configuration. Set-typed configuration is
+deduplicated, as Terraform's conversion does. A plan is checked against the
+store at the start of `apply`, so a stale or already applied plan is refused.
 
 Declared resources are ordered by `dependsOn`; orphans (recorded but no
 longer declared) are deleted first in reverse dependency order.
@@ -91,7 +104,16 @@ cuenv_infrastructure_resources(
   state_json, private, dependencies_json, serial, created_at, updated_at)
 
 cuenv_infrastructure_locks(module_path, project, lock_identifier, holder, acquired_at)
+
+cuenv_infrastructure_owners(module_path, project, instance, claimed_at)
 ```
+
+- The owner row records which CUE instance (`<directory relative to the module
+  root>:<package>`) manages the tenant. The first locked run claims it; any
+  other instance is refused until `cuenv infrastructure state adopt` transfers
+  ownership explicitly. This is the fence against two instances sharing a
+  project name where module discovery cannot see both (directories the CUE
+  loader skips, nested modules, other checkouts).
 
 - The tenant is the CUE module path from `cue.mod/module.cue` (major-version
   suffix stripped); the project name discriminates within it. `TenantKey`
@@ -133,7 +155,8 @@ applied and destroyed `random_pet` through `cuenv i`.
 Pitfall found during that verification: an import named `random` is shadowed
 inside `providers: random: {...}`. cuenv's Go bridge then exports the
 undefined reference as `null` instead of failing. Documentation prescribes an
-alias (`randomProvider`); the bridge behaviour is tracked below.
+alias (`randomProvider`). The bridge now fails evaluation instead: the
+infrastructure command requires the block to be concrete (`concretePaths`).
 
 ## Review practice
 
@@ -220,6 +243,49 @@ Rejected, with reasons:
 - Removing the always-empty `identity` column. It is reserved for resource
   identity (next step 2).
 
+### Milestone 3 review (after the milestone 2 fixes)
+
+The same five personas re-ran against the fixed build. Nothing corrupted
+state, but five findings were serious:
+
+- **Silent typos.** Projects embed `schema.#Project` at file level, which
+  bypasses closedness for the `infrastructure` block, so `resource:` instead of
+  `resources:` planned the deletion of everything. Fixed on both sides: the
+  schema wraps definition references so closedness holds, and the Rust types
+  reject unknown fields.
+- **Tenancy through skipped directories.** The CUE loader's module walk skips
+  directories starting with `_` or `.`, `testdata` and nested modules, yet
+  `--path` can target them, so the fail-closed duplicate check could not see
+  them. Fixed with the owner record in the state store (see State) and an
+  explicit refusal when the target is invisible to the walk.
+- **Destroy bypassed deletion protection.** `plan_destroy` was not honoured.
+- **Apply results were not checked** against the plan (`AssertObjectCompatible`).
+- **`state recover` overwrote newer state.** Unrecorded files now record the
+  version they replace, and recovery is a compare-and-swap (`--force` to
+  override).
+
+Also fixed: dynamic values keep their types; newer stored schema versions are
+refused; set configuration is deduplicated; a replacement honours a stop
+between its halves; provider process groups are killed as a whole, and on
+Linux providers die with cuenv; SIGHUP and SIGQUIT are handled like SIGTERM;
+socket directories are removed on a forced exit; the unrecorded store refuses
+symbolic links and foreign owners and writes atomically; store errors never
+carry request or response bodies; control characters are stripped from
+provider output and database strings; the registry client is HTTPS-only
+across redirects; JSON mode keeps its one-document contract on every exit
+path.
+
+Decision reversed: interactive `apply` now holds the lock from planning
+through the confirmation prompt, as Terraform does, instead of re-planning
+under the lock and comparing digests. The re-plan could never be both safe and
+stable (volatile attributes changed the digest on every run).
+
+Deferred: the Nix checks that would run the fake-provider suite and the
+bridge's `go test` in continuous integration (written once the local Nix gate
+works again), and moving older cuenv-specific helpers (`injectTaskNames`,
+`isProject`, `Projects`) out of cuengine, which predates this work and touches
+every command.
+
 ## Validation
 
 - Unit tests: `cty` codec and set equality, schema conversion, normalization
@@ -246,11 +312,10 @@ Rejected, with reasons:
    configuration reference another's attributes, propagate unknowns through
    planning, and resolve them during apply in dependency order. Derive
    `dependsOn` from references.
-2. Protocol fidelity (milestone 3): resource identity (`GetResourceIdentitySchemas`
-   and identity on read, plan and apply); typed values so dynamic attributes keep list, set and map types and
-   numbers keep full precision; `AssertObjectCompatible` on apply results;
-   honouring `plan_destroy`; masking by sensitive path rather than whole
-   top-level attribute.
+2. Protocol fidelity: resource identity (`GetResourceIdentitySchemas` and
+   identity on read, plan and apply); numbers with full precision beyond 64-bit
+   floats and integers; masking by sensitive path rather than whole top-level
+   attribute.
 3. Tests that run in continuous integration: build the fake provider and run
    it with a mock Hrana server in a Nix check, so the lifecycle suite no longer
    needs real binaries or is ignored; add `go test` for the cuengine bridge,
@@ -260,7 +325,7 @@ Rejected, with reasons:
    definition map) so `type`, `version` and `configuration` cannot disagree.
    Needs a decision across both repositories.
 5. Data sources (`ReadDataSource`) and imports (`ImportResourceState`),
-   `state rm`, `--target`.
+   `--target`.
 6. Parallel apply across independent resources.
 7. Provider version constraints, lock file entries in `cuenv.lock`, and GPG
    verification of `SHA256SUMS`. Until then the cache manifest only detects
