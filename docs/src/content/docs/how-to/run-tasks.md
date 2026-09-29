@@ -680,11 +680,11 @@ Tasks are hermetic by default (`hermetic: true`). Today that means two things:
   cuenv's fixed hermetic environment defaults.
 
 By default, every hermetic task starts with `HOME=/home/builder`,
-`USER=builder`, and `LOGNAME=builder`. That path is paired with the stable
-`builder` identity; cuenv never passes through the caller's home. These values
-are included in the action key, so they stay
-consistent across machines. Declared environment values can override the
-defaults. For host-executed tasks, use `hermetic: false` when a task needs the
+`USER=builder`, and `LOGNAME=builder`. If the fixed home is unavailable or
+unwritable, the host executor creates a private Cuenv-managed home and records
+that selected path in the action key. Cuenv never passes through the caller's
+home. Declared environment values can override the defaults. For
+host-executed tasks, use `hermetic: false` when a task needs the
 caller's actual home and ambient environment. Dagger tasks use their
 configured container image and do not inherit the caller's home.
 

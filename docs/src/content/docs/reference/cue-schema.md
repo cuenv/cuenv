@@ -428,10 +428,12 @@ tasks: build: schema.#Task & {
   key would describe a fraction of what produced the result. The skip is
   reported as `task is not hermetic`.
 - **Cache key contents.** The key records the resolved `inputs`, the command,
-  the CUE-declared environment, the platform, fixed hermetic defaults, and the
-  host values of any names in `passthrough`. By default, hermetic tasks receive
-  `HOME=/home/builder`, `USER=builder`, and `LOGNAME=builder`; host `HOME`
-  cannot be passed through. Task env passthrough markers cannot select host
+  the CUE-declared environment, the platform, hermetic defaults, and the host
+  values of any names in `passthrough`. By default, hermetic tasks receive
+  `HOME=/home/builder`, `USER=builder`, and `LOGNAME=builder`. If the fixed home
+  is not writable, the host executor provisions a Cuenv-managed writable home;
+  the selected path is included in the action key. Host `HOME` cannot be passed
+  through. Task env passthrough markers cannot select host
   `HOME` either. Declared environment values override these defaults. For host
   execution, use `hermetic: false` to inherit the caller's home and ambient
   environment; such tasks are never cached. Dagger tasks use the configured
