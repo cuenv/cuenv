@@ -445,6 +445,8 @@ pub enum Command {
         package: String,
         /// What to do.
         action: infrastructure::InfrastructureAction,
+        /// Complete named infrastructure configuration to select.
+        environment: Option<String>,
     },
 }
 

@@ -1,6 +1,6 @@
 ---
 name: cuenv-infrastructure
-description: Use for cuenv infrastructure as code — the project `infrastructure` block, Terraform provider plugins driven over gRPC, typed provider schemas from the github.com/cuenv/terraform CUE registry modules, Turso state keyed by CUE module path and project, and the `cuenv infrastructure` (short form `cuenv i`) plan, apply, destroy, state and unlock commands. Covers schema/infrastructure.cue.
+description: Use for cuenv infrastructure as code — the project `infrastructure` block, Terraform provider plugins driven over gRPC, typed provider schemas from the github.com/cuenv/terraform CUE registry modules, Turso state keyed by CUE module path, project and optional named environment, with a separate legacy no-flag namespace, and the `cuenv infrastructure` (short form `cuenv i`) plan, apply, destroy, state and unlock commands. Covers schema/infrastructure.cue.
 ---
 
 # Infrastructure (Terraform provider plugins)
@@ -23,24 +23,30 @@ No abbreviations anywhere in this feature: schema definitions, fields, command n
 - Modules live at `github.com/cuenv/terraform/terraform/<namespace>/<type>@v<major>`; the package name is `<type>`; definitions are `#ProviderConfig`, `#Resource_<type>`, `#DataSource_<type>` and friends. They are closed, so unknown arguments fail evaluation.
 - Always recommend an import alias that matches no field name in scope — not a provider key, resource key, `state`, `providers`, `resources` or `name` (for example `randomProvider`). A shadowed import fails evaluation with `undefined field`.
 - Package names follow the generator: characters outside letters, digits and `_` become `_`, and reserved CUE words or names not starting with a letter get a `provider_` prefix (`hashicorp/null` → `provider_null`, imported with an explicit `:provider_null` qualifier).
-- The `infrastructure` block must be concrete: the infrastructure command (and only it) passes `concretePaths: ["infrastructure"]` to the cuengine bridge when evaluating its target instance (a generic option; cuengine itself stays free of cuenv-specific names), so undefined references, missing required arguments and non-concrete values fail evaluation. Other commands never evaluate with that option.
+- Infrastructure evaluation requires common state plus the selected named configuration to be concrete. Without `--env`, it requires the legacy state/providers/resources that are present; unselected named configurations are pruned before DTO deserialization. The infrastructure object is exported leniently so Rust DTO validation still rejects unknown top-level fields. Other commands do not apply these infrastructure concrete paths.
 - Provider `version` and the module major version must match.
-- The schema checks references by name: every `dependsOn` entry must be a declared resource, and every resource's provider (explicit `provider` or the `type` prefix) must be declared. Cycles pass the schema and are reported by the engine.
+- CUE keeps provider and resource objects closed and validates their typed configuration. Before reading state or launching any provider, the Rust engine checks every provider source and install choice, every resource's provider, and all `dependsOn` entries and cycles in the selected configuration. It requires exactly one provider `version` or `path`, including for unused provider declarations.
 - When the package name differs from the last import path element (`hashicorp/google-beta` → `google_beta`), the import needs an explicit qualifier: `…/google-beta@v8:google_beta`.
 - CUE errors usually, but not always, carry a file position; do not promise one.
 - In-repository examples stay untyped so they evaluate without network access in the Nix sandbox.
 
+## Named environments and secrets
+
+- Global `--env NAME` selects the complete `infrastructure.environments.NAME` provider/resource set and, when present, the matching `env.environment.NAME` overlay. The common state backend is outside the selection; do not deep-merge with top-level providers/resources. Unknown or incomplete selections must fail before backend/provider side effects.
+- Project secret values use Cuenv's existing runtime resolvers. `allowInfrastructure` names exact command actions (`plan`, `apply`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt`, `unlock`). A denied project variable must also be withheld from provider host-environment inheritance.
+- The plan digest must distinguish legacy, explicit named environments and resolved provider-environment identity without exposing environment values.
+
 ## Status guardrails
 
 - `#Infrastructure` is a partial proof of concept. Do not present it as a Terraform replacement.
-- State is always keyed by CUE module path (tenant) and project name (discriminator). Never suggest a way to write state without both; `TenantKey` enforces it, and `plan`, `apply` and `destroy` refuse a project name shared with any other instance that has an `infrastructure` block, in any directory or CUE package of the module (child directories inherit their parent's `name`), failing closed when any instance cannot be evaluated; `state` and `unlock` skip the check. Tenancy is a naming boundary, not a security boundary: anyone with the database token can reach every tenant.
-- The owner record (`cuenv_infrastructure_owners`) binds a tenant to one CUE instance (`<directory>:<package>`); never bypass it. Moving a project means `cuenv i state adopt`, not deleting the row.
+- State is keyed by CUE module path and project name, plus an optional named environment. `TenantKey::new` preserves the legacy no-flag namespace; `TenantKey::with_environment` creates an isolated named namespace, including explicit `default`. Never fall back between them. `plan`, `apply` and `destroy` still refuse a project name shared with any other infrastructure instance in any directory or CUE package of the module (child directories inherit their parent's `name`), failing closed when any instance cannot be evaluated; `state` and `unlock` skip the uniqueness check. Tenancy is a naming boundary, not a security boundary: anyone with the database token can reach every tenant.
+- Legacy owners remain in `cuenv_infrastructure_owners`; named-environment owners use `cuenv_infrastructure_environment_owners`, each binding that state identity to one CUE instance (`<directory>:<package>`). Never bypass ownership. Moving a project means `cuenv i state adopt`, not deleting the row.
 - Interactive `apply` and `destroy` hold the lock from planning through the confirmation prompt, as Terraform does; there is no re-plan. Declining exits 1.
 - `state recover` is a compare-and-swap against the version the unrecorded file replaced; `--force` is for an operator who has checked both objects, never a default.
 - Every state write is fenced by the caller's lock (`StateStore::put`/`delete` take the `StateLock`); never add an unfenced write path. Failed creates are recorded as tainted. Changes that cannot be recorded are saved under the user state directory (`cuenv/infrastructure/unrecorded/`, never the project tree) and re-recorded with `cuenv i state recover`; `plan`, `apply` and `destroy` refuse to run while such files exist. Errors never carry state values.
-- Provider processes must not inherit the state token (`LaunchOptions::withheld_environment_variables`).
+- Provider processes preserve the caller environment, overlay resolved and policy-authorized project variables, then remove every denied project variable and the state token. `allowInfrastructure` filters before secret resolution; state-only actions resolve only the configured backend token. Register all resolved secret parts for redaction before state/provider output.
 - Interrupts follow Terraform: the first SIGINT, SIGTERM, SIGHUP or SIGQUIT asks running providers to stop and records what they return; the second kills provider process groups, waits briefly for a record in flight, releases the lock within a bound and prints the lock identifier (registered before acquisition, so a lock taken during the interrupt is still reported). Never add an exit path that skips recording or leaves providers running.
-- Each managed resource is one row in `cuenv_infrastructure_resources`; state is `cty` JSON so `UpgradeResourceState` can migrate it. Do not store MessagePack or re-encode planned states before `ApplyResourceChange`.
+- Each legacy resource is one row in `cuenv_infrastructure_resources`; named-environment resources use `cuenv_infrastructure_environment_resources`, keyed by module, project, environment and address. Schema v4 leaves legacy tables unchanged and has no cross-family fallback. State is `cty` JSON so `UpgradeResourceState` can migrate it. Do not store MessagePack or re-encode planned states before `ApplyResourceChange`.
 - Planned states pass through the ports of Terraform's `ProposedNew` and `AssertPlanValid` in `object_change.rs`; never relax those checks to make a provider pass — report the provider bug instead.
 - Resources cannot reference other resources' attributes. Use `dependsOn` strings for ordering only.
 - Provider `version` must be exact; `path` bypasses the registry. No version constraints, lockfile entries, or GPG verification.
@@ -68,5 +74,5 @@ Record confirmed findings and their resolution in the pull request; findings tha
 
 - "Pass the database identifier from one resource into another." Not supported yet; explain the reference limitation and point at the design specification's next steps.
 - "Use `~> 5.0` for the provider version." Exact versions only.
-- "Share state between two projects." Each project is its own discriminator; sharing requires the same module path and project name.
+- "Share state between environments." Each explicit environment has separate rows, locks and ownership; only runs with the same module path, project name and environment share that state. No-flag legacy state is distinct.
 - "Write `random.#Resource_random_pet` inside `providers: random:`." Explain the shadowing pitfall and use an alias.

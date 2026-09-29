@@ -97,6 +97,47 @@ const MIGRATIONS: &[Migration] = &[
                 PRIMARY KEY (module_path, project)
             ) WITHOUT ROWID"],
     },
+    Migration {
+        version: 4,
+        statements: &[
+            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_resources (
+                module_path TEXT NOT NULL,
+                project TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                provider_source TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                state_json TEXT NOT NULL,
+                private BLOB,
+                dependencies_json TEXT NOT NULL DEFAULT '[]',
+                tainted INTEGER NOT NULL DEFAULT 0,
+                identity_json TEXT,
+                serial INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (module_path, project, environment, resource_type, resource_name)
+            ) WITHOUT ROWID",
+            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_locks (
+                module_path TEXT NOT NULL,
+                project TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                lock_identifier TEXT NOT NULL,
+                holder TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                PRIMARY KEY (module_path, project, environment)
+            ) WITHOUT ROWID",
+            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_owners (
+                module_path TEXT NOT NULL,
+                project TEXT NOT NULL,
+                environment TEXT NOT NULL,
+                instance TEXT NOT NULL,
+                claimed_at TEXT NOT NULL,
+                PRIMARY KEY (module_path, project, environment)
+            ) WITHOUT ROWID",
+        ],
+    },
 ];
 
 /// Newest schema version this build knows.
@@ -109,6 +150,9 @@ const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
 const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
 const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
 const OWNERS_TABLE: &str = "cuenv_infrastructure_owners";
+const ENVIRONMENT_RESOURCES_TABLE: &str = "cuenv_infrastructure_environment_resources";
+const ENVIRONMENT_LOCKS_TABLE: &str = "cuenv_infrastructure_environment_locks";
+const ENVIRONMENT_OWNERS_TABLE: &str = "cuenv_infrastructure_environment_owners";
 
 const CREATE_SCHEMA_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_schema (version INTEGER NOT NULL)";
@@ -136,6 +180,82 @@ const SELECT_RESOURCE: &str = "SELECT resource_type, resource_name, provider, pr
 
 const SELECT_OWNER: &str = "SELECT instance, claimed_at FROM cuenv_infrastructure_owners \
      WHERE module_path = ? AND project = ?";
+
+/// The legacy tables remain physically separate from named-environment state.
+/// Table names are fixed by this module, never derived from user input.
+struct StateTables {
+    resources: &'static str,
+    locks: &'static str,
+    owners: &'static str,
+    named: bool,
+}
+
+impl StateTables {
+    fn for_tenant(tenant: &TenantKey) -> Self {
+        if tenant.environment().is_some() {
+            Self {
+                resources: ENVIRONMENT_RESOURCES_TABLE,
+                locks: ENVIRONMENT_LOCKS_TABLE,
+                owners: ENVIRONMENT_OWNERS_TABLE,
+                named: true,
+            }
+        } else {
+            Self {
+                resources: RESOURCES_TABLE,
+                locks: LOCKS_TABLE,
+                owners: OWNERS_TABLE,
+                named: false,
+            }
+        }
+    }
+
+    fn tenant_predicate(&self) -> &'static str {
+        if self.named {
+            "module_path = ? AND project = ? AND environment = ?"
+        } else {
+            "module_path = ? AND project = ?"
+        }
+    }
+
+    fn tenant_columns(&self) -> &'static str {
+        if self.named {
+            "module_path, project, environment"
+        } else {
+            "module_path, project"
+        }
+    }
+
+    fn tenant_values(&self) -> &'static str {
+        if self.named { "?, ?, ?" } else { "?, ?" }
+    }
+
+    fn resource_columns(&self) -> &'static str {
+        if self.named {
+            "module_path, project, environment, resource_type, resource_name"
+        } else {
+            "module_path, project, resource_type, resource_name"
+        }
+    }
+
+    fn lock_held(&self) -> String {
+        format!(
+            "EXISTS (SELECT 1 FROM {} WHERE {} AND lock_identifier = ?)",
+            self.locks,
+            self.tenant_predicate()
+        )
+    }
+
+    fn insert_resource(&self) -> String {
+        format!(
+            "INSERT INTO {} ({}, resource_type, resource_name, provider, provider_source, \
+             schema_version, state_json, private, dependencies_json, tainted, identity_json, \
+             serial, created_at, updated_at) SELECT {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?",
+            self.resources,
+            self.tenant_columns(),
+            self.tenant_values()
+        )
+    }
+}
 
 /// Largest HTTP error body read (and then only parsed for an error code,
 /// never quoted), in bytes.
@@ -473,8 +593,16 @@ impl TursoStateStore {
     async fn stored_schema(&self) -> Result<StoredSchema> {
         let tables = self
             .execute(Statement::new(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?)",
-                [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE, OWNERS_TABLE]
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    SCHEMA_TABLE,
+                    RESOURCES_TABLE,
+                    LOCKS_TABLE,
+                    OWNERS_TABLE,
+                    ENVIRONMENT_RESOURCES_TABLE,
+                    ENVIRONMENT_LOCKS_TABLE,
+                    ENVIRONMENT_OWNERS_TABLE,
+                ]
                     .into_iter()
                     .map(HranaValue::text)
                     .collect(),
@@ -502,9 +630,16 @@ impl TursoStateStore {
         }
         Ok(StoredSchema {
             version,
-            resources_table: present(RESOURCES_TABLE),
-            locks_table: present(LOCKS_TABLE),
-            owners_table: present(OWNERS_TABLE),
+            legacy: TablePresence {
+                resources: present(RESOURCES_TABLE),
+                locks: present(LOCKS_TABLE),
+                owners: present(OWNERS_TABLE),
+            },
+            named: TablePresence {
+                resources: present(ENVIRONMENT_RESOURCES_TABLE),
+                locks: present(ENVIRONMENT_LOCKS_TABLE),
+                owners: present(ENVIRONMENT_OWNERS_TABLE),
+            },
         })
     }
 
@@ -517,7 +652,19 @@ impl TursoStateStore {
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&address.resource_type));
         arguments.push(HranaValue::text(&address.name));
-        self.execute(Statement::new(SELECT_RESOURCE, arguments))
+        let tables = StateTables::for_tenant(tenant);
+        let query = if tables.named {
+            format!(
+                "SELECT resource_type, resource_name, provider, provider_source, schema_version, \
+                 state_json, private, dependencies_json, tainted, identity_json, serial FROM {} \
+                 WHERE {} AND resource_type = ? AND resource_name = ?",
+                tables.resources,
+                tables.tenant_predicate()
+            )
+        } else {
+            SELECT_RESOURCE.to_string()
+        };
+        self.execute(Statement::new(query, arguments))
             .await?
             .rows
             .first()
@@ -527,8 +674,18 @@ impl TursoStateStore {
 
     /// Read the tenant's owner row, with retries.
     async fn read_owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+        let tables = StateTables::for_tenant(tenant);
+        let query = if tables.named {
+            format!(
+                "SELECT instance, claimed_at FROM {} WHERE {}",
+                tables.owners,
+                tables.tenant_predicate()
+            )
+        } else {
+            SELECT_OWNER.to_string()
+        };
         let result = self
-            .execute(Statement::new(SELECT_OWNER, tenant_arguments(tenant)))
+            .execute(Statement::new(query, tenant_arguments(tenant)))
             .await?;
         Ok(result.rows.first().map(|row| {
             let field = |index: usize| {
@@ -594,10 +751,14 @@ impl TursoStateStore {
 
     /// Read the tenant's lock row, with retries.
     async fn read_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
+        let tables = StateTables::for_tenant(tenant);
         let result = self
             .execute(Statement::new(
-                "SELECT lock_identifier, holder, acquired_at FROM cuenv_infrastructure_locks \
-                 WHERE module_path = ? AND project = ?",
+                format!(
+                    "SELECT lock_identifier, holder, acquired_at FROM {} WHERE {}",
+                    tables.locks,
+                    tables.tenant_predicate()
+                ),
                 tenant_arguments(tenant),
             ))
             .await?;
@@ -647,25 +808,23 @@ fn pipeline_url(url: &str) -> Result<reqwest::Url> {
         "libsql" | "https" | "wss" => ("https", Transport::Encrypted),
         "http" | "ws" => ("http", Transport::Plaintext),
         _ => {
-            return Err(InfrastructureError::configuration(format!(
-                "unsupported Turso URL scheme '{}://'; expected libsql://, https:// or \
-                 wss:// (http:// and ws:// only for a loopback host)",
-                crate::error::strip_control_characters(&scheme)
-            )));
+            return Err(InfrastructureError::configuration(
+                "unsupported Turso URL scheme; expected libsql://, https:// or wss:// \
+                 (http:// and ws:// only for a loopback host)",
+            ));
         }
     };
     let parts = UrlParts::split(remainder)?;
     if transport == Transport::Plaintext && !is_loopback_host(parts.host) {
-        return Err(InfrastructureError::configuration(format!(
-            "Turso URL uses plaintext {scheme}:// for non-loopback host '{}', which would \
-             send the authentication token unencrypted; non-loopback URLs must use libsql://, \
-             https:// or wss://",
-            parts.host
-        )));
+        return Err(InfrastructureError::configuration(
+            "Turso URL uses plaintext transport for a non-loopback host, which would send the \
+             authentication token unencrypted; non-loopback URLs must use libsql://, https:// \
+             or wss://",
+        ));
     }
     let mut parsed =
-        reqwest::Url::parse(&format!("{http_scheme}://{remainder}")).map_err(|error| {
-            InfrastructureError::configuration(format!("invalid Turso URL: {error}"))
+        reqwest::Url::parse(&format!("{http_scheme}://{remainder}")).map_err(|_| {
+            InfrastructureError::configuration("invalid Turso URL: malformed URL components")
         })?;
     if parsed.host_str().is_none_or(str::is_empty) {
         return Err(InfrastructureError::configuration(
@@ -819,10 +978,14 @@ fn now() -> String {
 }
 
 fn tenant_arguments(tenant: &TenantKey) -> Vec<HranaValue> {
-    vec![
+    let mut arguments = vec![
         HranaValue::text(tenant.module_path()),
         HranaValue::text(tenant.project()),
-    ]
+    ];
+    if let Some(environment) = tenant.environment() {
+        arguments.push(HranaValue::text(environment));
+    }
+    arguments
 }
 
 #[async_trait]
@@ -868,16 +1031,25 @@ impl StateStore for TursoStateStore {
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
         let schema = self.stored_schema().await?;
-        if !schema.resources_table {
+        if !schema.resources_for(tenant) {
             // Never migrated: nothing has been recorded yet.
             return Ok(Vec::new());
         }
         // Version 0 is a table created before the schema was versioned, which
         // has the version 1 layout.
-        let query = if schema.version >= TAINT_AND_IDENTITY_SCHEMA_VERSION {
-            SELECT_RESOURCES
+        let tables = StateTables::for_tenant(tenant);
+        let query = if tables.named {
+            format!(
+                "SELECT resource_type, resource_name, provider, provider_source, schema_version, \
+                 state_json, private, dependencies_json, tainted, identity_json, serial FROM {} \
+                 WHERE {} ORDER BY resource_type, resource_name",
+                tables.resources,
+                tables.tenant_predicate()
+            )
+        } else if schema.version >= TAINT_AND_IDENTITY_SCHEMA_VERSION {
+            SELECT_RESOURCES.to_string()
         } else {
-            SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY
+            SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY.to_string()
         };
         let result = self
             .execute(Statement::new(query, tenant_arguments(tenant)))
@@ -892,6 +1064,7 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         resource: &ManagedResource,
     ) -> Result<()> {
+        let tables = StateTables::for_tenant(tenant);
         let columns = RecordColumns::of(resource)?;
         let mut arguments = columns.insert_arguments(tenant, resource);
         arguments.extend(lock_arguments(tenant, lock));
@@ -900,14 +1073,18 @@ impl StateStore for TursoStateStore {
         let written = self
             .execute(Statement::carrying_state(
                 format!(
-                    "{INSERT_RESOURCE} WHERE {LOCK_HELD} \
-                     ON CONFLICT (module_path, project, resource_type, resource_name) DO UPDATE SET \
+                    "{} WHERE {} \
+                     ON CONFLICT ({}) DO UPDATE SET \
                      provider = excluded.provider, provider_source = excluded.provider_source, \
                      schema_version = excluded.schema_version, state_json = excluded.state_json, \
                      private = excluded.private, dependencies_json = excluded.dependencies_json, \
                      tainted = excluded.tainted, identity_json = excluded.identity_json, \
-                     serial = cuenv_infrastructure_resources.serial + 1, \
-                     updated_at = excluded.updated_at"
+                     serial = {}.serial + 1, \
+                     updated_at = excluded.updated_at",
+                    tables.insert_resource(),
+                    tables.lock_held(),
+                    tables.resource_columns(),
+                    tables.resources
                 ),
                 arguments,
             ))
@@ -928,6 +1105,7 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         put: &ConditionalPut<'_>,
     ) -> Result<()> {
+        let tables = StateTables::for_tenant(tenant);
         let resource = put.resource;
         let columns = RecordColumns::of(resource)?;
         let statement = match put.expected {
@@ -936,9 +1114,10 @@ impl StateStore for TursoStateStore {
                 arguments.extend(lock_arguments(tenant, lock));
                 Statement::carrying_state(
                     format!(
-                        "{INSERT_RESOURCE} WHERE {LOCK_HELD} \
-                         ON CONFLICT (module_path, project, resource_type, resource_name) \
-                         DO NOTHING"
+                        "{} WHERE {} ON CONFLICT ({}) DO NOTHING",
+                        tables.insert_resource(),
+                        tables.lock_held(),
+                        tables.resource_columns()
                     ),
                     arguments,
                 )
@@ -952,12 +1131,15 @@ impl StateStore for TursoStateStore {
                 arguments.extend(lock_arguments(tenant, lock));
                 Statement::carrying_state(
                     format!(
-                        "UPDATE cuenv_infrastructure_resources SET provider = ?, \
+                        "UPDATE {} SET provider = ?, \
                          provider_source = ?, schema_version = ?, state_json = ?, private = ?, \
                          dependencies_json = ?, tainted = ?, identity_json = ?, \
                          serial = serial + 1, updated_at = ? \
-                         WHERE module_path = ? AND project = ? AND resource_type = ? \
-                         AND resource_name = ? AND serial = ? AND {LOCK_HELD}"
+                         WHERE {} AND resource_type = ? \
+                         AND resource_name = ? AND serial = ? AND {}",
+                        tables.resources,
+                        tables.tenant_predicate(),
+                        tables.lock_held()
                     ),
                     arguments,
                 )
@@ -992,21 +1174,20 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         address: &ResourceAddress,
     ) -> Result<()> {
+        let tables = StateTables::for_tenant(tenant);
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(&address.resource_type));
+        arguments.push(HranaValue::text(&address.name));
+        arguments.extend(lock_arguments(tenant, lock));
         let deleted = self
             .execute(Statement::new(
-                "DELETE FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
-                 AND resource_type = ? AND resource_name = ? \
-                 AND EXISTS (SELECT 1 FROM cuenv_infrastructure_locks \
-                 WHERE module_path = ? AND project = ? AND lock_identifier = ?)",
-                vec![
-                    HranaValue::text(tenant.module_path()),
-                    HranaValue::text(tenant.project()),
-                    HranaValue::text(&address.resource_type),
-                    HranaValue::text(&address.name),
-                    HranaValue::text(tenant.module_path()),
-                    HranaValue::text(tenant.project()),
-                    HranaValue::text(&lock.lock_identifier),
-                ],
+                format!(
+                    "DELETE FROM {} WHERE {} AND resource_type = ? AND resource_name = ? AND {}",
+                    tables.resources,
+                    tables.tenant_predicate(),
+                    tables.lock_held()
+                ),
+                arguments,
             ))
             .await?;
         // Nothing deleted means the row was already gone (possibly by an
@@ -1028,14 +1209,15 @@ impl StateStore for TursoStateStore {
         request: &LockRequest<'_>,
     ) -> Result<StateLock> {
         request.lock.validate()?;
+        let tables = StateTables::for_tenant(tenant);
         let holder = request.holder;
         // Every write needs the lock, so this is where writes fail closed on
         // a schema this build has not migrated to.
         let schema = self.stored_schema().await?;
         if schema.version != LATEST_SCHEMA_VERSION
-            || !schema.resources_table
-            || !schema.locks_table
-            || !schema.owners_table
+            || !schema.resources_for(tenant)
+            || !schema.locks_for(tenant)
+            || !schema.owners_for(tenant)
         {
             return Err(InfrastructureError::state(format!(
                 "Turso state schema is at version {} but this cuenv writes version \
@@ -1044,16 +1226,20 @@ impl StateStore for TursoStateStore {
             )));
         }
         let lock_identifier = request.lock.lock_identifier.clone();
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(&lock_identifier));
+        arguments.push(HranaValue::text(holder));
+        arguments.push(HranaValue::text(&now()));
         let insert = Statement::new(
-            "INSERT INTO cuenv_infrastructure_locks (module_path, project, lock_identifier, holder, acquired_at) \
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT (module_path, project) DO NOTHING",
-            vec![
-                HranaValue::text(tenant.module_path()),
-                HranaValue::text(tenant.project()),
-                HranaValue::text(&lock_identifier),
-                HranaValue::text(holder),
-                HranaValue::text(&now()),
-            ],
+            format!(
+                "INSERT INTO {} ({}, lock_identifier, holder, acquired_at) \
+                 VALUES ({}, ?, ?, ?) ON CONFLICT ({}) DO NOTHING",
+                tables.locks,
+                tables.tenant_columns(),
+                tables.tenant_values(),
+                tables.tenant_columns()
+            ),
+            arguments,
         );
         let ours = |information: &LockInformation| information.lock_identifier == lock_identifier;
         let acquired = || StateLock {
@@ -1120,8 +1306,13 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+        let tables = StateTables::for_tenant(tenant);
         self.execute(Statement::new(
-            "DELETE FROM cuenv_infrastructure_locks WHERE module_path = ? AND project = ? AND lock_identifier = ?",
+            format!(
+                "DELETE FROM {} WHERE {} AND lock_identifier = ?",
+                tables.locks,
+                tables.tenant_predicate()
+            ),
             lock_arguments(tenant, lock),
         ))
         .await
@@ -1130,7 +1321,7 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
-        if !self.stored_schema().await?.locks_table {
+        if !self.stored_schema().await?.locks_for(tenant) {
             // Never migrated: nobody can have taken the lock.
             return Ok(None);
         }
@@ -1139,18 +1330,20 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, lock_identifier = %lock_identifier))]
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
-        if !self.stored_schema().await?.locks_table {
+        if !self.stored_schema().await?.locks_for(tenant) {
             return Ok(false);
         }
+        let tables = StateTables::for_tenant(tenant);
+        let mut arguments = tenant_arguments(tenant);
+        arguments.push(HranaValue::text(lock_identifier));
         let released = self
             .execute(Statement::new(
-                "DELETE FROM cuenv_infrastructure_locks \
-                 WHERE module_path = ? AND project = ? AND lock_identifier = ?",
-                vec![
-                    HranaValue::text(tenant.module_path()),
-                    HranaValue::text(tenant.project()),
-                    HranaValue::text(lock_identifier),
-                ],
+                format!(
+                    "DELETE FROM {} WHERE {} AND lock_identifier = ?",
+                    tables.locks,
+                    tables.tenant_predicate()
+                ),
+                arguments,
             ))
             .await?;
         Ok(released.affected_row_count > 0)
@@ -1158,7 +1351,7 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
-        if !self.stored_schema().await?.owners_table {
+        if !self.stored_schema().await?.owners_for(tenant) {
             // Never migrated, or migrated by a cuenv without owner records.
             return Ok(None);
         }
@@ -1172,6 +1365,7 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         claim: &OwnerClaim<'_>,
     ) -> Result<TenantOwner> {
+        let tables = StateTables::for_tenant(tenant);
         let conflict = match claim.mode {
             OwnerClaimMode::IfUnowned => "DO NOTHING",
             OwnerClaimMode::Transfer => {
@@ -1185,9 +1379,13 @@ impl StateStore for TursoStateStore {
         let written = self
             .execute(Statement::new(
                 format!(
-                    "INSERT INTO cuenv_infrastructure_owners (module_path, project, instance, \
-                     claimed_at) SELECT ?, ?, ?, ? WHERE {LOCK_HELD} \
-                     ON CONFLICT (module_path, project) {conflict}"
+                    "INSERT INTO {} ({}, instance, claimed_at) SELECT {}, ?, ? WHERE {} \
+                     ON CONFLICT ({}) {conflict}",
+                    tables.owners,
+                    tables.tenant_columns(),
+                    tables.tenant_values(),
+                    tables.lock_held(),
+                    tables.tenant_columns()
                 ),
                 arguments,
             ))
@@ -1201,24 +1399,10 @@ impl StateStore for TursoStateStore {
     }
 }
 
-/// Fence clause: the caller still holds the tenant's lock. Takes the
-/// arguments of [`lock_arguments`].
-const LOCK_HELD: &str = "EXISTS (SELECT 1 FROM cuenv_infrastructure_locks \
-     WHERE module_path = ? AND project = ? AND lock_identifier = ?)";
-
-/// Insert of one record from a `SELECT` of the arguments of
-/// [`RecordColumns::insert_arguments`]; append a `WHERE` clause.
-const INSERT_RESOURCE: &str = "INSERT INTO cuenv_infrastructure_resources (module_path, project, \
-     resource_type, resource_name, provider, provider_source, schema_version, state_json, \
-     private, dependencies_json, tainted, identity_json, serial, created_at, updated_at) \
-     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?";
-
 fn lock_arguments(tenant: &TenantKey, lock: &StateLock) -> Vec<HranaValue> {
-    vec![
-        HranaValue::text(tenant.module_path()),
-        HranaValue::text(tenant.project()),
-        HranaValue::text(&lock.lock_identifier),
-    ]
+    let mut arguments = tenant_arguments(tenant);
+    arguments.push(HranaValue::text(&lock.lock_identifier));
+    arguments
 }
 
 /// A record's serialized columns.
@@ -1255,7 +1439,7 @@ impl RecordColumns {
         })
     }
 
-    /// Arguments of [`INSERT_RESOURCE`].
+    /// Arguments of [`StateTables::insert_resource`].
     fn insert_arguments(&self, tenant: &TenantKey, resource: &ManagedResource) -> Vec<HranaValue> {
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&resource.address.resource_type));
@@ -1286,12 +1470,38 @@ impl RecordColumns {
 struct StoredSchema {
     /// Recorded schema version; 0 when nothing is recorded.
     version: i64,
-    /// Whether `cuenv_infrastructure_resources` exists.
-    resources_table: bool,
-    /// Whether `cuenv_infrastructure_locks` exists.
-    locks_table: bool,
-    /// Whether `cuenv_infrastructure_owners` exists.
-    owners_table: bool,
+    legacy: TablePresence,
+    named: TablePresence,
+}
+
+/// Tables present for one physical state family.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TablePresence {
+    resources: bool,
+    locks: bool,
+    owners: bool,
+}
+
+impl StoredSchema {
+    fn tables_for(&self, tenant: &TenantKey) -> TablePresence {
+        if tenant.environment().is_some() {
+            self.named
+        } else {
+            self.legacy
+        }
+    }
+
+    fn resources_for(&self, tenant: &TenantKey) -> bool {
+        self.tables_for(tenant).resources
+    }
+
+    fn locks_for(&self, tenant: &TenantKey) -> bool {
+        self.tables_for(tenant).locks
+    }
+
+    fn owners_for(&self, tenant: &TenantKey) -> bool {
+        self.tables_for(tenant).owners
+    }
 }
 
 fn newer_schema(version: i64) -> InfrastructureError {
@@ -1913,9 +2123,8 @@ mod tests {
         assert!(configuration_error("db.turso.io").contains("expected libsql://"));
     }
 
-    /// The same cases as `turso_url_contract` in
-    /// `crates/cuengine/tests/repository_tests.rs`: the schema and this
-    /// parser must accept exactly the same URLs.
+    /// The runtime URL contract. The CUE schema checks field shape and type;
+    /// this parser enforces the URL and transport rules.
     #[test]
     fn urls_follow_the_schema_contract() {
         let accepted = [
@@ -2050,6 +2259,21 @@ mod tests {
             assert!(
                 message.contains("must not contain credentials"),
                 "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_url_components_are_never_echoed() {
+        for url in [
+            "secret-token-value://db.turso.io",
+            "http://secret-token-value",
+            "https://db.turso.io:secret-token-value",
+        ] {
+            let message = configuration_error(url);
+            assert!(
+                !message.contains("secret-token-value"),
+                "rejected URL component leaked: {message}"
             );
         }
     }
@@ -2296,6 +2520,58 @@ mod tests {
     }
 
     #[test]
+    fn version_four_creates_separate_named_environment_tables() {
+        let migration = MIGRATIONS.last().unwrap();
+        assert_eq!(migration.version, 4);
+        assert_eq!(migration.statements.len(), 3);
+        for (statement, table, key) in [
+            (
+                migration.statements[0],
+                ENVIRONMENT_RESOURCES_TABLE,
+                "PRIMARY KEY (module_path, project, environment, resource_type, resource_name)",
+            ),
+            (
+                migration.statements[1],
+                ENVIRONMENT_LOCKS_TABLE,
+                "PRIMARY KEY (module_path, project, environment)",
+            ),
+            (
+                migration.statements[2],
+                ENVIRONMENT_OWNERS_TABLE,
+                "PRIMARY KEY (module_path, project, environment)",
+            ),
+        ] {
+            assert!(statement.starts_with(&format!("CREATE TABLE IF NOT EXISTS {table}")));
+            assert!(statement.contains("environment TEXT NOT NULL"));
+            assert!(statement.contains(key));
+            assert!(statement.ends_with("WITHOUT ROWID"));
+        }
+        assert!(migration.statements.iter().all(|statement| {
+            !statement.contains("ALTER TABLE cuenv_infrastructure_resources")
+                && !statement.contains("DROP TABLE")
+        }));
+    }
+
+    #[test]
+    fn query_scope_selects_only_its_table_family_and_identity_arguments() {
+        let legacy = TenantKey::new("example.com/app", "web").unwrap();
+        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+        let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
+        let legacy_tables = StateTables::for_tenant(&legacy);
+        let named_tables = StateTables::for_tenant(&dev);
+        assert_eq!(legacy_tables.resources, RESOURCES_TABLE);
+        assert_eq!(named_tables.resources, ENVIRONMENT_RESOURCES_TABLE);
+        assert_eq!(named_tables.locks, ENVIRONMENT_LOCKS_TABLE);
+        assert_eq!(named_tables.owners, ENVIRONMENT_OWNERS_TABLE);
+        assert!(named_tables.lock_held().contains("environment = ?"));
+        assert!(named_tables.insert_resource().contains("environment"));
+        assert_eq!(tenant_arguments(&legacy).len(), 2);
+        assert_eq!(tenant_arguments(&dev)[2], HranaValue::text("Dev"));
+        assert_eq!(tenant_arguments(&staging)[2], HranaValue::text("Staging"));
+        assert_ne!(tenant_arguments(&dev), tenant_arguments(&staging));
+    }
+
+    #[test]
     fn parses_pipeline_results_and_rows() {
         let response: PipelineResponse = serde_json::from_value(json!({
             "baton": null,
@@ -2405,7 +2681,15 @@ mod tests {
         })
         .unwrap();
         let drop_tables = || async {
-            for table in [SCHEMA_TABLE, RESOURCES_TABLE, LOCKS_TABLE, OWNERS_TABLE] {
+            for table in [
+                SCHEMA_TABLE,
+                RESOURCES_TABLE,
+                LOCKS_TABLE,
+                OWNERS_TABLE,
+                ENVIRONMENT_RESOURCES_TABLE,
+                ENVIRONMENT_LOCKS_TABLE,
+                ENVIRONMENT_OWNERS_TABLE,
+            ] {
                 store
                     .execute(Statement::new(
                         format!("DROP TABLE IF EXISTS {table}"),
@@ -2417,9 +2701,8 @@ mod tests {
         };
         let untouched = StoredSchema {
             version: 0,
-            resources_table: false,
-            locks_table: false,
-            owners_table: false,
+            legacy: TablePresence::default(),
+            named: TablePresence::default(),
         };
         assert_eq!(
             store.stored_schema().await.unwrap(),
@@ -2589,12 +2872,26 @@ mod tests {
     /// for the store's schema inspection; `None` for any other statement.
     fn schema_rows(sql: &str, version: i64) -> Option<Value> {
         if sql.starts_with("SELECT name FROM sqlite_master") {
-            Some(json!([
+            let mut rows = json!([
                 [{"type": "text", "value": SCHEMA_TABLE}],
                 [{"type": "text", "value": RESOURCES_TABLE}],
                 [{"type": "text", "value": LOCKS_TABLE}],
                 [{"type": "text", "value": OWNERS_TABLE}],
-            ]))
+            ]);
+            if version >= 4 {
+                rows.as_array_mut().unwrap().extend(
+                    json!([
+                        [{"type": "text", "value": ENVIRONMENT_RESOURCES_TABLE}],
+                        [{"type": "text", "value": ENVIRONMENT_LOCKS_TABLE}],
+                        [{"type": "text", "value": ENVIRONMENT_OWNERS_TABLE}],
+                    ])
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned(),
+                );
+            }
+            Some(rows)
         } else if sql == SELECT_SCHEMA_VERSION {
             Some(json!([[{"type": "integer", "value": version.to_string()}]]))
         } else {
@@ -2930,6 +3227,150 @@ mod tests {
                 .iter()
                 .all(|sql| !sql.starts_with("ALTER") && !sql.starts_with("CREATE")),
         );
+    }
+
+    #[tokio::test]
+    async fn named_environment_reads_do_not_fall_back_to_legacy_tables() {
+        let (server, statements) = recording_database(|sql| schema_rows(sql, 3)).await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let named = TenantKey::with_environment("example.com/fake", "web", "Dev").unwrap();
+        assert!(store.list(&named).await.unwrap().is_empty());
+        assert!(store.current_lock(&named).await.unwrap().is_none());
+        assert!(store.owner(&named).await.unwrap().is_none());
+        assert!(!store.force_unlock(&named, "legacy-lock").await.unwrap());
+        assert!(store.lock(&named, "test").await.is_err());
+        assert!(
+            statements
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|sql| sql.starts_with("SELECT name FROM sqlite_master")
+                    || sql == SELECT_SCHEMA_VERSION)
+        );
+    }
+
+    #[tokio::test]
+    async fn named_environment_writes_use_only_environment_tables() {
+        let (server, statements) = recording_database(|sql| {
+            schema_rows(sql, 4).or_else(|| {
+                if sql.starts_with(
+                    "SELECT instance, claimed_at FROM cuenv_infrastructure_environment_owners",
+                ) {
+                    Some(json!([[{"type": "text", "value": ".:web"}, {"type": "text", "value": "now"}]]))
+                } else if sql.starts_with("SELECT resource_type, resource_name")
+                    && sql.contains(ENVIRONMENT_RESOURCES_TABLE)
+                    || sql.starts_with(
+                        "SELECT lock_identifier, holder, acquired_at FROM cuenv_infrastructure_environment_locks",
+                    )
+                {
+                    Some(json!([]))
+                } else {
+                    (sql.starts_with("INSERT INTO cuenv_infrastructure_environment_")
+                        || sql.starts_with("DELETE FROM cuenv_infrastructure_environment_")
+                        || sql.starts_with("UPDATE cuenv_infrastructure_environment_"))
+                    .then(|| json!([]))
+                }
+            })
+        })
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let named = TenantKey::with_environment("example.com/fake", "web", "Dev").unwrap();
+        let lock = store.lock(&named, "test").await.unwrap();
+        let record = ManagedResource {
+            address: ResourceAddress::new("random_pet", "pet"),
+            provider: "random".into(),
+            provider_source: "registry.terraform.io/hashicorp/random".into(),
+            schema_version: 0,
+            state: json!({"id": "dev-pet"}),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            tainted: false,
+            identity: None,
+            serial: 0,
+        };
+        store.put(&named, &lock, &record).await.unwrap();
+        store
+            .put_if_unchanged(
+                &named,
+                &lock,
+                &ConditionalPut {
+                    resource: &record,
+                    expected: RecordVersion::Serial(1),
+                },
+            )
+            .await
+            .unwrap();
+        store.delete(&named, &lock, &record.address).await.unwrap();
+        assert!(store.list(&named).await.unwrap().is_empty());
+        assert!(
+            store
+                .read_resource(&named, &record.address)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            store
+                .owner(&named)
+                .await
+                .unwrap()
+                .unwrap()
+                .instance
+                .as_str(),
+            ".:web"
+        );
+        let instance = ProjectInstance::new(".", "web").unwrap();
+        store
+            .claim_owner(
+                &named,
+                &lock,
+                &OwnerClaim {
+                    instance: &instance,
+                    mode: OwnerClaimMode::IfUnowned,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.current_lock(&named).await.unwrap().is_none());
+        store
+            .force_unlock(&named, &lock.lock_identifier)
+            .await
+            .unwrap();
+        store.unlock(&named, &lock).await.unwrap();
+        let statements = statements.lock().unwrap();
+        assert!(
+            statements
+                .iter()
+                .any(|sql| sql.starts_with(&format!("INSERT INTO {ENVIRONMENT_RESOURCES_TABLE}")))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|sql| sql.starts_with(&format!("UPDATE {ENVIRONMENT_RESOURCES_TABLE}")))
+        );
+        assert!(
+            statements
+                .iter()
+                .filter(|sql| {
+                    sql.contains(ENVIRONMENT_RESOURCES_TABLE)
+                        || sql.contains(ENVIRONMENT_LOCKS_TABLE)
+                        || sql.contains(ENVIRONMENT_OWNERS_TABLE)
+                })
+                .all(|sql| sql.contains("environment = ?") || sql.contains("environment,"))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|sql| sql.starts_with(&format!("INSERT INTO {ENVIRONMENT_OWNERS_TABLE}")))
+        );
+        assert!(statements.iter().all(|sql| {
+            !sql.contains("FROM cuenv_infrastructure_resources ")
+                && !sql.contains("INTO cuenv_infrastructure_resources ")
+                && !sql.contains("FROM cuenv_infrastructure_locks ")
+                && !sql.contains("INTO cuenv_infrastructure_locks ")
+                && !sql.contains("FROM cuenv_infrastructure_owners ")
+                && !sql.contains("INTO cuenv_infrastructure_owners ")
+        }));
     }
 
     #[tokio::test]

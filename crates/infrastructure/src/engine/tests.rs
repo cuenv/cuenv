@@ -71,6 +71,163 @@ fn topological_order_rejects_cycles_and_unknown_dependencies() {
     assert!(topological_order(&graph(&[("first", &["missing"])])).is_err());
 }
 
+#[tokio::test]
+async fn provider_install_source_is_validated_before_provider_launch() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(store, directory.path());
+    let provider_source = ProviderSource::parse("hashicorp/random").unwrap();
+
+    let version_and_path = InfrastructureProvider {
+        source: "hashicorp/random".into(),
+        version: Some("3.7.2".into()),
+        path: Some("provider".into()),
+        configuration: serde_json::Map::new(),
+    };
+    let error = engine
+        .resolve_binary("random", &version_and_path, &provider_source)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("sets both `path` and `version`"));
+
+    let missing_source = InfrastructureProvider {
+        source: "hashicorp/random".into(),
+        version: None,
+        path: None,
+        configuration: serde_json::Map::new(),
+    };
+    let error = engine
+        .resolve_binary("random", &missing_source, &provider_source)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("needs an exact `version`"));
+
+    let error = engine
+        .ensure_provider("undeclared", &mut Vec::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("is not declared in infrastructure.providers")
+    );
+}
+
+#[test]
+fn configuration_preflight_checks_unused_providers_and_resource_references() {
+    let mut configuration = infrastructure();
+    configuration.providers.insert(
+        "unused".into(),
+        InfrastructureProvider {
+            source: "hashicorp/unused".into(),
+            version: None,
+            path: None,
+            configuration: serde_json::Map::new(),
+        },
+    );
+    let error = validate_configuration(&configuration)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("provider 'unused' needs an exact `version`"),
+        "{error}"
+    );
+
+    configuration.providers.insert(
+        "unused".into(),
+        InfrastructureProvider {
+            source: "hashicorp/unused".into(),
+            version: Some("~> 3.7".into()),
+            path: None,
+            configuration: serde_json::Map::new(),
+        },
+    );
+    let error = validate_configuration(&configuration)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("invalid provider version"), "{error}");
+
+    configuration.providers.remove("unused");
+    configuration.resources.insert(
+        "pet".into(),
+        ManagedResourceDeclaration {
+            resource_type: "random_pet".into(),
+            provider: Some("missing".into()),
+            depends_on: Vec::new(),
+            configuration: serde_json::Map::new(),
+        },
+    );
+    let error = validate_configuration(&configuration)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no provider named 'missing'"), "{error}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("provider-started");
+    let binary = directory.path().join("provider.sh");
+    std::fs::write(
+        &binary,
+        "#!/bin/sh\nprintf started > \"$CUENV_TEST_PROVIDER_MARKER\"\n",
+    )
+    .unwrap();
+    let mut permissions = std::fs::metadata(&binary).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&binary, permissions).unwrap();
+
+    let mut configuration = infrastructure();
+    configuration.providers.insert(
+        "random".into(),
+        InfrastructureProvider {
+            source: "hashicorp/random".into(),
+            version: None,
+            path: Some(binary.display().to_string()),
+            configuration: serde_json::Map::new(),
+        },
+    );
+    configuration.providers.insert(
+        "unused".into(),
+        InfrastructureProvider {
+            source: "hashicorp/unused".into(),
+            version: None,
+            path: None,
+            configuration: serde_json::Map::new(),
+        },
+    );
+    configuration.resources.insert(
+        "pet".into(),
+        ManagedResourceDeclaration {
+            resource_type: "random_pet".into(),
+            provider: None,
+            depends_on: Vec::new(),
+            configuration: serde_json::Map::new(),
+        },
+    );
+
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(store, directory.path());
+    engine.infrastructure = configuration;
+    engine.options.provider_environment_variables.insert(
+        "CUENV_TEST_PROVIDER_MARKER".into(),
+        marker.display().to_string(),
+    );
+    let error = engine.plan(PlanMode::Apply).await.unwrap_err().to_string();
+
+    assert!(
+        error.contains("provider 'unused' needs an exact `version`"),
+        "{error}"
+    );
+    assert!(
+        !marker.exists(),
+        "a provider launched before validation: {error}"
+    );
+}
+
 #[test]
 fn diagnostics_split_errors_from_warnings() {
     let mut warnings = Vec::new();
@@ -137,6 +294,7 @@ fn plan_of(changes: Vec<ResourceChange>) -> Plan {
         tenant: tenant(),
         changes,
         warnings: Vec::new(),
+        environment_identity: environment_identity(&BTreeMap::new()),
     }
 }
 
@@ -234,6 +392,18 @@ fn digest_covers_values_replacement_paths_and_stored_records() {
     let mut different_action = base();
     different_action.changes[0].action = Action::Replace;
     assert_ne!(base().digest(), different_action.digest());
+
+    let mut different_environment = base();
+    different_environment.environment_identity =
+        environment_identity(&BTreeMap::from([("CREDENTIAL".into(), "changed".into())]));
+    assert_ne!(base().digest(), different_environment.digest());
+
+    let mut development = base();
+    development.tenant = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+    let mut staging = base();
+    staging.tenant = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
+    assert_ne!(development.digest(), staging.digest());
+    assert_ne!(base().digest(), development.digest());
 }
 
 #[test]
@@ -434,6 +604,7 @@ fn engine(store: Arc<dyn StateStore>, unrecorded_directory: &Path) -> Infrastruc
             project_directory: unrecorded_directory.to_path_buf(),
             plugin_cache_directory: None,
             withheld_environment_variables: Vec::new(),
+            provider_environment_variables: BTreeMap::new(),
             unrecorded_directory: Some(unrecorded_directory.join("unrecorded")),
             cancellation: Cancellation::default(),
         },
@@ -813,12 +984,12 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = engine(store, directory.path());
     let cause = InfrastructureError::state("connection refused");
-    let pet = record("random_pet", "pet", &[]);
-    let put = ConditionalPut {
-        resource: &pet,
+    let resource_record = record("random_pet", "pet", &[]);
+    let pending_write = ConditionalPut {
+        resource: &resource_record,
         expected: RecordVersion::Serial(3),
     };
-    let saved = engine.save_unrecorded(&put, &cause);
+    let saved = engine.save_unrecorded(&pending_write, &cause);
     let message = saved.to_string();
     assert!(
         matches!(saved, InfrastructureError::UnrecordedChange { .. }),
@@ -838,7 +1009,7 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     std::fs::write(blocked.path().join("unrecorded"), b"not a directory").unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = self::engine(store, blocked.path());
-    let lost = engine.save_unrecorded(&put, &cause);
+    let lost = engine.save_unrecorded(&pending_write, &cause);
     let message = lost.to_string();
     assert!(
         matches!(lost, InfrastructureError::UnrecordedChangeLost { .. }),
@@ -865,6 +1036,10 @@ fn engine_setup_debug_omits_the_store_and_configuration_values() {
             project_directory: directory.path().to_path_buf(),
             plugin_cache_directory: None,
             withheld_environment_variables: Vec::new(),
+            provider_environment_variables: BTreeMap::from([(
+                "CREDENTIAL".into(),
+                "must-never-appear-in-debug".into(),
+            )]),
             unrecorded_directory: None,
             cancellation: Cancellation::default(),
         },
@@ -872,4 +1047,8 @@ fn engine_setup_debug_omits_the_store_and_configuration_values() {
     let rendered = format!("{setup:?}");
     assert!(rendered.contains("EngineSetup"), "{rendered}");
     assert!(rendered.contains("example.com/app"), "{rendered}");
+    assert!(
+        !rendered.contains("must-never-appear-in-debug"),
+        "{rendered}"
+    );
 }

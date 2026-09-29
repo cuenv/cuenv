@@ -7,4 +7,7 @@ package schema
 
 	// Allowlist of exec commands that can access this variable
 	allowExec?: [...string]
+
+	// Allowlist of infrastructure actions that can access this variable
+	allowInfrastructure?: [...string]
 })

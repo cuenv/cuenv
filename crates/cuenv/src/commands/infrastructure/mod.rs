@@ -18,6 +18,7 @@ mod holder;
 mod interrupts;
 mod output;
 
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -31,8 +32,9 @@ use cuenv_infrastructure::{
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
     RecoverOptions, RecoverOverwrite, StateLock, StateStore, TenantKey, TursoConfiguration,
     TursoStateStore, UnrecordedStore, strip_control_characters,
-    strip_control_characters_except_newlines,
+    strip_control_characters_except_newlines, validate_configuration,
 };
+use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::Infrastructure;
 
 use self::evaluation::{NameCheck, Target, TargetRequest};
@@ -94,6 +96,30 @@ pub enum InfrastructureAction {
 }
 
 impl InfrastructureAction {
+    /// Stable policy name used to decide which project variables this action
+    /// may resolve and pass to providers.
+    const fn policy_name(&self) -> &'static str {
+        match self {
+            Self::Plan => "plan",
+            Self::Apply { .. } => "apply",
+            Self::Destroy { .. } => "destroy",
+            Self::State(StateAction::List) => "state-list",
+            Self::State(StateAction::Remove { .. }) => "state-remove",
+            Self::State(StateAction::Recover { .. }) => "state-recover",
+            Self::State(StateAction::Adopt) => "state-adopt",
+            Self::Unlock { .. } => "unlock",
+        }
+    }
+
+    /// Whether this action starts providers and needs the full project
+    /// environment. State-only commands resolve just the backend token.
+    const fn uses_provider_environment(&self) -> bool {
+        match self {
+            Self::Plan | Self::Apply { .. } | Self::Destroy { .. } => true,
+            Self::State(_) | Self::Unlock { .. } => false,
+        }
+    }
+
     /// Plans, changes and ownership transfers check the project name
     /// across the whole module; inspecting and repairing state and unlocking
     /// must keep working when a sibling instance is broken.
@@ -126,6 +152,8 @@ pub struct InfrastructureOptions {
     pub path: String,
     /// CUE package name to evaluate.
     pub package: String,
+    /// Named infrastructure and project environment selected with `--env`.
+    pub environment: Option<String>,
     /// Action to perform.
     pub action: InfrastructureAction,
     /// Text or JSON output.
@@ -283,9 +311,62 @@ async fn run(
         tenant,
         instance,
         infrastructure,
+        environment,
+        env,
         project_directory,
     } = evaluate_target(options, interrupts).await?;
-    let store = connect(&infrastructure).map_err(|error| failure(&error))?;
+    // Reject invalid provider/resource declarations before secret resolution,
+    // state access, or dispatch (which may acquire a lock or claim ownership).
+    // The engine repeats this check before planning as defense in depth.
+    if options.action.uses_provider_environment() {
+        validate_configuration(&infrastructure).map_err(|error| failure(&error))?;
+    }
+    let project_env_variables = env.map_or_else(HashMap::new, |env| {
+        environment
+            .as_deref()
+            .map_or_else(|| env.base.clone(), |name| env.for_environment(name))
+    });
+    let policy_name = options.action.policy_name();
+    let withheld_environment_variables = if options.action.uses_provider_environment() {
+        project_env_variables
+            .iter()
+            .filter(|(_, value)| !value.is_accessible_by_infrastructure(policy_name))
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let token_variable = infrastructure
+        .state
+        .turso
+        .authentication_token_environment_variable
+        .clone();
+    if project_env_variables
+        .get(&token_variable)
+        .is_some_and(|value| !value.is_accessible_by_infrastructure(policy_name))
+    {
+        return Err(CliError::config(format!(
+            "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
+        )));
+    }
+    let environment_to_resolve =
+        environment_variables_for_action(&options.action, &project_env_variables, &token_variable);
+    let (provider_environment_variables, secret_values) =
+        cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
+            policy_name,
+            &environment_to_resolve,
+        )
+        .await
+        .map_err(CliError::from)?;
+    // Register before connecting to state or launching providers so their
+    // diagnostics and output redact every resolved secret part.
+    cuenv_events::register_secrets(secret_values);
+    let store = connect(
+        &infrastructure,
+        &project_env_variables,
+        &provider_environment_variables,
+    )
+    .map_err(|error| failure(&error))?;
     let context = CommandContext {
         store: &store,
         tenant: &tenant,
@@ -300,6 +381,11 @@ async fn run(
         EngineInputs {
             infrastructure,
             project_directory,
+            provider_environment_variables: provider_environment_variables
+                .into_iter()
+                .filter(|(name, _)| name != &token_variable)
+                .collect(),
+            withheld_environment_variables,
             // The user state directory (see `UnrecordedStore`).
             unrecorded_directory: None,
         },
@@ -333,6 +419,20 @@ fn refuse_unconfirmable(
     Ok(())
 }
 
+fn environment_variables_for_action(
+    action: &InfrastructureAction,
+    project_environment: &HashMap<String, EnvValue>,
+    token_variable: &str,
+) -> HashMap<String, EnvValue> {
+    if action.uses_provider_environment() {
+        return project_environment.clone();
+    }
+    project_environment
+        .get(token_variable)
+        .map(|value| HashMap::from([(token_variable.to_string(), value.clone())]))
+        .unwrap_or_default()
+}
+
 /// Evaluate the target on a thread of its own. CUE evaluation cannot be
 /// cancelled, and nothing is held yet, so an interrupt abandons it at once:
 /// the thread is not waited for, and the process exits without it.
@@ -340,10 +440,11 @@ async fn evaluate_target(
     options: &InfrastructureOptions,
     interrupts: &Interrupts,
 ) -> Result<Target, CliError> {
-    let (path, package, name_check) = (
+    let (path, package, name_check, environment) = (
         options.path.clone(),
         options.package.clone(),
         options.action.name_check(),
+        options.environment.clone(),
     );
     let (sender, receiver) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
@@ -353,6 +454,7 @@ async fn evaluate_target(
                 path: &path,
                 package: &package,
                 name_check,
+                environment: environment.as_deref(),
             });
             // Nobody waits any more after an interrupt; the result is
             // meant to be dropped then.
@@ -380,6 +482,11 @@ struct CommandContext<'context> {
 struct EngineInputs {
     infrastructure: Infrastructure,
     project_directory: PathBuf,
+    /// Resolved project variables overlaid on the provider's host environment.
+    provider_environment_variables: BTreeMap<String, String>,
+    /// Project variables rejected by policy must not leak through inherited
+    /// host variables with the same name.
+    withheld_environment_variables: Vec<String>,
     /// Where unrecorded changes are saved; the user state directory when
     /// `None`.
     unrecorded_directory: Option<PathBuf>,
@@ -440,7 +547,7 @@ async fn dispatch(
 }
 
 fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSetup {
-    let withheld_environment_variables = vec![
+    let mut withheld_environment_variables = vec![
         inputs
             .infrastructure
             .state
@@ -448,6 +555,9 @@ fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSet
             .authentication_token_environment_variable
             .clone(),
     ];
+    withheld_environment_variables.extend(inputs.withheld_environment_variables);
+    withheld_environment_variables.sort();
+    withheld_environment_variables.dedup();
     EngineSetup {
         tenant: context.tenant.clone(),
         store: Arc::clone(context.store),
@@ -456,6 +566,7 @@ fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSet
             project_directory: inputs.project_directory,
             plugin_cache_directory: None,
             withheld_environment_variables,
+            provider_environment_variables: inputs.provider_environment_variables,
             unrecorded_directory: inputs.unrecorded_directory,
             // Every provider the engine launches is registered with the
             // command's interrupt handling.
@@ -476,12 +587,19 @@ fn unrecorded_store(inputs: &EngineInputs) -> Result<UnrecordedStore, CliError> 
 
 /// Connect to the state store. Nothing is sent yet: reads never create
 /// tables, and [`under_lock`] creates or upgrades them before any write.
-fn connect(infrastructure: &Infrastructure) -> cuenv_infrastructure::Result<Arc<dyn StateStore>> {
+fn connect(
+    infrastructure: &Infrastructure,
+    project_environment: &HashMap<String, EnvValue>,
+    resolved_environment: &HashMap<String, String>,
+) -> cuenv_infrastructure::Result<Arc<dyn StateStore>> {
     let turso = &infrastructure.state.turso;
     let variable = &turso.authentication_token_environment_variable;
-    let authentication_token = std::env::var(variable)
-        .ok()
-        .filter(|token| !token.is_empty());
+    let authentication_token = if project_environment.contains_key(variable) {
+        resolved_environment.get(variable).cloned()
+    } else {
+        std::env::var(variable).ok()
+    }
+    .filter(|token| !token.is_empty());
     match &authentication_token {
         // Redact the token from every output from here on, including
         // provider and store errors that might echo it.

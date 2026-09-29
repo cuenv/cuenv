@@ -104,6 +104,8 @@ struct UnrecordedFile {
 struct TenantIdentity {
     module_path: String,
     project: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    environment: Option<String>,
 }
 
 impl TenantIdentity {
@@ -111,6 +113,7 @@ impl TenantIdentity {
         Self {
             module_path: tenant.module_path().to_string(),
             project: tenant.project().to_string(),
+            environment: tenant.environment().map(ToString::to_string),
         }
     }
 }
@@ -221,6 +224,10 @@ impl UnrecordedStore {
         hasher.update(tenant.module_path().as_bytes());
         hasher.update([0]);
         hasher.update(tenant.project().as_bytes());
+        if let Some(environment) = tenant.environment() {
+            hasher.update([0]);
+            hasher.update(environment.as_bytes());
+        }
         let digest = hex::encode(hasher.finalize());
         self.root.join(&digest[..32])
     }
@@ -733,6 +740,7 @@ mod tests {
         assert_eq!(document["formatVersion"], 2);
         assert_eq!(document["expected"], "absent");
         assert_eq!(document["tenant"]["modulePath"], "example.com/app");
+        assert!(document["tenant"].get("environment").is_none());
         let resource = &document["resource"];
         for key in [
             "resourceType",
@@ -745,6 +753,62 @@ mod tests {
             assert!(resource.get(key).is_some(), "{key} missing: {resource}");
         }
         assert!(resource.get("provider_source").is_none());
+    }
+
+    #[test]
+    fn named_environment_files_never_share_the_legacy_recovery_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let store = UnrecordedStore::at(root.path().join("unrecorded"));
+        let legacy = tenant("web");
+        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+        let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
+        let legacy_file = save(&store, &legacy, &record("pet", "legacy"));
+        let dev_file = save(&store, &dev, &record("pet", "dev"));
+        let staging_file = save(&store, &staging, &record("pet", "staging"));
+
+        assert_ne!(legacy_file.parent(), dev_file.parent());
+        assert_ne!(dev_file.parent(), staging_file.parent());
+        assert_eq!(store.list(&legacy).unwrap().len(), 1);
+        assert_eq!(store.list(&dev).unwrap().len(), 1);
+        assert_eq!(store.list(&staging).unwrap().len(), 1);
+        let legacy_document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&legacy_file).unwrap()).unwrap();
+        assert!(legacy_document["tenant"].get("environment").is_none());
+        let dev_document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&dev_file).unwrap()).unwrap();
+        assert_eq!(dev_document["tenant"]["environment"], "Dev");
+    }
+
+    #[tokio::test]
+    async fn recovery_only_records_the_selected_environment() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = UnrecordedStore::at(root.path().join("unrecorded"));
+        let state = crate::state::MemoryStateStore::new();
+        let legacy = tenant("web");
+        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+        let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
+        save(&unrecorded, &legacy, &record("pet", "legacy"));
+        save(&unrecorded, &dev, &record("pet", "dev"));
+        save(&unrecorded, &staging, &record("pet", "staging"));
+        let lock = state.lock(&dev, "recover").await.unwrap();
+        let recovered = unrecorded
+            .recover(
+                &state,
+                &dev,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered, vec![ResourceAddress::new("random_pet", "pet")]);
+        assert!(unrecorded.list(&dev).unwrap().is_empty());
+        assert!(unrecorded.has_pending(&legacy).unwrap());
+        assert!(unrecorded.has_pending(&staging).unwrap());
+        assert!(state.list(&legacy).await.unwrap().is_empty());
+        assert!(state.list(&staging).await.unwrap().is_empty());
+        assert_eq!(state.list(&dev).await.unwrap()[0].state["id"], "dev");
     }
 
     #[test]

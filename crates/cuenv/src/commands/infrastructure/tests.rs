@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,6 +9,7 @@ use cuenv_infrastructure::{
     MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion, RecoverOverwrite,
     ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner, UnrecordedStore,
 };
+use cuenv_manifest::environment::EnvValue;
 use tokio::sync::mpsc;
 
 use super::evaluation::{self, NameCheck, TargetRequest};
@@ -15,7 +17,8 @@ use super::interrupts::{Interrupts, SignalSource};
 use super::output::{Finish, Output};
 use super::{
     AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, InfrastructureAction,
-    StateAction, confirm, dispatch, release, under_lock,
+    InfrastructureOptions, StateAction, confirm, dispatch, environment_variables_for_action,
+    release, run, under_lock,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -29,6 +32,39 @@ const INFRASTRUCTURE: &str = "infrastructure: {\n\
      \tproviders: random: {source: \"hashicorp/random\", version: \"3.7.2\"}\n\
      \tresources: pet: {type: \"random_pet\", configuration: length: 2}\n\
      }\n";
+
+#[test]
+fn state_only_actions_resolve_only_the_backend_token() {
+    let environment = HashMap::from([
+        (
+            "TURSO_AUTH_TOKEN".to_string(),
+            EnvValue::String("backend-token".to_string()),
+        ),
+        (
+            "AWS_PROFILE".to_string(),
+            EnvValue::String("platform-dev".to_string()),
+        ),
+    ]);
+    let state_environment = environment_variables_for_action(
+        &InfrastructureAction::State(StateAction::List),
+        &environment,
+        "TURSO_AUTH_TOKEN",
+    );
+    assert_eq!(
+        state_environment,
+        HashMap::from([(
+            "TURSO_AUTH_TOKEN".to_string(),
+            EnvValue::String("backend-token".to_string()),
+        )])
+    );
+
+    let provider_environment = environment_variables_for_action(
+        &InfrastructureAction::Plan,
+        &environment,
+        "TURSO_AUTH_TOKEN",
+    );
+    assert_eq!(provider_environment, environment);
+}
 
 fn write(root: &Path, relative: &str, contents: &str) {
     let path = root.join(relative);
@@ -62,10 +98,19 @@ fn module_with_target() -> tempfile::TempDir {
 }
 
 fn evaluate_at(project: &Path, name_check: NameCheck) -> Result<evaluation::Target, CliError> {
+    evaluate_at_environment(project, name_check, None)
+}
+
+fn evaluate_at_environment(
+    project: &Path,
+    name_check: NameCheck,
+    environment: Option<&str>,
+) -> Result<evaluation::Target, CliError> {
     evaluation::evaluate(TargetRequest {
         path: project.to_str().unwrap(),
         package: "cuenv",
         name_check,
+        environment,
     })
 }
 
@@ -88,6 +133,231 @@ fn a_unique_project_evaluates() {
     );
     assert_eq!(target.instance.as_str(), "app:cuenv");
     assert_eq!(target.infrastructure.resources.len(), 1);
+    assert_eq!(target.environment, None);
+}
+
+#[test]
+fn named_environment_selects_only_its_complete_configuration_and_overlay() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+env: {
+  BASE: "base"
+  environment: {
+    dev: {BASE: "development", ONLY: "dev"}
+    prod: {UNUSED: _}
+  }
+}
+
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providers: legacy: {source: "hashicorp/legacy", version: "1.0.0"}
+  resources: old: {type: "legacy_old"}
+  environments: {
+    dev: {
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 2}
+    }
+    prod: {
+      providers: random: {source: "hashicorp/random", version: _}
+    }
+  }
+}
+"#,
+    );
+    let target = evaluate_at_environment(
+        &module.path().join("app"),
+        NameCheck::TargetOnly,
+        Some("dev"),
+    )
+    .unwrap();
+    assert_eq!(target.environment.as_deref(), Some("dev"));
+    assert_eq!(target.infrastructure.providers.len(), 1);
+    assert!(target.infrastructure.providers.contains_key("random"));
+    assert!(target.infrastructure.resources.contains_key("pet"));
+    assert!(!target.infrastructure.resources.contains_key("old"));
+    assert!(target.infrastructure.environments.is_empty());
+    assert_eq!(
+        target.env.as_ref().unwrap().for_environment("dev")["BASE"].to_string_value(),
+        "development"
+    );
+    assert!(
+        !target
+            .env
+            .as_ref()
+            .unwrap()
+            .environment
+            .as_ref()
+            .unwrap()
+            .contains_key("prod")
+    );
+    assert_eq!(
+        target.tenant,
+        TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap()
+    );
+}
+
+#[tokio::test]
+async fn provider_configuration_preflight_runs_before_secret_resolution_and_state_access() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+env: {
+  SECRET_TOKEN: {resolver: "exec", command: "cuenv-secret-resolver-must-not-run"}
+}
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:1"
+  providers: random: {source: "hashicorp/random", version: "~> 3.7"}
+  resources: pet: {type: "random_pet", configuration: length: 2}
+}
+"#,
+    );
+
+    let harness = Harness::new(OutputFormat::Text, Script::Line(""));
+    let options = InfrastructureOptions {
+        path: module.path().join("app").to_string_lossy().into_owned(),
+        package: "cuenv".into(),
+        environment: None,
+        action: InfrastructureAction::Plan,
+        output: OutputFormat::Text,
+    };
+    let error = run(&options, &harness.output, &harness.interrupts)
+        .await
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("invalid provider version"),
+        "expected provider configuration error before secret resolution or backend access, got: {error}"
+    );
+}
+
+#[test]
+fn named_environment_match_is_case_sensitive_and_missing_name_fails_closed() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  environments: Dev: {
+    providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  }
+}
+"#,
+    );
+    let project = module.path().join("app");
+    assert!(evaluate_at_environment(&project, NameCheck::TargetOnly, Some("Dev")).is_ok());
+    let error = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert!(
+        error
+            .to_string()
+            .contains("no infrastructure environment named 'dev'"),
+        "{error}"
+    );
+}
+
+#[test]
+fn no_selector_keeps_legacy_configuration_without_deserializing_named_entries() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", configuration: length: 2}
+  environments: prod: {
+    providers: random: {source: "hashicorp/random", version: _}
+  }
+}
+"#,
+    );
+    let target = evaluate(module.path(), NameCheck::TargetOnly).unwrap();
+    assert_eq!(target.environment, None);
+    assert!(target.infrastructure.providers.contains_key("random"));
+    assert!(target.infrastructure.resources.contains_key("pet"));
+    assert!(target.infrastructure.environments.is_empty());
+    assert_eq!(
+        target.tenant,
+        TenantKey::new("example.com/infrastructure", "app").unwrap()
+    );
+}
+
+#[test]
+fn selected_named_environment_must_be_concrete() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  environments: dev: {
+    providers: random: {source: "hashicorp/random", version: _}
+  }
+}
+"#,
+    );
+    let error = evaluate_at_environment(
+        &module.path().join("app"),
+        NameCheck::TargetOnly,
+        Some("dev"),
+    )
+    .unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_EVAL);
+}
+
+#[test]
+fn selected_projection_rejects_unknown_infrastructure_fields() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  resource: typo: {type: "random_pet"}
+  environments: {
+    dev: {providers: random: {source: "hashicorp/random", version: "3.7.2"}}
+    prod: {providers: random: {source: "hashicorp/random", version: _}}
+  }
+}
+"#,
+    );
+    let error = evaluate_at_environment(
+        &module.path().join("app"),
+        NameCheck::TargetOnly,
+        Some("dev"),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field `resource`"),
+        "{error}"
+    );
+    let error = evaluate(module.path(), NameCheck::TargetOnly).unwrap_err();
+    assert!(
+        error.to_string().contains("unknown field `resource`"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -462,6 +732,8 @@ impl Harness {
             .unwrap(),
             project_directory: self.directory.path().to_path_buf(),
             unrecorded_directory: Some(self.directory.path().join("unrecorded")),
+            provider_environment_variables: std::collections::BTreeMap::default(),
+            withheld_environment_variables: Vec::new(),
         }
     }
 

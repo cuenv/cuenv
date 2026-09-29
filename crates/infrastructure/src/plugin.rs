@@ -37,7 +37,8 @@
 //! Provider log lines go to tracing at debug level only, with control
 //! characters removed; the serious ones are also kept for error reports.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -220,16 +221,58 @@ impl Handshake {
 }
 
 /// How to start a provider.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct LaunchOptions<'launch> {
     /// Provider executable.
     pub binary: &'launch Path,
     /// Environment variables the provider must not inherit, such as the
     /// state store's authentication token.
     pub withheld_environment_variables: &'launch [String],
+    /// Resolved, policy-authorized Cuenv variables overlaid on the host
+    /// environment before the withheld names are removed.
+    pub provider_environment_variables: &'launch BTreeMap<String, String>,
     /// Interruption the provider process is registered with, so a stop
     /// request reaches it and termination kills it.
     pub cancellation: &'launch Cancellation,
+}
+
+impl fmt::Debug for LaunchOptions<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LaunchOptions")
+            .field("binary", &self.binary)
+            .field(
+                "withheld_environment_variables",
+                &self.withheld_environment_variables,
+            )
+            .field(
+                "provider_environment_variable_names",
+                &self.provider_environment_variables.keys(),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+fn configure_provider_environment(
+    command: &mut Command,
+    options: &LaunchOptions<'_>,
+    socket_directory: &Path,
+) {
+    // Keep the provider's existing access to host credentials and runtime
+    // variables while making Cuenv precedence explicit.
+    command
+        .env_clear()
+        .envs(std::env::vars_os())
+        .envs(options.provider_environment_variables)
+        .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
+        .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
+        .env("PLUGIN_UNIX_SOCKET_DIR", socket_directory)
+        .env("TMPDIR", socket_directory);
+    // Always remove withheld names last, including names also present in the
+    // resolved Cuenv environment.
+    for name in options.withheld_environment_variables {
+        command.env_remove(name);
+    }
 }
 
 /// A running provider process, shared with [`Cancellation`] so an
@@ -459,9 +502,7 @@ impl ProviderClient {
         let binary = options.binary;
         let socket_directory = SocketDirectory::create(options.cancellation)?;
         let mut command = Command::new(binary);
-        for name in options.withheld_environment_variables {
-            command.env_remove(name);
-        }
+        configure_provider_environment(&mut command, options, &socket_directory.path);
         // Own process group: a terminal interrupt must reach cuenv only, so
         // in-flight provider operations are stopped deliberately, not killed.
         #[cfg(unix)]
@@ -469,10 +510,6 @@ impl ProviderClient {
         #[cfg(target_os = "linux")]
         kill_with_parent(&mut command);
         let mut child = command
-            .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
-            .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
-            .env("PLUGIN_UNIX_SOCKET_DIR", &socket_directory.path)
-            .env("TMPDIR", &socket_directory.path)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1019,6 +1056,62 @@ async fn connect_unix(address: &str) -> Result<Channel> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn provider_environment_preserves_host_overlays_cuenv_and_withholds_token() {
+        let cancellation = Cancellation::default();
+        let host_path = std::env::var("PATH").unwrap();
+        let variables = BTreeMap::from([
+            ("PATH".into(), "/cuenv/provider/path".into()),
+            ("TURSO_AUTH_TOKEN".into(), "withheld-secret".into()),
+            ("CUENV_PROVIDER_ONLY".into(), "visible".into()),
+        ]);
+        let withheld = vec!["TURSO_AUTH_TOKEN".into()];
+        let options = LaunchOptions {
+            binary: Path::new("/usr/bin/env"),
+            withheld_environment_variables: &withheld,
+            provider_environment_variables: &variables,
+            cancellation: &cancellation,
+        };
+        let mut command = Command::new(options.binary);
+        configure_provider_environment(&mut command, &options, Path::new("/tmp/provider-test"));
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        let entries = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            entries
+                .lines()
+                .any(|line| line == "PATH=/cuenv/provider/path")
+        );
+        assert!(
+            entries
+                .lines()
+                .any(|line| line == "CUENV_PROVIDER_ONLY=visible")
+        );
+        assert!(
+            !entries
+                .lines()
+                .any(|line| line.starts_with("TURSO_AUTH_TOKEN="))
+        );
+
+        let empty = BTreeMap::new();
+        let options = LaunchOptions {
+            provider_environment_variables: &empty,
+            withheld_environment_variables: &[],
+            ..options
+        };
+        let mut command = Command::new(options.binary);
+        configure_provider_environment(&mut command, &options, Path::new("/tmp/provider-test"));
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        let entries = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            entries
+                .lines()
+                .any(|line| line == format!("PATH={host_path}"))
+        );
+    }
 
     #[test]
     fn parses_protocol_5_unix_handshake() {

@@ -640,6 +640,22 @@ impl Environment {
         Self::resolve_filtered_with_secrets(&accessible).await
     }
 
+    /// Resolve only variables authorized for the infrastructure action.
+    ///
+    /// Filtering precedes secret resolution, so restricted secrets are never
+    /// requested from a resolver. The returned secret parts can be registered
+    /// for redaction by the command that owns the output surface.
+    pub async fn resolve_for_infrastructure_with_secrets(
+        action: &str,
+        env_vars: &HashMap<String, EnvValue>,
+    ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
+        let accessible: Vec<_> = env_vars
+            .iter()
+            .filter(|(_, value)| value.is_accessible_by_infrastructure(action))
+            .collect();
+        Self::resolve_filtered_with_secrets(&accessible).await
+    }
+
     /// Resolve a pre-filtered set of environment variables, resolving all secrets
     /// in parallel via a shared `SecretRegistry` and `tokio::task::JoinSet`.
     ///

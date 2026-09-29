@@ -21,15 +21,11 @@ use cuenv_core::ModuleEvaluation;
 use cuenv_core::cue::discovery::compute_relative_path;
 use cuenv_core::manifest::Project;
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
+use cuenv_manifest::environment::Env;
 use cuenv_manifest::manifest::Infrastructure;
 
 use crate::cli::CliError;
 use crate::commands::module_evaluation::{PathEvaluation, evaluate_path};
-
-/// The CUE path that must evaluate to a concrete value. Only this command's
-/// evaluation of its own target requires it; workspace discovery for other
-/// commands never does.
-const CONCRETE_PATH: &str = "infrastructure";
 
 /// Whether the command checks that the project name is unique in the module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +50,8 @@ pub(super) struct TargetRequest<'request> {
     pub(super) package: &'request str,
     /// Whether to check the project name across the module.
     pub(super) name_check: NameCheck,
+    /// Selected named infrastructure environment, if any.
+    pub(super) environment: Option<&'request str>,
 }
 
 /// Evaluated inputs for one run.
@@ -65,6 +63,10 @@ pub(super) struct Target {
     pub(super) instance: ProjectInstance,
     /// The project's `infrastructure` block.
     pub(super) infrastructure: Infrastructure,
+    /// Named environment selected by the global CLI flag.
+    pub(super) environment: Option<String>,
+    /// Project environment variables, including only the selected overlay.
+    pub(super) env: Option<Env>,
     /// Canonical project directory.
     pub(super) project_directory: PathBuf,
 }
@@ -81,18 +83,95 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     let target_path = Path::new(request.path).canonicalize().map_err(|error| {
         CliError::config(format!("cannot resolve path {}: {error}", request.path))
     })?;
-    let module = evaluate_path(PathEvaluation {
+    let selected_path = request
+        .environment
+        .map(|name| {
+            serde_json::to_string(name)
+                .map(|name| format!("infrastructure.environments.{name}"))
+                .map_err(|error| {
+                    CliError::config(format!("cannot encode infrastructure environment: {error}"))
+                })
+        })
+        .transpose()?;
+    let mut concrete_paths = vec!["infrastructure.state".to_string()];
+    if let Some(path) = &selected_path {
+        concrete_paths.push(path.clone());
+    }
+    // Export the infrastructure object leniently so its complete set of
+    // top-level keys reaches the DTO's unknown-field check. Only selected
+    // paths are required concrete; unselected named values are removed before
+    // deserialization.
+    let export_paths = vec![
+        "name".to_string(),
+        "env".to_string(),
+        "infrastructure".to_string(),
+    ];
+    let mut module = evaluate_path(PathEvaluation {
         target_path: &target_path,
         package: request.package,
-        concrete_paths: vec![CONCRETE_PATH.to_string()],
+        concrete_paths: concrete_paths.clone(),
+        export_paths: export_paths.clone(),
     })
-    .map_err(|error| explain_concrete_failure(&target_path, request.package, error))?;
+    .map_err(|error| {
+        explain_concrete_failure(
+            &target_path,
+            request.package,
+            request.environment,
+            export_paths,
+            error,
+        )
+    })?;
+    if request.environment.is_none() {
+        let relative_path = compute_relative_path(&target_path, &module.root);
+        if let Some(value) = module
+            .get(Path::new(&relative_path))
+            .map(|instance| &instance.value)
+        {
+            for field in ["providers", "resources"] {
+                if value.pointer(&format!("/infrastructure/{field}")).is_some() {
+                    concrete_paths.push(format!("infrastructure.{field}"));
+                }
+            }
+        }
+        if concrete_paths.len() > 1 {
+            let legacy_export_paths = vec![
+                "name".to_string(),
+                "env".to_string(),
+                "infrastructure".to_string(),
+            ];
+            module = evaluate_path(PathEvaluation {
+                target_path: &target_path,
+                package: request.package,
+                concrete_paths,
+                export_paths: legacy_export_paths.clone(),
+            })
+            .map_err(|error| {
+                explain_concrete_failure(
+                    &target_path,
+                    request.package,
+                    request.environment,
+                    legacy_export_paths,
+                    error,
+                )
+            })?;
+        }
+    }
     let relative_path = compute_relative_path(&target_path, &module.root);
-    let project = target_project(&module, &target_path)?;
+    let project = target_project(&module, &target_path, request.environment)?;
     let infrastructure = project
         .infrastructure
         .clone()
         .ok_or_else(|| missing_infrastructure(&project.name))?;
+    let infrastructure = if let Some(name) = request.environment {
+        infrastructure.for_environment(name).ok_or_else(|| {
+            CliError::config(format!(
+                "project '{}' has no infrastructure environment named '{name}'",
+                project.name
+            ))
+        })?
+    } else {
+        infrastructure
+    };
     let instance = ProjectInstance::new(&relative_path, request.package)
         .map_err(|error| super::failure(&error))?;
 
@@ -106,17 +185,27 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
 
     let module_path = cuenv_infrastructure::read_module_path(&module.root)
         .map_err(|error| super::failure(&error))?;
-    let tenant =
-        TenantKey::new(module_path, project.name).map_err(|error| super::failure(&error))?;
+    let tenant = if let Some(name) = request.environment {
+        TenantKey::with_environment(module_path, project.name, name)
+    } else {
+        TenantKey::new(module_path, project.name)
+    }
+    .map_err(|error| super::failure(&error))?;
     Ok(Target {
         tenant,
         instance,
         infrastructure,
+        environment: request.environment.map(str::to_owned),
+        env: project.env,
         project_directory: target_path,
     })
 }
 
-fn target_project(module: &ModuleEvaluation, target_path: &Path) -> Result<Project, CliError> {
+fn target_project(
+    module: &ModuleEvaluation,
+    target_path: &Path,
+    environment: Option<&str>,
+) -> Result<Project, CliError> {
     let relative_path = compute_relative_path(target_path, &module.root);
     let instance = module.get(Path::new(&relative_path)).ok_or_else(|| {
         CliError::config(format!(
@@ -124,7 +213,27 @@ fn target_project(module: &ModuleEvaluation, target_path: &Path) -> Result<Proje
             target_path.display()
         ))
     })?;
-    instance.deserialize().map_err(CliError::from)
+    let mut selected = instance.clone();
+    // The CLI resolves only the selected overlay. Other overlays may remain
+    // incomplete CUE values and must not enter Env deserialization.
+    if let Some(overlays) = selected.value.pointer_mut("/env/environment")
+        && let Some(overlays) = overlays.as_object_mut()
+    {
+        overlays.retain(|name, _| environment == Some(name.as_str()));
+    }
+    if let Some(environments) = selected.value.pointer_mut("/infrastructure/environments")
+        && let Some(environments) = environments.as_object_mut()
+    {
+        environments.retain(|name, _| environment == Some(name.as_str()));
+    }
+    if environment.is_some()
+        && let Some(infrastructure) = selected.value.get_mut("infrastructure")
+        && let Some(infrastructure) = infrastructure.as_object_mut()
+    {
+        infrastructure.remove("providers");
+        infrastructure.remove("resources");
+    }
+    selected.deserialize().map_err(CliError::from)
 }
 
 fn missing_infrastructure(project_name: &str) -> CliError {
@@ -140,19 +249,41 @@ fn missing_infrastructure(project_name: &str) -> CliError {
 fn explain_concrete_failure(
     target_path: &Path,
     package: &str,
+    environment: Option<&str>,
+    export_paths: Vec<String>,
     error: cuenv_core::Error,
 ) -> CliError {
     let lenient = evaluate_path(PathEvaluation {
         target_path,
         package,
         concrete_paths: Vec::new(),
+        export_paths,
     });
-    match lenient.map(|module| target_project(&module, target_path)) {
-        Ok(Ok(project)) if project.infrastructure.is_none() => {
-            missing_infrastructure(&project.name)
+    if let Ok(module) = lenient {
+        let relative_path = compute_relative_path(target_path, &module.root);
+        if let Some(instance) = module.get(Path::new(&relative_path)) {
+            let project_name = instance
+                .value
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<unknown>");
+            if instance.value.get("infrastructure").is_none() {
+                return missing_infrastructure(project_name);
+            }
+            if let Some(name) = environment
+                && instance
+                    .value
+                    .pointer("/infrastructure/environments")
+                    .and_then(serde_json::Value::as_object)
+                    .is_none_or(|environments| !environments.contains_key(name))
+            {
+                return CliError::config(format!(
+                    "project '{project_name}' has no infrastructure environment named '{name}'"
+                ));
+            }
         }
-        _ => CliError::from(error),
     }
+    CliError::from(error)
 }
 
 /// The only fields of each instance the uniqueness check reads.

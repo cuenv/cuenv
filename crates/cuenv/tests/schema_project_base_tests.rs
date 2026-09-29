@@ -108,6 +108,44 @@ schema.#Project & {
 }
 
 #[test]
+fn named_infrastructure_environments_evaluate_with_cue_language_v0_9() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project & {
+  name: "api"
+  infrastructure: {
+    state: {turso: {url: "http://localhost:8080"}}
+    environments: {
+      dev: {
+        providers: random: {source: "hashicorp/random", version: "3.7.2"}
+        resources: {}
+      }
+      staging: {
+        providers: random: {source: "hashicorp/random", path: "bin/provider"}
+        resources: {}
+      }
+    }
+  }
+}
+"#,
+    )?;
+
+    let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
+    let infrastructure = project.infrastructure.expect("infrastructure config");
+    assert!(infrastructure.environments.contains_key("dev"));
+    assert!(infrastructure.environments.contains_key("staging"));
+    Ok(())
+}
+
+#[test]
 fn task_dir_defaults_to_definition_dot() -> TestResult {
     let tmp = create_test_dir()?;
     let root = tmp.path();

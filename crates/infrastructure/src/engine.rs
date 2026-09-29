@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
@@ -45,7 +45,9 @@ use crate::error::{
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{ApplyRequest, LaunchOptions, PlanRequest, ProviderClient};
 use crate::protocol::{self, Diagnostic, Severity};
-use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
+use crate::registry::{
+    ProviderInstaller, ProviderSource, default_cache_directory, validate_version,
+};
 use crate::schema::{Block, ProviderSchema, Schema};
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
@@ -202,6 +204,9 @@ pub struct Plan {
     pub changes: Vec<ResourceChange>,
     /// Provider warnings collected while planning.
     pub warnings: Vec<String>,
+    /// Fingerprint of the Cuenv variables provided to provider processes.
+    /// The values themselves are never stored in the plan.
+    environment_identity: [u8; 32],
 }
 
 /// Counts of planned actions.
@@ -288,6 +293,14 @@ impl Plan {
         digest.field(b"cuenv infrastructure plan digest 1");
         digest.field(self.tenant.module_path().as_bytes());
         digest.field(self.tenant.project().as_bytes());
+        match self.tenant.environment() {
+            Some(environment) => {
+                digest.tag(1);
+                digest.field(environment.as_bytes());
+            }
+            None => digest.tag(0),
+        }
+        digest.field(&self.environment_identity);
         digest.count(self.changes.len());
         for change in &self.changes {
             digest.field(change.address.resource_type.as_bytes());
@@ -418,7 +431,7 @@ pub struct ApplyContext<'apply> {
 }
 
 /// Options for [`InfrastructureEngine::new`].
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EngineOptions {
     /// Directory relative provider `path`s resolve against.
     pub project_directory: PathBuf,
@@ -427,6 +440,9 @@ pub struct EngineOptions {
     /// Environment variables providers must not inherit, such as the state
     /// store's authentication token.
     pub withheld_environment_variables: Vec<String>,
+    /// Resolved, policy-authorized Cuenv variables overlaid on the host
+    /// environment for each provider process.
+    pub provider_environment_variables: BTreeMap<String, String>,
     /// Where changes the state store could not record are saved; defaults
     /// to [`UnrecordedStore::default_location`].
     pub unrecorded_directory: Option<PathBuf>,
@@ -434,6 +450,42 @@ pub struct EngineOptions {
     /// provider the engine launches, while planning or applying, is
     /// registered with it.
     pub cancellation: Cancellation,
+}
+
+impl fmt::Debug for EngineOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EngineOptions")
+            .field("project_directory", &self.project_directory)
+            .field("plugin_cache_directory", &self.plugin_cache_directory)
+            .field(
+                "withheld_environment_variables",
+                &self.withheld_environment_variables,
+            )
+            .field(
+                "provider_environment_variable_names",
+                &self.provider_environment_variables.keys(),
+            )
+            .field("unrecorded_directory", &self.unrecorded_directory)
+            .field("cancellation", &self.cancellation)
+            .finish()
+    }
+}
+
+/// Salt environment fingerprints so a visible plan digest cannot be used to
+/// guess a low-entropy secret from a short list of candidates.
+fn environment_identity(variables: &BTreeMap<String, String>) -> [u8; 32] {
+    static SALT: OnceLock<[u8; 16]> = OnceLock::new();
+    let salt = SALT.get_or_init(|| *uuid::Uuid::new_v4().as_bytes());
+    let mut digest = DigestWriter::default();
+    digest.field(b"cuenv infrastructure environment identity 1");
+    digest.field(salt);
+    digest.count(variables.len());
+    for (name, value) in variables {
+        digest.field(name.as_bytes());
+        digest.field(value.as_bytes());
+    }
+    digest.hasher.finalize().into()
 }
 
 /// Everything an engine needs.
@@ -544,6 +596,7 @@ impl InfrastructureEngine {
     #[tracing::instrument(skip(self), fields(tenant = %self.tenant))]
     pub async fn plan(&mut self, mode: PlanMode) -> Result<Plan> {
         self.ensure_not_stopped()?;
+        validate_configuration(&self.infrastructure)?;
         let unrecorded = self.unrecorded_store()?;
         let pending = unrecorded.list(&self.tenant)?;
         if !pending.is_empty() {
@@ -631,6 +684,9 @@ impl InfrastructureEngine {
             tenant: self.tenant.clone(),
             changes,
             warnings,
+            environment_identity: environment_identity(
+                &self.options.provider_environment_variables,
+            ),
         })
     }
 
@@ -1189,6 +1245,7 @@ impl InfrastructureEngine {
         let client = ProviderClient::launch(&LaunchOptions {
             binary: &binary,
             withheld_environment_variables: &self.options.withheld_environment_variables,
+            provider_environment_variables: &self.options.provider_environment_variables,
             cancellation: &self.options.cancellation,
         })
         .await?;
@@ -1832,6 +1889,64 @@ fn dependency_graph(
         .iter()
         .map(|(name, declaration)| (name.clone(), declaration.depends_on.clone()))
         .collect()
+}
+
+/// Validate every provider and resource declaration in the selected
+/// configuration.
+///
+/// CUE language v0.9 cannot express these cross-reference checks with the
+/// `error()` builtin, so the selected concrete configuration is checked here.
+/// Call this before resolving provider secrets or opening a state backend. The
+/// engine repeats the validation as defense in depth before planning.
+///
+/// # Errors
+///
+/// Returns an error for invalid provider sources or versions, resource
+/// references to undeclared providers, unknown dependencies, or dependency
+/// cycles.
+pub fn validate_configuration(infrastructure: &Infrastructure) -> Result<()> {
+    for (name, declaration) in &infrastructure.providers {
+        ProviderSource::parse(&declaration.source).map_err(|error| {
+            InfrastructureError::configuration(format!("provider '{name}': {error}"))
+        })?;
+
+        match (declaration.version.as_deref(), declaration.path.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err(InfrastructureError::configuration(format!(
+                    "provider '{name}' sets both `path` and `version`; choose one"
+                )));
+            }
+            (None, None) => {
+                return Err(InfrastructureError::configuration(format!(
+                    "provider '{name}' needs an exact `version` (or a local `path`)"
+                )));
+            }
+            (Some(version), None) => validate_version(version).map_err(|error| {
+                InfrastructureError::configuration(format!("provider '{name}': {error}"))
+            })?,
+            (None, Some(_)) => {}
+        }
+    }
+
+    for (name, declaration) in &infrastructure.resources {
+        let provider_name = declaration.provider_name();
+        if !infrastructure.providers.contains_key(provider_name) {
+            let detail = if declaration.provider.is_some() {
+                format!("no provider named '{provider_name}' in infrastructure.providers")
+            } else {
+                format!(
+                    "no provider named '{provider_name}' (the prefix of type '{}')",
+                    declaration.resource_type
+                )
+            };
+            return Err(InfrastructureError::configuration(format!(
+                "resource '{name}': {detail}"
+            )));
+        }
+    }
+
+    topological_order(&dependency_graph(&infrastructure.resources))?;
+    Ok(())
 }
 
 /// Order nodes so dependencies come first. Unknown dependencies are

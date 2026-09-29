@@ -38,6 +38,13 @@ pub struct Policy {
     /// Allowlist of exec commands that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowExec")]
     pub allow_exec: Option<Vec<String>>,
+
+    /// Allowlist of infrastructure actions that can access this variable
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        rename = "allowInfrastructure"
+    )]
+    pub allow_infrastructure: Option<Vec<String>>,
 }
 
 /// Environment variable with optional access policies
@@ -174,6 +181,24 @@ impl EnvValue {
                     })
                 }
             },
+        }
+    }
+
+    /// Check if an infrastructure action has access to this environment variable.
+    #[must_use]
+    pub fn is_accessible_by_infrastructure(&self, action: &str) -> bool {
+        match self {
+            Self::WithPolicies(var) => match &var.policies {
+                None => true,
+                Some(policies) if policies.is_empty() => true,
+                Some(policies) => policies.iter().any(|policy| {
+                    policy
+                        .allow_infrastructure
+                        .as_ref()
+                        .is_some_and(|actions| actions.iter().any(|allowed| allowed == action))
+                }),
+            },
+            _ => true,
         }
     }
 

@@ -18,6 +18,8 @@ pub(super) struct PathEvaluation<'request> {
     /// effects names them, so an undefined reference or a missing required
     /// argument there fails evaluation instead of becoming null.
     pub(super) concrete_paths: Vec<String>,
+    /// Export only these paths after building the CUE instance.
+    pub(super) export_paths: Vec<String>,
 }
 
 /// Evaluate the instance in one directory of its CUE module.
@@ -31,6 +33,7 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         target_path,
         package,
         concrete_paths,
+        export_paths,
     } = request;
     let module_root = env_file::find_cue_module_root(target_path).ok_or_else(|| {
         cuenv_core::Error::configuration(format!(
@@ -47,6 +50,7 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         with_references: true,
         target_dir: Some(target_path.to_string_lossy().to_string()),
         concrete_paths,
+        export_paths,
         ..Default::default()
     };
 
@@ -108,6 +112,7 @@ impl CommandExecutor {
             target_path,
             package: &self.package,
             concrete_paths: Vec::new(),
+            export_paths: Vec::new(),
         })
     }
 

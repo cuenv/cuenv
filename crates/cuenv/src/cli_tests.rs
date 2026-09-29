@@ -179,6 +179,23 @@ fn test_infrastructure_command_conversion() {
 }
 
 #[test]
+fn infrastructure_command_receives_global_environment_selector() {
+    let cli = Cli::try_parse_from(["cuenv", "--env", "Prod", "i", "plan"]).unwrap();
+    let command = cli.command.unwrap().into_command(cli.environment);
+    let Command::Infrastructure { environment, .. } = command else {
+        panic!("Expected Command::Infrastructure");
+    };
+    assert_eq!(environment.as_deref(), Some("Prod"));
+
+    let cli = Cli::try_parse_from(["cuenv", "i", "plan"]).unwrap();
+    let command = cli.command.unwrap().into_command(cli.environment);
+    let Command::Infrastructure { environment, .. } = command else {
+        panic!("Expected Command::Infrastructure");
+    };
+    assert_eq!(environment, None);
+}
+
+#[test]
 fn test_invalid_log_level() {
     let result = Cli::try_parse_from(["cuenv", "--level", "invalid", "version"]);
     assert!(result.is_err());
@@ -209,7 +226,7 @@ fn test_help_flag() {
     // Help flag should cause an error with help message
     assert!(result.is_err());
     let err = result.unwrap_err();
-    assert!(err.kind() == clap::error::ErrorKind::DisplayHelp);
+    assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
 }
 
 #[test]

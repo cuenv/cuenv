@@ -14,6 +14,7 @@ use crate::error::{InfrastructureError, Result};
 pub struct TenantKey {
     module_path: String,
     project: String,
+    environment: Option<String>,
 }
 
 impl TenantKey {
@@ -41,7 +42,32 @@ impl TenantKey {
         Ok(Self {
             module_path,
             project,
+            environment: None,
         })
+    }
+
+    /// Build a separate state identity for a named environment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an empty name or one containing control characters.
+    pub fn with_environment(
+        module_path: impl AsRef<str>,
+        project: impl Into<String>,
+        environment: impl Into<String>,
+    ) -> Result<Self> {
+        let mut key = Self::new(module_path, project)?;
+        let environment = environment.into();
+        if environment.trim().is_empty()
+            || environment.trim() != environment
+            || environment.chars().any(char::is_control)
+        {
+            return Err(InfrastructureError::configuration(
+                "infrastructure environment must be a nonempty name without surrounding whitespace or control characters",
+            ));
+        }
+        key.environment = Some(environment);
+        Ok(key)
     }
 
     /// CUE module path (tenant).
@@ -55,11 +81,21 @@ impl TenantKey {
     pub fn project(&self) -> &str {
         &self.project
     }
+
+    /// Selected named environment, or `None` for the legacy state.
+    #[must_use]
+    pub fn environment(&self) -> Option<&str> {
+        self.environment.as_deref()
+    }
 }
 
 impl fmt::Display for TenantKey {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}#{}", self.module_path, self.project)
+        write!(formatter, "{}#{}", self.module_path, self.project)?;
+        if let Some(environment) = &self.environment {
+            write!(formatter, "@{environment}")?;
+        }
+        Ok(())
     }
 }
 
@@ -202,6 +238,22 @@ mod tests {
     fn tenant_requires_both_components() {
         assert!(TenantKey::new("", "web").is_err());
         assert!(TenantKey::new("github.com/acme/infrastructure", " ").is_err());
+    }
+
+    #[test]
+    fn named_environment_is_distinct_from_legacy_and_default_is_not_implicit() {
+        let legacy = TenantKey::new("example.com/app@v1", "web").unwrap();
+        let default = TenantKey::with_environment("example.com/app@v1", "web", "default").unwrap();
+        let dev = TenantKey::with_environment("example.com/app@v1", "web", "Dev").unwrap();
+        assert_eq!(legacy.environment(), None);
+        assert_eq!(legacy.to_string(), "example.com/app#web");
+        assert_eq!(default.environment(), Some("default"));
+        assert_eq!(default.to_string(), "example.com/app#web@default");
+        assert_ne!(legacy, default);
+        assert_ne!(default, dev);
+        assert!(TenantKey::with_environment("example.com/app", "web", "").is_err());
+        assert!(TenantKey::with_environment("example.com/app", "web", " ").is_err());
+        assert!(TenantKey::with_environment("example.com/app", "web", "Dev\n").is_err());
     }
 
     #[test]

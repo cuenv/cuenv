@@ -172,7 +172,7 @@ impl Commands {
                 },
             }),
             Self::Secrets { subcommand } => secrets_command(subcommand),
-            Self::Infrastructure { subcommand } => infrastructure_command(subcommand),
+            Self::Infrastructure { subcommand } => infrastructure_command(subcommand, environment),
             Self::Runtime { subcommand } => runtime_command(subcommand),
             Self::Tools { subcommand } => tools_command(&subcommand),
             _ => unreachable!("nested command conversion called for another command family"),
@@ -579,7 +579,10 @@ fn filter_update_tools(names: Vec<String>) -> Vec<String> {
     names.into_iter().filter(|name| !name.is_empty()).collect()
 }
 
-fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
+fn infrastructure_command(
+    subcommand: InfrastructureCommands,
+    environment: Option<String>,
+) -> Command {
     use super::InfrastructureStateCommands;
     use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
     use cuenv_infrastructure::RecoverOverwrite;
@@ -645,6 +648,7 @@ fn infrastructure_command(subcommand: InfrastructureCommands) -> Command {
         path,
         package,
         action,
+        environment,
     }
 }
 

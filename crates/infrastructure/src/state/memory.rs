@@ -256,6 +256,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn named_environments_isolate_resources_locks_owners_and_conditional_writes() {
+        let store = MemoryStateStore::new();
+        let legacy = TenantKey::new("example.com/a", "web").unwrap();
+        let dev = TenantKey::with_environment("example.com/a", "web", "Dev").unwrap();
+        let staging = TenantKey::with_environment("example.com/a", "web", "Staging").unwrap();
+        let root = ProjectInstance::new(".", "web").unwrap();
+        let copy = ProjectInstance::new("copy", "web").unwrap();
+        let legacy_lock = store.lock(&legacy, "legacy").await.unwrap();
+        let dev_lock = store.lock(&dev, "dev").await.unwrap();
+        let staging_lock = store.lock(&staging, "staging").await.unwrap();
+        let record = resource("same");
+
+        store.put(&legacy, &legacy_lock, &record).await.unwrap();
+        store.put(&dev, &dev_lock, &record).await.unwrap();
+        assert!(store.list(&staging).await.unwrap().is_empty());
+        assert!(matches!(
+            store.put(&staging, &dev_lock, &record).await,
+            Err(InfrastructureError::LockLost { .. })
+        ));
+        store
+            .put_if_unchanged(
+                &staging,
+                &staging_lock,
+                &ConditionalPut {
+                    resource: &record,
+                    expected: RecordVersion::Absent,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.list(&staging).await.unwrap()[0].serial, 1);
+        store.put(&dev, &dev_lock, &record).await.unwrap();
+        assert_eq!(store.list(&dev).await.unwrap()[0].serial, 2);
+        assert_eq!(store.list(&legacy).await.unwrap()[0].serial, 1);
+        assert_eq!(store.list(&staging).await.unwrap()[0].serial, 1);
+
+        store
+            .claim_owner(
+                &dev,
+                &dev_lock,
+                &OwnerClaim {
+                    instance: &root,
+                    mode: OwnerClaimMode::IfUnowned,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .claim_owner(
+                &staging,
+                &staging_lock,
+                &OwnerClaim {
+                    instance: &copy,
+                    mode: OwnerClaimMode::IfUnowned,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store.owner(&legacy).await.unwrap().is_none());
+        assert_eq!(store.owner(&dev).await.unwrap().unwrap().instance, root);
+        assert_eq!(store.owner(&staging).await.unwrap().unwrap().instance, copy);
+        assert!(
+            !store
+                .force_unlock(&staging, &dev_lock.lock_identifier)
+                .await
+                .unwrap()
+        );
+        assert!(store.current_lock(&dev).await.unwrap().is_some());
+        store
+            .delete(&dev, &dev_lock, &record.address)
+            .await
+            .unwrap();
+        assert!(store.list(&dev).await.unwrap().is_empty());
+        assert_eq!(store.list(&legacy).await.unwrap().len(), 1);
+        assert_eq!(store.list(&staging).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn writes_require_the_current_lock() {
         let store = MemoryStateStore::new();
         let tenant = TenantKey::new("example.com/a", "web").unwrap();

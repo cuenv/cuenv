@@ -32,7 +32,7 @@ pub mod unrecorded;
 pub use cancellation::{Cancellation, RecordingGuard};
 pub use engine::{
     Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
-    PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan,
+    PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan, validate_configuration,
 };
 pub use error::{
     InfrastructureError, Result, failure_category, strip_control_characters,

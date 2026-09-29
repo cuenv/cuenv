@@ -1670,7 +1670,7 @@ dependencies = [
 
 [[package]]
 name = "cuenv-infrastructure"
-version = "0.56.6"
+version = "0.56.7"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

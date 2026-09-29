@@ -28,6 +28,33 @@ pub struct Infrastructure {
     /// Managed resources, keyed by resource name.
     #[serde(default)]
     pub resources: BTreeMap<String, ManagedResourceDeclaration>,
+
+    /// Complete provider and resource sets selected with `--env`.
+    #[serde(default)]
+    pub environments: BTreeMap<String, InfrastructureConfiguration>,
+}
+
+/// The complete provider and resource configuration for one named environment.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct InfrastructureConfiguration {
+    #[serde(default)]
+    pub providers: BTreeMap<String, InfrastructureProvider>,
+    #[serde(default)]
+    pub resources: BTreeMap<String, ManagedResourceDeclaration>,
+}
+
+impl Infrastructure {
+    /// Select a complete named configuration while retaining the common state.
+    #[must_use]
+    pub fn for_environment(&self, name: &str) -> Option<Self> {
+        self.environments.get(name).map(|configuration| Self {
+            state: self.state.clone(),
+            providers: configuration.providers.clone(),
+            resources: configuration.resources.clone(),
+            environments: BTreeMap::new(),
+        })
+    }
 }
 
 /// State backend configuration.

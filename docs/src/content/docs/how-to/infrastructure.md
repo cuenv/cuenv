@@ -3,7 +3,7 @@ title: Manage infrastructure
 description: Declare managed resources in CUE and let cuenv drive Terraform provider plugins directly, with typed provider schemas from the CUE registry and multi-tenant state in Turso.
 ---
 
-cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database.
+cuenv can manage real infrastructure with the provider ecosystem you already know from Terraform and OpenTofu — without either command line tool. `cuenv infrastructure` (short form: `cuenv i`) launches unmodified `terraform-provider-*` binaries, speaks their gRPC plugin protocol (versions 5 and 6), and stores every managed resource as its own record in a remote [Turso](https://turso.tech) (libSQL) database. Use `--env Dev` or `--env Staging` to select a complete infrastructure configuration and its project environment values.
 
 :::caution[Status: proof of concept]
 `#Infrastructure` is **partial**. Create, update, replace, delete, refresh, state upgrades, dependency ordering, fenced state locking and verified registry installs work against real providers. See [Current limitations](#current-limitations) before pointing it at anything you care about — in particular, Plugin Framework resources that declare a resource identity are not handled yet.
@@ -24,6 +24,73 @@ cuenv can manage real infrastructure with the provider ecosystem you already kno
 
 `i` is the only short form. Everything else — commands, schema definitions, fields — is spelled out in full. Every subcommand honours the global `--json` flag and then prints exactly one JSON document on standard output (events go to standard error); `apply` and `destroy` require `--yes` with `--json`.
 
+## Dev and Staging environments
+
+`--env` selects a case-sensitive name in `infrastructure.environments` and, when present, the matching `env.environment` overlay. The infrastructure entry must contain the complete provider and resource configuration for that environment. The common `infrastructure.state` backend stays outside the selector. cuenv does not merge top-level providers or resources into a named configuration.
+
+```cue
+package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "platform"
+
+infrastructure: {
+	state: turso: {
+		url: "libsql://platform-acme.turso.io"
+		authenticationTokenEnvironmentVariable: "TURSO_AUTH_TOKEN"
+	}
+	environments: {
+		Dev: {
+			providers: random: {source: "hashicorp/random", version: "3.9.1"}
+			resources: pet: {
+				type: "random_pet"
+				configuration: {length: 2, separator: "-dev-"}
+			}
+		}
+		Staging: {
+			providers: random: {source: "hashicorp/random", version: "3.9.1"}
+			resources: pet: {
+				type: "random_pet"
+				configuration: {length: 2, separator: "-staging-"}
+			}
+		}
+	}
+}
+
+env: {
+	AWS_REGION: "eu-west-2"
+	environment: {
+		Dev: {
+			AWS_PROFILE: "platform-dev"
+			DEPLOY_TOKEN: schema.#OnePasswordRef & {ref: "op://Development/platform/deploy-token"}
+		}
+		Staging: {
+			AWS_PROFILE: "platform-staging"
+			DEPLOY_TOKEN: schema.#OnePasswordRef & {ref: "op://Staging/platform/deploy-token"}
+		}
+	}
+}
+```
+
+```bash
+cuenv i plan --env Dev -p . --package cuenv
+cuenv i apply --env Staging -p . --package cuenv --yes
+```
+
+Without `--env`, cuenv uses the existing top-level `infrastructure.providers` and `infrastructure.resources` configuration and the base `env` values. An unknown name fails before connecting to the state backend or starting a provider. Each named environment has its own state namespace, lock, owner and recovery records, even though the environments use the common Turso backend. This keeps `Dev` and `Staging` from planning or deleting one another's resources. Explicit `--env default` is a named namespace, separate from the legacy no-flag namespace.
+
+Plan, apply and destroy resolve the selected project environment through cuenv's normal runtime secret resolvers. Existing `#OnePasswordRef`, `#InfisicalSecret`, `#AwsSecret`, `#GcpSecret` and `#ExecSecret` values can be placed in `env` or a named overlay; secret parts are registered for redaction before state and provider work starts. State-only commands resolve only the configured backend token, so an unavailable provider credential does not prevent listing, recovery or unlocking state. Provider child processes inherit the caller's environment for compatibility, then receive resolved, policy-authorized project values as overrides. Use `allowInfrastructure` to restrict a value to action names such as `plan`, `apply`, `destroy`, `state-list`, `state-remove`, `state-recover`, `state-adopt` and `unlock`. A denied project variable is also removed from provider inheritance, so a same-named host variable cannot bypass the policy.
+
+```cue
+DEPLOY_TOKEN: {
+	value: schema.#OnePasswordRef & {ref: "op://Development/platform/deploy-token"}
+	policies: [{allowInfrastructure: ["plan", "apply"]}]
+}
+```
+
 ## How state is keyed
 
 State is multi-tenant by construction. Every record is keyed by:
@@ -32,11 +99,12 @@ State is multi-tenant by construction. Every record is keyed by:
 | --- | --- | --- |
 | Tenant | `module:` in `cue.mod/module.cue`, without the `@vN` suffix | `github.com/acme/platform` |
 | Discriminator | the project's `name` | `web` |
-| Address | resource `type` and its name in `infrastructure.resources` | `random_pet.server` |
+| Environment | the global `--env` selector; absent for legacy configuration | `Dev` |
+| Address | resource `type` and its name in the selected `resources` map | `random_pet.server` |
 
 cuenv refuses to run without a CUE module path, and `plan`, `apply` and `destroy` refuse to run when another instance anywhere in the module — any directory, any CUE package — has the same `name` and an `infrastructure` block; otherwise the two would share state and each would plan to delete the other's resources. CUE instances in the same package inherit fields from their parent directories, so a child directory shares its parent's `name` (it cannot set its own) and, if it inherits the `infrastructure` block too, is a conflict; put the child in a different CUE package or move its files. The check evaluates every instance in the module and fails closed: if any instance cannot be evaluated, the command stops and names it, and a target the module walk cannot see (a directory starting with `_` or `.`, a `testdata` directory, a nested module) is refused with the reason.
 
-The state database also records which instance (`<directory>:<package>`) owns each project, claimed by the first `apply` or `destroy`. Any other instance using the same module path and project name — another checkout, a nested module, a copied directory — is refused until you move ownership explicitly with `cuenv i state adopt`, run from the instance that should own it. `state` and `unlock` skip both checks so a broken sibling never blocks recovery. Moving a project to a different module or renaming it starts from empty state.
+The state database also records which instance (`<directory>:<package>`) owns each project and environment, claimed by the first `apply` or `destroy`. Any other instance using the same module path, project name and environment — another checkout, a nested module, a copied directory — is refused until you move ownership explicitly with `cuenv i state adopt`, run from the instance that should own it. `state` and `unlock` skip both checks so a broken sibling never blocks recovery. Moving a project to a different module or renaming it starts from empty state.
 
 :::caution[Tenancy is a naming boundary, not a security boundary]
 The module path is declared by the project itself. Anyone holding a database token can read or write every tenant in that database. For isolation between teams or customers, give each tenant its own Turso database and token.
@@ -156,8 +224,8 @@ infrastructure: state: turso: {
 ```
 
 - `url` accepts `libsql://`, `https://` and `wss://`. Plain `http://` and `ws://` are accepted only for loopback addresses (a local `sqld`), so the token never crosses a network in cleartext. URLs must not carry credentials, queries or fragments.
-- The authentication token is read from the named environment variable at run time. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
-- cuenv creates and migrates its tables (`cuenv_infrastructure_schema`, `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks`) right before any command takes the lock. Other commands (`plan`, `state list`, `unlock`, `state recover` with nothing to recover) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A database migrated by a newer cuenv is refused rather than misread.
+- The authentication token is read from the resolved project environment when that variable is declared there, otherwise from the caller's environment. It is never written to CUE or state, never shown in errors or logs, and **withheld from provider processes**. Create one with `turso db tokens create <database>`.
+- cuenv creates and migrates its tables right before any command takes the lock. The legacy no-flag tables are `cuenv_infrastructure_resources`, `cuenv_infrastructure_locks` and `cuenv_infrastructure_owners`; schema v4 adds separate `cuenv_infrastructure_environment_resources`, `cuenv_infrastructure_environment_locks` and `cuenv_infrastructure_environment_owners` tables. Other commands (`plan`, `state list`, `unlock`, `state recover` with nothing to recover) never create or migrate tables, so they work with a read-only token and report empty state for a fresh database. A named-environment read against a pre-v4 database reports empty state and never falls back to the legacy namespace. A database migrated by a newer cuenv is refused rather than misread.
 - Transient failures (timeouts, 5xx, 429) are retried with backoff. Redirects are never followed, and plaintext loopback URLs bypass `HTTP_PROXY`.
 
 :::caution
@@ -182,10 +250,10 @@ infrastructure: providers: {
 ```
 
 - `source` is `namespace/type` or `hostname/namespace/type`.
-- Every resource's provider — its explicit `provider`, or the prefix of its `type` — must be declared here; evaluation fails otherwise. `dependsOn` entries must name declared resources.
-- Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`.
+- Every resource's provider — its explicit `provider`, or the prefix of its `type` — must be declared here. `dependsOn` entries must name declared resources. Planning checks all provider references, dependency edges and cycles up front, before reading state or starting any provider.
+- Set exactly one of `version` (an exact semantic version; constraints such as `~> 3.7` are not supported) or `path`. The engine validates every provider source and install choice up front, including unused declarations, before reading state or starting any provider.
 - Downloads must be HTTPS, are verified against the registry's SHA-256 checksum, and are cached using Terraform's layout in `$TF_PLUGIN_CACHE_DIR` when set, otherwise in your platform's cache directory under `cuenv/infrastructure/providers` (`~/.cache` on Linux, `~/Library/Caches` on macOS). cuenv records a manifest with the binary's SHA-256 and re-verifies it on every use; a cache populated by Terraform is reinstalled once. That manifest only detects accidental corruption: anyone who can write to the cache can replace a binary and its manifest together, so never share a writable plugin cache between trust boundaries. The registry's GPG signature and lockfile hashes are not verified yet.
-- `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the environment `cuenv infrastructure` runs in. Secret-typed arguments are not supported yet.
+- `configuration` is the provider block. Keep credentials out of it: providers read their usual environment variables (`CLOUDFLARE_API_TOKEN`, `AWS_PROFILE`, …) from the caller's environment, with authorized Cuenv project values overlaid. Secret-typed resource arguments are not supported yet.
 
 ## Declare resources
 
@@ -216,7 +284,7 @@ infrastructure: resources: {
 
 With or without a registry definition, `configuration` is also validated by the provider's own schema at plan time, including nested blocks.
 
-The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation with `field not allowed` and its position, instead of being ignored (which would otherwise plan the deletion of everything under the real field). A `dependsOn` entry or provider that is not declared fails with a message naming it, for example `no resource named "pett" in infrastructure.resources`.
+The `infrastructure` block is closed at every level: a misspelled field such as `resource:` or `sourcee:` fails evaluation with `field not allowed` and its position, instead of being ignored (which would otherwise plan the deletion of everything under the real field). The engine rejects an undeclared `dependsOn` entry or provider before launching a provider, with a message naming it, for example `resource 'web_dns' depends on unknown resource 'pett'`.
 
 ## Plan and apply
 

@@ -23,6 +23,7 @@
 //!
 //! `installs_provider_from_registry` downloads from registry.terraform.io.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -87,6 +88,7 @@ fn engine_options(project_directory: &Path, cancellation: &Cancellation) -> Engi
         project_directory: project_directory.to_path_buf(),
         plugin_cache_directory: None,
         withheld_environment_variables: vec!["TURSO_AUTH_TOKEN".to_string()],
+        provider_environment_variables: BTreeMap::new(),
         unrecorded_directory: Some(project_directory.join("unrecorded")),
         cancellation: cancellation.clone(),
     }
@@ -261,6 +263,7 @@ async fn protocol_6_provider_schema() -> TestResult {
         &cuenv_infrastructure::plugin::LaunchOptions {
             binary: Path::new(&binary),
             withheld_environment_variables: &[],
+            provider_environment_variables: &BTreeMap::new(),
             cancellation: &cancellation,
         },
     )
@@ -295,6 +298,7 @@ async fn installs_provider_from_registry() -> TestResult {
         &cuenv_infrastructure::plugin::LaunchOptions {
             binary: &binary,
             withheld_environment_variables: &[],
+            provider_environment_variables: &BTreeMap::new(),
             cancellation: &cancellation,
         },
     )
@@ -801,6 +805,7 @@ async fn fake_providers_run_in_their_own_process_group() -> TestResult {
         &cuenv_infrastructure::plugin::LaunchOptions {
             binary: Path::new(&binary),
             withheld_environment_variables: &[],
+            provider_environment_variables: &BTreeMap::new(),
             cancellation: &cancellation,
         },
     )
@@ -843,6 +848,7 @@ fn fake_providers_die_with_the_thread_that_launched_them() -> TestResult {
                 &cuenv_infrastructure::plugin::LaunchOptions {
                     binary: Path::new(&binary),
                     withheld_environment_variables: &[],
+                    provider_environment_variables: &BTreeMap::new(),
                     cancellation: &launcher,
                 },
             )

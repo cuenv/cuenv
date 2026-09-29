@@ -41,12 +41,14 @@ pub async fn execute_command_safe(
         path,
         package,
         action,
+        environment,
     } = &command
     {
         let options = commands::infrastructure::InfrastructureOptions {
             path: path.clone(),
             package: package.clone(),
             action: action.clone(),
+            environment: environment.clone(),
             output: json_format,
         };
         return commands::infrastructure::execute_infrastructure(&options).await;

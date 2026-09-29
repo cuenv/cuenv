@@ -129,6 +129,40 @@ cuenv_infrastructure_owners(module_path, project, instance, claimed_at)
 - Locks are `INSERT … ON CONFLICT DO NOTHING`; zero affected rows means
   another holder, which is reported with its identity.
 
+### Named environments and project secrets
+
+The global `--env NAME` selects a complete provider/resource configuration at
+`infrastructure.environments.NAME` and the matching project values at
+`env.environment.NAME`. The common `infrastructure.state` backend is outside
+that selection. No-flag use retains the original top-level configuration and
+legacy state identity; an explicit name, including `default`, is a distinct
+identity. Unknown or incomplete selections fail during CUE evaluation before
+state access or provider startup.
+
+Schema v4 preserves the original resource, lock and owner tables for legacy
+no-flag runs. It creates a separate named-environment table family, keyed by
+module, project, environment and resource address. Every named read, write,
+lock, owner transfer, recovery hash and plan digest uses that identity, with no
+fallback between table families. This avoids changing the key beneath old
+clients that may still be running; reads do not migrate, and the first write
+creates or upgrades the tables under the existing migration gate.
+
+Plan, apply and destroy resolve the selected project environment through
+Cuenv's existing secret resolvers. State-only commands resolve only the
+configured backend token, so unavailable provider credentials do not prevent
+state inspection, recovery or unlocking. `allowInfrastructure` filters before
+secret retrieval and can name `plan`, `apply`, `destroy`, `state-list`,
+`state-remove`, `state-recover`, `state-adopt` or `unlock`. Resolved secret
+parts are registered for redaction before state and provider work. Providers
+inherit ambient variables for compatibility, then receive resolved project
+values and their plugin variables; policy-denied project names and the state
+authentication token are removed before launch. If the project does not
+declare the state-token variable, the existing ambient-token path remains.
+
+The plan digest includes the named tenant and a process-salted fingerprint of
+resolved project provider variables. This binds a plan to the selected
+environment without writing those values or a reusable plain hash into output.
+
 ### Provider installation
 
 `hashicorp/random` plus an exact version resolves via registry service
@@ -188,11 +222,15 @@ About fifty findings, most reproduced. Resolved in milestone 2:
   drift) honouring `legacy_type_system`; JSON-encoded values decoded;
   deferrals rejected; replacement creates receive the first plan's private
   data; unknown values from refresh rejected.
-- Schema: exactly one of `version`/`path`, strict version, loopback-only
-  plaintext URLs, valid token variable names, well-formed resource types; the
-  `infrastructure` block must be concrete (generic `concretePaths` bridge
-  option, which fails closed on a missing or malformed path and is applied
-  only by the infrastructure command).
+- CUE and runtime validation: strict version strings, valid token variable
+  names, well-formed resource types, and typed/closed provider and resource
+  configuration are schema-checked. The Rust engine enforces exactly one of
+  `version`/`path` and rejects unknown provider/resource references before
+  launching a provider. The Rust Turso parser checks loopback-only plaintext
+  URLs and emits fixed errors without echoing the URL. The `infrastructure`
+  block must be concrete (generic `concretePaths` bridge option, which fails
+  closed on a missing or malformed path and is applied only by the
+  infrastructure command).
 
 ### Milestone 2 review (hardening) and the decisions it drove
 
@@ -333,8 +371,10 @@ every command.
    accidental corruption: anyone who can write to the plugin cache can replace
    both a binary and its manifest.
 8. Secret-typed provider and resource arguments resolved through cuenv's
-   secret resolvers instead of plaintext CUE or ambient environment, including
-   the state token itself (`#Secret` instead of an environment variable name).
+   secret resolvers instead of plaintext CUE. Provider environment values and
+   the state token already use the selected project environment, existing
+   resolvers and `allowInfrastructure`; the token remains configured by
+   environment-variable name.
 9. Lock leases with expiry and heartbeat instead of manual release, and a
    `--lock-timeout` that waits for a running apply instead of failing
    immediately.
