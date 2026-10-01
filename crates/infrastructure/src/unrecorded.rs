@@ -497,9 +497,9 @@ impl UnrecordedStore {
                         &unrecorded.file,
                         format!(
                             "the saved record of {} {reason}; inspect the saved record and the \
-                             configured backend, then run `cuenv infrastructure state recover \
-                             --accept-backend` to write it to this backend, or move the file \
-                             aside to keep current state",
+                             configured backend, then either recover it while accepting a different \
+                             backend to write it to this backend, or move the file aside to \
+                             keep current state",
                             unrecorded.record.address
                         ),
                     ));
@@ -1198,7 +1198,8 @@ mod tests {
                 message.contains("different state backend than the configured one"),
                 "{message}"
             );
-            assert!(message.contains("--accept-backend"), "{message}");
+            assert!(message.contains("accepting a different backend"), "{message}");
+            assert!(!message.contains("cuenv infrastructure"), "{message}");
             assert!(!message.contains("--force"), "{message}");
             assert!(!message.contains("hunter2"), "{message}");
             assert!(file.exists());

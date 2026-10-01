@@ -242,8 +242,10 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                 "{} is in cuenv's unrecorded change directory but cannot be used. Check it, then \
                  move it out of that directory and run the command again; moving it aside \
                  discards the change it records from cuenv's view (the resource itself is not \
-                 touched).",
-                strip_control_characters(path)
+                 touched). If it was saved for another state backend and you have checked that \
+                 this backend is the right one, run `{}` instead.",
+                strip_control_characters(path),
+                invocation.command("state recover --accept-backend")
             )),
         ),
         InfrastructureError::StateChanged { address, .. } => (

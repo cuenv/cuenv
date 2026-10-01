@@ -1144,7 +1144,7 @@ impl StateStore for TursoStateStore {
                             return Err(InfrastructureError::state(format!(
                                 "{}; the state lock for {tenant} may have been acquired as \
                                  {lock_identifier} (checking failed: {read_error}); if so, \
-                                 release it with `cuenv infrastructure unlock {lock_identifier}`",
+                                 release that lock by its identifier",
                                 self.redact(&failure.message)
                             )));
                         }
