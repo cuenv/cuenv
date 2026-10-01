@@ -926,13 +926,16 @@ async fn recorded_addresses(
 ///   real objects, so `apply` refuses (unless `--allow-separate-state`) and
 ///   `plan` warns. Resources at other addresses are not a conflict, which is
 ///   what lets top-level resources and environments coexist.
+/// - Without `--env`, the same conflict from the other side: `apply` would
+///   create resources whose addresses a declared environment already
+///   records. Same outcomes.
 async fn guard_identity(
     context: &CommandContext<'_>,
     action: &InfrastructureAction,
     facts: &SelectionFacts,
 ) -> Result<(), CliError> {
     match context.tenant.environment() {
-        None => guard_unselected_identity(context, action).await,
+        None => guard_unselected_identity(context, action, facts).await,
         Some(environment) => guard_named_identity(context, action, facts, environment).await,
     }
 }
@@ -954,10 +957,14 @@ fn refuse_or_warn(action: &InfrastructureAction, refusal: CliError) -> Result<()
 async fn guard_unselected_identity(
     context: &CommandContext<'_>,
     action: &InfrastructureAction,
+    facts: &SelectionFacts,
 ) -> Result<(), CliError> {
     let siblings = context.siblings;
-    if siblings.declared_environments.is_empty() || siblings.top_level.resource_count > 0 {
+    if siblings.declared_environments.is_empty() {
         return Ok(());
+    }
+    if siblings.top_level.resource_count > 0 {
+        return guard_environment_claims(context, action, facts).await;
     }
     let recorded = recorded_addresses(context, context.tenant).await?;
     let deletable = !recorded.is_empty() && siblings.top_level.provider_count > 0;
@@ -965,6 +972,52 @@ async fn guard_unselected_identity(
         return Ok(());
     }
     refuse_or_warn(action, unselected_refusal(context, &recorded))
+}
+
+/// What one declared environment already records of what a run without
+/// `--env` would create.
+#[derive(Debug)]
+struct EnvironmentClaim {
+    environment: String,
+    /// The configured addresses that environment records, in configuration
+    /// order.
+    addresses: Vec<ResourceAddress>,
+}
+
+/// The mirror of [`guard_named_identity`] for a run without `--env` in a
+/// project that declares top-level `resources` beside its environments:
+/// creating an address a declared environment records would manage one real
+/// object under two identities.
+async fn guard_environment_claims(
+    context: &CommandContext<'_>,
+    action: &InfrastructureAction,
+    facts: &SelectionFacts,
+) -> Result<(), CliError> {
+    // Only creating can claim an object twice.
+    if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
+        return Ok(());
+    }
+    let own = recorded_addresses(context, context.tenant).await?;
+    let mut claims = Vec::new();
+    for (environment, tenant) in context.siblings.declared() {
+        let recorded = recorded_addresses(context, &tenant).await?;
+        let addresses: Vec<ResourceAddress> = facts
+            .configured
+            .iter()
+            .filter(|address| !own.contains(address) && recorded.contains(address))
+            .cloned()
+            .collect();
+        if !addresses.is_empty() {
+            claims.push(EnvironmentClaim {
+                environment,
+                addresses,
+            });
+        }
+    }
+    if claims.is_empty() {
+        return Ok(());
+    }
+    refuse_warn_or_allow(action, environment_claims_refusal(context, &claims))
 }
 
 /// The refusal of a run without `--env` in a project that declares
@@ -1040,7 +1093,16 @@ async fn guard_named_identity(
     if conflicts.is_empty() {
         return Ok(());
     }
-    let refusal = separate_state_refusal(context, environment, &conflicts);
+    refuse_warn_or_allow(
+        action,
+        separate_state_refusal(context, environment, &conflicts),
+    )
+}
+
+/// A conflict between state identities: `apply` refuses unless
+/// `--allow-separate-state` was given (then it warns and goes on), `plan`
+/// warns, and `destroy` is never given one.
+fn refuse_warn_or_allow(action: &InfrastructureAction, refusal: CliError) -> Result<(), CliError> {
     match action {
         InfrastructureAction::Apply {
             separate_state: SeparateState::Allow,
@@ -1111,6 +1173,76 @@ fn separate_state_refusal(
              delete or hand them over yourself before creating them under '{environment}'). \
              If '{environment}' should manage separate objects with the same addresses, run \
              `{}`.",
+            invocation.command("apply --allow-separate-state")
+        ),
+    )
+}
+
+/// The refusal of `apply` without `--env` that would create what declared
+/// environments already record.
+fn environment_claims_refusal(
+    context: &CommandContext<'_>,
+    claims: &[EnvironmentClaim],
+) -> CliError {
+    let invocation = context.invocation;
+    let mut addresses: Vec<&ResourceAddress> = Vec::new();
+    for address in claims.iter().flat_map(|claim| &claim.addresses) {
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    let mut listed: Vec<String> = addresses
+        .iter()
+        .take(LISTED_ADDRESSES)
+        .map(|address| strip_control_characters(&address.to_string()))
+        .collect();
+    if addresses.len() > LISTED_ADDRESSES {
+        listed.push(format!("{} more", addresses.len() - LISTED_ADDRESSES));
+    }
+    let environments: Vec<String> = claims
+        .iter()
+        .map(|claim| {
+            format!(
+                "'{}'",
+                evaluation::escape_control_characters(&claim.environment)
+            )
+        })
+        .collect();
+    let (environment_noun, are, them) = match (claims.len(), addresses.len()) {
+        (1, 1) => ("environment", "is", "it"),
+        (1, _) => ("environment", "are", "them"),
+        (_, 1) => ("environments", "is", "it"),
+        _ => ("environments", "are", "them"),
+    };
+    // The first claim is the one the way out names: its environment, and
+    // its first address.
+    let first = &claims[0];
+    let holder = invocation.with_environment(Some(&first.environment));
+    let remove = holder.command(&format!(
+        "state remove {}",
+        invocation::quote_argument(&first.addresses[0].to_string())
+    ));
+    let environment_phrase = environments.join(", ");
+    CliError::config_with_help(
+        format!(
+            "{} without --env would create {}, which {are} already recorded for \
+             {environment_noun} {environment_phrase} of the same project",
+            tenant_label(&context.siblings.unselected_tenant),
+            listed.join(", "),
+        ),
+        format!(
+            "State is recorded separately for runs with and without --env, so creating {them} \
+             without --env would manage the same real objects twice: both identities would \
+             claim them, and the second create can fail or duplicate them (a later \
+             `destroy --env` would delete what the top-level configuration manages). Moving \
+             records between the two (`state move`) is not available yet. Keep these resources \
+             in the {environment_noun} {environment_phrase} (declare them there, not at the top \
+             level), or free their addresses first, by deleting the objects with `{}` \
+             (everything that environment records is deleted) or by forgetting the records with \
+             `{remove}` (the real objects are not touched, so delete or hand them over yourself \
+             before creating them without --env). If the top-level resources should manage \
+             separate objects with the same addresses, run `{}`.",
+            holder.command("destroy"),
             invocation.command("apply --allow-separate-state")
         ),
     )

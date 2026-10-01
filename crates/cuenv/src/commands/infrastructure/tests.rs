@@ -1883,6 +1883,110 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
     case.guard(&apply_action()).await.unwrap();
 }
 
+/// Records `addresses` for the named environment of the harness's project, as
+/// an earlier `--env` run would have left them.
+async fn record_for_environment(harness: &Harness, environment: &str, addresses: &[&str]) {
+    let tenant =
+        TenantKey::with_environment("example.com/infrastructure", "app", environment).unwrap();
+    let lock = harness.store.lock(&tenant, "seed").await.unwrap();
+    for address in addresses {
+        harness
+            .store
+            .put(&tenant, &lock, &managed(address))
+            .await
+            .unwrap();
+    }
+    harness.store.unlock(&tenant, &lock).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    record_for_environment(&harness, "dev", &["random_pet.pet", "random_id.id"]).await;
+    record_for_environment(&harness, "prod", &["random_pet.pet"]).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev", "prod"],
+        top_level: TopLevel {
+            provider_count: 1,
+            resource_count: 3,
+        },
+        configured: &["random_pet.pet", "random_id.id", "random_string.fresh"],
+    };
+    let error = case.guard(&apply_action()).await.unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    let text = texts(&error);
+    // It names the environments and the addresses, never the address nobody
+    // else records.
+    assert!(text.contains("'dev'"), "{text}");
+    assert!(text.contains("'prod'"), "{text}");
+    assert!(text.contains("random_pet.pet"), "{text}");
+    assert!(text.contains("random_id.id"), "{text}");
+    assert!(!text.contains("random_string.fresh"), "{text}");
+    assert!(text.contains("without --env"), "{text}");
+    // The way out acts on the environment that holds the records, and the
+    // override names the flag.
+    assert!(
+        text.contains("`cuenv infrastructure destroy --env dev`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`cuenv infrastructure state remove random_pet.pet --env dev`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`cuenv infrastructure apply --allow-separate-state`"),
+        "{text}"
+    );
+
+    // A plan only reads: it warns. Destroying creates nothing.
+    case.guard(&InfrastructureAction::Plan).await.unwrap();
+    case.guard(&destroy_action()).await.unwrap();
+    // The override is explicit.
+    case.guard(&InfrastructureAction::Apply {
+        confirmation: ConfirmationPolicy::AssumeYes,
+        separate_state: SeparateState::Allow,
+    })
+    .await
+    .unwrap();
+
+    // Once the identity without --env records the address itself, it is its
+    // own, even though an environment records it too.
+    harness
+        .seed(&["random_pet.pet", "random_id.id"], None)
+        .await;
+    case.guard(&apply_action()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_long_list_of_claimed_addresses_is_shortened() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let addresses = [
+        "random_pet.a",
+        "random_pet.b",
+        "random_pet.c",
+        "random_pet.d",
+        "random_pet.e",
+    ];
+    record_for_environment(&harness, "dev", &addresses).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev"],
+        top_level: TopLevel {
+            provider_count: 1,
+            resource_count: addresses.len(),
+        },
+        configured: &addresses,
+    };
+    let text = texts(&case.guard(&apply_action()).await.unwrap_err());
+    assert!(text.contains("random_pet.a"), "{text}");
+    assert!(text.contains("random_pet.c"), "{text}");
+    assert!(!text.contains("random_pet.d"), "{text}");
+    assert!(text.contains("2 more"), "{text}");
+}
+
 #[tokio::test]
 async fn nothing_is_refused_when_the_unselected_identity_has_no_state() {
     let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));

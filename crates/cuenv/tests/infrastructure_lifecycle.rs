@@ -17,7 +17,7 @@
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::Mutex;
 
 use cuenv_infrastructure::{StateStore, TenantKey, TursoConfiguration, TursoStateStore};
@@ -183,7 +183,8 @@ infrastructure: {{
         )?)
     }
 
-    fn run(&self, arguments: &[&str]) -> TestResult<Value> {
+    /// Run the CLI and record everything it printed.
+    fn execute(&self, arguments: &[&str]) -> TestResult<Output> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_cuenv"));
         command
             .env_clear()
@@ -218,6 +219,11 @@ infrastructure: {{
             transcript.push_str(&String::from_utf8_lossy(&output.stdout));
             transcript.push_str(&String::from_utf8_lossy(&output.stderr));
         }
+        Ok(output)
+    }
+
+    fn run(&self, arguments: &[&str]) -> TestResult<Value> {
+        let output = self.execute(arguments)?;
         assert!(
             output.status.success(),
             "cuenv infrastructure {} exited {}: {}{}",
@@ -230,6 +236,24 @@ infrastructure: {{
         let envelope: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(envelope["status"], "ok");
         Ok(envelope["data"].clone())
+    }
+
+    /// Run a command that must be refused as a configuration error (exit code
+    /// 2) and return everything it printed.
+    fn refused(&self, arguments: &[&str]) -> TestResult<String> {
+        let output = self.execute(arguments)?;
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "cuenv infrastructure {} was not refused: {printed}",
+            arguments.join(" "),
+        );
+        Ok(printed)
     }
 
     fn transcript(&self) -> TestResult<String> {
@@ -416,5 +440,103 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
         !transcript.contains(SECRET_VALUE),
         "the secret appeared in CLI output"
     );
+    Ok(())
+}
+
+/// One project at the two stages of moving a resource from an environment to
+/// the top level: `dev` records `random_pet.pet`, then the top level declares
+/// the same address while `dev` declares another resource.
+fn identity_conflict_configuration(
+    provider: &Path,
+    backend: &TursoConfiguration,
+    project: &str,
+    top_level_pet: bool,
+) -> TestResult<String> {
+    let provider_block = format!(
+        "providers: random: {{source: \"hashicorp/random\", path: {}}}",
+        serde_json::to_string(provider)?
+    );
+    let pet = "pet: {type: \"random_pet\", configuration: {length: 2, separator: \"-\"}}";
+    let (top_level, environment_resource) = if top_level_pet {
+        (
+            format!("{provider_block}\n\tresources: {pet}"),
+            "identifier: {type: \"random_id\", configuration: byte_length: 4}",
+        )
+    } else {
+        (String::new(), pet)
+    };
+    Ok(format!(
+        r#"package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: {project}
+
+infrastructure: {{
+	state: turso: url: {url}
+	{top_level}
+	environments: dev: {{
+		{provider_block}
+		resources: {environment_resource}
+	}}
+}}
+"#,
+        project = serde_json::to_string(project)?,
+        url = serde_json::to_string(&backend.url)?,
+    ))
+}
+
+/// A run without `--env` must not create an address a declared environment
+/// already records: both identities would manage one real object, and a later
+/// `destroy --env dev` would delete what the top-level configuration manages.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let store = TursoStateStore::new(backend.clone())?;
+    let project = format!("random-identity-{}", uuid::Uuid::new_v4());
+    let unselected = TenantKey::new(MODULE, &project)?;
+    let dev = TenantKey::with_environment(MODULE, &project, "dev")?;
+    let lifecycle = Lifecycle::from_configuration(
+        prepare_directory()?,
+        identity_conflict_configuration(&provider, &backend, &project, false)?,
+        &backend,
+    )?;
+    let created = lifecycle.run(&["apply", "--env", "dev", "--yes"])?;
+    assert_eq!(created["applied"]["create"], 1);
+
+    // The pet moves to the top level; `dev` keeps declaring something else.
+    fs::write(
+        lifecycle.directory.path().join("env.cue"),
+        identity_conflict_configuration(&provider, &backend, &project, true)?,
+    )?;
+    // A plan only warns.
+    lifecycle.run(&["plan"])?;
+    let printed = lifecycle.refused(&["apply", "--yes"])?;
+    assert!(printed.contains("random_pet.pet"), "{printed}");
+    assert!(printed.contains("'dev'"), "{printed}");
+    assert!(printed.contains("--allow-separate-state"), "{printed}");
+    assert!(
+        store.list(&unselected).await?.is_empty(),
+        "the refused run recorded resources"
+    );
+    assert_eq!(store.list(&dev).await?.len(), 1);
+
+    // The override creates separate objects, and each identity can then be
+    // destroyed on its own.
+    let separate = lifecycle.run(&["apply", "--yes", "--allow-separate-state"])?;
+    assert_eq!(separate["applied"]["create"], 1);
+    assert_eq!(store.list(&unselected).await?.len(), 1);
+    lifecycle.run(&["destroy", "--yes"])?;
+    lifecycle.run(&["destroy", "--env", "dev", "--yes"])?;
+    assert!(store.list(&unselected).await?.is_empty());
+    assert!(store.list(&dev).await?.is_empty());
     Ok(())
 }

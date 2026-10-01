@@ -51,8 +51,9 @@ selected `--env` (empty without it); duplicate project names within a module are
 refused. A named environment and the no-flag identity are separate identities in
 one state database with one token (a per-environment `state` is a follow-up), and
 cuenv refuses `apply --env NAME` only when it would create an address the
-no-flag identity already records (`--allow-separate-state` overrides; `plan`
-warns), and a no-flag `apply` of a project that declares only environments
+no-flag identity already records, and a no-flag `apply` only when it would
+create an address a declared environment records (`--allow-separate-state`
+overrides both; `plan` warns; `destroy` never refuses), and a no-flag `apply` of a project that declares only environments
 (`destroy` is the way out of an old layout; `state move` is a follow-up). Converging runs lock, plan, confirm
 and apply that same plan with lock-fenced writes, ordered as one dependency
 graph; interrupts finish the resource in flight and release the lock. `--yes`

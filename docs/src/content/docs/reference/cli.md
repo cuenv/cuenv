@@ -591,9 +591,10 @@ cuenv infrastructure unlock  [OPTIONS] [--module <MODULE>] [--project <PROJECT>]
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
   when standard input is not a terminal, and with `--json`. `--auto-approve`
   is accepted as an alias.
-- `--allow-separate-state` (`apply`): with `--env NAME`, create resources
-  whose addresses the project also has recorded without `--env`, as separate
-  objects, instead of refusing (see "Environment selection").
+- `--allow-separate-state` (`apply`): create resources whose addresses another
+  state identity of the project also records (the run without `--env` when
+  `--env NAME` is given, or a declared environment when it is not), as
+  separate objects, instead of refusing (see "Environment selection").
 - `--module <MODULE>`, `--project <PROJECT>` (`unlock`): the CUE module path
   and project name of the lock to show or release, when it is not the
   evaluated project's.
@@ -616,6 +617,11 @@ that work from the state recorded at that moment:
   creates them as separate objects anyway. `plan --env NAME` only warns, and
   `destroy --env NAME` never refuses. Moving records (`state move`) is not
   available yet; the error lists the alternatives.
+- `apply` without `--env` when it would create a resource whose address is
+  recorded for a declared environment and not yet recorded without `--env`:
+  the same conflict from the other side. The error names the environments and
+  up to three addresses. `--allow-separate-state` creates them as separate
+  objects anyway. `plan` only warns, and `destroy` never refuses.
 - `apply` without `--env` when `infrastructure.environments` is declared and
   there are no top-level `resources`; `plan` warns. `destroy` without `--env`
   in that layout runs when resources are still recorded without `--env` and
