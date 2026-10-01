@@ -125,13 +125,13 @@ Every resolved secret, and the state authentication token, is registered for red
 
 ### Provider environment
 
-Providers are third-party programs, and `providerEnvironment` decides how much of the cuenv process environment they inherit. It is set at the top level and in each environment. An environment does not inherit the top-level value, so when the top level sets `providerEnvironment` every `--env` run must set it on the selected environment too; otherwise the run is refused rather than silently falling back to `inherit`:
+Providers are third-party programs, and `providerEnvironment` decides how much of the cuenv process environment they inherit. It is set at the top level and in each environment. An environment does not inherit the top-level value, so when the top level sets `providerEnvironment: "isolated"` every `--env` run must set it on the selected environment too; otherwise the run is refused rather than silently falling back to `inherit`. A top level that says `"inherit"` (or says nothing) needs no such line: an environment without it inherits, which is what the top level does too.
 
 ```cue
 infrastructure: {
 	providerEnvironment: "isolated"
 	environments: prod: {
-		providerEnvironment: "isolated" // required while the top level sets it
+		providerEnvironment: "isolated" // required while the top level is isolated
 		// ...
 	}
 }

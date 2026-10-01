@@ -320,9 +320,11 @@ trace-level chatter of a large plan is never redacted at all.
 
 **Provider environment** (decision D5). `providerEnvironment` (top level and per
 environment, no inheritance) is `inherit` (default) or `isolated`. A selected
-environment that does not set it while the top level does is refused (explicit is
-safer than a silent fall back to `inherit`; the key's presence is read from the
-raw configuration, not from a defaulted value). In `inherit`
+environment that does not set it while the top level sets `isolated` is refused
+(explicit is safer than a silent fall back to `inherit`; the key's presence is
+read from the raw configuration, not from a defaulted value). A top level that
+says `inherit` needs no refusal, since an environment without the key inherits
+too. In `inherit`
 mode providers keep the ambient environment, minus the variables of cuenv's
 secret machinery (the table `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`,
 exact names and prefixes: `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`,

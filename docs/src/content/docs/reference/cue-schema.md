@@ -1059,9 +1059,11 @@ project's own `env` variables that the running action's policy allows (see
 - `"isolated"`: an empty environment except `PATH`, `HOME`, proxy and TLS
   variables (proxy URLs are passed without their `user:password@`).
 
-When the top level sets `providerEnvironment`, a selected environment must set
-it too: `--env` is refused otherwise, because an environment replaces the
-whole top-level configuration and would silently fall back to `"inherit"`.
+When the top level sets `providerEnvironment: "isolated"`, a selected
+environment must set it too: `--env` is refused otherwise, because an
+environment replaces the whole top-level configuration and would silently fall
+back to `"inherit"`. A top level that says `"inherit"` needs no refusal: an
+environment without the field inherits as well.
 Neither mode is a sandbox: `HOME` is passed even when isolated, and every
 provider receives every project variable the action's policy allows.
 
