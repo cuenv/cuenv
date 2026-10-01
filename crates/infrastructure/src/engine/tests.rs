@@ -732,7 +732,7 @@ fn an_update_waits_for_the_delete_of_what_its_record_depends_on_even_when_hurrie
 
 #[test]
 fn renaming_a_resource_whose_dependent_only_refreshes_deletes_the_old_one_first() {
-    // N1: the dependent follows the rename, so its record is rewritten. A
+    // The dependent follows the rename, so its record is rewritten. A
     // record rewrite detaches nothing; the old object goes before the new
     // one is created, because they may be the same real-world object.
     let changes = [
@@ -748,7 +748,7 @@ fn renaming_a_resource_whose_dependent_only_refreshes_deletes_the_old_one_first(
 
 #[test]
 fn renaming_a_resource_whose_dependent_is_updated_deletes_the_old_one_first() {
-    // N1b
+    // The dependent follows the rename and is updated; the old object still goes first.
     let changes = [
         pet("new", Action::Create, wired(&[], &[])),
         pet("old", Action::Delete, wired(&[], &[])),
@@ -762,7 +762,7 @@ fn renaming_a_resource_whose_dependent_is_updated_deletes_the_old_one_first() {
 
 #[test]
 fn renaming_a_resource_whose_dependent_is_replaced_deletes_the_old_one_first() {
-    // N1c: the dependent's delete may not wait for the new object either,
+    // The dependent's delete may not wait for the new object either,
     // because the old object's delete waits for the dependent's.
     let changes = [
         pet("new", Action::Create, wired(&[], &[])),
@@ -777,7 +777,7 @@ fn renaming_a_resource_whose_dependent_is_replaced_deletes_the_old_one_first() {
 
 #[test]
 fn a_type_change_with_a_dependent_deletes_the_old_object_first() {
-    // N3: the same name under another type is a new address and an orphan.
+    // The same name under another type is a new address and an orphan.
     for action in [Action::Refresh, Action::Update, Action::Replace] {
         let changes = [
             thing("fake_obj2.x", Action::Create, wired(&[], &[])),
@@ -799,7 +799,7 @@ fn a_type_change_with_a_dependent_deletes_the_old_object_first() {
 
 #[test]
 fn a_refresh_waits_for_the_refreshes_and_updates_it_is_configured_to_depend_on() {
-    // N4: `y` (updated) is configured to depend on `x`, whose record is only
+    // `y` (updated) is configured to depend on `x`, whose record is only
     // refreshed. If `x`'s refresh cannot run, `y` must not either, or the
     // stored records would depend on each other.
     let changes = [
@@ -1628,7 +1628,7 @@ async fn a_failure_skips_what_depends_on_it_transitively_and_nothing_else() {
 
 #[tokio::test]
 async fn a_failed_prerequisite_leaves_no_stored_dependency_cycle_behind() {
-    // N4: z's update fails. x (only refreshed, now depending on z) cannot
+    // z's update fails. x (only refreshed, now depending on z) cannot
     // be rewritten, so y (now depending on x) must not be updated either:
     // its stored record would depend on x while x's still depends on y.
     let runner = ScriptedRunner::new().failing(&["apply random_pet.z"]);
@@ -1650,7 +1650,7 @@ async fn a_failed_prerequisite_leaves_no_stored_dependency_cycle_behind() {
 
 #[test]
 fn a_replacement_that_became_ready_late_is_recreated_before_unrelated_deletes() {
-    // N7: after the delete of `x`, its create waits for `p`'s update. The
+    // After the delete of `x`, its create waits for `p`'s update. The
     // update goes before the unrelated replacement of `y`, so the window in
     // which `x` does not exist is as short as the graph allows.
     let changes = [
@@ -1716,7 +1716,7 @@ async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted
 
 #[tokio::test]
 async fn a_replacement_deleted_by_the_provider_but_not_recorded_is_deleted_not_recreated() {
-    // N9: the provider deleted the old object, and recording that failed.
+    // The provider deleted the old object, and recording that failed.
     // The create never runs, so the object is gone and not recreated.
     let mut runner = ScriptedRunner::new();
     runner.delete_unrecorded = ["delete random_pet.x".to_string()].into_iter().collect();

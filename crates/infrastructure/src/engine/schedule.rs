@@ -650,7 +650,8 @@ impl<'plan> Graph<'plan> {
         let mut current = stuck.iter().next().copied();
         while let Some(node) = current {
             if let Some(start) = path.iter().position(|seen| *seen == node) {
-                let cycle: Vec<String> = path[start..].iter().map(|n| self.label(*n)).collect();
+                let cycle: Vec<String> =
+                    path[start..].iter().map(|node| self.label(*node)).collect();
                 return InfrastructureError::configuration(format!(
                     "the planned operations depend on each other in a cycle, so no order can \
                      apply them safely: {} -> {}; the `dependsOn` entries of the resources \
