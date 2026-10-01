@@ -1198,7 +1198,10 @@ mod tests {
                 message.contains("different state backend than the configured one"),
                 "{message}"
             );
-            assert!(message.contains("accepting a different backend"), "{message}");
+            assert!(
+                message.contains("accepting a different backend"),
+                "{message}"
+            );
             assert!(!message.contains("cuenv infrastructure"), "{message}");
             assert!(!message.contains("--force"), "{message}");
             assert!(!message.contains("hunter2"), "{message}");
