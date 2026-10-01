@@ -392,6 +392,14 @@
           CARGO_PROFILE_CI_DEBUG = "0";
         };
 
+        # Formatting is part of the merge gate; without this check rustfmt drift
+        # reached a pushed head unnoticed.
+        fmt-check = craneLib.cargoFmt {
+          inherit src;
+          pname = "cuenv";
+          inherit version;
+        };
+
         infrastructureE2eCargoArtifacts = craneLib.buildDepsOnly (commonArgs // cargoArtifactsArgs // infrastructureE2eBuildArgs // {
           pname = "cuenv-infrastructure-e2e";
           cargoExtraArgs = infrastructureE2eCargoExtraArgs;
@@ -467,7 +475,9 @@
                 kill "$pid" 2>/dev/null || true
               done
             }
-            trap stop_sqld EXIT
+            # Registered as a failure hook and called again in postCheck rather than
+            # trapped on EXIT: a trap would replace stdenv's own exit handler.
+            failureHooks+=(stop_sqld)
 
             # Each libSQL database that a suite requires to be otherwise unused gets
             # its own server; the shared one serves everything else.
@@ -490,7 +500,7 @@
               return 1
             }
             # start_sqld runs in this shell (not a command substitution) so that the
-            # server's pid is recorded for the EXIT trap.
+            # server's pid is recorded for stop_sqld.
             start_sqld shared
             export CUENV_INFRASTRUCTURE_TEST_TURSO_URL="$started_sqld_url"
             start_sqld fresh
@@ -498,6 +508,12 @@
             start_sqld migration
             export CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL="$started_sqld_url"
           '';
+          postCheck = ''
+            stop_sqld
+          '';
+          # The check's outcome is all that matters; installing its target
+          # directory only adds a large artifact to the store and the cache.
+          doInstallCargoArtifacts = false;
         });
 
         doc-test-check = craneLib.cargoDocTest (workspaceDocCheckArgs // {
@@ -636,6 +652,7 @@
           cuenv-deny = deny-check;
           cuenv-doctest = doc-test-check;
           cuenv-fake-terraform-provider = fake-terraform-provider;
+          cuenv-fmt = fmt-check;
           cuenv-nextest = nextest-check;
         } // pkgs.lib.optionalAttrs pkgs.stdenv.isLinux {
           # Linux only: the suites need sqld, the nixpkgs Terraform providers and

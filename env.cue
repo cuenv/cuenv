@@ -247,6 +247,12 @@ schema.#Project & {
 				inputs: _checkInputs
 			}
 
+			fmt: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-fmt", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
 			doctest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-doctest", "-L", "--accept-flake-config"]

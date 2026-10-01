@@ -583,6 +583,7 @@ providers are stopped whatever the outcome, so no `?` may leave them behind:
 
 ```rust
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use cuenv_infrastructure::{
     ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
