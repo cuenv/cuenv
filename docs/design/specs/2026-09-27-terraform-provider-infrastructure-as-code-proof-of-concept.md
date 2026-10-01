@@ -180,10 +180,14 @@ not break task discovery, sync or CI.
 backend and token (decision D4). It is documented in the how-to and the schema
 reference; per-environment `state` is a follow-up.
 
-**No-flag to `--env` is refused, not migrated** (decision D3). `plan`, `apply`
-and `destroy` with `--env NAME` refuse when `NAME` has no records while the
-same module and project have no-flag records, and a no-flag run refuses when
-`infrastructure.environments` is declared and top-level `resources` is absent.
+**No-flag to `--env` is refused, not migrated** (decision D3). The guard is
+two-way. `apply --env NAME` refuses when it would create an address the no-flag
+identity records and `NAME` does not; a no-flag `apply` refuses when it would
+create an address a declared environment records and the no-flag identity does
+not (both name the conflicting addresses, and the environments for the second;
+`plan` warns, `destroy` never refuses, `--allow-separate-state` overrides). A
+no-flag run also refuses when `infrastructure.environments` is declared and
+top-level `resources` is absent.
 Removing or renaming an environment strands its state (`--env OLD` can no
 longer select a configuration), so the documentation says to destroy first; the
 state commands need only `infrastructure.state` and keep working for an
@@ -325,9 +329,11 @@ trace-level chatter of a large plan is never redacted at all.
 
 **Provider environment** (decision D5). `providerEnvironment` (top level and per
 environment, no inheritance) is `inherit` (default) or `isolated`. A selected
-environment that does not set it while the top level does is refused (explicit is
-safer than a silent fall back to `inherit`; the key's presence is read from the
-raw configuration, not from a defaulted value). In `inherit`
+environment that does not set it while the top level sets `isolated` is refused
+(explicit is safer than a silent fall back to `inherit`; the key's presence is
+read from the raw configuration, not from a defaulted value). A top level that
+says `inherit` needs no refusal, since an environment without the key inherits
+too. In `inherit`
 mode providers keep the ambient environment, minus the variables of cuenv's
 secret machinery (the table `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`,
 exact names and prefixes: `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`,

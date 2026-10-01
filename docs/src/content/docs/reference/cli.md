@@ -591,9 +591,10 @@ cuenv infrastructure unlock  [OPTIONS] [--module <MODULE>] [--project <PROJECT>]
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
   when standard input is not a terminal, and with `--json`. `--auto-approve`
   is accepted as an alias.
-- `--allow-separate-state` (`apply`): with `--env NAME`, create resources
-  whose addresses the project also has recorded without `--env`, as separate
-  objects, instead of refusing (see "Environment selection").
+- `--allow-separate-state` (`apply`): create resources whose addresses another
+  state identity of the project also records (the run without `--env` when
+  `--env NAME` is given, or a declared environment when it is not), as
+  separate objects, instead of refusing (see "Environment selection").
 - `--module <MODULE>`, `--project <PROJECT>` (`unlock`): the CUE module path
   and project name of the lock to show or release, when it is not the
   evaluated project's.
@@ -616,6 +617,11 @@ that work from the state recorded at that moment:
   creates them as separate objects anyway. `plan --env NAME` only warns, and
   `destroy --env NAME` never refuses. Moving records (`state move`) is not
   available yet; the error lists the alternatives.
+- `apply` without `--env` when it would create a resource whose address is
+  recorded for a declared environment and not yet recorded without `--env`:
+  the same conflict from the other side. The error names the environments and
+  up to three addresses. `--allow-separate-state` creates them as separate
+  objects anyway. `plan` only warns, and `destroy` never refuses.
 - `apply` without `--env` when `infrastructure.environments` is declared and
   there are no top-level `resources`; `plan` warns. `destroy` without `--env`
   in that layout runs when resources are still recorded without `--env` and
@@ -709,7 +715,8 @@ JSON lines. On failure the document is the error envelope
 `help` is present when there is help text; `lockIdentifier` and
 `lockReleased` are present when the failure concerns a state lock (this run's
 lock, or the one that blocked it), and `lockReleased` is `false` whenever the
-release failed or is not known; `deletedNotRecreated` (an array of addresses)
+release failed or is not known, and when the lock was no longer held at the end
+of the run (nothing was released); `deletedNotRecreated` (an array of addresses)
 is present when a failed or interrupted apply left replacements deleted and
 not recreated. A run that succeeded but could not release its lock reports
 that as an error, not as success. Every string in the envelope is redacted

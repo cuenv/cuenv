@@ -19,9 +19,10 @@ use super::interrupts::{Interrupts, SignalSource};
 use super::invocation::Invocation;
 use super::output::{Finish, Output};
 use super::{
-    AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, InfrastructureAction,
-    InfrastructureOptions, SelectionFacts, SeparateState, Siblings, StateAction, UnlockScope,
-    confirm, dispatch, environment_variables_for_action, guard_selection, release, run, under_lock,
+    AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, GuardRequest,
+    InfrastructureAction, InfrastructureOptions, SelectionFacts, SeparateState, Siblings,
+    StateAction, UnlockScope, confirm, dispatch, environment_variables_for_action, guard_selection,
+    release, run, under_lock,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -604,7 +605,7 @@ impl StateStore for CountingStore {
         &self,
         tenant: &TenantKey,
         lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<()> {
+    ) -> cuenv_infrastructure::Result<bool> {
         self.inner.unlock(tenant, lock).await
     }
 
@@ -1421,6 +1422,11 @@ impl StateStore for UnreleasableStore {
         Ok(request.lock.clone())
     }
 
+    async fn locks(&self) -> cuenv_infrastructure::Result<Vec<cuenv_infrastructure::TenantLock>> {
+        // The lock this store hands out is never recorded anywhere.
+        Ok(Vec::new())
+    }
+
     async fn owner(
         &self,
         _tenant: &TenantKey,
@@ -1444,7 +1450,7 @@ impl StateStore for UnreleasableStore {
         &self,
         _tenant: &TenantKey,
         _lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<()> {
+    ) -> cuenv_infrastructure::Result<bool> {
         self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
         Err(InfrastructureError::state("unavailable"))
     }
@@ -1520,6 +1526,65 @@ async fn an_unreleased_lock_is_never_reported_as_released() {
     .unwrap_err();
     assert!(error.to_string().contains("no such resource"), "{error}");
     assert!(!lock_of(&error).unwrap().released);
+}
+
+#[tokio::test]
+async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let context = harness.context();
+    let store = Arc::clone(&harness.store);
+    let tenant = harness.tenant.clone();
+
+    // The run loses its lock (the row is removed by another actor) and fails
+    // on its next fenced write, as the engine does.
+    let error = under_lock(&context, "apply", |lock| async move {
+        assert!(
+            store
+                .force_unlock(&tenant, &lock.lock_identifier)
+                .await
+                .unwrap()
+        );
+        Err::<(), _>(CliError::infrastructure(
+            "the lock was lost",
+            None,
+            crate::cli::InfrastructureFailureKind::Failed,
+        ))
+    })
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("the lock was lost"), "{error}");
+    let lock = lock_of(&error).expect("the error carries the lock");
+    assert!(!lock.released, "nothing was released: the row was gone");
+    let envelope = serde_json::to_value(crate::cli::error_envelope(&error)).unwrap();
+    assert_eq!(envelope["error"]["lockReleased"], false);
+    assert!(harness.current_lock().await.is_none());
+
+    // A run that finished but no longer held its lock still succeeded.
+    let store = Arc::clone(&harness.store);
+    let tenant = harness.tenant.clone();
+    under_lock(&context, "state remove", |lock| async move {
+        store
+            .force_unlock(&tenant, &lock.lock_identifier)
+            .await
+            .unwrap();
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn the_release_notice_says_what_the_release_did() {
+    let lock = StateLock::generate();
+    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let released = super::release_notice(&lock, &tenant, super::Release::Released);
+    assert!(released.starts_with("Released lock "), "{released}");
+    assert!(released.contains(&lock.lock_identifier), "{released}");
+    let gone = super::release_notice(&lock, &tenant, super::Release::NoLongerHeld);
+    assert!(!gone.contains("Released"), "{gone}");
+    assert!(gone.contains("no longer held"), "{gone}");
+    assert!(gone.contains("nothing was released"), "{gone}");
+    assert!(gone.contains(&lock.lock_identifier), "{gone}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,7 +1773,13 @@ impl GuardCase<'_> {
             invocation: &invocation,
             ..self.harness.context()
         };
-        guard_selection(&context, action, &facts, &self.harness.inputs()).await
+        let inputs = self.harness.inputs();
+        let request = GuardRequest {
+            action,
+            facts: &facts,
+            inputs: &inputs,
+        };
+        guard_selection(&context, &request).await
     }
 }
 
@@ -1881,6 +1952,110 @@ async fn an_environment_creating_what_the_unselected_identity_records_is_refused
         .unwrap();
     harness.store.unlock(&named, &lock).await.unwrap();
     case.guard(&apply_action()).await.unwrap();
+}
+
+/// Records `addresses` for the named environment of the harness's project, as
+/// an earlier `--env` run would have left them.
+async fn record_for_environment(harness: &Harness, environment: &str, addresses: &[&str]) {
+    let tenant =
+        TenantKey::with_environment("example.com/infrastructure", "app", environment).unwrap();
+    let lock = harness.store.lock(&tenant, "seed").await.unwrap();
+    for address in addresses {
+        harness
+            .store
+            .put(&tenant, &lock, &managed(address))
+            .await
+            .unwrap();
+    }
+    harness.store.unlock(&tenant, &lock).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_run_without_env_creating_what_an_environment_records_is_refused() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    record_for_environment(&harness, "dev", &["random_pet.pet", "random_id.id"]).await;
+    record_for_environment(&harness, "prod", &["random_pet.pet"]).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev", "prod"],
+        top_level: TopLevel {
+            provider_count: 1,
+            resource_count: 3,
+        },
+        configured: &["random_pet.pet", "random_id.id", "random_string.fresh"],
+    };
+    let error = case.guard(&apply_action()).await.unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    let text = texts(&error);
+    // It names the environments and the addresses, never the address nobody
+    // else records.
+    assert!(text.contains("'dev'"), "{text}");
+    assert!(text.contains("'prod'"), "{text}");
+    assert!(text.contains("random_pet.pet"), "{text}");
+    assert!(text.contains("random_id.id"), "{text}");
+    assert!(!text.contains("random_string.fresh"), "{text}");
+    assert!(text.contains("without --env"), "{text}");
+    // The way out acts on the environment that holds the records, and the
+    // override names the flag.
+    assert!(
+        text.contains("`cuenv infrastructure destroy --env dev`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`cuenv infrastructure state remove random_pet.pet --env dev`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("`cuenv infrastructure apply --allow-separate-state`"),
+        "{text}"
+    );
+
+    // A plan only reads: it warns. Destroying creates nothing.
+    case.guard(&InfrastructureAction::Plan).await.unwrap();
+    case.guard(&destroy_action()).await.unwrap();
+    // The override is explicit.
+    case.guard(&InfrastructureAction::Apply {
+        confirmation: ConfirmationPolicy::AssumeYes,
+        separate_state: SeparateState::Allow,
+    })
+    .await
+    .unwrap();
+
+    // Once the identity without --env records the address itself, it is its
+    // own, even though an environment records it too.
+    harness
+        .seed(&["random_pet.pet", "random_id.id"], None)
+        .await;
+    case.guard(&apply_action()).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_long_list_of_claimed_addresses_is_shortened() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let addresses = [
+        "random_pet.a",
+        "random_pet.b",
+        "random_pet.c",
+        "random_pet.d",
+        "random_pet.e",
+    ];
+    record_for_environment(&harness, "dev", &addresses).await;
+    let case = GuardCase {
+        harness: &harness,
+        environment: None,
+        declared: &["dev"],
+        top_level: TopLevel {
+            provider_count: 1,
+            resource_count: addresses.len(),
+        },
+        configured: &addresses,
+    };
+    let text = texts(&case.guard(&apply_action()).await.unwrap_err());
+    assert!(text.contains("random_pet.a"), "{text}");
+    assert!(text.contains("random_pet.c"), "{text}");
+    assert!(!text.contains("random_pet.d"), "{text}");
+    assert!(text.contains("2 more"), "{text}");
 }
 
 #[tokio::test]
@@ -2104,6 +2279,14 @@ fn an_unknown_environment_lists_the_declared_names_and_escapes_the_typed_one() {
         text.contains("not inherited"),
         "top-level is not inherited: {text}"
     );
+    // An environment that was removed from the configuration cannot be
+    // destroyed under its old name: the way out names both options.
+    assert!(text.contains("`state remove`"), "{text}");
+    assert!(text.contains("without touching the real objects"), "{text}");
+    assert!(
+        text.contains("restore the configuration of the environment"),
+        "{text}"
+    );
 
     let error = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("a\u{1b}[31mred"))
         .unwrap_err();
@@ -2175,6 +2358,75 @@ infrastructure: {
         TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap()
     );
     assert!(target.warnings.is_empty());
+}
+
+/// A project with infrastructure, a `dev`
+/// environment, and the given `cache` block.
+fn module_with_cache(cache: &str) -> tempfile::TempDir {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            "package cuenv\nname: \"app\"\n{cache}\ninfrastructure: {{\n\
+             \tstate: turso: url: \"http://127.0.0.1:8080\"\n\
+             \tproviders: random: {{source: \"hashicorp/random\", version: \"3.7.2\"}}\n\
+             \tresources: pet: {{type: \"random_pet\", configuration: length: 2}}\n\
+             \tenvironments: dev: {{\n\
+             \t\tproviders: random: {{source: \"hashicorp/random\", version: \"3.7.2\"}}\n\
+             \t\tresources: pet: {{type: \"random_pet\", configuration: length: 4}}\n\
+             \t}}\n\
+             }}\n"
+        ),
+    );
+    module
+}
+
+#[test]
+fn the_variables_the_remote_cache_reads_credentials_from_are_found_by_every_evaluation() {
+    let bearer = module_with_cache(
+        "cache: remote: {endpoint: \"grpcs://cache.example.com\", auth: bearerTokenEnv: \"CACHE_TOKEN\"}",
+    );
+    let project = bearer.path().join("app");
+    let names = |target: &evaluation::Target| target.remote_cache_credential_variables.clone();
+    let expected = vec!["CACHE_TOKEN".to_string()];
+    assert_eq!(
+        names(&evaluate_at(&project, NameCheck::TargetOnly).unwrap()),
+        expected
+    );
+    assert_eq!(
+        names(&evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap()),
+        expected
+    );
+    assert_eq!(names(&evaluate_state_only(&project, None)), expected);
+    assert_eq!(names(&evaluate_state_only(&project, Some("dev"))), expected);
+
+    let header = module_with_cache(
+        "cache: remote: {endpoint: \"grpcs://cache.example.com\", auth: header: {name: \"x-key\", valueEnv: \"CACHE_KEY\"}}",
+    );
+    assert_eq!(
+        names(&evaluate_at(&header.path().join("app"), NameCheck::TargetOnly).unwrap()),
+        vec!["CACHE_KEY".to_string()]
+    );
+}
+
+#[test]
+fn a_cache_block_that_is_not_a_complete_cache_never_stops_an_infrastructure_command() {
+    // Neither an incomplete endpoint nor a field the cache schema does not
+    // know belongs to this command; the credential variables are still found.
+    let incomplete = module_with_cache(
+        "cache: remote: {endpoint: string, upload: \"maybe\", auth: bearerTokenEnv: \"CACHE_TOKEN\", unknown: 1}",
+    );
+    let project = incomplete.path().join("app");
+    let target = evaluate_at(&project, NameCheck::TargetOnly).unwrap();
+    assert_eq!(target.remote_cache_credential_variables, ["CACHE_TOKEN"]);
+    let target = evaluate_state_only(&project, None);
+    assert_eq!(target.remote_cache_credential_variables, ["CACHE_TOKEN"]);
+    // A cache without credentials names no variable.
+    let plain = module_with_cache("cache: remote: endpoint: \"grpcs://cache.example.com\"");
+    let target = evaluate_at(&plain.path().join("app"), NameCheck::TargetOnly).unwrap();
+    assert!(target.remote_cache_credential_variables.is_empty());
 }
 
 #[test]
@@ -2673,6 +2925,20 @@ fn schema_and_file_problems_get_help_that_fits_them() {
         "{unreleased}"
     );
     assert!(!unreleased.contains("Upgrade cuenv"), "{unreleased}");
+    // The message lists the tables; the help points at them in the singular
+    // or the plural, whichever it listed.
+    assert!(
+        unreleased.contains("the table listed above"),
+        "{unreleased}"
+    );
+    assert!(!unreleased.contains("tables listed above"), "{unreleased}");
+    let several = help(InfrastructureError::StateUnreleasedLayout {
+        tables: vec![
+            "cuenv_infrastructure_schema".to_string(),
+            "cuenv_infrastructure_resources".to_string(),
+        ],
+    });
+    assert!(several.contains("the tables listed above"), "{several}");
     let conflict = help(InfrastructureError::StateSchemaConflict {
         problem: "it holds tables".to_string(),
     });

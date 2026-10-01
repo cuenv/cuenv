@@ -132,6 +132,9 @@ reqwest = { workspace = true, features = ["blocking", "rustls-no-provider"] }
 rustls = { workspace = true, features = ["ring"] }
 tempfile = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [dev-dependencies]
 temp-env = { workspace = true }
 cucumber = { workspace = true }

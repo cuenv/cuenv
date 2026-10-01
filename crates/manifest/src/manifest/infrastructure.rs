@@ -148,14 +148,15 @@ pub enum InfrastructureSelectionError {
         /// The environments the project declares, in name order.
         declared: Vec<String>,
     },
-    /// The top level sets `providerEnvironment` but the selected environment
-    /// does not, so the environment would silently fall back to `inherit`.
+    /// The top level sets `providerEnvironment` to `"isolated"` but the
+    /// selected environment does not set it, so the environment would
+    /// silently fall back to `inherit`.
     #[error(
-        "the top-level `providerEnvironment` does not apply to infrastructure environment \
-         '{environment}': an environment replaces the whole top-level configuration, so set \
-         `providerEnvironment` on it explicitly (`\"inherit\"` or `\"isolated\"`); falling \
-         back to `inherit` silently would give providers the ambient environment you meant \
-         to withhold"
+        "the top-level `providerEnvironment` is \"isolated\", but infrastructure environment \
+         '{environment}' does not set it: an environment replaces the whole top-level \
+         configuration, so set `providerEnvironment` on it explicitly (`\"isolated\"` to keep \
+         providers isolated, or `\"inherit\"`); falling back to `inherit` silently would give \
+         providers the ambient environment the top level withholds"
     )]
     ProviderEnvironmentNotSet {
         /// The selected environment.
@@ -211,10 +212,12 @@ impl Infrastructure {
     /// is not an object, [`InfrastructureSelectionError::UnknownEnvironment`]
     /// (naming the declared environments) when `environment` is not declared,
     /// [`InfrastructureSelectionError::ProviderEnvironmentNotSet`] when the
-    /// top level sets `providerEnvironment` and the selected environment does
-    /// not (the key must be present in the raw value; refusing is safer than
-    /// carrying the top-level mode over, because an environment replaces the
-    /// top-level configuration entirely), and
+    /// top level sets `providerEnvironment` to `"isolated"` and the selected
+    /// environment does not set it (the key must be present in the raw value;
+    /// refusing is safer than carrying the top-level mode over, because an
+    /// environment replaces the top-level configuration entirely; a top level
+    /// that says `"inherit"` needs no refusal, since an environment without
+    /// the key inherits too), and
     /// [`InfrastructureSelectionError::Invalid`] when the selected
     /// configuration does not decode strictly.
     pub fn select(
@@ -244,7 +247,11 @@ impl Infrastructure {
                 .and_then(|environments| environments.get(name))
                 .and_then(serde_json::Value::as_object)
                 .is_none_or(|configuration| configuration.contains_key("providerEnvironment"));
-            if object.contains_key("providerEnvironment") && !selected_sets_mode {
+            let top_level_isolates = object
+                .get("providerEnvironment")
+                .and_then(serde_json::Value::as_str)
+                == Some("isolated");
+            if top_level_isolates && !selected_sets_mode {
                 return Err(InfrastructureSelectionError::ProviderEnvironmentNotSet {
                     environment: name.to_owned(),
                 });
@@ -640,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selected_environment_must_set_the_provider_environment_the_top_level_sets() {
+    fn an_environment_must_set_the_provider_environment_when_the_top_level_isolates() {
         let mut value = declared_with_environments();
         value["environments"]["dev"]
             .as_object_mut()
@@ -658,6 +665,27 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("'dev'"), "{text}");
         assert!(text.contains("`providerEnvironment`"), "{text}");
+        assert!(text.contains("\"isolated\""), "{text}");
+    }
+
+    #[test]
+    fn an_explicit_top_level_inherit_lets_an_environment_without_the_key_inherit() {
+        // An environment without the key silently inherits, which is exactly
+        // what the top level says: there is nothing to refuse.
+        let mut value = declared_with_environments();
+        value["providerEnvironment"] = serde_json::json!("inherit");
+        value["environments"]["dev"]
+            .as_object_mut()
+            .unwrap()
+            .remove("providerEnvironment");
+        let selected = Infrastructure::select(value.clone(), Some("dev")).unwrap();
+        assert_eq!(selected.provider_environment, ProviderEnvironment::Inherit);
+        // The environment can still tighten it, and the top level still runs.
+        value["environments"]["dev"]["providerEnvironment"] = serde_json::json!("isolated");
+        let selected = Infrastructure::select(value.clone(), Some("dev")).unwrap();
+        assert_eq!(selected.provider_environment, ProviderEnvironment::Isolated);
+        let top = Infrastructure::select(value, None).unwrap();
+        assert_eq!(top.provider_environment, ProviderEnvironment::Inherit);
     }
 
     #[test]

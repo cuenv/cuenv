@@ -320,19 +320,25 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                 InfrastructureFailureKind::Locked,
             );
         }
-        InfrastructureError::StateUnreleasedLayout { .. } => (
-            InfrastructureFailureKind::Failed,
-            Some(
-                "The database holds tables written by an unreleased development build of \
-                 cuenv; no released cuenv reads that layout, and cuenv never adopts or \
-                 ignores it. This is not a connection problem. If the state recorded there is \
-                 disposable, drop every table whose name starts with `cuenv_infrastructure` \
-                 (the tables listed above and any others of that family) and run the command \
-                 again; if it manages real resources, use another database \
-                 (`infrastructure.state.turso.url`) instead."
-                    .to_string(),
-            ),
-        ),
+        InfrastructureError::StateUnreleasedLayout { tables } => {
+            let listed = if tables.len() == 1 {
+                "the table listed above"
+            } else {
+                "the tables listed above"
+            };
+            (
+                InfrastructureFailureKind::Failed,
+                Some(format!(
+                    "The database holds tables written by an unreleased development build of \
+                     cuenv; no released cuenv reads that layout, and cuenv never adopts or \
+                     ignores it. This is not a connection problem. If the state recorded there \
+                     is disposable, drop every table whose name starts with \
+                     `cuenv_infrastructure` ({listed} and any others of that family) and run \
+                     the command again; if it manages real resources, use another database \
+                     (`infrastructure.state.turso.url`) instead."
+                )),
+            )
+        }
         InfrastructureError::StateSchemaConflict { .. } => (
             InfrastructureFailureKind::Failed,
             Some(
@@ -531,10 +537,17 @@ async fn run(
 ) -> Result<(), CliError> {
     let answers = TerminalAnswers;
     let invocation = Invocation::of(options);
-    refuse_unconfirmable(&options.action, output, &answers, &invocation)?;
+    refuse_unconfirmable(
+        &options.action,
+        &PromptSetting {
+            output,
+            answers: &answers,
+            invocation: &invocation,
+        },
+    )?;
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
-    let resolved = resolve(&options.action, &target).await?;
+    let resolved = resolve(&options.action, &target, &invocation).await?;
     let facts = SelectionFacts::of(&target);
     let Target {
         tenant,
@@ -584,7 +597,12 @@ async fn run(
         // The user state directory (see `UnrecordedStore`).
         unrecorded_directory: None,
     };
-    guard_selection(&context, &options.action, &facts, &inputs).await?;
+    let request = GuardRequest {
+        action: &options.action,
+        facts: &facts,
+        inputs: &inputs,
+    };
+    guard_selection(&context, &request).await?;
     dispatch(&options.action, &context, inputs).await
 }
 
@@ -656,7 +674,11 @@ struct Resolved {
 
 /// Resolve the project's environment variables the action may use, connect
 /// to the state store, and decide what providers inherit.
-async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resolved, CliError> {
+async fn resolve(
+    action: &InfrastructureAction,
+    target: &Target,
+    invocation: &Invocation,
+) -> Result<Resolved, CliError> {
     let project_environment_variables =
         target
             .project_environment
@@ -691,19 +713,33 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
             "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
         )));
     }
-    let environment_to_resolve =
+    let mut environment_to_resolve =
         environment_variables_for_action(action, &project_environment_variables, &token_variable);
-    let (resolved_variables, secret_values) =
-        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
+    // Only the state backend's token is resolved before the state store is
+    // asked who owns the project: a secret is a command or a call to a secret
+    // provider, and nothing should run for a run the owner check refuses.
+    let backend_token: HashMap<String, EnvValue> = environment_to_resolve
+        .remove_entry(&token_variable)
+        .into_iter()
+        .collect();
+    let (mut resolved_variables, token_secrets) =
+        resolve_environment_variables(policy_name, &backend_token).await?;
     // Register before connecting to state or launching providers so their
     // diagnostics and output redact every resolved secret part.
-    cuenv_events::register_secrets(secret_values);
+    cuenv_events::register_secrets(token_secrets);
     let store = connect(
         &target.infrastructure,
         &project_environment_variables,
         &resolved_variables,
     )
     .map_err(|error| failure(&error, &Invocation::default()))?;
+    if action.uses_provider_environment() {
+        refuse_another_owner(store.as_ref(), target, invocation).await?;
+    }
+    let (other_variables, other_secrets) =
+        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
+    cuenv_events::register_secrets(other_secrets);
+    resolved_variables.extend(other_variables);
     let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
         .filter(|(name, _)| name != &token_variable)
@@ -743,6 +779,25 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
         store,
         provider_environment_variables,
         withheld_environment_variables,
+    })
+}
+
+/// Refuse a project whose state another CUE instance owns, before any of the
+/// project's secrets is resolved. Reads only; the owner is checked again under
+/// the lock where the run writes.
+async fn refuse_another_owner(
+    store: &dyn StateStore,
+    target: &Target,
+    invocation: &Invocation,
+) -> Result<(), CliError> {
+    let owner = store
+        .owner(&target.tenant)
+        .await
+        .map_err(|error| failure(&error, invocation))?;
+    owner.map_or(Ok(()), |owner| {
+        owner
+            .require(&target.tenant, &target.instance)
+            .map_err(|error| failure(&error, invocation))
     })
 }
 
@@ -875,6 +930,16 @@ impl SelectionFacts {
     }
 }
 
+/// What the guards on the state identity of a run look at besides the
+/// [`CommandContext`]: what the run does, what the evaluated configuration
+/// says, and the engine inputs. (No `Debug`: the engine inputs hold resolved
+/// secret values.)
+struct GuardRequest<'request> {
+    action: &'request InfrastructureAction,
+    facts: &'request SelectionFacts,
+    inputs: &'request EngineInputs,
+}
+
 /// The checks on the state identity a run acts on, which need the state
 /// store. They run once it is connected and before the command does
 /// anything.
@@ -882,20 +947,18 @@ impl SelectionFacts {
 /// `plan` only reads, so it warns where `apply` and `destroy` refuse.
 async fn guard_selection(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
-    inputs: &EngineInputs,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
-    match action {
+    match request.action {
         InfrastructureAction::Plan
         | InfrastructureAction::Apply { .. }
-        | InfrastructureAction::Destroy { .. } => guard_identity(context, action, facts).await,
+        | InfrastructureAction::Destroy { .. } => guard_identity(context, request).await,
         // Whole database, or another project's tenant: nothing of the
         // evaluated project's environments applies.
         InfrastructureAction::State(StateAction::Locks) => Ok(()),
         InfrastructureAction::Unlock { scope, .. } if scope.is_named() => Ok(()),
         InfrastructureAction::State(_) | InfrastructureAction::Unlock { .. } => {
-            guard_environment_known(context, facts, inputs).await
+            guard_environment_known(context, request).await
         }
     }
 }
@@ -926,14 +989,16 @@ async fn recorded_addresses(
 ///   real objects, so `apply` refuses (unless `--allow-separate-state`) and
 ///   `plan` warns. Resources at other addresses are not a conflict, which is
 ///   what lets top-level resources and environments coexist.
+/// - Without `--env`, the same conflict from the other side: `apply` would
+///   create resources whose addresses a declared environment already
+///   records. Same outcomes.
 async fn guard_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
     match context.tenant.environment() {
-        None => guard_unselected_identity(context, action).await,
-        Some(environment) => guard_named_identity(context, action, facts, environment).await,
+        None => guard_unselected_identity(context, request).await,
+        Some(environment) => guard_named_identity(context, request, environment).await,
     }
 }
 
@@ -953,11 +1018,15 @@ fn refuse_or_warn(action: &InfrastructureAction, refusal: CliError) -> Result<()
 
 async fn guard_unselected_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
     let siblings = context.siblings;
-    if siblings.declared_environments.is_empty() || siblings.top_level.resource_count > 0 {
+    let action = request.action;
+    if siblings.declared_environments.is_empty() {
         return Ok(());
+    }
+    if siblings.top_level.resource_count > 0 {
+        return guard_environment_claims(context, request).await;
     }
     let recorded = recorded_addresses(context, context.tenant).await?;
     let deletable = !recorded.is_empty() && siblings.top_level.provider_count > 0;
@@ -965,6 +1034,52 @@ async fn guard_unselected_identity(
         return Ok(());
     }
     refuse_or_warn(action, unselected_refusal(context, &recorded))
+}
+
+/// What one declared environment already records of what a run without
+/// `--env` would create.
+#[derive(Debug)]
+struct EnvironmentClaim {
+    environment: String,
+    /// The configured addresses that environment records, in configuration
+    /// order.
+    addresses: Vec<ResourceAddress>,
+}
+
+/// The mirror of [`guard_named_identity`] for a run without `--env` in a
+/// project that declares top-level `resources` beside its environments:
+/// creating an address a declared environment records would manage one real
+/// object under two identities.
+async fn guard_environment_claims(
+    context: &CommandContext<'_>,
+    request: &GuardRequest<'_>,
+) -> Result<(), CliError> {
+    let GuardRequest { action, facts, .. } = request;
+    // Only creating can claim an object twice.
+    if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
+        return Ok(());
+    }
+    let own = recorded_addresses(context, context.tenant).await?;
+    let mut claims = Vec::new();
+    for (environment, tenant) in context.siblings.declared() {
+        let recorded = recorded_addresses(context, &tenant).await?;
+        let addresses: Vec<ResourceAddress> = facts
+            .configured
+            .iter()
+            .filter(|address| !own.contains(address) && recorded.contains(address))
+            .cloned()
+            .collect();
+        if !addresses.is_empty() {
+            claims.push(EnvironmentClaim {
+                environment,
+                addresses,
+            });
+        }
+    }
+    if claims.is_empty() {
+        return Ok(());
+    }
+    refuse_warn_or_allow(action, environment_claims_refusal(context, &claims))
 }
 
 /// The refusal of a run without `--env` in a project that declares
@@ -1018,10 +1133,10 @@ fn unselected_refusal(context: &CommandContext<'_>, recorded: &[ResourceAddress]
 
 async fn guard_named_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
     environment: &str,
 ) -> Result<(), CliError> {
+    let GuardRequest { action, facts, .. } = request;
     // Only creating can claim an object twice; destroying a named
     // environment that has nothing recorded changes nothing.
     if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
@@ -1040,7 +1155,16 @@ async fn guard_named_identity(
     if conflicts.is_empty() {
         return Ok(());
     }
-    let refusal = separate_state_refusal(context, environment, &conflicts);
+    refuse_warn_or_allow(
+        action,
+        separate_state_refusal(context, environment, &conflicts),
+    )
+}
+
+/// A conflict between state identities: `apply` refuses unless
+/// `--allow-separate-state` was given (then it warns and goes on), `plan`
+/// warns, and `destroy` is never given one.
+fn refuse_warn_or_allow(action: &InfrastructureAction, refusal: CliError) -> Result<(), CliError> {
     match action {
         InfrastructureAction::Apply {
             separate_state: SeparateState::Allow,
@@ -1116,6 +1240,76 @@ fn separate_state_refusal(
     )
 }
 
+/// The refusal of `apply` without `--env` that would create what declared
+/// environments already record.
+fn environment_claims_refusal(
+    context: &CommandContext<'_>,
+    claims: &[EnvironmentClaim],
+) -> CliError {
+    let invocation = context.invocation;
+    let mut addresses: Vec<&ResourceAddress> = Vec::new();
+    for address in claims.iter().flat_map(|claim| &claim.addresses) {
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    let mut listed: Vec<String> = addresses
+        .iter()
+        .take(LISTED_ADDRESSES)
+        .map(|address| strip_control_characters(&address.to_string()))
+        .collect();
+    if addresses.len() > LISTED_ADDRESSES {
+        listed.push(format!("{} more", addresses.len() - LISTED_ADDRESSES));
+    }
+    let environments: Vec<String> = claims
+        .iter()
+        .map(|claim| {
+            format!(
+                "'{}'",
+                evaluation::escape_control_characters(&claim.environment)
+            )
+        })
+        .collect();
+    let (environment_noun, are, them) = match (claims.len(), addresses.len()) {
+        (1, 1) => ("environment", "is", "it"),
+        (1, _) => ("environment", "are", "them"),
+        (_, 1) => ("environments", "is", "it"),
+        _ => ("environments", "are", "them"),
+    };
+    // The first claim is the one the way out names: its environment, and
+    // its first address.
+    let first = &claims[0];
+    let holder = invocation.with_environment(Some(&first.environment));
+    let remove = holder.command(&format!(
+        "state remove {}",
+        invocation::quote_argument(&first.addresses[0].to_string())
+    ));
+    let environment_phrase = environments.join(", ");
+    CliError::config_with_help(
+        format!(
+            "{} without --env would create {}, which {are} already recorded for \
+             {environment_noun} {environment_phrase} of the same project",
+            tenant_label(&context.siblings.unselected_tenant),
+            listed.join(", "),
+        ),
+        format!(
+            "State is recorded separately for runs with and without --env, so creating {them} \
+             without --env would manage the same real objects twice: both identities would \
+             claim them, and the second create can fail or duplicate them (a later \
+             `destroy --env` would delete what the top-level configuration manages). Moving \
+             records between the two (`state move`) is not available yet. Keep these resources \
+             in the {environment_noun} {environment_phrase} (declare them there, not at the top \
+             level), or free their addresses first, by deleting the objects with `{}` \
+             (everything that environment records is deleted) or by forgetting the records with \
+             `{remove}` (the real objects are not touched, so delete or hand them over yourself \
+             before creating them without --env). If the top-level resources should manage \
+             separate objects with the same addresses, run `{}`.",
+            holder.command("destroy"),
+            invocation.command("apply --allow-separate-state")
+        ),
+    )
+}
+
 /// A state-only command that selected an environment the project does not
 /// declare: it may be one removed from the configuration, whose state still
 /// exists and can be listed, unlocked and cleaned up, or a mistyped name. It
@@ -1124,9 +1318,9 @@ fn separate_state_refusal(
 /// otherwise.
 async fn guard_environment_known(
     context: &CommandContext<'_>,
-    facts: &SelectionFacts,
-    inputs: &EngineInputs,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
+    let GuardRequest { facts, inputs, .. } = request;
     if facts.selection != EnvironmentSelection::NotDeclared {
         return Ok(());
     }
@@ -1177,13 +1371,24 @@ fn tenant_label(tenant: &TenantKey) -> String {
     evaluation::escape_control_characters(&tenant.to_string())
 }
 
+/// What a run's confirmation prompt depends on, known before anything is
+/// evaluated.
+struct PromptSetting<'setting> {
+    output: &'setting Output,
+    answers: &'setting dyn Answers,
+    invocation: &'setting Invocation,
+}
+
 /// Refuse a prompt that cannot be answered before evaluating anything.
 fn refuse_unconfirmable(
     action: &InfrastructureAction,
-    output: &Output,
-    answers: &dyn Answers,
-    invocation: &Invocation,
+    prompt: &PromptSetting<'_>,
 ) -> Result<(), CliError> {
+    let PromptSetting {
+        output,
+        answers,
+        invocation,
+    } = prompt;
     if action.confirmation() == ConfirmationPolicy::AssumeYes {
         return Ok(());
     }
@@ -1529,12 +1734,8 @@ where
     } else {
         None
     };
-    if released.is_ok() {
-        emit_stderr!(format!(
-            "Released lock {} for {}",
-            lock.lock_identifier,
-            tenant_label(context.tenant)
-        ));
+    if let Ok(outcome) = &released {
+        emit_stderr!(release_notice(&lock, context.tenant, *outcome));
     }
     settle(Settlement {
         operation,
@@ -1570,7 +1771,7 @@ struct Settlement<'settlement, Outcome> {
     lock: &'settlement StateLock,
     invocation: &'settlement Invocation,
     result: Result<Outcome, CliError>,
-    released: cuenv_infrastructure::Result<()>,
+    released: cuenv_infrastructure::Result<Release>,
     /// The JSON result the operation produced, when it finished and its lock
     /// could not be released.
     completed: Option<serde_json::Value>,
@@ -1598,8 +1799,8 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
         invocation.command(&format!("unlock {identifier}"))
     );
     match (result, released) {
-        (Ok(outcome), Ok(())) => Ok(outcome),
-        (Err(error), Ok(())) => Err(error.with_lock(status(true))),
+        (Ok(outcome), Ok(_)) => Ok(outcome),
+        (Err(error), Ok(release)) => Err(error.with_lock(status(release == Release::Released))),
         (Ok(_), Err(release_error)) => {
             let error = CliError::infrastructure(
                 format!(
@@ -2122,17 +2323,46 @@ fn deleted_not_recreated(error: &InfrastructureError, reported: &[String]) -> Ve
 /// Attempts to release the lock after a run.
 const RELEASE_ATTEMPTS: u32 = 3;
 
+/// What releasing a run's lock did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// The lock was held and is released.
+    Released,
+    /// The lock was already gone when the run ended (another actor released
+    /// it, or took it over): nothing was released.
+    NoLongerHeld,
+}
+
+/// The line that tells what releasing the lock did, saying nothing was
+/// released when the lock was no longer held.
+fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Release) -> String {
+    match release {
+        Release::Released => format!(
+            "Released lock {} for {}",
+            lock.lock_identifier,
+            tenant_label(tenant)
+        ),
+        Release::NoLongerHeld => format!(
+            "warning: lock {} for {} was no longer held when the run ended (another run \
+             released or took it); nothing was released",
+            lock.lock_identifier,
+            tenant_label(tenant)
+        ),
+    }
+}
+
 /// Release the lock, retrying a failure twice (after 250 ms, then 500 ms)
 /// and never waiting after the last attempt.
 async fn release(
     store: &dyn StateStore,
     tenant: &TenantKey,
     lock: &StateLock,
-) -> cuenv_infrastructure::Result<()> {
+) -> cuenv_infrastructure::Result<Release> {
     let mut attempt = 1;
     loop {
         match store.unlock(tenant, lock).await {
-            Ok(()) => return Ok(()),
+            Ok(true) => return Ok(Release::Released),
+            Ok(false) => return Ok(Release::NoLongerHeld),
             Err(error) if attempt >= RELEASE_ATTEMPTS => return Err(error),
             Err(_) => {
                 tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;

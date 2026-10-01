@@ -2450,7 +2450,7 @@ impl StateStore for FailingWrites {
         self.inner.acquire_lock(tenant, request).await
     }
 
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
         self.inner.unlock(tenant, lock).await
     }
 
@@ -2459,6 +2459,10 @@ impl StateStore for FailingWrites {
         tenant: &TenantKey,
     ) -> Result<Option<crate::state::LockInformation>> {
         self.inner.current_lock(tenant).await
+    }
+
+    async fn locks(&self) -> Result<Vec<crate::state::TenantLock>> {
+        self.inner.locks().await
     }
 
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {

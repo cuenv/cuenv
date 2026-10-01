@@ -635,6 +635,10 @@ let plan = outcome?;
 released?;
 ```
 
+`StateStore::unlock()` returns `Ok(true)` when the lock was still held and is
+now released, and `Ok(false)` when it was already gone (another actor released
+it or took it over); report the second case rather than claiming a release.
+
 - **Identities.** `TenantKey::new(module_path, project)` is the identity of a
   run without `--env`; `TenantKey::with_environment(module_path, project,
 environment)` is a separate identity for a named environment (including
@@ -649,8 +653,10 @@ environment)` is a separate identity for a named environment (including
   while `StateMigrationPending` holds new locks off. A database holding tables
   of an unreleased development build is `StateUnreleasedLayout`, and tables
   with cuenv's names but no migration record are `StateSchemaConflict`.
-  `StateStore::locks()` lists every lock of every tenant and
-  `StateStore::addresses()` reads a tenant's record addresses without decoding
+  `StateStore::locks()` lists every lock of every tenant (a required method:
+  every store, including a test double, must enumerate its locks, because a
+  store that answered "none" without looking would hide the locks that block a
+  migration) and `StateStore::addresses()` reads a tenant's record addresses without decoding
   them. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
   naming the address.
 - **Configuration.** `cuenv_manifest::manifest::Infrastructure::select(value,
@@ -697,7 +703,7 @@ environment)` repeats the schema's semantic checks and reports **every**
   the lock, as Terraform does, so it applies exactly the plan shown.
 - **Failed applies.** A provider failure skips the operations that depend on
   it and lets the rest run; `apply` then returns
-  `InfrastructureError::ApplyIncomplete(IncompleteApply)` with the failures,
+  `InfrastructureError::ApplyIncomplete(Box<IncompleteApply>)` with the failures,
   the skipped changes and the replacements deleted but not recreated.
   `ApplyEvent::DeletedNotRecreated` reports each such replacement on every way
   an apply can end early, and `ApplyEvent::Failed` and `ApplyEvent::Skipped`
