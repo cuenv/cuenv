@@ -534,10 +534,13 @@ mod tests {
 
     #[test]
     fn a_forced_exit_during_acquisition_names_the_lock_it_may_hold() {
-        let error = forced_exit_error(&ForcedExit {
+        let error = forced_exit_error(
+            &ForcedExit {
             recordings: Recordings::Finished,
             lock: ExitLock::MaybeAcquired("abc".to_string()),
-        });
+            },
+            &Invocation::default(),
+        );
         assert_eq!(crate::cli::exit_code_for(&error), EXIT_INTERRUPTED);
         assert!(
             error
@@ -561,10 +564,13 @@ mod tests {
 
     #[test]
     fn a_forced_exit_never_claims_an_unreleased_lock_was_released() {
-        let not_released = forced_exit_error(&ForcedExit {
+        let not_released = forced_exit_error(
+            &ForcedExit {
             recordings: Recordings::StillWriting,
             lock: ExitLock::NotReleased("abc".to_string()),
-        });
+            },
+            &Invocation::default(),
+        );
         let message = not_released.to_string();
         assert!(message.contains("lock abc was NOT released"), "{message}");
         assert!(
@@ -573,16 +579,22 @@ mod tests {
         );
         assert!(!lock_of(&not_released).unwrap().released);
 
-        let released = forced_exit_error(&ForcedExit {
+        let released = forced_exit_error(
+            &ForcedExit {
             recordings: Recordings::Finished,
             lock: ExitLock::Released("abc".to_string()),
-        });
+            },
+            &Invocation::default(),
+        );
         assert!(lock_of(&released).unwrap().released);
 
-        let unlocked = forced_exit_error(&ForcedExit {
+        let unlocked = forced_exit_error(
+            &ForcedExit {
             recordings: Recordings::Finished,
             lock: ExitLock::None,
-        });
+            },
+            &Invocation::default(),
+        );
         assert!(lock_of(&unlocked).is_none());
         let envelope = serde_json::to_value(crate::cli::error_envelope(&unlocked)).unwrap();
         assert_eq!(envelope["error"]["code"], "infrastructure_interrupted");

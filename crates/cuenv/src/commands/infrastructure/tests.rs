@@ -1996,7 +1996,6 @@ fn recovering_without_env_mentions_pending_changes_of_declared_environments() {
             &dev,
             &cuenv_infrastructure::ConditionalPut {
                 resource: &managed("random_pet.pet"),
-                lock: &StateLock::generate(),
                 expected: RecordVersion::Absent,
             },
         )

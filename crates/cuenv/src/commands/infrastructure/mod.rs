@@ -263,6 +263,10 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                 invocation.command("state recover --force")
             )),
         ),
+        InfrastructureError::PlanEnvironmentChanged => (
+            InfrastructureFailureKind::Failed,
+            Some("Run the command again; it plans again under the lock.".to_string()),
+        ),
         InfrastructureError::PlanOutdated { .. } => (
             InfrastructureFailureKind::Failed,
             Some(
@@ -302,6 +306,7 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         | InfrastructureError::Plugin(_)
         | InfrastructureError::RemoteProcedure { .. }
         | InfrastructureError::Diagnostics { .. }
+        | InfrastructureError::ApplyIncomplete(_)
         | InfrastructureError::Install(_)
         | InfrastructureError::InputOutput { .. } => (InfrastructureFailureKind::Failed, None),
     };
@@ -410,7 +415,7 @@ fn preflight(
     validate_state_url(&target.infrastructure)?;
     if action.uses_provider_environment() {
         refuse_unselected_environment(target, invocation)?;
-        validate_configuration(&target.infrastructure)
+        validate_configuration(&target.infrastructure, target.environment.as_deref())
             .map_err(|error| failure(&error, invocation))?;
     }
     Ok(())
@@ -1489,6 +1494,11 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
         });
         return Ok(());
     }
+    // Replacements whose old object is gone and whose new one was not
+    // created, as the engine reports them while it runs: the only source on
+    // the paths that end without an `ApplyIncomplete` (an interrupt, a fatal
+    // error).
+    let mut reported_deleted_not_recreated: Vec<String> = Vec::new();
     let mut on_event = |event: ApplyEvent| match event {
         ApplyEvent::Started { address, action } => {
             output.progress(format!("{} {address}: applying...", action.symbol()));
@@ -1496,6 +1506,21 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
         ApplyEvent::Finished { address, .. } => output.progress(format!("  {address}: done")),
         ApplyEvent::Refreshed { address } => {
             output.progress(format!("  {address}: stored state refreshed"));
+        }
+        ApplyEvent::Failed { address, action } => {
+            output.progress(format!("  {address}: {} failed", action.symbol()));
+        }
+        ApplyEvent::Skipped { address, action } => {
+            output.progress(format!(
+                "  {address}: {} skipped because a change it depends on failed",
+                action.symbol()
+            ));
+        }
+        ApplyEvent::DeletedNotRecreated { address } => {
+            emit_stderr!(format!(
+                "warning: {address} was deleted and NOT recreated; the next apply creates it"
+            ));
+            reported_deleted_not_recreated.push(address.to_string());
         }
         ApplyEvent::Warning(warning) => {
             emit_stderr!(format!(
@@ -1508,7 +1533,10 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
         .apply(plan, ApplyContext { lock }, &mut on_event)
         .await
         .map_err(|error| {
-            failure(&error, invocation).with_deleted_not_recreated(deleted_not_recreated(&error))
+            failure(&error, invocation).with_deleted_not_recreated(deleted_not_recreated(
+                &error,
+                &reported_deleted_not_recreated,
+            ))
         })?;
     output.converged(&Converged {
         mode,
@@ -1519,14 +1547,24 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
 }
 
 /// Addresses of the replacements a failed apply deleted (the first half of a
-/// replacement) and did not recreate.
-///
-/// TODO(m5-integration): the engine worker adds this list to the apply
-/// error (and to its events). Read it from `error` here once it exists;
-/// until then nothing is known, the list is empty, and neither the text help
-/// nor the JSON envelope's `deletedNotRecreated` is filled in.
-fn deleted_not_recreated(_error: &InfrastructureError) -> Vec<String> {
-    Vec::new()
+/// replacement) and did not recreate: the engine's own list when the apply
+/// ended incomplete, plus every one it reported while running (the only
+/// source when the run was interrupted or failed fatally). Each address once.
+fn deleted_not_recreated(error: &InfrastructureError, reported: &[String]) -> Vec<String> {
+    let mut addresses: Vec<String> = match error {
+        InfrastructureError::ApplyIncomplete(incomplete) => incomplete
+            .deleted_not_recreated
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        _ => Vec::new(),
+    };
+    for address in reported {
+        if !addresses.contains(address) {
+            addresses.push(address.clone());
+        }
+    }
+    addresses
 }
 
 /// Attempts to release the lock after a run.
