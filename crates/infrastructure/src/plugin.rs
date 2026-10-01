@@ -253,6 +253,56 @@ impl fmt::Debug for LaunchOptions<'_> {
     }
 }
 
+/// Variables an isolated provider still inherits from the host: the ones
+/// any process needs to find its tools and home directory, reach the network
+/// through the host's proxy and trust the host's certificate authorities.
+/// `TMPDIR` is listed for completeness; cuenv always sets its own.
+pub const ISOLATED_INHERITED_ENVIRONMENT_VARIABLES: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
+/// The host variable names an isolated provider must not inherit: every name
+/// in `ambient` that is neither on the
+/// [`ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`] allowlist nor passed by the
+/// project (`provided`, which reaches the provider through
+/// [`LaunchOptions::provider_environment_variables`]). Pass the result as
+/// [`LaunchOptions::withheld_environment_variables`], together with the names
+/// the project's policy withholds; the provider then sees the allowlist, the
+/// project's values and cuenv's own handshake variables, and nothing else.
+///
+/// Names that are not valid unicode cannot be listed and are inherited.
+#[must_use]
+pub fn isolated_withheld_names(
+    ambient: impl IntoIterator<Item = std::ffi::OsString>,
+    provided: &[String],
+) -> Vec<String> {
+    let mut names: Vec<String> = ambient
+        .into_iter()
+        .filter_map(|name| name.into_string().ok())
+        .filter(|name| {
+            !ISOLATED_INHERITED_ENVIRONMENT_VARIABLES.contains(&name.as_str())
+                && !provided.contains(name)
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
 fn configure_provider_environment(
     command: &mut Command,
     options: &LaunchOptions<'_>,
@@ -263,16 +313,43 @@ fn configure_provider_environment(
     command
         .env_clear()
         .envs(std::env::vars_os())
-        .envs(options.provider_environment_variables)
+        .envs(options.provider_environment_variables);
+    // Remove withheld names, including names also present in the resolved
+    // Cuenv environment.
+    for name in options.withheld_environment_variables {
+        command.env_remove(name);
+    }
+    // Set cuenv's own variables last: a policy that withholds one of these
+    // names must not break the handshake or the private socket directory.
+    command
         .env(MAGIC_COOKIE_KEY, MAGIC_COOKIE_VALUE)
         .env("PLUGIN_PROTOCOL_VERSIONS", "5,6")
         .env("PLUGIN_UNIX_SOCKET_DIR", socket_directory)
         .env("TMPDIR", socket_directory);
-    // Always remove withheld names last, including names also present in the
-    // resolved Cuenv environment.
-    for name in options.withheld_environment_variables {
-        command.env_remove(name);
-    }
+}
+
+/// Redacts text a provider wrote, before anything else is done to it.
+pub type LogRedactor = fn(&str) -> String;
+
+static LOG_REDACTOR: OnceLock<LogRedactor> = OnceLock::new();
+
+/// Install the function that replaces secrets in text read from providers
+/// (their log lines and their error messages). The command that owns the
+/// secret registry installs it once at startup; the first installation wins.
+///
+/// Provider text is redacted before control characters are stripped: a
+/// secret that contains one would no longer match after the stripping.
+pub fn install_log_redactor(redactor: LogRedactor) {
+    // A second installation keeps the first; the function is the same.
+    let _ = LOG_REDACTOR.set(redactor);
+}
+
+/// `text` with the installed redactor applied; unchanged when none is
+/// installed.
+pub(crate) fn redact_provider_text(text: &str) -> String {
+    LOG_REDACTOR
+        .get()
+        .map_or_else(|| text.to_string(), |redact| redact(text))
 }
 
 /// A running provider process, shared with [`Cancellation`] so an
@@ -628,7 +705,8 @@ impl ProviderClient {
                 tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
             );
             // The message comes from the provider and is displayed.
-            let message = strip_control_characters_except_newlines(status.message());
+            let message =
+                strip_control_characters_except_newlines(&redact_provider_text(status.message()));
             let status = if transport_failure {
                 tonic::Status::new(status.code(), format!("{message}{}", self.log.render()))
             } else {
@@ -933,7 +1011,10 @@ fn spawn_log_drain(
                 // Classify the raw line, then keep only printable text: a
                 // provider must not drive the terminal cuenv writes to.
                 let serious = provider_log_is_serious(&line.text);
-                let printable = strip_control_characters(line.text.trim_end());
+                // Redact the raw text first: stripping control characters
+                // can change a secret that contains one.
+                let printable =
+                    strip_control_characters(redact_provider_text(line.text.trim_end()).as_str());
                 let text = if line.truncated {
                     format!("{printable} [line truncated]")
                 } else {
@@ -1116,6 +1197,140 @@ mod tests {
                 .lines()
                 .any(|line| line == format!("PATH={host_path}"))
         );
+    }
+
+    /// The environment a provider launched with these options would see.
+    #[cfg(unix)]
+    async fn provider_visible_environment(
+        options: &LaunchOptions<'_>,
+    ) -> BTreeMap<String, String> {
+        let mut command = Command::new("/usr/bin/env");
+        configure_provider_environment(&mut command, options, Path::new("/tmp/provider-test"));
+        let output = command.output().await.unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .filter_map(|line| line.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn withheld_names_never_remove_cuenvs_own_handshake_variables() {
+        let cancellation = Cancellation::default();
+        let withheld: Vec<String> = [
+            "TMPDIR",
+            "PLUGIN_UNIX_SOCKET_DIR",
+            "PLUGIN_PROTOCOL_VERSIONS",
+            MAGIC_COOKIE_KEY,
+            "TURSO_AUTH_TOKEN",
+        ]
+        .map(String::from)
+        .to_vec();
+        let variables = BTreeMap::from([(MAGIC_COOKIE_KEY.to_string(), "project".to_string())]);
+        let environment = provider_visible_environment(&LaunchOptions {
+            binary: Path::new("/usr/bin/env"),
+            withheld_environment_variables: &withheld,
+            provider_environment_variables: &variables,
+            cancellation: &cancellation,
+        })
+        .await;
+        assert_eq!(environment["TMPDIR"], "/tmp/provider-test");
+        assert_eq!(environment["PLUGIN_UNIX_SOCKET_DIR"], "/tmp/provider-test");
+        assert_eq!(environment["PLUGIN_PROTOCOL_VERSIONS"], "5,6");
+        assert_eq!(environment[MAGIC_COOKIE_KEY], MAGIC_COOKIE_VALUE);
+        assert!(!environment.contains_key("TURSO_AUTH_TOKEN"));
+    }
+
+    #[test]
+    fn isolated_mode_withholds_everything_outside_the_allowlist() {
+        let ambient = [
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "TMPDIR",
+            "HTTP_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "ALL_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "AWS_SECRET_ACCESS_KEY",
+            "OP_SERVICE_ACCOUNT_TOKEN",
+            "GITHUB_TOKEN",
+            "SHELL",
+        ]
+        .map(std::ffi::OsString::from);
+        let withheld = isolated_withheld_names(ambient, &["GITHUB_TOKEN".to_string()]);
+        assert_eq!(
+            withheld,
+            vec![
+                "AWS_SECRET_ACCESS_KEY".to_string(),
+                "OP_SERVICE_ACCOUNT_TOKEN".to_string(),
+                "SHELL".to_string(),
+            ],
+            "the allowlist and the variables the project passes stay"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_isolated_provider_sees_only_the_allowlist_cuenvs_own_and_project_values() {
+        let cancellation = Cancellation::default();
+        let variables = BTreeMap::from([("PROJECT_VALUE".to_string(), "kept".to_string())]);
+        let provided: Vec<String> = variables.keys().cloned().collect();
+        let withheld = isolated_withheld_names(
+            std::env::vars_os().map(|(name, _)| name),
+            &provided,
+        );
+        let environment = provider_visible_environment(&LaunchOptions {
+            binary: Path::new("/usr/bin/env"),
+            withheld_environment_variables: &withheld,
+            provider_environment_variables: &variables,
+            cancellation: &cancellation,
+        })
+        .await;
+        let allowed = |name: &str| {
+            ISOLATED_INHERITED_ENVIRONMENT_VARIABLES.contains(&name)
+                || [
+                    "PROJECT_VALUE",
+                    "TMPDIR",
+                    "PLUGIN_UNIX_SOCKET_DIR",
+                    "PLUGIN_PROTOCOL_VERSIONS",
+                    MAGIC_COOKIE_KEY,
+                ]
+                .contains(&name)
+        };
+        let unexpected: Vec<_> = environment.keys().filter(|name| !allowed(name)).collect();
+        assert!(unexpected.is_empty(), "inherited {unexpected:?}");
+        assert_eq!(environment["PROJECT_VALUE"], "kept");
+    }
+
+    fn mask_test_secret(text: &str) -> String {
+        text.replace("SECRET\u{1b}VALUE", "*_*")
+    }
+
+    #[tokio::test]
+    async fn provider_log_lines_are_redacted_before_control_characters_are_stripped() {
+        install_log_redactor(mask_test_secret);
+        // The secret holds a control character: stripping it first would
+        // leave "SECRETVALUE", which no longer matches the registered secret.
+        let line = b"panic: token SECRET\x1bVALUE rejected\n".to_vec();
+        let log = ProviderLog::default();
+        spawn_log_drain(
+            "provider".to_string(),
+            std::io::Cursor::new(line),
+            log.clone(),
+        )
+            .await
+            .unwrap();
+        let rendered = log.render();
+        assert!(!rendered.contains("SECRET"), "{rendered}");
+        assert!(!rendered.contains("VALUE"), "{rendered}");
+        assert!(rendered.contains("token *_* rejected"), "{rendered}");
     }
 
     #[test]

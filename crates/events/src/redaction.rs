@@ -32,11 +32,27 @@ static SECRET_REGISTRY: LazyLock<RwLock<HashSet<String>>> =
 /// ```
 pub fn register_secret(secret: impl Into<String>) {
     let secret = secret.into();
-    if secret.len() >= MIN_SECRET_LENGTH
-        && let Ok(mut registry) = SECRET_REGISTRY.write()
-    {
-        registry.insert(secret);
+    if let Ok(mut registry) = SECRET_REGISTRY.write() {
+        insert_secret(&mut registry, secret);
     }
+}
+
+/// Add `secret` to the registry. A multi-line secret (a private key, a
+/// certificate) is registered whole and also line by line: process output
+/// and logs are read and written one line at a time, so no line of it ever
+/// contains the whole secret.
+fn insert_secret(registry: &mut HashSet<String>, secret: String) {
+    if secret.len() < MIN_SECRET_LENGTH {
+        return;
+    }
+    if secret.contains(['\n', '\r']) {
+        for line in secret.split(['\n', '\r']) {
+            if line.len() >= MIN_SECRET_LENGTH {
+                registry.insert(line.to_string());
+            }
+        }
+    }
+    registry.insert(secret);
 }
 
 /// Register multiple secrets at once.
@@ -53,10 +69,7 @@ pub fn register_secret(secret: impl Into<String>) {
 pub fn register_secrets(secrets: impl IntoIterator<Item = impl Into<String>>) {
     if let Ok(mut registry) = SECRET_REGISTRY.write() {
         for secret in secrets {
-            let s = secret.into();
-            if s.len() >= MIN_SECRET_LENGTH {
-                registry.insert(s);
-            }
+            insert_secret(&mut registry, secret.into());
         }
     }
 }
@@ -98,6 +111,57 @@ pub fn redact(input: &str) -> String {
     result
 }
 
+/// Redact every registered secret from each string inside a JSON value
+/// (object keys included), in place.
+///
+/// Redaction acts on the strings themselves, never on serialized text: a
+/// secret containing a quote, a backslash or a newline is written escaped
+/// in serialized JSON (`quo\"te`), where a search for the raw secret would
+/// not find it.
+pub fn redact_json_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            let redacted = redact(text);
+            if redacted != *text {
+                *text = redacted;
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(redact_json_value),
+        serde_json::Value::Object(map) => {
+            let entries = std::mem::take(map);
+            for (key, mut entry) in entries {
+                redact_json_value(&mut entry);
+                map.insert(redact(&key), entry);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+/// Redact every registered secret from one line of JSON text.
+///
+/// Text that parses as JSON is redacted string by string (see
+/// [`redact_json_value`]) and written again compactly; anything else is
+/// redacted as plain text.
+#[must_use]
+pub fn redact_json_text(text: &str) -> String {
+    if !has_secrets() {
+        return text.to_string();
+    }
+    let trimmed = text.trim_end_matches(['\n', '\r']);
+    let line_ending = &text[trimmed.len()..];
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(mut value) => {
+            redact_json_value(&mut value);
+            match serde_json::to_string(&value) {
+                Ok(json) => format!("{json}{line_ending}"),
+                Err(_) => redact(text),
+            }
+        }
+        Err(_) => redact(text),
+    }
+}
+
 /// Check if any secrets are registered.
 #[must_use]
 pub fn has_secrets() -> bool {
@@ -120,23 +184,75 @@ pub fn clear_secrets() {
     }
 }
 
+/// Serializes the tests that share the process-wide registry.
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use super::clear_secrets;
     use std::sync::Mutex;
 
     // Use a mutex to ensure tests don't interfere with each other
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    fn with_clean_registry<F, R>(f: F) -> R
+    pub(crate) fn with_clean_registry<F, R>(f: F) -> R
     where
         F: FnOnce() -> R,
     {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         clear_secrets();
         let result = f();
         clear_secrets();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::with_clean_registry;
+    use super::*;
+
+    #[test]
+    fn each_line_of_a_multi_line_secret_is_redacted_on_its_own() {
+        with_clean_registry(|| {
+            register_secret("line-one-MMMM\nline-two-MMMM\r\nxy");
+            // Output is read line by line: no line holds the whole secret.
+            assert_eq!(redact("log: line-two-MMMM"), "log: *_*");
+            assert_eq!(redact("line-one-MMMM"), "*_*");
+            // Lines shorter than the minimum are not registered.
+            assert_eq!(redact("xy"), "xy");
+        });
+    }
+
+    #[test]
+    fn json_strings_are_redacted_in_their_unescaped_form() {
+        with_clean_registry(|| {
+            register_secret("quo\"te\\back-QQQQ");
+            let mut value = serde_json::json!({
+                "message": "open /x/quo\"te\\back-QQQQ/y",
+                "nested": [{"key-quo\"te\\back-QQQQ": "ok"}],
+                "count": 3
+            });
+            redact_json_value(&mut value);
+            let serialized = value.to_string();
+            assert!(!serialized.contains("QQQQ"), "{serialized}");
+            assert_eq!(value["message"], "open /x/*_*/y");
+            assert_eq!(value["count"], 3);
+        });
+    }
+
+    #[test]
+    fn json_text_is_redacted_per_string_and_other_text_as_plain_text() {
+        with_clean_registry(|| {
+            register_secret("quo\"te-QQQQ");
+            let line = serde_json::json!({"m": "a quo\"te-QQQQ b"}).to_string();
+            assert!(line.contains("quo\\\"te-QQQQ"), "escaped form: {line}");
+            assert_eq!(
+                redact_json_text(&format!("{line}\n")),
+                "{\"m\":\"a *_* b\"}\n"
+            );
+            assert_eq!(redact_json_text("not json quo\"te-QQQQ"), "not json *_*");
+        });
     }
 
     #[test]

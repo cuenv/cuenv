@@ -11,7 +11,7 @@ pub use commands::Commands;
 pub use error::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
     EXIT_LOCKED, EXIT_OK, InfrastructureFailureKind, LockStatus, error_code_for, error_envelope,
-    exit_code_for, render_error,
+    error_report_text, exit_code_for, render_error,
 };
 pub use output::{ErrorEnvelope, OkEnvelope, OutputFormat};
 pub use subcommands::{

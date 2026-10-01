@@ -506,6 +506,7 @@ fn test_infrastructure_error_with_help_keeps_its_kind() {
         help,
         kind,
         lock,
+        ..
     } = &error
     else {
         panic!("Expected Infrastructure error");
@@ -549,6 +550,121 @@ fn test_error_envelope_carries_help_and_lock() {
         identifier: "abc".to_string(),
         released: true,
     });
+    assert!(matches!(config, CliError::Config { .. }));
+}
+
+#[test]
+fn the_infrastructure_command_is_marked_experimental_in_help_and_keeps_its_alias() {
+    use clap::CommandFactory;
+    let command = Cli::command();
+    let infrastructure = command.find_subcommand("infrastructure").unwrap();
+    let about = infrastructure.get_about().unwrap().to_string();
+    assert!(about.contains("experimental"), "{about}");
+    let long = infrastructure.get_long_about().unwrap().to_string();
+    assert!(long.contains("EXPERIMENTAL"), "{long}");
+    assert!(infrastructure.get_all_aliases().any(|alias| alias == "i"));
+}
+
+/// Render an error through miette's graphical handler at a narrow width, so
+/// a long secret has to wrap.
+fn wrapped_report(error: &CliError) -> String {
+    let mut text = String::new();
+    miette::GraphicalReportHandler::new()
+        .with_width(36)
+        .render_report(&mut text, error)
+        .unwrap();
+    text
+}
+
+#[test]
+fn errors_are_redacted_when_built_so_wrapping_cannot_split_a_secret() {
+    let secret = "LONGSECRET-aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-END9";
+    cuenv_events::register_secret(secret);
+    let message = format!("cannot create object: open /nonexistent/{secret}/ordered-parent");
+    let help = format!("check {secret} before retrying");
+    let errors = [
+        CliError::config(message.clone()),
+        CliError::config_with_help(message.clone(), help.clone()),
+        CliError::eval(message.clone()),
+        CliError::eval_with_help(message.clone(), help.clone()),
+        CliError::other(message.clone()),
+        CliError::other_with_help(message.clone(), help.clone()),
+        CliError::infrastructure(
+            message.clone(),
+            Some(help.clone()),
+            InfrastructureFailureKind::Failed,
+        ),
+        CliError::config("plain").with_help(help),
+    ];
+    for error in &errors {
+        let text = wrapped_report(error);
+        assert!(!text.contains("LONGSECRET"), "wrapped report leaks: {text}");
+        assert!(!text.contains("END9"), "wrapped report leaks: {text}");
+        assert!(!error.to_string().contains("LONGSECRET"));
+        assert!(!error.help().unwrap_or_default().contains("LONGSECRET"));
+    }
+}
+
+#[test]
+fn a_secret_registered_after_the_error_was_built_is_still_redacted_when_shown() {
+    let error = CliError::infrastructure(
+        "apply failed: open /x/late-secret-VALUE-zzzz/y",
+        Some("see late-secret-VALUE-zzzz".to_string()),
+        InfrastructureFailureKind::Failed,
+    );
+    cuenv_events::register_secret("late-secret-VALUE-zzzz");
+    let text = error_report_text(&error);
+    assert!(!text.contains("late-secret"), "{text}");
+    let envelope = serde_json::to_string(&error_envelope(&error)).unwrap();
+    assert!(!envelope.contains("late-secret"), "{envelope}");
+}
+
+#[test]
+fn json_error_envelopes_redact_secrets_that_json_escapes() {
+    // The envelope text holds the secret escaped (quo\"te\\back), so a search
+    // for the raw secret in the serialized text would never find it.
+    let error = CliError::infrastructure(
+        "open /x/quo\"te\\back-QQQQ-escaped/y",
+        Some("line\none quo\"te\\back-QQQQ-escaped".to_string()),
+        InfrastructureFailureKind::Failed,
+    );
+    cuenv_events::register_secret("quo\"te\\back-QQQQ-escaped");
+    let envelope = serde_json::to_string(&error_envelope(&error)).unwrap();
+    assert!(!envelope.contains("QQQQ"), "{envelope}");
+    let value: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("/x/*_*/y")
+    );
+}
+
+#[test]
+fn deleted_not_recreated_replacements_reach_the_text_help_and_the_json_envelope() {
+    let error = CliError::infrastructure(
+        "apply failed",
+        Some("fix the failure".to_string()),
+        InfrastructureFailureKind::Failed,
+    )
+    .with_deleted_not_recreated(vec!["local_file.a".to_string(), "random_pet.b".to_string()]);
+    let help = error.help().unwrap();
+    assert!(help.starts_with("fix the failure "), "{help}");
+    assert!(
+        help.contains("Deleted but NOT recreated: local_file.a, random_pet.b"),
+        "{help}"
+    );
+    let envelope = serde_json::to_value(error_envelope(&error)).unwrap();
+    assert_eq!(
+        envelope["error"]["deletedNotRecreated"],
+        serde_json::json!(["local_file.a", "random_pet.b"])
+    );
+    // Nothing to report, nothing added; and only infrastructure errors carry it.
+    let none = CliError::infrastructure("x", None, InfrastructureFailureKind::Failed)
+        .with_deleted_not_recreated(Vec::new());
+    let envelope = serde_json::to_value(error_envelope(&none)).unwrap();
+    assert!(envelope["error"].get("deletedNotRecreated").is_none());
+    let config = CliError::config("x").with_deleted_not_recreated(vec!["a.b".to_string()]);
     assert!(matches!(config, CliError::Config { .. }));
 }
 

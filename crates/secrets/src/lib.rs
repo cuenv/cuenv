@@ -24,6 +24,7 @@
 //! ```
 
 mod batch;
+mod credentials;
 mod fingerprint;
 mod global;
 #[cfg(feature = "http")]
@@ -35,6 +36,7 @@ mod salt;
 mod types;
 
 pub use batch::{BatchConfig, BatchResolver, resolve_batch};
+pub use credentials::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES;
 pub use fingerprint::compute_secret_fingerprint;
 pub use global::{global_registry, install_registry_factory};
 pub use registry::SecretRegistry;

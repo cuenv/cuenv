@@ -588,3 +588,75 @@ fn test_restart_reason_serialization() {
         assert_eq!(json, json2);
     }
 }
+
+fn output_event(content: &str) -> CuenvEvent {
+    CuenvEvent::new(
+        Uuid::new_v4(),
+        EventSource::new("cuenv::test"),
+        EventCategory::Output(OutputEvent::Stdout {
+            content: content.to_string(),
+        }),
+    )
+}
+
+#[test]
+fn output_events_are_redacted_before_any_renderer_sees_them() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    with_clean_registry(|| {
+        register_secret("output-secret-ABCD");
+        let event = output_event("value=output-secret-ABCD");
+        let redacted = event.redacted();
+        let EventCategory::Output(OutputEvent::Stdout { content }) = &redacted.category else {
+            panic!("the category must not change: {:?}", redacted.category);
+        };
+        assert_eq!(content, "value=*_*");
+        assert_eq!(redacted.id, event.id);
+        assert_eq!(redacted.timestamp, event.timestamp);
+    });
+}
+
+#[test]
+fn every_category_is_redacted_not_only_output() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    with_clean_registry(|| {
+        register_secret("task-secret-ABCD");
+        let event = CuenvEvent::new(
+            Uuid::new_v4(),
+            EventSource::new("cuenv::test"),
+            EventCategory::Task(TaskEvent::Output {
+                name: "build".to_string(),
+                stream: Stream::Stderr,
+                content: "token task-secret-ABCD".to_string(),
+                parent_group: None,
+            }),
+        );
+        let json = serde_json::to_string(event.redacted().as_ref()).unwrap();
+        assert!(!json.contains("task-secret-ABCD"), "{json}");
+        assert!(json.contains("*_*"), "{json}");
+    });
+}
+
+#[test]
+fn events_without_secrets_are_not_copied() {
+    use crate::redaction::test_support::with_clean_registry;
+    with_clean_registry(|| {
+        let event = output_event("nothing secret");
+        assert!(matches!(event.redacted(), std::borrow::Cow::Borrowed(_)));
+    });
+}
+
+#[test]
+fn a_secret_inside_event_metadata_never_drops_the_event() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    with_clean_registry(|| {
+        // A short secret can occur in the timestamp or the identifiers.
+        register_secret("2026");
+        let event = output_event("plain");
+        let redacted = event.redacted();
+        assert_eq!(redacted.id, event.id);
+        assert!(matches!(
+            redacted.category,
+            EventCategory::Output(OutputEvent::Stdout { .. })
+        ));
+    });
+}

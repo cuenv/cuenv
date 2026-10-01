@@ -32,8 +32,9 @@ use cuenv_infrastructure::{Cancellation, StateLock, StateStore, TenantKey};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use super::invocation::Invocation;
 use super::output::{Output, ResultGate};
-use crate::cli::{CliError, EXIT_INTERRUPTED, InfrastructureFailureKind, LockStatus};
+use crate::cli::{CliError, EXIT_INTERRUPTED, InfrastructureFailureKind, LockStatus, OutputFormat};
 
 /// How long a forced exit waits for the lock to be released.
 const RELEASE_BOUND: Duration = Duration::from_secs(2);
@@ -116,13 +117,18 @@ impl Interrupts {
     ///
     /// Returns an error when the handlers cannot be installed; the command
     /// refuses to run rather than run without clean interrupt handling.
-    pub(super) fn claim(output: &Output) -> Result<Self, CliError> {
-        Ok(Self::watch(Signals::install()?, output))
+    pub(super) fn claim(output: &Output, invocation: Invocation) -> Result<Self, CliError> {
+        Ok(Self::watch(Signals::install()?, output, invocation))
     }
 
     /// Start watching `signals`. A forced exit reports in `output`'s format
-    /// and claims standard output through its gate.
-    pub(super) fn watch(signals: impl SignalSource, output: &Output) -> Self {
+    /// and claims standard output through its gate; the commands its hints
+    /// name carry `invocation`'s environment and project.
+    pub(super) fn watch(
+        signals: impl SignalSource,
+        output: &Output,
+        invocation: Invocation,
+    ) -> Self {
         let cancellation = Cancellation::default();
         let (sender, requested) = watch::channel(false);
         let shared = Arc::new(Shared::default());
@@ -132,7 +138,8 @@ impl Interrupts {
             exit: ForcedExitContext {
                 cancellation: cancellation.clone(),
                 shared: Arc::clone(&shared),
-                json: output.is_json(),
+                format: output.format(),
+                invocation,
                 gate: output.gate(),
             },
         }));
@@ -232,8 +239,10 @@ async fn wait_for_request(requested: &mut watch::Receiver<bool>) {
 struct ForcedExitContext {
     cancellation: Cancellation,
     shared: Arc<Shared>,
-    /// Whether to report in JSON.
-    json: bool,
+    /// How the forced exit reports.
+    format: OutputFormat,
+    /// How hints name the run's environment and project.
+    invocation: Invocation,
     gate: Arc<ResultGate>,
 }
 
@@ -297,11 +306,15 @@ struct ForcedExit {
     lock: ExitLock,
 }
 
-const REVIEW_PLAN: &str = "A resource in flight may have changed without being recorded; review \
-                           `cuenv infrastructure plan`.";
+fn review_plan(invocation: &Invocation) -> String {
+    format!(
+        "A resource in flight may have changed without being recorded; review `{}`.",
+        invocation.command("plan")
+    )
+}
 
 /// The error a forced exit reports, with the lock it concerns.
-fn forced_exit_error(forced: &ForcedExit) -> CliError {
+fn forced_exit_error(forced: &ForcedExit, invocation: &Invocation) -> CliError {
     let recording = match forced.recordings {
         Recordings::Finished => "",
         Recordings::StillWriting => "; a record was still being written",
@@ -313,25 +326,27 @@ fn forced_exit_error(forced: &ForcedExit) -> CliError {
         })
     };
     let (outcome, help, lock) = match &forced.lock {
-        ExitLock::None => (String::new(), REVIEW_PLAN.to_string(), None),
+        ExitLock::None => (String::new(), review_plan(invocation), None),
         ExitLock::Released(identifier) => (
             format!("; lock {identifier} was released"),
-            REVIEW_PLAN.to_string(),
+            review_plan(invocation),
             status(identifier, true),
         ),
         ExitLock::NotReleased(identifier) => (
             format!("; lock {identifier} was NOT released"),
             format!(
-                "After checking no run is active, release it with `cuenv infrastructure unlock \
-                 {identifier}`. {REVIEW_PLAN}"
+                "After checking no run is active, release it with `{}`. {}",
+                invocation.command(&format!("unlock {identifier}")),
+                review_plan(invocation)
             ),
             status(identifier, false),
         ),
         ExitLock::MaybeAcquired(identifier) => (
             format!("; lock {identifier} may have been acquired"),
             format!(
-                "If `cuenv infrastructure unlock` shows lock {identifier}, release it with \
-                 `cuenv infrastructure unlock {identifier}`."
+                "If `{}` shows lock {identifier}, release it with `{}`.",
+                invocation.command("unlock"),
+                invocation.command(&format!("unlock {identifier}"))
             ),
             status(identifier, false),
         ),
@@ -382,12 +397,12 @@ async fn exit_now(context: &ForcedExitContext) {
             }
         }
     };
-    let error = forced_exit_error(&ForcedExit { recordings, lock });
+    let error = forced_exit_error(&ForcedExit { recordings, lock }, &context.invocation);
     if !context.gate.claim_for_exit() {
         // The command finished meanwhile and is reporting its own outcome.
         return;
     }
-    report_forced_exit(&error, context.json);
+    report_forced_exit(&error, context.format);
     std::process::exit(EXIT_INTERRUPTED);
 }
 
@@ -396,12 +411,12 @@ async fn exit_now(context: &ForcedExitContext) {
 /// standard error, rendered like any other event in JSON mode, and in JSON
 /// mode the one error envelope on standard output. Everything is redacted
 /// and flushed.
-fn report_forced_exit(error: &CliError, json: bool) {
+fn report_forced_exit(error: &CliError, format: OutputFormat) {
     let line = match error.help() {
         Some(help) => format!("{error}. {help}"),
         None => error.to_string(),
     };
-    if !json {
+    if !format.is_json() {
         cuenv_events::eprintln_redacted(&line);
         return;
     }
@@ -426,7 +441,7 @@ fn report_forced_exit(error: &CliError, json: bool) {
         .map_err(std::io::Error::other)
         .and_then(|envelope| {
             let mut standard_output = std::io::stdout().lock();
-            writeln!(standard_output, "{}", cuenv_events::redact(&envelope))?;
+            writeln!(standard_output, "{envelope}")?;
             standard_output.flush()
         });
     if let Err(write_error) = written {
