@@ -259,11 +259,6 @@ pub enum InfrastructureError {
     #[error("interrupted while planning; nothing was changed")]
     InterruptedWhilePlanning,
 
-    /// The plan was made with other provider environment variables than the
-    /// engine applying it has, so providers would behave differently.
-    #[error("the environment passed to providers changed after the plan was made; plan again")]
-    PlanEnvironmentChanged,
-
     /// An apply could not finish every change. Changes that do not depend
     /// on a failed change were still applied.
     #[error("{0}")]

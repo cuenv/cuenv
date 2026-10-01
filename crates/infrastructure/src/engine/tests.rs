@@ -224,6 +224,7 @@ fn configuration_preflight_reports_every_problem_with_its_full_field_path() {
         "infrastructure.environments.dev.providers.blank.path: must not be empty",
         "infrastructure.environments.dev.resources.pet.type: no provider named 'undeclared'",
         "infrastructure.environments.dev.resources.pet.dependsOn[0]: resource 'pet' depends on unknown resource 'ghost'",
+        "infrastructure.environments.dev.resources.pet.dependsOn[1]: resource 'pet' depends on itself",
     ] {
         assert!(
             error.contains(expected),
@@ -239,8 +240,9 @@ fn configuration_preflight_reports_every_problem_with_its_full_field_path() {
         error.contains("top-level `infrastructure.providers` are not inherited by environments"),
         "{error}"
     );
-    // Five problems, one line each, all in one error.
-    assert!(error.starts_with("5 problems:"), "{error}");
+    // Six problems, one line each, all in one error: the self-dependency
+    // is reported although another dependency is unknown.
+    assert!(error.starts_with("6 problems:"), "{error}");
 }
 
 #[test]
@@ -270,10 +272,58 @@ fn dependency_cycles_are_reported_with_the_resources_path() {
         .resources
         .insert("b".into(), declaration("random_pet", &["a"]));
     let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert_eq!(
+        error,
+        "infrastructure.resources: dependency cycle between resources a, b: \
+         infrastructure.resources.a.dependsOn[0] -> b, \
+         infrastructure.resources.b.dependsOn[0] -> a; remove one of these dependsOn entries"
+    );
+}
+
+#[test]
+fn each_dependency_cycle_is_reported_alone_even_beside_unknown_dependencies() {
+    let mut configuration = infrastructure();
+    configuration
+        .providers
+        .insert("random".into(), provider(Some("3.7.2"), None));
+    let resources = [
+        ("a", &["b"][..]),
+        ("b", &["a", "ghost"][..]),
+        // Not part of any cycle, although it depends on one.
+        ("bystander", &["a"][..]),
+        ("c", &["d"][..]),
+        ("d", &["e"][..]),
+        ("e", &["c"][..]),
+    ];
+    for (name, depends_on) in resources {
+        configuration
+            .resources
+            .insert(name.into(), declaration("random_pet", depends_on));
+    }
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert!(error.starts_with("3 problems:"), "{error}");
     assert!(
-        error.starts_with("infrastructure.resources: dependency cycle between resources"),
+        error.contains(
+            "infrastructure.resources.b.dependsOn[1]: resource 'b' depends on unknown resource 'ghost'"
+        ),
         "{error}"
     );
+    assert!(
+        error.contains(
+            "dependency cycle between resources a, b: infrastructure.resources.a.dependsOn[0] \
+             -> b, infrastructure.resources.b.dependsOn[0] -> a;"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains(
+            "dependency cycle between resources c, d, e: infrastructure.resources.c.dependsOn[0] \
+             -> d, infrastructure.resources.d.dependsOn[0] -> e, \
+             infrastructure.resources.e.dependsOn[0] -> c;"
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("bystander"), "{error}");
 }
 
 #[cfg(unix)]
@@ -440,24 +490,24 @@ fn replacement_step(kind: StepKind) -> ApplyStep {
     }
 }
 
-/// A `random_pet` change. `stored` are the names its stored record depends
-/// on and `configured` the names its configuration depends on; both are
-/// recorded as full addresses, as the engine does.
-fn pet(name: &str, action: Action, stored: &[&str], configured: &[&str]) -> ResourceChange {
-    let addresses = |names: &[&str]| -> Vec<String> {
-        names
-            .iter()
-            .map(|name| format!("random_pet.{name}"))
-            .collect()
-    };
-    let stored_addresses = addresses(stored);
-    let stored_references: Vec<&str> = stored_addresses.iter().map(String::as_str).collect();
-    let mut change = change(ResourceAddress::new("random_pet", name), action);
-    change.dependencies = addresses(configured);
-    if !matches!(action, Action::Create) {
-        change.stored = Some(record("random_pet", name, &stored_references));
-    }
-    match action {
+/// The dependencies of a change: the names (or addresses) its stored record
+/// depends on, and the ones its configuration depends on.
+#[derive(Clone, Copy)]
+struct Wiring<'names> {
+    stored: &'names [&'names str],
+    configured: &'names [&'names str],
+}
+
+fn wired<'names>(
+    stored: &'names [&'names str],
+    configured: &'names [&'names str],
+) -> Wiring<'names> {
+    Wiring { stored, configured }
+}
+
+/// Give `change` the steps its action needs.
+fn with_steps(mut change: ResourceChange) -> ResourceChange {
+    match change.action {
         Action::Replace => {
             change.steps = vec![
                 replacement_step(StepKind::Delete),
@@ -471,6 +521,42 @@ fn pet(name: &str, action: Action, stored: &[&str], configured: &[&str]) -> Reso
         Action::NoOp => {}
     }
     change
+}
+
+/// A resource of any type: the dependencies in `wiring` are full addresses.
+fn thing(address: &str, action: Action, wiring: Wiring<'_>) -> ResourceChange {
+    let (resource_type, name) = address.split_once('.').unwrap();
+    let mut change = change(ResourceAddress::new(resource_type, name), action);
+    change.dependencies = wiring
+        .configured
+        .iter()
+        .map(|text| (*text).to_string())
+        .collect();
+    if !matches!(action, Action::Create) {
+        change.stored = Some(record(resource_type, name, wiring.stored));
+    }
+    with_steps(change)
+}
+
+/// A `random_pet` change. The dependencies in `wiring` are names; they are
+/// recorded as full addresses, as the engine does.
+fn pet(name: &str, action: Action, wiring: Wiring<'_>) -> ResourceChange {
+    let addresses = |names: &[&str]| -> Vec<String> {
+        names
+            .iter()
+            .map(|name| format!("random_pet.{name}"))
+            .collect()
+    };
+    let stored = addresses(wiring.stored);
+    let configured = addresses(wiring.configured);
+    thing(
+        &format!("random_pet.{name}"),
+        action,
+        wired(
+            &stored.iter().map(String::as_str).collect::<Vec<_>>(),
+            &configured.iter().map(String::as_str).collect::<Vec<_>>(),
+        ),
+    )
 }
 
 fn operation_labels(schedule: &Schedule<'_>) -> Vec<String> {
@@ -503,8 +589,8 @@ fn orphan_deletes_run_before_creates_and_updates() {
     // Renaming a resource key: the old object goes first, so the new one can
     // take its real-world identity.
     let changes = [
-        pet("new", Action::Create, &[], &[]),
-        pet("old", Action::Delete, &[], &[]),
+        pet("new", Action::Create, wired(&[], &[])),
+        pet("old", Action::Delete, wired(&[], &[])),
     ];
     assert_eq!(short(&schedule_of(&changes)), ["delete old", "apply new"]);
 }
@@ -514,8 +600,8 @@ fn a_removed_child_is_deleted_before_its_parent_is_updated() {
     // Terraform's `creators` edge: the parent's update waits for the delete
     // of what hangs off it.
     let changes = [
-        pet("parent", Action::Update, &[], &[]),
-        pet("child", Action::Delete, &["parent"], &[]),
+        pet("parent", Action::Update, wired(&[], &[])),
+        pet("child", Action::Delete, wired(&["parent"], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
@@ -526,9 +612,9 @@ fn a_removed_child_is_deleted_before_its_parent_is_updated() {
 #[test]
 fn a_replacement_create_follows_its_delete_at_once() {
     let changes = [
-        pet("b", Action::Update, &[], &[]),
-        pet("a", Action::Replace, &[], &[]),
-        pet("c", Action::Create, &[], &[]),
+        pet("b", Action::Update, wired(&[], &[])),
+        pet("a", Action::Replace, wired(&[], &[])),
+        pet("c", Action::Create, wired(&[], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
@@ -539,8 +625,8 @@ fn a_replacement_create_follows_its_delete_at_once() {
 #[test]
 fn dependents_are_deleted_before_a_replaced_parent_and_recreated_after_it() {
     let changes = [
-        pet("parent", Action::Replace, &[], &[]),
-        pet("child", Action::Replace, &["parent"], &["parent"]),
+        pet("parent", Action::Replace, wired(&[], &[])),
+        pet("child", Action::Replace, wired(&["parent"], &["parent"])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
@@ -554,68 +640,339 @@ fn dependents_are_deleted_before_a_replaced_parent_and_recreated_after_it() {
 }
 
 #[test]
-fn an_update_that_detaches_runs_before_the_delete_of_its_old_parent() {
+fn an_update_that_drops_a_dependency_runs_after_the_delete_of_the_old_parent() {
+    // Terraform connects creators to the destroyers they may depend on: the
+    // dependent's update waits for the delete of what its stored record
+    // depends on. Detaching first would invert that, and would delay an
+    // orphan delete behind a create (see the rename tests below).
     let removed = [
-        pet("parent", Action::Delete, &[], &[]),
-        pet("dependent", Action::Update, &["parent"], &[]),
+        pet("parent", Action::Delete, wired(&[], &[])),
+        pet("dependent", Action::Update, wired(&["parent"], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&removed)),
-        ["apply dependent", "delete parent"]
+        ["delete parent", "apply dependent"]
     );
     let replaced = [
-        pet("parent", Action::Replace, &[], &[]),
-        pet("dependent", Action::Update, &["parent"], &[]),
+        pet("parent", Action::Replace, wired(&[], &[])),
+        pet("dependent", Action::Update, wired(&["parent"], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&replaced)),
-        ["apply dependent", "delete parent", "create parent"]
+        ["delete parent", "create parent", "apply dependent"]
     );
 }
 
 #[test]
-fn detaching_while_attaching_a_new_resource_is_ordered_not_refused() {
-    // The old schedule refused this ("apply the detachment separately")
-    // because the detaching update needs a resource that does not exist yet.
-    // Create it first, detach, then replace the old parent.
+fn updates_that_attach_a_new_resource_and_drop_an_old_one_are_ordered_not_refused() {
     let changes = [
-        pet("parent", Action::Replace, &[], &[]),
-        pet("retained", Action::Update, &["parent"], &["fresh"]),
-        pet("fresh", Action::Create, &[], &[]),
+        pet("parent", Action::Replace, wired(&[], &[])),
+        pet("retained", Action::Update, wired(&["parent"], &["fresh"])),
+        pet("fresh", Action::Create, wired(&[], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
         [
-            "apply fresh",
-            "apply retained",
             "delete parent",
-            "create parent"
+            "create parent",
+            "apply fresh",
+            "apply retained"
         ]
     );
 }
 
 #[test]
-fn preferred_edges_never_close_a_cycle() {
-    // Detaching `c` from the removed `d` would put `d`'s delete after
-    // `c`'s update, but `c` needs `p` updated first and `p`'s update must
-    // follow `d`'s delete. Terraform's order stands.
+fn the_creators_edge_orders_a_replaced_childs_delete_before_its_parent_update() {
+    // `c` needs `p` updated first and `p`'s update must follow `c`'s delete
+    // (Terraform's creators edge): the safety edge that would make `c`'s
+    // delete wait for `p` is dropped, as in Terraform.
     let changes = [
-        pet("d", Action::Delete, &["p"], &[]),
-        pet("c", Action::Update, &["d"], &["p"]),
-        pet("p", Action::Update, &[], &[]),
+        pet("c", Action::Replace, wired(&["p"], &["p"])),
+        pet("p", Action::Update, wired(&[], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
-        ["delete d", "apply p", "apply c"]
+        ["delete c", "apply p", "create c"]
     );
+}
+
+#[test]
+fn a_parents_update_waits_for_the_delete_of_what_hangs_off_it_even_when_hurried() {
+    // Terraform's creators edge. `a` is replaced and its create waits for
+    // `p`'s update, so once `a` is deleted the update is hurried; it must
+    // still wait for the delete of `z`, a child of `p` that has nothing to do
+    // with `a`.
+    let changes = [
+        pet("p", Action::Update, wired(&[], &[])),
+        pet("a", Action::Replace, wired(&["p"], &["p"])),
+        pet("z", Action::Replace, wired(&["p"], &[])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete a", "delete z", "apply p", "create z", "create a"]
+    );
+}
+
+#[test]
+fn an_update_waits_for_the_delete_of_what_its_record_depends_on_even_when_hurried() {
+    // Terraform connects creators to the destroyers they may depend on. `a`
+    // is replaced and its create waits for `c`'s update, so once `a` is
+    // deleted the update is hurried; `c`'s stored record depends on `d`,
+    // which is replaced, so `d` is deleted first.
+    let changes = [
+        pet("a", Action::Replace, wired(&["c"], &["c"])),
+        pet("c", Action::Update, wired(&["d"], &[])),
+        pet("d", Action::Replace, wired(&[], &[])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete a", "delete d", "apply c", "create d", "create a"]
+    );
+}
+
+#[test]
+fn renaming_a_resource_whose_dependent_only_refreshes_deletes_the_old_one_first() {
+    // N1: the dependent follows the rename, so its record is rewritten. A
+    // record rewrite detaches nothing; the old object goes before the new
+    // one is created, because they may be the same real-world object.
+    let changes = [
+        pet("new", Action::Create, wired(&[], &[])),
+        pet("old", Action::Delete, wired(&[], &[])),
+        pet("r", Action::Refresh, wired(&["old"], &["new"])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete old", "apply new", "refresh r"]
+    );
+}
+
+#[test]
+fn renaming_a_resource_whose_dependent_is_updated_deletes_the_old_one_first() {
+    // N1b
+    let changes = [
+        pet("new", Action::Create, wired(&[], &[])),
+        pet("old", Action::Delete, wired(&[], &[])),
+        pet("r", Action::Update, wired(&["old"], &["new"])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete old", "apply new", "apply r"]
+    );
+}
+
+#[test]
+fn renaming_a_resource_whose_dependent_is_replaced_deletes_the_old_one_first() {
+    // N1c: the dependent's delete may not wait for the new object either,
+    // because the old object's delete waits for the dependent's.
+    let changes = [
+        pet("new", Action::Create, wired(&[], &[])),
+        pet("old", Action::Delete, wired(&[], &[])),
+        pet("r", Action::Replace, wired(&["old"], &["new"])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete r", "delete old", "apply new", "create r"]
+    );
+}
+
+#[test]
+fn a_type_change_with_a_dependent_deletes_the_old_object_first() {
+    // N3: the same name under another type is a new address and an orphan.
+    for action in [Action::Refresh, Action::Update, Action::Replace] {
+        let changes = [
+            thing("fake_obj2.x", Action::Create, wired(&[], &[])),
+            thing("fake_obj.x", Action::Delete, wired(&[], &[])),
+            thing(
+                "fake_obj.y",
+                action,
+                wired(&["fake_obj.x"], &["fake_obj2.x"]),
+            ),
+        ];
+        let order = schedule_of(&changes);
+        let position = |label: &str| order.iter().position(|entry| entry == label).unwrap();
+        assert!(
+            position("delete fake_obj.x") < position("apply fake_obj2.x"),
+            "{action:?}: {order:?}"
+        );
+    }
+}
+
+#[test]
+fn a_refresh_waits_for_the_refreshes_and_updates_it_is_configured_to_depend_on() {
+    // N4: `y` (updated) is configured to depend on `x`, whose record is only
+    // refreshed. If `x`'s refresh cannot run, `y` must not either, or the
+    // stored records would depend on each other.
+    let changes = [
+        pet("x", Action::Refresh, wired(&["y"], &["z"])),
+        pet("y", Action::Update, wired(&[], &["x"])),
+        pet("z", Action::Update, wired(&[], &[])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["apply z", "refresh x", "apply y"]
+    );
+}
+
+/// A deterministic source of numbers below a bound.
+fn random_source(mut seed: u64) -> impl FnMut(u64) -> u64 {
+    move |bound| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % bound
+    }
+}
+
+/// A few changes of the given actions, with random stored dependencies and
+/// configured dependencies that point to earlier names only (so the
+/// configuration has no cycle, while the stored records may).
+fn random_changes(next: &mut dyn FnMut(u64) -> u64, actions: &[Action]) -> Vec<ResourceChange> {
+    let count = 3 + usize::try_from(next(5)).unwrap();
+    let names: Vec<String> = (0..count).map(|index| format!("n{index}")).collect();
+    let mut changes = Vec::new();
+    for (mine, name) in names.iter().enumerate() {
+        let action = actions[usize::try_from(next(actions.len() as u64)).unwrap()];
+        let mut stored: Vec<&str> = Vec::new();
+        let mut configured: Vec<&str> = Vec::new();
+        for (other, other_name) in names.iter().enumerate() {
+            if other != mine && action != Action::Create && next(3) == 0 {
+                stored.push(other_name);
+            }
+            if other < mine && action != Action::Delete && next(3) == 0 {
+                configured.push(other_name);
+            }
+        }
+        changes.push(pet(name, action, wired(&stored, &configured)));
+    }
+    changes
+}
+
+/// Changes in a line: action, address, stored and configured dependencies.
+fn describe(changes: &[ResourceChange]) -> String {
+    changes
+        .iter()
+        .map(|change| {
+            let stored = change
+                .stored
+                .as_ref()
+                .map_or_else(Vec::new, |stored| stored.dependencies.clone());
+            format!(
+                "{:?} {} stored={stored:?} configured={:?}",
+                change.action, change.address, change.dependencies
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+const ALL_ACTIONS: [Action; 5] = [
+    Action::Create,
+    Action::Update,
+    Action::Replace,
+    Action::Delete,
+    Action::Refresh,
+];
+
+#[test]
+fn an_orphan_delete_never_waits_for_a_create_or_an_update() {
+    // Whatever the mix of changes, every orphan delete, and every
+    // replacement delete that must come before one, runs before anything
+    // else.
+    let mut next = random_source(0x2545_f491_4f6c_dd1d);
+    for round in 0..400 {
+        let changes = random_changes(&mut next, &ALL_ACTIONS);
+        let schedule = Schedule::build(&changes).unwrap();
+        let kinds: Vec<OperationKind> = schedule
+            .operations
+            .iter()
+            .map(|scheduled| scheduled.operation.kind)
+            .collect();
+        for (index, kind) in kinds.iter().enumerate() {
+            if *kind != OperationKind::Delete {
+                continue;
+            }
+            assert!(
+                kinds[..index].iter().all(|earlier| matches!(
+                    earlier,
+                    OperationKind::Delete | OperationKind::ReplaceDelete
+                )),
+                "round {round}: an orphan delete came after other work: {:?}",
+                operation_labels(&schedule)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_replacement_is_never_deleted_once_a_prerequisite_of_its_create_has_failed() {
+    // Whichever operations fail: the old object of a replacement is not
+    // destroyed after something its create waits for has already failed.
+    let mut next = random_source(0x9e37_79b9_7f4a_7c15);
+    let actions = [
+        Action::Create,
+        Action::Update,
+        Action::Replace,
+        Action::Delete,
+    ];
+    for round in 0..300 {
+        let changes = random_changes(&mut next, &actions);
+        let schedule = Schedule::build(&changes).unwrap();
+        let full = operation_labels(&schedule);
+        let labels = short(&full);
+        let chosen: Vec<usize> = (0..full.len()).filter(|_| next(5) == 0).collect();
+        let failing: Vec<&str> = chosen.iter().map(|index| labels[*index].as_str()).collect();
+        let failing_full: Vec<&str> = chosen.iter().map(|index| full[*index].as_str()).collect();
+        let runner = ScriptedRunner::new().failing(&failing_full);
+        let mut before: Vec<Vec<usize>> = vec![Vec::new(); labels.len()];
+        for (node, scheduled) in schedule.operations.iter().enumerate() {
+            for successor in &scheduled.successors {
+                before[*successor].push(node);
+            }
+        }
+        run_scripted(changes.clone(), &runner).await;
+        let ran = runner.ran();
+        for (node, label) in labels.iter().enumerate() {
+            let Some(name) = label.strip_prefix("create ") else {
+                continue;
+            };
+            let delete = labels
+                .iter()
+                .position(|candidate| *candidate == format!("delete {name}"))
+                .unwrap();
+            let Some(deleted_at) = ran.iter().position(|entry| *entry == labels[delete]) else {
+                continue;
+            };
+            let mut pending = before[node].clone();
+            let mut seen = BTreeSet::new();
+            while let Some(earlier) = pending.pop() {
+                if earlier == delete || !seen.insert(earlier) {
+                    continue;
+                }
+                let failed_before = ran
+                    .iter()
+                    .position(|entry| *entry == labels[earlier])
+                    .is_some_and(|at| {
+                        at < deleted_at && failing.contains(&labels[earlier].as_str())
+                    });
+                assert!(
+                    !failed_before,
+                    "round {round}: {} was deleted after {} failed (ran {ran:?}, failing {failing:?}); changes {}",
+                    labels[delete],
+                    labels[earlier],
+                    describe(&changes)
+                );
+                pending.extend(before[earlier].iter().copied());
+            }
+        }
+    }
 }
 
 #[test]
 fn a_replacement_waits_for_the_creates_it_depends_on() {
     // If the prerequisite fails, the old object must still be there.
     let changes = [
-        pet("r", Action::Replace, &[], &["fresh"]),
-        pet("fresh", Action::Create, &[], &[]),
+        pet("r", Action::Replace, wired(&[], &["fresh"])),
+        pet("fresh", Action::Create, wired(&[], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
@@ -624,27 +981,64 @@ fn a_replacement_waits_for_the_creates_it_depends_on() {
 }
 
 #[test]
-fn stored_dependency_cycles_are_refused_naming_the_operations() {
+fn stored_dependency_cycles_among_deletes_are_ordered_with_a_warning() {
+    // Stored dependencies are history: a partial failure can leave records
+    // that depend on each other, and the project must still be destroyable.
     let changes = [
-        pet("a", Action::Delete, &["b"], &[]),
-        pet("b", Action::Delete, &["a"], &[]),
+        pet("a", Action::Delete, wired(&["b"], &[])),
+        pet("b", Action::Delete, wired(&["a"], &[])),
+    ];
+    let schedule = Schedule::build(&changes).unwrap();
+    assert_eq!(
+        short(&operation_labels(&schedule)),
+        ["delete b", "delete a"]
+    );
+    assert_eq!(schedule.warnings.len(), 1, "{:?}", schedule.warnings);
+    let warning = &schedule.warnings[0];
+    assert!(warning.contains("cycle"), "{warning}");
+    assert!(warning.contains("random_pet.a"), "{warning}");
+    assert!(warning.contains("random_pet.b"), "{warning}");
+    assert!(!warning.contains("configuration"), "{warning}");
+    assert!(!warning.contains("  "), "{warning}");
+
+    // A ring of three, and a delete hanging off it, still order: the edges
+    // that do not close the cycle keep their place.
+    let ring = [
+        pet("a", Action::Delete, wired(&["b"], &[])),
+        pet("b", Action::Delete, wired(&["c"], &[])),
+        pet("c", Action::Delete, wired(&["a"], &[])),
+        pet("leaf", Action::Delete, wired(&["a"], &[])),
+    ];
+    let schedule = Schedule::build(&ring).unwrap();
+    assert_eq!(schedule.operations.len(), 4);
+    assert_eq!(schedule.warnings.len(), 1, "{:?}", schedule.warnings);
+    let labels = short(&operation_labels(&schedule));
+    let position = |label: &str| labels.iter().position(|entry| entry == label).unwrap();
+    assert!(position("delete leaf") < position("delete a"), "{labels:?}");
+}
+
+#[test]
+fn a_cycle_through_configured_dependencies_is_refused_without_blaming_destroy() {
+    let changes = [
+        pet("a", Action::Create, wired(&[], &["b"])),
+        pet("b", Action::Create, wired(&[], &["a"])),
     ];
     let error = message(Schedule::build(&changes).unwrap_err());
     assert!(error.contains("cycle"), "{error}");
-    assert!(error.contains("delete random_pet.a"), "{error}");
-    assert!(error.contains("delete random_pet.b"), "{error}");
+    assert!(error.contains("a, b"), "{error}");
+    assert!(!error.contains("change the configuration"), "{error}");
 }
 
 #[test]
 fn the_schedule_does_not_depend_on_the_order_of_the_changes() {
     let changes = vec![
-        pet("parent", Action::Replace, &[], &[]),
-        pet("child", Action::Replace, &["parent"], &["parent"]),
-        pet("old", Action::Delete, &[], &[]),
-        pet("fresh", Action::Create, &[], &[]),
-        pet("kept", Action::Update, &["old"], &["fresh"]),
-        pet("same", Action::NoOp, &[], &[]),
-        pet("rewritten", Action::Refresh, &[], &[]),
+        pet("parent", Action::Replace, wired(&[], &[])),
+        pet("child", Action::Replace, wired(&["parent"], &["parent"])),
+        pet("old", Action::Delete, wired(&[], &[])),
+        pet("fresh", Action::Create, wired(&[], &[])),
+        pet("kept", Action::Update, wired(&["old"], &["fresh"])),
+        pet("same", Action::NoOp, wired(&[], &[])),
+        pet("rewritten", Action::Refresh, wired(&[], &[])),
     ];
     let expected = schedule_of(&changes);
     for rotation in 0..changes.len() {
@@ -660,8 +1054,8 @@ fn the_schedule_does_not_depend_on_the_order_of_the_changes() {
 #[test]
 fn unchanged_resources_have_no_operation_and_are_listed_last() {
     let changes = [
-        pet("quiet", Action::NoOp, &[], &[]),
-        pet("busy", Action::Create, &[], &[]),
+        pet("quiet", Action::NoOp, wired(&[], &[])),
+        pet("busy", Action::Create, wired(&[], &[])),
     ];
     let schedule = Schedule::build(&changes).unwrap();
     assert_eq!(operation_labels(&schedule), ["apply random_pet.busy"]);
@@ -676,13 +1070,13 @@ fn unchanged_resources_have_no_operation_and_are_listed_last() {
 #[test]
 fn a_plan_lists_its_changes_in_the_order_apply_runs_them() {
     let changes = vec![
-        pet("new", Action::Create, &[], &[]),
-        pet("kept", Action::Update, &["old"], &[]),
-        pet("old", Action::Delete, &[], &[]),
-        pet("replaced", Action::Replace, &[], &["new"]),
-        pet("same", Action::NoOp, &[], &[]),
+        pet("new", Action::Create, wired(&[], &[])),
+        pet("kept", Action::Update, wired(&["old"], &[])),
+        pet("old", Action::Delete, wired(&[], &[])),
+        pet("replaced", Action::Replace, wired(&[], &["new"])),
+        pet("same", Action::NoOp, wired(&[], &[])),
     ];
-    let ordered = in_schedule_order(changes).unwrap();
+    let ordered = in_schedule_order(changes).unwrap().changes;
     let schedule = Schedule::build(&ordered).unwrap();
     let mut first_runs: Vec<String> = Vec::new();
     for scheduled in &schedule.operations {
@@ -711,7 +1105,11 @@ fn a_long_chain_of_replacements_is_scheduled_in_dependency_order() {
             } else {
                 vec![dependency.as_str()]
             };
-            pet(&name(index), Action::Replace, &dependencies, &dependencies)
+            pet(
+                &name(index),
+                Action::Replace,
+                wired(&dependencies, &dependencies),
+            )
         })
         .collect();
     let labels = short(&schedule_of(&changes));
@@ -738,6 +1136,12 @@ struct ScriptedRunner {
     failing: BTreeSet<String>,
     /// Labels failing so the run cannot go on.
     aborting: BTreeSet<String>,
+    /// Delete labels where the provider deleted the object and recording
+    /// the deletion failed.
+    delete_unrecorded: BTreeSet<String>,
+    /// Create labels where the provider created the object and recording it
+    /// failed (the record was saved locally).
+    create_unrecorded: BTreeSet<String>,
     /// A label after which a stop is requested.
     stop_after: Option<(String, Cancellation)>,
 }
@@ -748,6 +1152,8 @@ impl ScriptedRunner {
             journal: std::sync::Mutex::new(Vec::new()),
             failing: BTreeSet::new(),
             aborting: BTreeSet::new(),
+            delete_unrecorded: BTreeSet::new(),
+            create_unrecorded: BTreeSet::new(),
             stop_after: None,
         }
     }
@@ -777,6 +1183,20 @@ impl OperationRunner for ScriptedRunner {
                 InfrastructureError::Diagnostics {
                     context: label,
                     errors: vec!["boom".to_string()],
+                },
+            ));
+        }
+        if self.delete_unrecorded.contains(&label) {
+            return Err(OperationFailure::AbortAfterDelete(
+                InfrastructureError::state("the lock was lost"),
+            ));
+        }
+        if self.create_unrecorded.contains(&label) {
+            return Err(OperationFailure::Abort(
+                InfrastructureError::UnrecordedChange {
+                    address: operation.change.address.to_string(),
+                    reason: "the state store is unavailable".to_string(),
+                    saved_to: "/recovery/file".to_string(),
                 },
             ));
         }
@@ -833,7 +1253,7 @@ async fn run_scripted(changes: Vec<ResourceChange>, runner: &ScriptedRunner) -> 
     let lock = StateLock {
         lock_identifier: "scripted".into(),
     };
-    let plan = plan_of(in_schedule_order(changes).unwrap());
+    let plan = plan_of(in_schedule_order(changes).unwrap().changes);
     let mut events = Vec::new();
     let result = engine
         .converge(
@@ -853,8 +1273,8 @@ async fn an_unrelated_failure_still_recreates_a_replacement() {
     let runner = ScriptedRunner::new().failing(&["apply random_pet.aaa"]);
     let scripted = run_scripted(
         vec![
-            pet("aaa", Action::Update, &[], &[]),
-            pet("zzz", Action::Replace, &[], &[]),
+            pet("aaa", Action::Update, wired(&[], &[])),
+            pet("zzz", Action::Replace, wired(&[], &[])),
         ],
         &runner,
     )
@@ -878,8 +1298,8 @@ async fn a_failed_create_is_reported_as_deleted_not_recreated_and_other_replacem
     let runner = ScriptedRunner::new().failing(&["create random_pet.aaa"]);
     let scripted = run_scripted(
         vec![
-            pet("aaa", Action::Replace, &[], &[]),
-            pet("zzz", Action::Replace, &[], &[]),
+            pet("aaa", Action::Replace, wired(&[], &[])),
+            pet("zzz", Action::Replace, wired(&[], &[])),
         ],
         &runner,
     )
@@ -911,10 +1331,11 @@ async fn a_replacement_is_not_started_when_a_prerequisite_already_failed() {
     };
     let plan = plan_of(
         in_schedule_order(vec![
-            pet("r", Action::Replace, &[], &["fresh"]),
-            pet("fresh", Action::Create, &[], &[]),
+            pet("r", Action::Replace, wired(&[], &["fresh"])),
+            pet("fresh", Action::Create, wired(&[], &[])),
         ])
-        .unwrap(),
+        .unwrap()
+        .changes,
     );
     let mut events = Vec::new();
     let result = engine
@@ -947,14 +1368,37 @@ async fn a_replacement_is_not_started_when_a_prerequisite_already_failed() {
 }
 
 #[tokio::test]
+async fn a_replacement_whose_create_can_no_longer_follow_keeps_its_old_object() {
+    // The create of `sibling` waits for the delete of `parent` (its record
+    // depends on it), which waits for the delete of `child`, which fails.
+    // `sibling`'s own delete is not ordered against `child`'s, but it must
+    // not destroy the old object when the new one cannot follow.
+    let runner = ScriptedRunner::new().failing(&["delete random_pet.child"]);
+    let scripted = run_scripted(
+        vec![
+            pet("parent", Action::Replace, wired(&[], &[])),
+            pet("child", Action::Delete, wired(&["parent"], &[])),
+            pet("sibling", Action::Replace, wired(&["parent"], &[])),
+        ],
+        &runner,
+    )
+    .await;
+    assert_eq!(runner.ran(), ["delete child"]);
+    let incomplete = scripted.incomplete();
+    assert_eq!(Scripted::names(&incomplete.skipped), ["parent", "sibling"]);
+    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert!(scripted.uncreated().is_empty());
+}
+
+#[tokio::test]
 async fn a_failure_skips_what_depends_on_it_transitively_and_nothing_else() {
     let runner = ScriptedRunner::new().failing(&["apply random_pet.a"]);
     let scripted = run_scripted(
         vec![
-            pet("a", Action::Create, &[], &[]),
-            pet("b", Action::Create, &[], &["a"]),
-            pet("c", Action::Create, &[], &["b"]),
-            pet("d", Action::Create, &[], &[]),
+            pet("a", Action::Create, wired(&[], &[])),
+            pet("b", Action::Create, wired(&[], &["a"])),
+            pet("c", Action::Create, wired(&[], &["b"])),
+            pet("d", Action::Create, wired(&[], &[])),
         ],
         &runner,
     )
@@ -974,9 +1418,47 @@ async fn a_failure_skips_what_depends_on_it_transitively_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn a_failed_prerequisite_leaves_no_stored_dependency_cycle_behind() {
+    // N4: z's update fails. x (only refreshed, now depending on z) cannot
+    // be rewritten, so y (now depending on x) must not be updated either:
+    // its stored record would depend on x while x's still depends on y.
+    let runner = ScriptedRunner::new().failing(&["apply random_pet.z"]);
+    let scripted = run_scripted(
+        vec![
+            pet("x", Action::Refresh, wired(&["y"], &["z"])),
+            pet("y", Action::Update, wired(&[], &["x"])),
+            pet("z", Action::Update, wired(&[], &[])),
+        ],
+        &runner,
+    )
+    .await;
+    assert_eq!(runner.ran(), ["apply z"]);
+    let incomplete = scripted.incomplete();
+    assert_eq!(incomplete.failures.len(), 1);
+    assert_eq!(incomplete.failures[0].address.name, "z");
+    assert_eq!(Scripted::names(&incomplete.skipped), ["x", "y"]);
+}
+
+#[test]
+fn a_replacement_that_became_ready_late_is_recreated_before_unrelated_deletes() {
+    // N7: after the delete of `x`, its create waits for `p`'s update. The
+    // update goes before the unrelated replacement of `y`, so the window in
+    // which `x` does not exist is as short as the graph allows.
+    let changes = [
+        pet("p", Action::Update, wired(&[], &[])),
+        pet("x", Action::Replace, wired(&["p"], &["p"])),
+        pet("y", Action::Replace, wired(&[], &[])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete x", "apply p", "create x", "delete y", "create y"]
+    );
+}
+
+#[tokio::test]
 async fn a_failed_replacement_delete_skips_its_create_without_calling_it_deleted() {
     let runner = ScriptedRunner::new().failing(&["delete random_pet.r"]);
-    let scripted = run_scripted(vec![pet("r", Action::Replace, &[], &[])], &runner).await;
+    let scripted = run_scripted(vec![pet("r", Action::Replace, wired(&[], &[]))], &runner).await;
     let incomplete = scripted.incomplete();
     assert_eq!(incomplete.failures.len(), 1);
     assert!(incomplete.skipped.is_empty(), "{:?}", incomplete.skipped);
@@ -997,7 +1479,7 @@ async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted
     let lock = StateLock {
         lock_identifier: "scripted".into(),
     };
-    let plan = plan_of(vec![pet("r", Action::Replace, &[], &[])]);
+    let plan = plan_of(vec![pet("r", Action::Replace, wired(&[], &[]))]);
     let mut events = Vec::new();
     let result = engine
         .converge(
@@ -1024,6 +1506,50 @@ async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted
 }
 
 #[tokio::test]
+async fn a_replacement_deleted_by_the_provider_but_not_recorded_is_deleted_not_recreated() {
+    // N9: the provider deleted the old object, and recording that failed.
+    // The create never runs, so the object is gone and not recreated.
+    let mut runner = ScriptedRunner::new();
+    runner.delete_unrecorded = ["delete random_pet.x".to_string()].into_iter().collect();
+    let scripted = run_scripted(vec![pet("x", Action::Replace, wired(&[], &[]))], &runner).await;
+    assert_eq!(runner.ran(), ["delete x"]);
+    assert!(
+        matches!(scripted.result, Err(InfrastructureError::State(_))),
+        "{:?}",
+        scripted.result
+    );
+    assert_eq!(scripted.uncreated(), ["x"]);
+}
+
+#[tokio::test]
+async fn a_replacement_created_but_not_recorded_is_not_called_deleted_not_recreated() {
+    // The provider created the new object; the record could not be written
+    // and was saved locally. The object exists, so it is not "not recreated".
+    let mut runner = ScriptedRunner::new();
+    runner.create_unrecorded = ["create random_pet.x".to_string()].into_iter().collect();
+    let scripted = run_scripted(vec![pet("x", Action::Replace, wired(&[], &[]))], &runner).await;
+    assert_eq!(runner.ran(), ["delete x", "create x"]);
+    assert!(
+        matches!(
+            scripted.result,
+            Err(InfrastructureError::UnrecordedChange { .. })
+        ),
+        "{:?}",
+        scripted.result
+    );
+    assert!(scripted.uncreated().is_empty(), "{:?}", scripted.events);
+    assert!(
+        scripted.events.iter().any(|event| matches!(
+            event,
+            ApplyEvent::Warning(warning)
+                if warning.contains("random_pet.x") && warning.contains("could not be recorded")
+        )),
+        "{:?}",
+        scripted.events
+    );
+}
+
+#[tokio::test]
 async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
@@ -1035,11 +1561,12 @@ async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
     };
     let plan = plan_of(
         in_schedule_order(vec![
-            pet("a", Action::Create, &[], &[]),
-            pet("b", Action::Create, &[], &[]),
-            pet("c", Action::Create, &[], &[]),
+            pet("a", Action::Create, wired(&[], &[])),
+            pet("b", Action::Create, wired(&[], &[])),
+            pet("c", Action::Create, wired(&[], &[])),
         ])
-        .unwrap(),
+        .unwrap()
+        .changes,
     );
     let mut events = Vec::new();
     let result = engine
@@ -1061,28 +1588,6 @@ async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
         event,
         ApplyEvent::Warning(warning) if warning.contains("random_pet.a failed earlier")
     )));
-}
-
-#[tokio::test]
-async fn apply_refuses_a_plan_made_with_another_provider_environment() {
-    let directory = tempfile::tempdir().unwrap();
-    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
-    let mut engine = engine(Arc::clone(&store), directory.path());
-    let lock = store.lock(&tenant(), "environment").await.unwrap();
-    // Made with no provider variables; the engine now has one.
-    let plan = plan_of(Vec::new());
-    engine
-        .options
-        .provider_environment_variables
-        .insert("CLOUD_TOKEN".into(), "rotated".into());
-    let error = engine
-        .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, InfrastructureError::PlanEnvironmentChanged),
-        "{error}"
-    );
 }
 
 #[tokio::test]

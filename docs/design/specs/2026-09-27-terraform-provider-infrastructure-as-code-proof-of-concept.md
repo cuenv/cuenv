@@ -192,35 +192,81 @@ run's `--env`, `-p` and `--package`.
 
 **Apply order.** Apply is one dependency graph, not phases. The plan's changes
 become operations (a replacement is a delete node and a create node) with the
-edges of Terraform's `DestroyEdgeTransformer`:
+edges of Terraform's `DestroyEdgeTransformer` (`transform_destroy_edge.go`,
+Terraform 1.9.8), "A waits for B":
 
-- creates and updates wait for the creates and updates of their configured
-  prerequisites;
+- creates and updates wait for the creates, updates and refreshes of their
+  configured prerequisites (a refresh is the record rewrite of an unchanged
+  resource; a resource that depends on it must not be written before it, or an
+  earlier partial failure would leave two records depending on each other);
+- the create half of a replacement waits for its delete half;
 - a delete waits for the deletes of everything whose **stored** record depends
-  on it, and a create or update waits for the deletes of everything whose
-  stored record depends on it (Terraform's creators edge);
-- two preferences are added only while they cannot close a cycle: an in-place
-  update that detaches from a parent runs before the delete of its old parent,
-  and a replacement's delete waits for the creates and updates its replacement
-  depends on, so a failed prerequisite is known before the old object is
-  destroyed;
-- among runnable operations deletes go first, then refreshes, then creates and
-  updates, each group in dependency order; a replacement's create follows its
-  delete at once.
+  on it;
+- a create or update waits for the deletes of everything whose stored record
+  depends on it (Terraform's `creators` edge) and for the deletes of everything
+  its own stored record depends on (Terraform's "connect creators to any
+  destroyers on which they may depend"). Terraform leaves unchanged resources
+  out of this (they are not creators), and so do we: a refresh has no such
+  edges, because rewriting a record detaches nothing.
 
-The schedule is computed in `plan()`: cycles are refused before any
-confirmation, naming the operations, and the plan lists its changes in apply
-order so the preview is the order of events. Dependencies are stored as full
-`type.name` addresses (bare names in old records resolve against the tenant's
-stored records), which removes a false cycle between two resources named alike.
-The delete half of a replacement is sent the change's planned private data, as
-in Terraform. On a provider failure the operations that depend on it are
-skipped and the rest still run; a replacement whose create can no longer run is
-not started, and every replacement whose old object was deleted but not
-recreated is reported on every ending (`ApplyEvent::DeletedNotRecreated`, the
-error's help text and `deletedNotRecreated` in the JSON error envelope).
-`apply` refuses a plan made with a different provider environment
-(`PlanEnvironmentChanged`). Each provider result is recorded before proceeding.
+One more edge, the safety edge, is added only while it cannot close a cycle: a
+replacement's delete waits for the creates and updates its replacement is
+configured to depend on, so a failed prerequisite is known before the old
+object is destroyed. Terraform has no such edge. It is dropped whenever the
+`creators` edge already orders the delete first (a replaced child of an updated
+parent: the child's delete precedes the parent's update, as in Terraform, so a
+failed parent update leaves the child deleted and not recreated, which is
+reported), and whenever it would make the delete of a removed resource (an
+orphan) wait, however indirectly, for a create.
+
+**Deliberate differences from Terraform**, each in favour of never losing data
+and never wedging a project:
+
+- *Orphan deletes never wait for creates.* Renaming a resource keeps its
+  real-world identity (the same `filename`, the same remote name); a create
+  that runs first can fail with "already exists" or, worse, succeed over the
+  object the orphan's delete then destroys (`local_file`: success reported, file
+  gone). Terraform would create first when the old and new resources have no
+  edge between them, because it has no notion of identity. Here the orphan
+  deletes, and the replacement deletes that must precede them, run before
+  everything else; no edge, preferred or required, can contradict that. An
+  earlier version added an edge that made an orphan delete wait for the update
+  of a dependent that no longer referenced it (to detach first); that inverts
+  Terraform's creators-to-destroyers edge and put the delete after the create
+  of the rename, so it is gone. Removing a resource together with the
+  reference to it in one change therefore follows Terraform: the delete comes
+  first, and a provider that refuses it stops the apply there with nothing
+  lost; two applies (detach, then remove) always work.
+- *Stored delete-to-delete cycles are dropped, not refused.* Stored
+  dependencies are history. A partial failure can leave records that depend on
+  each other, and Terraform would refuse to plan; refusing here would make
+  `destroy` impossible. When ordering deletes, an edge that would close a cycle
+  is ignored, with a warning in the plan and at the start of the apply. Cycles
+  in the configuration are still refused, up front.
+- *Among runnable operations, deletes first.* Within the graph, after a
+  replacement's delete has run, its create and what the create still waits for
+  go before unrelated work, so the window in which the object is missing is as
+  short as the graph allows (a run stopped there reports the replacement as
+  deleted and not recreated).
+
+The schedule is computed in `plan()`: impossible orders are refused before any
+confirmation, and the plan lists its changes in apply order so the preview is
+the order of events. Dependencies are stored as full `type.name` addresses
+(bare names in old records resolve against the tenant's stored records), which
+removes a false cycle between two resources named alike. The delete half of a
+replacement is sent the change's planned private data, as in Terraform; a
+tainted replacement plans its create with the old object's private data, as
+Terraform does. On a provider failure the operations that depend on it are
+skipped and the rest still run; every replacement whose old object was deleted
+but not recreated is reported on every ending (`ApplyEvent::DeletedNotRecreated`,
+the error's help text and `deletedNotRecreated` in the JSON error envelope),
+including one whose delete the provider completed but whose state write failed.
+A replacement whose create the provider completed but whose record could not be
+written is *not* reported that way: the object exists, a warning says so, and
+the error names the recovery file. Each provider result is recorded before
+proceeding. The plan digest covers the provider-environment fingerprint;
+there is no separate check at apply time, because an engine can only apply a
+plan it made and its environment is fixed at construction.
 
 **Secrets.** Plan, apply and destroy resolve the selected project environment
 through cuenv's existing secret resolvers. State-only commands resolve only the
@@ -596,9 +642,12 @@ thousand line `turso.rs`. Not resolved: see next steps.
 - Unit tests: `cty` codec and set equality, schema conversion, normalization
   and proposed state, handshake parsing, procedure naming, Hrana wire format,
   tenant parsing, memory store isolation and locking, registry cache layout and
-  archive extraction, diagnostics, the apply schedule (including cycles, renames
-  and detachment) and running it with a scripted runner, validation with field
-  paths, provider environment, redaction and plan rendering.
+  archive extraction, diagnostics, the apply schedule (including stored cycles,
+  renames with dependents and a randomised check that no orphan delete runs
+  after a create) and running it with a scripted runner (partial failures,
+  replacements deleted or created without being recorded), validation with
+  field paths (each cycle on its own), provider environment, redaction and plan
+  rendering.
 - Ignored integration tests (`crates/infrastructure/tests/provider_end_to_end.rs`)
   run the full lifecycle — create, idempotent re-plan, forced replacement,
   orphan delete, destroy, tenant isolation, rename — against real

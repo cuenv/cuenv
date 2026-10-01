@@ -70,7 +70,7 @@ use crate::unrecorded::UnrecordedStore;
 mod schedule;
 mod validation;
 
-use schedule::{ApplyOperation, OperationKind, Schedule, ScheduleRun};
+use schedule::{Aftermath, ApplyOperation, OperationKind, Schedule, ScheduleRun};
 use validation::ConfigurationScope;
 
 pub use validation::validate_configuration;
@@ -228,10 +228,12 @@ pub struct Plan {
     /// last. The schedule is computed, and refused when no safe order
     /// exists, while planning.
     pub changes: Vec<ResourceChange>,
-    /// Provider warnings collected while planning.
+    /// Warnings collected while planning: the providers', and what ordering
+    /// the changes had to overlook (stored dependencies that form a cycle).
     pub warnings: Vec<String>,
     /// Fingerprint of the Cuenv variables provided to provider processes.
-    /// The values themselves are never stored in the plan.
+    /// The values themselves are never stored in the plan. It is part of the
+    /// plan's digest, so two plans made with other provider variables differ.
     environment_identity: [u8; 32],
 }
 
@@ -445,7 +447,8 @@ pub enum ApplyEvent {
         /// Resource address.
         address: ResourceAddress,
     },
-    /// A provider warning.
+    /// A warning: from a provider, about how the apply was ordered, or about
+    /// a replacement whose new object exists but could not be recorded.
     Warning(String),
     /// A change failed. Changes that do not depend on it still run; the
     /// ones that do are reported as [`ApplyEvent::Skipped`].
@@ -464,8 +467,8 @@ pub enum ApplyEvent {
     },
     /// A replacement's old object was deleted, and its new object was not
     /// created, because the create failed or could not run, or the run
-    /// stopped between the two. The next apply creates it. Emitted on every
-    /// way an apply can end early.
+    /// stopped between the two, or recording the deletion failed. The next
+    /// apply creates it. Emitted on every way an apply can end early.
     DeletedNotRecreated {
         /// Resource address.
         address: ResourceAddress,
@@ -619,15 +622,27 @@ fn full_dependencies(
         .collect()
 }
 
+/// Changes in the order apply runs them.
+struct OrderedChanges {
+    changes: Vec<ResourceChange>,
+    /// What the ordering overlooked, for the user to see.
+    warnings: Vec<String>,
+}
+
 /// Put the changes in the order apply runs them, refusing changes that no
 /// order can apply.
-fn in_schedule_order(changes: Vec<ResourceChange>) -> Result<Vec<ResourceChange>> {
-    let order = Schedule::build(&changes)?.change_order;
+fn in_schedule_order(changes: Vec<ResourceChange>) -> Result<OrderedChanges> {
+    let schedule = Schedule::build(&changes)?;
+    let order = schedule.change_order;
+    let warnings = schedule.warnings;
     let mut slots: Vec<Option<ResourceChange>> = changes.into_iter().map(Some).collect();
-    Ok(order
-        .into_iter()
-        .filter_map(|index| slots[index].take())
-        .collect())
+    Ok(OrderedChanges {
+        changes: order
+            .into_iter()
+            .filter_map(|index| slots[index].take())
+            .collect(),
+        warnings,
+    })
 }
 
 impl InfrastructureEngine {
@@ -769,7 +784,9 @@ impl InfrastructureEngine {
 
         // Order, and refuse an impossible order, now: before anyone is asked
         // to confirm the plan.
-        let changes = in_schedule_order(changes)?;
+        let ordered = in_schedule_order(changes)?;
+        let changes = ordered.changes;
+        warnings.extend(ordered.warnings);
         Ok(Plan {
             tenant: self.tenant.clone(),
             changes,
@@ -807,8 +824,6 @@ impl InfrastructureEngine {
     /// # Errors
     ///
     /// Returns [`InfrastructureError::PlanOutdated`] for a stale plan,
-    /// [`InfrastructureError::PlanEnvironmentChanged`] when the provider
-    /// environment differs from the one the plan was made with,
     /// [`InfrastructureError::ApplyIncomplete`] when providers failed some
     /// changes (it lists the failures, the skipped changes and the
     /// replacements deleted but not recreated), the first state store
@@ -826,11 +841,6 @@ impl InfrastructureEngine {
             return Err(InfrastructureError::configuration(
                 "plan belongs to a different tenant",
             ));
-        }
-        if plan.environment_identity
-            != environment_identity(&self.options.provider_environment_variables)
-        {
-            return Err(InfrastructureError::PlanEnvironmentChanged);
         }
         self.require_current(plan).await?;
         for warning in &plan.warnings {
@@ -948,6 +958,9 @@ impl InfrastructureEngine {
                 continue;
             };
             let continues = failure.continues();
+            execution
+                .run
+                .aborted(index, failure.aftermath(operation.kind));
             let error = self.interrupted_or(
                 failure.into_error(),
                 InterruptedOperation {
@@ -1090,7 +1103,14 @@ impl InfrastructureEngine {
                 // A null result alongside errors means the change did not
                 // happen; keep whatever was recorded.
                 if !has_errors {
-                    self.forget(lock, &change.address).await?;
+                    // The provider has deleted the object; recording that
+                    // can still fail.
+                    self.forget(lock, &change.address)
+                        .await
+                        .map_err(|error| match step.kind {
+                            StepKind::Delete => OperationFailure::AbortAfterDelete(error),
+                            StepKind::Create | StepKind::Update => OperationFailure::Abort(error),
+                        })?;
                 }
             } else {
                 let stored = change.stored.as_ref();
@@ -1287,7 +1307,9 @@ impl InfrastructureEngine {
             ));
             change.action = Action::Replace;
             change.requires_replace.push("(tainted)".to_string());
-            let (planned, step) = plan_create(&create, Vec::new(), warnings).await?;
+            // Terraform plans the create with the private data of the object
+            // it replaces.
+            let (planned, step) = plan_create(&create, prior.private.clone(), warnings).await?;
             change.after = planned;
             change.steps = replacement_steps(&prior, step);
             return Ok(change);
@@ -1629,6 +1651,9 @@ enum OperationFailure {
     Continue(InfrastructureError),
     /// The run cannot go on: the outcome is unknown, or recording failed.
     Abort(InfrastructureError),
+    /// The run cannot go on, and the provider has deleted the object: only
+    /// recording the deletion failed.
+    AbortAfterDelete(InfrastructureError),
 }
 
 impl OperationFailure {
@@ -1636,9 +1661,24 @@ impl OperationFailure {
         matches!(self, Self::Continue(_))
     }
 
+    /// What the failure leaves behind for an operation of `kind`: a create
+    /// whose record could not be written (and was saved locally instead)
+    /// has made its object, and a delete that could not be recorded has
+    /// removed it.
+    fn aftermath(&self, kind: OperationKind) -> Aftermath {
+        match self {
+            Self::AbortAfterDelete(_) => Aftermath::Deleted,
+            Self::Abort(
+                InfrastructureError::UnrecordedChange { .. }
+                | InfrastructureError::UnrecordedChangeLost { .. },
+            ) if kind == OperationKind::ReplaceCreate => Aftermath::Created,
+            Self::Continue(_) | Self::Abort(_) => Aftermath::Unknown,
+        }
+    }
+
     fn into_error(self) -> InfrastructureError {
         match self {
-            Self::Continue(error) | Self::Abort(error) => error,
+            Self::Continue(error) | Self::Abort(error) | Self::AbortAfterDelete(error) => error,
         }
     }
 }

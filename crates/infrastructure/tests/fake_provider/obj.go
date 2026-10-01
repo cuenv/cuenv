@@ -19,8 +19,11 @@ import (
 // Creates refuse an existing key and a missing parent; deletes refuse while
 // a child names this key as parent; updates with mode "solo" refuse while a
 // child exists. Reads report a missing file as gone. Destroy plans attach
-// private data that deletes journal. Flags fail-create-<key>,
-// fail-update-<key> make those operations fail.
+// private data that deletes journal, and create plans journal the private
+// data of the object they replace (priorPrivate: what a create left behind
+// under "created"). Flags fail-create-<key>,
+// fail-update-<key> make those operations fail; taint-create-<key> makes a
+// create leave the object behind and fail, so it is recorded tainted.
 type obj struct{ kind string }
 
 type objModel struct {
@@ -93,6 +96,8 @@ func (r *obj) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest
 	if request.State.Raw.IsNull() {
 		var planned objModel
 		response.Diagnostics.Append(request.Plan.Get(ctx, &planned)...)
+		prior, _ := request.Private.GetKey(ctx, "created")
+		journal("obj: PlanCreate key=%s priorPrivate=%s", planned.Key.ValueString(), string(prior))
 		response.Diagnostics.Append(response.Private.SetKey(ctx, "destroy", []byte(`"planned-create-`+planned.Key.ValueString()+`-v`+planned.Version.ValueString()+`"`))...)
 	}
 }
@@ -125,6 +130,10 @@ func (r *obj) Create(ctx context.Context, request resource.CreateRequest, respon
 	journal("obj: Create key=%s parent=%s", key, model.Parent.ValueString())
 	model.ID = types.StringValue(key)
 	response.Diagnostics.Append(response.State.Set(ctx, &model)...)
+	if flag("taint-create-" + key) {
+		response.Diagnostics.Append(response.Private.SetKey(ctx, "created", []byte(`"created-`+key+`"`))...)
+		response.Diagnostics.AddError("waiting for object to become ready", "timeout after the object was created")
+	}
 }
 
 func (r *obj) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {

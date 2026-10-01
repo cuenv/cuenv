@@ -286,10 +286,6 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                 strip_control_characters(address)
             )),
         ),
-        InfrastructureError::PlanEnvironmentChanged => (
-            InfrastructureFailureKind::Failed,
-            Some("Run the command again; it plans again under the lock.".to_string()),
-        ),
         InfrastructureError::PlanOutdated { .. } => (
             InfrastructureFailureKind::Failed,
             Some(

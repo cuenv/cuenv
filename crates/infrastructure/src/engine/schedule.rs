@@ -5,30 +5,47 @@
 //! edges follow Terraform's `DestroyEdgeTransformer`, "A depends on B" meaning
 //! A runs after B:
 //!
-//! * a create or update of R depends on the create or update of every
+//! * a create or update of R depends on the create or update (or, for an
+//!   unchanged resource whose record is rewritten, the refresh) of every
 //!   resource R is configured to depend on;
 //! * the create half of a replacement depends on its delete half;
 //! * the delete of D depends on the delete of every resource whose stored
 //!   record depends on D (dependents go before what they depend on);
 //! * a create or update of R depends on the delete of every resource whose
 //!   stored record depends on R (Terraform's `creators` edge: an object that
-//!   hangs off R is gone before R is changed).
+//!   hangs off R is gone before R is changed);
+//! * a create or update of R depends on the delete of every resource R's own
+//!   stored record depends on (Terraform's "connect creators to any
+//!   destroyers on which they may depend"). A refresh is not a creator in
+//!   Terraform and has no such edges: rewriting a record detaches nothing.
 //!
-//! Two further edges are only added while they cannot form a cycle, so they
-//! never make an ordering impossible:
+//! The stored dependencies behind the delete-to-delete edges are history, not
+//! configuration: an earlier partial failure can leave records that depend on
+//! each other. Such an edge is dropped, with a warning, when it would close a
+//! cycle (Terraform refuses the plan there), so a project can always be
+//! destroyed.
 //!
-//! * detachment: the delete of D waits for the in-place update (or refresh)
-//!   of a resource whose stored record depends on D but whose configuration
-//!   no longer does, so the dependent lets go of D first;
+//! One further edge is only added while it cannot form a cycle, so it never
+//! makes an ordering impossible:
+//!
 //! * safety: the delete half of a replacement waits for the creates and
 //!   updates of everything its replacement is configured to depend on, so a
-//!   failed prerequisite is known before the old object is destroyed.
+//!   failed prerequisite is known before the old object is destroyed. It is
+//!   dropped when the creators edge already orders the delete first (a
+//!   replaced child of an updated parent), as in Terraform, and when it
+//!   would make an orphan delete wait, however indirectly, for a create.
 //!
-//! Among the nodes that may run, deletes go first, then refreshes, then
-//! creates and updates, each group in dependency order; the create half of a
-//! replacement follows its delete as soon as it may. The resulting order is
-//! the apply order, and the plan lists its changes in the order each one
-//! first appears in it.
+//! No edge makes the delete of an orphan (a resource that is no longer
+//! declared) wait for a create, an update or a refresh, because the new
+//! object a create makes may be the very object the orphan's delete would
+//! destroy (renaming a resource keeps its real-world identity). In the order
+//! the nodes run, the deletes of orphans, and the replacement deletes that
+//! must precede them, therefore go first. After that deletes go before
+//! refreshes, and those before creates and updates, each group in dependency
+//! order; once a replacement's delete has run, its create and everything the
+//! create still waits for go next, so the object is missing for as short a
+//! time as the graph allows. The resulting order is the apply order, and the
+//! plan lists its changes in the order each one first appears in it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -110,6 +127,9 @@ pub(super) struct Schedule<'plan> {
     /// Indices into the changes the schedule was built from: every change in
     /// the order its first operation runs, changes without work last.
     pub(super) change_order: Vec<usize>,
+    /// What the planner chose to overlook while ordering (see the module
+    /// documentation): worth telling the user about.
+    pub(super) warnings: Vec<String>,
 }
 
 impl<'plan> Schedule<'plan> {
@@ -122,6 +142,7 @@ impl<'plan> Schedule<'plan> {
     ///
     /// Returns a configuration error for a malformed replacement or for
     /// operations that depend on each other in a cycle.
+    #[tracing::instrument(skip_all, fields(changes = changes.len()))]
     pub(super) fn build(changes: &'plan [ResourceChange]) -> Result<Self> {
         validate_replacements(changes)?;
         let mut graph = Graph::new(changes);
@@ -242,6 +263,7 @@ struct Graph<'plan> {
     apply_of: BTreeMap<String, usize>,
     /// The record rewrite of an unchanged resource.
     refresh_of: BTreeMap<String, usize>,
+    warnings: Vec<String>,
 }
 
 impl<'plan> Graph<'plan> {
@@ -255,6 +277,7 @@ impl<'plan> Graph<'plan> {
             delete_of: BTreeMap::new(),
             apply_of: BTreeMap::new(),
             refresh_of: BTreeMap::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -347,11 +370,29 @@ impl<'plan> Graph<'plan> {
         false
     }
 
-    /// Add an edge unless it would make the graph cyclic.
-    fn prefer(&mut self, later: usize, earlier: usize) {
-        if later != earlier && !self.precedes(later, earlier) {
-            self.require(later, earlier);
+    /// Add an edge unless it would make the graph cyclic. Whether it was
+    /// added is returned.
+    fn prefer(&mut self, later: usize, earlier: usize) -> bool {
+        if later == earlier || self.precedes(later, earlier) {
+            return false;
         }
+        self.require(later, earlier);
+        true
+    }
+
+    /// Whether an orphan delete runs after `node`, however indirectly.
+    fn orphan_delete_follows(&self, node: usize) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut pending: Vec<usize> = self.waited_on_by[node].iter().copied().collect();
+        while let Some(current) = pending.pop() {
+            if self.operations[current].operation.kind == OperationKind::Delete {
+                return true;
+            }
+            if seen.insert(current) {
+                pending.extend(self.waited_on_by[current].iter().copied());
+            }
+        }
+        false
     }
 
     /// For every address, the delete nodes of the resources whose stored
@@ -369,8 +410,37 @@ impl<'plan> Graph<'plan> {
         dependents
     }
 
+    /// The delete of a resource waits for the delete of every resource whose
+    /// stored record depends on it, unless the records depend on each other
+    /// in a cycle: then the edge that would close it is dropped.
+    fn add_delete_edges(&mut self, dependents: &BTreeMap<String, Vec<usize>>) {
+        let nodes: Vec<(String, usize)> = self
+            .delete_of
+            .iter()
+            .map(|(address, node)| (address.clone(), *node))
+            .collect();
+        for (address, node) in nodes {
+            for &dependent in dependents.get(&address).map_or(&[][..], Vec::as_slice) {
+                if !self.prefer(node, dependent) {
+                    let dependent_address = self.address_of(dependent);
+                    self.warnings.push(format!(
+                        "the stored records of {dependent_address} and {address} depend on each \
+                         other in a cycle (an earlier failed apply can leave this behind); \
+                         ignoring the dependency of {dependent_address} on {address} while \
+                         ordering their deletes"
+                    ));
+                }
+            }
+        }
+    }
+
+    fn address_of(&self, node: usize) -> String {
+        self.operations[node].operation.change.address.to_string()
+    }
+
     fn add_required_edges(&mut self) {
         let dependents = self.deleted_dependents();
+        self.add_delete_edges(&dependents);
         let none = Vec::new();
         for node in 0..self.operations.len() {
             let index = self.operations[node].change;
@@ -378,68 +448,61 @@ impl<'plan> Graph<'plan> {
             let address = self.changes[index].address.to_string();
             let own_dependents = dependents.get(&address).unwrap_or(&none);
             match kind {
-                OperationKind::ReplaceCreate => {
+                OperationKind::ReplaceCreate | OperationKind::Apply => {
                     if let Some(delete) = self.operations[node].counterpart {
                         self.require(node, delete);
                     }
                     self.require_prerequisites(node, index);
-                    // Terraform's `creators` edge.
+                    // Terraform's `creators` edge: what hangs off this
+                    // resource is deleted before it is changed.
                     for &dependent in own_dependents {
                         self.require(node, dependent);
                     }
+                    // Terraform's edge from creators to the destroyers they
+                    // may depend on.
+                    self.require_stored_deletes(node, index);
                 }
-                OperationKind::Apply => {
-                    self.require_prerequisites(node, index);
-                    for &dependent in own_dependents {
-                        self.require(node, dependent);
-                    }
-                }
-                OperationKind::Delete | OperationKind::ReplaceDelete => {
-                    // The dependents of a resource are deleted before it.
-                    for &dependent in own_dependents {
-                        self.require(node, dependent);
-                    }
-                }
+                // Deletes were ordered above; they never wait for anything
+                // else, so an orphan delete cannot wait for a create.
+                OperationKind::Delete | OperationKind::ReplaceDelete => {}
                 OperationKind::Refresh => self.require_prerequisites(node, index),
             }
         }
     }
 
-    /// The create or update of a resource waits for the create or update of
-    /// everything it is configured to depend on.
+    /// The create or update of a resource waits for the create, update or
+    /// refresh of everything it is configured to depend on: a record must not
+    /// be written before the records it now depends on have been.
     fn require_prerequisites(&mut self, node: usize, index: usize) {
         let prerequisites: Vec<usize> = self.dependencies.configured[index]
             .iter()
-            .filter_map(|prerequisite| self.apply_of.get(prerequisite).copied())
+            .filter_map(|prerequisite| {
+                self.apply_of
+                    .get(prerequisite)
+                    .or_else(|| self.refresh_of.get(prerequisite))
+                    .copied()
+            })
             .collect();
         for earlier in prerequisites {
             self.require(node, earlier);
         }
     }
 
-    fn add_preferred_edges(&mut self) {
-        // Detachment first: it keeps a delete from failing, where the safety
-        // edge only limits the damage of a failure.
-        for index in 0..self.changes.len() {
-            let change = &self.changes[index];
-            let address = change.address.to_string();
-            let node = match change.action {
-                Action::Update => self.apply_of.get(&address),
-                Action::Refresh => self.refresh_of.get(&address),
-                _ => None,
-            };
-            let Some(&node) = node else {
-                continue;
-            };
-            let detached: Vec<usize> = self.dependencies.stored[index]
-                .iter()
-                .filter(|dependency| !self.dependencies.configured[index].contains(*dependency))
-                .filter_map(|dependency| self.delete_of.get(dependency).copied())
-                .collect();
-            for delete in detached {
-                self.prefer(delete, node);
-            }
+    /// The create or update of a resource waits for the delete of every
+    /// resource its stored record depends on.
+    fn require_stored_deletes(&mut self, node: usize, index: usize) {
+        let own = self.changes[index].address.to_string();
+        let deletes: Vec<usize> = self.dependencies.stored[index]
+            .iter()
+            .filter(|dependency| **dependency != own)
+            .filter_map(|dependency| self.delete_of.get(dependency).copied())
+            .collect();
+        for earlier in deletes {
+            self.require(node, earlier);
         }
+    }
+
+    fn add_preferred_edges(&mut self) {
         for index in 0..self.changes.len() {
             let change = &self.changes[index];
             if change.action != Action::Replace {
@@ -453,7 +516,11 @@ impl<'plan> Graph<'plan> {
                 .filter_map(|prerequisite| self.apply_of.get(prerequisite).copied())
                 .collect();
             for earlier in prerequisites {
-                self.prefer(delete, earlier);
+                // An orphan delete that has to wait for this one would wait
+                // for a create, which may make the very object it destroys.
+                if !self.orphan_delete_follows(delete) {
+                    self.prefer(delete, earlier);
+                }
             }
         }
     }
@@ -498,6 +565,24 @@ impl<'plan> Graph<'plan> {
             .collect())
     }
 
+    /// The nodes that have to run before the delete of an orphan does: the
+    /// orphan deletes themselves and the replacement deletes they wait for.
+    /// None of them waits for anything but deletes, so they can all run
+    /// before anything else.
+    fn precede_orphan_deletes(&self) -> Vec<bool> {
+        let mut marked = vec![false; self.operations.len()];
+        let mut pending: Vec<usize> = (0..self.operations.len())
+            .filter(|node| self.operations[*node].operation.kind == OperationKind::Delete)
+            .collect();
+        while let Some(node) = pending.pop() {
+            if !marked[node] {
+                marked[node] = true;
+                pending.extend(self.waits_for[node].iter().copied());
+            }
+        }
+        marked
+    }
+
     fn into_schedule(self) -> Result<Schedule<'plan>> {
         let ranks = self.ranks()?;
         let delete_ranks: BTreeMap<&str, usize> = self
@@ -506,7 +591,7 @@ impl<'plan> Graph<'plan> {
             .enumerate()
             .map(|(rank, address)| (address.as_str(), rank))
             .collect();
-        let priority = |node: usize| -> (u8, usize, usize) {
+        let priority = |node: usize| -> Priority {
             let raw = &self.operations[node];
             let address = raw.operation.change.address.to_string();
             let kind = raw.operation.kind;
@@ -519,29 +604,25 @@ impl<'plan> Graph<'plan> {
             (kind.priority(), rank.unwrap_or(usize::MAX), node)
         };
 
+        let mut queue = ReadyQueue::new(self.precede_orphan_deletes());
         let mut remaining: Vec<usize> = self.waits_for.iter().map(BTreeSet::len).collect();
-        let mut ready: BTreeSet<(u8, usize, usize)> = (0..self.operations.len())
-            .filter(|node| remaining[*node] == 0)
-            .map(priority)
-            .collect();
+        for node in (0..self.operations.len()).filter(|node| remaining[*node] == 0) {
+            queue.insert(node, priority(node));
+        }
         let mut order = Vec::with_capacity(self.operations.len());
-        let mut follow: Option<usize> = None;
-        loop {
-            let picked = follow
-                .take()
-                .and_then(|node| ready.take(&priority(node)))
-                .or_else(|| ready.pop_first());
-            let Some((_, _, next)) = picked else {
-                break;
-            };
+        while let Some(next) = queue.pop() {
             order.push(next);
-            if self.operations[next].operation.kind == OperationKind::ReplaceDelete {
-                follow = self.operations[next].counterpart;
+            // Once a replacement's delete has run, its create, and what the
+            // create still waits for, go before anything unrelated.
+            if self.operations[next].operation.kind == OperationKind::ReplaceDelete
+                && let Some(create) = self.operations[next].counterpart
+            {
+                queue.hurry(create, &self.waits_for);
             }
             for &successor in &self.waited_on_by[next] {
                 remaining[successor] -= 1;
                 if remaining[successor] == 0 {
-                    ready.insert(priority(successor));
+                    queue.insert(successor, priority(successor));
                 }
             }
         }
@@ -568,8 +649,8 @@ impl<'plan> Graph<'plan> {
                 let cycle: Vec<String> = path[start..].iter().map(|n| self.label(*n)).collect();
                 return InfrastructureError::configuration(format!(
                     "the planned operations depend on each other in a cycle, so no order can \
-                     apply them safely: {} -> {}; change the configuration so the dependencies \
-                     can be applied one at a time",
+                     apply them safely: {} -> {}; the `dependsOn` entries of the resources \
+                     named here form the cycle",
                     cycle.join(" -> "),
                     cycle.first().cloned().unwrap_or_default()
                 ));
@@ -604,6 +685,7 @@ impl<'plan> Graph<'plan> {
         let Self {
             operations,
             waited_on_by,
+            warnings,
             ..
         } = self;
         let mut slots: Vec<Option<RawOperation<'plan>>> =
@@ -624,6 +706,83 @@ impl<'plan> Graph<'plan> {
         Schedule {
             operations,
             change_order,
+            warnings,
+        }
+    }
+}
+
+/// How a node that may run is ranked: its kind's priority, its rank among
+/// the nodes of that kind, and the node itself.
+type Priority = (u8, usize, usize);
+
+/// The nodes that may run, in the order they are picked: first those that
+/// have to precede an orphan delete, then those a replacement whose delete
+/// has run is still waiting for, then everything else by priority.
+struct ReadyQueue {
+    /// Nodes that precede the delete of an orphan, by node.
+    precede_orphan_deletes: Vec<bool>,
+    /// Nodes already picked, by node.
+    picked: Vec<bool>,
+    /// Nodes the create of a replacement whose delete has run waits for.
+    urgent: BTreeSet<usize>,
+    /// The ranking of every node that may run now.
+    ready: BTreeMap<usize, Priority>,
+    first: BTreeSet<Priority>,
+    hurried: BTreeSet<Priority>,
+    rest: BTreeSet<Priority>,
+}
+
+impl ReadyQueue {
+    fn new(precede_orphan_deletes: Vec<bool>) -> Self {
+        Self {
+            picked: vec![false; precede_orphan_deletes.len()],
+            precede_orphan_deletes,
+            urgent: BTreeSet::new(),
+            ready: BTreeMap::new(),
+            first: BTreeSet::new(),
+            hurried: BTreeSet::new(),
+            rest: BTreeSet::new(),
+        }
+    }
+
+    fn insert(&mut self, node: usize, priority: Priority) {
+        self.ready.insert(node, priority);
+        if self.precede_orphan_deletes[node] {
+            self.first.insert(priority);
+        } else if self.urgent.contains(&node) {
+            self.hurried.insert(priority);
+        } else {
+            self.rest.insert(priority);
+        }
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let (_, _, node) = self
+            .first
+            .pop_first()
+            .or_else(|| self.hurried.pop_first())
+            .or_else(|| self.rest.pop_first())?;
+        self.ready.remove(&node);
+        self.picked[node] = true;
+        Some(node)
+    }
+
+    /// Put `create` and everything it still waits for ahead of the nodes
+    /// that have nothing to do with it (the nodes that precede an orphan
+    /// delete stay first).
+    fn hurry(&mut self, create: usize, waits_for: &[BTreeSet<usize>]) {
+        let mut pending = vec![create];
+        while let Some(node) = pending.pop() {
+            if self.picked[node] || !self.urgent.insert(node) {
+                continue;
+            }
+            if let Some(priority) = self.ready.get(&node)
+                && !self.precede_orphan_deletes[node]
+                && self.rest.remove(priority)
+            {
+                self.hurried.insert(*priority);
+            }
+            pending.extend(waits_for[node].iter().copied());
         }
     }
 }
@@ -647,6 +806,18 @@ pub(super) struct ScheduleRun<'schedule, 'plan> {
     skipped: Vec<ResourceAddress>,
     reported: BTreeSet<ResourceAddress>,
     deleted_not_recreated: BTreeSet<ResourceAddress>,
+    created_not_recorded: BTreeSet<ResourceAddress>,
+}
+
+/// What an operation that ended the run leaves behind, beyond the error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Aftermath {
+    /// Nothing more is known.
+    Unknown,
+    /// The provider deleted the object, and the deletion was not recorded.
+    Deleted,
+    /// The provider created the object, and the creation was not recorded.
+    Created,
 }
 
 impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
@@ -658,6 +829,7 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
             skipped: Vec::new(),
             reported: BTreeSet::new(),
             deleted_not_recreated: BTreeSet::new(),
+            created_not_recorded: BTreeSet::new(),
         }
     }
 
@@ -717,7 +889,9 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
                 .collect();
             // A create that can no longer run takes a delete that has not
             // started with it: the old object is only destroyed when the new
-            // one can follow.
+            // one can follow. (The delete usually waits for what the create
+            // waits for and is skipped as a successor already; it does not
+            // when stored dependencies that form a cycle left it unordered.)
             let scheduled = &self.schedule.operations[current];
             if scheduled.operation.kind == OperationKind::ReplaceCreate
                 && let Some(delete) = scheduled.counterpart
@@ -747,6 +921,23 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
         }
     }
 
+    /// The operation ended the run with an error of its own: the provider may
+    /// have changed the object without the change being recorded.
+    pub(super) fn aborted(&mut self, node: usize, aftermath: Aftermath) {
+        let operation = &self.schedule.operations[node].operation;
+        let address = operation.change.address.clone();
+        match (operation.kind, aftermath) {
+            (OperationKind::ReplaceDelete, Aftermath::Deleted) => {
+                self.deleted_not_recreated.insert(address);
+            }
+            (OperationKind::ReplaceCreate, Aftermath::Created) => {
+                self.deleted_not_recreated.remove(&address);
+                self.created_not_recorded.insert(address);
+            }
+            _ => {}
+        }
+    }
+
     /// Replacements whose old object was deleted but whose new object was
     /// not created.
     pub(super) fn deleted_not_recreated(&self) -> Vec<ResourceAddress> {
@@ -759,6 +950,13 @@ impl<'schedule, 'plan> ScheduleRun<'schedule, 'plan> {
             on_event(ApplyEvent::DeletedNotRecreated {
                 address: address.clone(),
             });
+        }
+        for address in &self.created_not_recorded {
+            on_event(ApplyEvent::Warning(format!(
+                "{address} was replaced: its old object was deleted and its new object was \
+                 created, but the new object could not be recorded (it exists; see the error \
+                 for where its record was saved)"
+            )));
         }
     }
 
