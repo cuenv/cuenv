@@ -4,13 +4,20 @@
 //! against Turso Cloud databases and self-hosted `sqld` alike without a
 //! native libSQL dependency.
 //!
+//! One table family holds every identity: resources, locks and owners are keyed
+//! by `(module_path, project, environment, ...)`, with the environment empty
+//! for a run without `--env`. The no-flag identity and each named environment
+//! are separate tenants; nothing falls back from one to another.
+//!
 //! The schema is versioned: `cuenv_infrastructure_schema` records the newest
 //! migration applied, and [`StateStore::migrate`] applies only newer ones, each
-//! in its own transaction. Every operation refuses a database whose schema is
-//! newer than this build knows. Reads ([`StateStore::list`] and
-//! [`StateStore::current_lock`]) never migrate: on a database without cuenv's
-//! tables they return nothing, so a read-only token can plan and inspect
-//! state. Taking the lock requires the current schema.
+//! in its own transaction. A migration after the first refuses, inside its
+//! transaction, while any lock row exists, so a run that is applying changes
+//! never has its writes land in a half-migrated shape. Every operation refuses
+//! a database whose schema is newer than this build knows. Reads
+//! ([`StateStore::list`] and [`StateStore::current_lock`]) never migrate: on a
+//! database without cuenv's tables they return nothing, so a read-only token can
+//! plan and inspect state. Taking the lock requires the current schema.
 //!
 //! Transient failures (connection errors, timeouts, HTTP 429 and 5xx,
 //! `SQLITE_BUSY`) are retried with exponential backoff; every statement issued
@@ -46,125 +53,65 @@ struct Migration {
 }
 
 /// Ordered schema migrations. Never edit an existing entry; append a new one.
-const MIGRATIONS: &[Migration] = &[
-    // Version 1 is the original schema. `IF NOT EXISTS` adopts databases that
-    // were created before the schema was versioned.
-    Migration {
-        version: 1,
-        statements: &[
-            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_resources (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                resource_name TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                provider_source TEXT NOT NULL,
-                schema_version INTEGER NOT NULL,
-                state_json TEXT NOT NULL,
-                private BLOB,
-                dependencies_json TEXT NOT NULL DEFAULT '[]',
-                serial INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project, resource_type, resource_name)
-            ) WITHOUT ROWID",
-            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_locks (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                lock_identifier TEXT NOT NULL,
-                holder TEXT NOT NULL,
-                acquired_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project)
-            ) WITHOUT ROWID",
-        ],
-    },
-    Migration {
-        version: 2,
-        statements: &[
-            "ALTER TABLE cuenv_infrastructure_resources \
-             ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN identity_json TEXT",
-        ],
-    },
-    // Version 3 records which CUE instance owns each tenant's state.
-    Migration {
-        version: 3,
-        statements: &["CREATE TABLE IF NOT EXISTS cuenv_infrastructure_owners (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                instance TEXT NOT NULL,
-                claimed_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project)
-            ) WITHOUT ROWID"],
-    },
-    Migration {
-        version: 4,
-        statements: &[
-            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_resources (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                environment TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                resource_name TEXT NOT NULL,
-                provider TEXT NOT NULL,
-                provider_source TEXT NOT NULL,
-                schema_version INTEGER NOT NULL,
-                state_json TEXT NOT NULL,
-                private BLOB,
-                dependencies_json TEXT NOT NULL DEFAULT '[]',
-                tainted INTEGER NOT NULL DEFAULT 0,
-                identity_json TEXT,
-                serial INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project, environment, resource_type, resource_name)
-            ) WITHOUT ROWID",
-            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_locks (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                environment TEXT NOT NULL,
-                lock_identifier TEXT NOT NULL,
-                holder TEXT NOT NULL,
-                acquired_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project, environment)
-            ) WITHOUT ROWID",
-            "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_environment_owners (
-                module_path TEXT NOT NULL,
-                project TEXT NOT NULL,
-                environment TEXT NOT NULL,
-                instance TEXT NOT NULL,
-                claimed_at TEXT NOT NULL,
-                PRIMARY KEY (module_path, project, environment)
-            ) WITHOUT ROWID",
-        ],
-    },
-    // Version 5 identifies each insertion so deleting and recreating an address
-    // cannot reuse a recovery or plan version, even when its serial restarts.
-    Migration {
-        version: 5,
-        statements: &[
-            "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN generation TEXT NOT NULL DEFAULT ''",
-            "UPDATE cuenv_infrastructure_resources SET generation = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))) WHERE generation = ''",
-            "ALTER TABLE cuenv_infrastructure_environment_resources ADD COLUMN generation TEXT NOT NULL DEFAULT ''",
-            "UPDATE cuenv_infrastructure_environment_resources SET generation = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))) WHERE generation = ''",
-        ],
-    },
-];
+///
+/// Version 1 is the first schema anyone is meant to use. A database holding
+/// tables of an earlier, unreleased layout is not adopted: creating them
+/// fails and the migration reports the tables as already present.
+const MIGRATIONS: &[Migration] = &[Migration {
+    version: 1,
+    statements: &[
+        "CREATE TABLE cuenv_infrastructure_resources (
+            module_path TEXT NOT NULL,
+            project TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_name TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_source TEXT NOT NULL,
+            schema_version INTEGER NOT NULL,
+            state_json TEXT NOT NULL,
+            private BLOB,
+            dependencies_json TEXT NOT NULL DEFAULT '[]',
+            tainted INTEGER NOT NULL DEFAULT 0,
+            identity_json TEXT,
+            serial INTEGER NOT NULL DEFAULT 1,
+            generation TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (module_path, project, environment, resource_type, resource_name)
+        ) WITHOUT ROWID",
+        "CREATE TABLE cuenv_infrastructure_locks (
+            module_path TEXT NOT NULL,
+            project TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            lock_identifier TEXT NOT NULL,
+            holder TEXT NOT NULL,
+            acquired_at TEXT NOT NULL,
+            PRIMARY KEY (module_path, project, environment)
+        ) WITHOUT ROWID",
+        "CREATE TABLE cuenv_infrastructure_owners (
+            module_path TEXT NOT NULL,
+            project TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            instance TEXT NOT NULL,
+            claimed_at TEXT NOT NULL,
+            PRIMARY KEY (module_path, project, environment)
+        ) WITHOUT ROWID",
+    ],
+}];
+
+/// The first schema version. It creates the lock table, so only later
+/// migrations can be fenced by it.
+const INITIAL_SCHEMA_VERSION: i64 = 1;
 
 /// Newest schema version this build knows.
 const LATEST_SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
 
-/// First schema version with the `tainted` and `identity_json` columns.
-const TAINT_AND_IDENTITY_SCHEMA_VERSION: i64 = 2;
-const GENERATION_SCHEMA_VERSION: i64 = 5;
-
 const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
-const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
-const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
-const OWNERS_TABLE: &str = "cuenv_infrastructure_owners";
-const ENVIRONMENT_RESOURCES_TABLE: &str = "cuenv_infrastructure_environment_resources";
-const ENVIRONMENT_LOCKS_TABLE: &str = "cuenv_infrastructure_environment_locks";
-const ENVIRONMENT_OWNERS_TABLE: &str = "cuenv_infrastructure_environment_owners";
+
+/// The `environment` column of a run without `--env`. A named environment is
+/// never empty ([`TenantKey::with_environment`]), so the two cannot collide.
+const NO_ENVIRONMENT: &str = "";
 
 const CREATE_SCHEMA_TABLE: &str =
     "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_schema (version INTEGER NOT NULL)";
@@ -172,102 +119,47 @@ const CREATE_SCHEMA_TABLE: &str =
 const SELECT_SCHEMA_VERSION: &str =
     "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_schema";
 
-const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial \
-     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
-     ORDER BY resource_type, resource_name";
+/// Whether the schema table exists, so a read can tell a database cuenv never
+/// touched without creating anything. One argument: the table name.
+const SELECT_SCHEMA_TABLE: &str =
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?";
 
-/// [`SELECT_RESOURCES`] for schemas older than
-/// [`TAINT_AND_IDENTITY_SCHEMA_VERSION`], which a read does not migrate.
-const SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, 0, NULL, serial \
-     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
+const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
+     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
+     generation FROM cuenv_infrastructure_resources \
+     WHERE module_path = ? AND project = ? AND environment = ? \
      ORDER BY resource_type, resource_name";
 
 /// One record of a tenant, with the columns of [`SELECT_RESOURCES`].
 const SELECT_RESOURCE: &str = "SELECT resource_type, resource_name, provider, provider_source, \
-     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial \
-     FROM cuenv_infrastructure_resources WHERE module_path = ? AND project = ? \
+     schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
+     generation FROM cuenv_infrastructure_resources \
+     WHERE module_path = ? AND project = ? AND environment = ? \
      AND resource_type = ? AND resource_name = ?";
 
 const SELECT_OWNER: &str = "SELECT instance, claimed_at FROM cuenv_infrastructure_owners \
-     WHERE module_path = ? AND project = ?";
+     WHERE module_path = ? AND project = ? AND environment = ?";
 
-/// The legacy tables remain physically separate from named-environment state.
-/// Table names are fixed by this module, never derived from user input.
-struct StateTables {
-    resources: &'static str,
-    locks: &'static str,
-    owners: &'static str,
-    named: bool,
-}
+const SELECT_LOCK: &str = "SELECT lock_identifier, holder, acquired_at \
+     FROM cuenv_infrastructure_locks \
+     WHERE module_path = ? AND project = ? AND environment = ?";
 
-impl StateTables {
-    fn for_tenant(tenant: &TenantKey) -> Self {
-        if tenant.environment().is_some() {
-            Self {
-                resources: ENVIRONMENT_RESOURCES_TABLE,
-                locks: ENVIRONMENT_LOCKS_TABLE,
-                owners: ENVIRONMENT_OWNERS_TABLE,
-                named: true,
-            }
-        } else {
-            Self {
-                resources: RESOURCES_TABLE,
-                locks: LOCKS_TABLE,
-                owners: OWNERS_TABLE,
-                named: false,
-            }
-        }
-    }
+/// Arguments: the tenant, then the lock identifier.
+const LOCK_HELD: &str = "EXISTS (SELECT 1 FROM cuenv_infrastructure_locks \
+     WHERE module_path = ? AND project = ? AND environment = ? AND lock_identifier = ?)";
 
-    fn tenant_predicate(&self) -> &'static str {
-        if self.named {
-            "module_path = ? AND project = ? AND environment = ?"
-        } else {
-            "module_path = ? AND project = ?"
-        }
-    }
+/// Arguments: the tenant, the address, the columns of
+/// [`RecordColumns::insert_arguments`]. Callers append a lock check and a
+/// conflict clause.
+const INSERT_RESOURCE: &str = "INSERT INTO cuenv_infrastructure_resources \
+     (module_path, project, environment, resource_type, resource_name, provider, \
+     provider_source, schema_version, state_json, private, dependencies_json, tainted, \
+     identity_json, serial, created_at, updated_at, generation) \
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?";
 
-    fn tenant_columns(&self) -> &'static str {
-        if self.named {
-            "module_path, project, environment"
-        } else {
-            "module_path, project"
-        }
-    }
+const RESOURCE_KEY: &str = "module_path, project, environment, resource_type, resource_name";
 
-    fn tenant_values(&self) -> &'static str {
-        if self.named { "?, ?, ?" } else { "?, ?" }
-    }
-
-    fn resource_columns(&self) -> &'static str {
-        if self.named {
-            "module_path, project, environment, resource_type, resource_name"
-        } else {
-            "module_path, project, resource_type, resource_name"
-        }
-    }
-
-    fn lock_held(&self) -> String {
-        format!(
-            "EXISTS (SELECT 1 FROM {} WHERE {} AND lock_identifier = ?)",
-            self.locks,
-            self.tenant_predicate()
-        )
-    }
-
-    fn insert_resource(&self) -> String {
-        format!(
-            "INSERT INTO {} ({}, resource_type, resource_name, provider, provider_source, \
-             schema_version, state_json, private, dependencies_json, tainted, identity_json, \
-             serial, created_at, updated_at, generation) SELECT {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?",
-            self.resources,
-            self.tenant_columns(),
-            self.tenant_values()
-        )
-    }
-}
+const TENANT_KEY: &str = "module_path, project, environment";
 
 /// Largest HTTP error body read (and then only parsed for an error code,
 /// never quoted), in bytes.
@@ -583,6 +475,7 @@ impl TursoStateStore {
     }
 
     /// The newest applied schema version; 0 for a database never migrated.
+    /// Creates the schema table, so only the migration path calls it.
     async fn schema_version(&self) -> Result<i64> {
         let results = self
             .pipeline(&[
@@ -598,61 +491,48 @@ impl TursoStateStore {
             .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))
     }
 
-    /// Inspect the schema without creating or changing anything.
+    /// The recorded schema version, read without creating or changing
+    /// anything; 0 when cuenv never migrated the database.
     ///
     /// Fails closed on a schema newer than this build knows, so an older
     /// cuenv never reads or writes rows whose meaning may have changed.
-    async fn stored_schema(&self) -> Result<StoredSchema> {
+    async fn stored_version(&self) -> Result<i64> {
         let tables = self
             .execute(Statement::new(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?, ?, ?, ?, ?)",
-                [
-                    SCHEMA_TABLE,
-                    RESOURCES_TABLE,
-                    LOCKS_TABLE,
-                    OWNERS_TABLE,
-                    ENVIRONMENT_RESOURCES_TABLE,
-                    ENVIRONMENT_LOCKS_TABLE,
-                    ENVIRONMENT_OWNERS_TABLE,
-                ]
-                    .into_iter()
-                    .map(HranaValue::text)
-                    .collect(),
+                SELECT_SCHEMA_TABLE,
+                vec![HranaValue::text(SCHEMA_TABLE)],
             ))
             .await?;
-        let present = |table: &str| {
-            tables
-                .rows
-                .iter()
-                .any(|row| row.first().and_then(HranaValue::as_text) == Some(table))
-        };
-        let version = if present(SCHEMA_TABLE) {
-            self.execute(Statement::new(SELECT_SCHEMA_VERSION, Vec::new()))
-                .await?
-                .rows
-                .first()
-                .and_then(|row| row.first())
-                .and_then(HranaValue::as_integer)
-                .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))?
-        } else {
-            0
-        };
-        if version > LATEST_SCHEMA_VERSION {
-            return Err(newer_schema(version));
+        if tables.rows.is_empty() {
+            return Ok(0);
         }
-        Ok(StoredSchema {
-            version,
-            legacy: TablePresence {
-                resources: present(RESOURCES_TABLE),
-                locks: present(LOCKS_TABLE),
-                owners: present(OWNERS_TABLE),
-            },
-            named: TablePresence {
-                resources: present(ENVIRONMENT_RESOURCES_TABLE),
-                locks: present(ENVIRONMENT_LOCKS_TABLE),
-                owners: present(ENVIRONMENT_OWNERS_TABLE),
-            },
-        })
+        let version = self
+            .execute(Statement::new(SELECT_SCHEMA_VERSION, Vec::new()))
+            .await?
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(HranaValue::as_integer)
+            .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))?;
+        if version > LATEST_SCHEMA_VERSION {
+            return Err(newer_schema(version, LATEST_SCHEMA_VERSION));
+        }
+        Ok(version)
+    }
+
+    /// Refuse unless the recorded schema is exactly the one this build
+    /// writes: [`InfrastructureError::StateSchemaNewer`] for a newer one,
+    /// a state error asking for a migration for an older or missing one.
+    async fn require_current_schema(&self) -> Result<()> {
+        let version = self.stored_version().await?;
+        if version == LATEST_SCHEMA_VERSION {
+            Ok(())
+        } else {
+            Err(InfrastructureError::state(format!(
+                "Turso state schema is at version {version} but this cuenv writes version \
+                 {LATEST_SCHEMA_VERSION}; migrate the state store before taking the lock"
+            )))
+        }
     }
 
     /// Read one record of the tenant, with retries.
@@ -664,20 +544,7 @@ impl TursoStateStore {
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&address.resource_type));
         arguments.push(HranaValue::text(&address.name));
-        let tables = StateTables::for_tenant(tenant);
-        let query = if tables.named {
-            format!(
-                "SELECT resource_type, resource_name, provider, provider_source, schema_version, \
-                 state_json, private, dependencies_json, tainted, identity_json, serial FROM {} \
-                 WHERE {} AND resource_type = ? AND resource_name = ?",
-                tables.resources,
-                tables.tenant_predicate()
-            )
-        } else {
-            SELECT_RESOURCE.to_string()
-        };
-        let query = query.replacen("serial FROM", "serial, generation FROM", 1);
-        self.execute(Statement::new(query, arguments))
+        self.execute(Statement::new(SELECT_RESOURCE, arguments))
             .await?
             .rows
             .first()
@@ -687,18 +554,8 @@ impl TursoStateStore {
 
     /// Read the tenant's owner row, with retries.
     async fn read_owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
-        let tables = StateTables::for_tenant(tenant);
-        let query = if tables.named {
-            format!(
-                "SELECT instance, claimed_at FROM {} WHERE {}",
-                tables.owners,
-                tables.tenant_predicate()
-            )
-        } else {
-            SELECT_OWNER.to_string()
-        };
         let result = self
-            .execute(Statement::new(query, tenant_arguments(tenant)))
+            .execute(Statement::new(SELECT_OWNER, tenant_arguments(tenant)))
             .await?;
         Ok(result.rows.first().map(|row| {
             let field = |index: usize| {
@@ -721,42 +578,70 @@ impl TursoStateStore {
             .is_some_and(|information| information.lock_identifier == lock.lock_identifier))
     }
 
+    /// Bring the database up to `migrations`, applying each newer step in
+    /// its own transaction.
+    async fn migrate_to(&self, migrations: &[Migration]) -> Result<()> {
+        let supported = migrations.last().map_or(0, |migration| migration.version);
+        let current = self.schema_version().await?;
+        if current > supported {
+            return Err(newer_schema(current, supported));
+        }
+        for migration in migrations
+            .iter()
+            .filter(|migration| migration.version > current)
+        {
+            match self.apply_migration(migration).await? {
+                MigrationOutcome::Applied => {
+                    tracing::info!(
+                        version = migration.version,
+                        "applied state schema migration"
+                    );
+                }
+                MigrationOutcome::LockHeld => {
+                    return Err(InfrastructureError::StateMigrationBlocked {
+                        version: migration.version,
+                    });
+                }
+                MigrationOutcome::AlreadyApplied => {
+                    // Another process applied this migration first; its
+                    // transaction also recorded the version.
+                    let recorded = self.schema_version().await?;
+                    if recorded < migration.version {
+                        return Err(InfrastructureError::state(format!(
+                            "state schema migration {} found its schema objects already present \
+                             but the recorded schema version is {recorded}; the database holds \
+                             tables cuenv did not create at this version",
+                            migration.version
+                        )));
+                    }
+                    tracing::debug!(
+                        version = migration.version,
+                        "state schema migration applied concurrently by another process"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Apply one migration and record its version, atomically.
     ///
-    /// Returns [`MigrationOutcome::ColumnAlreadyExists`] when another process
+    /// A migration after the first first checks, inside the transaction,
+    /// that no lock row exists ([`MigrationTransaction`]), and reports
+    /// [`MigrationOutcome::LockHeld`] without changing anything otherwise.
+    /// It returns [`MigrationOutcome::AlreadyApplied`] when another process
     /// applied the same migration concurrently.
     async fn apply_migration(&self, migration: &Migration) -> Result<MigrationOutcome> {
-        let version_arguments = || vec![HranaValue::integer(migration.version)];
-        let statements: Vec<Statement> = iter::once(Statement::new("BEGIN IMMEDIATE", Vec::new()))
-            .chain(
-                migration
-                    .statements
-                    .iter()
-                    .map(|sql| Statement::new(*sql, Vec::new())),
-            )
-            // The recorded version only ever moves forward, even if a slower
-            // migrator finishes an older step after a faster one.
-            .chain([
-                Statement::new(
-                    "DELETE FROM cuenv_infrastructure_schema WHERE version < ?",
-                    version_arguments(),
-                ),
-                Statement::new(
-                    "INSERT INTO cuenv_infrastructure_schema (version) SELECT ?1 \
-                     WHERE NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_schema WHERE version >= ?1)",
-                    version_arguments(),
-                ),
-                Statement::new("COMMIT", Vec::new()),
-                Statement::new("ROLLBACK", Vec::new()),
-            ])
-            .collect();
-        let commit_index = statements.len() - 2;
-        let statements = statements.as_slice();
+        let transaction = MigrationTransaction::of(migration);
+        let transaction = &transaction;
         self.retrying(move || async move {
             let result = self
-                .batch_once(transaction_steps(statements, commit_index))
+                .batch_once(transaction_steps(
+                    &transaction.statements,
+                    transaction.commit_index,
+                ))
                 .await?;
-            migration_outcome(&result, commit_index)
+            migration_outcome(&result, transaction)
         })
         .await
         .map_err(|failure| self.error(&failure))
@@ -764,16 +649,8 @@ impl TursoStateStore {
 
     /// Read the tenant's lock row, with retries.
     async fn read_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
-        let tables = StateTables::for_tenant(tenant);
         let result = self
-            .execute(Statement::new(
-                format!(
-                    "SELECT lock_identifier, holder, acquired_at FROM {} WHERE {}",
-                    tables.locks,
-                    tables.tenant_predicate()
-                ),
-                tenant_arguments(tenant),
-            ))
+            .execute(Statement::new(SELECT_LOCK, tenant_arguments(tenant)))
             .await?;
         Ok(result.rows.first().map(|row| {
             // Anyone with the token can write these; they are displayed.
@@ -990,15 +867,38 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// The tenant's key columns: module, project, environment (empty without
+/// `--env`).
 fn tenant_arguments(tenant: &TenantKey) -> Vec<HranaValue> {
-    let mut arguments = vec![
+    vec![
         HranaValue::text(tenant.module_path()),
         HranaValue::text(tenant.project()),
-    ];
-    if let Some(environment) = tenant.environment() {
-        arguments.push(HranaValue::text(environment));
+        HranaValue::text(tenant.environment().unwrap_or(NO_ENVIRONMENT)),
+    ]
+}
+
+/// The endpoint that identifies a backend: every spelling of the machine's
+/// own loopback interface (`localhost`, `127.0.0.1`, `[::1]`) names one.
+///
+/// A recovery file is bound to the server it was saved for. A local `sqld`
+/// is reached by whichever of those names the operator typed, and the name
+/// can change between the run that saved a file and the one that recovers it.
+/// Treating them as one identity is safe because they can only reach a
+/// process on this machine on the same port; it cannot make two machines
+/// look alike. The residual case is two different servers on the same port,
+/// one listening only on IPv4 and one only on IPv6; the compare-and-swap
+/// check on the stored record still guards the write. Other loopback
+/// addresses (`127.0.0.2`) stay distinct.
+fn backend_endpoint(url: &reqwest::Url) -> reqwest::Url {
+    // The parser has already lowercased domains and written IPv6 addresses
+    // in their canonical form, so these three spellings are all there is.
+    let is_own_loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+    let mut endpoint = url.clone();
+    if is_own_loopback && endpoint.set_host(Some("localhost")).is_ok() {
+        endpoint
+    } else {
+        url.clone()
     }
-    arguments
 }
 
 #[async_trait]
@@ -1007,78 +907,23 @@ impl StateStore for TursoStateStore {
         use sha2::Digest;
         let mut digest = sha2::Sha256::new();
         digest.update(b"cuenv-infrastructure-turso-recovery-v1\0");
-        digest.update(self.pipeline_url.as_str().as_bytes());
+        digest.update(backend_endpoint(&self.pipeline_url).as_str().as_bytes());
         Some(format!("{:x}", digest.finalize()))
     }
+
     #[tracing::instrument(skip_all)]
     async fn migrate(&self) -> Result<()> {
-        let current = self.schema_version().await?;
-        if current > LATEST_SCHEMA_VERSION {
-            return Err(newer_schema(current));
-        }
-        for migration in MIGRATIONS
-            .iter()
-            .filter(|migration| migration.version > current)
-        {
-            match self.apply_migration(migration).await? {
-                MigrationOutcome::Applied => {
-                    tracing::info!(
-                        version = migration.version,
-                        "applied state schema migration"
-                    );
-                }
-                MigrationOutcome::ColumnAlreadyExists => {
-                    // Another process applied this migration first; its
-                    // transaction also recorded the version.
-                    let recorded = self.schema_version().await?;
-                    if recorded < migration.version {
-                        return Err(InfrastructureError::state(format!(
-                            "state schema migration {} found its columns already present but \
-                             the recorded schema version is {recorded}",
-                            migration.version
-                        )));
-                    }
-                    tracing::debug!(
-                        version = migration.version,
-                        "state schema migration applied concurrently by another process"
-                    );
-                }
-            }
-        }
-        Ok(())
+        self.migrate_to(MIGRATIONS).await
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
-        let schema = self.stored_schema().await?;
-        if !schema.resources_for(tenant) {
+        if self.stored_version().await? == 0 {
             // Never migrated: nothing has been recorded yet.
             return Ok(Vec::new());
         }
-        // Version 0 is a table created before the schema was versioned, which
-        // has the version 1 layout.
-        let tables = StateTables::for_tenant(tenant);
-        let query = if tables.named {
-            format!(
-                "SELECT resource_type, resource_name, provider, provider_source, schema_version, \
-                 state_json, private, dependencies_json, tainted, identity_json, serial FROM {} \
-                 WHERE {} ORDER BY resource_type, resource_name",
-                tables.resources,
-                tables.tenant_predicate()
-            )
-        } else if schema.version >= TAINT_AND_IDENTITY_SCHEMA_VERSION {
-            SELECT_RESOURCES.to_string()
-        } else {
-            SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY.to_string()
-        };
-        let generation = if schema.version >= GENERATION_SCHEMA_VERSION {
-            "serial, generation FROM"
-        } else {
-            "serial, NULL AS generation FROM"
-        };
-        let query = query.replacen("serial FROM", generation, 1);
         let result = self
-            .execute(Statement::new(query, tenant_arguments(tenant)))
+            .execute(Statement::new(SELECT_RESOURCES, tenant_arguments(tenant)))
             .await?;
         result.rows.iter().map(|row| row_to_resource(row)).collect()
     }
@@ -1090,7 +935,6 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         resource: &ManagedResource,
     ) -> Result<()> {
-        let tables = StateTables::for_tenant(tenant);
         let columns = RecordColumns::of(resource)?;
         let mut arguments = columns.insert_arguments(tenant, resource);
         arguments.extend(lock_arguments(tenant, lock));
@@ -1099,18 +943,14 @@ impl StateStore for TursoStateStore {
         let written = self
             .execute(Statement::carrying_state(
                 format!(
-                    "{} WHERE {} \
-                     ON CONFLICT ({}) DO UPDATE SET \
+                    "{INSERT_RESOURCE} WHERE {LOCK_HELD} \
+                     ON CONFLICT ({RESOURCE_KEY}) DO UPDATE SET \
                      provider = excluded.provider, provider_source = excluded.provider_source, \
                      schema_version = excluded.schema_version, state_json = excluded.state_json, \
                      private = excluded.private, dependencies_json = excluded.dependencies_json, \
                      tainted = excluded.tainted, identity_json = excluded.identity_json, \
-                     serial = {}.serial + 1, \
-                     updated_at = excluded.updated_at",
-                    tables.insert_resource(),
-                    tables.lock_held(),
-                    tables.resource_columns(),
-                    tables.resources
+                     serial = cuenv_infrastructure_resources.serial + 1, \
+                     updated_at = excluded.updated_at"
                 ),
                 arguments,
             ))
@@ -1131,7 +971,6 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         put: &ConditionalPut<'_>,
     ) -> Result<()> {
-        let tables = StateTables::for_tenant(tenant);
         let resource = put.resource;
         let mut columns = RecordColumns::of(resource)?;
         if !resource.generation.is_nil() {
@@ -1143,18 +982,10 @@ impl StateStore for TursoStateStore {
                 arguments.extend(lock_arguments(tenant, lock));
                 Statement::carrying_state(
                     format!(
-                        "{} WHERE {} ON CONFLICT ({}) DO NOTHING",
-                        tables.insert_resource(),
-                        tables.lock_held(),
-                        tables.resource_columns()
+                        "{INSERT_RESOURCE} WHERE {LOCK_HELD} ON CONFLICT ({RESOURCE_KEY}) DO NOTHING"
                     ),
                     arguments,
                 )
-            }
-            RecordVersion::Serial(_) => {
-                return Err(InfrastructureError::configuration(
-                    "a serial-only recovery version is unsafe; inspect the saved record and use state recover --force",
-                ));
             }
             RecordVersion::Generation { generation, serial } => {
                 let mut arguments = columns.update_arguments(resource);
@@ -1166,15 +997,13 @@ impl StateStore for TursoStateStore {
                 arguments.extend(lock_arguments(tenant, lock));
                 Statement::carrying_state(
                     format!(
-                        "UPDATE {} SET provider = ?, \
+                        "UPDATE cuenv_infrastructure_resources SET provider = ?, \
                          provider_source = ?, schema_version = ?, state_json = ?, private = ?, \
                          dependencies_json = ?, tainted = ?, identity_json = ?, \
                          serial = serial + 1, updated_at = ? \
-                         WHERE {} AND resource_type = ? \
-                         AND resource_name = ? AND serial = ? AND generation = ? AND {}",
-                        tables.resources,
-                        tables.tenant_predicate(),
-                        tables.lock_held()
+                         WHERE module_path = ? AND project = ? AND environment = ? \
+                         AND resource_type = ? AND resource_name = ? AND serial = ? \
+                         AND generation = ? AND {LOCK_HELD}"
                     ),
                     arguments,
                 )
@@ -1197,6 +1026,7 @@ impl StateStore for TursoStateStore {
             address: resource.address.to_string(),
             expected: put.expected.to_string(),
             found: found.to_string(),
+            file: None,
         })
     }
 
@@ -1207,7 +1037,6 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         address: &ResourceAddress,
     ) -> Result<()> {
-        let tables = StateTables::for_tenant(tenant);
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&address.resource_type));
         arguments.push(HranaValue::text(&address.name));
@@ -1215,10 +1044,9 @@ impl StateStore for TursoStateStore {
         let deleted = self
             .execute(Statement::new(
                 format!(
-                    "DELETE FROM {} WHERE {} AND resource_type = ? AND resource_name = ? AND {}",
-                    tables.resources,
-                    tables.tenant_predicate(),
-                    tables.lock_held()
+                    "DELETE FROM cuenv_infrastructure_resources \
+                     WHERE module_path = ? AND project = ? AND environment = ? \
+                     AND resource_type = ? AND resource_name = ? AND {LOCK_HELD}"
                 ),
                 arguments,
             ))
@@ -1242,35 +1070,27 @@ impl StateStore for TursoStateStore {
         request: &LockRequest<'_>,
     ) -> Result<StateLock> {
         request.lock.validate()?;
-        let tables = StateTables::for_tenant(tenant);
         let holder = request.holder;
         // Every write needs the lock, so this is where writes fail closed on
         // a schema this build has not migrated to.
-        let schema = self.stored_schema().await?;
-        if schema.version != LATEST_SCHEMA_VERSION
-            || !schema.resources_for(tenant)
-            || !schema.locks_for(tenant)
-            || !schema.owners_for(tenant)
-        {
-            return Err(InfrastructureError::state(format!(
-                "Turso state schema is at version {} but this cuenv writes version \
-                 {LATEST_SCHEMA_VERSION}; migrate the state store before taking the lock",
-                schema.version
-            )));
-        }
+        self.require_current_schema().await?;
         let lock_identifier = request.lock.lock_identifier.clone();
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&lock_identifier));
         arguments.push(HranaValue::text(holder));
         arguments.push(HranaValue::text(&now()));
+        // The lock row is inserted only while the schema is still the one
+        // checked above, in the same statement. A migration (which refuses
+        // while any lock row exists) that commits between the check and the
+        // insert therefore cannot be followed by a lock, and writes, of a
+        // client that does not know the new shape.
         let insert = Statement::new(
             format!(
-                "INSERT INTO {} ({}, lock_identifier, holder, acquired_at) \
-                 VALUES ({}, ?, ?, ?) ON CONFLICT ({}) DO NOTHING",
-                tables.locks,
-                tables.tenant_columns(),
-                tables.tenant_values(),
-                tables.tenant_columns()
+                "INSERT INTO cuenv_infrastructure_locks \
+                 ({TENANT_KEY}, lock_identifier, holder, acquired_at) \
+                 SELECT ?, ?, ?, ?, ?, ? \
+                 WHERE ({SELECT_SCHEMA_VERSION}) = {LATEST_SCHEMA_VERSION} \
+                 ON CONFLICT ({TENANT_KEY}) DO NOTHING"
             ),
             arguments,
         );
@@ -1296,9 +1116,15 @@ impl StateStore for TursoStateStore {
                     Some(information) => {
                         return Err(locked(tenant, information));
                     }
-                    // Released between the insert and the read: try again.
-                    None if !last_attempt => {}
+                    // No lock row: either the schema moved under the insert's
+                    // guard (refuse), or the lock was released between the
+                    // insert and the read (try again).
                     None => {
+                        self.require_current_schema().await?;
+                        if !last_attempt {
+                            retry += 1;
+                            continue;
+                        }
                         return Err(InfrastructureError::state(format!(
                             "could not acquire the state lock for {tenant}: it kept changing hands"
                         )));
@@ -1339,13 +1165,9 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
-        let tables = StateTables::for_tenant(tenant);
         self.execute(Statement::new(
-            format!(
-                "DELETE FROM {} WHERE {} AND lock_identifier = ?",
-                tables.locks,
-                tables.tenant_predicate()
-            ),
+            "DELETE FROM cuenv_infrastructure_locks \
+             WHERE module_path = ? AND project = ? AND environment = ? AND lock_identifier = ?",
             lock_arguments(tenant, lock),
         ))
         .await
@@ -1354,7 +1176,7 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
-        if !self.stored_schema().await?.locks_for(tenant) {
+        if self.stored_version().await? == 0 {
             // Never migrated: nobody can have taken the lock.
             return Ok(None);
         }
@@ -1363,19 +1185,16 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, lock_identifier = %lock_identifier))]
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
-        if !self.stored_schema().await?.locks_for(tenant) {
+        if self.stored_version().await? == 0 {
             return Ok(false);
         }
-        let tables = StateTables::for_tenant(tenant);
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(lock_identifier));
         let released = self
             .execute(Statement::new(
-                format!(
-                    "DELETE FROM {} WHERE {} AND lock_identifier = ?",
-                    tables.locks,
-                    tables.tenant_predicate()
-                ),
+                "DELETE FROM cuenv_infrastructure_locks \
+                 WHERE module_path = ? AND project = ? AND environment = ? \
+                 AND lock_identifier = ?",
                 arguments,
             ))
             .await?;
@@ -1384,8 +1203,8 @@ impl StateStore for TursoStateStore {
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
     async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
-        if !self.stored_schema().await?.owners_for(tenant) {
-            // Never migrated, or migrated by a cuenv without owner records.
+        if self.stored_version().await? == 0 {
+            // Never migrated: no owner can be recorded.
             return Ok(None);
         }
         self.read_owner(tenant).await
@@ -1398,7 +1217,6 @@ impl StateStore for TursoStateStore {
         lock: &StateLock,
         claim: &OwnerClaim<'_>,
     ) -> Result<TenantOwner> {
-        let tables = StateTables::for_tenant(tenant);
         let conflict = match claim.mode {
             OwnerClaimMode::IfUnowned => "DO NOTHING",
             OwnerClaimMode::Transfer => {
@@ -1412,13 +1230,8 @@ impl StateStore for TursoStateStore {
         let written = self
             .execute(Statement::new(
                 format!(
-                    "INSERT INTO {} ({}, instance, claimed_at) SELECT {}, ?, ? WHERE {} \
-                     ON CONFLICT ({}) {conflict}",
-                    tables.owners,
-                    tables.tenant_columns(),
-                    tables.tenant_values(),
-                    tables.lock_held(),
-                    tables.tenant_columns()
+                    "INSERT INTO cuenv_infrastructure_owners ({TENANT_KEY}, instance, claimed_at) \
+                     SELECT ?, ?, ?, ?, ? WHERE {LOCK_HELD} ON CONFLICT ({TENANT_KEY}) {conflict}"
                 ),
                 arguments,
             ))
@@ -1474,7 +1287,7 @@ impl RecordColumns {
         })
     }
 
-    /// Arguments of [`StateTables::insert_resource`].
+    /// Arguments of [`INSERT_RESOURCE`].
     fn insert_arguments(&self, tenant: &TenantKey, resource: &ManagedResource) -> Vec<HranaValue> {
         let mut arguments = tenant_arguments(tenant);
         arguments.push(HranaValue::text(&resource.address.resource_type));
@@ -1501,50 +1314,8 @@ impl RecordColumns {
     }
 }
 
-/// What a read-only inspection of the database found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StoredSchema {
-    /// Recorded schema version; 0 when nothing is recorded.
-    version: i64,
-    legacy: TablePresence,
-    named: TablePresence,
-}
-
-/// Tables present for one physical state family.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct TablePresence {
-    resources: bool,
-    locks: bool,
-    owners: bool,
-}
-
-impl StoredSchema {
-    fn tables_for(&self, tenant: &TenantKey) -> TablePresence {
-        if tenant.environment().is_some() {
-            self.named
-        } else {
-            self.legacy
-        }
-    }
-
-    fn resources_for(&self, tenant: &TenantKey) -> bool {
-        self.tables_for(tenant).resources
-    }
-
-    fn locks_for(&self, tenant: &TenantKey) -> bool {
-        self.tables_for(tenant).locks
-    }
-
-    fn owners_for(&self, tenant: &TenantKey) -> bool {
-        self.tables_for(tenant).owners
-    }
-}
-
-fn newer_schema(version: i64) -> InfrastructureError {
-    InfrastructureError::state(format!(
-        "Turso state schema version {version} is newer than this cuenv supports \
-         ({LATEST_SCHEMA_VERSION}); upgrade cuenv"
-    ))
+fn newer_schema(found: i64, supported: i64) -> InfrastructureError {
+    InfrastructureError::StateSchemaNewer { found, supported }
 }
 
 fn locked(tenant: &TenantKey, information: LockInformation) -> InfrastructureError {
@@ -1563,27 +1334,58 @@ fn lock_lost(tenant: &TenantKey, lock: &StateLock) -> InfrastructureError {
     }
 }
 
+/// Stands in for the address of a row whose address columns are unreadable.
+const UNREADABLE_ADDRESS: &str = "(a record with an unreadable address)";
+
+/// Decode one row of [`SELECT_RESOURCES`].
+///
+/// Every failure is [`InfrastructureError::UndecodableRecord`] naming the
+/// address and the column, never a value: the state store answered, so this
+/// is damaged or foreign content, not a connection problem.
 fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
-    let text = |index: usize, name: &str| {
+    let undecodable = |address: &str, problem: String| InfrastructureError::UndecodableRecord {
+        address: strip_control_characters(address),
+        problem,
+    };
+    let column_text = |index: usize, name: &str| {
         row.get(index)
             .and_then(HranaValue::as_text)
             .map(str::to_string)
-            .ok_or_else(|| InfrastructureError::state(format!("state row missing {name}")))
+            .ok_or_else(|| format!("the {name} column is missing or not text"))
     };
+    let address_text = match (
+        column_text(0, "resource_type"),
+        column_text(1, "resource_name"),
+    ) {
+        (Ok(resource_type), Ok(name)) => ResourceAddress::new(resource_type, name),
+        (Err(problem), _) | (_, Err(problem)) => {
+            return Err(undecodable(UNREADABLE_ADDRESS, problem));
+        }
+    };
+    let address = address_text.to_string();
     let integer = |index: usize, name: &str| {
         row.get(index)
             .and_then(HranaValue::as_integer)
-            .ok_or_else(|| InfrastructureError::state(format!("state row missing {name}")))
+            .ok_or_else(|| {
+                undecodable(
+                    &address,
+                    format!("the {name} column is missing or not a number"),
+                )
+            })
     };
-    let address = ResourceAddress::new(text(0, "resource_type")?, text(1, "resource_name")?);
+    let text = |index: usize, name: &str| {
+        column_text(index, name).map_err(|problem| undecodable(&address, problem))
+    };
     // serde messages can quote the value they failed on: report the
     // column, the category and the position only.
     let corrupt = |column: &str, error: &serde_json::Error| {
-        InfrastructureError::state(format!(
-            "corrupt {column} of {} ({})",
-            strip_control_characters(&address.to_string()),
-            describe_json_error(error)
-        ))
+        undecodable(
+            &address,
+            format!(
+                "{column} is not valid JSON ({})",
+                describe_json_error(error)
+            ),
+        )
     };
     let state_json = text(5, "state_json")?;
     let dependencies_json = text(7, "dependencies_json")?;
@@ -1593,6 +1395,7 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         .map(serde_json::from_str)
         .transpose()
         .map_err(|error| corrupt("identity_json", &error))?;
+    let generation = text(11, "generation")?;
     Ok(ManagedResource {
         provider: text(2, "provider")?,
         provider_source: text(3, "provider_source")?,
@@ -1601,7 +1404,8 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         private: row
             .get(6)
             .map(HranaValue::as_blob)
-            .transpose()?
+            .transpose()
+            .map_err(|_| undecodable(&address, "the private column is not a blob".to_string()))?
             .flatten()
             .unwrap_or_default(),
         dependencies: serde_json::from_str(&dependencies_json)
@@ -1609,15 +1413,16 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         tainted: integer(8, "tainted")? != 0,
         identity,
         serial: integer(10, "serial")?,
-        generation: match row.get(11) {
-            Some(HranaValue::Null) => uuid::Uuid::nil(),
-            Some(value) => value
-                .as_text()
-                .and_then(|generation| uuid::Uuid::parse_str(generation).ok())
-                .ok_or_else(|| InfrastructureError::state("state row has an invalid generation"))?,
-            None => return Err(InfrastructureError::state("state row missing generation")),
-        },
-        address,
+        generation: uuid::Uuid::parse_str(&generation)
+            .ok()
+            .filter(|generation| !generation.is_nil())
+            .ok_or_else(|| {
+                undecodable(
+                    &address,
+                    "the generation column is not an insertion identifier".to_string(),
+                )
+            })?,
+        address: address_text,
     })
 }
 
@@ -1866,9 +1671,80 @@ fn describe_error_body(body: &BodyPrefix, total_bytes: Option<u64>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationOutcome {
     Applied,
-    /// The migration failed because its columns already exist: another
-    /// process applied it concurrently.
-    ColumnAlreadyExists,
+    /// The migration changed nothing because a lock row exists.
+    LockHeld,
+    /// The migration failed because its tables or columns already exist:
+    /// another process applied it concurrently.
+    AlreadyApplied,
+}
+
+/// The statements of one migration's transaction: `BEGIN`, the lock fence of
+/// a migration after the first, the migration's own statements, the version
+/// bookkeeping, `COMMIT` at `commit_index`, then `ROLLBACK`.
+struct MigrationTransaction {
+    statements: Vec<Statement>,
+    /// The statement that fails while any lock row exists; `None` for the
+    /// first migration, which creates the lock table.
+    fence_index: Option<usize>,
+    commit_index: usize,
+}
+
+impl MigrationTransaction {
+    fn of(migration: &Migration) -> Self {
+        let version_arguments = || vec![HranaValue::integer(migration.version)];
+        let mut statements = vec![Statement::new("BEGIN IMMEDIATE", Vec::new())];
+        let mut fence_index = None;
+        if migration.version > INITIAL_SCHEMA_VERSION {
+            // A run that holds a lock may be between two writes. Moving the
+            // schema under it would land its next write in a shape it does
+            // not know, so the migration refuses while any lock row exists.
+            // The check is inside the transaction: with `BEGIN IMMEDIATE`
+            // holding the write lock, no run can take a lock after it and
+            // before the commit.
+            //
+            // SQLite has no statement that raises an error on a condition,
+            // and a server like `sqld` rejects temporary tables, triggers
+            // and `RAISE`. `abs` of the smallest integer is an "integer
+            // overflow" error, though, and the argument is that integer
+            // exactly when at least one lock row exists: the capped count
+            // (0 or 1) is subtracted from -(2^63 - 1). The count keeps the
+            // expression from being folded into a constant that would fail
+            // whether or not a lock exists.
+            fence_index = Some(statements.len());
+            statements.push(Statement::new(
+                "SELECT abs(-9223372036854775807 - MIN(COUNT(*), 1)) \
+                 FROM cuenv_infrastructure_locks",
+                Vec::new(),
+            ));
+        }
+        statements.extend(
+            migration
+                .statements
+                .iter()
+                .map(|sql| Statement::new(*sql, Vec::new())),
+        );
+        // The recorded version only ever moves forward, even if a slower
+        // migrator finishes an older step after a faster one.
+        statements.extend([
+            Statement::new(
+                "DELETE FROM cuenv_infrastructure_schema WHERE version < ?",
+                version_arguments(),
+            ),
+            Statement::new(
+                "INSERT INTO cuenv_infrastructure_schema (version) SELECT ?1 \
+                 WHERE NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_schema WHERE version >= ?1)",
+                version_arguments(),
+            ),
+            Statement::new("COMMIT", Vec::new()),
+            Statement::new("ROLLBACK", Vec::new()),
+        ]);
+        let commit_index = statements.len() - 2;
+        Self {
+            statements,
+            fence_index,
+            commit_index,
+        }
+    }
 }
 
 /// Steps for a transaction batch: `statements` is `BEGIN`, the body,
@@ -1892,22 +1768,30 @@ fn transaction_steps(statements: &[Statement], commit_index: usize) -> Vec<Batch
         .collect()
 }
 
-fn migration_outcome(result: &BatchResult, commit_index: usize) -> Attempted<MigrationOutcome> {
+fn migration_outcome(
+    result: &BatchResult,
+    transaction: &MigrationTransaction,
+) -> Attempted<MigrationOutcome> {
     let first_error = result
         .step_errors
         .iter()
-        .take(commit_index + 1)
-        .flatten()
-        .next();
-    if let Some(error) = first_error {
-        if error.message.contains("duplicate column name") {
-            return Ok(MigrationOutcome::ColumnAlreadyExists);
+        .take(transaction.commit_index + 1)
+        .enumerate()
+        .find_map(|(index, error)| error.as_ref().map(|error| (index, error)));
+    if let Some((index, error)) = first_error {
+        if transaction.fence_index == Some(index) {
+            return Ok(MigrationOutcome::LockHeld);
+        }
+        if error.message.contains("duplicate column name")
+            || error.message.contains("already exists")
+        {
+            return Ok(MigrationOutcome::AlreadyApplied);
         }
         return Err(statement_failure(error, Disclosure::Full));
     }
     if result
         .step_results
-        .get(commit_index)
+        .get(transaction.commit_index)
         .is_some_and(Option::is_some)
     {
         Ok(MigrationOutcome::Applied)
@@ -2114,1511 +1998,4 @@ impl HranaValue {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    use serde_json::{Value, json};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-
-    use super::*;
-
-    fn configuration(url: &str) -> TursoConfiguration {
-        TursoConfiguration {
-            url: url.into(),
-            authentication_token: Some("secret-token".into()),
-        }
-    }
-
-    fn configuration_error(url: &str) -> String {
-        match pipeline_url(url) {
-            Err(InfrastructureError::Configuration(message)) => message,
-            other => panic!("expected a configuration error for {url}, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
-    async fn v4_migration_backfills_generations_that_support_conditional_updates() -> Result<()> {
-        let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").map_err(|_| {
-            InfrastructureError::configuration(
-                "set CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL to an empty isolated database",
-            )
-        })?;
-        let store = TursoStateStore::new(TursoConfiguration {
-            url,
-            authentication_token: None,
-        })?;
-        let schema = store.stored_schema().await?;
-        if schema.version != 0 || schema.legacy.resources || schema.named.resources {
-            return Err(InfrastructureError::configuration(
-                "the migration test requires an empty isolated database",
-            ));
-        }
-        store.schema_version().await?;
-        for migration in &MIGRATIONS[..4] {
-            store.apply_migration(migration).await?;
-        }
-        let tenants = [
-            TenantKey::new("example.com/migration", "web")?,
-            TenantKey::with_environment("example.com/migration", "web", "Dev")?,
-        ];
-        for tenant in &tenants {
-            let tables = StateTables::for_tenant(tenant);
-            for name in ["first", "second"] {
-                let resource = ManagedResource {
-                    address: ResourceAddress::new("random_pet", name),
-                    provider: "random".into(),
-                    provider_source: "registry.terraform.io/hashicorp/random".into(),
-                    schema_version: 0,
-                    state: json!({"id": name}),
-                    private: Vec::new(),
-                    dependencies: Vec::new(),
-                    tainted: false,
-                    identity: None,
-                    serial: 0,
-                    generation: uuid::Uuid::nil(),
-                };
-                let columns = RecordColumns::of(&resource)?;
-                let mut arguments = columns.insert_arguments(tenant, &resource);
-                arguments.pop();
-                let sql = tables.insert_resource().replace(", generation)", ")");
-                let sql = sql.strip_suffix(", ?").ok_or_else(|| {
-                    InfrastructureError::configuration("unexpected insert statement")
-                })?;
-                store
-                    .execute(Statement::carrying_state(sql, arguments))
-                    .await?;
-            }
-            assert!(
-                store
-                    .list(tenant)
-                    .await?
-                    .iter()
-                    .all(|record| record.generation.is_nil())
-            );
-        }
-        store.migrate().await?;
-        let mut generations = std::collections::BTreeSet::new();
-        for tenant in &tenants {
-            let lock = store.lock(tenant, "migration test").await?;
-            let records = store.list(tenant).await?;
-            assert_eq!(records.len(), 2);
-            for record in records {
-                assert!(!record.generation.is_nil());
-                assert!(generations.insert(record.generation));
-                let updated = ManagedResource {
-                    state: json!({"id": "updated"}),
-                    ..record.clone()
-                };
-                store
-                    .put_if_unchanged(
-                        tenant,
-                        &lock,
-                        &ConditionalPut {
-                            resource: &updated,
-                            expected: RecordVersion::of(Some(&record)),
-                        },
-                    )
-                    .await?;
-                let current = store
-                    .read_resource(tenant, &record.address)
-                    .await?
-                    .ok_or_else(|| InfrastructureError::state("missing updated record"))?;
-                assert_eq!(current.generation, record.generation);
-                assert_eq!(current.serial, record.serial + 1);
-                assert!(current.same_content(&updated));
-                store.delete(tenant, &lock, &record.address).await?;
-            }
-            store.unlock(tenant, &lock).await?;
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn pipeline_url_normalizes_schemes() {
-        let cases = [
-            (
-                "libsql://db-acme.turso.io",
-                "https://db-acme.turso.io/v2/pipeline",
-            ),
-            (
-                "LIBSQL://db-acme.turso.io/",
-                "https://db-acme.turso.io/v2/pipeline",
-            ),
-            (
-                "https://db.turso.io/prefix/",
-                "https://db.turso.io/prefix/v2/pipeline",
-            ),
-            ("wss://db.turso.io", "https://db.turso.io/v2/pipeline"),
-            ("ws://localhost:8080", "http://localhost:8080/v2/pipeline"),
-            (
-                "http://127.0.0.1:8080/",
-                "http://127.0.0.1:8080/v2/pipeline",
-            ),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(pipeline_url(input).unwrap().as_str(), expected, "{input}");
-        }
-        assert!(configuration_error("postgres://nope").contains("unsupported"));
-        assert!(configuration_error("db.turso.io").contains("expected libsql://"));
-    }
-
-    /// The runtime URL contract. The CUE schema checks field shape and type;
-    /// this parser enforces the URL and transport rules.
-    #[test]
-    fn urls_follow_the_schema_contract() {
-        let accepted = [
-            "libsql://db-acme.turso.io",
-            "LIBSQL://DB-ACME.TURSO.IO/",
-            "https://db.turso.io/prefix/",
-            "wss://db.turso.io",
-            "https://10.0.0.1:8443",
-            "https://[2001:db8::1]:8443/path",
-            "ws://localhost:8080",
-            "http://LOCALHOST",
-            "http://127.0.0.1:8080/",
-            "http://127.255.255.255:65535",
-            "http://[::1]:8080",
-            "http://[::ffff:127.0.0.1]:8080",
-            "HTTP://127.0.0.1:1",
-        ];
-        let rejected = [
-            "postgres://db.turso.io",
-            "db.turso.io",
-            "https://",
-            "http://:8080",
-            " libsql://db.turso.io",
-            "libsql://db.turso.io\u{a0}",
-            "libsql://db.turso.io/a b",
-            "http://db.turso.io",
-            "http://10.0.0.1:8080",
-            "http://[2001:db8::1]:8080",
-            "http://localhost.example.com",
-            "http://127.0.0.1.example.com",
-            "http://127.1",
-            "http://127.0.0.256",
-            "http://[::ffff:7f00:1]",
-            "http://[0:0:0:0:0:0:0:1]",
-            "http://127.0.0.1:0",
-            "http://127.0.0.1:",
-            "https://db.turso.io:65536",
-            "https://-db.turso.io",
-        ];
-        for url in accepted {
-            assert!(pipeline_url(url).is_ok(), "{url:?} must be accepted");
-        }
-        for url in rejected {
-            configuration_error(url);
-        }
-    }
-
-    #[test]
-    fn host_spellings_beyond_the_contract_are_rejected() {
-        for url in [
-            // Numeric forms the URL parser would read as loopback.
-            "http://0x7f.1",
-            "http://2130706433",
-            "http://127.00.0.1",
-            "http://[0:0:0:0:0:0:0:1]:8080",
-            // International names, `_` and percent-encoding.
-            "https://dé.turso.io",
-            "https://db_1.turso.io",
-            "https://d%62.turso.io",
-            // Ports with leading zeros or no digits; bad path characters.
-            "https://db.turso.io:08443",
-            "https://db.turso.io:x",
-            "https://db.turso.io/a\"b",
-            "https://db.turso.io/a<b",
-            // Whitespace anywhere, trimmed or not.
-            "libsql://db.turso.io\n",
-            "libsql://db.turso.io\t/x",
-        ] {
-            configuration_error(url);
-        }
-        for url in [
-            "http://127.0.0.1",
-            "http://[::FFFF:127.0.0.1]",
-            "http://LocalHost:1",
-        ] {
-            assert_eq!(pipeline_url(url).unwrap().scheme(), "http", "{url}");
-        }
-        assert_eq!(
-            pipeline_url("https://db.turso.io/a%20b;c=d@e")
-                .unwrap()
-                .path(),
-            "/a%20b;c=d@e/v2/pipeline"
-        );
-    }
-
-    #[test]
-    fn plaintext_urls_are_allowed_only_for_loopback_hosts() {
-        for url in [
-            "http://localhost",
-            "http://LOCALHOST:8080",
-            "http://127.0.0.1:8080",
-            "http://127.1.2.3",
-            "http://[::1]:8080",
-            "http://[::ffff:127.0.0.1]:8080",
-            "ws://127.0.0.1:8080",
-        ] {
-            assert_eq!(pipeline_url(url).unwrap().scheme(), "http", "{url}");
-        }
-        for url in [
-            "http://db.turso.io",
-            "http://10.0.0.1:8080",
-            "http://[2001:db8::1]:8080",
-            "ws://db.turso.io",
-            "http://localhost.example.com",
-            "http://127.0.0.1.example.com",
-        ] {
-            let message = configuration_error(url);
-            assert!(message.contains("plaintext"), "{url}: {message}");
-            assert!(
-                message.contains("libsql://, https:// or wss://"),
-                "{message}"
-            );
-        }
-    }
-
-    #[test]
-    fn urls_without_host_or_with_embedded_secrets_are_rejected() {
-        for url in ["https://", "libsql://", "http://:8080"] {
-            let message = configuration_error(url);
-            assert!(
-                message.contains("host") || message.contains("invalid"),
-                "{url}: {message}"
-            );
-        }
-        for url in [
-            "libsql://db.turso.io?authToken=secret-token",
-            "https://user:secret-token@db.turso.io",
-            "https://db.turso.io#secret-token",
-        ] {
-            let message = configuration_error(url);
-            assert!(!message.contains("secret-token"), "{message}");
-            assert!(
-                message.contains("must not contain credentials"),
-                "{message}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejected_url_components_are_never_echoed() {
-        for url in [
-            "secret-token-value://db.turso.io",
-            "http://secret-token-value",
-            "https://db.turso.io:secret-token-value",
-        ] {
-            let message = configuration_error(url);
-            assert!(
-                !message.contains("secret-token-value"),
-                "rejected URL component leaked: {message}"
-            );
-        }
-    }
-
-    #[test]
-    fn store_debug_redacts_token() {
-        let store = TursoStateStore::new(configuration("libsql://db.turso.io")).unwrap();
-        let rendered = format!("{store:?}");
-        assert!(!rendered.contains("secret-token"), "{rendered}");
-        assert!(rendered.contains("<redacted>"), "{rendered}");
-        assert!(
-            rendered.contains("https://db.turso.io/v2/pipeline"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn configuration_debug_redacts_token() {
-        let rendered = format!("{:?}", configuration("libsql://db.turso.io"));
-        assert!(!rendered.contains("secret-token"));
-        assert!(rendered.contains("<redacted>"));
-    }
-
-    #[test]
-    fn retry_policy_backs_off_exponentially() {
-        let policy = RetryPolicy::DEFAULT;
-        assert_eq!(policy.retries, 3);
-        let delays: Vec<Duration> = (0..policy.retries)
-            .map(|retry| policy.delay(retry))
-            .collect();
-        assert_eq!(delays, [200, 400, 800].map(Duration::from_millis).to_vec());
-    }
-
-    #[test]
-    fn classifies_http_statuses() {
-        for status in [408, 429, 500, 502, 503, 504] {
-            let status = reqwest::StatusCode::from_u16(status).unwrap();
-            assert!(status_is_transient(status), "{status}");
-        }
-        for status in [400, 401, 403, 404, 409] {
-            let status = reqwest::StatusCode::from_u16(status).unwrap();
-            assert!(!status_is_transient(status), "{status}");
-        }
-    }
-
-    #[test]
-    fn classifies_statement_errors() {
-        let busy = HranaError {
-            message: "database is locked".into(),
-            code: Some("SQLITE_BUSY".into()),
-        };
-        assert!(statement_failure(&busy, Disclosure::Full).is_transient());
-        let syntax = HranaError {
-            message: "near \"SELEC\": syntax error".into(),
-            code: Some("SQLITE_ERROR".into()),
-        };
-        let failure = statement_failure(&syntax, Disclosure::Full);
-        assert_eq!(failure.kind, FailureKind::Statement);
-        assert!(failure.message.contains("syntax error (SQLITE_ERROR)"));
-    }
-
-    #[test]
-    fn errors_about_statements_carrying_state_quote_only_codes() {
-        let echo = HranaError {
-            message: "invalid argument \"hunter2\"\u{1b}[2J".into(),
-            code: Some("SQLITE_TOOBIG".into()),
-        };
-        let withheld = statement_failure(&echo, Disclosure::CodeOnly).message;
-        assert!(withheld.contains("SQLITE_TOOBIG"), "{withheld}");
-        assert!(!withheld.contains("hunter2"), "{withheld}");
-        let quoted = statement_failure(&echo, Disclosure::Full).message;
-        assert!(quoted.contains("hunter2"), "{quoted}");
-        assert!(!quoted.contains('\u{1b}'), "{quoted}");
-
-        let body = BodyPrefix {
-            bytes: br#"{"message": "bad state_json \"hunter2\"", "code": "HTTP_BAD"}"#.to_vec(),
-            truncated: false,
-        };
-        let described = describe_http_error(&HttpError {
-            status: reqwest::StatusCode::BAD_REQUEST,
-            body: &body,
-            total_bytes: None,
-            disclosure: Disclosure::CodeOnly,
-        });
-        assert!(described.contains("HTTP 400"), "{described}");
-        assert!(described.contains("(HTTP_BAD)"), "{described}");
-        assert!(!described.contains("hunter2"), "{described}");
-    }
-
-    #[test]
-    fn corrupt_rows_are_reported_without_their_content() {
-        let mut row = vec![
-            HranaValue::text("random_pet"),
-            HranaValue::text("pet"),
-            HranaValue::text("random"),
-            HranaValue::text("registry.terraform.io/hashicorp/random"),
-            HranaValue::integer(1),
-            HranaValue::text("{\"password\": hunter2}"),
-            HranaValue::Null,
-            HranaValue::text("[]"),
-            HranaValue::integer(0),
-            HranaValue::Null,
-            HranaValue::integer(1),
-        ];
-        let message = row_to_resource(&row).unwrap_err().to_string();
-        assert!(
-            message.contains("state_json of random_pet.pet"),
-            "{message}"
-        );
-        assert!(message.contains("line 1"), "{message}");
-        assert!(!message.contains("hunter2"), "{message}");
-        row[5] = HranaValue::text("{}");
-        row[6] = HranaValue::Blob {
-            base64: "!!!!".into(),
-        };
-        let message = row_to_resource(&row).unwrap_err().to_string();
-        assert!(!message.contains('!'), "{message}");
-    }
-
-    #[test]
-    fn describes_error_body_prefixes() {
-        let complete = BodyPrefix {
-            bytes: b"short".to_vec(),
-            truncated: false,
-        };
-        assert_eq!(describe_error_body(&complete, Some(5)), "short");
-        // A two-byte character cut in half at the limit is dropped.
-        let mut bytes = "é".repeat(2048).into_bytes();
-        bytes.truncate(MAXIMUM_ERROR_BODY_BYTES - 1);
-        let cut = BodyPrefix {
-            bytes,
-            truncated: true,
-        };
-        let described = describe_error_body(&cut, Some(6000));
-        let kept = described.split('…').next().unwrap();
-        assert_eq!(kept, "é".repeat(2047));
-        assert!(described.ends_with("(truncated, 6000 bytes in total)"));
-        assert!(describe_error_body(&cut, None).ends_with("… (truncated)"));
-    }
-
-    #[test]
-    fn pipeline_body_matches_hrana_wire_format() {
-        let statement = Statement::new(
-            "SELECT ?",
-            vec![
-                HranaValue::text("a"),
-                HranaValue::integer(7),
-                HranaValue::blob(&[1, 2, 3]),
-                HranaValue::blob(&[]),
-                HranaValue::optional_text(None),
-            ],
-        );
-        let body = PipelineBody {
-            baton: None,
-            requests: vec![
-                PipelineRequest::Execute {
-                    statement: &statement,
-                },
-                PipelineRequest::Close,
-            ],
-        };
-        assert_eq!(
-            serde_json::to_value(&body).unwrap(),
-            json!({
-                "baton": null,
-                "requests": [
-                    {"type": "execute", "stmt": {"sql": "SELECT ?", "want_rows": true, "args": [
-                        {"type": "text", "value": "a"},
-                        {"type": "integer", "value": "7"},
-                        {"type": "blob", "base64": "AQID"},
-                        {"type": "null"},
-                        {"type": "null"},
-                    ]}},
-                    {"type": "close"},
-                ],
-            })
-        );
-    }
-
-    #[test]
-    fn transaction_batch_matches_hrana_wire_format() {
-        let statements = [
-            Statement::new("BEGIN IMMEDIATE", Vec::new()),
-            Statement::new("ALTER TABLE t ADD COLUMN c", Vec::new()),
-            Statement::new("COMMIT", Vec::new()),
-            Statement::new("ROLLBACK", Vec::new()),
-        ];
-        let body = PipelineBody {
-            baton: None,
-            requests: vec![PipelineRequest::Batch {
-                batch: Batch {
-                    steps: transaction_steps(&statements, 2),
-                },
-            }],
-        };
-        let steps = serde_json::to_value(&body).unwrap()["requests"][0]["batch"]["steps"].clone();
-        assert_eq!(steps[0].get("condition"), None);
-        assert_eq!(steps[1]["condition"], json!({"type": "ok", "step": 0}));
-        assert_eq!(steps[2]["condition"], json!({"type": "ok", "step": 1}));
-        assert_eq!(
-            steps[3]["condition"],
-            json!({"type": "not", "cond": {"type": "ok", "step": 2}})
-        );
-        assert_eq!(steps[3]["stmt"]["sql"], "ROLLBACK");
-    }
-
-    #[test]
-    fn interprets_migration_batch_results() {
-        let parse = |value: Value| -> BatchResult { serde_json::from_value(value).unwrap() };
-        let execute = json!({"cols": [], "rows": [], "affected_row_count": 0});
-        let committed = parse(json!({
-            "step_results": [execute, execute, execute, null],
-            "step_errors": [null, null, null, null],
-        }));
-        assert_eq!(
-            migration_outcome(&committed, 2).unwrap(),
-            MigrationOutcome::Applied
-        );
-        let duplicate = parse(json!({
-            "step_results": [execute, null, null, execute],
-            "step_errors": [null, {"message": "SQLite error: duplicate column name: tainted", "code": "SQLITE_ERROR"}, null, null],
-        }));
-        assert_eq!(
-            migration_outcome(&duplicate, 2).unwrap(),
-            MigrationOutcome::ColumnAlreadyExists
-        );
-        let broken = parse(json!({
-            "step_results": [execute, null, null, execute],
-            "step_errors": [null, {"message": "no such table: t", "code": "SQLITE_ERROR"}, null, null],
-        }));
-        let failure = migration_outcome(&broken, 2).unwrap_err();
-        assert_eq!(failure.kind, FailureKind::Statement);
-        assert!(failure.message.contains("no such table"));
-    }
-
-    #[test]
-    fn migrations_are_ordered_and_start_at_one() {
-        let versions: Vec<i64> = MIGRATIONS
-            .iter()
-            .map(|migration| migration.version)
-            .collect();
-        let expected: Vec<i64> = (1..=i64::try_from(MIGRATIONS.len()).unwrap()).collect();
-        assert_eq!(versions, expected);
-    }
-
-    #[test]
-    fn version_four_creates_separate_named_environment_tables() {
-        let migration = &MIGRATIONS[3];
-        assert_eq!(migration.version, 4);
-        assert_eq!(migration.statements.len(), 3);
-        for (statement, table, key) in [
-            (
-                migration.statements[0],
-                ENVIRONMENT_RESOURCES_TABLE,
-                "PRIMARY KEY (module_path, project, environment, resource_type, resource_name)",
-            ),
-            (
-                migration.statements[1],
-                ENVIRONMENT_LOCKS_TABLE,
-                "PRIMARY KEY (module_path, project, environment)",
-            ),
-            (
-                migration.statements[2],
-                ENVIRONMENT_OWNERS_TABLE,
-                "PRIMARY KEY (module_path, project, environment)",
-            ),
-        ] {
-            assert!(statement.starts_with(&format!("CREATE TABLE IF NOT EXISTS {table}")));
-            assert!(statement.contains("environment TEXT NOT NULL"));
-            assert!(statement.contains(key));
-            assert!(statement.ends_with("WITHOUT ROWID"));
-        }
-        assert!(migration.statements.iter().all(|statement| {
-            !statement.contains("ALTER TABLE cuenv_infrastructure_resources")
-                && !statement.contains("DROP TABLE")
-        }));
-    }
-
-    #[test]
-    fn query_scope_selects_only_its_table_family_and_identity_arguments() {
-        let legacy = TenantKey::new("example.com/app", "web").unwrap();
-        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
-        let staging = TenantKey::with_environment("example.com/app", "web", "Staging").unwrap();
-        let legacy_tables = StateTables::for_tenant(&legacy);
-        let named_tables = StateTables::for_tenant(&dev);
-        assert_eq!(legacy_tables.resources, RESOURCES_TABLE);
-        assert_eq!(named_tables.resources, ENVIRONMENT_RESOURCES_TABLE);
-        assert_eq!(named_tables.locks, ENVIRONMENT_LOCKS_TABLE);
-        assert_eq!(named_tables.owners, ENVIRONMENT_OWNERS_TABLE);
-        assert!(named_tables.lock_held().contains("environment = ?"));
-        assert!(named_tables.insert_resource().contains("environment"));
-        assert_eq!(tenant_arguments(&legacy).len(), 2);
-        assert_eq!(tenant_arguments(&dev)[2], HranaValue::text("Dev"));
-        assert_eq!(tenant_arguments(&staging)[2], HranaValue::text("Staging"));
-        assert_ne!(tenant_arguments(&dev), tenant_arguments(&staging));
-    }
-
-    #[test]
-    fn parses_pipeline_results_and_rows() {
-        let response: PipelineResponse = serde_json::from_value(json!({
-            "baton": null,
-            "base_url": null,
-            "results": [
-                {"type": "ok", "response": {"type": "execute", "result": {
-                    "cols": [{"name": "a", "decltype": "TEXT"}],
-                    "rows": [[
-                        {"type": "text", "value": "random_pet"},
-                        {"type": "integer", "value": "3"},
-                        {"type": "blob", "base64": "AQID"},
-                        {"type": "null"},
-                    ]],
-                    "affected_row_count": 0,
-                    "last_insert_rowid": null,
-                    "rows_read": 1,
-                }}},
-                {"type": "error", "error": {"message": "boom", "code": "SQLITE_ERROR"}},
-                {"type": "ok", "response": {"type": "close"}},
-            ],
-        }))
-        .unwrap();
-        let PipelineResult::Ok {
-            response: StreamResponse::Execute { result },
-        } = &response.results[0]
-        else {
-            panic!("expected execute result");
-        };
-        let row = &result.rows[0];
-        assert_eq!(row[0].as_text(), Some("random_pet"));
-        assert_eq!(row[1].as_integer(), Some(3));
-        assert_eq!(row[2].as_blob().unwrap(), Some(vec![1, 2, 3]));
-        assert_eq!(row[3].as_blob().unwrap(), None);
-        assert!(matches!(response.results[1], PipelineResult::Error { .. }));
-        assert!(matches!(
-            response.results[2],
-            PipelineResult::Ok {
-                response: StreamResponse::Other
-            }
-        ));
-    }
-
-    #[test]
-    fn row_to_resource_reads_tainted_and_identity() {
-        let row = |tainted: &str, identity: HranaValue| {
-            vec![
-                HranaValue::text("random_pet"),
-                HranaValue::text("pet"),
-                HranaValue::text("random"),
-                HranaValue::text("registry.terraform.io/hashicorp/random"),
-                HranaValue::integer(1),
-                HranaValue::text("{\"id\":\"x\"}"),
-                HranaValue::Null,
-                HranaValue::text("[]"),
-                HranaValue::Integer {
-                    value: tainted.into(),
-                },
-                identity,
-                HranaValue::integer(7),
-                HranaValue::text(&uuid::Uuid::from_u128(7).to_string()),
-            ]
-        };
-        let resource = row_to_resource(&row("1", HranaValue::text("{\"name\":\"a\"}"))).unwrap();
-        assert!(resource.tainted);
-        assert_eq!(resource.serial, 7);
-        assert_eq!(resource.identity, Some(json!({"name": "a"})));
-        let resource = row_to_resource(&row("0", HranaValue::Null)).unwrap();
-        assert!(!resource.tainted);
-        assert_eq!(resource.identity, None);
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
-    async fn concurrent_migrations_converge() {
-        let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL").unwrap();
-        let store = Arc::new(
-            TursoStateStore::new(TursoConfiguration {
-                url,
-                authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
-            })
-            .unwrap(),
-        );
-        let mut migrators = tokio::task::JoinSet::new();
-        for _ in 0..8 {
-            let store = Arc::clone(&store);
-            migrators.spawn(async move { store.migrate().await });
-        }
-        while let Some(outcome) = migrators.join_next().await {
-            outcome.unwrap().unwrap();
-        }
-        let latest = MIGRATIONS.last().unwrap().version;
-        assert_eq!(store.schema_version().await.unwrap(), latest);
-        store.migrate().await.unwrap();
-        assert_eq!(store.schema_version().await.unwrap(), latest);
-    }
-
-    /// Against a real server: reads on a database cuenv never touched are
-    /// empty and create nothing, and a schema newer than this build is
-    /// refused everywhere. The database must be one nothing else uses; the
-    /// test drops cuenv's tables at the end so it can run again.
-    #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "requires an otherwise unused libSQL database (CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL)"]
-    async fn fresh_database_reads_and_newer_schema_against_a_server() {
-        let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL").unwrap();
-        let store = TursoStateStore::new(TursoConfiguration {
-            url,
-            authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
-        })
-        .unwrap();
-        let drop_tables = || async {
-            for table in [
-                SCHEMA_TABLE,
-                RESOURCES_TABLE,
-                LOCKS_TABLE,
-                OWNERS_TABLE,
-                ENVIRONMENT_RESOURCES_TABLE,
-                ENVIRONMENT_LOCKS_TABLE,
-                ENVIRONMENT_OWNERS_TABLE,
-            ] {
-                store
-                    .execute(Statement::new(
-                        format!("DROP TABLE IF EXISTS {table}"),
-                        Vec::new(),
-                    ))
-                    .await
-                    .unwrap();
-            }
-        };
-        let untouched = StoredSchema {
-            version: 0,
-            legacy: TablePresence::default(),
-            named: TablePresence::default(),
-        };
-        assert_eq!(
-            store.stored_schema().await.unwrap(),
-            untouched,
-            "the database must start without cuenv tables"
-        );
-
-        assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
-        assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
-        assert_eq!(store.owner(&tenant()).await.unwrap(), None);
-        assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
-        assert!(store.lock(&tenant(), "test").await.is_err());
-        assert_eq!(store.stored_schema().await.unwrap(), untouched);
-
-        store.migrate().await.unwrap();
-        let lock = store.lock(&tenant(), "test").await.unwrap();
-        store.unlock(&tenant(), &lock).await.unwrap();
-
-        store
-            .execute(Statement::new(
-                "INSERT INTO cuenv_infrastructure_schema (version) VALUES (?)",
-                vec![HranaValue::integer(LATEST_SCHEMA_VERSION + 1)],
-            ))
-            .await
-            .unwrap();
-        let refusals = [
-            store.migrate().await.err(),
-            store.list(&tenant()).await.err(),
-            store.current_lock(&tenant()).await.err(),
-            store.lock(&tenant(), "test").await.err(),
-            store.force_unlock(&tenant(), "any").await.err(),
-            store.owner(&tenant()).await.err(),
-        ];
-        drop_tables().await;
-        for refusal in refusals {
-            let message = refusal.expect("a newer schema must be refused").to_string();
-            assert!(
-                message.contains("newer than this cuenv supports"),
-                "{message}"
-            );
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // A minimal HTTP server standing in for Turso.
-    // -----------------------------------------------------------------------
-
-    /// How the fake server answers one request: `None` drops the connection.
-    type Responder = dyn Fn(usize, Value) -> Option<(u16, String)> + Send + Sync;
-
-    struct FakeServer {
-        url: String,
-        requests: Arc<AtomicUsize>,
-    }
-
-    async fn fake_server(responder: Arc<Responder>) -> FakeServer {
-        fake_server_with_headers(responder, String::new()).await
-    }
-
-    /// A fake server whose every reply also carries `headers` (each line
-    /// ending in `\r\n`).
-    async fn fake_server_with_headers(responder: Arc<Responder>, headers: String) -> FakeServer {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let requests = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&requests);
-        let replies = Arc::new(Replies { responder, headers });
-        tokio::spawn(async move {
-            while let Ok((stream, _)) = listener.accept().await {
-                let index = counter.fetch_add(1, Ordering::SeqCst);
-                tokio::spawn(answer(stream, index, Arc::clone(&replies)));
-            }
-        });
-        FakeServer { url, requests }
-    }
-
-    /// How a fake server replies.
-    struct Replies {
-        responder: Arc<Responder>,
-        headers: String,
-    }
-
-    async fn answer(mut stream: TcpStream, index: usize, replies: Arc<Replies>) {
-        let Replies { responder, headers } = replies.as_ref();
-        let mut buffer = Vec::new();
-        let mut chunk = [0_u8; 4096];
-        let header_end = loop {
-            let read = stream.read(&mut chunk).await.unwrap();
-            if read == 0 {
-                return;
-            }
-            buffer.extend_from_slice(&chunk[..read]);
-            if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-                break position + 4;
-            }
-        };
-        let request_headers = String::from_utf8_lossy(&buffer[..header_end]).to_ascii_lowercase();
-        let length: usize = request_headers
-            .lines()
-            .find_map(|line| line.strip_prefix("content-length:"))
-            .map_or(0, |value| value.trim().parse().unwrap());
-        while buffer.len() < header_end + length {
-            let read = stream.read(&mut chunk).await.unwrap();
-            if read == 0 {
-                return;
-            }
-            buffer.extend_from_slice(&chunk[..read]);
-        }
-        let body: Value = serde_json::from_slice(&buffer[header_end..header_end + length]).unwrap();
-        let Some((status, response)) = responder(index, body) else {
-            return;
-        };
-        let reply = format!(
-            "HTTP/1.1 {status} Status\r\ncontent-type: application/json\r\n{headers}\
-             content-length: {}\r\nconnection: close\r\n\r\n{response}",
-            response.len()
-        );
-        stream.write_all(reply.as_bytes()).await.unwrap();
-        stream.shutdown().await.unwrap();
-    }
-
-    fn execute_response(rows: &Value, affected_row_count: u64) -> String {
-        json!({
-            "baton": null,
-            "base_url": null,
-            "results": [
-                {"type": "ok", "response": {"type": "execute", "result": {
-                    "cols": [], "rows": rows, "affected_row_count": affected_row_count,
-                }}},
-                {"type": "ok", "response": {"type": "close"}},
-            ],
-        })
-        .to_string()
-    }
-
-    /// Answer every statement of a pipeline with `rows_for(sql)`; `None` is
-    /// a statement error.
-    fn pipeline_response(body: &Value, rows_for: impl Fn(&str) -> Option<Value>) -> String {
-        let results: Vec<Value> = body["requests"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|request| match request["type"].as_str().unwrap() {
-                "execute" => {
-                    let sql = request["stmt"]["sql"].as_str().unwrap();
-                    rows_for(sql).map_or_else(
-                        || {
-                            json!({"type": "error", "error": {
-                                "message": format!("unexpected statement: {sql}"),
-                                "code": "SQLITE_ERROR",
-                            }})
-                        },
-                        |rows| {
-                            json!({"type": "ok", "response": {"type": "execute", "result": {
-                                "cols": [], "rows": rows, "affected_row_count": 1,
-                            }}})
-                        },
-                    )
-                }
-                _ => json!({"type": "ok", "response": {"type": "close"}}),
-            })
-            .collect();
-        json!({"baton": null, "base_url": null, "results": results}).to_string()
-    }
-
-    /// Rows a database at schema `version` with every cuenv table returns
-    /// for the store's schema inspection; `None` for any other statement.
-    fn schema_rows(sql: &str, version: i64) -> Option<Value> {
-        if sql.starts_with("SELECT name FROM sqlite_master") {
-            let mut rows = json!([
-                [{"type": "text", "value": SCHEMA_TABLE}],
-                [{"type": "text", "value": RESOURCES_TABLE}],
-                [{"type": "text", "value": LOCKS_TABLE}],
-                [{"type": "text", "value": OWNERS_TABLE}],
-            ]);
-            if version >= 4 {
-                rows.as_array_mut().unwrap().extend(
-                    json!([
-                        [{"type": "text", "value": ENVIRONMENT_RESOURCES_TABLE}],
-                        [{"type": "text", "value": ENVIRONMENT_LOCKS_TABLE}],
-                        [{"type": "text", "value": ENVIRONMENT_OWNERS_TABLE}],
-                    ])
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .cloned(),
-                );
-            }
-            Some(rows)
-        } else if sql == SELECT_SCHEMA_VERSION {
-            Some(json!([[{"type": "integer", "value": version.to_string()}]]))
-        } else {
-            None
-        }
-    }
-
-    fn first_statement(body: &Value) -> String {
-        body["requests"][0]["stmt"]["sql"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    }
-
-    fn fast_store(url: &str, timeout: Duration) -> TursoStateStore {
-        let mut store = TursoStateStore::with_timeout(configuration(url), timeout).unwrap();
-        store.retry_policy = RetryPolicy {
-            retries: 3,
-            initial_delay: Duration::from_millis(1),
-        };
-        store
-    }
-
-    fn tenant() -> TenantKey {
-        TenantKey::new("example.com/fake", "web").unwrap()
-    }
-
-    #[tokio::test]
-    async fn retries_transient_http_statuses_then_succeeds() {
-        let server = fake_server(Arc::new(|index, _| {
-            Some(match index {
-                0 => (503, "unavailable".to_string()),
-                1 => (429, "slow down".to_string()),
-                _ => (200, execute_response(&json!([]), 0)),
-            })
-        }))
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
-        assert_eq!(server.requests.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn permanent_http_errors_are_not_retried_and_never_leak_the_token() {
-        let server = fake_server(Arc::new(|_, _| {
-            let echo = format!("bad token secret-token {}", "x".repeat(10_000));
-            Some((401, echo))
-        }))
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let message = store.list(&tenant()).await.unwrap_err().to_string();
-        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
-        assert!(message.contains("HTTP 401"), "{message}");
-        assert!(!message.contains("secret-token"), "{message}");
-        assert!(message.contains("<redacted>"), "{message}");
-        assert!(message.contains("truncated"), "{message}");
-        assert!(
-            message.len() < MAXIMUM_ERROR_BODY_BYTES + 512,
-            "{}",
-            message.len()
-        );
-    }
-
-    #[tokio::test]
-    async fn write_errors_never_quote_a_body_echoing_the_state() {
-        let server = fake_server(Arc::new(|_, body| {
-            // Echo the request, state included, as some servers do.
-            Some((
-                400,
-                json!({"message": format!("bad request {body}"), "code": "BAD_REQUEST"})
-                    .to_string(),
-            ))
-        }))
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let record = ManagedResource {
-            address: ResourceAddress::new("random_password", "database"),
-            provider: "random".into(),
-            provider_source: "registry.terraform.io/hashicorp/random".into(),
-            schema_version: 0,
-            state: json!({"result": "hunter2"}),
-            private: Vec::new(),
-            dependencies: Vec::new(),
-            tainted: false,
-            identity: None,
-            serial: 0,
-            generation: uuid::Uuid::nil(),
-        };
-        let lock = StateLock::generate();
-        let message = store
-            .put(&tenant(), &lock, &record)
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(message.contains("HTTP 400"), "{message}");
-        assert!(message.contains("BAD_REQUEST"), "{message}");
-        assert!(!message.contains("hunter2"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn connection_failures_are_retried_and_report_their_cause() {
-        // Bind then drop a listener to find a port nothing listens on.
-        let port = TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let store = fast_store(&format!("http://127.0.0.1:{port}"), Duration::from_secs(5));
-        let message = store.list(&tenant()).await.unwrap_err().to_string();
-        assert!(message.contains("gave up after 4 attempts"), "{message}");
-        // The source chain is included, not just "error sending request".
-        assert!(message.to_lowercase().contains("connect"), "{message}");
-        assert!(message.matches(": ").count() >= 2, "{message}");
-    }
-
-    #[tokio::test]
-    async fn timeouts_are_retried_and_reported_as_timeouts() {
-        // Accept connections and never answer them.
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let accepted = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&accepted);
-        tokio::spawn(async move {
-            while let Ok((mut stream, _)) = listener.accept().await {
-                counter.fetch_add(1, Ordering::SeqCst);
-                // Read until the client gives up, never answering.
-                tokio::spawn(async move {
-                    let mut ignored = Vec::new();
-                    let _ = stream.read_to_end(&mut ignored).await;
-                });
-            }
-        });
-        let store = fast_store(&url, Duration::from_millis(100));
-        let message = store.list(&tenant()).await.unwrap_err().to_string();
-        assert!(message.contains("timed out"), "{message}");
-        assert!(message.contains("gave up after 4 attempts"), "{message}");
-        assert_eq!(accepted.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn lock_insert_with_lost_response_is_recovered_from_the_lock_row() {
-        let inserted = Arc::new(Mutex::new(None::<String>));
-        let recorded = Arc::clone(&inserted);
-        let inserts = Arc::new(AtomicUsize::new(0));
-        let insert_counter = Arc::clone(&inserts);
-        let server = fake_server(Arc::new(move |_, body| {
-            let sql = first_statement(&body);
-            if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
-                return Some((
-                    200,
-                    pipeline_response(&body, |sql| schema_rows(sql, LATEST_SCHEMA_VERSION)),
-                ));
-            }
-            if sql.starts_with("INSERT INTO cuenv_infrastructure_locks") {
-                insert_counter.fetch_add(1, Ordering::SeqCst);
-                // Commit the lock, then lose the response.
-                let identifier = body["requests"][0]["stmt"]["args"][2]["value"]
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                *recorded.lock().unwrap() = Some(identifier);
-                return None;
-            }
-            let rows = recorded
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map_or(json!([]), |identifier| {
-                    json!([[
-                        {"type": "text", "value": identifier},
-                        {"type": "text", "value": "test"},
-                        {"type": "text", "value": "2026-01-01T00:00:00Z"},
-                    ]])
-                });
-            Some((200, execute_response(&rows, 0)))
-        }))
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let lock = store.lock(&tenant(), "test").await.unwrap();
-        assert_eq!(Some(lock.lock_identifier), inserted.lock().unwrap().clone());
-        // One insert and one read after the schema check: no blind retry of
-        // the insert.
-        assert_eq!(inserts.load(Ordering::SeqCst), 1);
-        assert_eq!(server.requests.load(Ordering::SeqCst), 4);
-    }
-
-    #[tokio::test]
-    async fn lock_held_by_another_run_is_reported() {
-        let server = fake_server(Arc::new(|_, body| {
-            let sql = first_statement(&body);
-            Some(if schema_rows(&sql, LATEST_SCHEMA_VERSION).is_some() {
-                (
-                    200,
-                    pipeline_response(&body, |sql| schema_rows(sql, LATEST_SCHEMA_VERSION)),
-                )
-            } else if sql.starts_with("INSERT") {
-                (200, execute_response(&json!([]), 0))
-            } else {
-                let rows = json!([[
-                    {"type": "text", "value": "other-lock"},
-                    {"type": "text", "value": "someone else"},
-                    {"type": "text", "value": "2026-01-01T00:00:00Z"},
-                ]]);
-                (200, execute_response(&rows, 0))
-            })
-        }))
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let error = store.lock(&tenant(), "test").await.unwrap_err();
-        assert!(
-            matches!(&error, InfrastructureError::Locked { lock_identifier, holder, .. }
-                if lock_identifier == "other-lock" && holder == "someone else"),
-            "{error:?}"
-        );
-    }
-
-    /// A fake database that answers with `rows_for` and records every
-    /// statement it receives.
-    async fn recording_database(
-        rows_for: impl Fn(&str) -> Option<Value> + Send + Sync + 'static,
-    ) -> (FakeServer, Arc<Mutex<Vec<String>>>) {
-        let statements = Arc::new(Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&statements);
-        let server = fake_server(Arc::new(move |_, body| {
-            let requests = body["requests"].as_array().unwrap();
-            recorded.lock().unwrap().extend(
-                requests
-                    .iter()
-                    .filter_map(|request| request["stmt"]["sql"].as_str())
-                    .map(str::to_string),
-            );
-            Some((200, pipeline_response(&body, &rows_for)))
-        }))
-        .await;
-        (server, statements)
-    }
-
-    #[tokio::test]
-    async fn reads_on_a_database_without_cuenv_tables_are_empty_and_change_nothing() {
-        let (server, statements) = recording_database(|sql| {
-            sql.starts_with("SELECT name FROM sqlite_master")
-                .then(|| json!([]))
-        })
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
-        assert_eq!(store.current_lock(&tenant()).await.unwrap(), None);
-        assert!(!store.force_unlock(&tenant(), "any").await.unwrap());
-        assert_eq!(store.owner(&tenant()).await.unwrap(), None);
-        let statements = statements.lock().unwrap().clone();
-        assert_eq!(statements.len(), 4, "{statements:?}");
-        assert!(
-            statements
-                .iter()
-                .all(|sql| sql.starts_with("SELECT name FROM sqlite_master")),
-            "{statements:?}"
-        );
-        // Taking the lock needs a migrated schema.
-        let message = store.lock(&tenant(), "test").await.unwrap_err().to_string();
-        assert!(message.contains("migrate the state store"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn every_operation_refuses_a_newer_schema() {
-        let newer = LATEST_SCHEMA_VERSION + 1;
-        let (server, statements) = recording_database(move |sql| {
-            schema_rows(sql, newer).or_else(|| (sql == CREATE_SCHEMA_TABLE).then(|| json!([])))
-        })
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let messages = [
-            store.migrate().await.unwrap_err().to_string(),
-            store.list(&tenant()).await.unwrap_err().to_string(),
-            store.current_lock(&tenant()).await.unwrap_err().to_string(),
-            store.lock(&tenant(), "test").await.unwrap_err().to_string(),
-            store
-                .force_unlock(&tenant(), "lock")
-                .await
-                .unwrap_err()
-                .to_string(),
-            store.owner(&tenant()).await.unwrap_err().to_string(),
-        ];
-        for message in messages {
-            assert!(
-                message.contains(&format!(
-                    "schema version {newer} is newer than this cuenv supports"
-                )),
-                "{message}"
-            );
-        }
-        // Nothing but schema inspection reached the database.
-        let statements = statements.lock().unwrap().clone();
-        assert!(
-            statements.iter().all(|sql| sql == CREATE_SCHEMA_TABLE
-                || sql == SELECT_SCHEMA_VERSION
-                || sql.starts_with("SELECT name FROM sqlite_master")),
-            "{statements:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn reads_an_older_schema_without_migrating_it() {
-        let row = json!([[
-            {"type": "text", "value": "random_pet"},
-            {"type": "text", "value": "pet"},
-            {"type": "text", "value": "random"},
-            {"type": "text", "value": "registry.terraform.io/hashicorp/random"},
-            {"type": "integer", "value": "0"},
-            {"type": "text", "value": "{\"id\":\"x\"}"},
-            {"type": "null"},
-            {"type": "text", "value": "[]"},
-            {"type": "integer", "value": "0"},
-            {"type": "null"},
-            {"type": "integer", "value": "4"},
-            {"type": "null"},
-        ]]);
-        let (server, statements) = recording_database(move |sql| {
-            schema_rows(sql, 1).or_else(|| {
-                (sql == SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY.replacen(
-                    "serial FROM",
-                    "serial, NULL AS generation FROM",
-                    1,
-                ))
-                .then(|| row.clone())
-            })
-        })
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let resources = store.list(&tenant()).await.unwrap();
-        assert_eq!(resources.len(), 1);
-        assert!(!resources[0].tainted);
-        assert_eq!(resources[0].identity, None);
-        let message = store.lock(&tenant(), "test").await.unwrap_err().to_string();
-        assert!(message.contains("version 1"), "{message}");
-        assert!(
-            statements
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|sql| !sql.starts_with("ALTER") && !sql.starts_with("CREATE")),
-        );
-    }
-
-    #[tokio::test]
-    async fn named_environment_reads_do_not_fall_back_to_legacy_tables() {
-        let (server, statements) = recording_database(|sql| schema_rows(sql, 3)).await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let named = TenantKey::with_environment("example.com/fake", "web", "Dev").unwrap();
-        assert!(store.list(&named).await.unwrap().is_empty());
-        assert!(store.current_lock(&named).await.unwrap().is_none());
-        assert!(store.owner(&named).await.unwrap().is_none());
-        assert!(!store.force_unlock(&named, "legacy-lock").await.unwrap());
-        assert!(store.lock(&named, "test").await.is_err());
-        assert!(
-            statements
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|sql| sql.starts_with("SELECT name FROM sqlite_master")
-                    || sql == SELECT_SCHEMA_VERSION)
-        );
-    }
-
-    #[tokio::test]
-    async fn named_environment_writes_use_only_environment_tables() {
-        let (server, statements) = recording_database(|sql| {
-            schema_rows(sql, LATEST_SCHEMA_VERSION).or_else(|| {
-                if sql.starts_with(
-                    "SELECT instance, claimed_at FROM cuenv_infrastructure_environment_owners",
-                ) {
-                    Some(json!([[{"type": "text", "value": ".:web"}, {"type": "text", "value": "now"}]]))
-                } else if sql.starts_with("SELECT resource_type, resource_name")
-                    && sql.contains(ENVIRONMENT_RESOURCES_TABLE)
-                    || sql.starts_with(
-                        "SELECT lock_identifier, holder, acquired_at FROM cuenv_infrastructure_environment_locks",
-                    )
-                {
-                    Some(json!([]))
-                } else {
-                    (sql.starts_with("INSERT INTO cuenv_infrastructure_environment_")
-                        || sql.starts_with("DELETE FROM cuenv_infrastructure_environment_")
-                        || sql.starts_with("UPDATE cuenv_infrastructure_environment_"))
-                    .then(|| json!([]))
-                }
-            })
-        })
-        .await;
-        let store = fast_store(&server.url, Duration::from_secs(5));
-        let named = TenantKey::with_environment("example.com/fake", "web", "Dev").unwrap();
-        let lock = store.lock(&named, "test").await.unwrap();
-        let record = ManagedResource {
-            address: ResourceAddress::new("random_pet", "pet"),
-            provider: "random".into(),
-            provider_source: "registry.terraform.io/hashicorp/random".into(),
-            schema_version: 0,
-            state: json!({"id": "dev-pet"}),
-            private: Vec::new(),
-            dependencies: Vec::new(),
-            tainted: false,
-            identity: None,
-            serial: 0,
-            generation: uuid::Uuid::nil(),
-        };
-        store.put(&named, &lock, &record).await.unwrap();
-        store
-            .put_if_unchanged(
-                &named,
-                &lock,
-                &ConditionalPut {
-                    resource: &record,
-                    expected: RecordVersion::Generation {
-                        generation: uuid::Uuid::nil(),
-                        serial: 1,
-                    },
-                },
-            )
-            .await
-            .unwrap();
-        store.delete(&named, &lock, &record.address).await.unwrap();
-        assert!(store.list(&named).await.unwrap().is_empty());
-        assert!(
-            store
-                .read_resource(&named, &record.address)
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            store
-                .owner(&named)
-                .await
-                .unwrap()
-                .unwrap()
-                .instance
-                .as_str(),
-            ".:web"
-        );
-        let instance = ProjectInstance::new(".", "web").unwrap();
-        store
-            .claim_owner(
-                &named,
-                &lock,
-                &OwnerClaim {
-                    instance: &instance,
-                    mode: OwnerClaimMode::IfUnowned,
-                },
-            )
-            .await
-            .unwrap();
-        assert!(store.current_lock(&named).await.unwrap().is_none());
-        store
-            .force_unlock(&named, &lock.lock_identifier)
-            .await
-            .unwrap();
-        store.unlock(&named, &lock).await.unwrap();
-        let statements = statements.lock().unwrap();
-        assert!(
-            statements
-                .iter()
-                .any(|sql| sql.starts_with(&format!("INSERT INTO {ENVIRONMENT_RESOURCES_TABLE}")))
-        );
-        assert!(
-            statements
-                .iter()
-                .any(|sql| sql.starts_with(&format!("UPDATE {ENVIRONMENT_RESOURCES_TABLE}")))
-        );
-        assert!(
-            statements
-                .iter()
-                .filter(|sql| {
-                    sql.contains(ENVIRONMENT_RESOURCES_TABLE)
-                        || sql.contains(ENVIRONMENT_LOCKS_TABLE)
-                        || sql.contains(ENVIRONMENT_OWNERS_TABLE)
-                })
-                .all(|sql| sql.contains("environment = ?") || sql.contains("environment,"))
-        );
-        assert!(
-            statements
-                .iter()
-                .any(|sql| sql.starts_with(&format!("INSERT INTO {ENVIRONMENT_OWNERS_TABLE}")))
-        );
-        assert!(statements.iter().all(|sql| {
-            !sql.contains("FROM cuenv_infrastructure_resources ")
-                && !sql.contains("INTO cuenv_infrastructure_resources ")
-                && !sql.contains("FROM cuenv_infrastructure_locks ")
-                && !sql.contains("INTO cuenv_infrastructure_locks ")
-                && !sql.contains("FROM cuenv_infrastructure_owners ")
-                && !sql.contains("INTO cuenv_infrastructure_owners ")
-        }));
-    }
-
-    #[tokio::test]
-    async fn redirects_are_not_followed() {
-        let elsewhere = fake_server(Arc::new(|_, _| {
-            Some((200, execute_response(&json!([]), 0)))
-        }))
-        .await;
-        let redirecting = fake_server_with_headers(
-            Arc::new(|_, _| Some((307, String::new()))),
-            format!("location: {}/v2/pipeline\r\n", elsewhere.url),
-        )
-        .await;
-        let store = fast_store(&redirecting.url, Duration::from_secs(5));
-        let message = store.list(&tenant()).await.unwrap_err().to_string();
-        assert!(message.contains("HTTP 307"), "{message}");
-        assert_eq!(redirecting.requests.load(Ordering::SeqCst), 1);
-        assert_eq!(elsewhere.requests.load(Ordering::SeqCst), 0);
-    }
-
-    #[tokio::test]
-    async fn oversized_responses_are_refused_without_retrying() {
-        let server = fake_server(Arc::new(|_, body| {
-            Some((
-                200,
-                pipeline_response(&body, |_| {
-                    Some(json!([[{"type": "text", "value": "x".repeat(1_000)}]]))
-                }),
-            ))
-        }))
-        .await;
-        let mut store = fast_store(&server.url, Duration::from_secs(5));
-        store.maximum_response_bytes = 512;
-        let message = store.list(&tenant()).await.unwrap_err().to_string();
-        assert!(message.contains("exceeds the 512-byte limit"), "{message}");
-        assert_eq!(server.requests.load(Ordering::SeqCst), 1);
-    }
-
-    /// Set in the child process of
-    /// [`plaintext_loopback_requests_bypass_proxy_environment`].
-    const PROXY_CHILD_VARIABLE: &str = "CUENV_INFRASTRUCTURE_TEST_PROXY_CHILD";
-
-    /// A plaintext URL is always loopback; its requests (and the token) must
-    /// never go to a proxy named in the environment. The proxy variables are
-    /// process-wide, so the check runs in a child process of this test binary.
-    #[tokio::test]
-    async fn plaintext_loopback_requests_bypass_proxy_environment() {
-        if std::env::var_os(PROXY_CHILD_VARIABLE).is_some() {
-            let server = fake_server(Arc::new(|_, body| {
-                Some((200, pipeline_response(&body, |_| Some(json!([])))))
-            }))
-            .await;
-            let store = fast_store(&server.url, Duration::from_secs(5));
-            assert_eq!(store.list(&tenant()).await.unwrap(), Vec::new());
-            assert_eq!(server.requests.load(Ordering::SeqCst), 1);
-            return;
-        }
-        let proxy = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let proxy_url = format!("http://{}", proxy.local_addr().unwrap());
-        let proxied = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&proxied);
-        tokio::spawn(async move {
-            // Accept and drop: a request sent here fails.
-            while let Ok((stream, _)) = proxy.accept().await {
-                counter.fetch_add(1, Ordering::SeqCst);
-                drop(stream);
-            }
-        });
-        let output = tokio::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "state::turso::tests::plaintext_loopback_requests_bypass_proxy_environment",
-                "--test-threads=1",
-            ])
-            .env(PROXY_CHILD_VARIABLE, "1")
-            .env("HTTP_PROXY", &proxy_url)
-            .env("http_proxy", &proxy_url)
-            .env("ALL_PROXY", &proxy_url)
-            .env("all_proxy", &proxy_url)
-            .env_remove("NO_PROXY")
-            .env_remove("no_proxy")
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
-            "the child did not run the test"
-        );
-        assert_eq!(proxied.load(Ordering::SeqCst), 0);
-    }
-}
+mod tests;

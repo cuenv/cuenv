@@ -1,6 +1,10 @@
 //! Error type for the infrastructure engine.
 
+use std::fmt;
+
 use thiserror::Error;
+
+use crate::state::ResourceAddress;
 
 /// Result alias for this crate.
 pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
@@ -115,12 +119,49 @@ pub enum InfrastructureError {
         problem: String,
     },
 
+    /// The state store's schema is newer than this build supports. Reading or
+    /// writing it could misread rows whose meaning changed, so nothing is
+    /// touched.
+    #[error(
+        "the state schema is at version {found}, newer than this cuenv supports ({supported}); \
+         upgrade cuenv"
+    )]
+    StateSchemaNewer {
+        /// Schema version recorded in the state store.
+        found: i64,
+        /// Newest schema version this build knows.
+        supported: i64,
+    },
+
+    /// A schema migration was refused because a run holds a state lock.
+    /// Migrating under a live run could land its writes in a half-migrated
+    /// shape.
+    #[error(
+        "the state schema cannot move to version {version} while a run holds a state lock; wait \
+         for running `cuenv infrastructure` commands to finish, or release a lock left behind \
+         by a dead run with `cuenv infrastructure unlock`, then run the command again"
+    )]
+    StateMigrationBlocked {
+        /// Schema version the migration would create.
+        version: i64,
+    },
+
+    /// A stored record could not be decoded. The state store answered; its
+    /// content is damaged or was written by something else.
+    #[error("the stored record of {address} cannot be read: {problem}")]
+    UndecodableRecord {
+        /// Resource address, or a placeholder when the row has none.
+        address: String,
+        /// What is wrong, without the record's content.
+        problem: String,
+    },
+
     /// A conditional write found the stored record changed since the
     /// caller's view of it, so writing would overwrite a newer record.
     #[error(
-        "{address} changed in the state store since this record was saved (expected {expected}, \
-         found {found}); writing it would overwrite a newer record. Review the resource, then \
-         recover with force to overwrite it anyway"
+        "{}{address} changed in the state store since this record was saved (expected \
+         {expected}, found {found}); writing it would overwrite a newer record",
+        saved_in(.file.as_deref())
     )]
     StateChanged {
         /// Resource address.
@@ -129,6 +170,8 @@ pub enum InfrastructureError {
         expected: String,
         /// The record version found.
         found: String,
+        /// The unrecorded change file being recovered, when there is one.
+        file: Option<String>,
     },
 
     /// A plan's view of stored state no longer matches the store, so
@@ -217,6 +260,16 @@ pub enum InfrastructureError {
     #[error("interrupted while planning; nothing was changed")]
     InterruptedWhilePlanning,
 
+    /// The plan was made with other provider environment variables than the
+    /// engine applying it has, so providers would behave differently.
+    #[error("the environment passed to providers changed after the plan was made; plan again")]
+    PlanEnvironmentChanged,
+
+    /// An apply could not finish every change. Changes that do not depend
+    /// on a failed change were still applied.
+    #[error("{0}")]
+    ApplyIncomplete(Box<IncompleteApply>),
+
     /// Input or output failure.
     #[error("{context}: {source}")]
     InputOutput {
@@ -226,6 +279,82 @@ pub enum InfrastructureError {
         #[source]
         source: std::io::Error,
     },
+}
+
+/// A change whose operation failed during an apply.
+#[derive(Debug)]
+pub struct ChangeFailure {
+    /// The resource.
+    pub address: ResourceAddress,
+    /// How it failed.
+    pub error: InfrastructureError,
+}
+
+/// What an apply that could not finish every change leaves behind.
+#[derive(Debug)]
+pub struct IncompleteApply {
+    /// The failed changes, in the order they failed; never empty.
+    pub failures: Vec<ChangeFailure>,
+    /// Changes not attempted because a change they depend on failed.
+    pub skipped: Vec<ResourceAddress>,
+    /// Replacements whose old object was deleted but whose new object was
+    /// not created. The next apply creates them.
+    pub deleted_not_recreated: Vec<ResourceAddress>,
+    /// Changes applied and recorded.
+    pub completed: usize,
+    /// Changes to real infrastructure the plan contained.
+    pub total: usize,
+}
+
+impl fmt::Display for IncompleteApply {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut failures = self.failures.iter();
+        if let Some(first) = failures.next() {
+            write!(formatter, "{}", first.error)?;
+        }
+        let further: Vec<&ChangeFailure> = failures.collect();
+        if !further.is_empty() {
+            write!(formatter, "\n{} more change(s) failed:", further.len())?;
+            for failure in further {
+                write!(formatter, "\n  {}: {}", failure.address, failure.error)?;
+            }
+        }
+        if !self.skipped.is_empty() {
+            write!(
+                formatter,
+                "\n{} change(s) were not attempted because a change they depend on failed: {}",
+                self.skipped.len(),
+                join_addresses(&self.skipped)
+            )?;
+        }
+        if !self.deleted_not_recreated.is_empty() {
+            write!(
+                formatter,
+                "\n{} replacement(s) were deleted but not recreated; the next apply creates \
+                 them: {}",
+                self.deleted_not_recreated.len(),
+                join_addresses(&self.deleted_not_recreated)
+            )?;
+        }
+        write!(
+            formatter,
+            "\napplied and recorded {} of {} changes",
+            self.completed, self.total
+        )
+    }
+}
+
+fn join_addresses(addresses: &[ResourceAddress]) -> String {
+    addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Prefix naming the unrecorded change file an error is about.
+fn saved_in(file: Option<&str>) -> String {
+    file.map_or_else(String::new, |file| format!("{file}: "))
 }
 
 impl InfrastructureError {

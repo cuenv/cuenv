@@ -33,6 +33,11 @@
 //	fake_dyn       a computed dynamic attribute holding list(string)
 //	fake_tags      an optional set of strings
 //	fake_ordered   parent/dependent objects enforcing replacement ordering
+//	fake_obj       real objects as files obj-<key>: key and version force replacement,
+//	               mode "solo" updates and deletes need a childless object, creates
+//	               refuse an existing key; failures by flag; deletes journal the private
+//	               data they were sent
+//	fake_obj2      the same under another type name (type changes of one resource)
 package main
 
 import (
@@ -142,6 +147,8 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &dynamic{} },
 		func() resource.Resource { return &tags{} },
 		func() resource.Resource { return &ordered{} },
+		func() resource.Resource { return &obj{kind: "obj"} },
+		func() resource.Resource { return &obj{kind: "obj2"} },
 	}
 }
 

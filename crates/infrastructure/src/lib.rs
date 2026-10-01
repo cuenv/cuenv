@@ -44,7 +44,10 @@ pub use state::{
     TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};
-pub use unrecorded::{RecoverOptions, RecoverOverwrite, UnrecordedRecord, UnrecordedStore};
+pub use unrecorded::{
+    BackendMismatch, ChangedRecord, RecoverOptions, RecoverOverrides, UnrecordedRecord,
+    UnrecordedStore,
+};
 
 /// Install the process-wide rustls cryptography provider reqwest needs.
 ///

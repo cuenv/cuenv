@@ -585,7 +585,7 @@ fn infrastructure_command(
 ) -> Command {
     use super::InfrastructureStateCommands;
     use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
-    use cuenv_infrastructure::RecoverOverwrite;
+    use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
@@ -624,11 +624,21 @@ fn infrastructure_command(
                 Some(InfrastructureStateCommands::Remove { address }) => {
                     StateAction::Remove { address }
                 }
-                Some(InfrastructureStateCommands::Recover { force }) => StateAction::Recover {
-                    overwrite: if force {
-                        RecoverOverwrite::Always
-                    } else {
-                        RecoverOverwrite::IfUnchanged
+                Some(InfrastructureStateCommands::Recover {
+                    force,
+                    accept_backend,
+                }) => StateAction::Recover {
+                    overrides: RecoverOverrides {
+                        changed_record: if force {
+                            ChangedRecord::Overwrite
+                        } else {
+                            ChangedRecord::Refuse
+                        },
+                        backend: if accept_backend {
+                            BackendMismatch::Accept
+                        } else {
+                            BackendMismatch::Refuse
+                        },
                     },
                 },
                 Some(InfrastructureStateCommands::Adopt) => StateAction::Adopt,

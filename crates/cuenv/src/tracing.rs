@@ -3,8 +3,7 @@
 //! This module provides structured, contextual tracing with multiple output formats,
 //! correlation IDs, performance instrumentation, and structured event capture.
 
-use cuenv_events::{CuenvEventLayer, EventBus, EventReceiver};
-use std::io;
+use cuenv_events::{CuenvEventLayer, EventBus, EventReceiver, LogFormat, RedactingStderr};
 use std::sync::OnceLock;
 pub use tracing::Level;
 use tracing_subscriber::{filter::EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -186,7 +185,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
         TracingFormat::Pretty => {
             let layer = tracing_subscriber::fmt::layer()
                 .pretty()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_target(true)
                 .with_thread_ids(true)
                 .with_thread_names(true);
@@ -196,7 +195,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
         TracingFormat::Compact => {
             let layer = tracing_subscriber::fmt::layer()
                 .compact()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_target(false)
                 .with_thread_ids(false);
 
@@ -205,7 +204,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
         TracingFormat::Json => {
             let layer = tracing_subscriber::fmt::layer()
                 .json()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::JsonLines))
                 .with_current_span(true)
                 .with_span_list(true);
 
@@ -213,7 +212,7 @@ pub fn init_tracing(config: TracingConfig) -> miette::Result<()> {
         }
         TracingFormat::Dev => {
             let layer = tracing_subscriber::fmt::layer()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_file(config.enable_file_location)
                 .with_line_number(config.enable_file_location)
                 .with_target(true)
@@ -304,7 +303,7 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
             // JSON mode: format layer always on for structured logs
             let layer = tracing_subscriber::fmt::layer()
                 .json()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::JsonLines))
                 .with_current_span(true)
                 .with_span_list(true);
             registry.with(layer).init();
@@ -312,7 +311,7 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
         TracingFormat::Pretty if is_verbose => {
             let layer = tracing_subscriber::fmt::layer()
                 .pretty()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_target(true)
                 .with_thread_ids(true)
                 .with_thread_names(true);
@@ -321,14 +320,14 @@ pub fn init_tracing_with_events(config: TracingConfig) -> miette::Result<EventRe
         TracingFormat::Compact if is_verbose => {
             let layer = tracing_subscriber::fmt::layer()
                 .compact()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_target(false)
                 .with_thread_ids(false);
             registry.with(layer).init();
         }
         TracingFormat::Dev if is_verbose => {
             let layer = tracing_subscriber::fmt::layer()
-                .with_writer(io::stderr)
+                .with_writer(RedactingStderr::new(LogFormat::Text))
                 .with_file(enable_file_location)
                 .with_line_number(enable_file_location)
                 .with_target(true)

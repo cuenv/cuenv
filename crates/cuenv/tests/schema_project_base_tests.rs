@@ -36,7 +36,7 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     fs::create_dir_all(root.join("cue.mod"))?;
     fs::write(
         root.join("cue.mod/module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
     )?;
 
     // Copy the real schema package into the temporary module so imports work.
@@ -157,7 +157,7 @@ schema.#Project & {
 }
 
 #[test]
-fn named_infrastructure_environments_evaluate_with_cue_language_v0_9() -> TestResult {
+fn named_infrastructure_environments_evaluate_and_decode() -> TestResult {
     let tmp = create_test_dir()?;
     let root = tmp.path();
     write_local_cuenv_module(root)?;
@@ -195,6 +195,175 @@ schema.#Project & {
     )?;
     assert!(infrastructure.environments.contains_key("dev"));
     assert!(infrastructure.environments.contains_key("staging"));
+    Ok(())
+}
+
+/// A fake 1Password CLI (`whoami` succeeds, `read` prints a fixed secret) so
+/// the test resolves a 1Password reference without the real tool.
+#[cfg(unix)]
+fn write_fake_op(directory: &Path) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+
+    let script = directory.join("op");
+    fs::write(
+        &script,
+        "#!/bin/sh\ncase \"$1\" in\n  whoami) echo test-user@example.com ;;\n  read) echo fake-onepassword-secret ;;\n  *) exit 2 ;;\nesac\n",
+    )?;
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
+
+const POLICY_ENV: &str = r#"
+  PLAIN: "visible-value"
+  GUARDED_PLAIN: {value: "guarded-value", policies: [{allowInfrastructure: ["plan"], allowTasks: ["build"]}]}
+  EXEC: {resolver: "exec", command: "echo", args: ["exec-secret"]}
+  GUARDED_EXEC: {value: {resolver: "exec", command: "echo", args: ["guarded-exec-secret"]}, policies: [{allowInfrastructure: ["apply"]}]}
+  OP: {resolver: "onepassword", ref: "op://vault/item/field"}
+  GUARDED_OP: {value: {resolver: "onepassword", ref: "op://vault/item/guarded"}, policies: [{allowExec: ["env"], allowInfrastructure: ["plan"]}]}
+"#;
+
+#[cfg(unix)]
+#[test]
+fn documented_policy_form_evaluates_and_resolves_in_the_binary() -> TestResult {
+    // `{value: …, policies: […]}` next to plain values, exec secrets and a
+    // 1Password reference, with `schema.#Project` embedded at file level and
+    // unified with `&`. Before the schema forbade `value` and `policies` in
+    // the open `#Secret`, the policy form matched two alternatives of
+    // `#EnvironmentVariable` and the project failed to deserialize.
+    let bin_directory = create_test_dir()?;
+    write_fake_op(bin_directory.path())?;
+    let path = format!(
+        "{}:{}",
+        bin_directory.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let sources = [
+        format!(
+            "package cuenv\n\nimport \"github.com/cuenv/cuenv/schema\"\n\nschema.#Project\n\nname: \"policy-form\"\n\nenv: {{{POLICY_ENV}}}\n"
+        ),
+        format!(
+            "package cuenv\n\nimport \"github.com/cuenv/cuenv/schema\"\n\nschema.#Project & {{\n  name: \"policy-form\"\n  env: {{{POLICY_ENV}}}\n}}\n"
+        ),
+    ];
+    for source in sources {
+        let tmp = create_test_dir()?;
+        let root = tmp.path();
+        write_local_cuenv_module(root)?;
+        fs::write(root.join("env.cue"), source)?;
+
+        let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
+        let env = project.env.ok_or("env missing")?;
+        assert_eq!(env.base.len(), 6);
+
+        let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+            .env("PATH", &path)
+            .args(["env", "print", "--path"])
+            .arg(root)
+            .args(["--package", "cuenv", "--output", "json"])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "env print failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let printed: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(printed["PLAIN"], "visible-value");
+        assert_eq!(printed["GUARDED_PLAIN"], "guarded-value");
+        // Resolved secrets are redacted in output, but every variable is there.
+        for name in ["EXEC", "GUARDED_EXEC", "OP", "GUARDED_OP"] {
+            assert!(printed.get(name).is_some(), "{name} missing: {printed}");
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for secret in [
+            "exec-secret",
+            "guarded-exec-secret",
+            "fake-onepassword-secret",
+        ] {
+            assert!(!stdout.contains(secret), "{secret} leaked: {stdout}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn misspelled_policy_field_fails_in_the_binary() -> TestResult {
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "typo"
+
+env: TOKEN: {value: "x", policies: [{allowInfrastucture: ["plan"]}]}
+"#,
+    )?;
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+        .args(["env", "print", "--path"])
+        .arg(root)
+        .args(["--package", "cuenv"])
+        .output()?;
+    assert!(!output.status.success(), "the typo must be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("allowInfrastucture"), "{stderr}");
+    Ok(())
+}
+
+#[test]
+fn schema_checks_fail_every_command_in_every_environment() -> TestResult {
+    // A mistake in an environment that no command selects, and one at the top
+    // level, are both reported together by a command that has nothing to do
+    // with infrastructure.
+    let tmp = create_test_dir()?;
+    let root = tmp.path();
+    write_local_cuenv_module(root)?;
+    fs::write(
+        root.join("env.cue"),
+        r#"package cuenv
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: "checks"
+
+env: PLAIN: "value"
+
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:1"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", dependsOn: ["nosuch"]}
+  environments: staging: {
+    providers: random: {source: "hashicorp/random", version: "3.7.2", path: "bin/provider"}
+    resources: pet: {type: "random_pet", provider: "missing"}
+  }
+}
+"#,
+    )?;
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+        .args(["env", "print", "--path"])
+        .arg(root)
+        .args(["--package", "cuenv"])
+        .output()?;
+    assert!(!output.status.success(), "the mistakes must be rejected");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let flattened = stderr.replace(['│', '\n'], " ");
+    let flattened = flattened.split_whitespace().collect::<Vec<_>>().join(" ");
+    for fragment in [
+        "infrastructure._unresolved",
+        "no resource named \"nosuch\"",
+        "infrastructure.environments.staging._unresolved",
+        "no provider named \"missing\"",
+        "infrastructure.environments.staging.providers.random._versionOrPath",
+        "set exactly one of `version` and `path`, not both",
+    ] {
+        assert!(flattened.contains(fragment), "{fragment} missing: {stderr}");
+    }
     Ok(())
 }
 

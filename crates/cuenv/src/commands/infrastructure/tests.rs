@@ -5,25 +5,36 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cuenv_infrastructure::{
-    ConditionalPut, InfrastructureError, LockInformation, LockRequest, ManagedResource,
-    MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion, RecoverOverwrite,
-    ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner, UnrecordedStore,
+    ChangedRecord, ConditionalPut, InfrastructureError, LockInformation, LockRequest,
+    ManagedResource, MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion,
+    RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner,
+    UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
+use cuenv_manifest::manifest::InfrastructurePolicyAction;
 use tokio::sync::mpsc;
 
-use super::evaluation::{self, NameCheck, TargetRequest};
+use super::evaluation::{self, NameCheck, Needs, TargetRequest};
 use super::interrupts::{Interrupts, SignalSource};
+use super::invocation::Invocation;
 use super::output::{Finish, Output};
 use super::{
     AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, InfrastructureAction,
-    InfrastructureOptions, StateAction, confirm, dispatch, environment_variables_for_action,
-    release, run, under_lock,
+    InfrastructureOptions, Siblings, StateAction, confirm, dispatch,
+    environment_variables_for_action, release, run, under_lock,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
-    EXIT_LOCKED, LockStatus, OutputFormat, error_code_for, exit_code_for,
+    EXIT_LOCKED, EXIT_OK, LockStatus, OutputFormat, error_code_for, exit_code_for,
 };
+
+/// Recovery that overwrites a stored record that changed (`--force`).
+fn overwrite_changed() -> RecoverOverrides {
+    RecoverOverrides {
+        changed_record: ChangedRecord::Overwrite,
+        ..RecoverOverrides::default()
+    }
+}
 
 const MODULE: &str = "module: \"example.com/infrastructure\"\nlanguage: version: \"v0.14.1\"\n";
 
@@ -110,6 +121,7 @@ fn evaluate_at_environment(
         path: project.to_str().unwrap(),
         package: "cuenv",
         name_check,
+        needs: Needs::Configuration,
         environment,
     })
 }
@@ -182,12 +194,17 @@ infrastructure: {
     assert!(!target.infrastructure.resources.contains_key("old"));
     assert!(target.infrastructure.environments.is_empty());
     assert_eq!(
-        target.env.as_ref().unwrap().for_environment("dev")["BASE"].to_string_value(),
+        target
+            .project_environment
+            .as_ref()
+            .unwrap()
+            .for_environment("dev")["BASE"]
+            .to_string_value(),
         "development"
     );
     assert!(
         !target
-            .env
+            .project_environment
             .as_ref()
             .unwrap()
             .environment
@@ -675,6 +692,8 @@ struct Harness {
     store: Arc<dyn StateStore>,
     tenant: TenantKey,
     instance: ProjectInstance,
+    siblings: Siblings,
+    invocation: Invocation,
     output: Output,
     interrupts: Interrupts,
     answers: ScriptedAnswers,
@@ -690,7 +709,7 @@ impl Harness {
         let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
         let output = Output::new(format);
         let (signals, receiver) = mpsc::unbounded_channel();
-        let interrupts = Interrupts::watch(receiver, &output);
+        let interrupts = Interrupts::watch(receiver, &output, Invocation::default());
         let script = match script {
             // The harness's own source, so the interrupt reaches the watcher.
             Script::Interrupt(_) => Script::Interrupt(signals.clone()),
@@ -701,6 +720,12 @@ impl Harness {
             store: Arc::clone(&store),
             tenant: tenant.clone(),
             instance: ProjectInstance::new("app", "cuenv").unwrap(),
+            siblings: Siblings {
+                unselected_tenant: tenant.clone(),
+                declared_environments: Vec::new(),
+                selected: None,
+            },
+            invocation: Invocation::default(),
             output,
             interrupts,
             answers: ScriptedAnswers {
@@ -719,6 +744,8 @@ impl Harness {
             store: &self.store,
             tenant: &self.tenant,
             instance: &self.instance,
+            siblings: &self.siblings,
+            invocation: &self.invocation,
             output: &self.output,
             interrupts: &self.interrupts,
             answers: &self.answers,
@@ -823,12 +850,8 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
         InfrastructureAction::Unlock {
             lock_identifier: None,
         },
-        // Naming a lock when none is held shows that and succeeds.
-        InfrastructureAction::Unlock {
-            lock_identifier: Some("stale".to_string()),
-        },
         InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }),
     ] {
         harness.run(action.clone()).await.unwrap();
@@ -837,6 +860,18 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
     }
     // The last result: nothing to recover, without a lock.
     assert_eq!(harness.result()["recovered"], serde_json::json!([]));
+
+    // Naming a lock when none is held is an error (it matched nothing), and
+    // still reads only.
+    let error = harness
+        .run(InfrastructureAction::Unlock {
+            lock_identifier: Some("stale".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(harness.migrations(), 0);
+    assert_eq!(harness.acquisitions(), 0);
 }
 
 #[tokio::test]
@@ -1045,10 +1080,10 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
             .unwrap();
         let pending = unrecorded.list(&harness.tenant).unwrap();
 
-        for overwrite in [RecoverOverwrite::IfUnchanged, RecoverOverwrite::Always] {
+        for overrides in [RecoverOverrides::default(), overwrite_changed()] {
             let error = harness
                 .run(InfrastructureAction::State(StateAction::Recover {
-                    overwrite,
+                    overrides,
                 }))
                 .await
                 .unwrap_err();
@@ -1091,7 +1126,7 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
             .unwrap();
         harness
             .run(InfrastructureAction::State(StateAction::Recover {
-                overwrite: RecoverOverwrite::IfUnchanged,
+                overrides: RecoverOverrides::default(),
             }))
             .await
             .unwrap();
@@ -1187,7 +1222,7 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
 
     harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap();
@@ -1234,7 +1269,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
 
     let error = harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap_err();
@@ -1248,7 +1283,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
 
     harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::Always,
+            overrides: overwrite_changed(),
         }))
         .await
         .unwrap();
@@ -1275,7 +1310,7 @@ async fn an_unusable_unrecorded_file_names_the_file_not_the_state_store() {
 
     let error = harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap_err();
@@ -1466,4 +1501,639 @@ async fn an_unreleased_lock_is_never_reported_as_released() {
     .unwrap_err();
     assert!(error.to_string().contains("no such resource"), "{error}");
     assert!(!lock_of(&error).unwrap().released);
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 5: preflight order, identities, state-only evaluation, hints.
+// ---------------------------------------------------------------------------
+
+/// A module whose project declares a secret that, when resolved, leaves
+/// `marker` behind, and the given `infrastructure` block.
+fn module_with_marker_secret(marker: &Path, infrastructure: &str) -> tempfile::TempDir {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            r#"package cuenv
+name: "app"
+env: SECRET_TOKEN: {{resolver: "exec", command: "/bin/sh", args: ["-c", "touch {} && echo value-1234"]}}
+{infrastructure}"#,
+            marker.display()
+        ),
+    );
+    module
+}
+
+fn options_for(module: &Path, action: InfrastructureAction) -> InfrastructureOptions {
+    InfrastructureOptions {
+        path: module.join("app").to_string_lossy().into_owned(),
+        package: "cuenv".into(),
+        environment: None,
+        action,
+        output: OutputFormat::Text,
+    }
+}
+
+#[tokio::test]
+async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_action() {
+    let scratch = module_directory();
+    let marker = scratch.path().join("resolver-ran");
+    let module = module_with_marker_secret(
+        &marker,
+        r#"infrastructure: {
+  state: turso: url: "http://example.invalid:8080"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", configuration: length: 2}
+}
+"#,
+    );
+    for action in [
+        InfrastructureAction::Plan,
+        InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+        },
+        InfrastructureAction::Destroy {
+            confirmation: ConfirmationPolicy::AssumeYes,
+        },
+        InfrastructureAction::State(StateAction::List),
+        InfrastructureAction::State(StateAction::Remove {
+            address: "random_pet.pet".to_string(),
+        }),
+        InfrastructureAction::State(StateAction::Recover {
+            overrides: RecoverOverrides::default(),
+        }),
+        InfrastructureAction::State(StateAction::Adopt),
+        InfrastructureAction::Unlock {
+            lock_identifier: None,
+        },
+    ] {
+        let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+        let error = run(
+            &options_for(module.path(), action.clone()),
+            &harness.output,
+            &harness.interrupts,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(exit_code_for(&error), EXIT_CLI, "{action:?}: {error}");
+        assert!(
+            error.to_string().to_lowercase().contains("loopback"),
+            "{action:?}: expected the URL contract, got {error}"
+        );
+        assert!(
+            !marker.exists(),
+            "{action:?}: the secret resolver ran before the URL was validated"
+        );
+    }
+}
+
+fn module_with_environments(top_level_resources: bool) -> tempfile::TempDir {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    let top_level = if top_level_resources {
+        "  providers: random: {source: \"hashicorp/random\", version: \"3.7.2\"}\n  \
+         resources: pet: {type: \"random_pet\", configuration: length: 2}\n"
+    } else {
+        "  providers: random: {source: \"hashicorp/random\", version: \"3.7.2\"}\n"
+    };
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            r#"package cuenv
+name: "app"
+infrastructure: {{
+  state: turso: url: "http://127.0.0.1:8080"
+{top_level}  environments: {{
+    dev: {{
+      providers: random: {{source: "hashicorp/random", version: "3.7.2"}}
+      resources: pet: {{type: "random_pet", configuration: length: 2}}
+    }}
+    prod: {{
+      providers: random: {{source: "hashicorp/random", version: "3.7.2"}}
+      resources: pet: {{type: "random_pet", configuration: length: 4}}
+    }}
+  }}
+}}
+"#
+        ),
+    );
+    module
+}
+
+#[tokio::test]
+async fn a_run_without_env_is_refused_when_only_environments_are_declared() {
+    let module = module_with_environments(false);
+    for action in [
+        InfrastructureAction::Plan,
+        InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+        },
+        InfrastructureAction::Destroy {
+            confirmation: ConfirmationPolicy::AssumeYes,
+        },
+    ] {
+        let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+        let error = run(
+            &options_for(module.path(), action.clone()),
+            &harness.output,
+            &harness.interrupts,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(exit_code_for(&error), EXIT_CLI, "{action:?}: {error}");
+        let text = format!("{error} {}", error.help().unwrap_or_default());
+        assert!(text.contains("--env"), "{action:?}: {text}");
+        assert!(text.contains("declared environments: dev, prod"), "{text}");
+        assert!(text.contains("--env dev"), "an example to copy: {text}");
+        assert_eq!(harness.acquisitions(), 0);
+    }
+}
+
+#[test]
+fn a_project_with_top_level_resources_still_runs_without_env() {
+    let module = module_with_environments(true);
+    let target = evaluate_at(&module.path().join("app"), NameCheck::TargetOnly).unwrap();
+    assert_eq!(target.declared_environments, vec!["dev", "prod"]);
+    assert!(!target.infrastructure.resources.is_empty());
+    let invocation = Invocation::default();
+    assert!(super::refuse_unselected_environment(&target, &invocation).is_ok());
+}
+
+#[tokio::test]
+async fn a_named_environment_without_state_is_refused_while_the_unselected_identity_has_state() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    harness
+        .seed(&["random_pet.pet", "random_id.id"], None)
+        .await;
+    let named = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    let siblings = Siblings {
+        unselected_tenant: harness.tenant.clone(),
+        declared_environments: vec!["dev".to_string()],
+        selected: Some("dev".to_string()),
+    };
+    let invocation = Invocation::default().with_environment(Some("dev"));
+    let context = CommandContext {
+        tenant: &named,
+        siblings: &siblings,
+        invocation: &invocation,
+        ..harness.context()
+    };
+    let error = super::refuse_unmoved_state(&context).await.unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    let text = format!("{error} {}", error.help().unwrap());
+    assert!(text.contains("2 resource(s)"), "{text}");
+    assert!(text.contains("without --env"), "{text}");
+    assert!(text.contains("`state move`"), "{text}");
+    assert!(text.contains("is not available yet"), "{text}");
+    // The hints act on the identity that holds the records.
+    assert!(
+        text.contains("`cuenv infrastructure destroy`"),
+        "no --env on the legacy destroy: {text}"
+    );
+
+    // Once the named environment has state of its own, nothing is refused.
+    let lock = harness.store.lock(&named, "seed").await.unwrap();
+    harness
+        .store
+        .put(&named, &lock, &managed("random_pet.pet"))
+        .await
+        .unwrap();
+    harness.store.unlock(&named, &lock).await.unwrap();
+    assert!(super::refuse_unmoved_state(&context).await.is_ok());
+}
+
+#[tokio::test]
+async fn nothing_is_refused_when_neither_identity_has_state_or_no_environment_is_selected() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    // No environment selected: the check does not apply.
+    assert!(
+        super::refuse_unmoved_state(&harness.context())
+            .await
+            .is_ok()
+    );
+    // An environment selected, but no records anywhere.
+    let named = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    let context = CommandContext {
+        tenant: &named,
+        ..harness.context()
+    };
+    assert!(super::refuse_unmoved_state(&context).await.is_ok());
+}
+
+#[test]
+fn an_unknown_environment_lists_the_declared_names_and_escapes_the_typed_one() {
+    let module = module_with_environments(true);
+    let project = module.path().join("app");
+    let error =
+        evaluate_at_environment(&project, NameCheck::TargetOnly, Some("stage")).unwrap_err();
+    let text = format!("{error} {}", error.help().unwrap_or_default());
+    assert!(
+        text.contains("no infrastructure environment named 'stage'"),
+        "{text}"
+    );
+    assert!(
+        text.to_lowercase()
+            .contains("declared environments: dev, prod"),
+        "{text}"
+    );
+    assert!(
+        text.contains("not inherited"),
+        "top-level is not inherited: {text}"
+    );
+
+    let error = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("a\u{1b}[31mred"))
+        .unwrap_err();
+    let text = format!("{error} {}", error.help().unwrap_or_default());
+    assert!(!text.contains('\u{1b}'), "raw escape in {text:?}");
+    assert!(text.contains("a\\u{1b}[31mred"), "{text}");
+}
+
+#[test]
+fn a_project_declaring_no_environments_says_so() {
+    let module = module_with_target();
+    let error = evaluate_at_environment(
+        &module.path().join("app"),
+        NameCheck::TargetOnly,
+        Some("dev"),
+    )
+    .unwrap_err();
+    let text = format!("{error} {}", error.help().unwrap_or_default());
+    assert!(
+        text.contains("declares no infrastructure environments"),
+        "{text}"
+    );
+}
+
+fn evaluate_state_only(project: &Path, environment: Option<&str>) -> evaluation::Target {
+    evaluation::evaluate(TargetRequest {
+        path: project.to_str().unwrap(),
+        package: "cuenv",
+        name_check: NameCheck::TargetOnly,
+        needs: Needs::StateOnly,
+        environment,
+    })
+    .unwrap()
+}
+
+#[test]
+fn state_only_evaluation_needs_nothing_but_the_state_backend() {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  // Not concrete: planning could not use this, listing state can.
+  providers: random: {source: "hashicorp/random", version: string}
+  resources: pet: {type: "random_pet", configuration: length: int}
+  environments: dev: providers: random: {source: "hashicorp/random", version: _}
+}
+"#,
+    );
+    let project = module.path().join("app");
+    // The configuration is incomplete: a command that needs it fails ...
+    assert!(evaluate_at(&project, NameCheck::TargetOnly).is_err());
+    assert!(evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).is_err());
+    // ... and a state-only command does not.
+    let target = evaluate_state_only(&project, None);
+    assert_eq!(
+        target.infrastructure.state.turso.url,
+        "http://127.0.0.1:8080"
+    );
+    assert!(target.infrastructure.providers.is_empty());
+    assert!(target.warnings.is_empty());
+    let target = evaluate_state_only(&project, Some("dev"));
+    assert_eq!(
+        target.tenant,
+        TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap()
+    );
+    assert!(target.warnings.is_empty());
+}
+
+#[test]
+fn state_only_evaluation_tolerates_a_removed_environment_with_a_warning() {
+    let module = module_with_environments(true);
+    let target = evaluate_state_only(&module.path().join("app"), Some("retired"));
+    assert_eq!(
+        target.tenant,
+        TenantKey::with_environment("example.com/infrastructure", "app", "retired").unwrap()
+    );
+    assert_eq!(target.warnings.len(), 1, "{:?}", target.warnings);
+    let warning = &target.warnings[0];
+    assert!(warning.contains("no longer declares"), "{warning}");
+    assert!(warning.contains("'retired'"), "{warning}");
+    assert!(
+        warning.contains("declared environments: dev, prod"),
+        "{warning}"
+    );
+}
+
+fn state_changed() -> InfrastructureError {
+    InfrastructureError::StateChanged {
+        address: "random_pet.pet".to_string(),
+        expected: "1".to_string(),
+        found: "2".to_string(),
+        file: None,
+    }
+}
+
+#[test]
+fn every_repair_hint_carries_the_selected_environment_and_project() {
+    let invocation = Invocation::of(&InfrastructureOptions {
+        path: "./services/api".to_string(),
+        package: "ops".to_string(),
+        environment: Some("dev".to_string()),
+        action: InfrastructureAction::Plan,
+        output: OutputFormat::Text,
+    });
+    let flags = "--env dev -p ./services/api --package ops";
+    let help = super::failure(&state_changed(), &invocation)
+        .help()
+        .unwrap()
+        .to_string();
+    assert!(
+        help.contains(&format!(
+            "cuenv infrastructure state recover --force {flags}"
+        )),
+        "{help}"
+    );
+    let pending = InfrastructureError::UnrecordedChangesPending {
+        tenant: "example.com/infrastructure#app@dev".to_string(),
+        count: 1,
+        directory: "/state/x".to_string(),
+    };
+    let error = super::failure(&pending, &invocation);
+    let text = format!("{error} {}", error.help().unwrap());
+    assert!(
+        text.contains(&format!("cuenv infrastructure state recover {flags}")),
+        "{text}"
+    );
+    assert!(
+        !text.contains("`cuenv infrastructure state recover`"),
+        "a hint without the flags: {text}"
+    );
+    let owned = InfrastructureError::OwnedByAnotherInstance {
+        tenant: "t".to_string(),
+        owner: "a:cuenv".to_string(),
+        instance: "b:cuenv".to_string(),
+    };
+    let error = super::failure(&owned, &invocation);
+    let text = format!("{error} {}", error.help().unwrap());
+    assert!(
+        text.contains(&format!("cuenv infrastructure state adopt {flags}")),
+        "{text}"
+    );
+    let lost = InfrastructureError::LockLost {
+        tenant: "t".to_string(),
+        lock_identifier: "abc".to_string(),
+    };
+    let help = super::failure(&lost, &invocation)
+        .help()
+        .unwrap()
+        .to_string();
+    assert!(
+        help.contains(&format!("cuenv infrastructure plan {flags}")),
+        "{help}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unreleased_lock_hint_carries_the_environment() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let invocation = Invocation::default().with_environment(Some("dev"));
+    let store: Arc<dyn StateStore> = Arc::new(UnreleasableStore::default());
+    let context = CommandContext {
+        invocation: &invocation,
+        store: &store,
+        ..harness.context()
+    };
+    let error = under_lock(&context, "state remove", |_lock| async { Ok(()) })
+        .await
+        .unwrap_err();
+    let help = error.help().unwrap();
+    assert!(
+        help.contains("`cuenv infrastructure unlock ") && help.contains(" --env dev`"),
+        "{help}"
+    );
+}
+
+#[tokio::test]
+async fn unlock_with_an_identifier_that_matches_no_lock_fails_and_names_where_it_is() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    let lock = harness.store.lock(&dev, "someone").await.unwrap();
+    let siblings = Siblings {
+        unselected_tenant: harness.tenant.clone(),
+        declared_environments: vec!["dev".to_string()],
+        selected: None,
+    };
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    // Nothing is locked here, and the named lock is the dev environment's.
+    let error = dispatch(
+        &InfrastructureAction::Unlock {
+            lock_identifier: Some(lock.lock_identifier.clone()),
+        },
+        &context,
+        harness.inputs(),
+    )
+    .await
+    .unwrap_err();
+    assert_ne!(exit_code_for(&error), EXIT_OK);
+    let text = format!("{error} {}", error.help().unwrap());
+    assert!(
+        text.contains(&format!("unlock {} --env dev", lock.lock_identifier)),
+        "{text}"
+    );
+    assert!(
+        harness.store.current_lock(&dev).await.unwrap().is_some(),
+        "the other environment's lock is untouched"
+    );
+
+    // An identifier that is nowhere also fails.
+    let error = dispatch(
+        &InfrastructureAction::Unlock {
+            lock_identifier: Some("nowhere".to_string()),
+        },
+        &context,
+        harness.inputs(),
+    )
+    .await
+    .unwrap_err();
+    assert_ne!(exit_code_for(&error), EXIT_OK);
+    assert!(error.to_string().contains("nowhere"), "{error}");
+}
+
+#[tokio::test]
+async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    let lock = harness.store.lock(&dev, "ci-run").await.unwrap();
+    let siblings = Siblings {
+        unselected_tenant: harness.tenant.clone(),
+        declared_environments: vec!["dev".to_string(), "prod".to_string()],
+        selected: None,
+    };
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    let notes = super::locks_in_other_environments(&context).await;
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("environment 'dev' is locked by 'ci-run'"),
+        "{notes:?}"
+    );
+    assert!(
+        notes[0].contains(&format!("unlock {} --env dev", lock.lock_identifier)),
+        "{notes:?}"
+    );
+    // With --env selected, nothing else is mentioned.
+    let siblings = Siblings {
+        selected: Some("dev".to_string()),
+        ..siblings
+    };
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    assert!(
+        super::locks_in_other_environments(&context)
+            .await
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn recovering_without_env_mentions_pending_changes_of_declared_environments() {
+    let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
+    let unrecorded = UnrecordedStore::at(harness.directory.path().join("unrecorded"));
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    unrecorded
+        .save(
+            &dev,
+            &cuenv_infrastructure::ConditionalPut {
+                resource: &managed("random_pet.pet"),
+                expected: RecordVersion::Absent,
+            },
+        )
+        .unwrap();
+    let siblings = Siblings {
+        unselected_tenant: harness.tenant.clone(),
+        declared_environments: vec!["dev".to_string(), "prod".to_string()],
+        selected: None,
+    };
+    let context = CommandContext {
+        siblings: &siblings,
+        ..harness.context()
+    };
+    let notes = super::pending_in_other_environments(&context, &unrecorded);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("environment 'dev'"), "{notes:?}");
+    assert!(
+        notes[0].contains("cuenv infrastructure state recover --env dev"),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn json_results_carry_the_environment_in_its_own_field() {
+    let output = Output::new(OutputFormat::Json);
+    let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
+    output.state(&dev, &[]);
+    let Finish::Report(Some(payload)) = output.finish() else {
+        panic!("expected a result");
+    };
+    assert_eq!(payload["tenant"], "example.com/infrastructure#app");
+    assert_eq!(payload["environment"], "dev");
+
+    let output = Output::new(OutputFormat::Json);
+    let unselected = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    output.state(&unselected, &[]);
+    let Finish::Report(Some(payload)) = output.finish() else {
+        panic!("expected a result");
+    };
+    assert_eq!(payload["tenant"], "example.com/infrastructure#app");
+    assert!(payload["environment"].is_null(), "{payload}");
+}
+
+#[tokio::test]
+async fn a_failing_secret_names_its_variable_and_never_echoes_the_command_output() {
+    let variables = HashMap::from([
+        (
+            "OK_VARIABLE".to_string(),
+            EnvValue::String("plain".to_string()),
+        ),
+        (
+            "DB_PASSWORD".to_string(),
+            EnvValue::Secret(cuenv_manifest::secrets::Secret::new(
+                "/bin/sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    "echo leaked-token-VALUE-77 >&2; exit 7".to_string(),
+                ],
+            )),
+        ),
+    ]);
+    let error = super::resolve_environment_variables(InfrastructurePolicyAction::Plan, &variables)
+        .await
+        .unwrap_err();
+    let text = format!("{error} {}", error.help().unwrap_or_default());
+    assert!(text.contains("DB_PASSWORD"), "{text}");
+    assert!(!text.contains("leaked-token"), "{text}");
+    assert!(!text.contains("'secret'"), "{text}");
+    assert_eq!(exit_code_for(&error), EXIT_EVAL);
+}
+
+#[test]
+fn the_selected_configurations_provider_environment_reaches_the_target() {
+    use cuenv_manifest::manifest::ProviderEnvironment;
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providerEnvironment: "isolated"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", configuration: length: 2}
+  environments: {
+    dev: {
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 2}
+    }
+    prod: {
+      providerEnvironment: "isolated"
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 4}
+    }
+  }
+}
+"#,
+    );
+    let project = module.path().join("app");
+    let top_level = evaluate_at(&project, NameCheck::TargetOnly).unwrap();
+    assert_eq!(
+        top_level.provider_environment,
+        ProviderEnvironment::Isolated
+    );
+    let dev = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap();
+    assert_eq!(
+        dev.provider_environment,
+        ProviderEnvironment::Inherit,
+        "an environment does not inherit the top level's mode"
+    );
+    let prod = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("prod")).unwrap();
+    assert_eq!(prod.provider_environment, ProviderEnvironment::Isolated);
 }

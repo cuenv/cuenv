@@ -3,9 +3,13 @@
 //! This module defines the core event types that flow through the cuenv event system.
 //! Events are categorized by domain (Task, CI, Command, etc.) and include rich metadata.
 
+use std::borrow::Cow;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::redaction::{has_secrets, redact_json_value};
 
 /// A structured cuenv event with full metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +37,44 @@ impl CuenvEvent {
             source,
             category,
         }
+    }
+
+    /// This event with every registered secret replaced by the redaction
+    /// placeholder, in every string its category carries.
+    ///
+    /// Renderers and subscribers call this before they show an event, so
+    /// content that was built after (or without) the tracing layer's own
+    /// redaction, such as the text of [`OutputEvent`]s, never carries a
+    /// secret out. Only the category is rewritten: the identifiers and the
+    /// timestamp stay as they were, whatever the secret looks like. When no
+    /// secret is registered the event is borrowed unchanged.
+    ///
+    /// An event whose category cannot be rewritten (a secret that equals a
+    /// variant name, say) is replaced by a notice rather than shown.
+    #[must_use]
+    pub fn redacted(&self) -> Cow<'_, Self> {
+        if !has_secrets() {
+            return Cow::Borrowed(self);
+        }
+        let category = serde_json::to_value(&self.category)
+            .map(|mut value| {
+                redact_json_value(&mut value);
+                value
+            })
+            .and_then(serde_json::from_value::<EventCategory>)
+            .unwrap_or_else(|_| {
+                EventCategory::Output(OutputEvent::Stderr {
+                    content: "cuenv: an event was withheld because it could not be redacted"
+                        .to_string(),
+                })
+            });
+        Cow::Owned(Self {
+            id: self.id,
+            correlation_id: self.correlation_id,
+            timestamp: self.timestamp,
+            source: self.source.clone(),
+            category,
+        })
     }
 }
 

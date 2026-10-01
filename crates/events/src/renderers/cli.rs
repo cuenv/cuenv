@@ -114,6 +114,9 @@ impl CliRenderer {
 
     /// Render a single event.
     pub fn render(&self, event: &CuenvEvent) {
+        // Redact at the last moment too: a secret registered after the event
+        // was emitted must not reach the terminal either.
+        let event = event.redacted();
         match &event.category {
             EventCategory::Task(task_event) => self.render_task(task_event),
             EventCategory::Service(service_event) => Self::render_service(service_event),

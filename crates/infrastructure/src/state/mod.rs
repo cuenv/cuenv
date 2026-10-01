@@ -1,10 +1,13 @@
 //! Durable, multi-tenant state for managed resources.
 //!
 //! Each managed resource is one record keyed by
-//! `(module_path, project, resource_type, resource_name)`. Records hold the
-//! provider's state in cty JSON (the format `UpgradeResourceState` expects),
-//! the schema version it was written with, the provider's opaque private
-//! bytes, and a serial the store increments on every write.
+//! `(module_path, project, environment, resource_type, resource_name)`, where
+//! the environment is empty for a run without `--env`. The no-flag identity
+//! and every named environment are distinct tenants that never read each
+//! other's records. Records hold the provider's state in cty JSON (the format
+//! `UpgradeResourceState` expects), the schema version it was written with,
+//! the provider's opaque private bytes, a generation identifying the
+//! insertion, and a serial the store increments on every write.
 //!
 //! Every tenant also has at most one owner record naming the CUE instance
 //! that owns its state ([`TenantOwner`]), and at most one lock.
@@ -80,8 +83,9 @@ pub struct ManagedResource {
     /// when the record is read; ignored when writing.
     #[serde(default)]
     pub serial: i64,
-    /// Identity of this insertion, retained on updates and renewed after deletion.
-    /// Nil identifies records read from a schema predating generations.
+    /// Identity of this insertion, retained on updates and renewed after
+    /// deletion. Nil on a record that has not been stored yet; the store
+    /// assigns one on insertion.
     #[serde(default)]
     pub generation: uuid::Uuid,
 }
@@ -104,8 +108,6 @@ impl ManagedResource {
 pub enum RecordVersion {
     /// No record is stored.
     Absent,
-    /// The record with this serial is stored.
-    Serial(i64),
     /// A particular insertion and its update serial. Unlike a serial alone,
     /// this version cannot match a record deleted and recreated at the same address.
     Generation {
@@ -125,26 +127,12 @@ impl RecordVersion {
             serial: record.serial,
         })
     }
-
-    /// The version a successful write of the record leaves behind.
-    #[must_use]
-    pub const fn after_write(self) -> Self {
-        match self {
-            Self::Absent => Self::Serial(1),
-            Self::Serial(serial) => Self::Serial(serial.saturating_add(1)),
-            Self::Generation { generation, serial } => Self::Generation {
-                generation,
-                serial: serial.saturating_add(1),
-            },
-        }
-    }
 }
 
 impl fmt::Display for RecordVersion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Absent => formatter.write_str("no record"),
-            Self::Serial(serial) => write!(formatter, "serial {serial}"),
             Self::Generation { generation, serial } => {
                 write!(formatter, "generation {generation}, serial {serial}")
             }
@@ -173,10 +161,9 @@ impl ConditionalPut<'_> {
             && stored.same_content(self.resource)
             && match self.expected {
                 RecordVersion::Absent => stored.serial == 1,
-                RecordVersion::Generation { .. } => {
-                    RecordVersion::of(Some(stored)) == self.expected.after_write()
+                RecordVersion::Generation { generation, serial } => {
+                    stored.generation == generation && stored.serial == serial.saturating_add(1)
                 }
-                RecordVersion::Serial(_) => false,
             }
     }
 }
@@ -309,7 +296,12 @@ pub trait StateStore: Send + Sync {
     /// Create tables and indexes if they do not exist, and bring the schema
     /// up to date.
     ///
-    /// Fails when the stored schema is newer than this build knows.
+    /// Fails with [`crate::InfrastructureError::StateSchemaNewer`] when the
+    /// stored schema is newer than this build knows, and with
+    /// [`crate::InfrastructureError::StateMigrationBlocked`] when a migration
+    /// would run while any state lock is held: a run that holds a lock must
+    /// never have its writes land in a half-migrated shape. (The first schema
+    /// creates the lock table, so only later migrations are fenced.)
     async fn migrate(&self) -> Result<()>;
 
     /// List all managed resources of a tenant, with generation and serial.
@@ -394,8 +386,7 @@ pub trait StateStore: Send + Sync {
 
     /// The instance that owns the tenant's state, if one is recorded.
     ///
-    /// Never migrates: a store without the owner table (never migrated, or
-    /// migrated by an older cuenv) has no owner recorded.
+    /// Never migrates: a store that was never migrated has no owner recorded.
     async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>>;
 
     /// Record `claim.instance` as the tenant's owner, as `claim.mode`
@@ -437,20 +428,45 @@ mod tests {
 
     #[test]
     fn record_versions_advance_with_every_write() {
-        assert_eq!(
-            RecordVersion::Absent.after_write(),
-            RecordVersion::Serial(1)
-        );
-        assert_eq!(
-            RecordVersion::Serial(4).after_write(),
-            RecordVersion::Serial(5)
-        );
+        let generation = uuid::Uuid::new_v4();
+        let stored = ManagedResource {
+            address: ResourceAddress::new("random_pet", "pet"),
+            provider: "random".into(),
+            provider_source: "registry.terraform.io/hashicorp/random".into(),
+            schema_version: 0,
+            state: serde_json::json!({}),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            tainted: false,
+            identity: None,
+            serial: 4,
+            generation,
+        };
         assert_eq!(RecordVersion::of(None), RecordVersion::Absent);
-        assert_eq!(RecordVersion::Serial(3).to_string(), "serial 3");
+        let version = RecordVersion::of(Some(&stored));
         assert_eq!(
-            serde_json::to_value(RecordVersion::Serial(3)).unwrap(),
-            serde_json::json!({"serial": 3})
+            version,
+            RecordVersion::Generation {
+                generation,
+                serial: 4
+            }
         );
+        assert_eq!(
+            version.to_string(),
+            format!("generation {generation}, serial 4")
+        );
+        // A retry finds its own earlier write only at the next serial of the
+        // same insertion.
+        let next = ManagedResource {
+            serial: 5,
+            ..stored.clone()
+        };
+        let put = ConditionalPut {
+            resource: &stored,
+            expected: version,
+        };
+        assert!(put.is_recorded(&next));
+        assert!(!put.is_recorded(&stored));
         assert_eq!(
             serde_json::to_value(RecordVersion::Absent).unwrap(),
             serde_json::json!("absent")

@@ -49,11 +49,7 @@ fn main() {
 
     // Register known credential environment variables for redaction.
     // This ensures any output containing these values is automatically redacted.
-    for name in [
-        "OP_SERVICE_ACCOUNT_TOKEN",
-        "INFISICAL_TOKEN",
-        "INFISICAL_CLIENT_SECRET",
-    ] {
+    for name in cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES {
         if let Ok(token) = std::env::var(name)
             && !token.is_empty()
         {

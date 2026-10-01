@@ -57,6 +57,16 @@ pub struct LockStatus {
     pub released: bool,
 }
 
+/// Replace every registered secret in `text`.
+///
+/// Errors are redacted when they are built, from the raw strings: the
+/// terminal renderer wraps long lines, which can split a secret across two
+/// lines where no later search would find it, and JSON escapes quotes and
+/// backslashes inside a secret.
+fn redacted(text: impl Into<String>) -> String {
+    cuenv_events::redact(&text.into())
+}
+
 /// CLI-specific error types with proper exit code mapping
 #[derive(Error, Debug, Clone, Diagnostic)]
 pub enum CliError {
@@ -94,6 +104,10 @@ pub enum CliError {
         kind: InfrastructureFailureKind,
         /// The state lock the failure concerns, when there is one
         lock: Option<LockStatus>,
+        /// Addresses of replacements whose delete finished and whose create
+        /// did not: the objects are gone until the next apply recreates
+        /// them. Empty when there are none.
+        deleted_not_recreated: Vec<String>,
     },
     /// Other unexpected error (exit code 3)
     #[error("Unexpected error: {message}")]
@@ -112,7 +126,7 @@ impl CliError {
     #[must_use]
     pub fn config(message: impl Into<String>) -> Self {
         Self::Config {
-            message: message.into(),
+            message: redacted(message),
             help: None,
         }
     }
@@ -121,8 +135,8 @@ impl CliError {
     #[must_use]
     pub fn config_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
         Self::Config {
-            message: message.into(),
-            help: Some(help.into()),
+            message: redacted(message),
+            help: Some(redacted(help)),
         }
     }
 
@@ -130,7 +144,7 @@ impl CliError {
     #[must_use]
     pub fn eval(message: impl Into<String>) -> Self {
         Self::Eval {
-            message: message.into(),
+            message: redacted(message),
             help: None,
         }
     }
@@ -139,8 +153,8 @@ impl CliError {
     #[must_use]
     pub fn eval_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
         Self::Eval {
-            message: message.into(),
-            help: Some(help.into()),
+            message: redacted(message),
+            help: Some(redacted(help)),
         }
     }
 
@@ -152,10 +166,11 @@ impl CliError {
         kind: InfrastructureFailureKind,
     ) -> Self {
         Self::Infrastructure {
-            message: message.into(),
-            help,
+            message: redacted(message),
+            help: help.map(redacted),
             kind,
             lock: None,
+            deleted_not_recreated: Vec::new(),
         }
     }
 
@@ -168,13 +183,47 @@ impl CliError {
                 message,
                 help,
                 kind,
+                deleted_not_recreated,
                 ..
             } => Self::Infrastructure {
                 message,
                 help,
                 kind,
                 lock: Some(status),
+                deleted_not_recreated,
             },
+            other => other,
+        }
+    }
+
+    /// Say that these replacements were deleted and not recreated, in the
+    /// help text and in the JSON envelope (`deletedNotRecreated`); any other
+    /// error, or an empty list, is returned unchanged.
+    #[must_use]
+    pub fn with_deleted_not_recreated(self, addresses: Vec<String>) -> Self {
+        match self {
+            Self::Infrastructure {
+                message,
+                help,
+                kind,
+                lock,
+                ..
+            } if !addresses.is_empty() => {
+                let listed = addresses.join(", ");
+                let notice = format!(
+                    "Deleted but NOT recreated: {listed}. They no longer exist; run apply again \
+                     to recreate them."
+                );
+                Self::Infrastructure {
+                    message,
+                    help: Some(redacted(
+                        help.map_or_else(|| notice.clone(), |help| format!("{help} {notice}")),
+                    )),
+                    kind,
+                    lock,
+                    deleted_not_recreated: addresses,
+                }
+            }
             other => other,
         }
     }
@@ -205,7 +254,7 @@ impl CliError {
     #[must_use]
     pub fn other(message: impl Into<String>) -> Self {
         Self::Other {
-            message: message.into(),
+            message: redacted(message),
             help: None,
         }
     }
@@ -214,15 +263,49 @@ impl CliError {
     #[must_use]
     pub fn other_with_help(message: impl Into<String>, help: impl Into<String>) -> Self {
         Self::Other {
-            message: message.into(),
-            help: Some(help.into()),
+            message: redacted(message),
+            help: Some(redacted(help)),
+        }
+    }
+
+    /// The error with every registered secret replaced in its message and
+    /// help, including secrets registered after it was built. Constructors
+    /// redact already; this is the last check before an error is shown.
+    #[must_use]
+    pub fn with_secrets_redacted(self) -> Self {
+        match self {
+            Self::Config { message, help } => Self::Config {
+                message: redacted(message),
+                help: help.map(redacted),
+            },
+            Self::Eval { message, help } => Self::Eval {
+                message: redacted(message),
+                help: help.map(redacted),
+            },
+            Self::Other { message, help } => Self::Other {
+                message: redacted(message),
+                help: help.map(redacted),
+            },
+            Self::Infrastructure {
+                message,
+                help,
+                kind,
+                lock,
+                deleted_not_recreated,
+            } => Self::Infrastructure {
+                message: redacted(message),
+                help: help.map(redacted),
+                kind,
+                lock,
+                deleted_not_recreated,
+            },
         }
     }
 
     /// Add help text to an existing error, returning a new error with the help text set.
     #[must_use]
     pub fn with_help(self, help_text: impl Into<String>) -> Self {
-        let help = Some(help_text.into());
+        let help = Some(redacted(help_text));
         match self {
             Self::Config { message, .. } => Self::Config { message, help },
             Self::Eval { message, .. } => Self::Eval { message, help },
@@ -231,12 +314,14 @@ impl CliError {
                 message,
                 kind,
                 lock,
+                deleted_not_recreated,
                 ..
             } => Self::Infrastructure {
                 message,
                 help,
                 kind,
                 lock,
+                deleted_not_recreated,
             },
         }
     }
@@ -376,9 +461,15 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
     }
 }
 
-/// The JSON error envelope of an error: `code`, `message`, `help` when there
-/// is help text, and `lockIdentifier` and `lockReleased` when an
-/// infrastructure error concerns a state lock.
+/// The JSON error envelope of an error.
+///
+/// It holds `code`, `message`, `help` when there is help text,
+/// `lockIdentifier` and `lockReleased` when an infrastructure error concerns
+/// a state lock, and `deletedNotRecreated` (the addresses) when a failed
+/// apply left replacements deleted and not recreated.
+///
+/// Every string in it is redacted as a string (never as serialized text,
+/// where a secret that JSON escapes would not be found).
 #[must_use]
 pub fn error_envelope(err: &CliError) -> ErrorEnvelope<serde_json::Value> {
     let mut error = serde_json::Map::new();
@@ -394,7 +485,28 @@ pub fn error_envelope(err: &CliError) -> ErrorEnvelope<serde_json::Value> {
         error.insert("lockIdentifier".to_string(), lock.identifier.clone().into());
         error.insert("lockReleased".to_string(), lock.released.into());
     }
-    ErrorEnvelope::new(serde_json::Value::Object(error))
+    if let CliError::Infrastructure {
+        deleted_not_recreated,
+        ..
+    } = err
+        && !deleted_not_recreated.is_empty()
+    {
+        error.insert(
+            "deletedNotRecreated".to_string(),
+            deleted_not_recreated.clone().into(),
+        );
+    }
+    let mut error = serde_json::Value::Object(error);
+    cuenv_events::redact_json_value(&mut error);
+    ErrorEnvelope::new(error)
+}
+
+/// The error as the terminal shows it, with every registered secret
+/// replaced before the report is laid out and wrapped.
+#[must_use]
+pub fn error_report_text(err: &CliError) -> String {
+    let report = Report::new(err.clone().with_secrets_redacted());
+    format!("{report:?}")
 }
 
 /// Render error appropriately based on output format
@@ -403,14 +515,21 @@ pub fn render_error(err: &CliError, format: OutputFormat) {
         let error_envelope = error_envelope(err);
 
         match serde_json::to_string(&error_envelope) {
-            Ok(json) => cuenv_events::println_redacted(&json),
+            Ok(json) => write_standard_output_line(&json),
             Err(_) => {
                 cuenv_events::eprintln_redacted("Error serializing error response");
             }
         }
     } else {
-        let report = Report::new(err.clone());
-        cuenv_events::eprintln_redacted(&format!("{report:?}"));
+        cuenv_events::eprintln_redacted(&error_report_text(err));
         let _ = io::stderr().flush();
+    }
+}
+
+/// Write one line of already redacted JSON to standard output.
+fn write_standard_output_line(line: &str) {
+    let mut standard_output = io::stdout().lock();
+    if let Err(error) = writeln!(standard_output, "{line}") {
+        tracing::debug!(%error, "failed to write the JSON error envelope");
     }
 }

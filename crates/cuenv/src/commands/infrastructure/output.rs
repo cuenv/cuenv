@@ -10,6 +10,7 @@
 //! values, and text read from the state store is stripped of control
 //! characters.
 
+use std::io::Write;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cuenv_events::{emit_stderr, emit_stdout};
@@ -19,7 +20,15 @@ use cuenv_infrastructure::{
 };
 use serde_json::{Value, json};
 
+use super::tenant_label;
 use crate::cli::OutputFormat;
+
+/// The project part of a tenant, without its environment: the JSON `tenant`
+/// field. The environment is reported in its own `environment` field, so a
+/// consumer never has to split a name apart.
+fn tenant_identity(tenant: &TenantKey) -> String {
+    format!("{}#{}", tenant.module_path(), tenant.project())
+}
 
 /// The JSON name of what a converging command does.
 #[must_use]
@@ -118,6 +127,11 @@ impl Output {
         }
     }
 
+    /// The format the command reports in.
+    pub(super) const fn format(&self) -> OutputFormat {
+        self.format
+    }
+
     /// Whether the command's result is one JSON envelope.
     #[must_use]
     pub(super) const fn is_json(&self) -> bool {
@@ -204,12 +218,14 @@ impl Output {
     pub(super) fn removed(&self, tenant: &TenantKey, address: &ResourceAddress) {
         if self.is_json() {
             self.envelope(json!({
-                "tenant": tenant.to_string(),
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
                 "removed": address.to_string(),
             }));
         } else {
             emit_stdout!(format!(
-                "Removed {address} from the state of {tenant}. The real object was not touched."
+                "Removed {address} from the state of {}. The real object was not touched.",
+                tenant_label(tenant)
             ));
         }
     }
@@ -219,21 +235,26 @@ impl Output {
         if self.is_json() {
             let recovered: Vec<String> = addresses.iter().map(ToString::to_string).collect();
             self.envelope(json!({
-                "tenant": tenant.to_string(),
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
                 "recovered": recovered,
             }));
             return;
         }
         if addresses.is_empty() {
-            emit_stdout!(format!("No unrecorded changes for {tenant}."));
+            emit_stdout!(format!(
+                "No unrecorded changes for {}.",
+                tenant_label(tenant)
+            ));
             return;
         }
         for address in addresses {
             emit_stdout!(format!("Recorded {address}"));
         }
         emit_stdout!(format!(
-            "Recovered {} unrecorded change(s) for {tenant}.",
-            addresses.len()
+            "Recovered {} unrecorded change(s) for {}.",
+            addresses.len(),
+            tenant_label(tenant)
         ));
     }
 
@@ -247,7 +268,8 @@ impl Output {
         };
         if self.is_json() {
             self.envelope(json!({
-                "tenant": adoption.tenant.to_string(),
+                "tenant": tenant_identity(adoption.tenant),
+                "environment": adoption.tenant.environment(),
                 "previousOwner": adoption.previous.map(owner_json),
                 "owner": owner_json(adoption.owner),
             }));
@@ -257,14 +279,17 @@ impl Output {
         match adoption.previous {
             None => emit_stdout!(format!(
                 "{} had no owner; {owner} now owns its state.",
-                adoption.tenant
+                tenant_label(adoption.tenant)
             )),
-            Some(previous) if previous.instance == adoption.owner.instance => emit_stdout!(
-                format!("{owner} already owns the state of {}.", adoption.tenant)
-            ),
+            Some(previous) if previous.instance == adoption.owner.instance => {
+                emit_stdout!(format!(
+                    "{owner} already owns the state of {}.",
+                    tenant_label(adoption.tenant)
+                ));
+            }
             Some(previous) => emit_stdout!(format!(
                 "Ownership of {} moved from {} (since {}) to {owner}.",
-                adoption.tenant,
+                tenant_label(adoption.tenant),
                 strip_control_characters(previous.instance.as_str()),
                 strip_control_characters(&previous.claimed_at)
             )),
@@ -286,11 +311,15 @@ impl Output {
                     })
                 })
                 .collect();
-            self.envelope(json!({"tenant": tenant.to_string(), "resources": rows}));
+            self.envelope(json!({
+                "tenant": tenant_identity(tenant),
+                "environment": tenant.environment(),
+                "resources": rows,
+            }));
             return;
         }
         if resources.is_empty() {
-            emit_stdout!(format!("No managed resources for {tenant}"));
+            emit_stdout!(format!("No managed resources for {}", tenant_label(tenant)));
             return;
         }
         emit_stdout!(format!("{:<40} {:<12} {}", "ADDRESS", "PROVIDER", "SOURCE"));
@@ -314,7 +343,8 @@ impl Output {
         });
         if self.is_json() {
             self.envelope(json!({
-                "tenant": report.tenant.to_string(),
+                "tenant": tenant_identity(report.tenant),
+                "environment": report.tenant.environment(),
                 "lock": lock.as_ref().map(|lock| json!({
                     "lockIdentifier": lock.lock_identifier,
                     "holder": lock.holder,
@@ -324,14 +354,19 @@ impl Output {
             }));
             return;
         }
-        let tenant = report.tenant;
+        let tenant = tenant_label(report.tenant);
         match (lock, report.outcome) {
             (None, _) => emit_stdout!(format!("{tenant} is not locked")),
             (Some(lock), LockOutcome::Shown) => emit_stdout!(format!(
                 "{tenant} is locked by '{}' since {} (lock {}).\n\
-                 Confirm that run is gone, then release it with \
-                 `cuenv infrastructure unlock {}`.",
-                lock.holder, lock.acquired_at, lock.lock_identifier, lock.lock_identifier
+                 Confirm that run is gone, then release it with `{}`.",
+                lock.holder,
+                lock.acquired_at,
+                lock.lock_identifier,
+                report
+                    .unlock_command
+                    .as_deref()
+                    .unwrap_or("cuenv infrastructure unlock <lock identifier>")
             )),
             (Some(lock), LockOutcome::Released) => emit_stdout!(format!(
                 "Released lock {} held by '{}' on {tenant}",
@@ -381,6 +416,9 @@ pub(super) struct LockReport<'report> {
     pub(super) lock: Option<&'report LockInformation>,
     /// What `unlock` did.
     pub(super) outcome: LockOutcome,
+    /// The command that releases the lock shown, naming this run's
+    /// environment and project.
+    pub(super) unlock_command: Option<String>,
 }
 
 fn warnings(plan: &Plan) {
@@ -390,7 +428,10 @@ fn warnings(plan: &Plan) {
 }
 
 fn render_plan_text(plan: &Plan) {
-    emit_stdout!(format!("cuenv infrastructure: {}", plan.tenant));
+    emit_stdout!(format!(
+        "cuenv infrastructure: {}",
+        tenant_label(&plan.tenant)
+    ));
     if plan.has_work() {
         emit_stdout!(cuenv_infrastructure::render_plan(plan));
     } else {
@@ -424,7 +465,8 @@ pub(super) fn plan_json(plan: &Plan) -> Value {
         })
         .collect();
     json!({
-        "tenant": plan.tenant.to_string(),
+        "tenant": tenant_identity(&plan.tenant),
+        "environment": plan.tenant.environment(),
         "changes": changes,
         "summary": summary_json(&plan.summary()),
     })
@@ -433,8 +475,19 @@ pub(super) fn plan_json(plan: &Plan) -> Value {
 /// Print a JSON result in cuenv's standard success envelope.
 pub(super) fn print_envelope(payload: &Value) {
     let envelope = crate::cli::OkEnvelope::new(payload);
-    match serde_json::to_string(&envelope) {
-        Ok(json) => cuenv_events::println_redacted(&json),
+    // Redact the strings inside the document, never its serialized text,
+    // where a secret that JSON escapes would not be found.
+    let rendered = serde_json::to_value(&envelope).and_then(|mut document| {
+        cuenv_events::redact_json_value(&mut document);
+        serde_json::to_string(&document)
+    });
+    match rendered {
+        Ok(json) => {
+            let mut standard_output = std::io::stdout().lock();
+            if let Err(error) = writeln!(standard_output, "{json}") {
+                tracing::debug!(%error, "failed to write the JSON result");
+            }
+        }
         Err(error) => emit_stderr!(format!("error: could not serialize JSON output: {error}")),
     }
 }
