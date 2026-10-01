@@ -18,6 +18,7 @@ use tracing::instrument;
 mod async_dispatch;
 mod hook_supervisor;
 mod oci_activate;
+mod process_hardening;
 mod sync_dispatch;
 use async_dispatch::execute_command_safe;
 use hook_supervisor::run_hook_supervisor;
@@ -31,6 +32,13 @@ const LLMS_CONTENT: &str = include_str!(concat!(env!("OUT_DIR"), "/llms-full.txt
 
 /// Main entry point - determines sync vs async execution path
 fn main() {
+    // First of all, before anything reads a secret or starts a process: keep
+    // processes of the same user (the providers and task commands cuenv
+    // starts) from reading this process's environment and memory.
+    if let Err(error) = process_hardening::restrict_process_inspection() {
+        cuenv_events::eprintln_redacted(&format!("cuenv: warning: {error}"));
+    }
+
     // Install the rustls crypto provider before any HTTP clients are created.
     // Required because reqwest uses `rustls-no-provider` to avoid bundling aws-lc-sys.
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -47,15 +55,14 @@ fn main() {
         );
     }));
 
-    // Register known credential environment variables for redaction.
-    // This ensures any output containing these values is automatically redacted.
-    for name in cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES {
-        if let Ok(token) = std::env::var(name)
-            && !token.is_empty()
-        {
-            cuenv_events::register_secret(token);
-        }
-    }
+    // Register the values of cuenv's own resolver credentials for redaction
+    // (exact names and prefixes such as `OP_SESSION_*`; the same table
+    // `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES` decides what providers
+    // never inherit). This ensures any output containing these values is
+    // automatically redacted.
+    cuenv_events::register_secrets(cuenv_secrets::resolver_credential_values(
+        std::env::vars_os(),
+    ));
 
     // Install the secret-registry factory before any path that could
     // resolve secrets (dynamic completions below may evaluate CUE modules).

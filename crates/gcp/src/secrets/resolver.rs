@@ -138,12 +138,21 @@ impl GcpSecretManagerResolver {
         })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            // gcloud's error output is deliberately not quoted: it can echo
+            // the credentials it was given, and nothing is registered for
+            // redaction yet, because the secret was never resolved. Run the
+            // command yourself to see its output.
+            let exit = output.status.code().map_or_else(
+                || "was terminated by a signal".to_string(),
+                |code| format!("exited with status {code}"),
+            );
             return Err(SecretError::resolution_failed(
                 name,
                 format!(
-                    "gcloud could not provide an Application Default Credentials token: {}",
-                    stderr.trim()
+                    "gcloud could not provide an Application Default Credentials token: it \
+                     {exit}; its error output is not shown because it can contain secret \
+                     material (run `gcloud auth application-default print-access-token` \
+                     yourself to see it)"
                 ),
             ));
         }
@@ -321,6 +330,49 @@ mod tests {
             url.as_str(),
             "https://example.com/v1/projects/project%20id/secrets/API%20KEY/versions/7:access"
         );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_gcloud_reports_its_status_and_never_its_error_output()
+    -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = TEST_ENV_LOCK.lock().await;
+        let directory = std::env::temp_dir().join(format!("cuenv-gcp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory)?;
+        let gcloud = directory.join("gcloud");
+        std::fs::write(
+            &gcloud,
+            "#!/bin/sh\nprintf 'refresh_token=LEAKED-STDERR-VALUE\\n' >&2\nexit 4\n",
+        )?;
+        std::fs::set_permissions(&gcloud, std::fs::Permissions::from_mode(0o755))?;
+        let mut parts = vec![directory.clone()];
+        if let Some(current) = std::env::var_os("PATH") {
+            parts.extend(std::env::split_paths(&current));
+        }
+        let path = std::env::join_paths(parts)?.to_string_lossy().into_owned();
+
+        let error = temp_env::async_with_vars(
+            [
+                ("PATH", Some(path.as_str())),
+                ("GOOGLE_OAUTH_ACCESS_TOKEN", None),
+                ("GOOGLE_APPLICATION_CREDENTIALS", None),
+            ],
+            async {
+                let resolver = GcpSecretManagerResolver::new()?;
+                let config = GcpSecretConfig::new("project", "API_KEY");
+                let spec = SecretSpec::new(serde_json::to_string(&config)?);
+                Ok::<_, Box<dyn Error>>(resolver.resolve("API_KEY", &spec).await)
+            },
+        )
+        .await?
+        .unwrap_err();
+        let _ = std::fs::remove_dir_all(&directory);
+        let message = error.to_string();
+        assert!(message.contains("exited with status 4"), "{message}");
+        assert!(!message.contains("LEAKED-STDERR-VALUE"), "{message}");
+        assert!(!message.contains("refresh_token"), "{message}");
         Ok(())
     }
 

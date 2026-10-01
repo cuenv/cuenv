@@ -36,7 +36,11 @@ mod salt;
 mod types;
 
 pub use batch::{BatchConfig, BatchResolver, resolve_batch};
-pub use credentials::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES;
+pub use credentials::{
+    NamePattern, RESOLVER_ENVIRONMENT_VARIABLES, ResolverVariable, ValueKind,
+    is_resolver_credential, is_resolver_environment_variable, resolver_credential_values,
+    resolver_environment_variable_names,
+};
 pub use fingerprint::compute_secret_fingerprint;
 pub use global::{global_registry, install_registry_factory};
 pub use registry::SecretRegistry;

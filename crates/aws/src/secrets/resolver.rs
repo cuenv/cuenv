@@ -107,10 +107,21 @@ impl AwsSecretsManagerResolver {
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            // The CLI's error output is deliberately not quoted: it can echo
+            // the request, the credentials in use or a partial response, and
+            // nothing is registered for redaction yet, because the secret was
+            // never resolved. Run the command yourself to see its output.
+            let exit = output.status.code().map_or_else(
+                || "was terminated by a signal".to_string(),
+                |code| format!("exited with status {code}"),
+            );
             return Err(SecretError::resolution_failed(
                 name,
-                format!("AWS Secrets Manager read failed: {stderr}"),
+                format!(
+                    "AWS Secrets Manager read failed: the AWS CLI {exit}; its error output is \
+                     not shown because it can contain secret material (run `aws secretsmanager \
+                     get-secret-value` yourself to see it)"
+                ),
             ));
         }
 
@@ -274,6 +285,37 @@ mod tests {
         })
         .await?;
 
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failing_cli_reports_its_status_and_never_its_error_output()
+    -> Result<(), Box<dyn Error>> {
+        let resolver = AwsSecretsManagerResolver::new();
+        let spec = SecretSpec::new(serde_json::to_string(&AwsSecretConfig::new("prod/api"))?);
+
+        let temp_dir = tempfile::tempdir()?;
+        let aws_path = temp_dir.path().join("aws");
+        fs::write(
+            &aws_path,
+            "#!/bin/sh\nprintf 'denied: aws_secret_access_key=LEAKED-STDERR-VALUE\\n' >&2\nexit 3\n",
+        )?;
+        let mut perms = fs::metadata(&aws_path)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&aws_path, perms)?;
+        let path = prepend_path(temp_dir.path())?;
+
+        let error = temp_env::async_with_vars([("PATH", Some(path.as_str()))], async {
+            resolver.resolve("API_KEY", &spec).await
+        })
+        .await
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("exited with status 3"), "{message}");
+        assert!(message.contains("API_KEY"), "{message}");
+        assert!(!message.contains("LEAKED-STDERR-VALUE"), "{message}");
+        assert!(!message.contains("aws_secret_access_key"), "{message}");
         Ok(())
     }
 

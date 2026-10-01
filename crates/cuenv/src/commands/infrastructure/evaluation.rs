@@ -91,6 +91,9 @@ pub(super) struct Target {
     pub(super) provider_environment: ProviderEnvironment,
     /// Things the operator should know that do not stop the run.
     pub(super) warnings: Vec<String>,
+    /// Names of the environment variables the project's remote cache is
+    /// configured to read credentials from (`cache.remote.auth`).
+    pub(super) remote_cache_credential_variables: Vec<String>,
     /// Project environment variables, including only the selected overlay.
     pub(super) project_environment: Option<Env>,
     /// Canonical project directory.
@@ -226,6 +229,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         })?;
     }
 
+    let credential_variables = remote_cache_credential_variables(&project);
     let module_path = cuenv_infrastructure::read_module_path(&module.root)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
     let unselected_tenant = TenantKey::new(&module_path, &project.name)
@@ -245,9 +249,28 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         environment: request.environment.map(str::to_owned),
         declared_environments,
         warnings,
+        remote_cache_credential_variables: credential_variables,
         project_environment: project.env,
         project_directory: target_path,
     })
+}
+
+/// The environment variables the project's remote cache reads its
+/// credentials from, if it has one.
+fn remote_cache_credential_variables(project: &Project) -> Vec<String> {
+    project
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.remote.as_ref())
+        .and_then(|remote| remote.auth.as_ref())
+        .map(|auth| {
+            auth.bearer_token_env
+                .iter()
+                .cloned()
+                .chain(auth.header.iter().map(|header| header.value_env.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The project and the infrastructure the evaluation selected.
@@ -337,6 +360,7 @@ fn select_infrastructure(
             unknown_environment(project_name, &requested, declared_environments)
         }
         other @ (InfrastructureSelectionError::NotAnObject { .. }
+        | InfrastructureSelectionError::ProviderEnvironmentNotSet { .. }
         | InfrastructureSelectionError::Invalid(_)) => CliError::config(other.to_string()),
     })
 }

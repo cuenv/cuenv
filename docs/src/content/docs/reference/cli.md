@@ -605,12 +605,19 @@ carries the run's `--env`, `-p` and `--package`.
 
 **Provider environment and policy:** provider processes inherit the cuenv
 process environment minus the credentials of cuenv's secret resolvers
-(`OP_SERVICE_ACCOUNT_TOKEN`, `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`,
-`INFISICAL_CLIENT_SECRET`, `VAULT_TOKEN`) and the state token, unless the
+(`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*`,
+`OP_CONNECT_HOST`, `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`,
+`INFISICAL_CLIENT_SECRET`, `VAULT_TOKEN`, `CUENV_SECRET_SALT`,
+`CUENV_SECRET_SALT_PREV`, and the variables `cache.remote.auth` names), and
+the state token, unless the
 project passes a variable of that name. `providerEnvironment: "isolated"`
-(top level or per environment) starts from an empty environment instead. The
-project's variables that the action's `allowInfrastructure` policy allows are
-added in both modes. See
+(top level or per environment) starts from an empty environment instead; when
+the top level sets it, a selected `--env` that does not is refused (exit code
+`2`). The project's variables that the action's `allowInfrastructure` policy
+allows are added in both modes. Both are hygiene, not a sandbox: `HOME` is
+passed even when isolated and every provider receives every allowed variable.
+On Linux cuenv also makes itself non-dumpable at startup so a provider cannot
+read its `/proc/<pid>/environ`. See
 [Manage infrastructure](/how-to/infrastructure/#provider-environment).
 
 **Project name uniqueness:** state is keyed by the CUE module path and the

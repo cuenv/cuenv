@@ -660,3 +660,124 @@ fn a_secret_inside_event_metadata_never_drops_the_event() {
         ));
     });
 }
+
+/// One event of every category, each carrying `text` in its text fields.
+fn one_event_per_category(text: &str) -> Vec<CuenvEvent> {
+    let category =
+        |category| CuenvEvent::new(Uuid::new_v4(), EventSource::new("cuenv::test"), category);
+    vec![
+        category(EventCategory::Task(TaskEvent::Output {
+            name: "build".to_string(),
+            stream: Stream::Stderr,
+            content: text.to_string(),
+            parent_group: Some(text.to_string()),
+        })),
+        category(EventCategory::Task(TaskEvent::CacheSkipped {
+            name: text.to_string(),
+            parent_group: None,
+            reason: CacheSkipReason::HashFailed {
+                reason: text.to_string(),
+            },
+        })),
+        category(EventCategory::Task(TaskEvent::Skipped {
+            name: "build".to_string(),
+            parent_group: None,
+            reason: SkipReason::DependencyFailed {
+                dep: text.to_string(),
+            },
+        })),
+        category(EventCategory::Service(ServiceEvent::Watch {
+            name: "web".to_string(),
+            changed: vec![text.to_string()],
+        })),
+        category(EventCategory::Ci(CiEvent::TaskResult {
+            project: "app".to_string(),
+            task: "test".to_string(),
+            success: false,
+            error: Some(text.to_string()),
+        })),
+        category(EventCategory::Command(CommandEvent::Started {
+            command: "run".to_string(),
+            args: vec![text.to_string()],
+        })),
+        category(EventCategory::Interactive(
+            InteractiveEvent::PromptRequested {
+                prompt_id: "p".to_string(),
+                message: text.to_string(),
+                options: vec![text.to_string()],
+            },
+        )),
+        category(EventCategory::System(SystemEvent::SupervisorLog {
+            tag: "t".to_string(),
+            message: text.to_string(),
+        })),
+        output_event(text),
+    ]
+}
+
+#[test]
+fn a_secret_that_equals_a_schema_name_changes_no_tag_key_or_variant() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    // Every one of these is a tag, a key or an enumeration value in the
+    // serialized form of an event.
+    for secret in [
+        "data", "type", "event", "content", "Task", "Output", "Stdout", "Stderr", "name", "stream",
+        "message", "error",
+    ] {
+        with_clean_registry(|| {
+            register_secret(secret);
+            for event in one_event_per_category(secret) {
+                let redacted = event.redacted();
+                let json = serde_json::to_value(redacted.as_ref()).unwrap();
+                let category = &json["category"];
+                assert!(category.get("type").is_some(), "{secret}: {json}");
+                assert!(category.get("data").is_some(), "{secret}: {json}");
+                assert!(category["data"].get("event").is_some(), "{secret}: {json}");
+                assert_eq!(
+                    std::mem::discriminant(&redacted.category),
+                    std::mem::discriminant(&event.category),
+                    "{secret}: the category must not change"
+                );
+                // The event is still a valid event.
+                let text = serde_json::to_string(redacted.as_ref()).unwrap();
+                serde_json::from_str::<CuenvEvent>(&text)
+                    .unwrap_or_else(|error| panic!("{secret}: {error}: {text}"));
+                // Its text is redacted wherever it carried the secret.
+                assert!(text.contains("*_*"), "{secret}: {text}");
+            }
+        });
+    }
+}
+
+#[test]
+fn a_secret_named_data_is_replaced_in_content_but_not_in_the_envelope() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    with_clean_registry(|| {
+        register_secret("data");
+        let redacted = output_event("the data and metadata")
+            .redacted()
+            .into_owned();
+        let EventCategory::Output(OutputEvent::Stdout { content }) = &redacted.category else {
+            panic!("{:?}", redacted.category);
+        };
+        assert_eq!(content, "the *_* and meta*_*");
+        let json = serde_json::to_string(&redacted).unwrap();
+        assert!(
+            json.contains("\"data\":{"),
+            "the envelope key survives: {json}"
+        );
+        assert!(!json.contains("\"*_*\":"), "no key was renamed: {json}");
+    });
+}
+
+#[test]
+fn every_category_variant_text_is_redacted() {
+    use crate::redaction::{register_secret, test_support::with_clean_registry};
+    with_clean_registry(|| {
+        register_secret("sekret-ZZZZ");
+        for event in one_event_per_category("has sekret-ZZZZ inside") {
+            let json = serde_json::to_string(event.redacted().as_ref()).unwrap();
+            assert!(!json.contains("sekret-ZZZZ"), "{json}");
+        }
+    });
+}

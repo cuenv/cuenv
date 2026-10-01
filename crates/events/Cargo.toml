@@ -21,6 +21,9 @@ default = ["spinner"]
 spinner = ["dep:indicatif"]
 
 [dependencies]
+# Secret redaction: one multi-pattern matcher over every registered secret
+aho-corasick = { workspace = true }
+
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }

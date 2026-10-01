@@ -37,7 +37,7 @@ use cuenv_infrastructure::{
     strip_control_characters_except_newlines, validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
-use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction};
+use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction, ProviderEnvironment};
 
 use self::evaluation::{NameCheck, Needs, Target, TargetRequest};
 use self::interrupts::{HeldLock, Interrupts};
@@ -546,17 +546,36 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
         &resolved_variables,
     )
     .map_err(|error| failure(&error, &Invocation::default()))?;
-    let provider_environment_variables: BTreeMap<String, String> = resolved_variables
+    let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
         .filter(|(name, _)| name != &token_variable)
         .collect();
     let provided: Vec<String> = provider_environment_variables.keys().cloned().collect();
+    // The remote cache's credentials are named by the project's configuration.
+    // Their values are secrets cuenv holds: redact them, and (below) keep
+    // them from providers unless the project passes them.
+    cuenv_events::register_secrets(
+        target
+            .remote_cache_credential_variables
+            .iter()
+            .filter_map(|name| std::env::var(name).ok())
+            .filter(|value| !value.is_empty()),
+    );
     let withheld_environment_variables = if action.uses_provider_environment() {
+        if target.provider_environment == ProviderEnvironment::Isolated {
+            // Proxy URLs carrying credentials reach isolated providers
+            // without them (an overlay replaces the inherited value).
+            provider_environment_variables.extend(provider_environment::isolated_proxy_overlay(
+                std::env::vars_os(),
+                &provided,
+            ));
+        }
         provider_environment::withheld_environment_variables(&ProviderEnvironmentInputs {
             mode: target.provider_environment,
             ambient: std::env::vars_os().map(|(name, _)| name).collect(),
             provided: &provided,
             policy_withheld: &policy_withheld,
+            configured_credentials: &target.remote_cache_credential_variables,
             token_variable: &token_variable,
         })
     } else {

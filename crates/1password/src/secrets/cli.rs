@@ -109,11 +109,15 @@ impl CliResolver {
             return Ok(AuthCheck::Authenticated);
         }
 
-        let details = stderr_details(&output.stderr);
-        if details.to_lowercase().contains("not signed in") {
+        // The error output is read to tell "signed out" from other failures,
+        // but never quoted (see `exit_details`).
+        if String::from_utf8_lossy(&output.stderr)
+            .to_lowercase()
+            .contains("not signed in")
+        {
             Ok(AuthCheck::SignedOut)
         } else {
-            Ok(AuthCheck::Failed(details))
+            Ok(AuthCheck::Failed(exit_details(output.status)))
         }
     }
 
@@ -156,7 +160,7 @@ impl CliResolver {
             return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
         }
 
-        Err(CliCommandError::Failed(stderr_details(&output.stderr)))
+        Err(CliCommandError::Failed(exit_details(output.status)))
     }
 }
 
@@ -179,13 +183,21 @@ fn fail_auth(
     Err(SecretError::resolution_failed(name, message))
 }
 
-fn stderr_details(stderr: &[u8]) -> String {
-    let details = String::from_utf8_lossy(stderr).trim().to_string();
-    if details.is_empty() {
-        "no error output from 1Password CLI".to_string()
-    } else {
-        details
-    }
+/// How a failed `op` run is described in an error: its exit status only.
+///
+/// The CLI's error output is deliberately not quoted: it can echo the
+/// reference, the credentials in use or part of the secret, and nothing is
+/// registered for redaction yet, because the secret was never resolved. Run
+/// `op` yourself to see its output.
+fn exit_details(status: std::process::ExitStatus) -> String {
+    let exit = status.code().map_or_else(
+        || "was terminated by a signal".to_string(),
+        |code| format!("exited with status {code}"),
+    );
+    format!(
+        "the 1Password CLI {exit}; its error output is not shown because it can contain secret \
+         material (run `op` yourself to see it)"
+    )
 }
 
 fn missing_op_message() -> String {

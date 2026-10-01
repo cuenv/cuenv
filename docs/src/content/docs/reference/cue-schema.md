@@ -1031,10 +1031,17 @@ project's own `env` variables that the running action's policy allows (see
 
 - `"inherit"` (default): the ambient environment of the cuenv process, minus
   the credentials of cuenv's own secret resolvers (for example
-  `OP_SERVICE_ACCOUNT_TOKEN`, `INFISICAL_TOKEN`, `VAULT_TOKEN`), unless the
-  project passes them explicitly in `env`.
+  `OP_SERVICE_ACCOUNT_TOKEN`, every `OP_SESSION_*`, `INFISICAL_TOKEN`,
+  `VAULT_TOKEN`, `CUENV_SECRET_SALT`), unless the project passes them
+  explicitly in `env`.
 - `"isolated"`: an empty environment except `PATH`, `HOME`, proxy and TLS
-  variables.
+  variables (proxy URLs are passed without their `user:password@`).
+
+When the top level sets `providerEnvironment`, a selected environment must set
+it too: `--env` is refused otherwise, because an environment replaces the
+whole top-level configuration and would silently fall back to `"inherit"`.
+Neither mode is a sandbox: `HOME` is passed even when isolated, and every
+provider receives every project variable the action's policy allows.
 
 Both modes still expose whatever else the cuenv process holds that is not a
 resolver credential. In CI, for example, an OIDC token or `GITHUB_TOKEN` is
