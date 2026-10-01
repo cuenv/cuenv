@@ -216,6 +216,32 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REF_TYPE: ${{ github.ref_type }}
         GITHUB_REF_NAME: ${{ github.ref_name }}
+  checks-infrastructure-e2e:
+    name: checks.infrastructure-e2e
+    runs-on: namespace-profile-cuenv-linux-x86
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup Hestia Nix Cache
+      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      with:
+        drain-timeout: '900'
+        upstream-cache-filter: 'true'
+        version: v2.0.0
+    - name: checks.infrastructure-e2e
+      run: nix build .#checks.x86_64-linux.cuenv-infrastructure-e2e -L --accept-flake-config
+      working-directory: .
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
   checks-nextest:
     name: checks.nextest
     runs-on: namespace-profile-cuenv-linux-x86

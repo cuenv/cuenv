@@ -1,6 +1,10 @@
 //! Random provider lifecycle through the CLI, checked-out CUE example and Turso.
 //!
-//! This test is ignored because it needs a real provider binary and state server:
+//! Two tests run the CLI against a real provider and state server: the legacy
+//! no-flag stack from the checked-out example, and a named `--env dev` stack
+//! whose provider receives an `#ExecSecret` through `allowInfrastructure`.
+//!
+//! These tests are ignored because they need a real provider binary and state server:
 //! ```text
 //! CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER=/path/terraform-provider-random \
 //! CUENV_INFRASTRUCTURE_TEST_TURSO_URL=http://127.0.0.1:8080 \
@@ -14,6 +18,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 
 use cuenv_infrastructure::{StateStore, TenantKey, TursoConfiguration, TursoStateStore};
 use serde_json::Value;
@@ -22,6 +27,16 @@ type TestResult<Success = ()> = Result<Success, Box<dyn Error>>;
 
 const MODULE: &str = "github.com/cuenv/cuenv";
 const PET_LENGTH: &str = "length:    2";
+const SECRET_VARIABLE: &str = "DEPLOY_TOKEN";
+const SECRET_VALUE: &str = "lifecycle-secret-4f9c2d71-never-printed";
+const RECORDED_SECRET: &str = "recorded-secret";
+
+fn write_executable(path: &Path, contents: &str) -> TestResult {
+    use std::os::unix::fs::PermissionsExt;
+    fs::write(path, contents)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
+    Ok(())
+}
 
 fn copy_schema(source: &Path, destination: &Path) -> TestResult {
     fs::create_dir_all(destination)?;
@@ -42,20 +57,28 @@ struct Lifecycle {
     directory: tempfile::TempDir,
     configuration: String,
     authentication_token: Option<String>,
+    /// Every byte the CLI wrote to stdout and stderr, for leak assertions.
+    transcript: Mutex<String>,
+}
+
+/// A temporary project directory holding a copy of the schema and a CUE module.
+fn prepare_directory() -> TestResult<tempfile::TempDir> {
+    let directory = tempfile::Builder::new()
+        .prefix("cuenv-infrastructure-lifecycle-")
+        .tempdir()?;
+    let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    copy_schema(&repository.join("schema"), &directory.path().join("schema"))?;
+    fs::create_dir_all(directory.path().join("cue.mod"))?;
+    fs::write(
+        directory.path().join("cue.mod/module.cue"),
+        format!("module: \"{MODULE}\"\nlanguage: version: \"v0.14.1\"\n"),
+    )?;
+    Ok(directory)
 }
 
 impl Lifecycle {
     fn new(provider: &Path, backend: &TursoConfiguration, project: &str) -> TestResult<Self> {
-        let directory = tempfile::Builder::new()
-            .prefix("cuenv-infrastructure-lifecycle-")
-            .tempdir()?;
         let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-        copy_schema(&repository.join("schema"), &directory.path().join("schema"))?;
-        fs::create_dir_all(directory.path().join("cue.mod"))?;
-        fs::write(
-            directory.path().join("cue.mod/module.cue"),
-            format!("module: \"{MODULE}\"\nlanguage: version: \"v0.14.1\"\n"),
-        )?;
         let example =
             fs::read_to_string(repository.join("examples/infrastructure-random/env.cue"))?;
         let configuration = example
@@ -76,12 +99,89 @@ impl Lifecycle {
             "example pet length changed"
         );
         assert!(!configuration.contains("version: \"3.9.1\""));
+        Self::from_configuration(prepare_directory()?, configuration, backend)
+    }
+
+    fn from_configuration(
+        directory: tempfile::TempDir,
+        configuration: String,
+        backend: &TursoConfiguration,
+    ) -> TestResult<Self> {
         fs::write(directory.path().join("env.cue"), &configuration)?;
         Ok(Self {
             directory,
             configuration,
             authentication_token: backend.authentication_token.clone(),
+            transcript: Mutex::new(String::new()),
         })
+    }
+
+    /// A project whose `dev` infrastructure environment has a provider that
+    /// records the secret it was given, and an `env.environment.dev` exec
+    /// secret released to that provider by `allowInfrastructure`.
+    ///
+    /// The variable carries an explicit `#EnvironmentVariableWithPolicies`
+    /// annotation: at ba11c96 the bare `{value, policies}` form does not
+    /// deserialise as an `EnvValue` inside a named `env.environment` overlay.
+    fn with_environment_secret(
+        provider: &Path,
+        backend: &TursoConfiguration,
+        project: &str,
+    ) -> TestResult<Self> {
+        let directory = prepare_directory()?;
+        let secret_command = directory.path().join("secret.sh");
+        write_executable(
+            &secret_command,
+            &format!("#!/bin/sh\nprintf '%s' '{SECRET_VALUE}'\n"),
+        )?;
+        // The wrapper records what the provider process was given, then becomes
+        // the real provider so the plugin handshake is unchanged.
+        let wrapper = directory.path().join("provider-wrapper.sh");
+        write_executable(
+            &wrapper,
+            &format!(
+                "#!/bin/sh\nprintf '%s' \"${{{SECRET_VARIABLE}-unset}}\" > '{}'\nexec '{}' \"$@\"\n",
+                directory.path().join(RECORDED_SECRET).display(),
+                provider.display(),
+            ),
+        )?;
+        let configuration = format!(
+            r#"package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: {project}
+
+env: environment: dev: {SECRET_VARIABLE}: schema.#EnvironmentVariableWithPolicies & {{
+	value: schema.#ExecSecret & {{command: {command}}}
+	policies: [{{allowInfrastructure: ["plan", "apply", "destroy"]}}]
+}}
+
+infrastructure: {{
+	state: turso: url: {url}
+	environments: dev: {{
+		providers: random: {{source: "hashicorp/random", path: {wrapper}}}
+		resources: pet: {{
+			type: "random_pet"
+			configuration: {{length: 2, separator: "-"}}
+		}}
+	}}
+}}
+"#,
+            project = serde_json::to_string(project)?,
+            command = serde_json::to_string(&secret_command)?,
+            url = serde_json::to_string(&backend.url)?,
+            wrapper = serde_json::to_string(&wrapper)?,
+        );
+        Self::from_configuration(directory, configuration, backend)
+    }
+
+    fn recorded_secret(&self) -> TestResult<String> {
+        Ok(fs::read_to_string(
+            self.directory.path().join(RECORDED_SECRET),
+        )?)
     }
 
     fn run(&self, arguments: &[&str]) -> TestResult<Value> {
@@ -106,18 +206,39 @@ impl Lifecycle {
         if let Some(token) = &self.authentication_token {
             command.env("TURSO_AUTH_TOKEN", token);
         }
+        // The CLI loads the platform's root certificates even for a plain-HTTP
+        // state server; sandboxed builds provide them only through these variables.
+        for variable in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
+            if let Some(value) = std::env::var_os(variable) {
+                command.env(variable, value);
+            }
+        }
         let output = command.output()?;
+        {
+            let mut transcript = self.transcript.lock().map_err(|_| "transcript poisoned")?;
+            transcript.push_str(&String::from_utf8_lossy(&output.stdout));
+            transcript.push_str(&String::from_utf8_lossy(&output.stderr));
+        }
         assert!(
             output.status.success(),
-            "cuenv infrastructure {} exited {}: {}",
+            "cuenv infrastructure {} exited {}: {}{}",
             arguments.join(" "),
             output.status,
+            String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
         // Parsing the complete stdout also rejects extra JSON documents or logs.
         let envelope: Value = serde_json::from_slice(&output.stdout)?;
         assert_eq!(envelope["status"], "ok");
         Ok(envelope["data"].clone())
+    }
+
+    fn transcript(&self) -> TestResult<String> {
+        Ok(self
+            .transcript
+            .lock()
+            .map_err(|_| "transcript poisoned")?
+            .clone())
     }
 
     fn edit_pet(&self) -> TestResult {
@@ -232,5 +353,69 @@ async fn random_provider_create_edit_destroy_stack() -> TestResult {
     assert!(store.current_lock(&tenant).await?.is_none());
     let destroyed_again = lifecycle.run(&["destroy", "--yes"])?;
     assert!(destroyed_again["applied"].is_null());
+    Ok(())
+}
+
+/// `--env dev` with an `env.environment.dev` exec secret consumed by the
+/// provider: the secret reaches the provider process, is never printed or
+/// stored, and the named environment applies and destroys independently.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let store = TursoStateStore::new(backend.clone())?;
+    let project = format!("random-secret-lifecycle-{}", uuid::Uuid::new_v4());
+    let tenant = TenantKey::with_environment(MODULE, &project, "dev")?;
+    // A fresh project name means the no-flag namespace holds no rows to migrate.
+    let legacy = TenantKey::new(MODULE, &project)?;
+    assert!(store.list(&legacy).await?.is_empty());
+    let lifecycle = Lifecycle::with_environment_secret(&provider, &backend, &project)?;
+
+    let plan = lifecycle.run(&["plan", "--env", "dev"])?;
+    assert_eq!(plan["summary"]["create"], 1);
+    assert!(
+        store.list(&tenant).await?.is_empty(),
+        "plan wrote resources"
+    );
+
+    let created = lifecycle.run(&["apply", "--env", "dev", "--yes"])?;
+    assert_eq!(created["applied"]["create"], 1);
+    assert_eq!(
+        lifecycle.recorded_secret()?,
+        SECRET_VALUE,
+        "the provider did not receive the authorised secret"
+    );
+    let recorded = store.list(&tenant).await?;
+    assert_eq!(recorded.len(), 1);
+    assert!(
+        store.list(&legacy).await?.is_empty(),
+        "the named environment wrote to the no-flag namespace"
+    );
+    assert!(
+        !serde_json::to_string(&recorded.iter().map(|row| &row.state).collect::<Vec<_>>())?
+            .contains(SECRET_VALUE),
+        "the secret was stored in state"
+    );
+    assert!(store.current_lock(&tenant).await?.is_none());
+
+    let destroyed = lifecycle.run(&["destroy", "--env", "dev", "--yes"])?;
+    assert_eq!(destroyed["applied"]["delete"], 1);
+    assert!(store.list(&tenant).await?.is_empty());
+    assert!(store.current_lock(&tenant).await?.is_none());
+
+    let transcript = lifecycle.transcript()?;
+    assert!(
+        !transcript.is_empty(),
+        "the transcript recorded no CLI output"
+    );
+    assert!(
+        !transcript.contains(SECRET_VALUE),
+        "the secret appeared in CLI output"
+    );
     Ok(())
 }
