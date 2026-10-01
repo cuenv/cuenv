@@ -72,18 +72,29 @@ for instance in module.projects() {
 `cuengine::ModuleEvalOptions`. Every field has a default
 (`..Default::default()`); the defaults keep the behaviour described above.
 
-| Field                 | Default   | Effect |
-| --------------------- | --------- | ------ |
-| `recursive`           | `false`   | `true` evaluates the module tree (`./...`), `false` one directory |
-| `package_name`        | `None`    | The package to evaluate (takes precedence over the legacy `package` argument) |
-| `target_dir`          | `None`    | The directory of a non-recursive evaluation (default: the module root) |
-| `package_scope`       | `Named`   | `All` evaluates every package of every directory; see keys below |
-| `instance_failures`   | `Skip`    | `Fail` fails the call when any loaded instance fails to load, build, validate or export |
-| `concrete_paths`      | empty     | Paths that must exist and be fully concrete in every instance |
-| `export_paths`        | empty     | When set, export only these paths of each instance |
-| `presence_paths`      | empty     | Report which of these paths exist in each instance, without exporting them |
-| `skipped_directories` | `Ignore`  | `Report` lists the directories a recursive evaluation did not load |
-| `with_meta`, `with_references` | `false` | Source positions and reference paths in `ModuleResult::meta` |
+| Field                          | Default  | Effect                                                                                  |
+| ------------------------------ | -------- | --------------------------------------------------------------------------------------- |
+| `recursive`                    | `false`  | `true` evaluates the module tree (`./...`), `false` one directory                       |
+| `package_name`                 | `None`   | The package to evaluate (takes precedence over the legacy `package` argument)           |
+| `target_dir`                   | `None`   | The directory of a non-recursive evaluation (default: the module root)                  |
+| `package_scope`                | `Named`  | `All` evaluates every package of every directory; see keys below                        |
+| `instance_failures`            | `Skip`   | `Fail` fails the call when any loaded instance fails to load, build, validate or export |
+| `concrete_paths`               | empty    | Paths that must exist and be fully concrete in every instance                           |
+| `export_paths`                 | empty    | When set, export only these paths of each instance                                      |
+| `presence_paths`               | empty    | Report which of these paths exist in each instance, without exporting them              |
+| `skipped_directories`          | `Ignore` | `Report` lists the directories a recursive evaluation did not load                      |
+| `task_field`                   | `None`   | The top-level field that holds the task graph; see below                                |
+| `with_meta`, `with_references` | `false`  | Source positions and reference paths in `ModuleResult::meta`                            |
+
+**Task field.** Sequence items inside the task graph need a hidden `_name`
+field before export so that output references resolve. `task_field` names the
+top-level field that holds the graph: sequence items below it get `_name`
+injected, and a projection (`export_paths`) that exports nothing below that
+field skips the injection. `None` keeps the behaviour every existing caller
+relies on (the field is `tasks`); `Some("")` turns the injection off, so a
+caller that evaluates something other than a cuenv project does not depend on
+cuenv's task shape. The injection itself (and the project detection) is still
+cuenv-specific code in the bridge; see the design specification's next steps.
 
 **Instance keys.** With `PackageScope::Named`, `ModuleResult::instances` is
 keyed by the directory relative to the module root (`"."`,
@@ -277,11 +288,11 @@ let deploy = TaskNode::Sequence(vec![
 
 **TaskNode variants:**
 
-| Variant                  | Description                                      |
-| ------------------------ | ------------------------------------------------ |
-| `TaskNode::Task(Task)`   | Single executable command or script              |
-| `TaskNode::Group(TaskGroup)` | Parallel execution - all children run concurrently |
-| `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order |
+| Variant                             | Description                                        |
+| ----------------------------------- | -------------------------------------------------- |
+| `TaskNode::Task(Task)`              | Single executable command or script                |
+| `TaskNode::Group(TaskGroup)`        | Parallel execution - all children run concurrently |
+| `TaskNode::Sequence(Vec<TaskNode>)` | Sequential execution - runs in order               |
 
 #### Task
 
@@ -289,21 +300,21 @@ Represents a single executable command.
 
 **Fields:**
 
-| Field             | Type                                 | Description                                         |
-| ----------------- | ------------------------------------ | --------------------------------------------------- |
-| `command`         | `Option<String>`                     | Command to execute                                  |
-| `args`            | `Vec<String>`                        | Command arguments                                   |
-| `script`          | `Option<String>`                     | Multi-line script (alternative to command)          |
-| `script_shell`    | `Option<ScriptShell>`                | Shell for script execution (default: bash)          |
-| `shell_options`   | `Option<ShellOptions>`               | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
-| `env`             | `HashMap<String, serde_json::Value>` | Task-specific environment additions                 |
-| `depends_on`      | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)    |
-| `inputs`          | `Vec<Input>`                         | Files/globs or task output references               |
-| `outputs`         | `Vec<String>`                        | Declared outputs that become cacheable artifacts    |
-| `description`     | `Option<String>`                     | Human-friendly summary                              |
-| `hermetic`        | `Option<bool>`                       | Isolated execution (default: true)                  |
-| `timeout`         | `Option<String>`                     | Execution timeout (e.g., "30m")                     |
-| `continue_on_error` | `Option<bool>`                     | Continue on failure (default: false)                |
+| Field               | Type                                 | Description                                                          |
+| ------------------- | ------------------------------------ | -------------------------------------------------------------------- |
+| `command`           | `Option<String>`                     | Command to execute                                                   |
+| `args`              | `Vec<String>`                        | Command arguments                                                    |
+| `script`            | `Option<String>`                     | Multi-line script (alternative to command)                           |
+| `script_shell`      | `Option<ScriptShell>`                | Shell for script execution (default: bash)                           |
+| `shell_options`     | `Option<ShellOptions>`               | POSIX shell options for `bash`/`zsh`, or `sh` with `pipefail: false` |
+| `env`               | `HashMap<String, serde_json::Value>` | Task-specific environment additions                                  |
+| `depends_on`        | `Vec<TaskDependency>`                | Task dependencies (resolved from CUE references)                     |
+| `inputs`            | `Vec<Input>`                         | Files/globs or task output references                                |
+| `outputs`           | `Vec<String>`                        | Declared outputs that become cacheable artifacts                     |
+| `description`       | `Option<String>`                     | Human-friendly summary                                               |
+| `hermetic`          | `Option<bool>`                       | Isolated execution (default: true)                                   |
+| `timeout`           | `Option<String>`                     | Execution timeout (e.g., "30m")                                      |
+| `continue_on_error` | `Option<bool>`                       | Continue on failure (default: false)                                 |
 
 #### TaskDependency
 
@@ -325,13 +336,13 @@ Parallel execution group - all child tasks run concurrently.
 
 **Fields:**
 
-| Field            | Type                           | Description                              |
-| ---------------- | ------------------------------ | ---------------------------------------- |
-| `type_`          | `String`                       | Type discriminator (always "group")      |
-| `children`       | `HashMap<String, TaskNode>`    | Named child tasks (run in parallel)      |
-| `depends_on`     | `Vec<TaskDependency>`          | Dependencies on other tasks              |
-| `max_concurrency`| `Option<i32>`                  | Limit concurrent executions (0 = unlimited) |
-| `description`    | `Option<String>`               | Human-readable description               |
+| Field             | Type                        | Description                                 |
+| ----------------- | --------------------------- | ------------------------------------------- |
+| `type_`           | `String`                    | Type discriminator (always "group")         |
+| `children`        | `HashMap<String, TaskNode>` | Named child tasks (run in parallel)         |
+| `depends_on`      | `Vec<TaskDependency>`       | Dependencies on other tasks                 |
+| `max_concurrency` | `Option<i32>`               | Limit concurrent executions (0 = unlimited) |
+| `description`     | `Option<String>`            | Human-readable description                  |
 
 ### Environment
 
@@ -363,10 +374,10 @@ use cuenv_hooks::{Hook, Hooks};
 
 **Fields:**
 
-| Field      | Type                    | Description                     |
-| ---------- | ----------------------- | ------------------------------- |
-| `on_enter` | `Option<Vec<Hook>>`     | Hooks to run on directory entry |
-| `on_exit`  | `Option<Vec<Hook>>`     | Hooks to run on directory exit  |
+| Field      | Type                | Description                     |
+| ---------- | ------------------- | ------------------------------- |
+| `on_enter` | `Option<Vec<Hook>>` | Hooks to run on directory entry |
+| `on_exit`  | `Option<Vec<Hook>>` | Hooks to run on directory exit  |
 
 ### Hook
 
@@ -571,6 +582,8 @@ which other tools can drive the same way. The lock is released and the
 providers are stopped whatever the outcome, so no `?` may leave them behind:
 
 ```rust
+use std::collections::BTreeMap;
+
 use cuenv_infrastructure::{
     ApplyContext, Cancellation, EngineOptions, EngineSetup, InfrastructureEngine,
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, PlanMode, ProjectInstance,
@@ -587,13 +600,16 @@ store
     .acquire_lock(&tenant, &LockRequest { lock: &lock, holder: "my tool" })
     .await?;
 let mut engine = InfrastructureEngine::new(EngineSetup {
-    tenant: tenant.clone(), // TenantKey: CUE module path and project name
+    tenant: tenant.clone(), // TenantKey: module path, project name, optional environment
     store: Arc::clone(&store), // Arc<dyn StateStore>, such as TursoStateStore
-    infrastructure,            // the evaluated `infrastructure` block
+    infrastructure,            // the selected configuration, see `Infrastructure::select`
     options: EngineOptions {
         project_directory,
         plugin_cache_directory: None,
+        // Names providers must not inherit, applied after the overlay below.
         withheld_environment_variables: vec!["TURSO_AUTH_TOKEN".into()],
+        // Resolved, policy-authorized project values added to each provider's environment.
+        provider_environment_variables: BTreeMap::new(),
         unrecorded_directory: None, // the user state directory
         cancellation: cancellation.clone(),
     },
@@ -618,6 +634,37 @@ let plan = outcome?;
 released?;
 ```
 
+- **Identities.** `TenantKey::new(module_path, project)` is the identity of a
+  run without `--env`; `TenantKey::with_environment(module_path, project,
+environment)` is a separate identity for a named environment (including
+  `default`), and its `Display` form is `<module>#<project>@<environment>`.
+  Every store method takes a `TenantKey`, and nothing falls back from one
+  identity to another. The Turso store keeps one table family keyed by
+  `(module_path, project, environment, …)`, with an empty environment for the
+  no-flag identity, at schema version 1; `migrate()` fails with
+  `InfrastructureError::StateSchemaNewer` for a newer schema and, for any later
+  migration, with `InfrastructureError::StateMigrationBlocked` while a lock row
+  exists. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
+  naming the address.
+- **Configuration.** `cuenv_manifest::manifest::Infrastructure::select(value,
+environment)` strictly decodes the raw `infrastructure` value of a project
+  for the selected environment (`None` for the top level) and returns an
+  `InfrastructureSelectionError` that names the declared environments when
+  the requested one is missing. `cuenv_infrastructure::validate_configuration(&infrastructure,
+environment)` repeats the schema's semantic checks and reports **every**
+  problem, each with its full field path
+  (`infrastructure.environments.dev.resources.pet.dependsOn[0]`).
+  `InfrastructureConfiguration` is the exported type of one configuration, and
+  `ProviderEnvironment` (`Inherit`, `Isolated`) is the manifest form of
+  `providerEnvironment`.
+- **Provider environment.** `cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES`
+  lists the variables only cuenv's secret resolvers use; the command withholds
+  them from providers in `inherit` mode unless the project passes the same
+  name. `cuenv_infrastructure::plugin::ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`
+  is the allowlist of the `isolated` mode and `isolated_withheld_names` computes
+  the names to pass in `withheld_environment_variables` for it. cuenv's own
+  handshake variables are set after the withheld names are removed, so a policy
+  can never strip them.
 - `Cancellation::stop()` is the first interrupt: no new resource is started and
   every provider the engine launched is asked to stop.
   `terminate_providers()` is the second: it kills them (with their process
@@ -626,11 +673,22 @@ released?;
   lock is released. The command calls them from its SIGINT, SIGTERM, SIGHUP
   and SIGQUIT handling, which it installs before evaluating anything.
 - `Plan::has_work()` is true when applying would change infrastructure or
-  rewrite stored records (`PlanSummary::refresh`). `engine.apply()` refuses a
-  plan whose stored records changed since it was made
-  (`InfrastructureError::PlanOutdated`); `Plan::digest()` identifies
+  rewrite stored records (`PlanSummary::refresh`). `engine.plan()` orders the
+  changes as one dependency graph and refuses cycles and changes no order can
+  apply, so the plan lists its changes in apply order and refusals happen
+  before any confirmation. `engine.apply()` refuses a plan whose stored records
+  changed since it was made (`InfrastructureError::PlanOutdated`) and a plan
+  made with other provider environment values
+  (`InfrastructureError::PlanEnvironmentChanged`); `Plan::digest()` identifies
   everything a plan would do. The command plans and confirms while holding
   the lock, as Terraform does, so it applies exactly the plan shown.
+- **Failed applies.** A provider failure skips the operations that depend on
+  it and lets the rest run; `apply` then returns
+  `InfrastructureError::ApplyIncomplete(IncompleteApply)` with the failures,
+  the skipped changes and the replacements deleted but not recreated.
+  `ApplyEvent::DeletedNotRecreated` reports each such replacement on every way
+  an apply can end early, and `ApplyEvent::Failed` and `ApplyEvent::Skipped`
+  report the others.
 - `StateStore::owner()` names the CUE instance (`ProjectInstance`,
   `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
   `OwnerClaimMode::IfUnowned` records it under the first lock, and
@@ -638,35 +696,61 @@ released?;
   (`cuenv infrastructure state adopt`). `TenantOwner::require()` refuses any
   other instance (`InfrastructureError::OwnedByAnotherInstance`).
 - A change the store could not record is saved by `UnrecordedStore` in the
-  user state directory; `engine.plan()` refuses to run until
-  `UnrecordedStore::recover` has recorded it under the lock
+  user state directory in one file format (`formatVersion` 1: tenant with its
+  environment, generation, serial and backend binding); `engine.plan()` refuses
+  to run until `UnrecordedStore::recover` has recorded it under the lock
   (`cuenv infrastructure state recover`). `has_pending()` checks without a
-  lock; `RecoverOverwrite::IfUnchanged` refuses to overwrite a stored record
-  that changed since the change was saved (`InfrastructureError::StateChanged`),
-  and `RecoverOverwrite::Always` (`state recover --force`) overwrites it.
+  lock. `RecoverOverrides` holds two independent, per-file overrides:
+  `changed_record: ChangedRecord::Overwrite` writes over a stored record that
+  changed since the change was saved (otherwise
+  `InfrastructureError::StateChanged`, which names the file), and
+  `backend: BackendMismatch::Accept` accepts a file saved for another state
+  backend or without a binding. They are the CLI's `--force` and
+  `--accept-backend`; neither implies the other, and the default
+  (`RecoverOverrides::default()`) overrides nothing. `localhost`, `127.0.0.1`
+  and `[::1]` are one backend.
+
+### Redaction (`cuenv-events`)
+
+`register_secret` and `register_secrets` take the values to hide. A multi-line
+secret is also registered line by line, and a secret with characters that are
+escaped when quoted is also registered in its debug-quoted and JSON-quoted
+forms. `redact` replaces them in text, and `redact_json_value` and
+`redact_json_text` replace them inside the strings of a JSON value, so a secret
+that JSON escapes is still found. `emit_with_source` redacts every event before
+any subscriber sees it, the CLI and JSON renderers redact again, and
+`RedactingStderr` (with `RedactingWriter` and `LogFormat`) redacts tracing's
+formatting layers. Values shorter than `MIN_SECRET_LENGTH` (4) are ignored.
+Redaction clones and re-serializes each event while any secret is registered;
+see the design specification's next steps.
 
 ## CLI Exit Codes
 
 The cuenv CLI uses structured exit codes:
 
-| Code | Constant              | Description                                                                                                                                  | JSON `code`                  |
-| ---- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| 0    | `EXIT_OK`             | Command completed successfully                                                                                                               | (success envelope)           |
-| 1    | `EXIT_CANCELLED`      | Infrastructure change not confirmed at the prompt; nothing was applied (`CliError::Infrastructure` with `Cancelled` kind)                     | `infrastructure_cancelled`   |
-| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                 | `config`                     |
-| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                              | `eval` / `other`             |
-| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` kind)              | `infrastructure_locked`      |
-| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store, apply, ownership or unrecorded changes (`CliError::Infrastructure` with `Failed` kind) | `infrastructure`             |
+| Code | Constant              | Description                                                                                                                                            | JSON `code`                  |
+| ---- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------- |
+| 0    | `EXIT_OK`             | Command completed successfully                                                                                                                         | (success envelope)           |
+| 1    | `EXIT_CANCELLED`      | Infrastructure change not confirmed at the prompt; nothing was applied (`CliError::Infrastructure` with `Cancelled` kind)                              | `infrastructure_cancelled`   |
+| 2    | `EXIT_CLI`            | CLI/configuration error (`CliError::Config`)                                                                                                           | `config`                     |
+| 3    | `EXIT_EVAL`           | Evaluation, task, or other runtime error (`CliError::Eval` / `CliError::Other`)                                                                        | `eval` / `other`             |
+| 4    | `EXIT_LOCKED`         | Infrastructure run collided with concurrent activity; retrying later can succeed (`CliError::Infrastructure` with `Locked` kind)                       | `infrastructure_locked`      |
+| 5    | `EXIT_INFRASTRUCTURE` | Any other infrastructure failure: provider, state store, apply, ownership or unrecorded changes (`CliError::Infrastructure` with `Failed` kind)        | `infrastructure`             |
 | 130  | `EXIT_INTERRUPTED`    | Interrupted: Ctrl-C for every command; for `cuenv infrastructure` also SIGTERM, SIGHUP or SIGQUIT (`CliError::Infrastructure` with `Interrupted` kind) | `infrastructure_interrupted` |
 
 `exit_code_for` and `error_code_for` in `cuenv::cli` map a `CliError` to its
 exit code and to the `code` field of the JSON error envelope, which
 `error_envelope` builds:
-`{"status":"error","error":{"code":…,"message":…,"help":…,"lockIdentifier":…,"lockReleased":…}}`.
+`{"status":"error","error":{"code":…,"message":…,"help":…,"lockIdentifier":…,"lockReleased":…,"deletedNotRecreated":…}}`.
 `help` is present when the error has help text; `lockIdentifier` and
 `lockReleased` are present when an infrastructure error concerns a state lock
 (`CliError::with_lock` and `LockStatus`), and `lockReleased` is `false`
-whenever the release failed or is unknown. Codes 1, 4, 5 and 130 with an
+whenever the release failed or is unknown; `deletedNotRecreated` lists the
+replacements a failed or interrupted apply deleted without recreating
+(`CliError::with_deleted_not_recreated`). Every `CliError` constructor redacts
+its message and help from the raw strings, `error_report_text` redacts the
+terminal report before it is wrapped, and `error_envelope` redacts each string
+of the envelope. Codes 1, 4, 5 and 130 with an
 envelope are only produced by `cuenv infrastructure`; they extend the taxonomy
 of ADR-0005. `InfrastructureFailureKind` (`Locked`, `Cancelled`,
 `Interrupted`, `Failed`) selects between them. `cuenv infrastructure` itself
