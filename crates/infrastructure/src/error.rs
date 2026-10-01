@@ -390,7 +390,7 @@ impl InfrastructureError {
     /// Build an input or output error with context.
     ///
     /// Never pass a `serde_json` error's message into any error: it can
-    /// quote the value it failed on. Use [`json_error_category`] instead.
+    /// quote the value it failed on. Use `json_error_category` instead.
     #[must_use]
     pub fn input_output(context: impl Into<String>, source: std::io::Error) -> Self {
         Self::InputOutput {

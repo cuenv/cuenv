@@ -635,10 +635,13 @@ experimental.
 4. Per-environment `state`: let `environments.NAME` override the state backend
    (and token) so environments can be isolated by credential, not only by name
    (decision D4).
-5. A darwin continuous integration job. Releases build `macos-arm64`, but the
-   `cfg(unix)` and Linux-specific code in `plugin.rs`, `holder.rs` and
-   `unrecorded.rs` has never been compiled there, and the end-to-end check is
-   Linux only.
+5. A darwin continuous integration job. Releases build `macos-arm64`, but no
+   pull request job does: the `cfg(unix)` code in `plugin.rs`, `holder.rs` and
+   `unrecorded.rs` has only been type-checked for `aarch64-apple-darwin` by hand
+   (never linked or run there), the CUE bridge's Go tests would first run on
+   darwin during a release, and the end-to-end check is Linux only. The
+   cheapest gate is `nix build .#checks.aarch64-darwin.cuenv-clippy` on the
+   existing macOS runner.
 6. Event redaction cost. While any secret is registered, every event is
    serialized to a JSON value, redacted and deserialized in `emit_with_source`, and
    again by each renderer. Measure it on task-heavy runs and, if it matters,
