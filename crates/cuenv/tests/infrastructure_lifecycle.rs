@@ -648,3 +648,81 @@ async fn the_remote_cache_credential_never_reaches_a_provider() -> TestResult {
     );
     Ok(())
 }
+
+/// A project whose name another CUE instance owns (it was moved) is refused
+/// before any of its secrets is resolved: an exec secret runs a command, and
+/// nothing should run for a run that is going to be refused.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn a_project_owned_by_another_instance_is_refused_before_any_secret_runs() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let project = format!("random-owner-{}", uuid::Uuid::new_v4());
+    let directory = prepare_directory()?;
+    let marker = directory.path().join("secret-ran");
+    let secret = directory.path().join("secret.sh");
+    write_executable(
+        &secret,
+        &format!(
+            "#!/bin/sh\ntouch '{}'\nprintf '%s' value\n",
+            marker.display()
+        ),
+    )?;
+    let configuration = format!(
+        r#"package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: {project}
+
+env: SOME_TOKEN: schema.#ExecSecret & {{command: {secret}}}
+
+infrastructure: {{
+	state: turso: url: {url}
+	providers: random: {{source: "hashicorp/random", path: {provider}}}
+	resources: pet: {{type: "random_pet", configuration: {{length: 2, separator: "-"}}}}
+}}
+"#,
+        project = serde_json::to_string(&project)?,
+        secret = serde_json::to_string(&secret)?,
+        url = serde_json::to_string(&backend.url)?,
+        provider = serde_json::to_string(&provider)?,
+    );
+    let root = directory.path().to_path_buf();
+    let lifecycle = Lifecycle::from_configuration(directory, configuration.clone(), &backend)?;
+
+    // The first run claims the state for the instance at the module root,
+    // and its secret runs.
+    lifecycle.run(&["apply", "--yes"])?;
+    assert!(marker.exists(), "the secret did not run for the owner");
+    fs::remove_file(&marker)?;
+
+    // The project moves to another directory under the same name.
+    fs::create_dir_all(root.join("moved"))?;
+    fs::write(root.join("moved/env.cue"), &configuration)?;
+    fs::remove_file(root.join("env.cue"))?;
+    let output = lifecycle.execute(&["apply", "--yes", "-p", "moved"], &[])?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.status.success(), "{printed}");
+    assert!(printed.contains("owned by the CUE instance"), "{printed}");
+    assert!(
+        !marker.exists(),
+        "a secret ran for a run that was refused: {printed}"
+    );
+
+    // Back where it was, the owner can destroy what it created.
+    fs::remove_dir_all(root.join("moved"))?;
+    fs::write(root.join("env.cue"), &configuration)?;
+    lifecycle.run(&["destroy", "--yes"])?;
+    Ok(())
+}

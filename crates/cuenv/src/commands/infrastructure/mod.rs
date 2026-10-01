@@ -547,7 +547,7 @@ async fn run(
     )?;
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
-    let resolved = resolve(&options.action, &target).await?;
+    let resolved = resolve(&options.action, &target, &invocation).await?;
     let facts = SelectionFacts::of(&target);
     let Target {
         tenant,
@@ -674,7 +674,11 @@ struct Resolved {
 
 /// Resolve the project's environment variables the action may use, connect
 /// to the state store, and decide what providers inherit.
-async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resolved, CliError> {
+async fn resolve(
+    action: &InfrastructureAction,
+    target: &Target,
+    invocation: &Invocation,
+) -> Result<Resolved, CliError> {
     let project_environment_variables =
         target
             .project_environment
@@ -709,19 +713,33 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
             "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
         )));
     }
-    let environment_to_resolve =
+    let mut environment_to_resolve =
         environment_variables_for_action(action, &project_environment_variables, &token_variable);
-    let (resolved_variables, secret_values) =
-        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
+    // Only the state backend's token is resolved before the state store is
+    // asked who owns the project: a secret is a command or a call to a secret
+    // provider, and nothing should run for a run the owner check refuses.
+    let backend_token: HashMap<String, EnvValue> = environment_to_resolve
+        .remove_entry(&token_variable)
+        .into_iter()
+        .collect();
+    let (mut resolved_variables, token_secrets) =
+        resolve_environment_variables(policy_name, &backend_token).await?;
     // Register before connecting to state or launching providers so their
     // diagnostics and output redact every resolved secret part.
-    cuenv_events::register_secrets(secret_values);
+    cuenv_events::register_secrets(token_secrets);
     let store = connect(
         &target.infrastructure,
         &project_environment_variables,
         &resolved_variables,
     )
     .map_err(|error| failure(&error, &Invocation::default()))?;
+    if action.uses_provider_environment() {
+        refuse_another_owner(store.as_ref(), target, invocation).await?;
+    }
+    let (other_variables, other_secrets) =
+        resolve_environment_variables(policy_name, &environment_to_resolve).await?;
+    cuenv_events::register_secrets(other_secrets);
+    resolved_variables.extend(other_variables);
     let mut provider_environment_variables: BTreeMap<String, String> = resolved_variables
         .into_iter()
         .filter(|(name, _)| name != &token_variable)
@@ -761,6 +779,25 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
         store,
         provider_environment_variables,
         withheld_environment_variables,
+    })
+}
+
+/// Refuse a project whose state another CUE instance owns, before any of the
+/// project's secrets is resolved. Reads only; the owner is checked again under
+/// the lock where the run writes.
+async fn refuse_another_owner(
+    store: &dyn StateStore,
+    target: &Target,
+    invocation: &Invocation,
+) -> Result<(), CliError> {
+    let owner = store
+        .owner(&target.tenant)
+        .await
+        .map_err(|error| failure(&error, invocation))?;
+    owner.map_or(Ok(()), |owner| {
+        owner
+            .require(&target.tenant, &target.instance)
+            .map_err(|error| failure(&error, invocation))
     })
 }
 
