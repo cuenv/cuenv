@@ -37,7 +37,9 @@ pub(super) fn detailed_deserialize_error<T: DeserializeOwned>(
 }
 
 fn should_include_env_value_hint(message: &str) -> bool {
-    message.contains("untagged enum EnvValue") || message.contains("untagged enum EnvValueSimple")
+    message.contains("untagged enum EnvValue")
+        || message.contains("untagged enum EnvValueSimple")
+        || message.contains("environment variable")
 }
 
 fn find_invalid_env_value_path(value: &serde_json::Value) -> Option<String> {

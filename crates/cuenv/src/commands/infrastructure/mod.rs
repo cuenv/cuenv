@@ -187,25 +187,11 @@ fn printable_text(text: &str) -> String {
     strip_control_characters_except_newlines(&cuenv_events::redact(text))
 }
 
-/// Some engine and store messages name a repair command themselves (as
-/// "`cuenv infrastructure state recover`"), without knowing which
-/// environment or project the run selected. Name it with the run's flags.
-fn with_selected_commands(message: String, invocation: &Invocation) -> String {
-    ["state recover", "state adopt"]
-        .into_iter()
-        .fold(message, |message, subcommand| {
-            message.replace(
-                &format!("`cuenv infrastructure {subcommand}`"),
-                &format!("`{}`", invocation.command(subcommand)),
-            )
-        })
-}
-
 /// Map an engine or store error to the command's error, with the help an
 /// operator needs. Every command the help names carries the run's `--env`,
 /// `-p` and `--package`.
 fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
-    let message = with_selected_commands(printable_text(&error.to_string()), invocation);
+    let message = printable_text(&error.to_string());
     let (kind, help) = match error {
         InfrastructureError::Configuration(_) => return CliError::config(message),
         InfrastructureError::Locked {
@@ -213,7 +199,14 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         } => {
             return CliError::infrastructure(
                 message,
-                Some("Wait for the other run to finish, then run the command again.".to_string()),
+                Some(format!(
+                    "Wait for the other run to finish, then run the command again. If that run \
+                     is gone, release the lock with `{}`.",
+                    invocation.command(&format!(
+                        "unlock {}",
+                        strip_control_characters(lock_identifier)
+                    ))
+                )),
                 InfrastructureFailureKind::Locked,
             )
             .with_lock(LockStatus {
@@ -320,7 +313,8 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                     .to_string(),
             ),
         ),
-        InfrastructureError::UnrecordedChangesPending { .. } => (
+        InfrastructureError::UnrecordedChange { .. }
+        | InfrastructureError::UnrecordedChangesPending { .. } => (
             InfrastructureFailureKind::Failed,
             Some(format!(
                 "Run `{}`, then run this command again.",
@@ -329,8 +323,7 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
         ),
         // The messages of these say what to do next, or carry the
         // provider's own diagnostics.
-        InfrastructureError::UnrecordedChange { .. }
-        | InfrastructureError::Codec(_)
+        InfrastructureError::Codec(_)
         | InfrastructureError::Plugin(_)
         | InfrastructureError::RemoteProcedure { .. }
         | InfrastructureError::Diagnostics { .. }

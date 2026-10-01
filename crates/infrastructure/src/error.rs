@@ -53,7 +53,7 @@ pub enum InfrastructureError {
     /// The tenant's state is locked by another run.
     #[error(
         "state for {tenant} is locked by '{holder}' (lock {lock_identifier}, acquired {acquired_at}); \
-         if that run is gone, release it with `cuenv infrastructure unlock {lock_identifier}`"
+         if that run is gone, release the lock"
     )]
     Locked {
         /// Tenant whose state is locked.
@@ -81,7 +81,7 @@ pub enum InfrastructureError {
     /// A provider changed a resource but its new state could not be recorded.
     #[error(
         "{address} was changed by its provider, but recording its state failed: {reason}. \
-         The record was saved to {saved_to}; run `cuenv infrastructure state recover` before \
+         The record was saved to {saved_to}; recover the saved changes before \
          planning again, or the resource will be created a second time"
     )]
     UnrecordedChange {
@@ -138,8 +138,8 @@ pub enum InfrastructureError {
     /// shape.
     #[error(
         "the state schema cannot move to version {version} while a run holds a state lock; wait \
-         for running `cuenv infrastructure` commands to finish, or release a lock left behind \
-         by a dead run with `cuenv infrastructure unlock`, then run the command again"
+         for running infrastructure commands to finish, or release a lock left behind by a \
+         dead run, then run the command again"
     )]
     StateMigrationBlocked {
         /// Schema version the migration would create.
@@ -188,8 +188,7 @@ pub enum InfrastructureError {
     /// Another CUE instance owns the tenant's state.
     #[error(
         "{tenant} is owned by the CUE instance {owner}, not {instance}; refusing to act on its \
-         state. If {instance} is now the right owner, transfer ownership with `cuenv \
-         infrastructure state adopt`"
+         state. If {instance} is now the right owner, transfer ownership to it"
     )]
     OwnedByAnotherInstance {
         /// Tenant whose state is owned.
@@ -220,7 +219,7 @@ pub enum InfrastructureError {
     /// Earlier runs left changes that are not yet in the state store.
     #[error(
         "{tenant} has {count} unrecorded change(s) from an earlier run, saved in {directory}; \
-         run `cuenv infrastructure state recover` to record them before planning"
+         recover them before planning"
     )]
     UnrecordedChangesPending {
         /// Tenant with unrecorded changes.
@@ -482,5 +481,40 @@ mod tests {
         let category = failure_category(&error);
         assert_eq!(category, "permission denied");
         assert!(!category.contains("secret"));
+    }
+
+    #[test]
+    fn messages_describe_remedies_without_naming_commands() {
+        let errors = [
+            InfrastructureError::Locked {
+                tenant: "tenant".into(),
+                lock_identifier: "lock-1".into(),
+                holder: "holder".into(),
+                acquired_at: "now".into(),
+            },
+            InfrastructureError::UnrecordedChange {
+                address: "random_pet.name".into(),
+                reason: "store unreachable".into(),
+                saved_to: "/state/file".into(),
+            },
+            InfrastructureError::StateMigrationBlocked { version: 2 },
+            InfrastructureError::OwnedByAnotherInstance {
+                tenant: "tenant".into(),
+                owner: "a".into(),
+                instance: "b".into(),
+            },
+            InfrastructureError::UnrecordedChangesPending {
+                tenant: "tenant".into(),
+                count: 1,
+                directory: "/state".into(),
+            },
+        ];
+        for error in errors {
+            let message = error.to_string();
+            assert!(
+                !message.contains("cuenv infrastructure") && !message.contains('`'),
+                "a library error names a command line: {message}"
+            );
+        }
     }
 }

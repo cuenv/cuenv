@@ -508,6 +508,7 @@ mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("_copy:web"), "{error}");
-        assert!(error.to_string().contains("state adopt"), "{error}");
+        assert!(error.to_string().contains("transfer ownership"), "{error}");
+        assert!(!error.to_string().contains("state adopt"), "{error}");
     }
 }
