@@ -19,9 +19,10 @@ use super::interrupts::{Interrupts, SignalSource};
 use super::invocation::Invocation;
 use super::output::{Finish, Output};
 use super::{
-    AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, InfrastructureAction,
-    InfrastructureOptions, SelectionFacts, SeparateState, Siblings, StateAction, UnlockScope,
-    confirm, dispatch, environment_variables_for_action, guard_selection, release, run, under_lock,
+    AnswerFuture, Answers, CommandContext, ConfirmationPolicy, EngineInputs, GuardRequest,
+    InfrastructureAction, InfrastructureOptions, SelectionFacts, SeparateState, Siblings,
+    StateAction, UnlockScope, confirm, dispatch, environment_variables_for_action, guard_selection,
+    release, run, under_lock,
 };
 use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
@@ -1708,7 +1709,13 @@ impl GuardCase<'_> {
             invocation: &invocation,
             ..self.harness.context()
         };
-        guard_selection(&context, action, &facts, &self.harness.inputs()).await
+        let inputs = self.harness.inputs();
+        let request = GuardRequest {
+            action,
+            facts: &facts,
+            inputs: &inputs,
+        };
+        guard_selection(&context, &request).await
     }
 }
 

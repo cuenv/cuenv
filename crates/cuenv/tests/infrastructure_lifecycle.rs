@@ -503,30 +503,41 @@ async fn named_environment_passes_an_exec_secret_to_the_provider() -> TestResult
     Ok(())
 }
 
-/// One project at the two stages of moving a resource from an environment to
-/// the top level: `dev` records `random_pet.pet`, then the top level declares
-/// the same address while `dev` declares another resource.
-fn identity_conflict_configuration(
-    provider: &Path,
-    backend: &TursoConfiguration,
-    project: &str,
-    top_level_pet: bool,
-) -> TestResult<String> {
-    let provider_block = format!(
-        "providers: random: {{source: \"hashicorp/random\", path: {}}}",
-        serde_json::to_string(provider)?
-    );
-    let pet = "pet: {type: \"random_pet\", configuration: {length: 2, separator: \"-\"}}";
-    let (top_level, environment_resource) = if top_level_pet {
-        (
-            format!("{provider_block}\n\tresources: {pet}"),
-            "identifier: {type: \"random_id\", configuration: byte_length: 4}",
-        )
-    } else {
-        (String::new(), pet)
-    };
-    Ok(format!(
-        r#"package examples
+/// Where `random_pet.pet` is declared.
+#[derive(Debug, Clone, Copy)]
+enum PetDeclaration {
+    /// In the `dev` environment only.
+    InEnvironment,
+    /// At the top level, while `dev` declares another resource.
+    AtTopLevel,
+}
+
+/// One project of the identity conflict test.
+struct ConflictProject<'project> {
+    provider: &'project Path,
+    backend: &'project TursoConfiguration,
+    name: &'project str,
+}
+
+impl ConflictProject<'_> {
+    /// The configuration at the two stages of moving a resource from an
+    /// environment to the top level.
+    fn configuration(&self, pet: PetDeclaration) -> TestResult<String> {
+        let provider_block = format!(
+            "providers: random: {{source: \"hashicorp/random\", path: {}}}",
+            serde_json::to_string(self.provider)?
+        );
+        let pet_resource =
+            "pet: {type: \"random_pet\", configuration: {length: 2, separator: \"-\"}}";
+        let (top_level, environment_resource) = match pet {
+            PetDeclaration::AtTopLevel => (
+                format!("{provider_block}\n\tresources: {pet_resource}"),
+                "identifier: {type: \"random_id\", configuration: byte_length: 4}",
+            ),
+            PetDeclaration::InEnvironment => (String::new(), pet_resource),
+        };
+        Ok(format!(
+            r#"package examples
 
 import "github.com/cuenv/cuenv/schema"
 
@@ -543,9 +554,10 @@ infrastructure: {{
 	}}
 }}
 "#,
-        project = serde_json::to_string(project)?,
-        url = serde_json::to_string(&backend.url)?,
-    ))
+            project = serde_json::to_string(self.name)?,
+            url = serde_json::to_string(&self.backend.url)?,
+        ))
+    }
 }
 
 /// A run without `--env` must not create an address a declared environment
@@ -564,9 +576,14 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
     let project = format!("random-identity-{}", uuid::Uuid::new_v4());
     let unselected = TenantKey::new(MODULE, &project)?;
     let dev = TenantKey::with_environment(MODULE, &project, "dev")?;
+    let conflict = ConflictProject {
+        provider: &provider,
+        backend: &backend,
+        name: &project,
+    };
     let lifecycle = Lifecycle::from_configuration(
         prepare_directory()?,
-        identity_conflict_configuration(&provider, &backend, &project, false)?,
+        conflict.configuration(PetDeclaration::InEnvironment)?,
         &backend,
     )?;
     let created = lifecycle.run(&["apply", "--env", "dev", "--yes"])?;
@@ -575,7 +592,7 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
     // The pet moves to the top level; `dev` keeps declaring something else.
     fs::write(
         lifecycle.directory.path().join("env.cue"),
-        identity_conflict_configuration(&provider, &backend, &project, true)?,
+        conflict.configuration(PetDeclaration::AtTopLevel)?,
     )?;
     // A plan only warns.
     lifecycle.run(&["plan"])?;

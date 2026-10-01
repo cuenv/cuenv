@@ -531,7 +531,14 @@ async fn run(
 ) -> Result<(), CliError> {
     let answers = TerminalAnswers;
     let invocation = Invocation::of(options);
-    refuse_unconfirmable(&options.action, output, &answers, &invocation)?;
+    refuse_unconfirmable(
+        &options.action,
+        &PromptSetting {
+            output,
+            answers: &answers,
+            invocation: &invocation,
+        },
+    )?;
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
     let resolved = resolve(&options.action, &target).await?;
@@ -584,7 +591,12 @@ async fn run(
         // The user state directory (see `UnrecordedStore`).
         unrecorded_directory: None,
     };
-    guard_selection(&context, &options.action, &facts, &inputs).await?;
+    let request = GuardRequest {
+        action: &options.action,
+        facts: &facts,
+        inputs: &inputs,
+    };
+    guard_selection(&context, &request).await?;
     dispatch(&options.action, &context, inputs).await
 }
 
@@ -875,6 +887,16 @@ impl SelectionFacts {
     }
 }
 
+/// What the guards on the state identity of a run look at besides the
+/// [`CommandContext`]: what the run does, what the evaluated configuration
+/// says, and the engine inputs. (No `Debug`: the engine inputs hold resolved
+/// secret values.)
+struct GuardRequest<'request> {
+    action: &'request InfrastructureAction,
+    facts: &'request SelectionFacts,
+    inputs: &'request EngineInputs,
+}
+
 /// The checks on the state identity a run acts on, which need the state
 /// store. They run once it is connected and before the command does
 /// anything.
@@ -882,20 +904,18 @@ impl SelectionFacts {
 /// `plan` only reads, so it warns where `apply` and `destroy` refuse.
 async fn guard_selection(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
-    inputs: &EngineInputs,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
-    match action {
+    match request.action {
         InfrastructureAction::Plan
         | InfrastructureAction::Apply { .. }
-        | InfrastructureAction::Destroy { .. } => guard_identity(context, action, facts).await,
+        | InfrastructureAction::Destroy { .. } => guard_identity(context, request).await,
         // Whole database, or another project's tenant: nothing of the
         // evaluated project's environments applies.
         InfrastructureAction::State(StateAction::Locks) => Ok(()),
         InfrastructureAction::Unlock { scope, .. } if scope.is_named() => Ok(()),
         InfrastructureAction::State(_) | InfrastructureAction::Unlock { .. } => {
-            guard_environment_known(context, facts, inputs).await
+            guard_environment_known(context, request).await
         }
     }
 }
@@ -931,12 +951,11 @@ async fn recorded_addresses(
 ///   records. Same outcomes.
 async fn guard_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
     match context.tenant.environment() {
-        None => guard_unselected_identity(context, action, facts).await,
-        Some(environment) => guard_named_identity(context, action, facts, environment).await,
+        None => guard_unselected_identity(context, request).await,
+        Some(environment) => guard_named_identity(context, request, environment).await,
     }
 }
 
@@ -956,15 +975,15 @@ fn refuse_or_warn(action: &InfrastructureAction, refusal: CliError) -> Result<()
 
 async fn guard_unselected_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
     let siblings = context.siblings;
+    let action = request.action;
     if siblings.declared_environments.is_empty() {
         return Ok(());
     }
     if siblings.top_level.resource_count > 0 {
-        return guard_environment_claims(context, action, facts).await;
+        return guard_environment_claims(context, request).await;
     }
     let recorded = recorded_addresses(context, context.tenant).await?;
     let deletable = !recorded.is_empty() && siblings.top_level.provider_count > 0;
@@ -990,9 +1009,9 @@ struct EnvironmentClaim {
 /// object under two identities.
 async fn guard_environment_claims(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
+    let GuardRequest { action, facts, .. } = request;
     // Only creating can claim an object twice.
     if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
         return Ok(());
@@ -1071,10 +1090,10 @@ fn unselected_refusal(context: &CommandContext<'_>, recorded: &[ResourceAddress]
 
 async fn guard_named_identity(
     context: &CommandContext<'_>,
-    action: &InfrastructureAction,
-    facts: &SelectionFacts,
+    request: &GuardRequest<'_>,
     environment: &str,
 ) -> Result<(), CliError> {
+    let GuardRequest { action, facts, .. } = request;
     // Only creating can claim an object twice; destroying a named
     // environment that has nothing recorded changes nothing.
     if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
@@ -1256,9 +1275,9 @@ fn environment_claims_refusal(
 /// otherwise.
 async fn guard_environment_known(
     context: &CommandContext<'_>,
-    facts: &SelectionFacts,
-    inputs: &EngineInputs,
+    request: &GuardRequest<'_>,
 ) -> Result<(), CliError> {
+    let GuardRequest { facts, inputs, .. } = request;
     if facts.selection != EnvironmentSelection::NotDeclared {
         return Ok(());
     }
@@ -1309,13 +1328,24 @@ fn tenant_label(tenant: &TenantKey) -> String {
     evaluation::escape_control_characters(&tenant.to_string())
 }
 
+/// What a run's confirmation prompt depends on, known before anything is
+/// evaluated.
+struct PromptSetting<'setting> {
+    output: &'setting Output,
+    answers: &'setting dyn Answers,
+    invocation: &'setting Invocation,
+}
+
 /// Refuse a prompt that cannot be answered before evaluating anything.
 fn refuse_unconfirmable(
     action: &InfrastructureAction,
-    output: &Output,
-    answers: &dyn Answers,
-    invocation: &Invocation,
+    prompt: &PromptSetting<'_>,
 ) -> Result<(), CliError> {
+    let PromptSetting {
+        output,
+        answers,
+        invocation,
+    } = prompt;
     if action.confirmation() == ConfirmationPolicy::AssumeYes {
         return Ok(());
     }

@@ -2207,14 +2207,24 @@ async fn fake_a_tainted_replacement_plans_its_create_with_the_old_objects_privat
     Ok(())
 }
 
+/// The state and the project directory a run with the local provider acts on.
+struct LocalProject<'project> {
+    store: &'project Arc<dyn StateStore>,
+    tenant: &'project TenantKey,
+    directory: &'project Path,
+}
+
 /// Plan and apply `resources` with the local provider.
 async fn local_converge(
-    store: &Arc<dyn StateStore>,
-    tenant: &TenantKey,
-    project: &Path,
+    local: &LocalProject<'_>,
     resources: serde_json::Value,
     mode: PlanMode,
 ) -> TestResult<Converged> {
+    let LocalProject {
+        store,
+        tenant,
+        directory: project,
+    } = local;
     let infrastructure: Infrastructure = serde_json::from_value(json!({
         "state": {"turso": {"url": "http://unused"}},
         "providers": {"local": {
@@ -2224,7 +2234,7 @@ async fn local_converge(
         "resources": resources,
     }))?;
     let mut engine = InfrastructureEngine::new(EngineSetup {
-        tenant: tenant.clone(),
+        tenant: (*tenant).clone(),
         store: Arc::clone(store),
         infrastructure,
         options: engine_options(project, &Cancellation::default()),
@@ -2263,21 +2273,19 @@ async fn local_file_rename_with_a_dependent(reader_after: &str) -> TestResult {
         "old": local_file(&file, "hello", &[]),
         "reader": local_file(&reader, "r1", &["old"]),
     });
-    local_converge(&store, &tenant, directory.path(), before, PlanMode::Apply)
+    let local = LocalProject {
+        store: &store,
+        tenant: &tenant,
+        directory: directory.path(),
+    };
+    local_converge(&local, before, PlanMode::Apply)
         .await?
         .applied?;
     let after = json!({
         "new": local_file(&file, "hello", &[]),
         "reader": local_file(&reader, reader_after, &["new"]),
     });
-    let renamed = local_converge(
-        &store,
-        &tenant,
-        directory.path(),
-        after.clone(),
-        PlanMode::Apply,
-    )
-    .await?;
+    let renamed = local_converge(&local, after.clone(), PlanMode::Apply).await?;
     let plan = actions(&renamed.plan);
     renamed
         .applied
@@ -2296,20 +2304,14 @@ async fn local_file_rename_with_a_dependent(reader_after: &str) -> TestResult {
         ["local_file.new", "local_file.reader"]
     );
     assert!(
-        !local_converge(&store, &tenant, directory.path(), after, PlanMode::Apply)
+        !local_converge(&local, after, PlanMode::Apply)
             .await?
             .plan
             .has_work()
     );
-    local_converge(
-        &store,
-        &tenant,
-        directory.path(),
-        json!({}),
-        PlanMode::Destroy,
-    )
-    .await?
-    .applied?;
+    local_converge(&local, json!({}), PlanMode::Destroy)
+        .await?
+        .applied?;
     assert!(!file.exists() && !reader.exists());
     Ok(())
 }

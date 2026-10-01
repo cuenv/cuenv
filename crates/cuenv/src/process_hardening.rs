@@ -80,10 +80,19 @@ mod tests {
     /// the probe's command line.
     const COMMAND_LINE_DENIED: i32 = 19;
 
+    /// What a probe process does before it reports.
+    #[derive(Debug, Clone, Copy)]
+    enum ProbeMode {
+        /// Harden the process first.
+        Hardened,
+        /// Leave the process as it is (the control).
+        Control,
+    }
+
     /// The probe: runs in a process of its own (see `probe`), optionally
     /// hardens itself, and reports whether a child can read its environment.
-    fn run_probe(harden: bool) -> ! {
-        if harden {
+    fn run_probe(mode: ProbeMode) -> ! {
+        if matches!(mode, ProbeMode::Hardened) {
             restrict_process_inspection().expect("hardening");
         }
         let read = |file: &str| {
@@ -108,8 +117,8 @@ mod tests {
     #[test]
     fn probe() {
         match std::env::var(PROBE_VARIABLE).as_deref() {
-            Ok("hardened") => run_probe(true),
-            Ok("control") => run_probe(false),
+            Ok("hardened") => run_probe(ProbeMode::Hardened),
+            Ok("control") => run_probe(ProbeMode::Control),
             _ => {}
         }
     }
