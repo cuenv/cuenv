@@ -35,7 +35,7 @@ use cuenv_infrastructure::{
     strip_control_characters_except_newlines, validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
-use cuenv_manifest::manifest::Infrastructure;
+use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction};
 
 use self::evaluation::{NameCheck, Target, TargetRequest};
 use self::interrupts::{HeldLock, Interrupts};
@@ -96,18 +96,18 @@ pub enum InfrastructureAction {
 }
 
 impl InfrastructureAction {
-    /// Stable policy name used to decide which project variables this action
-    /// may resolve and pass to providers.
-    const fn policy_name(&self) -> &'static str {
+    /// The `allowInfrastructure` policy action that decides which project
+    /// variables this action may resolve and pass to providers.
+    const fn policy_name(&self) -> InfrastructurePolicyAction {
         match self {
-            Self::Plan => "plan",
-            Self::Apply { .. } => "apply",
-            Self::Destroy { .. } => "destroy",
-            Self::State(StateAction::List) => "state-list",
-            Self::State(StateAction::Remove { .. }) => "state-remove",
-            Self::State(StateAction::Recover { .. }) => "state-recover",
-            Self::State(StateAction::Adopt) => "state-adopt",
-            Self::Unlock { .. } => "unlock",
+            Self::Plan => InfrastructurePolicyAction::Plan,
+            Self::Apply { .. } => InfrastructurePolicyAction::Apply,
+            Self::Destroy { .. } => InfrastructurePolicyAction::Destroy,
+            Self::State(StateAction::List) => InfrastructurePolicyAction::StateList,
+            Self::State(StateAction::Remove { .. }) => InfrastructurePolicyAction::StateRemove,
+            Self::State(StateAction::Recover { .. }) => InfrastructurePolicyAction::StateRecover,
+            Self::State(StateAction::Adopt) => InfrastructurePolicyAction::StateAdopt,
+            Self::Unlock { .. } => InfrastructurePolicyAction::Unlock,
         }
     }
 

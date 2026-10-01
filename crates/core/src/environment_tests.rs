@@ -226,7 +226,7 @@ fn infrastructure_policies_are_independent_of_task_and_exec_access() {
         policies: Some(vec![]),
     });
     for value in [&unrestricted, &no_policies, &empty_policies] {
-        assert!(value.is_accessible_by_infrastructure("plan"));
+        assert!(value.is_accessible_by_infrastructure(InfrastructurePolicyAction::Plan));
     }
 
     let restricted = EnvValue::WithPolicies(EnvVarWithPolicies {
@@ -240,13 +240,13 @@ fn infrastructure_policies_are_independent_of_task_and_exec_access() {
             Policy {
                 allow_tasks: None,
                 allow_exec: None,
-                allow_infrastructure: Some(vec!["apply".into()]),
+                allow_infrastructure: Some(vec![InfrastructurePolicyAction::Apply]),
             },
         ]),
     });
-    assert!(!restricted.is_accessible_by_infrastructure("plan"));
-    assert!(restricted.is_accessible_by_infrastructure("apply"));
-    assert!(!restricted.is_accessible_by_infrastructure("destroy"));
+    assert!(!restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Plan));
+    assert!(restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Apply));
+    assert!(!restricted.is_accessible_by_infrastructure(InfrastructurePolicyAction::Destroy));
 }
 
 #[test]
@@ -255,7 +255,10 @@ fn infrastructure_policy_uses_schema_field_name() {
         serde_json::from_str(r#"{"allowInfrastructure":["plan","apply"]}"#).unwrap();
     assert_eq!(
         policy.allow_infrastructure,
-        Some(vec!["plan".into(), "apply".into()])
+        Some(vec![
+            InfrastructurePolicyAction::Plan,
+            InfrastructurePolicyAction::Apply
+        ])
     );
     assert_eq!(
         serde_json::to_value(&policy).unwrap(),
@@ -289,10 +292,12 @@ async fn infrastructure_filters_before_resolving_and_returns_secret_parts() {
         ),
     ]);
 
-    let (resolved, parts) =
-        Environment::resolve_for_infrastructure_with_secrets("plan", &variables)
-            .await
-            .unwrap();
+    let (resolved, parts) = Environment::resolve_for_infrastructure_with_secrets(
+        InfrastructurePolicyAction::Plan,
+        &variables,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         resolved.get("ENDPOINT").map(String::as_str),
         Some("prefix-credential-suffix")

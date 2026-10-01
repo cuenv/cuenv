@@ -59,7 +59,7 @@ fn write_local_cuenv_module(root: &Path) -> TestResult {
     fs::create_dir_all(&cue_mod_dir)?;
     fs::write(
         cue_mod_dir.join("module.cue"),
-        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.9.0\"\n}\n",
+        "module: \"github.com/cuenv/cuenv\"\nlanguage: {\n\tversion: \"v0.14.1\"\n}\n",
     )?;
 
     let schema_src = repo_root()?.join("schema");
