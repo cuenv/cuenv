@@ -36,20 +36,9 @@ pub struct HardeningError(#[from] std::io::Error);
 /// Returns the operating system's error if the kernel refuses; the process
 /// then keeps running unprotected.
 #[cfg(target_os = "linux")]
-#[expect(
-    unsafe_code,
-    reason = "prctl(PR_SET_DUMPABLE) has no safe standard library wrapper"
-)]
 pub fn restrict_process_inspection() -> Result<(), HardeningError> {
-    // SAFETY: prctl with PR_SET_DUMPABLE only sets a flag on the calling
-    // process. It takes no pointers (the remaining arguments are ignored and
-    // passed as zero), so it cannot touch memory.
-    let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(HardeningError(std::io::Error::last_os_error()))
-    }
+    rustix::process::set_dumpable_behavior(rustix::process::DumpableBehavior::NotDumpable)
+        .map_err(|error| HardeningError(error.into()))
 }
 
 /// See the Linux version.
@@ -135,10 +124,7 @@ mod tests {
                 "--test-threads=1",
             ])
             .env(PROBE_VARIABLE, mode);
-        // SAFETY: geteuid only reads the process's credentials.
-        #[expect(unsafe_code, reason = "geteuid has no safe standard library wrapper")]
-        let superuser = unsafe { libc::geteuid() } == 0;
-        if superuser {
+        if rustix::process::geteuid().is_root() {
             command.uid(65534).gid(65534);
         }
         command

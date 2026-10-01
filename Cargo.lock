@@ -1295,6 +1295,7 @@ dependencies = [
  "ratatui",
  "rayon",
  "reqwest 0.13.3",
+ "rustix 1.1.4",
  "rustls 0.23.40",
  "semver",
  "serde",

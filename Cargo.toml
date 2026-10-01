@@ -107,6 +107,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 libc = "0.2"
+rustix = { version = "1.1", default-features = false, features = ["std"] }
 tokio = { version = "1.52", features = ["full"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 ratatui = "0.30"
