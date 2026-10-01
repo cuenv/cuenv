@@ -678,10 +678,9 @@ environment)` repeats the schema's semantic checks and reports **every**
   changes as one dependency graph and refuses cycles and changes no order can
   apply, so the plan lists its changes in apply order and refusals happen
   before any confirmation. `engine.apply()` refuses a plan whose stored records
-  changed since it was made (`InfrastructureError::PlanOutdated`) and a plan
-  made with other provider environment values
-  (`InfrastructureError::PlanEnvironmentChanged`); `Plan::digest()` identifies
-  everything a plan would do. The command plans and confirms while holding
+  changed since it was made (`InfrastructureError::PlanOutdated`);
+  `Plan::digest()` identifies everything a plan would do, including the
+  provider environment it was made with. The command plans and confirms while holding
   the lock, as Terraform does, so it applies exactly the plan shown.
 - **Failed applies.** A provider failure skips the operations that depend on
   it and lets the rest run; `apply` then returns
@@ -689,7 +688,10 @@ environment)` repeats the schema's semantic checks and reports **every**
   the skipped changes and the replacements deleted but not recreated.
   `ApplyEvent::DeletedNotRecreated` reports each such replacement on every way
   an apply can end early, and `ApplyEvent::Failed` and `ApplyEvent::Skipped`
-  report the others.
+  report the others. A replacement whose new object was created but could not
+  be recorded is not "deleted and not recreated": it exists, an
+  `ApplyEvent::Warning` says so, and the error names the file its record was
+  saved to.
 - `StateStore::owner()` names the CUE instance (`ProjectInstance`,
   `<directory>:<package>`) that owns a tenant's state; `claim_owner()` with
   `OwnerClaimMode::IfUnowned` records it under the first lock, and
