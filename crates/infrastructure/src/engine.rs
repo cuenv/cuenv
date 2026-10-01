@@ -1411,7 +1411,6 @@ fn write_generation(expected: RecordVersion) -> uuid::Uuid {
     match expected {
         RecordVersion::Generation { generation, .. } => generation,
         RecordVersion::Absent => uuid::Uuid::new_v4(),
-        RecordVersion::Serial(_) => uuid::Uuid::nil(),
     }
 }
 

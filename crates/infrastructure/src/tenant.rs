@@ -82,7 +82,8 @@ impl TenantKey {
         &self.project
     }
 
-    /// Selected named environment, or `None` for the legacy state.
+    /// Selected named environment, or `None` for a run without `--env` (the
+    /// no-flag identity, which shares no state with any named environment).
     #[must_use]
     pub fn environment(&self) -> Option<&str> {
         self.environment.as_deref()

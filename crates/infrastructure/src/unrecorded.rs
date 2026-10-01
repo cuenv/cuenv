@@ -16,19 +16,25 @@
 //!   Files are opened with `O_NOFOLLOW`.
 //! - Files are written atomically: to a hidden temporary file, flushed to
 //!   disk, then renamed into place, so a crash never leaves half a record.
-//! - Each file names its tenant, the hash of its normalized state backend,
-//!   and the version of the stored record it replaces ([`RecordVersion`]),
-//!   so [`UnrecordedStore::recover`] writes it only to that backend while
-//!   the stored record is still the one it replaces. Files without a
-//!   matching backend identity require inspection and explicit force.
+//! - Each file names its tenant (module, project and environment), the hash
+//!   of its normalized state backend, and the version of the stored record
+//!   it replaces ([`RecordVersion`]), so [`UnrecordedStore::recover`] writes
+//!   it only to that backend while the stored record is still the one it
+//!   replaces.
+//!
+//! Recovery has two independent overrides ([`RecoverOverrides`]), each
+//! evaluated per file: overwriting a stored record that changed since the
+//! file was saved, and accepting a file saved for a different state backend.
+//! One never implies the other. A refused file is reported with its path,
+//! the resource address and the specific reason.
 //!
 //! Files are grouped per tenant so one tenant's leftovers never block
 //! another. Planning refuses to run while a tenant has unrecorded changes.
 //!
 //! The file format is JSON in camelCase throughout, with an explicit
-//! `formatVersion`. Nothing here ever puts a state value in an error
-//! message; problems with a file are [`InfrastructureError::UnrecordedFile`]
-//! errors naming the file.
+//! `formatVersion` (currently 1). Nothing here ever puts a state value in an
+//! error message; problems with a file are
+//! [`InfrastructureError::UnrecordedFile`] errors naming the file.
 
 use std::fs::File;
 use std::io::{Read as _, Write as _};
@@ -43,11 +49,8 @@ use crate::state::{
 };
 use crate::tenant::TenantKey;
 
-/// Format version written into every file.
-const FILE_FORMAT_VERSION: u32 = 4;
-
-/// First file format that preserves the insertion generation.
-const GENERATION_FILE_FORMAT_VERSION: u32 = 3;
+/// Format version written into every file, and the only one read.
+const FILE_FORMAT_VERSION: u32 = 1;
 
 /// Largest unrecorded file read, in bytes (64 MiB, the state store's own
 /// response limit).
@@ -71,33 +74,45 @@ pub struct UnrecordedRecord {
     pub expected: RecordVersion,
     /// The record the provider's change produced.
     pub record: ManagedResource,
-    /// Format that wrote the file; version 2 has no insertion generation.
-    pub format_version: u32,
     /// Hash of the normalized backend that could not record this change.
     /// Kept private so callers cannot bypass the store's binding check.
     backend_identity: Option<String>,
 }
 
-impl UnrecordedRecord {
-    /// Whether ordinary compare-and-swap recovery cannot safely identify the
-    /// stored insertion this file replaced. Such files need inspection and force.
-    #[must_use]
-    pub const fn requires_force(&self) -> bool {
-        self.format_version < GENERATION_FILE_FORMAT_VERSION
-            || matches!(self.expected, RecordVersion::Serial(_))
-    }
+/// What [`UnrecordedStore::recover`] does when the stored record is no
+/// longer the one a file replaces.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChangedRecord {
+    /// Stop with [`InfrastructureError::StateChanged`] naming the file and
+    /// the address; the file stays.
+    #[default]
+    Refuse,
+    /// Write the saved record over whatever is stored.
+    Overwrite,
 }
 
-/// Whether [`UnrecordedStore::recover`] may overwrite a stored record that
-/// changed since the unrecorded record was saved.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoverOverwrite {
-    /// Write each record only while the stored record is still the one it
-    /// replaces; otherwise stop with
-    /// [`InfrastructureError::StateChanged`].
-    IfUnchanged,
-    /// Write every record whatever is stored (an explicit `--force`).
-    Always,
+/// What [`UnrecordedStore::recover`] does with a file saved for a different
+/// state backend than the one in use (or without a backend binding).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackendMismatch {
+    /// Refuse with [`InfrastructureError::UnrecordedFile`] naming the file,
+    /// the address and what differs; nothing is written.
+    #[default]
+    Refuse,
+    /// Write the file to the backend in use. The record is still written
+    /// only while the stored record is the one it replaces, unless
+    /// [`ChangedRecord::Overwrite`] is also chosen.
+    Accept,
+}
+
+/// The two independent overrides of [`UnrecordedStore::recover`]. The
+/// default overrides nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecoverOverrides {
+    /// Overwrite a stored record that changed since the file was saved.
+    pub changed_record: ChangedRecord,
+    /// Accept a file saved for a different state backend.
+    pub backend: BackendMismatch,
 }
 
 /// Options for [`UnrecordedStore::recover`].
@@ -105,8 +120,8 @@ pub enum RecoverOverwrite {
 pub struct RecoverOptions<'options> {
     /// The tenant's lock, which fences every write.
     pub lock: &'options StateLock,
-    /// Whether newer stored records may be overwritten.
-    pub overwrite: RecoverOverwrite,
+    /// Which refusals the caller chose to override.
+    pub overrides: RecoverOverrides,
 }
 
 /// On-disk form of one unrecorded record.
@@ -156,7 +171,6 @@ struct FileResource {
     dependencies: Vec<String>,
     tainted: bool,
     identity: Option<serde_json::Value>,
-    #[serde(default)]
     generation: uuid::Uuid,
 }
 
@@ -262,13 +276,14 @@ impl UnrecordedStore {
         Ok(self)
     }
 
-    /// Whether a saved file requires inspection and explicit force because
-    /// its backend identity is missing or differs from this store's binding.
+    /// Whether a saved file was saved for a different backend than this
+    /// store's binding: its identity is missing or differs. Recovering it
+    /// needs [`BackendMismatch::Accept`].
     ///
-    /// Two unbound identities are accepted for in-memory stores. A bound file
-    /// cannot be recovered ordinarily through an unbound store.
+    /// Two unbound identities match, for in-memory stores. A bound file
+    /// does not match an unbound store.
     #[must_use]
-    pub fn requires_backend_force(&self, unrecorded: &UnrecordedRecord) -> bool {
+    pub fn differs_from_backend(&self, unrecorded: &UnrecordedRecord) -> bool {
         self.backend_identity != unrecorded.backend_identity
     }
 
@@ -327,7 +342,7 @@ impl UnrecordedStore {
         if resource.generation.is_nil() {
             resource.generation = match put.expected {
                 RecordVersion::Generation { generation, .. } => generation,
-                RecordVersion::Absent | RecordVersion::Serial(_) => uuid::Uuid::new_v4(),
+                RecordVersion::Absent => uuid::Uuid::new_v4(),
             };
         }
         let document = UnrecordedFile {
@@ -419,7 +434,6 @@ impl UnrecordedStore {
                     saved_at: document.saved_at,
                     expected: document.expected,
                     record: document.resource.into_record(),
-                    format_version: document.format_version,
                     backend_identity: document.backend_identity,
                 })
             })
@@ -441,12 +455,21 @@ impl UnrecordedStore {
     /// deleting each file once its record is written. Writes are fenced by
     /// `options.lock`, which the caller must hold.
     ///
-    /// With [`RecoverOverwrite::IfUnchanged`] every file must have a backend
-    /// identity matching this wrapper and the actual state store before any
-    /// record is written. Each record is written only while the stored record
-    /// is still the one it replaces; a stored
-    /// record that holds the same generation, resulting serial and content
-    /// counts as recorded after a lost response.
+    /// Each file is judged on its own, for two independent concerns:
+    ///
+    /// - Backend binding: a file saved for a different backend than the
+    ///   configured one, or than `store` itself, is refused unless
+    ///   [`BackendMismatch::Accept`] is chosen. Every file is checked before
+    ///   any record is written, so a refusal never leaves a partial recovery.
+    /// - Changed record: a record is written only while the stored record is
+    ///   still the one it replaces; a stored record that holds the same
+    ///   generation, resulting serial and content counts as recorded after a
+    ///   lost response. A changed record is refused unless
+    ///   [`ChangedRecord::Overwrite`] is chosen, and then only that file is
+    ///   written over it.
+    ///
+    /// Accepting a different backend does not overwrite a changed record, and
+    /// overwriting a changed record does not accept a different backend.
     ///
     /// Returns the addresses recorded, in order.
     ///
@@ -454,9 +477,10 @@ impl UnrecordedStore {
     ///
     /// Stops at the first failure; records written before it stay written
     /// and their files are gone, the rest remain for a later attempt. A
-    /// stored record that changed is
-    /// [`InfrastructureError::StateChanged`] naming the address.
-    #[tracing::instrument(skip_all, fields(tenant = %tenant, overwrite = ?options.overwrite))]
+    /// refused backend binding is [`InfrastructureError::UnrecordedFile`]
+    /// and a changed record is [`InfrastructureError::StateChanged`]; each
+    /// names the file, the address and the reason.
+    #[tracing::instrument(skip_all, fields(tenant = %tenant, overrides = ?options.overrides))]
     pub async fn recover(
         &self,
         store: &dyn StateStore,
@@ -464,21 +488,20 @@ impl UnrecordedStore {
         options: &RecoverOptions<'_>,
     ) -> Result<Vec<ResourceAddress>> {
         let unrecorded_records = self.list(tenant)?;
-        if options.overwrite == RecoverOverwrite::IfUnchanged {
+        if options.overrides.backend == BackendMismatch::Refuse {
             let backend_identity = store.recovery_identity();
             for unrecorded in &unrecorded_records {
-                if self.requires_backend_force(unrecorded)
-                    || unrecorded.backend_identity != backend_identity
+                if let Some(reason) = self.binding_refusal(unrecorded, backend_identity.as_deref())
                 {
                     return Err(file_problem(
                         &unrecorded.file,
-                        "it has no matching state backend identity; inspect the saved object and the configured backend, then use `cuenv infrastructure state recover --force`, or move this file aside to keep current state",
-                    ));
-                }
-                if unrecorded.requires_force() {
-                    return Err(file_problem(
-                        &unrecorded.file,
-                        "it predates safe generation comparisons; inspect the saved and stored objects, then use `cuenv infrastructure state recover --force`, or move this file aside to keep current state",
+                        format!(
+                            "the saved record of {} {reason}; inspect the saved record and the \
+                             configured backend, then run `cuenv infrastructure state recover \
+                             --accept-backend` to write it to this backend, or move the file \
+                             aside to keep current state",
+                            unrecorded.record.address
+                        ),
                     ));
                 }
             }
@@ -486,38 +509,81 @@ impl UnrecordedStore {
         let mut recorded = Vec::new();
         for unrecorded in unrecorded_records {
             let record = &unrecorded.record;
-            match options.overwrite {
-                RecoverOverwrite::Always => store.put(tenant, options.lock, record).await?,
-                RecoverOverwrite::IfUnchanged => {
-                    let put = ConditionalPut {
-                        resource: record,
-                        expected: unrecorded.expected,
-                    };
-                    match store.put_if_unchanged(tenant, options.lock, &put).await {
-                        Ok(()) => {}
-                        Err(changed @ InfrastructureError::StateChanged { .. }) => {
-                            let already_recorded = store
-                                .list(tenant)
-                                .await?
-                                .iter()
-                                .any(|stored| put.is_recorded(stored));
-                            if !already_recorded {
-                                return Err(changed);
-                            }
-                            tracing::info!(
-                                address = %record.address,
-                                "the state store already holds this unrecorded change"
-                            );
-                        }
-                        Err(other) => return Err(other),
+            let put = ConditionalPut {
+                resource: record,
+                expected: unrecorded.expected,
+            };
+            match store.put_if_unchanged(tenant, options.lock, &put).await {
+                Ok(()) => {}
+                Err(InfrastructureError::StateChanged {
+                    address,
+                    expected,
+                    found,
+                    ..
+                }) => {
+                    let already_recorded = store
+                        .list(tenant)
+                        .await?
+                        .iter()
+                        .any(|stored| put.is_recorded(stored));
+                    if already_recorded {
+                        tracing::info!(
+                            address = %record.address,
+                            "the state store already holds this unrecorded change"
+                        );
+                    } else if options.overrides.changed_record == ChangedRecord::Overwrite {
+                        tracing::warn!(
+                            address = %record.address,
+                            "overwriting a stored record that changed since the change was saved"
+                        );
+                        store.put(tenant, options.lock, record).await?;
+                    } else {
+                        return Err(InfrastructureError::StateChanged {
+                            address,
+                            expected,
+                            found,
+                            file: Some(unrecorded.file.display().to_string()),
+                        });
                     }
                 }
+                Err(other) => return Err(other),
             }
             self.remove(&unrecorded)?;
             tracing::info!(address = %record.address, "recovered an unrecorded change");
             recorded.push(unrecorded.record.address);
         }
         Ok(recorded)
+    }
+
+    /// Why `unrecorded` cannot be written to `actual` (the identity of the
+    /// store in use) without [`BackendMismatch::Accept`], as a clause
+    /// continuing "the saved record of ADDRESS ...".
+    fn binding_refusal(
+        &self,
+        unrecorded: &UnrecordedRecord,
+        actual: Option<&str>,
+    ) -> Option<&'static str> {
+        match (
+            unrecorded.backend_identity.as_deref(),
+            self.backend_identity.as_deref(),
+            actual,
+        ) {
+            (None, None, None) => None,
+            (None, _, _) => Some("was saved without a state backend binding"),
+            (Some(_), None, _) => {
+                Some("was saved for a state backend, but this cuenv has none configured")
+            }
+            (Some(saved), Some(configured), _) if saved != configured => {
+                Some("was saved for a different state backend than the configured one")
+            }
+            (Some(saved), Some(_), Some(actual)) if saved != actual => {
+                Some("was saved for a different state backend than the store in use")
+            }
+            (Some(_), Some(_), None) => {
+                Some("was saved for a state backend, but the store in use has none")
+            }
+            (Some(_), Some(_), Some(_)) => None,
+        }
     }
 }
 
@@ -551,10 +617,7 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
             )
         })?
         .format_version;
-    if !matches!(
-        version,
-        Some(2 | GENERATION_FILE_FORMAT_VERSION | FILE_FORMAT_VERSION)
-    ) {
+    if version != Some(FILE_FORMAT_VERSION) {
         return Err(file_problem(
             file,
             format!(
@@ -582,6 +645,12 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
         return Err(file_problem(
             file,
             "it has an invalid state backend identity",
+        ));
+    }
+    if document.resource.generation.is_nil() {
+        return Err(file_problem(
+            file,
+            "it records no insertion generation, so the stored record it replaces cannot be identified",
         ));
     }
     Ok(document)
@@ -771,6 +840,22 @@ mod tests {
         TursoConfiguration, TursoStateStore,
     };
 
+    /// Only the backend binding is overridden.
+    fn accept_backend() -> RecoverOverrides {
+        RecoverOverrides {
+            backend: BackendMismatch::Accept,
+            ..RecoverOverrides::default()
+        }
+    }
+
+    /// Only a changed stored record is overridden.
+    fn overwrite_changed() -> RecoverOverrides {
+        RecoverOverrides {
+            changed_record: ChangedRecord::Overwrite,
+            ..RecoverOverrides::default()
+        }
+    }
+
     struct BoundMemoryStateStore {
         inner: MemoryStateStore,
         identity: String,
@@ -913,12 +998,16 @@ mod tests {
         let store = UnrecordedStore::at(root.path().join("unrecorded"));
         let web = tenant("web");
         let first = save(&store, &web, &record("first", "a"));
+        let replaced = RecordVersion::Generation {
+            generation: uuid::Uuid::from_u128(4),
+            serial: 4,
+        };
         let second = store
             .save(
                 &web,
                 &ConditionalPut {
                     resource: &record("second", "b"),
-                    expected: RecordVersion::Serial(4),
+                    expected: replaced,
                 },
             )
             .unwrap();
@@ -932,7 +1021,9 @@ mod tests {
         assert!(listed[0].record.same_content(&record("first", "a")));
         assert!(!listed[0].record.generation.is_nil());
         assert_eq!(listed[0].expected, RecordVersion::Absent);
-        assert_eq!(listed[1].expected, RecordVersion::Serial(4));
+        assert_eq!(listed[1].expected, replaced);
+        // A record saved over an existing one keeps that insertion's identity.
+        assert_eq!(listed[1].record.generation, uuid::Uuid::from_u128(4));
         assert!(store.list(&tenant("elsewhere")).unwrap().is_empty());
         assert!(store.has_pending(&web).unwrap());
         assert!(!store.has_pending(&tenant("elsewhere")).unwrap());
@@ -1004,6 +1095,23 @@ mod tests {
             bound_store(root.path(), "libsql://[2001:0DB8:0:0:0:0:0:1]:443"),
             bound_store(root.path(), "https://[2001:db8::1]/")
         );
+        // The machine's own loopback is one backend however it is spelled,
+        // so a file saved through `localhost` recovers through `127.0.0.1`.
+        let local = bound_store(root.path(), "http://localhost:8080/state");
+        for url in [
+            "http://127.0.0.1:8080/state",
+            "http://[::1]:8080/state/",
+            "ws://LocalHost:8080/state",
+        ] {
+            assert_eq!(local, bound_store(root.path(), url), "{url}");
+        }
+        for url in [
+            "http://localhost:8081/state",
+            "http://127.0.0.2:8080/state",
+            "http://localhost:8080/other",
+        ] {
+            assert_ne!(local, bound_store(root.path(), url), "{url}");
+        }
         assert_ne!(
             encrypted,
             bound_store(root.path(), "https://state-a.turso.io/another-prefix")
@@ -1051,7 +1159,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_refuses_an_absent_record_saved_for_another_empty_backend_until_forced() {
+    async fn recovery_refuses_an_absent_record_saved_for_another_empty_backend_until_accepted() {
         for environment in [None, Some("Dev")] {
             let root = tempfile::tempdir().unwrap();
             let backend_a = bound_store(root.path(), "libsql://state-a.turso.io");
@@ -1066,9 +1174,8 @@ mod tests {
             let file = save(&backend_a, &tenant, &saved);
             let listed = backend_b.list(&tenant).unwrap();
             assert_eq!(listed[0].expected, RecordVersion::Absent);
-            assert!(backend_b.requires_backend_force(&listed[0]));
-            assert!(!backend_a.requires_backend_force(&listed[0]));
-            assert!(!listed[0].requires_force());
+            assert!(backend_b.differs_from_backend(&listed[0]));
+            assert!(!backend_a.differs_from_backend(&listed[0]));
             let lock = state_b.lock(&tenant, "recover").await.unwrap();
             let error = backend_b
                 .recover(
@@ -1076,15 +1183,24 @@ mod tests {
                     &tenant,
                     &RecoverOptions {
                         lock: &lock,
-                        overwrite: RecoverOverwrite::IfUnchanged,
+                        overrides: RecoverOverrides::default(),
                     },
                 )
                 .await
                 .unwrap_err();
             assert!(matches!(error, InfrastructureError::UnrecordedFile { .. }));
-            assert!(error.to_string().contains("backend identity"));
-            assert!(error.to_string().contains("recover --force"));
-            assert!(!error.to_string().contains("hunter2"));
+            // The refusal names the file, the address and the reason, and
+            // offers the backend override, not a general force.
+            let message = error.to_string();
+            assert!(message.contains(&file.display().to_string()), "{message}");
+            assert!(message.contains("random_pet.pet"), "{message}");
+            assert!(
+                message.contains("different state backend than the configured one"),
+                "{message}"
+            );
+            assert!(message.contains("--accept-backend"), "{message}");
+            assert!(!message.contains("--force"), "{message}");
+            assert!(!message.contains("hunter2"), "{message}");
             assert!(file.exists());
             assert!(state_b.list(&tenant).await.unwrap().is_empty());
             assert!(state_a.list(&tenant).await.unwrap().is_empty());
@@ -1095,7 +1211,7 @@ mod tests {
                     &tenant,
                     &RecoverOptions {
                         lock: &lock,
-                        overwrite: RecoverOverwrite::Always,
+                        overrides: accept_backend(),
                     },
                 )
                 .await
@@ -1117,7 +1233,7 @@ mod tests {
         let saved = record("pet", "pending");
         let file = save(&backend, &tenant, &saved);
         let listed = equivalent.list(&tenant).unwrap();
-        assert!(!equivalent.requires_backend_force(&listed[0]));
+        assert!(!equivalent.differs_from_backend(&listed[0]));
         let lock = state.lock(&tenant, "recover").await.unwrap();
         equivalent
             .recover(
@@ -1125,7 +1241,7 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1135,57 +1251,173 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_recovery_requires_explicit_force_for_files_without_a_backend_identity() {
-        for version in [2, GENERATION_FILE_FORMAT_VERSION, FILE_FORMAT_VERSION] {
-            let root = tempfile::tempdir().unwrap();
-            let unbound = UnrecordedStore::at(root.path());
-            let bound = bound_store(root.path(), "libsql://state-a.turso.io");
-            let state = BoundMemoryStateStore::for_backend("libsql://state-a.turso.io");
-            let tenant = tenant("web");
-            let saved = record("pet", "pending");
-            let file = save(&unbound, &tenant, &saved);
-            let mut document: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-            document["formatVersion"] = serde_json::json!(version);
-            if version < GENERATION_FILE_FORMAT_VERSION {
-                document["resource"]
-                    .as_object_mut()
-                    .unwrap()
-                    .remove("generation");
-            }
-            std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
-            let listed = bound.list(&tenant).unwrap();
-            assert_eq!(listed[0].format_version, version);
-            assert!(bound.requires_backend_force(&listed[0]));
-            let lock = state.lock(&tenant, "recover").await.unwrap();
+    async fn bound_recovery_requires_the_backend_override_for_files_without_a_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let unbound = UnrecordedStore::at(root.path());
+        let bound = bound_store(root.path(), "libsql://state-a.turso.io");
+        let state = BoundMemoryStateStore::for_backend("libsql://state-a.turso.io");
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&unbound, &tenant, &saved);
+        let listed = bound.list(&tenant).unwrap();
+        assert!(bound.differs_from_backend(&listed[0]));
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        // Overwriting a changed record is a different concern and does not
+        // accept an unbound file.
+        for overrides in [RecoverOverrides::default(), overwrite_changed()] {
             let error = bound
                 .recover(
                     &state,
                     &tenant,
                     &RecoverOptions {
                         lock: &lock,
-                        overwrite: RecoverOverwrite::IfUnchanged,
+                        overrides,
                     },
                 )
                 .await
                 .unwrap_err();
-            assert!(error.to_string().contains("backend identity"));
+            let message = error.to_string();
+            assert!(
+                message.contains("without a state backend binding"),
+                "{message}"
+            );
+            assert!(message.contains("random_pet.pet"), "{message}");
+            assert!(message.contains(&file.display().to_string()), "{message}");
             assert!(state.list(&tenant).await.unwrap().is_empty());
             assert!(file.exists());
-            bound
-                .recover(
-                    &state,
-                    &tenant,
-                    &RecoverOptions {
-                        lock: &lock,
-                        overwrite: RecoverOverwrite::Always,
-                    },
-                )
-                .await
-                .unwrap();
-            assert!(state.list(&tenant).await.unwrap()[0].same_content(&saved));
-            assert!(!file.exists());
         }
+        bound
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overrides: accept_backend(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(state.list(&tenant).await.unwrap()[0].same_content(&saved));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_changed_record_override_does_not_accept_another_backend_and_vice_versa() {
+        let root = tempfile::tempdir().unwrap();
+        let backend_a = bound_store(root.path(), "libsql://state-a.turso.io");
+        let backend_b = bound_store(root.path(), "libsql://state-b.turso.io");
+        let state_b = BoundMemoryStateStore::for_backend("libsql://state-b.turso.io");
+        let tenant = tenant("web");
+        // Saved for backend A when no record was stored there; backend B
+        // has since recorded another record at the address.
+        let file = save(&backend_a, &tenant, &record("pet", "saved"));
+        let lock = state_b.lock(&tenant, "recover").await.unwrap();
+        state_b
+            .put(&tenant, &lock, &record("pet", "stored-in-b"))
+            .await
+            .unwrap();
+        let recover = |overrides| {
+            let backend_b = &backend_b;
+            let state_b = &state_b;
+            let tenant = &tenant;
+            let lock = &lock;
+            async move {
+                backend_b
+                    .recover(state_b, tenant, &RecoverOptions { lock, overrides })
+                    .await
+            }
+        };
+
+        // The changed-record override alone leaves the backend refusal.
+        let error = recover(overwrite_changed()).await.unwrap_err();
+        assert!(matches!(error, InfrastructureError::UnrecordedFile { .. }));
+        assert!(
+            error.to_string().contains("different state backend"),
+            "{error}"
+        );
+        // The backend override alone leaves the changed-record refusal, and
+        // it names the file too.
+        let error = recover(accept_backend()).await.unwrap_err();
+        assert!(
+            matches!(&error, InfrastructureError::StateChanged { address, file: Some(path), .. }
+                if address == "random_pet.pet" && path == &file.display().to_string()),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().starts_with(&file.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(
+            state_b.list(&tenant).await.unwrap()[0].state["id"],
+            "stored-in-b"
+        );
+        assert!(file.exists());
+
+        // Both together write it.
+        let both = RecoverOverrides {
+            changed_record: ChangedRecord::Overwrite,
+            backend: BackendMismatch::Accept,
+        };
+        recover(both).await.unwrap();
+        assert_eq!(state_b.list(&tenant).await.unwrap()[0].state["id"], "saved");
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn the_changed_record_override_applies_only_to_the_files_that_need_it() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("web");
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        let clean = save(&unrecorded, &tenant, &record("clean", "saved-clean"));
+        let changed = save(&unrecorded, &tenant, &record("changed", "saved-changed"));
+        state
+            .put(&tenant, &lock, &record("changed", "stored-changed"))
+            .await
+            .unwrap();
+        let options = |overrides| RecoverOptions {
+            lock: &lock,
+            overrides,
+        };
+
+        // Without the override the unchanged file is recorded and the
+        // changed one is refused with its own path.
+        let error = unrecorded
+            .recover(&state, &tenant, &options(RecoverOverrides::default()))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, InfrastructureError::StateChanged { address, file: Some(path), .. }
+                if address == "random_pet.changed" && path == &changed.display().to_string()),
+            "{error:?}"
+        );
+        assert!(!clean.exists());
+        assert!(changed.exists());
+        let stored = state.list(&tenant).await.unwrap();
+        assert_eq!(stored.len(), 2);
+
+        // With it, only that file overwrites; its neighbour was already
+        // recorded the ordinary way.
+        let recovered = unrecorded
+            .recover(&state, &tenant, &options(overwrite_changed()))
+            .await
+            .unwrap();
+        assert_eq!(
+            recovered,
+            vec![ResourceAddress::new("random_pet", "changed")]
+        );
+        let stored = state.list(&tenant).await.unwrap();
+        let state_of = |name: &str| {
+            stored
+                .iter()
+                .find(|record| record.address.name == name)
+                .unwrap()
+                .state["id"]
+                .clone()
+        };
+        assert_eq!(state_of("clean"), "saved-clean");
+        assert_eq!(state_of("changed"), "saved-changed");
     }
 
     #[tokio::test]
@@ -1204,7 +1436,7 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1223,7 +1455,7 @@ mod tests {
         let saved = record("pet", "pending");
         let file = save(&backend_a, &tenant, &saved);
         let listed = backend_a.list(&tenant).unwrap();
-        assert!(!backend_a.requires_backend_force(&listed[0]));
+        assert!(!backend_a.differs_from_backend(&listed[0]));
         let lock = state_b.lock(&tenant, "recover").await.unwrap();
         let error = backend_a
             .recover(
@@ -1231,12 +1463,16 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("backend identity"));
+        assert!(
+            error
+                .to_string()
+                .contains("different state backend than the store in use")
+        );
         assert!(state_b.list(&tenant).await.unwrap().is_empty());
         assert!(file.exists());
         backend_a
@@ -1245,7 +1481,7 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::Always,
+                    overrides: accept_backend(),
                 },
             )
             .await
@@ -1268,12 +1504,12 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("backend identity"));
+        assert!(error.to_string().contains("state backend"));
         assert!(state.list(&tenant).await.unwrap().is_empty());
         assert!(file.exists());
     }
@@ -1343,7 +1579,7 @@ mod tests {
                     &tenant,
                     &RecoverOptions {
                         lock: &lock,
-                        overwrite: RecoverOverwrite::IfUnchanged,
+                        overrides: RecoverOverrides::default(),
                     },
                 )
                 .await
@@ -1374,7 +1610,7 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1409,7 +1645,7 @@ mod tests {
                 &tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1418,56 +1654,106 @@ mod tests {
         assert_eq!(state.list(&tenant).await.unwrap()[0].serial, 1);
     }
 
-    #[tokio::test]
-    async fn legacy_recovery_files_remain_readable_but_require_explicit_force() {
+    #[test]
+    fn only_format_version_one_is_read() {
         let root = tempfile::tempdir().unwrap();
         let unrecorded = UnrecordedStore::at(root.path());
-        let state = MemoryStateStore::new();
         let tenant = tenant("web");
-        let saved = record("pet", "pending");
-        let file = save(&unrecorded, &tenant, &saved);
-        let mut document: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        document["formatVersion"] = serde_json::json!(2);
-        document["expected"] = serde_json::json!({"serial": 1});
-        document["resource"]
+        let file = save(&unrecorded, &tenant, &record("pet", "pending"));
+        let original = std::fs::read(&file).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        assert_eq!(document["formatVersion"], 1);
+        assert_eq!(unrecorded.list(&tenant).unwrap().len(), 1);
+
+        // Earlier layouts were never released and have no reader: the file
+        // is refused as another format, and left in place.
+        for version in [0, 2, 3, 4] {
+            let mut other = document.clone();
+            other["formatVersion"] = serde_json::json!(version);
+            std::fs::write(&file, serde_json::to_vec(&other).unwrap()).unwrap();
+            let message = unrecorded.list(&tenant).unwrap_err().to_string();
+            assert!(
+                message.contains(&format!(
+                    "format version {version}, but this cuenv reads version 1"
+                )),
+                "{message}"
+            );
+            assert!(message.contains(&file.display().to_string()), "{message}");
+            assert!(!message.contains("hunter2"), "{message}");
+            assert!(file.exists());
+        }
+
+        // A serial-only expectation, or a record without an insertion
+        // generation, cannot identify what the file replaces.
+        let mut serial_only = document.clone();
+        serial_only["expected"] = serde_json::json!({"serial": 1});
+        std::fs::write(&file, serde_json::to_vec(&serial_only).unwrap()).unwrap();
+        let message = unrecorded.list(&tenant).unwrap_err().to_string();
+        assert!(
+            message.contains("not a valid unrecorded record"),
+            "{message}"
+        );
+        let mut no_generation = document.clone();
+        no_generation["resource"]
             .as_object_mut()
             .unwrap()
             .remove("generation");
-        std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
-        let lock = state.lock(&tenant, "test").await.unwrap();
+        std::fs::write(&file, serde_json::to_vec(&no_generation).unwrap()).unwrap();
+        let message = unrecorded.list(&tenant).unwrap_err().to_string();
+        assert!(
+            message.contains("not a valid unrecorded record"),
+            "{message}"
+        );
+        let mut nil_generation = document;
+        nil_generation["resource"]["generation"] = serde_json::json!(uuid::Uuid::nil());
+        std::fs::write(&file, serde_json::to_vec(&nil_generation).unwrap()).unwrap();
+        let message = unrecorded.list(&tenant).unwrap_err().to_string();
+        assert!(message.contains("no insertion generation"), "{message}");
+
+        std::fs::write(&file, original).unwrap();
+        assert_eq!(unrecorded.list(&tenant).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_saved_file_carries_its_tenant_environment_generation_and_binding() {
+        let root = tempfile::tempdir().unwrap();
+        let store = bound_store(root.path(), "libsql://state-a.turso.io");
+        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+        let state = MemoryStateStore::new();
+        let lock = state.lock(&dev, "test").await.unwrap();
         state
-            .put(&tenant, &lock, &record("pet", "current"))
+            .put(&dev, &lock, &record("pet", "stored"))
             .await
             .unwrap();
-        assert!(unrecorded.list(&tenant).unwrap()[0].requires_force());
-        let error = unrecorded
-            .recover(
-                &state,
-                &tenant,
-                &RecoverOptions {
-                    lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+        let previous = state.list(&dev).await.unwrap()[0].clone();
+        let file = store
+            .save(
+                &dev,
+                &ConditionalPut {
+                    resource: &record("pet", "pending"),
+                    expected: RecordVersion::of(Some(&previous)),
                 },
             )
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("recover --force"));
-        assert_eq!(state.list(&tenant).await.unwrap()[0].state["id"], "current");
-        assert!(file.exists());
-        unrecorded
-            .recover(
-                &state,
-                &tenant,
-                &RecoverOptions {
-                    lock: &lock,
-                    overwrite: RecoverOverwrite::Always,
-                },
-            )
-            .await
             .unwrap();
-        assert_eq!(state.list(&tenant).await.unwrap()[0].state["id"], "pending");
-        assert!(!file.exists());
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(document["formatVersion"], 1);
+        assert_eq!(document["tenant"]["environment"], "Dev");
+        assert!(is_backend_identity(
+            document["backendIdentity"].as_str().unwrap()
+        ));
+        assert_eq!(
+            document["resource"]["generation"],
+            previous.generation.to_string()
+        );
+        assert_eq!(
+            document["expected"]["generation"]["generation"],
+            previous.generation.to_string()
+        );
+        assert_eq!(
+            document["expected"]["generation"]["serial"],
+            previous.serial
+        );
     }
 
     #[tokio::test]
@@ -1488,7 +1774,7 @@ mod tests {
                 &dev,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1516,7 +1802,7 @@ mod tests {
         };
         write_private(
             "broken.json",
-            r#"{"formatVersion": 2, "tenant": "hunter2"}"#,
+            r#"{"formatVersion": 1, "tenant": "hunter2"}"#,
         );
         let error = store.list(&web).unwrap_err();
         assert!(
@@ -1618,7 +1904,7 @@ mod tests {
                 &web,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1631,7 +1917,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_refuses_to_overwrite_a_newer_record_unless_forced() {
+    async fn recover_refuses_to_overwrite_a_newer_record_unless_overridden() {
         let root = tempfile::tempdir().unwrap();
         let unrecorded = UnrecordedStore::at(root.path());
         let web = tenant("web");
@@ -1644,12 +1930,12 @@ mod tests {
             .put(&web, &lock, &record("pet", "newer"))
             .await
             .unwrap();
-        let options = |overwrite| RecoverOptions {
+        let options = |overrides| RecoverOptions {
             lock: &lock,
-            overwrite,
+            overrides,
         };
         let error = unrecorded
-            .recover(&state, &web, &options(RecoverOverwrite::IfUnchanged))
+            .recover(&state, &web, &options(RecoverOverrides::default()))
             .await
             .unwrap_err();
         assert!(
@@ -1661,7 +1947,7 @@ mod tests {
         assert_eq!(unrecorded.list(&web).unwrap().len(), 1);
 
         unrecorded
-            .recover(&state, &web, &options(RecoverOverwrite::Always))
+            .recover(&state, &web, &options(overwrite_changed()))
             .await
             .unwrap();
         assert_eq!(state.list(&web).await.unwrap()[0].state["id"], "saved");
@@ -1695,7 +1981,7 @@ mod tests {
                 &web,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite: RecoverOverwrite::IfUnchanged,
+                    overrides: RecoverOverrides::default(),
                 },
             )
             .await
@@ -1721,7 +2007,7 @@ mod tests {
                     &web,
                     &RecoverOptions {
                         lock: &lock_not_held,
-                        overwrite: RecoverOverwrite::IfUnchanged,
+                        overrides: RecoverOverrides::default(),
                     },
                 )
                 .await

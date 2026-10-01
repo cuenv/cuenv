@@ -115,12 +115,49 @@ pub enum InfrastructureError {
         problem: String,
     },
 
+    /// The state store's schema is newer than this build supports. Reading or
+    /// writing it could misread rows whose meaning changed, so nothing is
+    /// touched.
+    #[error(
+        "the state schema is at version {found}, newer than this cuenv supports ({supported}); \
+         upgrade cuenv"
+    )]
+    StateSchemaNewer {
+        /// Schema version recorded in the state store.
+        found: i64,
+        /// Newest schema version this build knows.
+        supported: i64,
+    },
+
+    /// A schema migration was refused because a run holds a state lock.
+    /// Migrating under a live run could land its writes in a half-migrated
+    /// shape.
+    #[error(
+        "the state schema cannot move to version {version} while a run holds a state lock; wait \
+         for running `cuenv infrastructure` commands to finish, or release a lock left behind \
+         by a dead run with `cuenv infrastructure unlock`, then run the command again"
+    )]
+    StateMigrationBlocked {
+        /// Schema version the migration would create.
+        version: i64,
+    },
+
+    /// A stored record could not be decoded. The state store answered; its
+    /// content is damaged or was written by something else.
+    #[error("the stored record of {address} cannot be read: {problem}")]
+    UndecodableRecord {
+        /// Resource address, or a placeholder when the row has none.
+        address: String,
+        /// What is wrong, without the record's content.
+        problem: String,
+    },
+
     /// A conditional write found the stored record changed since the
     /// caller's view of it, so writing would overwrite a newer record.
     #[error(
-        "{address} changed in the state store since this record was saved (expected {expected}, \
-         found {found}); writing it would overwrite a newer record. Review the resource, then \
-         recover with force to overwrite it anyway"
+        "{}{address} changed in the state store since this record was saved (expected \
+         {expected}, found {found}); writing it would overwrite a newer record",
+        saved_in(.file.as_deref())
     )]
     StateChanged {
         /// Resource address.
@@ -129,6 +166,8 @@ pub enum InfrastructureError {
         expected: String,
         /// The record version found.
         found: String,
+        /// The unrecorded change file being recovered, when there is one.
+        file: Option<String>,
     },
 
     /// A plan's view of stored state no longer matches the store, so
@@ -226,6 +265,11 @@ pub enum InfrastructureError {
         #[source]
         source: std::io::Error,
     },
+}
+
+/// Prefix naming the unrecorded change file an error is about.
+fn saved_in(file: Option<&str>) -> String {
+    file.map_or_else(String::new, |file| format!("{file}: "))
 }
 
 impl InfrastructureError {
