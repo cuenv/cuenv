@@ -309,7 +309,7 @@ fn an_environment_that_is_not_selected_is_still_checked() -> TestResult {
     ]))?;
     let message = fixture.error()?;
     assert!(
-        message.contains("infrastructure.environments.prod.providers.random._versionOrPath"),
+        message.contains("infrastructure.environments.prod._unresolved.\"providers.random\""),
         "{message}"
     );
     assert!(!message.contains("environments.dev"), "{message}");
@@ -399,7 +399,7 @@ fn provider_needs_exactly_one_of_version_and_path() -> TestResult {
     .error()?;
     assert!(
         in_environment.contains(
-            "infrastructure.environments.dev.providers.random._versionOrPath: set exactly one of `version` and `path`"
+            "infrastructure.environments.dev._unresolved.\"providers.random\": set exactly one of `version` and `path`"
         ),
         "{in_environment}"
     );
@@ -412,6 +412,128 @@ fn provider_needs_exactly_one_of_version_and_path() -> TestResult {
         empty_in_environment.contains("environments.dev.providers.random.path"),
         "{empty_in_environment}"
     );
+    Ok(())
+}
+
+#[test]
+fn an_invalid_provider_or_resource_reports_only_its_own_error() -> TestResult {
+    // An error inside `providers` or `resources` makes that whole struct an
+    // error; the reference checks must wait for it instead of reporting that
+    // every provider or resource is missing.
+    let cases = [
+        (
+            "neither version nor path",
+            infrastructure(&[
+                STATE,
+                "providers: random: source: \"hashicorp/random\"",
+                "resources: pet: type: \"random_pet\"",
+                "resources: id: {type: \"random_id\", provider: \"random\"}",
+            ]),
+            "set `version` (an exact registry release) or `path`",
+        ),
+        (
+            "invalid version",
+            infrastructure(&[
+                STATE,
+                "providers: random: {source: \"hashicorp/random\", version: \"latest\"}",
+                "resources: pet: type: \"random_pet\"",
+            ]),
+            "providers.random.version: invalid value \"latest\"",
+        ),
+        (
+            "empty path",
+            infrastructure(&[
+                STATE,
+                "providers: random: {source: \"hashicorp/random\", path: \"\"}",
+                "resources: pet: type: \"random_pet\"",
+            ]),
+            "providers.random.path: invalid value \"\"",
+        ),
+        (
+            "provider configuration conflict",
+            infrastructure(&[
+                STATE,
+                "providers: random: {source: \"hashicorp/random\", version: \"3.9.1\", configuration: seed: 1 & 2}",
+                "resources: pet: type: \"random_pet\"",
+            ]),
+            "providers.random.configuration.seed: conflicting values",
+        ),
+        (
+            "resource configuration conflict",
+            infrastructure(&[
+                STATE,
+                PROVIDER,
+                "resources: pet: {type: \"random_pet\", configuration: length: 2 & 3}",
+                "resources: id: {type: \"random_id\", dependsOn: [\"pet\"]}",
+            ]),
+            "resources.pet.configuration.length: conflicting values",
+        ),
+    ];
+    for (name, body, expected) in cases {
+        let message = SchemaFixture::new(&body)?.error()?;
+        assert!(message.contains(expected), "{name}: {message}");
+        for false_report in [
+            "no provider named",
+            "no resource named",
+            "set exactly one of",
+        ] {
+            assert!(
+                !message.contains(false_report),
+                "{name} reports `{false_report}`: {message}"
+            );
+        }
+        if !name.starts_with("neither") {
+            assert!(!message.contains("set `version`"), "{name}: {message}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn reference_checks_run_for_the_part_that_is_valid() -> TestResult {
+    // An invalid provider hides the provider checks, not the resource ones.
+    let message = SchemaFixture::new(&infrastructure(&[
+        STATE,
+        "providers: random: {source: \"hashicorp/random\", version: \"3.9.1\", configuration: seed: 1 & 2}",
+        "resources: pet: {type: \"random_pet\", dependsOn: [\"nosuch\"]}",
+    ]))?
+    .error()?;
+    assert!(message.contains("conflicting values"), "{message}");
+    assert!(
+        message.contains("no resource named \"nosuch\""),
+        "{message}"
+    );
+    assert!(!message.contains("no provider named"), "{message}");
+    Ok(())
+}
+
+#[test]
+fn resources_without_any_declared_provider_are_still_reported() -> TestResult {
+    // No `providers` at all is not an error inside `providers`.
+    let message = SchemaFixture::new(&infrastructure(&[
+        STATE,
+        "resources: pet: type: \"random_pet\"",
+    ]))?
+    .error()?;
+    assert!(
+        message.contains("no provider named \"random\" (the prefix of type \"random_pet\")"),
+        "{message}"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_incomplete_value_in_an_unused_environment_does_not_fail_evaluation() -> TestResult {
+    // `version: string` is not yet a value, not a missing `version`: another
+    // file or an overlay may fill it in, and commands that never select the
+    // environment must keep working.
+    let fixture = SchemaFixture::new(&infrastructure(&[
+        STATE,
+        DEVELOPMENT,
+        "environments: staging: {providers: random: {source: \"hashicorp/random\", version: string}, resources: pet: type: \"random_pet\"}",
+    ]))?;
+    let project = fixture.project()?;
+    assert!(project.infrastructure.is_some());
     Ok(())
 }
 
@@ -456,6 +578,10 @@ fn turso_url_contract() -> TestResult {
         "http://[::1]:8080",
         "http://[::ffff:127.0.0.1]:8080",
         "HTTP://127.0.0.1:1",
+        "https://[::1]",
+        "https://[::ffff:1.2.3.4]",
+        "https://[1:2:3:4:5:6:7:8]",
+        "https://sqld-0.sqld.default.svc.cluster.local:8080",
     ];
     let rejected = [
         "postgres://db.turso.io",
@@ -478,6 +604,26 @@ fn turso_url_contract() -> TestResult {
         "http://127.0.0.1:",
         "https://db.turso.io:65536",
         "https://-db.turso.io",
+        // Dotted-numeric hosts the URL parser rejects (an octet above 255,
+        // five parts) or reads as another address (zero-padded octal,
+        // hexadecimal, shorthand and single-number IPv4).
+        "https://999.1.1.1",
+        "https://256.0.0.1",
+        "https://1.2.3.4.5",
+        "https://127.1",
+        "https://0x7f.1",
+        "https://0177.0.0.1",
+        "https://010.0.0.1",
+        "https://2130706433",
+        "https://a.b.c.1",
+        "https://a..b",
+        // Malformed bracketed IPv6 addresses.
+        "https://[1:2:3]",
+        "https://[:::]",
+        "https://[1::2::3]",
+        "https://[1:2:3:4:5:6:7:8:9]",
+        "https://[::ffff:1.2.3.999]",
+        "https://[fe80::1%25eth0]",
     ];
     // One instance per URL, so one rejection cannot hide another; the
     // default policy leaves rejected instances out of the result.
@@ -521,16 +667,25 @@ fn turso_url_is_checked_wherever_the_state_is_declared() -> TestResult {
     Ok(())
 }
 
-/// A project that embeds `schema.#Project` at file level (`file_level`) or
-/// unifies with it (`schema.#Project & {…}`), with the given `env` body.
-fn environment_fixture(file_level: bool, env_body: &str) -> TestResult<SchemaFixture> {
+/// How a fixture project uses `schema.#Project`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectForm {
+    /// Embedded at file level (`schema.#Project` on its own line).
+    FileLevel,
+    /// Unified with the project body (`schema.#Project & {…}`).
+    Unified,
+}
+
+/// A project that uses `schema.#Project` in the given form, with the given
+/// `env` body.
+fn environment_fixture(form: ProjectForm, env_body: &str) -> TestResult<SchemaFixture> {
     let repository = repository_root()?;
     let module = temporary_module("cuengine-environment-schema-")?;
     copy_cue_files(&repository.join("cue.mod"), &module.path().join("cue.mod"))?;
     copy_cue_files(&repository.join("schema"), &module.path().join("schema"))?;
     let project = module.path().join("app");
     fs::create_dir_all(&project)?;
-    let source = if file_level {
+    let source = if form == ProjectForm::FileLevel {
         format!(
             "package app\n\nimport \"github.com/cuenv/cuenv/schema\"\n\nschema.#Project\n\nname: \"schema-fixture\"\n\nenv: {{\n{env_body}\n}}\n"
         )
@@ -573,11 +728,11 @@ fn documented_policy_form_evaluates_and_deserializes() -> TestResult {
     // `{value: …, policies: […]}` next to plain values and secrets: the
     // #EnvironmentVariable disjunction must pick exactly one alternative,
     // with `schema.#Project` embedded at file level and unified with `&`.
-    for file_level in [true, false] {
-        let fixture = environment_fixture(file_level, POLICY_VARIABLES)?;
+    for form in [ProjectForm::FileLevel, ProjectForm::Unified] {
+        let fixture = environment_fixture(form, POLICY_VARIABLES)?;
         let project = fixture.project()?;
         let base = project.env.ok_or("env missing")?.base;
-        assert_eq!(base.len(), 7, "file_level={file_level}");
+        assert_eq!(base.len(), 7, "{form:?}");
         let accessible = |name: &str, action: InfrastructurePolicyAction| {
             base[name].is_accessible_by_infrastructure(action)
         };
@@ -617,7 +772,7 @@ fn documented_policy_form_evaluates_and_deserializes() -> TestResult {
 #[test]
 fn policy_form_works_in_an_environment_overlay() -> TestResult {
     let fixture = environment_fixture(
-        true,
+        ProjectForm::FileLevel,
         "\tenvironment: staging: TOKEN: {value: \"x\", policies: [{allowTasks: [\"deploy\"], allowInfrastructure: [\"plan\"]}]}",
     )?;
     let project = fixture.project()?;
@@ -642,7 +797,7 @@ fn misspelled_policy_fields_and_actions_are_rejected_by_the_schema() -> TestResu
         ("allowInfrastructure: [\"state\"]", "allowInfrastructure"),
     ] {
         let fixture = environment_fixture(
-            true,
+            ProjectForm::FileLevel,
             &format!("\tTOKEN: {{value: \"x\", policies: [{{{policy}}}]}}"),
         )?;
         let message = match fixture.project() {
@@ -672,7 +827,7 @@ fn every_infrastructure_action_name_is_accepted() -> TestResult {
         .collect::<Vec<_>>()
         .join(", ");
     let fixture = environment_fixture(
-        true,
+        ProjectForm::FileLevel,
         &format!("\tTOKEN: {{value: \"x\", policies: [{{allowInfrastructure: [{list}]}}]}}"),
     )?;
     let project = fixture.project()?;

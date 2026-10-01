@@ -123,10 +123,6 @@ env: {
     // Boolean value as a string
     DEBUG: "true"
 
-    // Host environment passthrough for task execution
-    GITHUB_ACTOR: schema.#EnvPassthrough
-    TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
-
     // Secret reference (named resolver)
     API_KEY: schema.#OnePasswordRef & {
         ref: "op://vault/item/field"
@@ -158,9 +154,21 @@ not meant to be the user-facing shape. Always reach for a concrete secret type:
 the [schema-first workflow](/agents/schema-first/) for the full rationale.
 :::
 
-`#EnvPassthrough` forwards a variable from the process running cuenv into the task environment.
-Use it for CI-provided context such as GitHub Actions actor and ref values. When `name` is omitted,
-cuenv reads the host variable with the same name as the env key.
+`#EnvPassthrough` forwards a variable from the process running cuenv into a task's environment, so
+it is valid only in a task's `env` (`tasks: build: env: GITHUB_ACTOR: schema.#EnvPassthrough`); the
+project-level `env` rejects it with an error that says so. Use it for CI-provided context such as
+GitHub Actions actor and ref values. When `name` is omitted, cuenv reads the host variable with the
+same name as the env key:
+
+```cue
+tasks: release: schema.#Task & {
+    command: "release"
+    env: {
+        GITHUB_ACTOR: schema.#EnvPassthrough
+        TAG: schema.#EnvPassthrough & { name: "GITHUB_REF_NAME" }
+    }
+}
+```
 
 Task-level `env` accepts the same value forms, including secret refs. For GitHub Actions tasks that
 need to write outside the current repository, prefer a task-local `GH_TOKEN` secret because the
@@ -959,16 +967,17 @@ it.
 #### Checks
 
 The schema reports these mistakes with `error()` while the project is
-evaluated, so every cuenv command that evaluates the project fails on them
-before it touches state or starts a provider, and all of them are listed
-together. Each applies to the top-level configuration and, separately, to every
-`environments.NAME` configuration, whether or not `--env` selects it:
+evaluated, so every cuenv command that evaluates the project (including
+`cuenv fmt` and the shell hook, `cuenv export --shell`) fails on them before it
+touches state or starts a provider. Each check applies to the top-level
+configuration and, separately, to every `environments.NAME` configuration,
+whether or not `--env` selects it:
 
 | Mistake | Error key | Message |
 | ------- | --------- | ------- |
-| a provider sets neither `version` nor `path` | `…providers.NAME._versionOrPath` | ``set `version` (an exact registry release) or `path` (a local provider binary)`` |
-| a provider sets both | `…providers.NAME._versionOrPath` | ``set exactly one of `version` and `path`, not both`` |
-| `path` is empty | `…providers.NAME.path` | CUE's own `!=""` constraint failure |
+| a provider sets neither `version` nor `path` | `…_unresolved."providers.NAME"` | ``set `version` (an exact registry release) or `path` (a local provider binary)`` |
+| a provider sets both | `…_unresolved."providers.NAME"` | ``set exactly one of `version` and `path`, not both`` |
+| `version` is not an exact version, or `path` is empty | `…providers.NAME.version`, `…providers.NAME.path` | CUE's own constraint failure (the only error for that value) |
 | a `dependsOn` entry names no resource of the same configuration | `…_unresolved."resources.NAME.dependsOn[INDEX]"` | ``no resource named "…" in `resources` of this configuration`` |
 | a resource's `provider` names no provider of the same configuration | `…_unresolved."resources.NAME.provider"` | ``no provider named "…" in `providers` of this configuration`` |
 | a resource without `provider` whose type prefix (`aws` of `aws_instance`) is not a provider of the same configuration | `…_unresolved."resources.NAME.type"` | ``no provider named "aws" (the prefix of type "aws_instance") in `providers` of this configuration; declare it or set `provider` `` |
@@ -977,9 +986,22 @@ together. Each applies to the top-level configuration and, separately, to every
 The key starts with the path of the configuration: `infrastructure` for the
 top level, `infrastructure.environments.NAME` for an environment. A
 configuration is checked against its own `providers` and `resources` only: a
-top-level provider does not satisfy a resource inside an environment. The
-checks compare names only and take time linear in the number of resources. The
-database URL is never repeated in its error, because it may carry a token.
+top-level provider does not satisfy a resource inside an environment.
+
+Each check reads only the part of the configuration it needs and runs only when
+that part has no error of its own. A provider, a resource or a nested
+`configuration` that CUE already rejects (a conflicting value, a version that is
+not exact, an empty `path`) is reported by CUE alone: the checks that read
+`providers` or `resources` wait until it is fixed, so one mistake never
+produces a stream of "no provider named" or "no resource named" errors, and the
+error you see is the original one. Fixing it can reveal further errors in the
+checks that were waiting. A value that is still open (`version: string`, to be
+filled in by another file or an overlay) counts as present: it is not a missing
+`version`, and an environment that no command selects can carry it without
+breaking the other commands.
+
+The checks compare names only and take time linear in the number of resources.
+The database URL is never repeated in its error, because it may carry a token.
 Dependency cycles pass the schema and are reported by `cuenv infrastructure`
 itself. The Rust engine repeats these checks before it starts a provider, which
 also covers projects that do not unify with this schema.
@@ -1021,7 +1043,7 @@ environment does not declare) is an error, not a merge.
 
 | Field                 | Type                                               | Required | Description                                                      |
 | --------------------- | -------------------------------------------------- | -------- | ---------------------------------------------------------------- |
-| `providers`           | `{[#InfrastructureName]: #InfrastructureProvider}` | No       | Provider plugins keyed by local name                             |
+| `providers`           | `{[#InfrastructureName]: #InfrastructureProvider}` | No       | Provider plugins keyed by local name. Always present in the evaluated project (an empty struct when none is declared) so the schema checks can tell "no providers" from "providers that failed to evaluate" |
 | `resources`           | `{[#InfrastructureName]: #ManagedResource}`        | No       | Managed resources keyed by name                                  |
 | `providerEnvironment` | `"inherit" \| "isolated"`                          | No       | What provider processes inherit from the cuenv process. Default `"inherit"` |
 
@@ -1054,19 +1076,30 @@ provider needs.
 | `url`          | `string` | Yes      | `libsql://`, `https://` or `wss://` with a host name or address; `http://`/`ws://` only for a loopback host (local `sqld`). Optional port and path; no credentials, query, fragment or whitespace. See the URL contract below |
 | `authenticationTokenEnvironmentVariable` | `string` | No       | Environment variable holding the authentication token (a valid variable name). Default `TURSO_AUTH_TOKEN` |
 
-URL contract, shared with the Rust state store (which must accept exactly the
-same set):
+URL contract, shared with the Rust state store. The schema accepts a subset of
+what the store accepts and never a URL the store rejects, so a project that
+evaluates cannot fail later on its database address:
 
 - Scheme `libsql`, `https`, `wss`, `http` or `ws`, in any letter case.
-- Encrypted schemes (`libsql`, `https`, `wss`): a DNS name (letters, digits,
-  `.` and `-`, starting and ending with a letter or digit), a dotted IPv4
-  address, or a bracketed IPv6 address.
+- Encrypted schemes (`libsql`, `https`, `wss`): a DNS name (labels of letters,
+  digits and `-`, each starting and ending with a letter or digit, separated
+  by single `.`, whose last label starts with a letter), a dotted decimal IPv4
+  address (four octets from 0 to 255, no leading zeros), or a bracketed IPv6
+  address in its standard text form (at most one `::`, at most eight groups,
+  an optional dotted IPv4 tail after `::`; no zone identifier).
 - Plaintext schemes (`http`, `ws`): only a loopback host — `localhost` (any
   case), a dotted IPv4 address in `127.0.0.0/8` with four decimal octets,
   `[::1]`, or `[::ffff:127.x.y.z]` — so the token never crosses the network
   unencrypted.
 - An optional port from 1 to 65535, then an optional path of URL path
   characters. No user information, query, fragment or whitespace anywhere.
+
+The schema refuses spellings that the URL parser reads as another address or
+rejects outright: an octet above 255 (`999.1.1.1`), five parts (`1.2.3.4.5`),
+zero-padded, octal, hexadecimal, shorthand and single-number IPv4 hosts
+(`010.0.0.1`, `0177.0.0.1`, `0x7f.1`, `127.1`, `2130706433`), a host name whose
+last label starts with a digit, empty labels, and malformed IPv6 (`[1:2:3]`,
+`[:::]`, two `::`).
 
 An invalid URL fails with ``infrastructure.state.turso._invalidUrl: `url`
 must be …`` and the URL itself is not repeated, because it may carry a token.
@@ -1476,7 +1509,18 @@ evaluation, and so does deserialization in cuenv's Rust types.
 A variable that has policies is available to a consumer only when some policy
 lists it. `allowTasks` grants tasks, `allowExec` grants `cuenv exec`
 commands, and `allowInfrastructure` grants `cuenv infrastructure` actions; one
-does not grant another. A variable with no policies is available everywhere.
+does not grant another. A variable with no policies (or an empty `policies: []`)
+is available everywhere.
+
+Policies apply to every value, secret or not. A plain value that carries a
+policy list, such as `{value: "y", policies: [{allowTasks: ["other"]}]}`, is
+left out of the environment of a task that no policy lists, left out of the
+environment of a `cuenv exec` command that no policy lists, and never exported
+to the interactive shell by `cuenv export` (no policy names the shell, so a
+variable with a non-empty policy list is not exported there). Before this
+rule, plain values with policies still reached tasks, `cuenv exec` and the
+shell regardless of the list, and only secrets honoured it. A project that
+relied on that must add the consumer to the policy or drop the policy.
 
 ### #InfrastructureAction
 

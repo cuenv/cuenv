@@ -147,3 +147,43 @@ fn secret_without_resolver_names_the_secret() {
     assert!(error.contains("secret"), "{error}");
     assert!(error.contains("resolver"), "{error}");
 }
+
+#[test]
+fn interpolated_value_error_names_an_environment_variable() {
+    // The module loader adds the `env.NAME` path and the value hint only to
+    // messages that name an environment variable.
+    let error = error_of(json!(["a", {"command": "echo"}]));
+    assert!(error.contains("environment variable"), "{error}");
+}
+
+#[test]
+fn passthrough_is_rejected_in_the_project_environment_with_the_reason() {
+    let error = error_of(json!({"cuenvPassthrough": true, "name": "USER"}));
+    assert!(error.contains("#EnvPassthrough"), "{error}");
+    assert!(error.contains("task's `env`"), "{error}");
+    assert!(!error.contains("resolver"), "{error}");
+}
+
+#[test]
+fn null_value_inside_policies_says_the_value_is_incomplete() {
+    let error = error_of(json!({"value": null, "policies": []}));
+    assert!(error.contains("incomplete CUE value"), "{error}");
+}
+
+fn restricted(policies: &serde_json::Value) -> EnvValue {
+    serde_json::from_value(json!({"value": "y", "policies": policies})).unwrap()
+}
+
+#[test]
+fn shell_receives_only_unrestricted_values() {
+    assert!(EnvValue::String("x".into()).is_accessible_by_shell());
+    assert!(restricted(&json!([])).is_accessible_by_shell());
+    assert!(
+        serde_json::from_value::<EnvValue>(json!({"value": "y"}))
+            .unwrap()
+            .is_accessible_by_shell()
+    );
+    assert!(!restricted(&json!([{"allowTasks": ["build"]}])).is_accessible_by_shell());
+    assert!(!restricted(&json!([{"allowExec": ["make"]}])).is_accessible_by_shell());
+    assert!(!restricted(&json!([{"allowInfrastructure": ["plan"]}])).is_accessible_by_shell());
+}

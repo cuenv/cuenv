@@ -1,5 +1,5 @@
 use super::*;
-use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies};
+use cuenv_core::environment::{Env, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy};
 use cuenv_core::manifest::Project;
 use cuenv_manifest::secrets::Secret;
 
@@ -161,9 +161,132 @@ fn test_extract_static_env_vars_skips_secrets() {
         infrastructure: None,
     };
 
-    let vars = extract_static_env_vars(&cfg);
+    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Shell);
     assert_eq!(vars.get("PLAIN"), Some(&"value".to_string()));
     assert!(!vars.contains_key("SECRET"));
+}
+
+fn project_with_env(base: HashMap<String, EnvValue>) -> Project {
+    Project {
+        config: None,
+        env: Some(Env {
+            base,
+            environment: None,
+        }),
+        hooks: None,
+        ci: None,
+        cache: None,
+        tasks: HashMap::new(),
+        name: "test".to_string(),
+        codegen: None,
+        runtime: None,
+        formatters: None,
+        services: HashMap::new(),
+        images: HashMap::new(),
+        vcs: HashMap::new(),
+        infrastructure: None,
+    }
+}
+
+fn plain_value_with_policies(value: &str, policies: Vec<Policy>) -> EnvValue {
+    EnvValue::WithPolicies(EnvVarWithPolicies {
+        value: EnvValueSimple::String(value.to_string()),
+        policies: Some(policies),
+    })
+}
+
+fn policy_allowing_tasks(tasks: &[&str]) -> Policy {
+    Policy {
+        allow_tasks: Some(tasks.iter().map(ToString::to_string).collect()),
+        allow_exec: None,
+        allow_infrastructure: None,
+    }
+}
+
+fn policy_allowing_exec(commands: &[&str]) -> Policy {
+    Policy {
+        allow_tasks: None,
+        allow_exec: Some(commands.iter().map(ToString::to_string).collect()),
+        allow_infrastructure: None,
+    }
+}
+
+#[test]
+fn static_env_honours_task_policies() {
+    let cfg = project_with_env(HashMap::from([
+        ("OPEN".to_string(), EnvValue::String("a".to_string())),
+        (
+            "ALLOWED".to_string(),
+            plain_value_with_policies("b", vec![policy_allowing_tasks(&["show"])]),
+        ),
+        (
+            "DENIED".to_string(),
+            plain_value_with_policies("c", vec![policy_allowing_tasks(&["other"])]),
+        ),
+        (
+            "EXEC_ONLY".to_string(),
+            plain_value_with_policies("d", vec![policy_allowing_exec(&["make"])]),
+        ),
+    ]));
+
+    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Task("show"));
+    assert_eq!(vars.get("OPEN"), Some(&"a".to_string()));
+    assert_eq!(vars.get("ALLOWED"), Some(&"b".to_string()));
+    assert!(!vars.contains_key("DENIED"), "{vars:?}");
+    assert!(!vars.contains_key("EXEC_ONLY"), "{vars:?}");
+}
+
+#[test]
+fn static_env_honours_exec_policies() {
+    let cfg = project_with_env(HashMap::from([
+        ("OPEN".to_string(), EnvValue::String("a".to_string())),
+        (
+            "ALLOWED".to_string(),
+            plain_value_with_policies("b", vec![policy_allowing_exec(&["make"])]),
+        ),
+        (
+            "DENIED".to_string(),
+            plain_value_with_policies("c", vec![policy_allowing_exec(&["other"])]),
+        ),
+        (
+            "TASK_ONLY".to_string(),
+            plain_value_with_policies("d", vec![policy_allowing_tasks(&["make"])]),
+        ),
+    ]));
+
+    let vars = extract_static_env_vars(&cfg, StaticEnvConsumer::Exec("make"));
+    assert_eq!(vars.get("OPEN"), Some(&"a".to_string()));
+    assert_eq!(vars.get("ALLOWED"), Some(&"b".to_string()));
+    assert!(!vars.contains_key("DENIED"), "{vars:?}");
+    assert!(!vars.contains_key("TASK_ONLY"), "{vars:?}");
+}
+
+#[test]
+fn shell_export_omits_every_value_with_a_policy_list() {
+    let cfg = project_with_env(HashMap::from([
+        ("OPEN".to_string(), EnvValue::String("a".to_string())),
+        (
+            "NO_RESTRICTION".to_string(),
+            EnvValue::WithPolicies(EnvVarWithPolicies {
+                value: EnvValueSimple::String("b".to_string()),
+                policies: None,
+            }),
+        ),
+        (
+            "TASKS".to_string(),
+            plain_value_with_policies("c", vec![policy_allowing_tasks(&["show"])]),
+        ),
+        (
+            "EXEC".to_string(),
+            plain_value_with_policies("d", vec![policy_allowing_exec(&["make"])]),
+        ),
+    ]));
+
+    let merged = collect_all_env_vars(&cfg, &HashMap::new());
+    assert_eq!(merged.get("OPEN"), Some(&"a".to_string()));
+    assert_eq!(merged.get("NO_RESTRICTION"), Some(&"b".to_string()));
+    assert!(!merged.contains_key("TASKS"), "{merged:?}");
+    assert!(!merged.contains_key("EXEC"), "{merged:?}");
 }
 
 #[test]

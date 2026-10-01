@@ -20,7 +20,7 @@ use cuenv_task_exec::execute_command_with_redaction;
 use cuenv_tool_runtime::apply_resolved_tool_activation;
 use std::path::Path;
 
-use super::export::extract_static_env_vars;
+use super::export::{StaticEnvConsumer, extract_static_env_vars};
 use tracing::instrument;
 
 /// Represents the type of manifest found at a path.
@@ -215,7 +215,7 @@ async fn prepare_exec_environment(
     let mut secrets_for_redaction: Vec<String> = Vec::new();
 
     if let Some(project) = manifest_kind.project() {
-        let base_env_vars = extract_static_env_vars(project);
+        let base_env_vars = extract_static_env_vars(project, StaticEnvConsumer::Exec(exec.command));
         tracing::debug!("Base environment variables for exec: {:?}", base_env_vars);
 
         let runtime_env_vars =

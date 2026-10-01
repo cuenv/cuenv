@@ -2,6 +2,7 @@ use super::{CommandExecutor, convert_engine_error, env_file, schema_compat};
 use crate::commands::module_utils::EvaluationMetadataBuilder;
 use cuengine::ModuleEvalOptions;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path, format_eval_errors};
+use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, ModuleEvaluationInput, Result};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -51,6 +52,7 @@ pub(super) fn evaluate_path(request: PathEvaluation<'_>) -> Result<ModuleEvaluat
         target_dir: Some(target_path.to_string_lossy().to_string()),
         concrete_paths,
         export_paths,
+        task_field: Some(TASK_FIELD.to_string()),
         ..Default::default()
     };
 
@@ -145,6 +147,7 @@ impl CommandExecutor {
             recursive: true,
             with_meta: true,
             with_references: true,
+            task_field: Some(TASK_FIELD.to_string()),
             ..Default::default()
         };
 
@@ -204,6 +207,7 @@ impl CommandExecutor {
                     with_meta: true,
                     with_references: true,
                     target_dir: Some(dir.to_string_lossy().to_string()),
+                    task_field: Some(TASK_FIELD.to_string()),
                     ..Default::default()
                 };
                 let dir_rel_path = compute_relative_path(dir, module_root);

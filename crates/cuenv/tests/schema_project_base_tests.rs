@@ -359,7 +359,7 @@ infrastructure: {
         "no resource named \"nosuch\"",
         "infrastructure.environments.staging._unresolved",
         "no provider named \"missing\"",
-        "infrastructure.environments.staging.providers.random._versionOrPath",
+        "infrastructure.environments.staging._unresolved.\"providers.random\"",
         "set exactly one of `version` and `path`, not both",
     ] {
         assert!(flattened.contains(fragment), "{fragment} missing: {stderr}");

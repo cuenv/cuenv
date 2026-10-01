@@ -328,7 +328,7 @@ About fifty findings, most reproduced. Resolved in milestone 2:
   names, well-formed resource types, and typed/closed provider and resource
   configuration are schema-checked. The Rust engine enforces exactly one of
   `version`/`path` and rejects unknown provider/resource references before
-  launching a provider (milestone 4 restored the same checks in CUE; the Rust
+  launching a provider (milestone 5 restored the same checks in CUE; the Rust
   checks remain as defense in depth). The Rust Turso parser checks loopback-only plaintext
   URLs and emits fixed errors without echoing the URL. The `infrastructure`
   block must be concrete (generic `concretePaths` bridge option, which fails
@@ -536,12 +536,27 @@ thousand line `turso.rs`. Not resolved: see next steps.
 - **D2. Restore the CUE semantic checks.** The reason given for removing them was
   wrong (see above). They return as `error()` calls scoped so each applies to the
   top level and to each `environments.NAME` configuration, each against its own
-  maps, in linear time. Test fixtures that copy the schema into a module declare
+  maps. They are written for linear cost: name sets are built once and each
+  resource only looks names up (a per-resource `let` that split the type made
+  evaluation quadratic and was removed; `cuenv env print` on 12 000 resources
+  takes 4.7 s (chain of dependencies) or 6.0 s (five dependencies each) without
+  the checks, 5.9 s and 7.9 s with them, and took 26 s and 31 s with the `let`;
+  doubling the size from 6 000 to 12 000 about doubles the time). A check reads only a struct that has no error of its own, because CUE
+  treats a struct with an erroneous descendant as an error: an invalid provider
+  or resource is reported by CUE alone and the checks that read it wait, instead
+  of cascading into "no provider named" for every resource. For the same reason
+  the checks sit beside `providers` and `resources` rather than inside them, and
+  `providers` is always present (an empty struct when none is declared), which
+  lets a check tell "no providers" from "providers that failed to evaluate".
+  `version`/`path` presence is decided from the provider's field names, so an
+  open value (`version: string` in an unused environment) is present and an
+  invalid one gets a single error. Test fixtures that copy the schema into a module declare
   language v0.14.1. The Rust checks remain as defense in depth for projects that
   do not unify with the schema and now collect every problem with its field path.
   Consequence, deliberately fail-closed: a semantic error in any environment,
   selected or not, is a CUE evaluation error and fails every command that
-  evaluates the project; state-only commands still fail while the project does not
+  evaluates the project, including `cuenv fmt` and the shell hook
+  (`cuenv export --shell`); state-only commands still fail while the project does not
   evaluate and need the configuration fixed first, even though they need only
   `infrastructure.state`.
 - **D3. Refuse no-flag to `--env` instead of migrating.** Moving rows and the
@@ -651,11 +666,18 @@ experimental.
    signalling in `plugin.rs`, file ownership in `unrecorded.rs`, user, host name
    and account lookups in the command's `holder.rs`) with `rustix`.
 9. The cuenv-specific semantics still in cuengine's task injection:
-   `injectTaskNames`, `isTaskShaped`, `schemaPackagePath` and project detection
-   remain hard-wired to cuenv's task and project shapes. Milestone 4 only made the
-   field name (`exportsTasks`, now `exportsField`) a caller option (`task_field`);
-   the rest should move out of the generic bridge. It predates this work and
-   touches every command.
+   `injectTaskNames`, `isTaskShaped`, `schemaPackagePath` (the import path that
+   scopes the hidden `_name` field), the `name`-field project detection and the
+   OCI client name `"cuenv"` remain hard-wired to cuenv's task and project
+   shapes. Milestone 4 made the field name a caller option (`task_field`) and
+   milestone 5 made the cuenv CLI pass it explicitly (`cuenv_core::module::
+   TASK_FIELD`). `None` still means `tasks`, kept as a compatibility default for
+   callers outside the CLI that rely on `..Default::default()` (`cuenv-ci`
+   discovery, `cuenv-codegen`, `cuenv infrastructure` evaluation and the Cuetty
+   app); dropping it needs those callers to pass the field too. The remaining
+   task-shaped injection and `schemaPackagePath` should move out of the generic
+   bridge (for example behind a caller-supplied hook or schema package path). It
+   predates this work and touches every command.
 10. A cargo feature that keeps `cuenv infrastructure` and its dependencies (tonic,
     prost, rustls) out of builds that do not want them (decision D7).
 11. A `validate`-style command or `state recover --dry-run` / `state show`, to

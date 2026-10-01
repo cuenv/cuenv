@@ -11,6 +11,7 @@ use crate::commands::convert_engine_error;
 use crate::commands::env_file::{discover_env_cue_directories, find_cue_module_root};
 use cuengine::ModuleEvalOptions;
 use cuenv_core::cue::discovery::{adjust_meta_key_path, compute_relative_path};
+use cuenv_core::module::TASK_FIELD;
 use cuenv_core::{ModuleEvaluation, Result};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -190,6 +191,7 @@ fn evaluate_discovered_env_cue_directories(
             recursive: false,
             with_meta: options.with_meta,
             target_dir: Some(dir.to_string_lossy().to_string()),
+            task_field: Some(TASK_FIELD.to_string()),
             ..Default::default()
         };
 
@@ -220,6 +222,7 @@ fn evaluate_specific_info_path(
         with_meta: options.with_meta,
         recursive: false,
         target_dir: Some(context.start_path.to_string_lossy().to_string()),
+        task_field: Some(TASK_FIELD.to_string()),
         ..Default::default()
     };
 
