@@ -16,29 +16,8 @@
 use std::ffi::OsString;
 
 use cuenv_infrastructure::plugin::isolated_withheld_names;
+use cuenv_manifest::manifest::ProviderEnvironment;
 use cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES;
-
-/// What a provider process inherits from the cuenv process environment.
-///
-/// TODO(m5-integration): this is a local stand-in for
-/// `cuenv_manifest::manifest::ProviderEnvironment`, the type of
-/// `infrastructure.providerEnvironment` (and of the same field on each
-/// environment configuration) that the schema worker adds. Until the
-/// manifest decodes it, `evaluation::take_provider_environment` reads the
-/// field from the raw configuration. Delete this enum, import that one and
-/// that function, and read the selected configuration's
-/// `provider_environment`; the variants and their meaning are the same.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) enum ProviderEnvironment {
-    /// The ambient environment, minus the credentials of cuenv's own secret
-    /// resolvers (unless the project passes them explicitly).
-    #[default]
-    Inherit,
-    /// An empty environment except `PATH`, `HOME`, `USER`, `LOGNAME`,
-    /// `TMPDIR` (cuenv sets its own), proxy and TLS variables, then the
-    /// project's values.
-    Isolated,
-}
 
 /// What decides which host variables a provider must not inherit.
 #[derive(Debug)]

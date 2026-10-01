@@ -22,10 +22,9 @@ use cuenv_core::cue::discovery::compute_relative_path;
 use cuenv_core::manifest::Project;
 use cuenv_infrastructure::{ProjectInstance, TenantKey};
 use cuenv_manifest::environment::Env;
-use cuenv_manifest::manifest::Infrastructure;
+use cuenv_manifest::manifest::{Infrastructure, InfrastructureSelectionError, ProviderEnvironment};
 
 use super::invocation::Invocation;
-use super::provider_environment::ProviderEnvironment;
 use crate::cli::CliError;
 use crate::commands::module_evaluation::{PathEvaluation, evaluate_path};
 
@@ -192,31 +191,22 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         project,
         infrastructure,
         declared_environments,
-        provider_environment,
     } = projection;
     let infrastructure = infrastructure.ok_or_else(|| missing_infrastructure(&project.name))?;
     let mut warnings = Vec::new();
-    let infrastructure = match (request.environment, request.needs) {
-        (Some(name), Needs::Configuration) => infrastructure
-            .for_environment(name)
-            .ok_or_else(|| unknown_environment(&project.name, name, &declared_environments))?,
-        (Some(name), Needs::StateOnly) => {
-            if !declared_environments
-                .iter()
-                .any(|declared| declared == name)
-            {
-                warnings.push(format!(
-                    "project '{}' no longer declares infrastructure environment '{}'; using \
-                     the state recorded for it ({})",
-                    project.name,
-                    escape_control_characters(name),
-                    declared_environments_phrase(&declared_environments)
-                ));
-            }
-            infrastructure
-        }
-        (None, _) => infrastructure,
-    };
+    if let (Some(name), Needs::StateOnly) = (request.environment, request.needs)
+        && !declared_environments
+            .iter()
+            .any(|declared| declared == name)
+    {
+        warnings.push(format!(
+            "project '{}' no longer declares infrastructure environment '{}'; using the state \
+             recorded for it ({})",
+            project.name,
+            escape_control_characters(name),
+            declared_environments_phrase(&declared_environments)
+        ));
+    }
     let instance = ProjectInstance::new(&relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
@@ -242,10 +232,10 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         tenant,
         unselected_tenant,
         instance,
+        provider_environment: infrastructure.provider_environment,
         infrastructure,
         environment: request.environment.map(str::to_owned),
         declared_environments,
-        provider_environment,
         warnings,
         project_environment: project.env,
         project_directory: target_path,
@@ -259,8 +249,6 @@ struct ProjectedTarget {
     infrastructure: Option<Infrastructure>,
     /// Every environment `infrastructure.environments` declares.
     declared_environments: Vec<String>,
-    /// `providerEnvironment` of the selected configuration.
-    provider_environment: ProviderEnvironment,
 }
 
 fn project_target(
@@ -285,106 +273,63 @@ fn project_target(
     {
         overlays.retain(|name, _| environment == Some(name.as_str()));
     }
-    let mut provider_environment = ProviderEnvironment::default();
-    if let Some(infrastructure) = selected
+    let project_name = instance
         .value
-        .get_mut("infrastructure")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        provider_environment = take_provider_environment(infrastructure, environment)?;
-        match request.needs {
-            // Only the state backend is wanted; whatever the configuration
-            // around it holds (it may be incomplete, or name an environment
-            // that was removed) is not decoded.
-            Needs::StateOnly => {
-                for field in ["providers", "resources", "environments"] {
-                    infrastructure.remove(field);
-                }
-            }
-            Needs::Configuration => {
-                if let Some(environments) = infrastructure
-                    .get_mut("environments")
-                    .and_then(serde_json::Value::as_object_mut)
-                {
-                    environments.retain(|name, _| environment == Some(name.as_str()));
-                }
-                if environment.is_some() {
-                    infrastructure.remove("providers");
-                    infrastructure.remove("resources");
-                }
-            }
-        }
-    }
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("<unknown>")
+        .to_owned();
     let project = selected.deserialize().map_err(CliError::from)?;
     // Ordinary Project decoding keeps infrastructure as raw JSON. Only this
-    // command consumes it, after selecting the concrete configuration above.
+    // command consumes it, decoding strictly just the selected configuration.
     let infrastructure = selected
         .value
         .get("infrastructure")
         .cloned()
-        .map(|value| {
-            selected.value = value;
-            selected
-                .deserialize::<Infrastructure>()
-                .map_err(CliError::from)
-        })
+        .map(|value| select_infrastructure(value, request, &project_name, &declared_environments))
         .transpose()?;
     Ok(ProjectedTarget {
         project,
         infrastructure,
         declared_environments,
-        provider_environment,
     })
 }
 
-/// Read, and remove from the raw object, `providerEnvironment` of the
-/// configuration selected with `environment` (the top-level one when `None`).
-/// The field of every configuration is removed so none reaches strict
-/// decoding.
-///
-/// TODO(m5-integration): once `cuenv_manifest::manifest::Infrastructure`
-/// has `provider_environment`, delete this function and read that field of
-/// the selected configuration instead.
-fn take_provider_environment(
-    infrastructure: &mut serde_json::Map<String, serde_json::Value>,
-    environment: Option<&str>,
-) -> Result<ProviderEnvironment, CliError> {
-    let top_level = infrastructure.remove(PROVIDER_ENVIRONMENT_FIELD);
-    let mut selected = None;
-    if let Some(environments) = infrastructure
-        .get_mut("environments")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        for (name, configuration) in environments.iter_mut() {
-            let value = configuration
-                .as_object_mut()
-                .and_then(|configuration| configuration.remove(PROVIDER_ENVIRONMENT_FIELD));
-            if environment == Some(name.as_str()) {
-                selected = value;
+/// Decode the selected configuration of the raw `infrastructure` value.
+fn select_infrastructure(
+    mut value: serde_json::Value,
+    request: &TargetRequest<'_>,
+    project_name: &str,
+    declared_environments: &[String],
+) -> Result<Infrastructure, CliError> {
+    let environment = match request.needs {
+        Needs::Configuration => request.environment,
+        // Only the state backend is wanted; whatever the configuration
+        // around it holds (it may be incomplete, or name an environment that
+        // was removed) is not decoded.
+        Needs::StateOnly => {
+            if let Some(infrastructure) = value.as_object_mut() {
+                for field in [
+                    "providers",
+                    "resources",
+                    "providerEnvironment",
+                    "environments",
+                ] {
+                    infrastructure.remove(field);
+                }
             }
+            None
         }
-    }
-    let value = if environment.is_some() {
-        selected
-    } else {
-        top_level
     };
-    value.map_or(Ok(ProviderEnvironment::default()), |value| {
-        match value.as_str() {
-            Some("inherit") => Ok(ProviderEnvironment::Inherit),
-            Some("isolated") => Ok(ProviderEnvironment::Isolated),
-            _ => Err(CliError::config(format!(
-                "`providerEnvironment` must be \"inherit\" or \"isolated\", found {value}"
-            ))),
+    Infrastructure::select(value, environment).map_err(|error| match error {
+        InfrastructureSelectionError::UnknownEnvironment { requested, .. } => {
+            unknown_environment(project_name, &requested, declared_environments)
         }
+        other @ (InfrastructureSelectionError::NotAnObject { .. }
+        | InfrastructureSelectionError::Invalid(_)) => CliError::config(other.to_string()),
     })
 }
 
-/// The field naming what providers inherit, on `infrastructure` and on each
-/// environment configuration.
-const PROVIDER_ENVIRONMENT_FIELD: &str = "providerEnvironment";
-
-/// The names `infrastructure.environments` declares, in order.
 fn declared_environment_names(project: &serde_json::Value) -> Vec<String> {
     project
         .pointer("/infrastructure/environments")

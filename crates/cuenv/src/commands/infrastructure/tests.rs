@@ -11,6 +11,7 @@ use cuenv_infrastructure::{
     UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
+use cuenv_manifest::manifest::InfrastructurePolicyAction;
 use tokio::sync::mpsc;
 
 use super::evaluation::{self, NameCheck, Needs, TargetRequest};
@@ -2082,7 +2083,7 @@ async fn a_failing_secret_names_its_variable_and_never_echoes_the_command_output
             )),
         ),
     ]);
-    let error = super::resolve_environment_variables("plan", &variables)
+    let error = super::resolve_environment_variables(InfrastructurePolicyAction::Plan, &variables)
         .await
         .unwrap_err();
     let text = format!("{error} {}", error.help().unwrap_or_default());
@@ -2090,4 +2091,49 @@ async fn a_failing_secret_names_its_variable_and_never_echoes_the_command_output
     assert!(!text.contains("leaked-token"), "{text}");
     assert!(!text.contains("'secret'"), "{text}");
     assert_eq!(exit_code_for(&error), EXIT_EVAL);
+}
+
+#[test]
+fn the_selected_configurations_provider_environment_reaches_the_target() {
+    use cuenv_manifest::manifest::ProviderEnvironment;
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        r#"package cuenv
+name: "app"
+infrastructure: {
+  state: turso: url: "http://127.0.0.1:8080"
+  providerEnvironment: "isolated"
+  providers: random: {source: "hashicorp/random", version: "3.7.2"}
+  resources: pet: {type: "random_pet", configuration: length: 2}
+  environments: {
+    dev: {
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 2}
+    }
+    prod: {
+      providerEnvironment: "isolated"
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 4}
+    }
+  }
+}
+"#,
+    );
+    let project = module.path().join("app");
+    let top_level = evaluate_at(&project, NameCheck::TargetOnly).unwrap();
+    assert_eq!(
+        top_level.provider_environment,
+        ProviderEnvironment::Isolated
+    );
+    let dev = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap();
+    assert_eq!(
+        dev.provider_environment,
+        ProviderEnvironment::Inherit,
+        "an environment does not inherit the top level's mode"
+    );
+    let prod = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("prod")).unwrap();
+    assert_eq!(prod.provider_environment, ProviderEnvironment::Isolated);
 }

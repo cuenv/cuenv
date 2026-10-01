@@ -578,7 +578,7 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
 /// variable and all at once, so a failure names the variable it concerns.
 /// Returns the values and every secret part, for redaction.
 async fn resolve_environment_variables(
-    action: &str,
+    action: InfrastructurePolicyAction,
     variables: &HashMap<String, EnvValue>,
 ) -> Result<(HashMap<String, String>, Vec<String>), CliError> {
     let mut resolutions = tokio::task::JoinSet::new();
@@ -586,12 +586,12 @@ async fn resolve_environment_variables(
         .iter()
         .filter(|(_, value)| value.is_accessible_by_infrastructure(action))
     {
-        let (name, value, action) = (name.clone(), value.clone(), action.to_string());
+        let (name, value) = (name.clone(), value.clone());
         resolutions.spawn(async move {
             let single = HashMap::from([(name.clone(), value)]);
             let resolved =
                 cuenv_core::environment::Environment::resolve_for_infrastructure_with_secrets(
-                    &action, &single,
+                    action, &single,
                 )
                 .await;
             (name, resolved)
