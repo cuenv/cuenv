@@ -253,6 +253,14 @@ schema.#Project & {
 				inputs: _checkInputs
 			}
 
+			// Runs the ignored infrastructure suites against sqld and real/fake
+			// Terraform providers inside the Nix sandbox.
+			"infrastructure-e2e": schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.x86_64-linux.cuenv-infrastructure-e2e", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
