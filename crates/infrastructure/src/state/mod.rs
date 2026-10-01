@@ -457,11 +457,10 @@ pub trait StateStore: Send + Sync {
     ///
     /// This is how a lock left behind by a project that no longer evaluates
     /// (or by another repository sharing the database) is found and released
-    /// with [`StateStore::force_unlock`]. A store that cannot enumerate its
-    /// locks reports none.
-    async fn locks(&self) -> Result<Vec<TenantLock>> {
-        Ok(Vec::new())
-    }
+    /// with [`StateStore::force_unlock`]. Every store must enumerate its
+    /// locks: a store that answered "none" without looking would hide the
+    /// locks that block a migration or a run.
+    async fn locks(&self) -> Result<Vec<TenantLock>>;
 
     /// The addresses of the tenant's records, read from their key columns
     /// alone. Unlike [`StateStore::list`] it succeeds when a record's content

@@ -1422,6 +1422,11 @@ impl StateStore for UnreleasableStore {
         Ok(request.lock.clone())
     }
 
+    async fn locks(&self) -> cuenv_infrastructure::Result<Vec<cuenv_infrastructure::TenantLock>> {
+        // The lock this store hands out is never recorded anywhere.
+        Ok(Vec::new())
+    }
+
     async fn owner(
         &self,
         _tenant: &TenantKey,

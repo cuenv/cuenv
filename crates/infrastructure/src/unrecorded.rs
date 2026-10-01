@@ -970,6 +970,10 @@ mod tests {
             self.inner.current_lock(tenant).await
         }
 
+        async fn locks(&self) -> Result<Vec<crate::state::TenantLock>> {
+            self.inner.locks().await
+        }
+
         async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
             self.inner.force_unlock(tenant, lock_identifier).await
         }
