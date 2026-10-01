@@ -54,7 +54,9 @@ use crate::error::{
     strip_control_characters_except_newlines,
 };
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
-use crate::plugin::{ApplyRequest, LaunchOptions, PlanRequest, ProviderClient};
+use crate::plugin::{
+    ApplyRequest, LaunchOptions, PlanRequest, ProviderClient, redact_provider_text,
+};
 use crate::protocol::{self, Diagnostic, Severity};
 use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
 use crate::schema::{Block, ProviderSchema, Schema};
@@ -2114,13 +2116,19 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 
 /// Render a diagnostic as a single human-readable string, without the
 /// control characters a provider could use to drive the terminal.
+///
+/// Provider text is redacted before it is stripped: a secret that
+/// contains a control character would no longer match once stripped.
 fn render_diagnostic(diagnostic: &Diagnostic) -> String {
-    let mut rendered = strip_control_characters_except_newlines(&diagnostic.summary);
+    render_diagnostic_with(diagnostic, redact_provider_text)
+}
+
+fn render_diagnostic_with(diagnostic: &Diagnostic, redact: fn(&str) -> String) -> String {
+    let sanitize = |text: &str| strip_control_characters_except_newlines(&redact(text));
+    let mut rendered = sanitize(&diagnostic.summary);
     if !diagnostic.detail.is_empty() {
         rendered.push_str(": ");
-        rendered.push_str(&strip_control_characters_except_newlines(
-            &diagnostic.detail,
-        ));
+        rendered.push_str(&sanitize(&diagnostic.detail));
     }
     if let Some(path) = &diagnostic.attribute
         && !path.steps.is_empty()

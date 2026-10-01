@@ -341,6 +341,24 @@ async fn invalid_unused_provider_fails_before_any_declared_provider_launches() {
     );
 }
 
+fn mask_tab_secret(text: &str) -> String {
+    text.replace("pass\tword", "*_*")
+}
+
+#[test]
+fn diagnostics_redact_secrets_containing_control_characters_before_stripping() {
+    // Stripping first would leave "password", which the registered secret
+    // "pass<TAB>word" no longer matches.
+    let diagnostic = Diagnostic {
+        severity: Severity::Error as i32,
+        summary: "login with pass\tword failed".into(),
+        detail: "server echoed pass\tword back".into(),
+        attribute: None,
+    };
+    let rendered = render_diagnostic_with(&diagnostic, mask_tab_secret);
+    assert_eq!(rendered, "login with *_* failed: server echoed *_* back");
+}
+
 #[test]
 fn diagnostics_split_errors_from_warnings() {
     let mut warnings = Vec::new();
@@ -1871,10 +1889,13 @@ async fn planning_refuses_while_unrecorded_changes_are_pending() {
         ),
         "{error}"
     );
+    // The library says what to do, not which command line does it.
     assert!(
-        error
-            .to_string()
-            .contains("cuenv infrastructure state recover"),
+        error.to_string().contains("recover them before planning"),
+        "{error}"
+    );
+    assert!(
+        !error.to_string().contains("cuenv infrastructure"),
         "{error}"
     );
 }
@@ -1921,7 +1942,8 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
         "{message}"
     );
     assert!(message.contains("random_pet.pet"), "{message}");
-    assert!(message.contains("state recover"), "{message}");
+    assert!(message.contains("recover the saved changes"), "{message}");
+    assert!(!message.contains("state recover"), "{message}");
     assert!(!message.contains("hunter2"), "{message}");
     let listed = engine.unrecorded_store().unwrap().list(&tenant()).unwrap();
     assert_eq!(listed.len(), 1);

@@ -1889,6 +1889,38 @@ fn every_repair_hint_carries_the_selected_environment_and_project() {
         text.contains(&format!("cuenv infrastructure state adopt {flags}")),
         "{text}"
     );
+    // The library errors name no command; the help carries the exact one.
+    let unrecorded = InfrastructureError::UnrecordedChange {
+        address: "random_pet.pet".to_string(),
+        reason: "store unreachable".to_string(),
+        saved_to: "/state/x/file".to_string(),
+    };
+    let error = super::failure(&unrecorded, &invocation);
+    assert!(
+        !error.to_string().contains("cuenv infrastructure"),
+        "{error}"
+    );
+    let help = error.help().unwrap().to_string();
+    assert!(
+        help.contains(&format!("`cuenv infrastructure state recover {flags}`")),
+        "{help}"
+    );
+    let locked = InfrastructureError::Locked {
+        tenant: "t".to_string(),
+        lock_identifier: "abc".to_string(),
+        holder: "someone".to_string(),
+        acquired_at: "now".to_string(),
+    };
+    let error = super::failure(&locked, &invocation);
+    assert!(
+        !error.to_string().contains("cuenv infrastructure"),
+        "{error}"
+    );
+    let help = error.help().unwrap().to_string();
+    assert!(
+        help.contains(&format!("`cuenv infrastructure unlock abc {flags}`")),
+        "{help}"
+    );
     let lost = InfrastructureError::LockLost {
         tenant: "t".to_string(),
         lock_identifier: "abc".to_string(),
