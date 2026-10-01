@@ -316,6 +316,13 @@ type ModuleEvalOptions struct {
 	// PresencePaths lists regular-field paths whose existence is reported
 	// per instance in ModuleResult.Present, without exporting their values.
 	PresencePaths []string `json:"presencePaths"`
+	// TaskField names the top-level field that holds the task graph. Sequence
+	// items inside it get their hidden `_name` field injected before export
+	// (see injectTaskNames), and a projection that exports nothing below this
+	// field skips the injection. nil selects defaultTaskField, the behaviour
+	// of callers that predate this option; an empty string turns the
+	// injection off.
+	TaskField *string `json:"taskField"`
 	// SkippedDirectories decides whether a recursive evaluation reports the
 	// directories it leaves out (SkippedDirectoriesReport) or not
 	// (SkippedDirectoriesIgnore, the default, also selected by an empty
@@ -394,6 +401,11 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 	if err != nil {
 		result = createErrorResponse(ErrorCodeInvalidInput, err.Error(), &projectionHint)
 		return result
+	}
+
+	taskField := defaultTaskField
+	if options.TaskField != nil {
+		taskField = *options.TaskField
 	}
 
 	switch options.SkippedDirectories {
@@ -707,8 +719,8 @@ func evaluateModuleResponse(goModuleRoot string, goPackageName string, goOptions
 		// Inject sequence item _name fields so that computed output ref fields
 		// (stdout, stderr, exitCode) resolve to concrete values everywhere.
 		// A projection that exports no tasks does not need them.
-		if exportsTasks(exportPaths) {
-			v = injectTaskNames(v)
+		if exportsField(exportPaths, taskField) {
+			v = injectTaskNames(v, taskField)
 		}
 
 		// Check if this is a Project (has required "name" field) vs Base (no name)
@@ -804,28 +816,31 @@ func instanceKey(moduleRoot string, inst *build.Instance, allPackages bool) stri
 	return directory + ":" + inst.PkgName
 }
 
-// injectTaskNames walks the "tasks" struct in a CUE value and fills the hidden
+// injectTaskNames walks the struct at the given top-level field in a CUE value and fills the hidden
 // _name field on task nodes that live inside sequences. Named tasks and group
 // children derive _name directly in schema via label aliases; sequence items
 // still need bridge-side injection because CUE does not yet support aliases on
 // list elements.
-func injectTaskNames(v cue.Value) cue.Value {
-	tasksVal := v.LookupPath(cue.ParsePath("tasks"))
+func injectTaskNames(v cue.Value, field string) cue.Value {
+	if field == "" {
+		return v
+	}
+	tasksVal := v.LookupPath(cue.MakePath(cue.Str(field)))
 	if !tasksVal.Exists() || tasksVal.Err() != nil {
 		return v
 	}
 
-	return injectTaskNamesRecursive(v, tasksVal, "")
+	return injectTaskNamesRecursive(v, field, tasksVal, "")
 }
 
 // injectTaskNamesRecursive walks task nodes and fills _name for sequence items.
-func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue.Value {
+func injectTaskNamesRecursive(root cue.Value, field string, node cue.Value, prefix string) cue.Value {
 	switch node.Kind() {
 	case cue.StructKind:
 		// Check if this struct looks like a Task (has "command" or "script" field)
 		if isTaskShaped(node) {
 			if strings.Contains(prefix, "[") {
-				root = fillTaskName(root, prefix)
+				root = fillTaskName(root, field, prefix)
 			}
 			return root
 		}
@@ -845,7 +860,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 					if prefix != "" {
 						childPrefix = prefix + "." + label
 					}
-					root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
+					root = injectTaskNamesRecursive(root, field, iter.Value(), childPrefix)
 				}
 				return root
 			}
@@ -859,7 +874,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 			if prefix != "" {
 				childPrefix = prefix + "." + label
 			}
-			root = injectTaskNamesRecursive(root, iter.Value(), childPrefix)
+			root = injectTaskNamesRecursive(root, field, iter.Value(), childPrefix)
 		}
 
 	case cue.ListKind:
@@ -867,7 +882,7 @@ func injectTaskNamesRecursive(root cue.Value, node cue.Value, prefix string) cue
 		list, _ := node.List()
 		for i := 0; list.Next(); i++ {
 			childPrefix := fmt.Sprintf("%s[%d]", prefix, i)
-			root = injectTaskNamesRecursive(root, list.Value(), childPrefix)
+			root = injectTaskNamesRecursive(root, field, list.Value(), childPrefix)
 		}
 	}
 
@@ -886,12 +901,12 @@ func isTaskShaped(v cue.Value) bool {
 }
 
 // fillTaskName fills the _name hidden field on a sequence task at the given path.
-func fillTaskName(root cue.Value, taskName string) cue.Value {
+func fillTaskName(root cue.Value, field string, taskName string) cue.Value {
 	if taskName == "" {
 		return root
 	}
 
-	namePath, ok := taskFillPath(taskName)
+	namePath, ok := taskFillPath(field, taskName)
 	if !ok {
 		return root
 	}
@@ -900,9 +915,10 @@ func fillTaskName(root cue.Value, taskName string) cue.Value {
 }
 
 // taskFillPath converts a task path like "pipeline[0]" or
-// "release-check[0].verify" into a CUE FillPath that targets tasks.<path>._name.
-func taskFillPath(taskName string) (cue.Path, bool) {
-	selectors := []cue.Selector{cue.Str("tasks")}
+// "release-check[0].verify" into a CUE FillPath that targets
+// <field>.<path>._name.
+func taskFillPath(field string, taskName string) (cue.Path, bool) {
+	selectors := []cue.Selector{cue.Str(field)}
 
 	for i := 0; i < len(taskName); {
 		labelStart := i
@@ -946,6 +962,10 @@ func taskFillPath(taskName string) (cue.Path, bool) {
 	selectors = append(selectors, cue.Hid("_name", schemaPackagePath))
 	return cue.MakePath(selectors...), true
 }
+
+// defaultTaskField is the task graph field used when ModuleEvalOptions.TaskField
+// is not set. It keeps the behaviour of callers that do not pass the option.
+const defaultTaskField = "tasks"
 
 // schemaPackagePath is the CUE import path for the schema package.
 // Hidden fields (_name) are scoped to their defining package, so FillPath

@@ -11,6 +11,7 @@ use std::path::Path;
 pub use cuenv_manifest::environment::{
     Env, EnvPart, EnvValue, EnvValueSimple, EnvVarWithPolicies, Policy,
 };
+use cuenv_manifest::manifest::InfrastructurePolicyAction;
 
 use crate::secrets::SecretExt;
 
@@ -646,7 +647,7 @@ impl Environment {
     /// requested from a resolver. The returned secret parts can be registered
     /// for redaction by the command that owns the output surface.
     pub async fn resolve_for_infrastructure_with_secrets(
-        action: &str,
+        action: InfrastructurePolicyAction,
         env_vars: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
         let accessible: Vec<_> = env_vars

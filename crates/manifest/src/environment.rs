@@ -3,6 +3,7 @@
 //! Async secret resolution for these values lives in `cuenv-core`
 //! (`EnvValueExt`); this module holds only the serde types and pure helpers.
 
+use crate::manifest::InfrastructurePolicyAction;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -29,7 +30,11 @@ impl EnvPart {
 }
 
 /// Policy for controlling environment variable access
+///
+/// Unknown fields are rejected so a misspelled allowlist (`allowInfrastucture`)
+/// fails instead of silently granting nothing.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Policy {
     /// Allowlist of task names that can access this variable
     #[serde(skip_serializing_if = "Option::is_none", rename = "allowTasks")]
@@ -44,11 +49,12 @@ pub struct Policy {
         skip_serializing_if = "Option::is_none",
         rename = "allowInfrastructure"
     )]
-    pub allow_infrastructure: Option<Vec<String>>,
+    pub allow_infrastructure: Option<Vec<InfrastructurePolicyAction>>,
 }
 
 /// Environment variable with optional access policies
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct EnvVarWithPolicies {
     /// The actual value
     pub value: EnvValueSimple,
@@ -77,17 +83,18 @@ pub enum EnvValueSimple {
 /// Environment variable values can be strings, integers, booleans, secrets,
 /// interpolated arrays, or values with policies.
 /// When exported to actual environment, these will always be strings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// Deserialization chooses the variant from the JSON shape and reports why a
+/// value does not fit: a misspelled policy field, or an incomplete CUE value
+/// (exported as `null`), is named instead of "did not match any variant".
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum EnvValue {
-    /// Value with access policies. Must come first for serde untagged to try
-    /// it first (it's an object with a specific "value" + "policies" shape).
+    /// Value with access policies: an object with a `value` field.
     WithPolicies(EnvVarWithPolicies),
-    /// A secret that needs runtime resolution. Must come before `String` to
-    /// parse `{"resolver": ...}` correctly.
+    /// A secret that needs runtime resolution: an object with a `resolver`.
     Secret(crate::secrets::Secret),
-    /// An interpolated value composed of literals and secrets. Must come
-    /// before the simple types.
+    /// An interpolated value composed of literals and secrets: a list.
     Interpolated(Vec<EnvPart>),
     /// A simple string value
     String(String),
@@ -95,6 +102,52 @@ pub enum EnvValue {
     Int(i64),
     /// A boolean value
     Bool(bool),
+}
+
+impl EnvValue {
+    fn from_json(value: serde_json::Value) -> Result<Self, String> {
+        use serde_json::Value;
+        match value {
+            Value::String(text) => Ok(Self::String(text)),
+            Value::Bool(flag) => Ok(Self::Bool(flag)),
+            Value::Number(number) => number.as_i64().map(Self::Int).ok_or_else(|| {
+                format!("environment variable value {number} must be an integer, string or boolean")
+            }),
+            Value::Array(_) => serde_json::from_value(value)
+                .map(Self::Interpolated)
+                .map_err(|error| format!("invalid interpolated environment value: {error}")),
+            Value::Object(fields) => {
+                let policies_form = fields.contains_key("value") || fields.contains_key("policies");
+                let value = Value::Object(fields);
+                if policies_form {
+                    serde_json::from_value(value)
+                        .map(Self::WithPolicies)
+                        .map_err(|error| {
+                            format!("invalid environment variable with policies: {error}")
+                        })
+                } else {
+                    serde_json::from_value(value)
+                        .map(Self::Secret)
+                        .map_err(|error| format!("invalid environment variable secret: {error}"))
+                }
+            }
+            Value::Null => Err(
+                "environment variable value is null; an incomplete CUE value (for example \
+                 `string` with no value) is exported as null"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Self::from_json(value).map_err(serde::de::Error::custom)
+    }
 }
 
 /// Environment configuration with environment-specific overrides
@@ -186,7 +239,7 @@ impl EnvValue {
 
     /// Check if an infrastructure action has access to this environment variable.
     #[must_use]
-    pub fn is_accessible_by_infrastructure(&self, action: &str) -> bool {
+    pub fn is_accessible_by_infrastructure(&self, action: InfrastructurePolicyAction) -> bool {
         match self {
             Self::WithPolicies(var) => match &var.policies {
                 None => true,
@@ -195,7 +248,7 @@ impl EnvValue {
                     policy
                         .allow_infrastructure
                         .as_ref()
-                        .is_some_and(|actions| actions.iter().any(|allowed| allowed == action))
+                        .is_some_and(|actions| actions.contains(&action))
                 }),
             },
             _ => true,
@@ -334,3 +387,7 @@ impl EnvValue {
         (result, secrets)
     }
 }
+
+#[cfg(test)]
+#[path = "environment_tests.rs"]
+mod tests;
