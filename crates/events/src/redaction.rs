@@ -37,22 +37,55 @@ pub fn register_secret(secret: impl Into<String>) {
     }
 }
 
-/// Add `secret` to the registry. A multi-line secret (a private key, a
-/// certificate) is registered whole and also line by line: process output
-/// and logs are read and written one line at a time, so no line of it ever
-/// contains the whole secret.
+/// Add `secret` to the registry.
+///
+/// A multi-line secret (a private key, a certificate) is registered whole
+/// and also line by line: process output and logs are read and written one
+/// line at a time, so no line of it ever contains the whole secret. A secret
+/// with characters that are escaped when quoted (a quote, a backslash, a tab
+/// or other control character) is also registered as it appears in quoted
+/// text, in Rust's debug form and in JSON's, because plans and diagnostics
+/// print values quoted.
 fn insert_secret(registry: &mut HashSet<String>, secret: String) {
     if secret.len() < MIN_SECRET_LENGTH {
         return;
     }
+    let mut forms = vec![secret.clone()];
     if secret.contains(['\n', '\r']) {
-        for line in secret.split(['\n', '\r']) {
-            if line.len() >= MIN_SECRET_LENGTH {
-                registry.insert(line.to_string());
+        forms.extend(
+            secret
+                .split(['\n', '\r'])
+                .filter(|line| line.len() >= MIN_SECRET_LENGTH)
+                .map(str::to_string),
+        );
+    }
+    for form in forms {
+        for quoted in [debug_quoted(&form), json_quoted(&form)] {
+            if quoted != form {
+                registry.insert(quoted);
             }
         }
+        registry.insert(form);
     }
-    registry.insert(secret);
+}
+
+/// `text` as Rust's debug formatting writes it inside quotes.
+fn debug_quoted(text: &str) -> String {
+    let quoted = format!("{text:?}");
+    strip_quotes(&quoted)
+}
+
+/// `text` as JSON writes it inside quotes.
+fn json_quoted(text: &str) -> String {
+    serde_json::to_string(text).map_or_else(|_| text.to_string(), |quoted| strip_quotes(&quoted))
+}
+
+fn strip_quotes(quoted: &str) -> String {
+    quoted
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(quoted)
+        .to_string()
 }
 
 /// Register multiple secrets at once.
@@ -221,6 +254,25 @@ mod tests {
             assert_eq!(redact("line-one-MMMM"), "*_*");
             // Lines shorter than the minimum are not registered.
             assert_eq!(redact("xy"), "xy");
+        });
+    }
+
+    #[test]
+    fn a_secret_is_also_redacted_as_quoted_text_prints_it() {
+        with_clean_registry(|| {
+            register_secret("quo\"te\\back-QQQQ");
+            register_secret("tab\there-UUUU");
+            // How a plan or a diagnostic prints the values (debug quoting).
+            assert_eq!(
+                redact(&format!("name = {:?}", "quo\"te\\back-QQQQ")),
+                "name = \"*_*\""
+            );
+            assert_eq!(redact(&format!("{:?}", "tab\there-UUUU")), "\"*_*\"");
+            // And as JSON text holds them.
+            assert_eq!(
+                redact(&serde_json::json!("tab\there-UUUU").to_string()),
+                "\"*_*\""
+            );
         });
     }
 

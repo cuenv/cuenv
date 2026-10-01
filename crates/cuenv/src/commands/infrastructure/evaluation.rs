@@ -130,10 +130,18 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
     // top-level keys reaches the DTO's unknown-field check. Only selected
     // paths are required concrete; unselected named values are removed before
     // deserialization.
+    // A state-only command exports `infrastructure.state` alone: CUE reports
+    // the semantic errors of the providers and resources (a missing version,
+    // an undeclared reference) while those values are exported, and such an
+    // error must not keep state from being listed, unlocked or removed.
+    let infrastructure_path = match request.needs {
+        Needs::Configuration => "infrastructure",
+        Needs::StateOnly => "infrastructure.state",
+    };
     let export_paths = vec![
         "name".to_string(),
         "env".to_string(),
-        "infrastructure".to_string(),
+        infrastructure_path.to_string(),
     ];
     let mut module = evaluate_path(PathEvaluation {
         target_path: &target_path,
@@ -265,7 +273,10 @@ fn project_target(
         ))
     })?;
     let mut selected = instance.clone();
-    let declared_environments = declared_environment_names(&selected.value);
+    let declared_environments = match request.needs {
+        Needs::Configuration => declared_environment_names(&selected.value),
+        Needs::StateOnly => declared_environments_if_evaluable(target_path, request.package),
+    };
     // The CLI resolves only the selected overlay. Other overlays may remain
     // incomplete CUE values and must not enter Env deserialization.
     if let Some(overlays) = selected.value.pointer_mut("/env/environment")
@@ -328,6 +339,28 @@ fn select_infrastructure(
         other @ (InfrastructureSelectionError::NotAnObject { .. }
         | InfrastructureSelectionError::Invalid(_)) => CliError::config(other.to_string()),
     })
+}
+
+/// The environments the project declares, for a state-only command that did
+/// not export them: found by a second evaluation that is allowed to fail.
+/// An environment that does not evaluate (the very reason state may be
+/// stranded) must not stop the command, so a failure only means the names
+/// are unknown, and no warning or note can name them.
+fn declared_environments_if_evaluable(target_path: &Path, package: &str) -> Vec<String> {
+    let evaluated = evaluate_path(PathEvaluation {
+        target_path,
+        package,
+        concrete_paths: Vec::new(),
+        export_paths: vec!["infrastructure.environments".to_string()],
+    });
+    let Ok(module) = evaluated else {
+        return Vec::new();
+    };
+    let relative_path = compute_relative_path(target_path, &module.root);
+    module
+        .get(Path::new(&relative_path))
+        .map(|instance| declared_environment_names(&instance.value))
+        .unwrap_or_default()
 }
 
 fn declared_environment_names(project: &serde_json::Value) -> Vec<String> {
