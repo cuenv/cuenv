@@ -148,6 +148,19 @@ pub enum InfrastructureSelectionError {
         /// The environments the project declares, in name order.
         declared: Vec<String>,
     },
+    /// The top level sets `providerEnvironment` but the selected environment
+    /// does not, so the environment would silently fall back to `inherit`.
+    #[error(
+        "the top-level `providerEnvironment` does not apply to infrastructure environment \
+         '{environment}': an environment replaces the whole top-level configuration, so set \
+         `providerEnvironment` on it explicitly (`\"inherit\"` or `\"isolated\"`); falling \
+         back to `inherit` silently would give providers the ambient environment you meant \
+         to withhold"
+    )]
+    ProviderEnvironmentNotSet {
+        /// The selected environment.
+        environment: String,
+    },
     /// The selected configuration does not match the infrastructure types
     /// (a missing `state`, a misspelled field, an incomplete value).
     #[error("invalid `infrastructure` configuration: {0}")]
@@ -197,7 +210,12 @@ impl Infrastructure {
     /// Returns [`InfrastructureSelectionError::NotAnObject`] when the value
     /// is not an object, [`InfrastructureSelectionError::UnknownEnvironment`]
     /// (naming the declared environments) when `environment` is not declared,
-    /// and [`InfrastructureSelectionError::Invalid`] when the selected
+    /// [`InfrastructureSelectionError::ProviderEnvironmentNotSet`] when the
+    /// top level sets `providerEnvironment` and the selected environment does
+    /// not (the key must be present in the raw value; refusing is safer than
+    /// carrying the top-level mode over, because an environment replaces the
+    /// top-level configuration entirely), and
+    /// [`InfrastructureSelectionError::Invalid`] when the selected
     /// configuration does not decode strictly.
     pub fn select(
         mut value: serde_json::Value,
@@ -217,6 +235,18 @@ impl Infrastructure {
                 return Err(InfrastructureSelectionError::UnknownEnvironment {
                     requested: name.to_owned(),
                     declared,
+                });
+            }
+            // Presence in the raw value, not the decoded value: an absent key
+            // and an explicit `inherit` both decode to `Inherit`.
+            let selected_sets_mode = object
+                .get("environments")
+                .and_then(|environments| environments.get(name))
+                .and_then(serde_json::Value::as_object)
+                .is_none_or(|configuration| configuration.contains_key("providerEnvironment"));
+            if object.contains_key("providerEnvironment") && !selected_sets_mode {
+                return Err(InfrastructureSelectionError::ProviderEnvironmentNotSet {
+                    environment: name.to_owned(),
                 });
             }
             object.remove("providers");
@@ -499,6 +529,7 @@ mod tests {
                 "dev": {
                     "providers": {"random": {"source": "hashicorp/random", "path": "/bin/p"}},
                     "resources": {"dev": {"type": "random_pet"}},
+                    "providerEnvironment": "inherit",
                 },
                 "prod": {
                     "providers": {"random": null},
@@ -606,5 +637,55 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("unknown field `resource`"), "{error}");
+    }
+
+    #[test]
+    fn a_selected_environment_must_set_the_provider_environment_the_top_level_sets() {
+        let mut value = declared_with_environments();
+        value["environments"]["dev"]
+            .as_object_mut()
+            .unwrap()
+            .remove("providerEnvironment");
+        let error = Infrastructure::select(value, Some("dev")).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                InfrastructureSelectionError::ProviderEnvironmentNotSet { environment }
+                    if environment == "dev"
+            ),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("'dev'"), "{text}");
+        assert!(text.contains("`providerEnvironment`"), "{text}");
+    }
+
+    #[test]
+    fn an_explicit_inherit_satisfies_the_requirement_and_is_not_confused_with_absence() {
+        // `inherit` is also what an absent key decodes to: only the raw key
+        // tells them apart.
+        let selected = Infrastructure::select(declared_with_environments(), Some("dev")).unwrap();
+        assert_eq!(selected.provider_environment, ProviderEnvironment::Inherit);
+    }
+
+    #[test]
+    fn an_environment_without_the_mode_is_fine_when_the_top_level_does_not_set_one() {
+        let mut value = declared_with_environments();
+        value.as_object_mut().unwrap().remove("providerEnvironment");
+        value["environments"]["dev"]
+            .as_object_mut()
+            .unwrap()
+            .remove("providerEnvironment");
+        let selected = Infrastructure::select(value.clone(), Some("dev")).unwrap();
+        assert_eq!(selected.provider_environment, ProviderEnvironment::Inherit);
+        // And the top level selects as before.
+        let top = Infrastructure::select(value, None).unwrap();
+        assert!(top.resources.contains_key("top"));
+    }
+
+    #[test]
+    fn the_top_level_mode_alone_does_not_stop_a_run_without_an_environment() {
+        let selected = Infrastructure::select(declared_with_environments(), None).unwrap();
+        assert_eq!(selected.provider_environment, ProviderEnvironment::Isolated);
     }
 }

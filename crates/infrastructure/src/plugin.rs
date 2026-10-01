@@ -286,8 +286,10 @@ pub const ISOLATED_INHERITED_ENVIRONMENT_VARIABLES: &[&str] = &[
 /// the project's policy withholds; the provider then sees the allowlist, the
 /// project's values and cuenv's own handshake variables, and nothing else.
 ///
-/// Names that are not valid unicode cannot be listed and are inherited.
+/// Names that are not valid unicode cannot be listed; they are never
+/// inherited at all (see [`ProviderClient::launch`]), in either mode.
 #[must_use]
+#[tracing::instrument(level = "debug", skip_all, fields(provided = provided.len()))]
 pub fn isolated_withheld_names(
     ambient: impl IntoIterator<Item = std::ffi::OsString>,
     provided: &[String],
@@ -305,16 +307,34 @@ pub fn isolated_withheld_names(
     names
 }
 
+/// The host variables a provider may inherit before names are withheld:
+/// those whose names are valid unicode.
+///
+/// Withheld names are text, so a variable whose name is not valid unicode
+/// could never be withheld, in `isolated` mode or any other. It is dropped
+/// instead of being inherited by default.
+fn listable_ambient_environment(
+    ambient: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    ambient
+        .into_iter()
+        .filter(|(name, _)| name.to_str().is_some())
+        .collect()
+}
+
 fn configure_provider_environment(
     command: &mut Command,
     options: &LaunchOptions<'_>,
     socket_directory: &Path,
 ) {
     // Keep the provider's existing access to host credentials and runtime
-    // variables while making Cuenv precedence explicit.
+    // variables while making Cuenv precedence explicit. The environment is
+    // built from nothing: a variable reaches the provider only by being
+    // listed here, so one whose name cannot be listed (not valid unicode)
+    // never does.
     command
         .env_clear()
-        .envs(std::env::vars_os())
+        .envs(listable_ambient_environment(std::env::vars_os()))
         .envs(options.provider_environment_variables);
     // Remove withheld names, including names also present in the resolved
     // Cuenv environment.
@@ -340,11 +360,26 @@ static LOG_REDACTOR: OnceLock<LogRedactor> = OnceLock::new();
 /// It applies to their log lines and their error messages. The command that owns the
 /// secret registry installs it once at startup; the first installation wins.
 ///
+/// The redactor is process-wide on purpose. It is a view of the secret
+/// registry, which is itself one per process, so a redactor chosen per
+/// launch could only differ from it by hiding less; and the same function
+/// serves every place provider text is read (log lines, gRPC messages,
+/// diagnostics rendered by the engine), none of which is handed the options
+/// of the launch that produced it. Installing the same function again (each
+/// command run does) is expected and silent; installing a different one is
+/// ignored and logged, so a second owner of the registry cannot silently
+/// lose.
+///
 /// Provider text is redacted before control characters are stripped: a
 /// secret that contains one would no longer match after the stripping.
 pub fn install_log_redactor(redactor: LogRedactor) {
-    // A second installation keeps the first; the function is the same.
-    let _ = LOG_REDACTOR.set(redactor);
+    if let Err(rejected) = LOG_REDACTOR.set(redactor)
+        && LOG_REDACTOR
+            .get()
+            .is_some_and(|installed| !std::ptr::fn_addr_eq(*installed, rejected))
+    {
+        tracing::warn!("a different provider log redactor is already installed; keeping the first");
+    }
 }
 
 /// `text` with the installed redactor applied; unchanged when none is
@@ -353,6 +388,13 @@ pub(crate) fn redact_provider_text(text: &str) -> String {
     LOG_REDACTOR
         .get()
         .map_or_else(|| text.to_string(), |redact| redact(text))
+}
+
+/// A provider's gRPC status message as it may be shown: redacted first and
+/// only then stripped of control characters, because a secret that contains
+/// one would no longer match once it was stripped.
+fn displayable_provider_message(message: &str) -> String {
+    strip_control_characters_except_newlines(&redact_provider_text(message))
 }
 
 /// A running provider process, shared with [`Cancellation`] so an
@@ -708,8 +750,7 @@ impl ProviderClient {
                 tonic::Code::Unavailable | tonic::Code::Unknown | tonic::Code::Internal
             );
             // The message comes from the provider and is displayed.
-            let message =
-                strip_control_characters_except_newlines(&redact_provider_text(status.message()));
+            let message = displayable_provider_message(status.message());
             let status = if transport_failure {
                 tonic::Status::new(status.code(), format!("{message}{}", self.log.render()))
             } else {
@@ -1011,24 +1052,29 @@ fn spawn_log_drain(
             let mut reader = BufReader::new(standard_error);
             while let Ok(Some(line)) = read_bounded_line(&mut reader, MAXIMUM_LOG_LINE_BYTES).await
             {
-                // Classify the raw line, then keep only printable text: a
-                // provider must not drive the terminal cuenv writes to.
+                // Classify the raw line first: nearly all of a provider's
+                // output is trace-level chatter that is discarded, and
+                // redacting it would cost time for nothing.
                 let serious = provider_log_is_serious(&line.text);
-                // Redact the raw text first: stripping control characters
-                // can change a secret that contains one.
-                let printable =
-                    strip_control_characters(redact_provider_text(line.text.trim_end()).as_str());
+                // Provider text may contain resolved secrets. Only the redacted
+                // ProviderLog/event path may emit it; tracing records metadata.
+                tracing::debug!(provider = %name, serious, "provider emitted a log line");
+                if !serious {
+                    continue;
+                }
+                // Keep only printable text: a provider must not drive the
+                // terminal cuenv writes to. Redact the raw text first:
+                // stripping control characters can change a secret that
+                // contains one.
+                let printable = strip_control_characters(
+                    redact_provider_log_line(line.text.trim_end()).as_str(),
+                );
                 let text = if line.truncated {
                     format!("{printable} [line truncated]")
                 } else {
                     printable
                 };
-                // Provider text may contain resolved secrets. Only the redacted
-                // ProviderLog/event path may emit it; tracing records metadata.
-                tracing::debug!(provider = %name, serious, "provider emitted a log line");
-                if serious {
-                    log.record(text);
-                }
+                log.record(text);
             }
         }
         .with_current_subscriber(),
@@ -1048,6 +1094,55 @@ fn provider_log_is_serious(line: &str) -> bool {
             .and_then(serde_json::Value::as_str)
             .is_some_and(|level| matches!(level, "error" | "warn")),
         _ => true,
+    }
+}
+
+/// One provider log line with secrets replaced.
+///
+/// A line of hclog JSON is parsed and each decoded string (and key) redacted
+/// before the line is written again: Go's JSON encoder writes `&`, `<` and
+/// `>` as `\u0026`, `\u003c` and `\u003e`, so a secret holding them does not
+/// appear in the raw text. A line that is not a JSON object (a Go panic, raw
+/// output, a line cut at the length limit) is redacted as plain text, which
+/// also finds the escaped forms the registry knows.
+fn redact_provider_log_line(line: &str) -> String {
+    let Ok(mut entry @ serde_json::Value::Object(_)) = serde_json::from_str(line) else {
+        return redact_provider_text(line);
+    };
+    if !redact_json_strings(&mut entry) {
+        return redact_provider_text(line);
+    }
+    // The rewritten line is redacted once more as text, which catches a
+    // secret that only the whole line, not one string, contains.
+    redact_provider_text(&entry.to_string())
+}
+
+/// Redact every string inside `value` in place; whether any changed.
+fn redact_json_strings(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            let redacted = redact_provider_text(text);
+            let changed = redacted != *text;
+            *text = redacted;
+            changed
+        }
+        serde_json::Value::Array(items) => items
+            .iter_mut()
+            .fold(false, |changed, item| redact_json_strings(item) | changed),
+        serde_json::Value::Object(map) => {
+            let entries = std::mem::take(map);
+            let mut changed = false;
+            for (key, mut entry) in entries {
+                changed |= redact_json_strings(&mut entry);
+                let redacted_key = redact_provider_text(&key);
+                changed |= redacted_key != key;
+                map.insert(redacted_key, entry);
+            }
+            changed
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            false
+        }
     }
 }
 
@@ -1326,8 +1421,98 @@ mod tests {
         assert_eq!(environment["PROJECT_VALUE"], "kept");
     }
 
+    /// Every text the test redactor was asked to redact.
+    static REDACTED_TEXTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
     fn mask_test_secret(text: &str) -> String {
+        REDACTED_TEXTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(text.to_string());
         text.replace("SECRET\u{1b}VALUE", "*_*")
+            .replace("p&ss<w>rd-GGGG", "*_*")
+    }
+
+    /// Run `lines` through the log drain; what it kept.
+    async fn drained(lines: &str) -> String {
+        install_log_redactor(mask_test_secret);
+        let log = ProviderLog::default();
+        spawn_log_drain(
+            "provider".to_string(),
+            std::io::Cursor::new(lines.as_bytes().to_vec()),
+            log.clone(),
+        )
+        .await
+        .unwrap();
+        log.render()
+    }
+
+    #[tokio::test]
+    async fn a_discarded_provider_log_line_is_never_redacted() {
+        let marker = "TRACE-CHATTER-9f3a1c";
+        let lines = format!(
+            "{{\"@level\":\"trace\",\"@message\":\"{marker} one\"}}\n\
+             {{\"@level\":\"debug\",\"@message\":\"{marker} two\"}}\n\
+             {{\"@level\":\"info\",\"@message\":\"{marker} three\"}}\n\
+             {{\"@level\":\"error\",\"@message\":\"kept SECRET\\u001bVALUE\"}}\n"
+        );
+        let rendered = drained(&lines).await;
+        assert!(rendered.contains("kept"), "{rendered}");
+        assert!(!rendered.contains(marker), "{rendered}");
+        let seen = REDACTED_TEXTS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|text| text.contains(marker))
+            .count();
+        assert_eq!(seen, 0, "trace, debug and info lines are not redacted");
+    }
+
+    #[tokio::test]
+    async fn go_json_escapes_do_not_hide_a_secret_in_an_hclog_line() {
+        // Go's encoding/json writes & < > as \u0026 \u003c \u003e.
+        let line = "{\"@level\":\"error\",\"@message\":\"auth failed for token p\\u0026ss\\u003cw\\u003erd-GGGG\",\"@module\":\"provider\"}\n";
+        let rendered = drained(line).await;
+        assert!(!rendered.contains("GGGG"), "{rendered}");
+        assert!(rendered.contains("auth failed for token *_*"), "{rendered}");
+        assert!(rendered.contains("\"@module\":\"provider\""), "{rendered}");
+    }
+
+    #[test]
+    fn a_json_line_without_a_secret_is_left_as_it_was() {
+        install_log_redactor(mask_test_secret);
+        let line = "{\"@level\":\"warn\",   \"@message\":\"plain\"}";
+        assert_eq!(redact_provider_log_line(line), line);
+        // Not an object: redacted as text.
+        assert_eq!(redact_provider_log_line("[1, 2]"), "[1, 2]");
+    }
+
+    #[test]
+    fn a_status_message_is_redacted_before_it_is_stripped() {
+        install_log_redactor(mask_test_secret);
+        // Stripping first would leave "SECRETVALUE", which the redactor does
+        // not know; the order matters.
+        let message = displayable_provider_message("rpc failed: SECRET\u{1b}VALUE\nnext line\u{7}");
+        assert_eq!(message, "rpc failed: *_*\nnext line");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn variables_with_names_that_are_not_unicode_never_reach_a_provider() {
+        use std::os::unix::ffi::OsStringExt;
+        let ambient = vec![
+            (
+                std::ffi::OsString::from("PATH"),
+                std::ffi::OsString::from("/usr/bin"),
+            ),
+            (
+                std::ffi::OsString::from_vec(b"SECRET_\xff_NAME".to_vec()),
+                std::ffi::OsString::from("leaked"),
+            ),
+        ];
+        let kept = listable_ambient_environment(ambient);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].0, "PATH");
     }
 
     #[tokio::test]

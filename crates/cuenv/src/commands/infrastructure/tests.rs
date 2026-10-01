@@ -2513,8 +2513,13 @@ infrastructure: {
   resources: pet: {type: "random_pet", configuration: length: 2}
   environments: {
     dev: {
+      providerEnvironment: "inherit"
       providers: random: {source: "hashicorp/random", version: "3.7.2"}
       resources: pet: {type: "random_pet", configuration: length: 2}
+    }
+    staging: {
+      providers: random: {source: "hashicorp/random", version: "3.7.2"}
+      resources: pet: {type: "random_pet", configuration: length: 3}
     }
     prod: {
       providerEnvironment: "isolated"
@@ -2537,6 +2542,14 @@ infrastructure: {
         ProviderEnvironment::Inherit,
         "an environment does not inherit the top level's mode"
     );
+    // An environment that does not set the mode while the top level does is
+    // refused: it would silently run providers with the ambient environment.
+    let error =
+        evaluate_at_environment(&project, NameCheck::TargetOnly, Some("staging")).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("providerEnvironment"), "{text}");
+    assert!(text.contains("'staging'"), "{text}");
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
     let prod = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("prod")).unwrap();
     assert_eq!(prod.provider_environment, ProviderEnvironment::Isolated);
 }

@@ -664,14 +664,21 @@ environment)` repeats the schema's semantic checks and reports **every**
   `InfrastructureConfiguration` is the exported type of one configuration, and
   `ProviderEnvironment` (`Inherit`, `Isolated`) is the manifest form of
   `providerEnvironment`.
-- **Provider environment.** `cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES`
-  lists the variables only cuenv's secret resolvers use; the command withholds
-  them from providers in `inherit` mode unless the project passes the same
-  name. `cuenv_infrastructure::plugin::ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`
+- **Provider environment.** `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`
+  is the table of variables only cuenv's secret machinery uses, each an exact
+  name or a prefix (`NamePattern`) and a `ValueKind` (a `Credential` is
+  withheld and redacted, an `Endpoint` such as `OP_CONNECT_HOST` is only
+  withheld). `is_resolver_credential`, `is_resolver_environment_variable`,
+  `resolver_environment_variable_names` and `resolver_credential_values` query
+  it. The command withholds the matching variables from providers in `inherit`
+  mode unless the project passes the same name, and `main` registers the
+  credential values for redaction from the same table.
+  `cuenv_infrastructure::plugin::ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`
   is the allowlist of the `isolated` mode and `isolated_withheld_names` computes
   the names to pass in `withheld_environment_variables` for it. cuenv's own
   handshake variables are set after the withheld names are removed, so a policy
-  can never strip them.
+  can never strip them. Variables whose names are not valid unicode are never
+  passed to a provider. This is hygiene, not a sandbox (see the how-to guide).
 - `Cancellation::stop()` is the first interrupt: no new resource is started and
   every provider the engine launched is asked to stop.
   `terminate_providers()` is the second: it kills them (with their process
@@ -723,15 +730,19 @@ environment)` repeats the schema's semantic checks and reports **every**
 
 `register_secret` and `register_secrets` take the values to hide. A multi-line
 secret is also registered line by line, and a secret with characters that are
-escaped when quoted is also registered in its debug-quoted and JSON-quoted
-forms. `redact` replaces them in text, and `redact_json_value` and
-`redact_json_text` replace them inside the strings of a JSON value, so a secret
-that JSON escapes is still found. `emit_with_source` redacts every event before
-any subscriber sees it, the CLI and JSON renderers redact again, and
-`RedactingStderr` (with `RedactingWriter` and `LogFormat`) redacts tracing's
+escaped when quoted is also registered in its debug-quoted, JSON-quoted and Go
+JSON (`\u0026` for `&`) forms. `redact` (and `redact_cow`, which does not copy
+text without a secret) replaces them in text in one pass over a matcher that is
+compiled when the registry changes; where secrets overlap the whole stretch is
+replaced. `redact_json_value` and `redact_json_text` replace them inside the
+string values of a JSON value and keep the keys, so a secret that JSON escapes
+is still found and no secret renames a field; `redact_json_value_and_keys` and
+`redact_free_form_json_text` also redact keys, for free-form JSON such as a
+provider's log. `CuenvEvent::redacted` rewrites each event by type, so no
+secret can rename a tag or withhold an event. `emit_with_source` redacts every
+event before any subscriber sees it, the CLI and JSON renderers redact again,
+and `RedactingStderr` (with `RedactingWriter` and `LogFormat`) redacts tracing's
 formatting layers. Values shorter than `MIN_SECRET_LENGTH` (4) are ignored.
-Redaction clones and re-serializes each event while any secret is registered;
-see the design specification's next steps.
 
 ## CLI Exit Codes
 

@@ -120,16 +120,19 @@ DEPLOY_TOKEN: {
 
 ### Secrets in output
 
-Every resolved secret, and the state authentication token, is registered for redaction before any state or provider work starts. cuenv replaces registered values in everything it prints: events on standard output and standard error, the JSON documents and error envelopes (string by string, so a secret that JSON escapes is still found), tracing logs, error messages and their help text, and provider log lines and gRPC messages (redacted before control characters are stripped). A multi-line secret is also redacted line by line, and a secret that contains a quote, a backslash or a control character is also redacted as it appears when printed quoted. Values shorter than four characters are not redacted. Redaction is a safety net, not a reason to put a secret in `configuration`: resource records still hold sensitive attribute values in plaintext (see [Configure the state database](#configure-the-state-database)).
+Every resolved secret, and the state authentication token, is registered for redaction before any state or provider work starts, as are the values of cuenv's own resolver credentials in its environment (`OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*`, `INFISICAL_*`, `VAULT_TOKEN`, `CUENV_SECRET_SALT` and `CUENV_SECRET_SALT_PREV`, and the variables a project's `cache.remote.auth` names). cuenv replaces registered values in everything it prints: events on standard output and standard error, the JSON documents and error envelopes (string by string, so a secret that JSON escapes is still found; the names of fields are never rewritten, whatever the secret is), tracing logs, error messages and their help text, and provider log lines and gRPC messages (redacted before control characters are stripped). A provider's JSON log line is parsed and each decoded string redacted, so a secret that Go's JSON encoder writes with `\u0026` for `&` is found too. A multi-line secret is also redacted line by line, and a secret that contains a quote, a backslash or a control character is also redacted as it appears when printed quoted. Where two secrets overlap in a text, the whole overlapping stretch is replaced. Provider log lines that are not warnings or errors are discarded without being redacted. Values shorter than four characters are not redacted. Redaction is a safety net, not a reason to put a secret in `configuration`: resource records still hold sensitive attribute values in plaintext (see [Configure the state database](#configure-the-state-database)).
 
 ### Provider environment
 
-Providers are third-party programs. `providerEnvironment` decides how much of the cuenv process environment they inherit, and it can be set at the top level and in each environment (an environment does not inherit the top-level value):
+Providers are third-party programs, and `providerEnvironment` decides how much of the cuenv process environment they inherit. It is set at the top level and in each environment. An environment does not inherit the top-level value, so when the top level sets `providerEnvironment` every `--env` run must set it on the selected environment too; otherwise the run is refused rather than silently falling back to `inherit`:
 
 ```cue
 infrastructure: {
 	providerEnvironment: "isolated"
-	// ...
+	environments: prod: {
+		providerEnvironment: "isolated" // required while the top level sets it
+		// ...
+	}
 }
 ```
 
@@ -138,10 +141,19 @@ infrastructure: {
 | `"inherit"` (default) | The ambient environment, **minus the credentials of cuenv's own secret resolvers and the state token**, plus the project values the action's policy allows                                                                                                         |
 | `"isolated"`          | Only `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, the proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY` and their lowercase forms) and the TLS variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`), plus the project values the action's policy allows |
 
-In both modes cuenv sets its own plugin handshake variables and a private `TMPDIR`, and the state authentication token is withheld. The withheld resolver credentials are `OP_SERVICE_ACCOUNT_TOKEN`, `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `VAULT_TOKEN`. To give a provider one of them, pass it explicitly in the project's `env` under the same name (subject to its policy).
+In both modes cuenv sets its own plugin handshake variables and a private `TMPDIR`, and the state authentication token is withheld. Variables whose names are not valid unicode are never passed. In `isolated` mode the environment is built from nothing, so only the listed variables and the project values exist; a proxy URL that carries credentials (`http://user:password@proxy:3128`) is passed without them, because the credentials were not given to the provider on purpose (cuenv logs a warning naming the variable). To use an authenticated proxy, pass the full URL explicitly in the project's `env` under the same name.
 
-:::caution[Residual exposure in `inherit` mode]
-Credentials that providers legitimately read are not withheld: the `AWS_*` variables, `GOOGLE_APPLICATION_CREDENTIALS` and similar cloud credentials stay, because the AWS and Google providers need them. A continuous integration runner's own tokens (an OIDC request token, `GITHUB_TOKEN`) and anything else in the environment are visible to every provider too. For anything you do not fully trust, use `"isolated"` and pass each provider only the variables it needs.
+The withheld resolver variables are `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`, every `OP_SESSION_*` (the 1Password CLI's session tokens), `OP_CONNECT_HOST` (not a secret, so it is withheld but not redacted), `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`, `VAULT_TOKEN`, `CUENV_SECRET_SALT`, `CUENV_SECRET_SALT_PREV`, and the variables the project's `cache.remote.auth` names (`bearerTokenEnv` and `header.valueEnv`). To give a provider one of them, pass it explicitly in the project's `env` under the same name (subject to its policy).
+
+:::caution[Hygiene, not a sandbox]
+Withholding variables and `isolated` mode keep secrets out of a provider's environment by accident; they do not stop a provider that wants them.
+
+- A provider runs as you. In `isolated` mode `HOME` is still passed, so a provider can read `~/.aws`, `~/.vault-token`, `~/.config/op`, `~/.terraformrc` and `credentials.tfrc.json`, and anything else your user can read.
+- Every provider receives every project variable the action's policy allows. There is no per-provider scoping: a secret you pass for one provider reaches all the others in the same run. Policies (`allowInfrastructure`) choose which actions may use a variable, not which provider.
+- On Linux, cuenv marks its own process non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) as soon as it starts, so a provider cannot read cuenv's `/proc/<pid>/environ` or memory, which would otherwise hold every ambient variable that was withheld from it. This does not exist on macOS, where a process of the same user may be able to read another's environment. A side effect is that a same-user debugger cannot attach to cuenv and cuenv writes no core dump.
+- Credentials that providers legitimately read are not withheld in `inherit` mode: the `AWS_*` variables, `GOOGLE_APPLICATION_CREDENTIALS` and similar cloud credentials stay, because the AWS and Google providers need them. A continuous integration runner's own tokens (an OIDC request token, `GITHUB_TOKEN`) and anything else in the environment are visible to every provider too.
+
+Run providers you do not fully trust under operating-system isolation instead: a container, a virtual machine or a separate user account whose home directory holds no credentials.
 :::
 
 ## How state is keyed

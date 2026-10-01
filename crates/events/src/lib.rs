@@ -39,6 +39,7 @@
 
 pub mod bus;
 pub mod event;
+mod event_redaction;
 pub mod layer;
 mod macros;
 pub mod metadata;
@@ -60,8 +61,8 @@ pub use layer::CuenvEventLayer;
 pub use metadata::{MetadataContext, correlation_id, set_correlation_id};
 pub use redacting_writer::{LogFormat, RedactingStderr, RedactingWriter};
 pub use redaction::{
-    REDACTED_PLACEHOLDER, redact, redact_json_text, redact_json_value, register_secret,
-    register_secrets,
+    REDACTED_PLACEHOLDER, redact, redact_cow, redact_free_form_json_text, redact_json_text,
+    redact_json_value, redact_json_value_and_keys, register_secret, register_secrets,
 };
 #[cfg(feature = "spinner")]
 pub use renderers::SpinnerRenderer;

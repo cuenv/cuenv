@@ -283,29 +283,69 @@ made the `#EnvironmentVariable` disjunction ambiguous and left the variable
 unresolved (for `allowTasks` as well).
 
 **Redaction.** Resolved secret parts and the state token are registered before
-state and provider work. Registration includes each line of a multi-line secret
-and the debug- and JSON-quoted forms of a secret with escapable characters.
+state and provider work, together with the values of cuenv's own resolver
+credentials found in its environment at startup (the table in
+`cuenv_secrets::credentials`, which also drives withholding). Registration
+includes each line of a multi-line secret, the debug- and JSON-quoted forms of a
+secret with escapable characters, and Go's JSON form (`&`, `<` and `>` written
+as `\u0026`, `\u003c` and `\u003e`, which Terraform providers log with).
 Every event is redacted in `emit_with_source` before any subscriber sees it (so
 `emit_stdout!` and `emit_stderr!` text is covered) and again by the CLI and JSON
-renderers; JSON is redacted string by string, never as serialized text;
-`RedactingStderr` redacts tracing's formatting layers; `CliError` redacts its
-message and help when it is built (so terminal wrapping cannot split a secret)
-and again when shown; provider log lines and gRPC messages are redacted before
-control characters are stripped. A failing secret command's error output is never
-quoted, because nothing is registered for redaction until a secret has resolved.
+renderers. Events are redacted by type, field by field: no secret, whatever it
+equals (`data`, `type`, `content`), can rename a tag or key, change a variant or
+withhold an event. Other JSON is redacted string by string, never as serialized
+text, and its object keys are kept unless the JSON is free-form (provider logs),
+where keys are content too. A provider's JSON log line is parsed and each decoded
+string redacted, so Go's escapes cannot hide a secret. `RedactingStderr`
+redacts tracing's formatting layers; `CliError` redacts its message and help when
+it is built (so terminal wrapping cannot split a secret) and again when shown;
+provider log lines and gRPC messages are redacted before control characters are
+stripped. A failing secret command's error output is never quoted, because
+nothing is registered for redaction until a secret has resolved; the same holds
+for the 1Password, AWS and Google Cloud command-line resolvers, which report the
+exit status only.
+
+The registry compiles its secrets into one Aho-Corasick matcher the first time
+text is redacted after the registry changed (a generation counter detects
+that), and every redaction is a single pass that replaces the union of all
+matches, overlapping ones included. The cost of redacting a string no longer
+grows with the number of registered secrets, and nothing is cloned or sorted per
+call. The provider log drain classifies each line first and redacts only the
+lines it keeps (warnings, errors, and anything that is not hclog JSON), so the
+trace-level chatter of a large plan is never redacted at all.
 
 **Provider environment** (decision D5). `providerEnvironment` (top level and per
-environment, no inheritance) is `inherit` (default) or `isolated`. In `inherit`
-mode providers keep the ambient environment, minus the credentials of cuenv's
-secret resolvers (`cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES`:
-`OP_SERVICE_ACCOUNT_TOKEN`, `INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`,
-`INFISICAL_CLIENT_SECRET`, `VAULT_TOKEN`) and the state token, unless the
+environment, no inheritance) is `inherit` (default) or `isolated`. A selected
+environment that does not set it while the top level does is refused (explicit is
+safer than a silent fall back to `inherit`; the key's presence is read from the
+raw configuration, not from a defaulted value). In `inherit`
+mode providers keep the ambient environment, minus the variables of cuenv's
+secret machinery (the table `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`,
+exact names and prefixes: `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_TOKEN`,
+`OP_SESSION_*`, `OP_CONNECT_HOST` (withheld, not redacted),
+`INFISICAL_TOKEN`, `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET`,
+`VAULT_TOKEN`, `CUENV_SECRET_SALT`, `CUENV_SECRET_SALT_PREV`), the variables the
+project's `cache.remote.auth` names, and the state token, unless the
 project passes a variable of that name. In `isolated` mode the environment is
 cleared except `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, proxy and TLS
-variables. In both modes the project's policy-allowed values are added last,
+variables; proxy URLs lose their userinfo (credentials the provider was not given
+on purpose; an authenticated proxy is passed explicitly in `env`). Variables with
+names that are not valid unicode are never passed in either mode. In both modes the project's policy-allowed values are added last,
 policy-denied project names are never inherited from the host, and cuenv's own
 handshake variables are set after the withheld names are removed, so a policy
 cannot strip them.
+
+This is hygiene, not a sandbox. A provider runs as the user: `HOME` is passed even
+in `isolated` mode, so `~/.aws`, `~/.vault-token`, `~/.config/op` and
+`credentials.tfrc.json` are readable, and every provider receives every
+policy-allowed project variable (there is no per-provider scoping). The kernel
+would also have let a provider read cuenv's own `/proc/<pid>/environ`, which holds
+everything that was withheld, so on Linux cuenv calls `prctl(PR_SET_DUMPABLE, 0)`
+first thing in `main` (a same-user child then gets permission denied; `execve`
+resets the flag for the programs cuenv starts; a debugger cannot attach and no
+core dump is written; `/proc/<pid>/cmdline`, which cuenv's own process discovery
+reads, stays readable). There is no equivalent on macOS. Untrusted providers need
+operating-system isolation (a container, a virtual machine, a separate user).
 
 The plan digest includes the identity and a process-salted fingerprint of
 resolved project provider variables. This binds a plan to the selected
@@ -706,10 +746,10 @@ experimental.
    darwin during a release, and the end-to-end check is Linux only. The
    cheapest gate is `nix build .#checks.aarch64-darwin.cuenv-clippy` on the
    existing macOS runner.
-6. Event redaction cost. While any secret is registered, every event is
-   serialized to a JSON value, redacted and deserialized in `emit_with_source`, and
-   again by each renderer. Measure it on task-heavy runs and, if it matters,
-   redact only the string fields that can carry text, or once.
+6. Event redaction cost. Events are redacted by type with a compiled matcher (no
+   JSON round trip, no per-call registry copy), but still in `emit_with_source`
+   and again by each renderer. Measure it on task-heavy runs and, if it matters,
+   redact once.
 7. Narrow the public API before the crates are published to crates.io: every
    module of `cuenv-infrastructure` is `pub`, `StateStore` is unsealed, the
    recovery identity defaults to `None`, and registration, publish order and
