@@ -149,13 +149,25 @@ fn test_infrastructure_command_conversion() {
     assert_eq!(
         state_action(&["cuenv", "i", "state", "recover"]).1,
         InfrastructureAction::State(StateAction::Recover {
-            overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged
+            overrides: cuenv_infrastructure::RecoverOverrides::default()
         })
     );
     assert_eq!(
         state_action(&["cuenv", "i", "state", "recover", "--force"]).1,
         InfrastructureAction::State(StateAction::Recover {
-            overwrite: cuenv_infrastructure::RecoverOverwrite::Always
+            overrides: cuenv_infrastructure::RecoverOverrides {
+                changed_record: cuenv_infrastructure::ChangedRecord::Overwrite,
+                backend: cuenv_infrastructure::BackendMismatch::Refuse,
+            }
+        })
+    );
+    assert_eq!(
+        state_action(&["cuenv", "i", "state", "recover", "--accept-backend"]).1,
+        InfrastructureAction::State(StateAction::Recover {
+            overrides: cuenv_infrastructure::RecoverOverrides {
+                changed_record: cuenv_infrastructure::ChangedRecord::Refuse,
+                backend: cuenv_infrastructure::BackendMismatch::Accept,
+            }
         })
     );
     assert_eq!(

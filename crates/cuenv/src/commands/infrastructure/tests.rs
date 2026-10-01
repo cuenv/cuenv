@@ -5,9 +5,10 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use cuenv_infrastructure::{
-    ConditionalPut, InfrastructureError, LockInformation, LockRequest, ManagedResource,
-    MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion, RecoverOverwrite,
-    ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner, UnrecordedStore,
+    ChangedRecord, ConditionalPut, InfrastructureError, LockInformation, LockRequest,
+    ManagedResource, MemoryStateStore, OwnerClaim, OwnerClaimMode, ProjectInstance, RecordVersion,
+    RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey, TenantOwner,
+    UnrecordedStore,
 };
 use cuenv_manifest::environment::EnvValue;
 use tokio::sync::mpsc;
@@ -25,6 +26,14 @@ use crate::cli::{
     CliError, EXIT_CANCELLED, EXIT_CLI, EXIT_EVAL, EXIT_INFRASTRUCTURE, EXIT_INTERRUPTED,
     EXIT_LOCKED, EXIT_OK, LockStatus, OutputFormat, error_code_for, exit_code_for,
 };
+
+/// Recovery that overwrites a stored record that changed (`--force`).
+fn overwrite_changed() -> RecoverOverrides {
+    RecoverOverrides {
+        changed_record: ChangedRecord::Overwrite,
+        ..RecoverOverrides::default()
+    }
+}
 
 const MODULE: &str = "module: \"example.com/infrastructure\"\nlanguage: version: \"v0.14.1\"\n";
 
@@ -844,7 +853,7 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
             lock_identifier: Some("stale".to_string()),
         },
         InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }),
     ] {
         harness.run(action.clone()).await.unwrap();
@@ -1061,10 +1070,10 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
             .unwrap();
         let pending = unrecorded.list(&harness.tenant).unwrap();
 
-        for overwrite in [RecoverOverwrite::IfUnchanged, RecoverOverwrite::Always] {
+        for overrides in [RecoverOverrides::default(), overwrite_changed()] {
             let error = harness
                 .run(InfrastructureAction::State(StateAction::Recover {
-                    overwrite,
+                    overrides,
                 }))
                 .await
                 .unwrap_err();
@@ -1107,7 +1116,7 @@ async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
             .unwrap();
         harness
             .run(InfrastructureAction::State(StateAction::Recover {
-                overwrite: RecoverOverwrite::IfUnchanged,
+                overrides: RecoverOverrides::default(),
             }))
             .await
             .unwrap();
@@ -1203,7 +1212,7 @@ async fn state_recover_records_and_deletes_unrecorded_files() {
 
     harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap();
@@ -1250,7 +1259,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
 
     let error = harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap_err();
@@ -1264,7 +1273,7 @@ async fn state_recover_refuses_to_overwrite_a_newer_record_unless_forced() {
 
     harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::Always,
+            overrides: overwrite_changed(),
         }))
         .await
         .unwrap();
@@ -1291,7 +1300,7 @@ async fn an_unusable_unrecorded_file_names_the_file_not_the_state_store() {
 
     let error = harness
         .run(InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }))
         .await
         .unwrap_err();

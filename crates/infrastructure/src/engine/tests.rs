@@ -1130,7 +1130,7 @@ async fn recreate_over_an_existing_row_recovers_after_a_lost_write_response() {
             &tenant(),
             &crate::unrecorded::RecoverOptions {
                 lock: &lock,
-                overwrite: crate::unrecorded::RecoverOverwrite::IfUnchanged,
+                overrides: crate::unrecorded::RecoverOverrides::default(),
             },
         )
         .await
@@ -1906,9 +1906,13 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     let engine = engine(store, directory.path());
     let cause = InfrastructureError::state("connection refused");
     let resource_record = record("random_pet", "pet", &[]);
+    let replaced = RecordVersion::Generation {
+        generation: uuid::Uuid::from_u128(3),
+        serial: 3,
+    };
     let pending_write = ConditionalPut {
         resource: &resource_record,
-        expected: RecordVersion::Serial(3),
+        expected: replaced,
     };
     let saved = engine.save_unrecorded(&pending_write, &cause);
     let message = saved.to_string();
@@ -1922,7 +1926,7 @@ fn unrecorded_changes_are_saved_and_never_leak_state_into_errors() {
     let listed = engine.unrecorded_store().unwrap().list(&tenant()).unwrap();
     assert_eq!(listed.len(), 1);
     // The saved record remembers which stored version it replaces.
-    assert_eq!(listed[0].expected, RecordVersion::Serial(3));
+    assert_eq!(listed[0].expected, replaced);
 
     // When even the local save fails, the error names the address and the
     // kind of local failure only.

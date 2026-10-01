@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
-    ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine,
+    ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, EngineSetup, InfrastructureEngine,
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
-    RecoverOptions, RecoverOverwrite, StateLock, StateStore, TenantKey, TursoConfiguration,
+    RecoverOptions, RecoverOverrides, StateLock, StateStore, TenantKey, TursoConfiguration,
     TursoStateStore, UnrecordedStore, strip_control_characters,
     strip_control_characters_except_newlines, validate_configuration,
 };
@@ -67,9 +67,10 @@ pub enum StateAction {
     },
     /// Record changes an earlier run could not record and saved locally.
     Recover {
-        /// Whether a stored record that changed since the change was saved
-        /// may be overwritten (`--force`).
-        overwrite: RecoverOverwrite,
+        /// Which refusals to override: a stored record that changed since the
+        /// change was saved (`--force`), and a file saved for a different
+        /// state backend (`--accept-backend`).
+        overrides: RecoverOverrides,
     },
     /// Make this project's CUE instance the owner of its state.
     Adopt,
@@ -257,10 +258,37 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
             Some(format!(
                 "The state store's record of {} changed after the unrecorded change was saved, \
                  so recording it would overwrite the newer record. Review the resource, then \
-                 either run `{}` to write the saved record anyway, or move its file out of the \
-                 unrecorded change directory to keep the stored record.",
+                 either run `{}` to write the saved record anyway (this does not accept a file \
+                 saved for another backend), or move its file out of the unrecorded change \
+                 directory to keep the stored record.",
                 strip_control_characters(address),
                 invocation.command("state recover --force")
+            )),
+        ),
+        InfrastructureError::StateSchemaNewer { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(
+                "The state database was migrated by a newer cuenv. Upgrade cuenv; an older \
+                 version never reads or writes it."
+                    .to_string(),
+            ),
+        ),
+        InfrastructureError::StateMigrationBlocked { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(format!(
+                "Run the command again once the other `cuenv infrastructure` commands have \
+                 finished. If a run died and left its lock behind, release it with `{}` for \
+                 the project that holds it.",
+                invocation.command("unlock <lock id>")
+            )),
+        ),
+        InfrastructureError::UndecodableRecord { address, .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(format!(
+                "The state store answered, but its record of {} is damaged or was not written by \
+                 cuenv; this is not a connection problem, so the Turso URL and token are fine. \
+                 Inspect or repair that row in the state database.",
+                strip_control_characters(address)
             )),
         ),
         InfrastructureError::PlanEnvironmentChanged => (
@@ -839,8 +867,8 @@ async fn dispatch(
         InfrastructureAction::State(StateAction::Remove { address }) => {
             remove_resource(context, address).await
         }
-        InfrastructureAction::State(StateAction::Recover { overwrite }) => {
-            recover(context, &unrecorded_store(&inputs, context)?, *overwrite).await
+        InfrastructureAction::State(StateAction::Recover { overrides }) => {
+            recover(context, &unrecorded_store(&inputs, context)?, *overrides).await
         }
         InfrastructureAction::State(StateAction::Adopt) => adopt(context).await,
         InfrastructureAction::Unlock { lock_identifier } => {
@@ -1192,7 +1220,7 @@ async fn remove_resource(context: &CommandContext<'_>, address: &str) -> Result<
 async fn recover(
     context: &CommandContext<'_>,
     unrecorded: &UnrecordedStore,
-    overwrite: RecoverOverwrite,
+    overrides: RecoverOverrides,
 ) -> Result<(), CliError> {
     if !unrecorded
         .has_pending(context.tenant)
@@ -1204,11 +1232,21 @@ async fn recover(
     }
     let result = under_lock(context, "state recover", |lock| async move {
         require_owner(context).await?;
-        if overwrite == RecoverOverwrite::Always
-            && unrecorded.list(context.tenant).map_err(|error| failure(&error, context.invocation))?
-                .iter().any(|record| record.requires_force() || unrecorded.requires_backend_force(record))
-        {
-            emit_stderr!("warning: forcing recovery of saved state whose generation or backend binding cannot be verified; inspect the saved object, stored object and configured backend before overwriting current state");
+        if overrides.backend == BackendMismatch::Accept {
+            let pending = unrecorded
+                .list(context.tenant)
+                .map_err(|error| failure(&error, context.invocation))?;
+            for record in pending
+                .iter()
+                .filter(|record| unrecorded.differs_from_backend(record))
+            {
+                emit_stderr!(format!(
+                    "warning: recording {} from {} although it was saved for a different state \
+                     backend than the one in use",
+                    record.record.address,
+                    strip_control_characters(&record.file.display().to_string())
+                ));
+            }
         }
         let recovered = unrecorded
             .recover(
@@ -1216,7 +1254,7 @@ async fn recover(
                 context.tenant,
                 &RecoverOptions {
                     lock: &lock,
-                    overwrite,
+                    overrides,
                 },
             )
             .await

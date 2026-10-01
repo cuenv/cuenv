@@ -133,6 +133,7 @@ impl StateStore for MemoryStateStore {
                 address: put.resource.address.to_string(),
                 expected: put.expected.to_string(),
                 found: found.to_string(),
+                file: None,
             });
         }
         let insertion = if put.resource.generation.is_nil() {

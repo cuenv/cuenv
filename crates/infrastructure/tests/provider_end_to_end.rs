@@ -380,7 +380,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
                 &tenant,
                 &cuenv_infrastructure::RecoverOptions {
                     lock: &lock,
-                    overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged,
+                    overrides: cuenv_infrastructure::RecoverOverrides::default(),
                 },
             )
             .await;
@@ -415,7 +415,7 @@ async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestRe
                 &tenant,
                 &cuenv_infrastructure::RecoverOptions {
                     lock: &lock,
-                    overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged,
+                    overrides: cuenv_infrastructure::RecoverOverrides::default(),
                 },
             )
             .await;

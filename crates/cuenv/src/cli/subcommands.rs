@@ -327,13 +327,20 @@ pub enum InfrastructureStateCommands {
     /// Record changes an earlier run could not record and saved locally.
     #[command(about = "Record changes an earlier run could not record and saved locally")]
     Recover {
-        /// Write each saved record even when the stored record changed since
-        /// it was saved, overwriting the newer record.
+        /// Write a saved record even when the stored record changed since it
+        /// was saved, overwriting the newer record.
         #[arg(
             long,
-            help = "Write each saved record even when the stored record changed since it was saved, overwriting the newer record"
+            help = "Write a saved record even when the stored record changed since it was saved, overwriting the newer record"
         )]
         force: bool,
+        /// Accept a saved record that was saved for a different state backend
+        /// (or without a backend binding) than the one in use.
+        #[arg(
+            long,
+            help = "Accept a saved record that was saved for a different state backend than the one in use"
+        )]
+        accept_backend: bool,
     },
     /// Make this project's CUE instance the owner of its state.
     #[command(
