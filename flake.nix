@@ -160,10 +160,18 @@
           '';
 
           doCheck = true;
+          # Tests use the stdenv compiler wrapper rather than zig: the test
+          # binaries run here, and zig links them against a dynamic loader
+          # path that does not exist inside the Nix sandbox. Zig is only
+          # needed for the portable archives the build phase produces.
           checkPhase = ''
             runHook preCheck
 
-            ${cgoToolchainSetup}
+            # buildPhase exported the zig wrappers into this shell; replace them.
+            export CGO_ENABLED=1
+            export CC=${pkgs.stdenv.cc}/bin/cc
+            export CXX=${pkgs.stdenv.cc}/bin/c++
+            unset AR
 
             go vet ./...
             go test ./...
