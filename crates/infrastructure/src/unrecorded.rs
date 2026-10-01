@@ -655,6 +655,16 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
                 ),
             ));
         }
+        // Whatever the version, a marker that names another kind of document
+        // is not an unrecorded change at all (its text is not repeated here).
+        (Some(kind), _) if kind != FILE_KIND => {
+            return Err(kinded_file_problem(
+                file,
+                UnrecordedFileProblem::Format,
+                "it is not an unrecorded change written by cuenv (its `kind` marker names \
+                 another kind of document)",
+            ));
+        }
         (_, version) => {
             return Err(kinded_file_problem(
                 file,
@@ -1909,6 +1919,41 @@ mod tests {
         let message = store.list(&web).unwrap_err().to_string();
         assert!(message.contains("format version (none)"), "{message}");
         assert!(!message.contains("hunter2"), "{message}");
+    }
+
+    #[test]
+    fn a_file_with_another_kind_is_not_blamed_on_its_format_version() {
+        let root = tempfile::tempdir().unwrap();
+        let store = UnrecordedStore::at(root.path());
+        let web = tenant("web");
+        let saved = save(&store, &web, &record("pet", "a"));
+        std::fs::remove_file(saved).unwrap();
+        let directory = store.tenant_directory(&web);
+        // The version is the one this cuenv reads; only the marker is wrong.
+        write_new_private_file(
+            &directory.join("foreign.json"),
+            br#"{"kind": "hunter2-some-other-document", "formatVersion": 1}"#,
+        )
+        .unwrap();
+        let error = store.list(&web).unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("not an unrecorded change written by cuenv"),
+            "{message}"
+        );
+        assert!(!message.contains("reads version 1"), "{message}");
+        assert!(!message.contains("hunter2"), "{message}");
+        assert!(message.contains("foreign.json"), "{message}");
+        assert!(
+            matches!(
+                error,
+                InfrastructureError::UnrecordedFile {
+                    kind: UnrecordedFileProblem::Format,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

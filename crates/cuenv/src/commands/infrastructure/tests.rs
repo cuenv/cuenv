@@ -2220,6 +2220,14 @@ fn an_unknown_environment_lists_the_declared_names_and_escapes_the_typed_one() {
         text.contains("not inherited"),
         "top-level is not inherited: {text}"
     );
+    // An environment that was removed from the configuration cannot be
+    // destroyed under its old name: the way out names both options.
+    assert!(text.contains("`state remove`"), "{text}");
+    assert!(text.contains("without touching the real objects"), "{text}");
+    assert!(
+        text.contains("restore the configuration of the environment"),
+        "{text}"
+    );
 
     let error = evaluate_at_environment(&project, NameCheck::TargetOnly, Some("a\u{1b}[31mred"))
         .unwrap_err();
@@ -2858,6 +2866,20 @@ fn schema_and_file_problems_get_help_that_fits_them() {
         "{unreleased}"
     );
     assert!(!unreleased.contains("Upgrade cuenv"), "{unreleased}");
+    // The message lists the tables; the help points at them in the singular
+    // or the plural, whichever it listed.
+    assert!(
+        unreleased.contains("the table listed above"),
+        "{unreleased}"
+    );
+    assert!(!unreleased.contains("tables listed above"), "{unreleased}");
+    let several = help(InfrastructureError::StateUnreleasedLayout {
+        tables: vec![
+            "cuenv_infrastructure_schema".to_string(),
+            "cuenv_infrastructure_resources".to_string(),
+        ],
+    });
+    assert!(several.contains("the tables listed above"), "{several}");
     let conflict = help(InfrastructureError::StateSchemaConflict {
         problem: "it holds tables".to_string(),
     });

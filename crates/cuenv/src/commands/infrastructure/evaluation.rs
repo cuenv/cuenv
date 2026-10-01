@@ -540,7 +540,11 @@ fn unknown_environment(project_name: &str, name: &str, declared: &[String]) -> C
         format!(
             "Environment names are case-sensitive and each environment is a complete \
              configuration under `infrastructure.environments`; the top-level providers and \
-             resources are not inherited. {}.",
+             resources are not inherited. {}. If the environment was removed from the \
+             configuration and its state still exists, `state list` and `state remove` (with \
+             the same --env) still reach it: `state remove` forgets records without touching \
+             the real objects, and to delete the objects themselves, restore the configuration \
+             of the environment so that `destroy` can run.",
             capitalized(&declared_environments_phrase(declared))
         ),
     )

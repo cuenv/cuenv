@@ -320,19 +320,25 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                 InfrastructureFailureKind::Locked,
             );
         }
-        InfrastructureError::StateUnreleasedLayout { .. } => (
-            InfrastructureFailureKind::Failed,
-            Some(
-                "The database holds tables written by an unreleased development build of \
-                 cuenv; no released cuenv reads that layout, and cuenv never adopts or \
-                 ignores it. This is not a connection problem. If the state recorded there is \
-                 disposable, drop every table whose name starts with `cuenv_infrastructure` \
-                 (the tables listed above and any others of that family) and run the command \
-                 again; if it manages real resources, use another database \
-                 (`infrastructure.state.turso.url`) instead."
-                    .to_string(),
-            ),
-        ),
+        InfrastructureError::StateUnreleasedLayout { tables } => {
+            let listed = if tables.len() == 1 {
+                "the table listed above"
+            } else {
+                "the tables listed above"
+            };
+            (
+                InfrastructureFailureKind::Failed,
+                Some(format!(
+                    "The database holds tables written by an unreleased development build of \
+                     cuenv; no released cuenv reads that layout, and cuenv never adopts or \
+                     ignores it. This is not a connection problem. If the state recorded there \
+                     is disposable, drop every table whose name starts with \
+                     `cuenv_infrastructure` ({listed} and any others of that family) and run \
+                     the command again; if it manages real resources, use another database \
+                     (`infrastructure.state.turso.url`) instead."
+                )),
+            )
+        }
         InfrastructureError::StateSchemaConflict { .. } => (
             InfrastructureFailureKind::Failed,
             Some(
