@@ -903,11 +903,63 @@ fn an_orphan_delete_never_waits_for_a_create_or_an_update() {
     }
 }
 
-#[tokio::test]
-async fn a_replacement_is_never_deleted_once_a_prerequisite_of_its_create_has_failed() {
-    // Whichever operations fail: the old object of a replacement is not
-    // destroyed after something its create waits for has already failed.
+#[test]
+fn a_replacement_is_deleted_before_every_create_it_is_configured_to_depend_on() {
+    // Whatever the mix of changes: the create of a new resource, or the
+    // create half of a replacement, never comes before the delete of a
+    // replacement that depends on it.
     let mut next = random_source(0x9e37_79b9_7f4a_7c15);
+    let actions = [
+        Action::Create,
+        Action::Update,
+        Action::Replace,
+        Action::Delete,
+    ];
+    for round in 0..400 {
+        let changes = random_changes(&mut next, &actions);
+        let schedule = Schedule::build(&changes).unwrap();
+        let position = |kind: OperationKind, address: &ResourceAddress| {
+            schedule.operations.iter().position(|scheduled| {
+                scheduled.operation.kind == kind && scheduled.operation.change.address == *address
+            })
+        };
+        for replaced in changes
+            .iter()
+            .filter(|change| change.action == Action::Replace)
+        {
+            let delete = position(OperationKind::ReplaceDelete, &replaced.address).unwrap();
+            for prerequisite in &changes {
+                if !replaced
+                    .dependencies
+                    .contains(&prerequisite.address.to_string())
+                {
+                    continue;
+                }
+                let kind = match prerequisite.action {
+                    Action::Create => OperationKind::Apply,
+                    Action::Replace => OperationKind::ReplaceCreate,
+                    _ => continue,
+                };
+                let create = position(kind, &prerequisite.address).unwrap();
+                assert!(
+                    delete < create,
+                    "round {round}: {} was deleted after {} was created: {:?}; changes {}",
+                    replaced.address,
+                    prerequisite.address,
+                    operation_labels(&schedule),
+                    describe(&changes)
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_replacement_that_was_deleted_is_recreated_or_reported_whichever_operation_fails() {
+    // The old object of a replacement may be destroyed before the create of
+    // what it depends on fails, but it is never lost silently: the replacement
+    // is recreated or reported as deleted and not recreated.
+    let mut next = random_source(0x2545_f491_4f6c_dd1d);
     let actions = [
         Action::Create,
         Action::Update,
@@ -917,67 +969,123 @@ async fn a_replacement_is_never_deleted_once_a_prerequisite_of_its_create_has_fa
     for round in 0..300 {
         let changes = random_changes(&mut next, &actions);
         let schedule = Schedule::build(&changes).unwrap();
-        let full = operation_labels(&schedule);
-        let labels = short(&full);
-        let chosen: Vec<usize> = (0..full.len()).filter(|_| next(5) == 0).collect();
-        let failing: Vec<&str> = chosen.iter().map(|index| labels[*index].as_str()).collect();
-        let failing_full: Vec<&str> = chosen.iter().map(|index| full[*index].as_str()).collect();
-        let runner = ScriptedRunner::new().failing(&failing_full);
-        let mut before: Vec<Vec<usize>> = vec![Vec::new(); labels.len()];
-        for (node, scheduled) in schedule.operations.iter().enumerate() {
-            for successor in &scheduled.successors {
-                before[*successor].push(node);
-            }
-        }
-        run_scripted(changes.clone(), &runner).await;
+        let labels = operation_labels(&schedule);
+        let failing: Vec<&str> = labels
+            .iter()
+            .filter(|label| !label.starts_with("delete ") && next(5) == 0)
+            .map(String::as_str)
+            .collect();
+        let runner = ScriptedRunner::new().failing(&failing);
+        let scripted = run_scripted(changes.clone(), &runner).await;
         let ran = runner.ran();
-        for (node, label) in labels.iter().enumerate() {
-            let Some(name) = label.strip_prefix("create ") else {
-                continue;
-            };
-            let delete = labels
+        let reported: Vec<String> = match &scripted.result {
+            Err(InfrastructureError::ApplyIncomplete(incomplete)) => incomplete
+                .deleted_not_recreated
                 .iter()
-                .position(|candidate| *candidate == format!("delete {name}"))
-                .unwrap();
-            let Some(deleted_at) = ran.iter().position(|entry| *entry == labels[delete]) else {
+                .map(|address| address.name.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        for entry in &ran {
+            let Some(name) = entry.strip_prefix("delete ") else {
                 continue;
             };
-            let mut pending = before[node].clone();
-            let mut seen = BTreeSet::new();
-            while let Some(earlier) = pending.pop() {
-                if earlier == delete || !seen.insert(earlier) {
-                    continue;
-                }
-                let failed_before = ran
-                    .iter()
-                    .position(|entry| *entry == labels[earlier])
-                    .is_some_and(|at| {
-                        at < deleted_at && failing.contains(&labels[earlier].as_str())
-                    });
-                assert!(
-                    !failed_before,
-                    "round {round}: {} was deleted after {} failed (ran {ran:?}, failing {failing:?}); changes {}",
-                    labels[delete],
-                    labels[earlier],
-                    describe(&changes)
-                );
-                pending.extend(before[earlier].iter().copied());
-            }
+            let recreated = ran.contains(&format!("create {name}"));
+            let kept = reported.iter().any(|reported| reported == name);
+            let orphan = changes
+                .iter()
+                .any(|change| change.address.name == name && change.action == Action::Delete);
+            assert!(
+                recreated || kept || orphan,
+                "round {round}: {name} was deleted and neither recreated nor reported \
+                 (ran {ran:?}, failing {failing:?}); changes {}",
+                describe(&changes)
+            );
         }
     }
 }
 
 #[test]
-fn a_replacement_waits_for_the_creates_it_depends_on() {
-    // If the prerequisite fails, the old object must still be there.
+fn a_replacement_is_deleted_before_the_creates_of_what_it_depends_on() {
+    // The replaced object is destroyed anyway, so deleting it first costs
+    // availability and never data. Creating the prerequisite first could
+    // collide with the old object, or take over its real-world identity.
     let changes = [
         pet("r", Action::Replace, wired(&[], &["fresh"])),
         pet("fresh", Action::Create, wired(&[], &[])),
     ];
     assert_eq!(
         short(&schedule_of(&changes)),
-        ["apply fresh", "delete r", "create r"]
+        ["delete r", "apply fresh", "create r"]
     );
+}
+
+#[test]
+fn an_identity_handoff_deletes_the_old_object_before_the_new_prerequisite_is_created() {
+    // `c` takes over what `a` held, and `a` is replaced to hold something
+    // else, after `c`. The delete of `a` must come first: if `c` were created
+    // before it, `a`'s delete would destroy the object `c` just made.
+    let changes = [
+        pet("a", Action::Replace, wired(&[], &["c"])),
+        pet("c", Action::Create, wired(&[], &[])),
+    ];
+    let order = short(&schedule_of(&changes));
+    let position = |label: &str| order.iter().position(|entry| entry == label).unwrap();
+    assert!(position("delete a") < position("apply c"), "{order:?}");
+    assert!(position("apply c") < position("create a"), "{order:?}");
+}
+
+#[test]
+fn replacement_deletes_precede_the_creates_they_wait_behind_even_when_hurried() {
+    // `a` and `x` are both replaced and both depend on the new `c`. After
+    // the delete of `a`, the create of `a` and `c` are hurried, which must
+    // not let `c` overtake the delete of `x`.
+    let changes = [
+        pet("a", Action::Replace, wired(&[], &["c"])),
+        pet("x", Action::Replace, wired(&[], &["c"])),
+        pet("c", Action::Create, wired(&[], &[])),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete a", "delete x", "apply c", "create a", "create x"]
+    );
+}
+
+#[test]
+fn a_replacement_delete_is_not_ordered_against_a_prerequisite_that_is_only_updated() {
+    // Only creates collide with an object that is about to be destroyed: an
+    // update keeps its own object, so neither waits for the other.
+    let changes = [
+        pet("r", Action::Replace, wired(&[], &["kept"])),
+        pet("kept", Action::Update, wired(&[], &[])),
+    ];
+    let schedule = Schedule::build(&changes).unwrap();
+    let order = short(&operation_labels(&schedule));
+    let position = |label: &str| order.iter().position(|entry| entry == label).unwrap();
+    let delete = position("delete r");
+    let update = position("apply kept");
+    assert!(
+        !schedule.operations[delete].successors.contains(&update),
+        "the update waits for the delete: {order:?}"
+    );
+    assert!(
+        !schedule.operations[update].successors.contains(&delete),
+        "the delete waits for the update: {order:?}"
+    );
+}
+
+#[test]
+fn a_replacement_is_deleted_before_the_create_half_of_a_replaced_prerequisite() {
+    // `p` is replaced and `r` depends on it: `r`'s old object goes before the
+    // new `p` is created, as before any other create.
+    let changes = [
+        pet("p", Action::Replace, wired(&[], &[])),
+        pet("r", Action::Replace, wired(&[], &["p"])),
+    ];
+    let order = short(&schedule_of(&changes));
+    let position = |label: &str| order.iter().position(|entry| entry == label).unwrap();
+    assert!(position("delete r") < position("create p"), "{order:?}");
+    assert!(position("create p") < position("create r"), "{order:?}");
 }
 
 #[test]
@@ -1246,7 +1354,10 @@ impl Scripted {
     }
 }
 
-async fn run_scripted(changes: Vec<ResourceChange>, runner: &ScriptedRunner) -> Scripted {
+async fn run_scripted(
+    changes: Vec<ResourceChange>,
+    runner: &(impl OperationRunner + Sync),
+) -> Scripted {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let engine = engine(store, directory.path());
@@ -1266,6 +1377,105 @@ async fn run_scripted(changes: Vec<ResourceChange>, runner: &ScriptedRunner) -> 
         )
         .await;
     Scripted { result, events }
+}
+
+/// Runs operations in a world where every object holds a unique real-world
+/// identity (a file name, an address): creating an object whose identity is
+/// held already fails, as it does with most providers, and deleting an
+/// object frees what it holds.
+struct IdentityRunner {
+    /// Identity to the address of the resource whose object holds it.
+    held: std::sync::Mutex<BTreeMap<String, String>>,
+    /// The identity the object of an address takes when it is created.
+    identities: BTreeMap<String, String>,
+}
+
+impl IdentityRunner {
+    /// A world where `held` pairs (identity, address) exist already, and
+    /// `identities` pairs (address, identity) say what creates take.
+    fn new(held: &[(&str, &str)], identities: &[(&str, &str)]) -> Self {
+        let pairs = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(first, second)| ((*first).to_string(), (*second).to_string()))
+                .collect()
+        };
+        Self {
+            held: std::sync::Mutex::new(pairs(held).into_iter().collect()),
+            identities: pairs(identities).into_iter().collect(),
+        }
+    }
+
+    fn holders(&self) -> Vec<(String, String)> {
+        self.held
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(identity, address)| (identity.clone(), address.clone()))
+            .collect()
+    }
+}
+
+#[async_trait]
+impl OperationRunner for IdentityRunner {
+    async fn run_operation(
+        &self,
+        operation: &ApplyOperation<'_>,
+        _lock: &StateLock,
+        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+    ) -> std::result::Result<(), OperationFailure> {
+        let address = operation.change.address.to_string();
+        let mut held = self.held.lock().unwrap();
+        match operation.kind {
+            OperationKind::Delete | OperationKind::ReplaceDelete => {
+                held.retain(|_, holder| *holder != address);
+            }
+            OperationKind::Apply | OperationKind::ReplaceCreate
+                if operation.change.action != Action::Update =>
+            {
+                let identity = self.identities[&address].clone();
+                if held.contains_key(&identity) {
+                    return Err(OperationFailure::Continue(
+                        InfrastructureError::Diagnostics {
+                            context: format!("create {address}"),
+                            errors: vec![format!("{identity} already exists")],
+                        },
+                    ));
+                }
+                held.insert(identity, address);
+            }
+            OperationKind::Apply | OperationKind::ReplaceCreate | OperationKind::Refresh => {}
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn an_identity_handoff_between_resources_converges_when_identities_are_unique() {
+    // `a` holds `shared.conf`. The new configuration gives it to `c`, and
+    // `a` is replaced to hold `a2.conf`, after `c`. Creating `c` first would
+    // fail, or, with a provider that overwrites, be destroyed by `a`'s delete
+    // straight after: the delete of `a` has to come first.
+    let runner = IdentityRunner::new(
+        &[("shared.conf", "random_pet.a")],
+        &[("random_pet.c", "shared.conf"), ("random_pet.a", "a2.conf")],
+    );
+    let scripted = run_scripted(
+        vec![
+            pet("a", Action::Replace, wired(&[], &["c"])),
+            pet("c", Action::Create, wired(&[], &[])),
+        ],
+        &runner,
+    )
+    .await;
+    assert!(scripted.result.is_ok(), "{:?}", scripted.result);
+    assert_eq!(
+        runner.holders(),
+        [
+            ("a2.conf".to_string(), "random_pet.a".to_string()),
+            ("shared.conf".to_string(), "random_pet.c".to_string()),
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1321,7 +1531,7 @@ async fn a_failed_create_is_reported_as_deleted_not_recreated_and_other_replacem
 }
 
 #[tokio::test]
-async fn a_replacement_is_not_started_when_a_prerequisite_already_failed() {
+async fn a_replacement_whose_new_prerequisite_fails_to_create_is_left_deleted_and_reported() {
     let runner = ScriptedRunner::new().failing(&["apply random_pet.fresh"]);
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
@@ -1348,22 +1558,21 @@ async fn a_replacement_is_not_started_when_a_prerequisite_already_failed() {
             },
         )
         .await;
-    // The old object of `r` was never touched.
-    assert_eq!(runner.ran(), ["apply fresh"]);
+    // The old object of `r` goes first, and `r`'s create waits for `fresh`,
+    // which failed: `r` is reported as deleted and not recreated, not
+    // skipped silently.
+    assert_eq!(runner.ran(), ["delete r", "apply fresh"]);
     let Err(InfrastructureError::ApplyIncomplete(incomplete)) = result else {
         panic!("expected an incomplete apply");
     };
-    assert_eq!(Scripted::names(&incomplete.skipped), ["r"]);
-    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert!(incomplete.skipped.is_empty(), "{:?}", incomplete.skipped);
+    assert_eq!(Scripted::names(&incomplete.deleted_not_recreated), ["r"]);
     assert!(
-        events.iter().any(
-            |event| matches!(event, ApplyEvent::Skipped { address, .. } if address.name == "r")
-        )
-    );
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, ApplyEvent::DeletedNotRecreated { .. }))
+        events.iter().any(|event| matches!(
+            event,
+            ApplyEvent::DeletedNotRecreated { address } if address.name == "r"
+        )),
+        "{events:?}"
     );
 }
 

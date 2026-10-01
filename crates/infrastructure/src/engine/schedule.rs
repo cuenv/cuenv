@@ -28,12 +28,17 @@
 //! One further edge is only added while it cannot form a cycle, so it never
 //! makes an ordering impossible:
 //!
-//! * safety: the delete half of a replacement waits for the creates and
-//!   updates of everything its replacement is configured to depend on, so a
-//!   failed prerequisite is known before the old object is destroyed. It is
-//!   dropped when the creators edge already orders the delete first (a
-//!   replaced child of an updated parent), as in Terraform, and when it
-//!   would make an orphan delete wait, however indirectly, for a create.
+//! * handoff: the create of a new resource, or the create half of a
+//!   replacement, waits for the delete half of every replacement that is
+//!   configured to depend on it. The old object of a replacement is destroyed
+//!   anyway, so deleting it first costs availability and never data, while
+//!   creating the prerequisite first could collide with the old object or
+//!   take over an identity it holds, and the delete would then destroy the
+//!   new object. If such a create fails, the replacement is left deleted and
+//!   not recreated, which is reported and recovered by the next apply. An
+//!   update is not held back: it keeps its own object. No delete waits for
+//!   anything but deletes, so this edge never makes an orphan delete wait for
+//!   a create, and it is dropped if it ever would close a cycle.
 //!
 //! No edge makes the delete of an orphan (a resource that is no longer
 //! declared) wait for a create, an update or a refresh, because the new
@@ -380,21 +385,6 @@ impl<'plan> Graph<'plan> {
         true
     }
 
-    /// Whether an orphan delete runs after `node`, however indirectly.
-    fn orphan_delete_follows(&self, node: usize) -> bool {
-        let mut seen = BTreeSet::new();
-        let mut pending: Vec<usize> = self.waited_on_by[node].iter().copied().collect();
-        while let Some(current) = pending.pop() {
-            if self.operations[current].operation.kind == OperationKind::Delete {
-                return true;
-            }
-            if seen.insert(current) {
-                pending.extend(self.waited_on_by[current].iter().copied());
-            }
-        }
-        false
-    }
-
     /// For every address, the delete nodes of the resources whose stored
     /// record depends on it.
     fn deleted_dependents(&self) -> BTreeMap<String, Vec<usize>> {
@@ -502,6 +492,18 @@ impl<'plan> Graph<'plan> {
         }
     }
 
+    /// The old object of a replacement is destroyed whatever happens, so it
+    /// goes before the creates of the resources the replacement is
+    /// configured to depend on: such a create may take over the very
+    /// identity the old object holds (a file name, an address), and an old
+    /// object deleted afterwards would take the new one with it, or make the
+    /// create fail. Deleting early costs availability, never data.
+    ///
+    /// Only creates are held back, and only the new objects: the create of a
+    /// new resource and the create half of a replacement. An update keeps its
+    /// own object. No delete waits for anything but deletes, so this edge
+    /// never makes an orphan delete wait for a create; it is added through
+    /// [`Self::prefer`] all the same, so it can never close a cycle.
     fn add_preferred_edges(&mut self) {
         for index in 0..self.changes.len() {
             let change = &self.changes[index];
@@ -511,16 +513,18 @@ impl<'plan> Graph<'plan> {
             let Some(&delete) = self.delete_of.get(&change.address.to_string()) else {
                 continue;
             };
-            let prerequisites: Vec<usize> = self.dependencies.configured[index]
+            let creates: Vec<usize> = self.dependencies.configured[index]
                 .iter()
                 .filter_map(|prerequisite| self.apply_of.get(prerequisite).copied())
+                .filter(|node| {
+                    matches!(
+                        self.operations[*node].operation.change.action,
+                        Action::Create | Action::Replace
+                    )
+                })
                 .collect();
-            for earlier in prerequisites {
-                // An orphan delete that has to wait for this one would wait
-                // for a create, which may make the very object it destroys.
-                if !self.orphan_delete_follows(delete) {
-                    self.prefer(delete, earlier);
-                }
+            for create in creates {
+                self.prefer(create, delete);
             }
         }
     }

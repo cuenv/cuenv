@@ -1694,7 +1694,7 @@ async fn fake_a_failing_create_does_not_strand_another_replacement() -> TestResu
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
-async fn fake_a_replacement_whose_prerequisite_failed_keeps_its_old_object() -> TestResult {
+async fn fake_a_replacement_whose_new_prerequisite_fails_to_create_is_left_deleted() -> TestResult {
     let fake = Fake::new().await?;
     fake.converge(
         &json!({"r": obj(&json!({"key": "R", "version": "1"}))}),
@@ -1710,25 +1710,28 @@ async fn fake_a_replacement_whose_prerequisite_failed_keeps_its_old_object() -> 
     });
     let run = fake.converge(&second, PlanMode::Apply).await?;
     let error = run.applied.expect_err("p2's create fails");
-    // R's replacement needs P2, which failed: R is neither deleted nor
-    // replaced.
-    assert!(
-        fake.exists("R"),
-        "R was destroyed although its create could not run"
-    );
-    assert_eq!(fake.record("r").await?.state["version"], "1");
-    assert!(
-        !fake.changes().iter().any(|line| line.contains("key=R")),
-        "{:?}",
-        fake.changes()
-    );
+    // The old object of R goes before the create of its new prerequisite P2,
+    // which failed: R is deleted and not recreated, loudly.
+    assert!(!fake.exists("R"), "R was not deleted before P2's create");
+    assert!(!fake.exists("P2"));
     assert_eq!(failed_addresses(&error), ["fake_obj.p2"]);
-    assert_eq!(skipped_addresses(&error), ["fake_obj.r"]);
-    assert!(uncreated_in_error(&error).is_empty());
+    assert!(skipped_addresses(&error).is_empty());
+    assert_eq!(uncreated_in_error(&error), ["fake_obj.r"]);
+    assert_eq!(uncreated_addresses(&run.events), ["fake_obj.r"]);
+    assert!(fake.addresses().await?.is_empty());
 
+    // The next successful apply creates what is missing.
     fake.clear_flag("fail-create-P2")?;
     fake.converge(&second, PlanMode::Apply).await?.applied?;
     assert_eq!(fake.record("r").await?.state["version"], "2");
+    assert!(fake.exists("R") && fake.exists("P2"));
+    assert!(
+        !fake
+            .converge(&second, PlanMode::Apply)
+            .await?
+            .plan
+            .has_work()
+    );
     fake.converge(&second, PlanMode::Destroy).await?.applied?;
     Ok(())
 }
@@ -2398,5 +2401,47 @@ async fn local_file_rename_keeps_the_file_both_resources_manage() -> TestResult 
     );
     converge(json!({}), PlanMode::Destroy).await?.applied?;
     assert!(!file.exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_an_identity_handoff_deletes_the_old_object_before_the_new_one_takes_its_identity()
+-> TestResult {
+    let fake = Fake::new().await?;
+    // `a` holds the object K.
+    fake.converge(&json!({"a": obj(&json!({"key": "K"}))}), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.clear_journal()?;
+    // `c` takes K over, and `a` is replaced to hold another object, after `c`.
+    let second = json!({
+        "c": obj(&json!({"key": "K"})),
+        "a": obj_after("c", &json!({"key": "A2"})),
+    });
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    let plan = actions(&run.plan);
+    assert!(plan.contains(&("fake_obj.a".to_string(), Action::Replace)));
+    assert!(plan.contains(&("fake_obj.c".to_string(), Action::Create)));
+    run.applied?;
+    // The old object of `a` went first; creating `c` before it would fail with
+    // "already exists", or lose K to the delete.
+    let changes = fake.changes();
+    assert_eq!(changes.len(), 3, "{changes:?}");
+    assert!(changes[0].starts_with("obj: Delete key=K"), "{changes:?}");
+    assert!(changes[1].starts_with("obj: Create key=K"), "{changes:?}");
+    assert!(changes[2].starts_with("obj: Create key=A2"), "{changes:?}");
+    assert!(fake.exists("K") && fake.exists("A2"));
+    assert_eq!(fake.addresses().await?, ["fake_obj.a", "fake_obj.c"]);
+    assert_eq!(fake.record("c").await?.state["key"], "K");
+    assert!(
+        !fake
+            .converge(&second, PlanMode::Apply)
+            .await?
+            .plan
+            .has_work()
+    );
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    assert!(!fake.exists("K") && !fake.exists("A2"));
     Ok(())
 }

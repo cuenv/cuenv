@@ -209,15 +209,24 @@ Terraform 1.9.8), "A waits for B":
   out of this (they are not creators), and so do we: a refresh has no such
   edges, because rewriting a record detaches nothing.
 
-One more edge, the safety edge, is added only while it cannot close a cycle: a
-replacement's delete waits for the creates and updates its replacement is
-configured to depend on, so a failed prerequisite is known before the old
-object is destroyed. Terraform has no such edge. It is dropped whenever the
-`creators` edge already orders the delete first (a replaced child of an updated
-parent: the child's delete precedes the parent's update, as in Terraform, so a
-failed parent update leaves the child deleted and not recreated, which is
-reported), and whenever it would make the delete of a removed resource (an
-orphan) wait, however indirectly, for a create.
+One more edge, the handoff edge, is added only while it cannot close a cycle:
+the create of a new resource, and the create half of a replacement, wait for
+the delete half of every replacement that is configured to depend on them.
+Terraform has no such edge. The old object of a replacement is destroyed
+whatever happens, so deleting it before the prerequisite's create costs
+availability and never data, whereas the reverse order could let a create take
+over an identity the old object still holds: the create fails with "already
+exists", or succeeds and the delete then destroys the new object (an identity
+handoff: `c` is given the `filename` that `a` held, and `a` is replaced to
+hold another one, after `c`). If such a create fails, the replacement is left
+deleted and not recreated, which is reported and recovered by the next apply
+(the same outcome as a replaced child of an updated parent whose update
+fails). Updates are not held back. A delete waits for nothing but deletes, so
+the edge cannot make the delete of a removed resource (an orphan) wait for a
+create. An earlier version had the opposite edge (the replacement's delete
+waited for its prerequisites' creates, so a failed prerequisite was known
+before the old object was destroyed); it destroyed live data in the handoff
+shape and is gone.
 
 **Deliberate differences from Terraform**, each in favour of never losing data
 and never wedging a project:
