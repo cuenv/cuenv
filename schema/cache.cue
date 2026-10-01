@@ -46,16 +46,21 @@ package schema
 	auth?: #CacheAuth
 })
 
-// How to authenticate to a remote cache.
+// How to authenticate to a remote cache: exactly one of a bearer token or a
+// named header. Each alternative forbids the other's field, so a project that
+// sets one resolves to it; without that the two alternatives stay ambiguous
+// and the whole `auth` value cannot be exported.
 #CacheAuth: close({
 	// Environment variable holding a bearer token. Sent as
 	// `authorization: Bearer <token>`, which is what the hosted providers
 	// issue.
 	bearerTokenEnv!: string
+	header?:         _|_
 }) | close({
 	// An arbitrary header, for a provider that names its own.
 	header!: close({
 		name!:     string
 		valueEnv!: string
 	})
+	bearerTokenEnv?: _|_
 })

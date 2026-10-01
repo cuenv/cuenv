@@ -170,11 +170,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         Needs::Configuration => "infrastructure",
         Needs::StateOnly => "infrastructure.state",
     };
-    let export_paths = vec![
-        "name".to_string(),
-        "env".to_string(),
-        infrastructure_path.to_string(),
-    ];
+    let export_paths = exported_paths(infrastructure_path);
     let mut module = evaluate_path(PathEvaluation {
         target_path: &target_path,
         package: request.package,
@@ -203,11 +199,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
             }
         }
         if concrete_paths.len() > 1 {
-            let unselected_export_paths = vec![
-                "name".to_string(),
-                "env".to_string(),
-                "infrastructure".to_string(),
-            ];
+            let unselected_export_paths = exported_paths("infrastructure");
             module = evaluate_path(PathEvaluation {
                 target_path: &target_path,
                 package: request.package,
@@ -232,6 +224,7 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         infrastructure,
         declared_environments,
         top_level,
+        remote_cache_credential_variables,
     } = projection;
     let infrastructure = infrastructure.ok_or_else(|| missing_infrastructure(&project.name))?;
     let selection = match request.environment {
@@ -256,7 +249,6 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         })?;
     }
 
-    let credential_variables = remote_cache_credential_variables(&project);
     let module_path = cuenv_infrastructure::read_module_path(&module.root)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
     let unselected_tenant = TenantKey::new(&module_path, &project.name)
@@ -278,28 +270,48 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         top_level,
         selection,
         warnings: Vec::new(),
-        remote_cache_credential_variables: credential_variables,
+        remote_cache_credential_variables,
         project_environment: project.env,
         project_directory: target_path,
     })
 }
 
+/// The fields of the project every evaluation of this command exports: its
+/// name, its values, the part of `infrastructure` the command needs, and the
+/// `cache` block, where the remote cache names the variables its credentials
+/// are read from (see [`remote_cache_credential_variables`]).
+fn exported_paths(infrastructure_path: &str) -> Vec<String> {
+    vec![
+        "name".to_string(),
+        "env".to_string(),
+        infrastructure_path.to_string(),
+        CACHE_PATH.to_string(),
+    ]
+}
+
+/// The field of the project that configures its caches.
+const CACHE_PATH: &str = "cache";
+
 /// The environment variables the project's remote cache reads its
-/// credentials from, if it has one.
-fn remote_cache_credential_variables(project: &Project) -> Vec<String> {
-    project
-        .cache
-        .as_ref()
-        .and_then(|cache| cache.remote.as_ref())
-        .and_then(|remote| remote.auth.as_ref())
-        .map(|auth| {
-            auth.bearer_token_env
-                .iter()
-                .cloned()
-                .chain(auth.header.iter().map(|header| header.value_env.clone()))
-                .collect()
-        })
-        .unwrap_or_default()
+/// credentials from (`cache.remote.auth`), if it names any.
+///
+/// Read from the raw value, leniently: this command has no use for the rest of
+/// the cache configuration, so a cache block that is incomplete or does not
+/// decode never stops it, and no variable is named when the block does not
+/// say so plainly.
+fn remote_cache_credential_variables(project: &serde_json::Value) -> Vec<String> {
+    let Some(auth) = project.pointer("/cache/remote/auth") else {
+        return Vec::new();
+    };
+    let text = |pointer: &str| {
+        auth.pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+    };
+    [text("/bearerTokenEnv"), text("/header/valueEnv")]
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The project and the infrastructure the evaluation selected.
@@ -311,6 +323,8 @@ struct ProjectedTarget {
     declared_environments: Vec<String>,
     /// What the top level of `infrastructure` declares.
     top_level: TopLevel,
+    /// The variables the remote cache reads its credentials from.
+    remote_cache_credential_variables: Vec<String>,
 }
 
 fn project_target(
@@ -344,6 +358,12 @@ fn project_target(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("<unknown>")
         .to_owned();
+    // The cache block is only read for the variables it names; it is taken out
+    // before the project is decoded, so it cannot stop the command.
+    let remote_cache_credential_variables = remote_cache_credential_variables(&selected.value);
+    if let Some(project) = selected.value.as_object_mut() {
+        project.remove(CACHE_PATH);
+    }
     let project = selected.deserialize().map_err(CliError::from)?;
     // Ordinary Project decoding keeps infrastructure as raw JSON. Only this
     // command consumes it, decoding strictly just the selected configuration.
@@ -371,6 +391,7 @@ fn project_target(
         infrastructure,
         declared_environments,
         top_level,
+        remote_cache_credential_variables,
     })
 }
 

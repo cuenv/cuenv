@@ -2281,6 +2281,75 @@ infrastructure: {
     assert!(target.warnings.is_empty());
 }
 
+/// A project with infrastructure, a `dev`
+/// environment, and the given `cache` block.
+fn module_with_cache(cache: &str) -> tempfile::TempDir {
+    let module = module_directory();
+    write(module.path(), "cue.mod/module.cue", MODULE);
+    write(
+        module.path(),
+        "app/env.cue",
+        &format!(
+            "package cuenv\nname: \"app\"\n{cache}\ninfrastructure: {{\n\
+             \tstate: turso: url: \"http://127.0.0.1:8080\"\n\
+             \tproviders: random: {{source: \"hashicorp/random\", version: \"3.7.2\"}}\n\
+             \tresources: pet: {{type: \"random_pet\", configuration: length: 2}}\n\
+             \tenvironments: dev: {{\n\
+             \t\tproviders: random: {{source: \"hashicorp/random\", version: \"3.7.2\"}}\n\
+             \t\tresources: pet: {{type: \"random_pet\", configuration: length: 4}}\n\
+             \t}}\n\
+             }}\n"
+        ),
+    );
+    module
+}
+
+#[test]
+fn the_variables_the_remote_cache_reads_credentials_from_are_found_by_every_evaluation() {
+    let bearer = module_with_cache(
+        "cache: remote: {endpoint: \"grpcs://cache.example.com\", auth: bearerTokenEnv: \"CACHE_TOKEN\"}",
+    );
+    let project = bearer.path().join("app");
+    let names = |target: &evaluation::Target| target.remote_cache_credential_variables.clone();
+    let expected = vec!["CACHE_TOKEN".to_string()];
+    assert_eq!(
+        names(&evaluate_at(&project, NameCheck::TargetOnly).unwrap()),
+        expected
+    );
+    assert_eq!(
+        names(&evaluate_at_environment(&project, NameCheck::TargetOnly, Some("dev")).unwrap()),
+        expected
+    );
+    assert_eq!(names(&evaluate_state_only(&project, None)), expected);
+    assert_eq!(names(&evaluate_state_only(&project, Some("dev"))), expected);
+
+    let header = module_with_cache(
+        "cache: remote: {endpoint: \"grpcs://cache.example.com\", auth: header: {name: \"x-key\", valueEnv: \"CACHE_KEY\"}}",
+    );
+    assert_eq!(
+        names(&evaluate_at(&header.path().join("app"), NameCheck::TargetOnly).unwrap()),
+        vec!["CACHE_KEY".to_string()]
+    );
+}
+
+#[test]
+fn a_cache_block_that_is_not_a_complete_cache_never_stops_an_infrastructure_command() {
+    // Neither an incomplete endpoint nor a field the cache schema does not
+    // know belongs to this command; the credential variables are still found.
+    let incomplete = module_with_cache(
+        "cache: remote: {endpoint: string, upload: \"maybe\", auth: bearerTokenEnv: \"CACHE_TOKEN\", unknown: 1}",
+    );
+    let project = incomplete.path().join("app");
+    let target = evaluate_at(&project, NameCheck::TargetOnly).unwrap();
+    assert_eq!(target.remote_cache_credential_variables, ["CACHE_TOKEN"]);
+    let target = evaluate_state_only(&project, None);
+    assert_eq!(target.remote_cache_credential_variables, ["CACHE_TOKEN"]);
+    // A cache without credentials names no variable.
+    let plain = module_with_cache("cache: remote: endpoint: \"grpcs://cache.example.com\"");
+    let target = evaluate_at(&plain.path().join("app"), NameCheck::TargetOnly).unwrap();
+    assert!(target.remote_cache_credential_variables.is_empty());
+}
+
 #[test]
 fn state_only_evaluation_tolerates_an_undeclared_environment() {
     let module = module_with_environments(TopLevelResources::Declared);

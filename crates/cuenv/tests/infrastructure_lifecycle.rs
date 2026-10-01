@@ -30,6 +30,8 @@ const PET_LENGTH: &str = "length:    2";
 const SECRET_VARIABLE: &str = "DEPLOY_TOKEN";
 const SECRET_VALUE: &str = "lifecycle-secret-4f9c2d71-never-printed";
 const RECORDED_SECRET: &str = "recorded-secret";
+const CACHE_TOKEN_VARIABLE: &str = "LIFECYCLE_CACHE_TOKEN";
+const CACHE_TOKEN_VALUE: &str = "lifecycle-cache-token-7b1e90-never-passed";
 
 fn write_executable(path: &Path, contents: &str) -> TestResult {
     use std::os::unix::fs::PermissionsExt;
@@ -177,6 +179,54 @@ infrastructure: {{
         Self::from_configuration(directory, configuration, backend)
     }
 
+    /// A project whose remote cache reads its credentials from
+    /// `CACHE_TOKEN_VARIABLE`, with a provider that records what it was given
+    /// for that variable.
+    fn with_remote_cache(
+        provider: &Path,
+        backend: &TursoConfiguration,
+        project: &str,
+    ) -> TestResult<Self> {
+        let directory = prepare_directory()?;
+        let wrapper = directory.path().join("provider-wrapper.sh");
+        write_executable(
+            &wrapper,
+            &format!(
+                "#!/bin/sh\nprintf '%s' \"${{{CACHE_TOKEN_VARIABLE}-unset}}\" > '{}'\nexec '{}' \"$@\"\n",
+                directory.path().join(RECORDED_SECRET).display(),
+                provider.display(),
+            ),
+        )?;
+        let configuration = format!(
+            r#"package examples
+
+import "github.com/cuenv/cuenv/schema"
+
+schema.#Project
+
+name: {project}
+
+cache: remote: {{
+	endpoint: "grpcs://cache.example.com"
+	auth: bearerTokenEnv: "{CACHE_TOKEN_VARIABLE}"
+}}
+
+infrastructure: {{
+	state: turso: url: {url}
+	providers: random: {{source: "hashicorp/random", path: {wrapper}}}
+	resources: pet: {{
+		type: "random_pet"
+		configuration: {{length: 2, separator: "-"}}
+	}}
+}}
+"#,
+            project = serde_json::to_string(project)?,
+            url = serde_json::to_string(&backend.url)?,
+            wrapper = serde_json::to_string(&wrapper)?,
+        );
+        Self::from_configuration(directory, configuration, backend)
+    }
+
     fn recorded_secret(&self) -> TestResult<String> {
         Ok(fs::read_to_string(
             self.directory.path().join(RECORDED_SECRET),
@@ -184,7 +234,7 @@ infrastructure: {{
     }
 
     /// Run the CLI and record everything it printed.
-    fn execute(&self, arguments: &[&str]) -> TestResult<Output> {
+    fn execute(&self, arguments: &[&str], environment: &[(&str, &str)]) -> TestResult<Output> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_cuenv"));
         command
             .env_clear()
@@ -206,6 +256,7 @@ infrastructure: {{
         if let Some(token) = &self.authentication_token {
             command.env("TURSO_AUTH_TOKEN", token);
         }
+        command.envs(environment.iter().copied());
         // The CLI loads the platform's root certificates even for a plain-HTTP
         // state server; sandboxed builds provide them only through these variables.
         for variable in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
@@ -223,7 +274,16 @@ infrastructure: {{
     }
 
     fn run(&self, arguments: &[&str]) -> TestResult<Value> {
-        let output = self.execute(arguments)?;
+        self.run_with_environment(arguments, &[])
+    }
+
+    /// Run the CLI with extra variables in its environment and expect success.
+    fn run_with_environment(
+        &self,
+        arguments: &[&str],
+        environment: &[(&str, &str)],
+    ) -> TestResult<Value> {
+        let output = self.execute(arguments, environment)?;
         assert!(
             output.status.success(),
             "cuenv infrastructure {} exited {}: {}{}",
@@ -241,7 +301,7 @@ infrastructure: {{
     /// Run a command that must be refused as a configuration error (exit code
     /// 2) and return everything it printed.
     fn refused(&self, arguments: &[&str]) -> TestResult<String> {
-        let output = self.execute(arguments)?;
+        let output = self.execute(arguments, &[])?;
         let printed = format!(
             "{}{}",
             String::from_utf8_lossy(&output.stdout),
@@ -538,5 +598,36 @@ async fn a_run_without_env_cannot_claim_what_an_environment_records() -> TestRes
     lifecycle.run(&["destroy", "--env", "dev", "--yes"])?;
     assert!(store.list(&unselected).await?.is_empty());
     assert!(store.list(&dev).await?.is_empty());
+    Ok(())
+}
+
+/// The variable the project's `cache.remote.auth` names holds the remote
+/// cache's credential: a provider (which inherits the rest of the environment)
+/// must not receive it, and no output may contain it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a real Random provider and Turso/sqld; see module documentation"]
+async fn the_remote_cache_credential_never_reaches_a_provider() -> TestResult {
+    let provider = PathBuf::from(std::env::var("CUENV_INFRASTRUCTURE_TEST_RANDOM_PROVIDER")?)
+        .canonicalize()?;
+    let backend = TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    };
+    let project = format!("random-cache-token-{}", uuid::Uuid::new_v4());
+    let lifecycle = Lifecycle::with_remote_cache(&provider, &backend, &project)?;
+    let environment = [(CACHE_TOKEN_VARIABLE, CACHE_TOKEN_VALUE)];
+
+    let created = lifecycle.run_with_environment(&["apply", "--yes"], &environment)?;
+    assert_eq!(created["applied"]["create"], 1);
+    assert_eq!(
+        lifecycle.recorded_secret()?,
+        "unset",
+        "the provider received the remote cache credential"
+    );
+    lifecycle.run_with_environment(&["destroy", "--yes"], &environment)?;
+    assert!(
+        !lifecycle.transcript()?.contains(CACHE_TOKEN_VALUE),
+        "the remote cache credential appeared in CLI output"
+    );
     Ok(())
 }
