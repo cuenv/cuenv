@@ -120,9 +120,8 @@ impl Lifecycle {
     /// records the secret it was given, and an `env.environment.dev` exec
     /// secret released to that provider by `allowInfrastructure`.
     ///
-    /// The variable carries an explicit `#EnvironmentVariableWithPolicies`
-    /// annotation: at ba11c96 the bare `{value, policies}` form does not
-    /// deserialise as an `EnvValue` inside a named `env.environment` overlay.
+    /// The variable uses the bare `{value, policies}` form the documentation
+    /// teaches, so this test also proves that form reaches a provider.
     fn with_environment_secret(
         provider: &Path,
         backend: &TursoConfiguration,
@@ -154,7 +153,7 @@ schema.#Project
 
 name: {project}
 
-env: environment: dev: {SECRET_VARIABLE}: schema.#EnvironmentVariableWithPolicies & {{
+env: environment: dev: {SECRET_VARIABLE}: {{
 	value: schema.#ExecSecret & {{command: {command}}}
 	policies: [{{allowInfrastructure: ["plan", "apply", "destroy"]}}]
 }}
