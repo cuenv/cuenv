@@ -253,8 +253,9 @@ impl fmt::Debug for LaunchOptions<'_> {
     }
 }
 
-/// Variables an isolated provider still inherits from the host: the ones
-/// any process needs to find its tools and home directory, reach the network
+/// Variables an isolated provider still inherits from the host.
+///
+/// These are the ones any process needs to find its tools and home directory, reach the network
 /// through the host's proxy and trust the host's certificate authorities.
 /// `TMPDIR` is listed for completeness; cuenv always sets its own.
 pub const ISOLATED_INHERITED_ENVIRONMENT_VARIABLES: &[&str] = &[
@@ -275,8 +276,9 @@ pub const ISOLATED_INHERITED_ENVIRONMENT_VARIABLES: &[&str] = &[
     "SSL_CERT_DIR",
 ];
 
-/// The host variable names an isolated provider must not inherit: every name
-/// in `ambient` that is neither on the
+/// The host variable names an isolated provider must not inherit.
+///
+/// That is every name in `ambient` that is neither on the
 /// [`ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`] allowlist nor passed by the
 /// project (`provided`, which reaches the provider through
 /// [`LaunchOptions::provider_environment_variables`]). Pass the result as
@@ -333,8 +335,9 @@ pub type LogRedactor = fn(&str) -> String;
 
 static LOG_REDACTOR: OnceLock<LogRedactor> = OnceLock::new();
 
-/// Install the function that replaces secrets in text read from providers
-/// (their log lines and their error messages). The command that owns the
+/// Install the function that replaces secrets in text read from providers.
+///
+/// It applies to their log lines and their error messages. The command that owns the
 /// secret registry installs it once at startup; the first installation wins.
 ///
 /// Provider text is redacted before control characters are stripped: a
@@ -1201,9 +1204,7 @@ mod tests {
 
     /// The environment a provider launched with these options would see.
     #[cfg(unix)]
-    async fn provider_visible_environment(
-        options: &LaunchOptions<'_>,
-    ) -> BTreeMap<String, String> {
+    async fn provider_visible_environment(options: &LaunchOptions<'_>) -> BTreeMap<String, String> {
         let mut command = Command::new("/usr/bin/env");
         configure_provider_environment(&mut command, options, Path::new("/tmp/provider-test"));
         let output = command.output().await.unwrap();
@@ -1282,10 +1283,8 @@ mod tests {
         let cancellation = Cancellation::default();
         let variables = BTreeMap::from([("PROJECT_VALUE".to_string(), "kept".to_string())]);
         let provided: Vec<String> = variables.keys().cloned().collect();
-        let withheld = isolated_withheld_names(
-            std::env::vars_os().map(|(name, _)| name),
-            &provided,
-        );
+        let withheld =
+            isolated_withheld_names(std::env::vars_os().map(|(name, _)| name), &provided);
         let environment = provider_visible_environment(&LaunchOptions {
             binary: Path::new("/usr/bin/env"),
             withheld_environment_variables: &withheld,
@@ -1325,8 +1324,8 @@ mod tests {
             std::io::Cursor::new(line),
             log.clone(),
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         let rendered = log.render();
         assert!(!rendered.contains("SECRET"), "{rendered}");
         assert!(!rendered.contains("VALUE"), "{rendered}");

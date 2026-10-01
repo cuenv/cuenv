@@ -197,7 +197,8 @@ infrastructure: {
             .project_environment
             .as_ref()
             .unwrap()
-            .for_environment("dev")["BASE"].to_string_value(),
+            .for_environment("dev")["BASE"]
+            .to_string_value(),
         "development"
     );
     assert!(
@@ -848,10 +849,6 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
         InfrastructureAction::Unlock {
             lock_identifier: None,
         },
-        // Naming a lock when none is held shows that and succeeds.
-        InfrastructureAction::Unlock {
-            lock_identifier: Some("stale".to_string()),
-        },
         InfrastructureAction::State(StateAction::Recover {
             overrides: RecoverOverrides::default(),
         }),
@@ -862,6 +859,18 @@ async fn reads_never_create_or_upgrade_tables_and_take_no_lock() {
     }
     // The last result: nothing to recover, without a lock.
     assert_eq!(harness.result()["recovered"], serde_json::json!([]));
+
+    // Naming a lock when none is held is an error (it matched nothing), and
+    // still reads only.
+    let error = harness
+        .run(InfrastructureAction::Unlock {
+            lock_identifier: Some("stale".to_string()),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(exit_code_for(&error), EXIT_CLI);
+    assert_eq!(harness.migrations(), 0);
+    assert_eq!(harness.acquisitions(), 0);
 }
 
 #[tokio::test]
@@ -1552,7 +1561,7 @@ async fn an_invalid_state_url_fails_before_any_secret_resolver_runs_for_every_ac
             address: "random_pet.pet".to_string(),
         }),
         InfrastructureAction::State(StateAction::Recover {
-            overwrite: RecoverOverwrite::IfUnchanged,
+            overrides: RecoverOverrides::default(),
         }),
         InfrastructureAction::State(StateAction::Adopt),
         InfrastructureAction::Unlock {
@@ -1655,7 +1664,9 @@ fn a_project_with_top_level_resources_still_runs_without_env() {
 #[tokio::test]
 async fn a_named_environment_without_state_is_refused_while_the_unselected_identity_has_state() {
     let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
-    harness.seed(&["random_pet.pet", "random_id.id"], None).await;
+    harness
+        .seed(&["random_pet.pet", "random_id.id"], None)
+        .await;
     let named = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();
     let siblings = Siblings {
         unselected_tenant: harness.tenant.clone(),
@@ -1722,7 +1733,11 @@ fn an_unknown_environment_lists_the_declared_names_and_escapes_the_typed_one() {
         text.contains("no infrastructure environment named 'stage'"),
         "{text}"
     );
-    assert!(text.contains("declared environments: dev, prod"), "{text}");
+    assert!(
+        text.to_lowercase()
+            .contains("declared environments: dev, prod"),
+        "{text}"
+    );
     assert!(
         text.contains("not inherited"),
         "top-level is not inherited: {text}"
@@ -1823,6 +1838,7 @@ fn state_changed() -> InfrastructureError {
         address: "random_pet.pet".to_string(),
         expected: "1".to_string(),
         found: "2".to_string(),
+        file: None,
     }
 }
 
@@ -1995,8 +2011,8 @@ async fn showing_the_lock_without_env_mentions_locks_in_declared_environments() 
     );
 }
 
-#[test]
-fn recovering_without_env_mentions_pending_changes_of_declared_environments() {
+#[tokio::test]
+async fn recovering_without_env_mentions_pending_changes_of_declared_environments() {
     let harness = Harness::new(OutputFormat::Text, Script::Line("yes"));
     let unrecorded = UnrecordedStore::at(harness.directory.path().join("unrecorded"));
     let dev = TenantKey::with_environment("example.com/infrastructure", "app", "dev").unwrap();

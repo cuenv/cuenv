@@ -43,7 +43,7 @@ use self::evaluation::{NameCheck, Needs, Target, TargetRequest};
 use self::interrupts::{HeldLock, Interrupts};
 use self::invocation::Invocation;
 use self::output::{Adoption, Converged, Finish, LockOutcome, LockReport, Output};
-use self::provider_environment::{ProviderEnvironment, ProviderEnvironmentInputs};
+use self::provider_environment::ProviderEnvironmentInputs;
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus, OutputFormat};
 
 /// Whether an operator must confirm before changes are applied.
@@ -466,10 +466,7 @@ fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), CliError> {
 /// `--env`, so such a run would act on the no-flag identity: it would plan
 /// to delete whatever is recorded there, or report "no changes" and leave
 /// the operator thinking an environment was converged.
-fn refuse_unselected_environment(
-    target: &Target,
-    invocation: &Invocation,
-) -> Result<(), CliError> {
+fn refuse_unselected_environment(target: &Target, invocation: &Invocation) -> Result<(), CliError> {
     if target.environment.is_some()
         || target.declared_environments.is_empty()
         || !target.infrastructure.resources.is_empty()
@@ -541,11 +538,8 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
             "environment variable {token_variable} is restricted from infrastructure action {policy_name}"
         )));
     }
-    let environment_to_resolve = environment_variables_for_action(
-        action,
-        &project_environment_variables,
-        &token_variable,
-    );
+    let environment_to_resolve =
+        environment_variables_for_action(action, &project_environment_variables, &token_variable);
     let (resolved_variables, secret_values) =
         resolve_environment_variables(policy_name, &environment_to_resolve).await?;
     // Register before connecting to state or launching providers so their
@@ -564,9 +558,7 @@ async fn resolve(action: &InfrastructureAction, target: &Target) -> Result<Resol
     let provided: Vec<String> = provider_environment_variables.keys().cloned().collect();
     let withheld_environment_variables = if action.uses_provider_environment() {
         provider_environment::withheld_environment_variables(&ProviderEnvironmentInputs {
-            // TODO(m5-integration): read the selected configuration's
-            // `provider_environment` here once the manifest has the field.
-            mode: ProviderEnvironment::default(),
+            mode: target.provider_environment,
             ambient: std::env::vars_os().map(|(name, _)| name).collect(),
             provided: &provided,
             policy_withheld: &policy_withheld,
@@ -738,7 +730,6 @@ async fn refuse_unmoved_state(context: &CommandContext<'_>) -> Result<(), CliErr
 fn tenant_label(tenant: &TenantKey) -> String {
     evaluation::escape_control_characters(&tenant.to_string())
 }
-
 
 /// Refuse a prompt that cannot be answered before evaluating anything.
 fn refuse_unconfirmable(
@@ -1484,7 +1475,10 @@ async fn converge(convergence: &Convergence<'_>, inputs: EngineInputs) -> Result
     let planning = &mut engine;
     let result = under_lock(context, output::operation_name(mode), |lock| async move {
         claim_ownership(context, &lock).await?;
-        let plan = planning.plan(mode).await.map_err(|error| failure(&error, context.invocation))?;
+        let plan = planning
+            .plan(mode)
+            .await
+            .map_err(|error| failure(&error, context.invocation))?;
         context.output.preview(&plan);
         if plan.has_work() && convergence.confirmation == ConfirmationPolicy::Prompt {
             confirm(mode, context).await?;
@@ -1561,10 +1555,7 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
             reported_deleted_not_recreated.push(address.to_string());
         }
         ApplyEvent::Warning(warning) => {
-            emit_stderr!(format!(
-                "warning: {}",
-                printable_text(&warning)
-            ));
+            emit_stderr!(format!("warning: {}", printable_text(&warning)));
         }
     };
     let applied = engine

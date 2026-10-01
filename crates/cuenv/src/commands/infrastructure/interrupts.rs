@@ -536,8 +536,8 @@ mod tests {
     fn a_forced_exit_during_acquisition_names_the_lock_it_may_hold() {
         let error = forced_exit_error(
             &ForcedExit {
-            recordings: Recordings::Finished,
-            lock: ExitLock::MaybeAcquired("abc".to_string()),
+                recordings: Recordings::Finished,
+                lock: ExitLock::MaybeAcquired("abc".to_string()),
             },
             &Invocation::default(),
         );
@@ -566,8 +566,8 @@ mod tests {
     fn a_forced_exit_never_claims_an_unreleased_lock_was_released() {
         let not_released = forced_exit_error(
             &ForcedExit {
-            recordings: Recordings::StillWriting,
-            lock: ExitLock::NotReleased("abc".to_string()),
+                recordings: Recordings::StillWriting,
+                lock: ExitLock::NotReleased("abc".to_string()),
             },
             &Invocation::default(),
         );
@@ -581,8 +581,8 @@ mod tests {
 
         let released = forced_exit_error(
             &ForcedExit {
-            recordings: Recordings::Finished,
-            lock: ExitLock::Released("abc".to_string()),
+                recordings: Recordings::Finished,
+                lock: ExitLock::Released("abc".to_string()),
             },
             &Invocation::default(),
         );
@@ -590,8 +590,8 @@ mod tests {
 
         let unlocked = forced_exit_error(
             &ForcedExit {
-            recordings: Recordings::Finished,
-            lock: ExitLock::None,
+                recordings: Recordings::Finished,
+                lock: ExitLock::None,
             },
             &Invocation::default(),
         );

@@ -193,7 +193,7 @@ pub(crate) mod test_support {
     // Use a mutex to ensure tests don't interfere with each other
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-    pub(crate) fn with_clean_registry<F, R>(f: F) -> R
+    pub fn with_clean_registry<F, R>(f: F) -> R
     where
         F: FnOnce() -> R,
     {

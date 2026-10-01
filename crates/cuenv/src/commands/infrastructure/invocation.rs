@@ -58,17 +58,17 @@ impl Invocation {
     /// run's environment and project, for a hint to print.
     #[must_use]
     pub(super) fn command(&self, subcommand: &str) -> String {
-        let mut command = format!("cuenv infrastructure {subcommand}");
+        let mut words = vec![format!("cuenv infrastructure {subcommand}")];
         if let Some(environment) = &self.environment {
-            command.push_str(&format!(" --env {}", quote_argument(environment)));
+            words.push(format!("--env {}", quote_argument(environment)));
         }
         if self.path != DEFAULT_PATH {
-            command.push_str(&format!(" -p {}", quote_argument(&self.path)));
+            words.push(format!("-p {}", quote_argument(&self.path)));
         }
         if self.package != DEFAULT_PACKAGE {
-            command.push_str(&format!(" --package {}", quote_argument(&self.package)));
+            words.push(format!("--package {}", quote_argument(&self.package)));
         }
-        command
+        words.join(" ")
     }
 }
 

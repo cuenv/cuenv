@@ -237,9 +237,15 @@ mod tests {
             assert!(!json.contains("VVVV"), "{json}");
             assert!(!json.contains("QQQQ"), "{json}");
             let parsed: serde_json::Value = serde_json::from_str(json.trim_end()).unwrap();
-            assert_eq!(parsed["category"]["data"]["data"]["content"], "a *_* b *_* c");
+            assert_eq!(
+                parsed["category"]["data"]["data"]["content"],
+                "a *_* b *_* c"
+            );
             let pretty = JsonRenderer::pretty().render_to_string(&event).unwrap();
-            assert!(!pretty.contains("VVVV") && !pretty.contains("QQQQ"), "{pretty}");
+            assert!(
+                !pretty.contains("VVVV") && !pretty.contains("QQQQ"),
+                "{pretty}"
+            );
         });
     }
 

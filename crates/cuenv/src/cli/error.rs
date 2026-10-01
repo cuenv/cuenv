@@ -461,10 +461,12 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
     }
 }
 
-/// The JSON error envelope of an error: `code`, `message`, `help` when there
-/// is help text, `lockIdentifier` and `lockReleased` when an infrastructure
-/// error concerns a state lock, and `deletedNotRecreated` (the addresses)
-/// when a failed apply left replacements deleted and not recreated.
+/// The JSON error envelope of an error.
+///
+/// It holds `code`, `message`, `help` when there is help text,
+/// `lockIdentifier` and `lockReleased` when an infrastructure error concerns
+/// a state lock, and `deletedNotRecreated` (the addresses) when a failed
+/// apply left replacements deleted and not recreated.
 ///
 /// Every string in it is redacted as a string (never as serialized text,
 /// where a secret that JSON escapes would not be found).

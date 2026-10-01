@@ -128,7 +128,6 @@ impl Output {
     }
 
     /// The format the command reports in.
-    #[must_use]
     pub(super) const fn format(&self) -> OutputFormat {
         self.format
     }
@@ -282,12 +281,12 @@ impl Output {
                 "{} had no owner; {owner} now owns its state.",
                 tenant_label(adoption.tenant)
             )),
-            Some(previous) if previous.instance == adoption.owner.instance => emit_stdout!(
-                format!(
+            Some(previous) if previous.instance == adoption.owner.instance => {
+                emit_stdout!(format!(
                     "{owner} already owns the state of {}.",
                     tenant_label(adoption.tenant)
-                )
-            ),
+                ));
+            }
             Some(previous) => emit_stdout!(format!(
                 "Ownership of {} moved from {} (since {}) to {owner}.",
                 tenant_label(adoption.tenant),
@@ -429,7 +428,10 @@ fn warnings(plan: &Plan) {
 }
 
 fn render_plan_text(plan: &Plan) {
-    emit_stdout!(format!("cuenv infrastructure: {}", tenant_label(&plan.tenant)));
+    emit_stdout!(format!(
+        "cuenv infrastructure: {}",
+        tenant_label(&plan.tenant)
+    ));
     if plan.has_work() {
         emit_stdout!(cuenv_infrastructure::render_plan(plan));
     } else {

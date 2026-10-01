@@ -23,11 +23,11 @@ use cuenv_secrets::RESOLVER_CREDENTIAL_ENVIRONMENT_VARIABLES;
 /// TODO(m5-integration): this is a local stand-in for
 /// `cuenv_manifest::manifest::ProviderEnvironment`, the type of
 /// `infrastructure.providerEnvironment` (and of the same field on each
-/// environment configuration) that the schema worker adds. Delete this enum,
-/// import that one, and read the selected configuration's
-/// `provider_environment` where [`super::run`] now passes
-/// `ProviderEnvironment::default()`; the variants and their meaning are the
-/// same.
+/// environment configuration) that the schema worker adds. Until the
+/// manifest decodes it, `evaluation::take_provider_environment` reads the
+/// field from the raw configuration. Delete this enum, import that one and
+/// that function, and read the selected configuration's
+/// `provider_environment`; the variants and their meaning are the same.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum ProviderEnvironment {
     /// The ambient environment, minus the credentials of cuenv's own secret
@@ -99,9 +99,14 @@ mod tests {
     ) -> ProviderEnvironmentInputs<'inputs> {
         ProviderEnvironmentInputs {
             mode,
-            ambient: ["PATH", "HOME", "AWS_SECRET_ACCESS_KEY", "OP_SERVICE_ACCOUNT_TOKEN"]
-                .map(OsString::from)
-                .to_vec(),
+            ambient: [
+                "PATH",
+                "HOME",
+                "AWS_SECRET_ACCESS_KEY",
+                "OP_SERVICE_ACCOUNT_TOKEN",
+            ]
+            .map(OsString::from)
+            .to_vec(),
             provided,
             policy_withheld,
             token_variable: "TURSO_AUTH_TOKEN",
@@ -111,11 +116,8 @@ mod tests {
     #[test]
     fn inherit_withholds_resolver_credentials_the_token_and_policy_names() {
         let policy = names(&["DENIED"]);
-        let withheld = withheld_environment_variables(&inputs(
-            ProviderEnvironment::Inherit,
-            &[],
-            &policy,
-        ));
+        let withheld =
+            withheld_environment_variables(&inputs(ProviderEnvironment::Inherit, &[], &policy));
         for name in [
             "OP_SERVICE_ACCOUNT_TOKEN",
             "INFISICAL_TOKEN",
@@ -137,7 +139,11 @@ mod tests {
         let withheld =
             withheld_environment_variables(&inputs(ProviderEnvironment::Inherit, &provided, &[]));
         assert!(!withheld.iter().any(|name| name == "VAULT_TOKEN"));
-        assert!(withheld.iter().any(|name| name == "OP_SERVICE_ACCOUNT_TOKEN"));
+        assert!(
+            withheld
+                .iter()
+                .any(|name| name == "OP_SERVICE_ACCOUNT_TOKEN")
+        );
     }
 
     #[test]
@@ -153,7 +159,11 @@ mod tests {
         let provided = names(&["AWS_SECRET_ACCESS_KEY"]);
         let withheld =
             withheld_environment_variables(&inputs(ProviderEnvironment::Isolated, &provided, &[]));
-        assert!(withheld.iter().any(|name| name == "OP_SERVICE_ACCOUNT_TOKEN"));
+        assert!(
+            withheld
+                .iter()
+                .any(|name| name == "OP_SERVICE_ACCOUNT_TOKEN")
+        );
         assert!(withheld.iter().any(|name| name == "TURSO_AUTH_TOKEN"));
         assert!(!withheld.iter().any(|name| name == "PATH" || name == "HOME"));
         assert!(
