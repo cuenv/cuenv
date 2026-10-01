@@ -1,6 +1,10 @@
 //! Error type for the infrastructure engine.
 
+use std::fmt;
+
 use thiserror::Error;
+
+use crate::state::ResourceAddress;
 
 /// Result alias for this crate.
 pub type Result<Success> = std::result::Result<Success, InfrastructureError>;
@@ -217,6 +221,16 @@ pub enum InfrastructureError {
     #[error("interrupted while planning; nothing was changed")]
     InterruptedWhilePlanning,
 
+    /// The plan was made with other provider environment variables than the
+    /// engine applying it has, so providers would behave differently.
+    #[error("the environment passed to providers changed after the plan was made; plan again")]
+    PlanEnvironmentChanged,
+
+    /// An apply could not finish every change. Changes that do not depend
+    /// on a failed change were still applied.
+    #[error("{0}")]
+    ApplyIncomplete(Box<IncompleteApply>),
+
     /// Input or output failure.
     #[error("{context}: {source}")]
     InputOutput {
@@ -226,6 +240,77 @@ pub enum InfrastructureError {
         #[source]
         source: std::io::Error,
     },
+}
+
+/// A change whose operation failed during an apply.
+#[derive(Debug)]
+pub struct ChangeFailure {
+    /// The resource.
+    pub address: ResourceAddress,
+    /// How it failed.
+    pub error: InfrastructureError,
+}
+
+/// What an apply that could not finish every change leaves behind.
+#[derive(Debug)]
+pub struct IncompleteApply {
+    /// The failed changes, in the order they failed; never empty.
+    pub failures: Vec<ChangeFailure>,
+    /// Changes not attempted because a change they depend on failed.
+    pub skipped: Vec<ResourceAddress>,
+    /// Replacements whose old object was deleted but whose new object was
+    /// not created. The next apply creates them.
+    pub deleted_not_recreated: Vec<ResourceAddress>,
+    /// Changes applied and recorded.
+    pub completed: usize,
+    /// Changes to real infrastructure the plan contained.
+    pub total: usize,
+}
+
+impl fmt::Display for IncompleteApply {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut failures = self.failures.iter();
+        if let Some(first) = failures.next() {
+            write!(formatter, "{}", first.error)?;
+        }
+        let further: Vec<&ChangeFailure> = failures.collect();
+        if !further.is_empty() {
+            write!(formatter, "\n{} more change(s) failed:", further.len())?;
+            for failure in further {
+                write!(formatter, "\n  {}: {}", failure.address, failure.error)?;
+            }
+        }
+        if !self.skipped.is_empty() {
+            write!(
+                formatter,
+                "\n{} change(s) were not attempted because a change they depend on failed: {}",
+                self.skipped.len(),
+                join_addresses(&self.skipped)
+            )?;
+        }
+        if !self.deleted_not_recreated.is_empty() {
+            write!(
+                formatter,
+                "\n{} replacement(s) were deleted but not recreated; the next apply creates \
+                 them: {}",
+                self.deleted_not_recreated.len(),
+                join_addresses(&self.deleted_not_recreated)
+            )?;
+        }
+        write!(
+            formatter,
+            "\napplied and recorded {} of {} changes",
+            self.completed, self.total
+        )
+    }
+}
+
+fn join_addresses(addresses: &[ResourceAddress]) -> String {
+    addresses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl InfrastructureError {

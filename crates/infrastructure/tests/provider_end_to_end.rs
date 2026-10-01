@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cuenv_infrastructure::{
-    Action, ApplyContext, Cancellation, ConditionalPut, EngineOptions, EngineSetup,
+    Action, ApplyContext, ApplyEvent, Cancellation, ConditionalPut, EngineOptions, EngineSetup,
     InfrastructureEngine, InfrastructureError, LockRequest, MemoryStateStore, OwnerClaim,
     OwnerClaimMode, Plan, PlanMode, PlanSummary, ProjectInstance, RecordVersion, StateLock,
     StateStore, TenantKey, TursoConfiguration, TursoStateStore,
@@ -209,11 +209,12 @@ async fn managed_resource_lifecycle() -> TestResult {
         mode: PlanMode::Apply,
     })
     .await?;
+    // Changes appear in the order apply runs them; unchanged resources last.
     assert_eq!(
         actions(&plan),
         vec![
-            ("random_pet.pet".to_string(), Action::NoOp),
             ("local_file.greeting".to_string(), Action::Replace),
+            ("random_pet.pet".to_string(), Action::NoOp),
         ]
     );
     assert_eq!(std::fs::read_to_string(&file)?, "world");
@@ -673,13 +674,14 @@ async fn fake_dependent_update_detaches_before_parent_replacement() -> TestResul
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the fake provider binary"]
-async fn fake_detachment_with_an_unavailable_new_prerequisite_fails_before_mutations() -> TestResult
-{
+async fn fake_detaching_while_attaching_a_new_resource_converges_in_order() -> TestResult {
+    // The detaching update needs a resource that does not exist yet. The
+    // schedule used to refuse this; it creates the new resource, detaches
+    // the dependent, then replaces the old parent.
     let fake = Fake::new().await?;
     fake.converge(&ordered_resources("old"), PlanMode::Apply)
         .await?
         .applied?;
-    let before = fake.store.list(&fake.tenant).await?;
     std::fs::write(fake.directory.path().join("journal.log"), "")?;
     let desired = json!({
         "parent": {"type": "fake_ordered", "configuration": {"name": "parent-replaced"}},
@@ -687,19 +689,27 @@ async fn fake_detachment_with_an_unavailable_new_prerequisite_fails_before_mutat
         "dependent": {"type": "fake_ordered", "dependsOn": ["new"],
             "configuration": {"name": "dependent-old", "parent_name": "parent-new"}},
     });
-    let error = fake
-        .converge(&desired, PlanMode::Apply)
-        .await?
-        .applied
-        .unwrap_err();
-    assert!(
-        matches!(error, InfrastructureError::Configuration(message) if message.contains("prerequisite"))
+    let run = fake.converge(&desired, PlanMode::Apply).await?;
+    assert_eq!(
+        actions(&run.plan),
+        vec![
+            ("fake_ordered.new".to_string(), Action::Create),
+            ("fake_ordered.dependent".to_string(), Action::Update),
+            ("fake_ordered.parent".to_string(), Action::Replace),
+        ]
     );
-    assert!(fake.journal().is_empty());
-    assert_eq!(fake.store.list(&fake.tenant).await?, before);
-    fake.converge(&ordered_resources("old"), PlanMode::Destroy)
-        .await?
-        .applied?;
+    run.applied?;
+    assert_eq!(
+        fake.journal().lines().collect::<Vec<_>>(),
+        vec![
+            "ordered: Create name=parent-new",
+            "ordered: Update name=dependent-old",
+            "ordered: Delete name=parent-old",
+            "ordered: Create name=parent-replaced",
+        ]
+    );
+    fake.converge(&desired, PlanMode::Destroy).await?.applied?;
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
     Ok(())
 }
 
@@ -726,7 +736,7 @@ async fn fake_failed_detachment_retains_old_edges_for_safe_destroy() -> TestResu
         .iter()
         .find(|row| row.address.name == "dependent")
         .ok_or("missing dependent")?;
-    assert_eq!(dependent.dependencies, vec!["parent"]);
+    assert_eq!(dependent.dependencies, vec!["fake_ordered.parent"]);
     assert_eq!(dependent.state["parent_name"], "parent-old");
     fake.clear_flag("fail-ordered-update")?;
     std::fs::write(fake.directory.path().join("journal.log"), "")?;
@@ -871,6 +881,7 @@ struct Fake {
 struct Converged {
     plan: Plan,
     applied: Result<PlanSummary, InfrastructureError>,
+    events: Vec<ApplyEvent>,
 }
 
 impl Fake {
@@ -943,10 +954,17 @@ impl Fake {
         let planned = engine.plan(mode).await;
         let converged = match planned {
             Ok(plan) => {
+                let mut events = Vec::new();
                 let applied = engine
-                    .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+                    .apply(&plan, ApplyContext { lock: &lock }, &mut |event| {
+                        events.push(event);
+                    })
                     .await;
-                Ok(Converged { plan, applied })
+                Ok(Converged {
+                    plan,
+                    applied,
+                    events,
+                })
             }
             Err(error) => Err(error),
         };
@@ -1410,12 +1428,8 @@ async fn fake_stop_between_the_halves_of_a_replacement_skips_the_create() -> Tes
     let lock = fake.store.lock(&fake.tenant, "fake").await?;
     let plan = engine.plan(PlanMode::Apply).await?;
     assert_eq!(plan.changes[0].action, Action::Replace);
-    let mut warnings = Vec::new();
-    let mut collect = |event| {
-        if let cuenv_infrastructure::ApplyEvent::Warning(warning) = event {
-            warnings.push(warning);
-        }
-    };
+    let mut events = Vec::new();
+    let mut collect = |event| events.push(event);
     let (applied, ()) = tokio::join!(
         engine.apply(&plan, ApplyContext { lock: &lock }, &mut collect),
         async {
@@ -1440,15 +1454,482 @@ async fn fake_stop_between_the_halves_of_a_replacement_skips_the_create() -> Tes
         "{journal}"
     );
     assert!(!journal.contains("repl: Create name=b"), "{journal}");
-    assert!(
-        warnings
-            .iter()
-            .any(|warning| warning.contains("replacement was not created")),
-        "{warnings:?}"
-    );
+    assert_eq!(uncreated_addresses(&events), ["fake_repl.thing"]);
     // The delete is recorded; the next apply creates the replacement.
     assert!(fake.store.list(&fake.tenant).await?.is_empty());
     fake.store.unlock(&fake.tenant, &lock).await?;
     engine.shutdown().await;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Apply order and failure semantics (fake_obj: real objects as files)
+// ---------------------------------------------------------------------------
+
+// The helpers between these markers use the error and event types that
+// report incomplete applies.
+// BEGIN INCOMPLETE APPLY API
+fn failed_addresses(error: &InfrastructureError) -> Vec<String> {
+    match error {
+        InfrastructureError::ApplyIncomplete(incomplete) => incomplete
+            .failures
+            .iter()
+            .map(|failure| failure.address.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn skipped_addresses(error: &InfrastructureError) -> Vec<String> {
+    match error {
+        InfrastructureError::ApplyIncomplete(incomplete) => {
+            incomplete.skipped.iter().map(ToString::to_string).collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn uncreated_in_error(error: &InfrastructureError) -> Vec<String> {
+    match error {
+        InfrastructureError::ApplyIncomplete(incomplete) => incomplete
+            .deleted_not_recreated
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn uncreated_addresses(events: &[ApplyEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            ApplyEvent::DeletedNotRecreated { address } => Some(address.to_string()),
+            _ => None,
+        })
+        .collect()
+}
+// END INCOMPLETE APPLY API
+
+fn obj(configuration: &serde_json::Value) -> serde_json::Value {
+    json!({"type": "fake_obj", "configuration": configuration})
+}
+
+fn obj_after(parent: &str, configuration: &serde_json::Value) -> serde_json::Value {
+    json!({"type": "fake_obj", "dependsOn": [parent], "configuration": configuration})
+}
+
+impl Fake {
+    /// The journal lines of the fake_obj operations that changed something.
+    fn changes(&self) -> Vec<String> {
+        self.journal()
+            .lines()
+            .filter(|line| {
+                ["obj: Create", "obj: Update", "obj: Delete"]
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix))
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn clear_journal(&self) -> TestResult {
+        std::fs::write(self.directory.path().join("journal.log"), "")?;
+        Ok(())
+    }
+
+    /// Whether the fake_obj object `key` exists.
+    fn exists(&self, key: &str) -> bool {
+        self.directory.path().join(format!("obj-{key}")).exists()
+    }
+
+    async fn addresses(&self) -> TestResult<Vec<String>> {
+        Ok(self
+            .store
+            .list(&self.tenant)
+            .await?
+            .into_iter()
+            .map(|row| row.address.to_string())
+            .collect())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_an_unrelated_failure_does_not_leave_a_replacement_destroyed() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "aaa": obj(&json!({"key": "aaa", "mode": "x"})),
+        "zzz": obj(&json!({"key": "zzz", "version": "1"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    fake.set_flag("fail-update-aaa")?;
+    let second = json!({
+        "aaa": obj(&json!({"key": "aaa", "mode": "y"})),
+        "zzz": obj(&json!({"key": "zzz", "version": "2"})),
+    });
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    let error = run.applied.expect_err("aaa's update fails");
+    // zzz does not depend on aaa: it was replaced and recreated.
+    assert!(fake.exists("zzz"), "zzz was destroyed and not recreated");
+    assert_eq!(fake.record("zzz").await?.state["version"], "2");
+    assert_eq!(fake.record("aaa").await?.state["mode"], "x");
+    assert_eq!(failed_addresses(&error), ["fake_obj.aaa"]);
+    assert!(uncreated_in_error(&error).is_empty());
+    assert!(uncreated_addresses(&run.events).is_empty());
+
+    fake.clear_flag("fail-update-aaa")?;
+    fake.converge(&second, PlanMode::Apply).await?.applied?;
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_failing_create_does_not_strand_another_replacement() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "aaa": obj(&json!({"key": "aaa", "version": "1"})),
+        "zzz": obj(&json!({"key": "zzz", "version": "1"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    fake.set_flag("fail-create-aaa")?;
+    let second = json!({
+        "aaa": obj(&json!({"key": "aaa", "version": "2"})),
+        "zzz": obj(&json!({"key": "zzz", "version": "2"})),
+    });
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    let error = run.applied.expect_err("aaa's create fails");
+    // zzz was replaced in full; aaa is reported as deleted but not recreated.
+    assert!(fake.exists("zzz"), "zzz was destroyed and not recreated");
+    assert_eq!(fake.record("zzz").await?.state["version"], "2");
+    assert!(!fake.exists("aaa"));
+    assert_eq!(failed_addresses(&error), ["fake_obj.aaa"]);
+    assert_eq!(uncreated_in_error(&error), ["fake_obj.aaa"]);
+    assert_eq!(uncreated_addresses(&run.events), ["fake_obj.aaa"]);
+
+    // The next apply creates what is missing.
+    fake.clear_flag("fail-create-aaa")?;
+    fake.converge(&second, PlanMode::Apply).await?.applied?;
+    assert!(fake.exists("aaa"));
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_replacement_whose_prerequisite_failed_keeps_its_old_object() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(
+        &json!({"r": obj(&json!({"key": "R", "version": "1"}))}),
+        PlanMode::Apply,
+    )
+    .await?
+    .applied?;
+    fake.clear_journal()?;
+    fake.set_flag("fail-create-P2")?;
+    let second = json!({
+        "p2": obj(&json!({"key": "P2"})),
+        "r": obj_after("p2", &json!({"key": "R", "version": "2", "parent": "P2"})),
+    });
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    let error = run.applied.expect_err("p2's create fails");
+    // R's replacement needs P2, which failed: R is neither deleted nor
+    // replaced.
+    assert!(
+        fake.exists("R"),
+        "R was destroyed although its create could not run"
+    );
+    assert_eq!(fake.record("r").await?.state["version"], "1");
+    assert!(
+        !fake.changes().iter().any(|line| line.contains("key=R")),
+        "{:?}",
+        fake.changes()
+    );
+    assert_eq!(failed_addresses(&error), ["fake_obj.p2"]);
+    assert_eq!(skipped_addresses(&error), ["fake_obj.r"]);
+    assert!(uncreated_in_error(&error).is_empty());
+
+    fake.clear_flag("fail-create-P2")?;
+    fake.converge(&second, PlanMode::Apply).await?.applied?;
+    assert_eq!(fake.record("r").await?.state["version"], "2");
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_renaming_a_key_with_the_same_identity_deletes_the_old_object_first() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&json!({"old": obj(&json!({"key": "K"}))}), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.clear_journal()?;
+    let renamed = json!({"new": obj(&json!({"key": "K"}))});
+    let run = fake.converge(&renamed, PlanMode::Apply).await?;
+    // The preview is the order of events: the orphan goes first.
+    assert_eq!(
+        actions(&run.plan),
+        vec![
+            ("fake_obj.old".to_string(), Action::Delete),
+            ("fake_obj.new".to_string(), Action::Create),
+        ]
+    );
+    run.applied?;
+    let changes = fake.changes();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(changes[0].starts_with("obj: Delete key=K"), "{changes:?}");
+    assert!(changes[1].starts_with("obj: Create key=K"), "{changes:?}");
+    assert!(fake.exists("K"));
+    assert_eq!(fake.addresses().await?, ["fake_obj.new"]);
+    assert!(
+        !fake
+            .converge(&renamed, PlanMode::Apply)
+            .await?
+            .plan
+            .has_work()
+    );
+    fake.converge(&renamed, PlanMode::Destroy).await?.applied?;
+    assert!(!fake.exists("K"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_removed_child_is_deleted_before_its_parent_is_updated() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "p": obj(&json!({"key": "P"})),
+        "c": obj_after("p", &json!({"key": "C", "parent": "P"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    // The update to "solo" needs a parent without children.
+    let second = json!({"p": obj(&json!({"key": "P", "mode": "solo"}))});
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    assert_eq!(
+        actions(&run.plan),
+        vec![
+            ("fake_obj.c".to_string(), Action::Delete),
+            ("fake_obj.p".to_string(), Action::Update),
+        ]
+    );
+    run.applied?;
+    let changes = fake.changes();
+    assert_eq!(changes.len(), 2, "{changes:?}");
+    assert!(changes[0].starts_with("obj: Delete key=C"), "{changes:?}");
+    assert!(changes[1].starts_with("obj: Update key=P"), "{changes:?}");
+    assert_eq!(fake.addresses().await?, ["fake_obj.p"]);
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_vanished_object_is_recreated_under_the_same_generation() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({"a": obj(&json!({"key": "A"}))});
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    let before = fake.record("a").await?;
+    std::fs::remove_file(fake.directory.path().join("obj-A"))?;
+    let run = fake.converge(&first, PlanMode::Apply).await?;
+    assert_eq!(
+        actions(&run.plan),
+        vec![("fake_obj.a".to_string(), Action::Create)]
+    );
+    run.applied?;
+    let recreated = fake.record("a").await?;
+    // The record is the same insertion, rewritten once more.
+    assert_eq!(recreated.generation, before.generation);
+    assert_eq!(recreated.serial, before.serial + 1);
+    // A replacement removes the record and inserts a new one.
+    let second = json!({"a": obj(&json!({"key": "A", "version": "2"}))});
+    fake.converge(&second, PlanMode::Apply).await?.applied?;
+    assert_ne!(fake.record("a").await?.generation, before.generation);
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_replacement_delete_is_sent_the_changes_private_data() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "p": obj(&json!({"key": "P", "version": "1"})),
+        "c": obj_after("p", &json!({"key": "C", "parent": "P"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    fake.clear_journal()?;
+    // `p` is replaced and its dependent `c` removed.
+    let second = json!({"p": obj(&json!({"key": "P", "version": "2"}))});
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    assert_eq!(
+        actions(&run.plan),
+        vec![
+            ("fake_obj.c".to_string(), Action::Delete),
+            ("fake_obj.p".to_string(), Action::Replace),
+        ]
+    );
+    run.applied?;
+    assert_eq!(
+        fake.changes(),
+        vec![
+            // A plain delete is sent its destroy plan's private data.
+            r#"obj: Delete key=C private="planned-destroy-C""#.to_string(),
+            // The delete half of a replacement is sent the private data of
+            // the change, which is the create plan's (version 2), not the
+            // data refreshed from the old object (version 1).
+            r#"obj: Delete key=P private="planned-create-P-v2""#.to_string(),
+            "obj: Create key=P parent=".to_string(),
+        ]
+    );
+    fake.converge(&second, PlanMode::Destroy).await?.applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_type_change_does_not_create_a_false_dependency_cycle() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "x": obj_after("y", &json!({"key": "X"})),
+        "y": obj(&json!({"key": "Y"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    // A child of X blocks its deletion once.
+    std::fs::write(
+        fake.directory.path().join("obj-blocker"),
+        br#"{"parent":"X","mode":""}"#,
+    )?;
+    // `x` becomes another type (a new address; the old record is an orphan)
+    // and `y` now depends on the new `x`.
+    let second = json!({
+        "x": {"type": "fake_obj2", "configuration": {"key": "X2"}},
+        "y": {"type": "fake_obj", "dependsOn": ["x"], "configuration": {"key": "Y"}},
+    });
+    let run = fake.converge(&second, PlanMode::Apply).await?;
+    let error = run.applied.expect_err("the old x cannot be deleted yet");
+    assert_eq!(failed_addresses(&error), ["fake_obj.x"]);
+    // Dependencies are stored as full addresses, so the two records named x
+    // stay distinct.
+    assert_eq!(fake.record("y").await?.dependencies, ["fake_obj2.x"]);
+    std::fs::remove_file(fake.directory.path().join("obj-blocker"))?;
+    // With bare names this destroy saw a cycle between "x" and "y".
+    fake.converge(&json!({}), PlanMode::Destroy)
+        .await?
+        .applied?;
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert!(!fake.exists("X") && !fake.exists("X2") && !fake.exists("Y"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider (CUENV_INFRASTRUCTURE_TEST_FAKE_PROVIDER)"]
+async fn fake_a_dependency_cycle_in_state_is_refused_while_planning() -> TestResult {
+    let fake = Fake::new().await?;
+    let first = json!({
+        "a": obj(&json!({"key": "A"})),
+        "b": obj(&json!({"key": "B"})),
+    });
+    fake.converge(&first, PlanMode::Apply).await?.applied?;
+    // Damage the stored dependencies so that each depends on the other.
+    let lock = fake.store.lock(&fake.tenant, "damage").await?;
+    for (name, dependency) in [("a", "fake_obj.b"), ("b", "fake_obj.a")] {
+        let mut row = fake.record(name).await?;
+        row.dependencies = vec![dependency.to_string()];
+        fake.store.put(&fake.tenant, &lock, &row).await?;
+    }
+    fake.store.unlock(&fake.tenant, &lock).await?;
+    fake.clear_journal()?;
+
+    // Planning refuses, naming the operations, before anyone confirms
+    // anything and before any provider changes anything.
+    let error = fake
+        .plan(&json!({}))
+        .await
+        .expect_err("a cycle has no safe order")
+        .to_string();
+    assert!(error.contains("cycle"), "{error}");
+    assert!(error.contains("delete fake_obj.a"), "{error}");
+    assert!(error.contains("delete fake_obj.b"), "{error}");
+    assert!(fake.changes().is_empty());
+    assert!(fake.exists("A") && fake.exists("B"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the local provider (CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER)"]
+async fn local_file_rename_keeps_the_file_both_resources_manage() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let store = store().await?;
+    let run = uuid::Uuid::new_v4().to_string();
+    let tenant = TenantKey::new(format!("example.com/local-rename-{run}"), "web")?;
+    let file = directory.path().join("greeting.txt");
+    let resources = |name: &str| {
+        json!({name: {"type": "local_file", "configuration": {
+            "filename": file.to_string_lossy(),
+            "content": "hi",
+        }}})
+    };
+    let converge = |resources: serde_json::Value, mode: PlanMode| {
+        let store = Arc::clone(&store);
+        let tenant = tenant.clone();
+        let project = directory.path().to_path_buf();
+        async move {
+            let infrastructure: Infrastructure = serde_json::from_value(json!({
+                "state": {"turso": {"url": "http://unused"}},
+                "providers": {"local": {
+                    "source": "hashicorp/local",
+                    "path": environment_path("CUENV_INFRASTRUCTURE_TEST_LOCAL_PROVIDER")?,
+                }},
+                "resources": resources,
+            }))?;
+            let mut engine = InfrastructureEngine::new(EngineSetup {
+                tenant: tenant.clone(),
+                store: Arc::clone(&store),
+                infrastructure,
+                options: engine_options(&project, &Cancellation::default()),
+            });
+            let lock = store.lock(&tenant, "local rename").await?;
+            let plan = engine.plan(mode).await?;
+            let applied = engine
+                .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+                .await;
+            store.unlock(&tenant, &lock).await?;
+            engine.shutdown().await;
+            TestResult::Ok(Converged {
+                plan,
+                applied,
+                events: Vec::new(),
+            })
+        }
+    };
+    converge(resources("old"), PlanMode::Apply).await?.applied?;
+    assert_eq!(std::fs::read_to_string(&file)?, "hi");
+
+    // Same file, new key: the old resource is deleted before the new one is
+    // created, so the file the two share still exists afterwards.
+    let renamed = converge(resources("new"), PlanMode::Apply).await?;
+    assert_eq!(
+        actions(&renamed.plan),
+        vec![
+            ("local_file.old".to_string(), Action::Delete),
+            ("local_file.new".to_string(), Action::Create),
+        ]
+    );
+    renamed.applied?;
+    assert!(file.exists(), "the rename deleted the file it manages");
+    assert_eq!(std::fs::read_to_string(&file)?, "hi");
+    let rows = store.list(&tenant).await?;
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.address.to_string())
+            .collect::<Vec<_>>(),
+        ["local_file.new"]
+    );
+    converge(json!({}), PlanMode::Destroy).await?.applied?;
+    assert!(!file.exists());
     Ok(())
 }

@@ -11,11 +11,19 @@
 //!    a destroy-then-create replacement. Deletes are planned too
 //!    (`PlanResourceChange` with null configuration) for providers with the
 //!    `plan_destroy` capability, which may refuse them.
-//! 3. **Apply**: `ApplyResourceChange` with the planned state, persisting
+//! 3. **Order**: the plan's changes become one dependency graph of
+//!    operations (see the `schedule` module): a replacement is a delete and
+//!    a create, with the edges of Terraform's `DestroyEdgeTransformer`. The
+//!    graph is built, and refused when it has a cycle, while planning, and
+//!    the plan lists its changes in the order apply runs them.
+//! 4. **Apply**: `ApplyResourceChange` with the planned state, persisting
 //!    the provider's new state (or deleting the record) after every
-//!    resource so a failed run never loses track of what exists. A create
+//!    operation so a failed run never loses track of what exists. A create
 //!    or update result must be a valid completion of its plan (Terraform's
 //!    `AssertObjectCompatible`); an inconsistent create is recorded tainted.
+//!    When a provider fails an operation, the operations that depend on it
+//!    are skipped and the others still run; replacements whose old object
+//!    was deleted but whose new object was not created are reported.
 //!
 //! Values travel to providers as MessagePack. A provider's own MessagePack
 //! bytes (refreshed and planned states) are passed back verbatim so
@@ -25,13 +33,16 @@
 //!
 //! What it deliberately does not do yet: references between resources
 //! (values known only after apply), data sources, imports, saved plans,
-//! or parallel applies. Ordering comes from explicit `dependsOn`.
+//! or parallel applies. Ordering comes from explicit `dependsOn` (and the
+//! dependencies recorded in state); `create_before_destroy` is not
+//! supported: a replacement is always destroy, then create.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use async_trait::async_trait;
 use cuenv_manifest::manifest::{
     Infrastructure, InfrastructureProvider, ManagedResourceDeclaration,
 };
@@ -39,15 +50,13 @@ use sha2::{Digest, Sha256};
 
 use crate::cancellation::Cancellation;
 use crate::error::{
-    InfrastructureError, Result, failure_category, json_error_category,
+    IncompleteApply, InfrastructureError, Result, failure_category, json_error_category,
     strip_control_characters_except_newlines,
 };
 use crate::object_change::{PlanProblem, PlanValues, compatibility_problems, plan_problems};
 use crate::plugin::{ApplyRequest, LaunchOptions, PlanRequest, ProviderClient};
 use crate::protocol::{self, Diagnostic, Severity};
-use crate::registry::{
-    ProviderInstaller, ProviderSource, default_cache_directory, validate_version,
-};
+use crate::registry::{ProviderInstaller, ProviderSource, default_cache_directory};
 use crate::schema::{Block, ProviderSchema, Schema};
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
@@ -55,6 +64,14 @@ use crate::state::{
 use crate::tenant::TenantKey;
 use crate::type_system::{self, PathStep, Type, Value};
 use crate::unrecorded::UnrecordedStore;
+
+mod schedule;
+mod validation;
+
+use schedule::{ApplyOperation, OperationKind, Schedule, ScheduleRun};
+use validation::ConfigurationScope;
+
+pub use validation::validate_configuration;
 
 /// MessagePack encoding of null, used for absent prior/planned states.
 const NULL_MESSAGE_PACK: [u8; 1] = [0xc0];
@@ -171,6 +188,8 @@ pub struct ResourceChange {
     pub sensitive: Vec<String>,
     /// Attribute paths forcing replacement.
     pub requires_replace: Vec<String>,
+    /// The resources this one is configured to depend on, as full
+    /// `type.name` addresses; recorded with the resource.
     dependencies: Vec<String>,
     steps: Vec<ApplyStep>,
     /// For [`Action::Refresh`]: the refreshed record apply writes.
@@ -200,9 +219,12 @@ impl ResourceChange {
 pub struct Plan {
     /// Tenant the plan belongs to.
     pub tenant: TenantKey,
-    /// Changes in desired dependency order followed by reverse-order orphan
-    /// deletes. Apply schedules replacement deletes and their removed
-    /// dependents before converging desired resources.
+    /// Changes in the order apply runs them: the order in which each change
+    /// first appears in the apply schedule, so a preview is the order of
+    /// events. A replacement appears where its delete runs and finishes
+    /// where its create runs, which can be later; unchanged resources come
+    /// last. The schedule is computed, and refused when no safe order
+    /// exists, while planning.
     pub changes: Vec<ResourceChange>,
     /// Provider warnings collected while planning.
     pub warnings: Vec<String>,
@@ -423,6 +445,29 @@ pub enum ApplyEvent {
     },
     /// A provider warning.
     Warning(String),
+    /// A change failed. Changes that do not depend on it still run; the
+    /// ones that do are reported as [`ApplyEvent::Skipped`].
+    Failed {
+        /// Resource address.
+        address: ResourceAddress,
+        /// Action that failed.
+        action: Action,
+    },
+    /// A change was not attempted because a change it depends on failed.
+    Skipped {
+        /// Resource address.
+        address: ResourceAddress,
+        /// Action that was not attempted.
+        action: Action,
+    },
+    /// A replacement's old object was deleted, and its new object was not
+    /// created, because the create failed or could not run, or the run
+    /// stopped between the two. The next apply creates it. Emitted on every
+    /// way an apply can end early.
+    DeletedNotRecreated {
+        /// Resource address.
+        address: ResourceAddress,
+    },
 }
 
 /// What an apply needs besides the plan.
@@ -546,7 +591,41 @@ impl fmt::Debug for InfrastructureEngine {
 struct ResourcePlanInput<'input> {
     name: &'input str,
     declaration: &'input ManagedResourceDeclaration,
+    /// The resources it depends on, as full `type.name` addresses.
+    dependencies: Vec<String>,
     stored: Option<&'input ManagedResource>,
+}
+
+/// The addresses of the resources a declaration depends on.
+fn full_dependencies(
+    declared: &BTreeMap<String, ManagedResourceDeclaration>,
+    declaration: &ManagedResourceDeclaration,
+) -> Result<Vec<String>> {
+    declaration
+        .depends_on
+        .iter()
+        .map(|name| {
+            declared
+                .get(name)
+                .map(|dependency| ResourceAddress::new(&dependency.resource_type, name).to_string())
+                .ok_or_else(|| {
+                    InfrastructureError::configuration(format!(
+                        "dependency on unknown resource '{name}'"
+                    ))
+                })
+        })
+        .collect()
+}
+
+/// Put the changes in the order apply runs them, refusing changes that no
+/// order can apply.
+fn in_schedule_order(changes: Vec<ResourceChange>) -> Result<Vec<ResourceChange>> {
+    let order = Schedule::build(&changes)?.change_order;
+    let mut slots: Vec<Option<ResourceChange>> = changes.into_iter().map(Some).collect();
+    Ok(order
+        .into_iter()
+        .filter_map(|index| slots[index].take())
+        .collect())
 }
 
 impl InfrastructureEngine {
@@ -560,6 +639,12 @@ impl InfrastructureEngine {
             options: setup.options,
             providers: BTreeMap::new(),
         }
+    }
+
+    /// Where in the `infrastructure` block this engine's configuration
+    /// lives, for naming the field a message is about.
+    fn scope(&self) -> ConfigurationScope<'_> {
+        ConfigurationScope::new(self.tenant.environment())
     }
 
     /// The interruption this engine's providers are registered with.
@@ -603,7 +688,7 @@ impl InfrastructureEngine {
     #[tracing::instrument(skip(self), fields(tenant = %self.tenant))]
     pub async fn plan(&mut self, mode: PlanMode) -> Result<Plan> {
         self.ensure_not_stopped()?;
-        validate_configuration(&self.infrastructure)?;
+        validate_configuration(&self.infrastructure, self.tenant.environment())?;
         let unrecorded = self.unrecorded_store()?;
         let pending = unrecorded.list(&self.tenant)?;
         if !pending.is_empty() {
@@ -655,22 +740,14 @@ impl InfrastructureEngine {
             .map(|(name, declaration)| ResourceAddress::new(&declaration.resource_type, name))
             .collect();
 
-        // Orphans (and everything, when destroying) are deleted first, in
-        // reverse dependency order.
-        let orphans: Vec<&ManagedResource> = stored
+        // Orphans (and everything, when destroying) are deleted; the schedule
+        // below puts every change in its place.
+        for row in stored
             .values()
             .filter(|resource| !declared_addresses.contains(&resource.address))
-            .collect();
-        let mut orphan_order = topological_order(&orphan_graph(&orphans))?;
-        orphan_order.reverse();
-        for address in orphan_order {
-            if let Some(row) = orphans
-                .iter()
-                .find(|orphan| orphan.address.to_string() == address)
-            {
-                self.ensure_not_stopped()?;
-                changes.push(self.plan_delete(row, &mut warnings).await?);
-            }
+        {
+            self.ensure_not_stopped()?;
+            changes.push(self.plan_delete(row, &mut warnings).await?);
         }
 
         for name in order {
@@ -682,11 +759,15 @@ impl InfrastructureEngine {
             let input = ResourcePlanInput {
                 name: &name,
                 declaration,
+                dependencies: full_dependencies(&declared, declaration)?,
                 stored: stored.get(&address),
             };
             changes.push(self.plan_resource(&input, &mut warnings).await?);
         }
 
+        // Order, and refuse an impossible order, now: before anyone is asked
+        // to confirm the plan.
+        let changes = in_schedule_order(changes)?;
         Ok(Plan {
             tenant: self.tenant.clone(),
             changes,
@@ -705,17 +786,31 @@ impl InfrastructureEngine {
     /// may hold the lock from before planning until after applying (so the
     /// plan cannot go stale), or plan first and lock only to apply.
     ///
-    /// State is persisted after every resource and every write is fenced by
-    /// the lock. Refreshed records of unchanged resources are written too.
-    /// [`Cancellation::stop`] is honoured between resources and between the
-    /// delete and the create of a replacement; an operation in flight when
-    /// it arrives is still recorded.
+    /// Operations run in the order of one dependency graph (see the
+    /// `schedule` module): a replacement is a delete followed, as soon as
+    /// its prerequisites allow, by a create. State is persisted after every
+    /// operation and every write is fenced by the lock. Refreshed records of
+    /// unchanged resources are written too. [`Cancellation::stop`] is
+    /// honoured between operations, including between the delete and the
+    /// create of a replacement; an operation in flight when it arrives is
+    /// still recorded.
+    ///
+    /// When a provider fails an operation, everything that depends on it is
+    /// skipped, a replacement whose create can no longer run is not started,
+    /// and every other operation still runs. Every replacement whose old
+    /// object was deleted but whose new object was not created is reported
+    /// through [`ApplyEvent::DeletedNotRecreated`], on every way the run can
+    /// end early.
     ///
     /// # Errors
     ///
-    /// Returns [`InfrastructureError::PlanOutdated`] for a stale plan, the
-    /// first provider or state store failure,
-    /// [`InfrastructureError::UnrecordedChange`] or
+    /// Returns [`InfrastructureError::PlanOutdated`] for a stale plan,
+    /// [`InfrastructureError::PlanEnvironmentChanged`] when the provider
+    /// environment differs from the one the plan was made with,
+    /// [`InfrastructureError::ApplyIncomplete`] when providers failed some
+    /// changes (it lists the failures, the skipped changes and the
+    /// replacements deleted but not recreated), the first state store
+    /// failure, [`InfrastructureError::UnrecordedChange`] or
     /// [`InfrastructureError::UnrecordedChangeLost`] when a provider change
     /// could not be recorded, or [`InfrastructureError::Interrupted`].
     #[tracing::instrument(skip_all, fields(tenant = %self.tenant))]
@@ -730,70 +825,141 @@ impl InfrastructureEngine {
                 "plan belongs to a different tenant",
             ));
         }
+        if plan.environment_identity
+            != environment_identity(&self.options.provider_environment_variables)
+        {
+            return Err(InfrastructureError::PlanEnvironmentChanged);
+        }
         self.require_current(plan).await?;
         for warning in &plan.warnings {
             on_event(ApplyEvent::Warning(warning.clone()));
         }
-        let mut progress = Progress {
-            completed: 0,
-            total: plan
-                .changes
-                .iter()
-                .filter(|change| change.action.changes_infrastructure())
-                .count(),
+        let this: &Self = self;
+        this.converge(
+            this,
+            Convergence {
+                plan,
+                lock: context.lock,
+                on_event,
+            },
+        )
+        .await
+    }
+
+    /// Run a plan's schedule with `runner` and sum up how it went.
+    async fn converge(
+        &self,
+        runner: &(impl OperationRunner + Sync),
+        convergence: Convergence<'_>,
+    ) -> Result<PlanSummary> {
+        let Convergence {
+            plan,
+            lock,
+            on_event,
+        } = convergence;
+        let schedule = Schedule::build(&plan.changes)?;
+        let total = plan
+            .changes
+            .iter()
+            .filter(|change| change.action.changes_infrastructure())
+            .count();
+        let mut execution = Execution {
+            run: ScheduleRun::new(&schedule),
+            progress: Progress {
+                completed: 0,
+                total,
+            },
+            lock,
+            on_event,
         };
-        let mut pending_replacements = BTreeSet::new();
-        for operation in apply_operations(plan)? {
-            let change = operation.change;
-            if self.cancellation().is_stop_requested() {
-                warn_uncreated_replacements(&pending_replacements, on_event);
-                return Err(progress.interrupted());
-            }
-            if let Some(record) = &change.refreshed_record
-                && change.action == Action::Refresh
-            {
-                self.store
-                    .put(&self.tenant, context.lock, record)
-                    .await
-                    .map_err(|error| naming_address(error, &change.address))?;
-                on_event(ApplyEvent::Refreshed {
-                    address: change.address.clone(),
-                });
+        if let Err(error) = self.execute(runner, &mut execution).await {
+            execution.run.abandon(execution.on_event);
+            return Err(error);
+        }
+        if execution.run.has_failures() {
+            execution.run.report_uncreated(execution.on_event);
+            return Err(InfrastructureError::ApplyIncomplete(Box::new(
+                IncompleteApply {
+                    deleted_not_recreated: execution.run.deleted_not_recreated(),
+                    failures: execution.run.take_failures(),
+                    skipped: execution.run.take_skipped(),
+                    completed: execution.progress.completed,
+                    total,
+                },
+            )));
+        }
+        Ok(plan.summary())
+    }
+
+    /// Run the operations of a schedule in order. A provider failure of one
+    /// operation skips the operations that depend on it and the rest carry
+    /// on; anything else (an interrupt, a state store failure, a lost
+    /// provider connection) ends the run at once.
+    async fn execute(
+        &self,
+        runner: &(impl OperationRunner + Sync),
+        execution: &mut Execution<'_, '_, '_>,
+    ) -> Result<()> {
+        let schedule = execution.run.schedule();
+        for (index, scheduled) in schedule.operations.iter().enumerate() {
+            if execution.run.is_skipped(index) {
                 continue;
             }
-            // A replacement begins during destruction and finishes only after
-            // its creation. The phases may have other resources between them.
-            if !pending_replacements.contains(&change.address) {
-                on_event(ApplyEvent::Started {
+            let operation = &scheduled.operation;
+            let change = operation.change;
+            if self.cancellation().is_stop_requested() {
+                return Err(execution.progress.interrupted());
+            }
+            if operation.kind == OperationKind::Refresh
+                && let Some(record) = &change.refreshed_record
+            {
+                self.store
+                    .put(&self.tenant, execution.lock, record)
+                    .await
+                    .map_err(|error| naming_address(error, &change.address))?;
+                (execution.on_event)(ApplyEvent::Refreshed {
+                    address: change.address.clone(),
+                });
+                execution.run.finished(index);
+                continue;
+            }
+            // A replacement starts with its delete and finishes with its
+            // create, which may be some operations later.
+            if operation.starts_change() {
+                (execution.on_event)(ApplyEvent::Started {
                     address: change.address.clone(),
                     action: change.action,
                 });
             }
-            if let Err(error) = self
-                .apply_operation(&operation, context.lock, on_event)
-                .await
-            {
-                return Err(self.interrupted_or(
-                    error,
-                    InterruptedOperation {
-                        address: &change.address,
-                        progress,
-                        on_event,
-                    },
-                ));
-            }
-            if !operation.completes_change {
-                pending_replacements.insert(change.address.clone());
+            let outcome = runner
+                .run_operation(operation, execution.lock, execution.on_event)
+                .await;
+            let Err(failure) = outcome else {
+                execution.run.finished(index);
+                if operation.completes_change() {
+                    execution.progress.completed += 1;
+                    (execution.on_event)(ApplyEvent::Finished {
+                        address: change.address.clone(),
+                        action: change.action,
+                    });
+                }
                 continue;
+            };
+            let continues = failure.continues();
+            let error = self.interrupted_or(
+                failure.into_error(),
+                InterruptedOperation {
+                    address: &change.address,
+                    progress: execution.progress,
+                    on_event: execution.on_event,
+                },
+            );
+            if !continues || self.cancellation().is_stop_requested() {
+                return Err(error);
             }
-            pending_replacements.remove(&change.address);
-            progress.completed += 1;
-            on_event(ApplyEvent::Finished {
-                address: change.address.clone(),
-                action: change.action,
-            });
+            execution.run.failed(index, error, execution.on_event);
         }
-        Ok(plan.summary())
+        Ok(())
     }
 
     /// Refuse a plan whose view of stored state no longer matches the store.
@@ -869,7 +1035,7 @@ impl InfrastructureEngine {
         operation: &ApplyOperation<'_>,
         lock: &StateLock,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
-    ) -> Result<()> {
+    ) -> std::result::Result<(), OperationFailure> {
         let change = operation.change;
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
@@ -974,13 +1140,18 @@ impl InfrastructureEngine {
                 .await?;
             }
 
+            // The change is recorded, so a failure the provider reported
+            // concerns this change alone and the run can go on without it.
             let mut warnings = Vec::new();
-            check_diagnostics(&context, &response.diagnostics, &mut warnings)?;
+            check_diagnostics(&context, &response.diagnostics, &mut warnings)
+                .map_err(OperationFailure::Continue)?;
             for warning in warnings {
                 on_event(ApplyEvent::Warning(warning));
             }
             if let Some(problem) = problem {
-                return Err(InfrastructureError::plugin(problem));
+                return Err(OperationFailure::Continue(InfrastructureError::plugin(
+                    problem,
+                )));
             }
         }
 
@@ -1044,12 +1215,14 @@ impl InfrastructureEngine {
         let declaration = input.declaration;
         let provider_name = declaration.provider_name().to_string();
         let address = ResourceAddress::new(&declaration.resource_type, input.name);
+        let declared_at = format!("{}.{}", self.scope().resources(), input.name);
         self.ensure_provider(&provider_name, warnings).await?;
         let provider = self.loaded(&provider_name)?;
         if let Some(row) = input.stored {
             require_same_source(row, provider)?;
         }
-        let schema = resource_schema(provider, &provider_name, &declaration.resource_type)?;
+        let schema = resource_schema(provider, &provider_name, &declaration.resource_type)
+            .map_err(|error| validation::at_path(error, &format!("{declared_at}.type")))?;
         let block = &schema.block;
         let value_type = block.implied_type();
 
@@ -1083,7 +1256,7 @@ impl InfrastructureEngine {
             after: Value::Null,
             sensitive: block.sensitive_attributes(),
             requires_replace: Vec::new(),
-            dependencies: declaration.depends_on.clone(),
+            dependencies: input.dependencies.clone(),
             steps: Vec::new(),
             refreshed_record: None,
             stored: input.stored.cloned(),
@@ -1112,10 +1285,9 @@ impl InfrastructureEngine {
             ));
             change.action = Action::Replace;
             change.requires_replace.push("(tainted)".to_string());
-            change.steps.push(delete_step(&prior));
             let (planned, step) = plan_create(&create, Vec::new(), warnings).await?;
             change.after = planned;
-            change.steps.push(step);
+            change.steps = replacement_steps(&prior, step);
             return Ok(change);
         }
 
@@ -1194,10 +1366,9 @@ impl InfrastructureEngine {
 
         change.action = Action::Replace;
         change.requires_replace = requires_replace;
-        change.steps.push(delete_step(&prior));
         let (planned, step) = plan_create(&create, response.planned_private, warnings).await?;
         change.after = planned;
-        change.steps.push(step);
+        change.steps = replacement_steps(&prior, step);
         Ok(change)
     }
 
@@ -1210,8 +1381,10 @@ impl InfrastructureEngine {
             .await
             .map_err(|error| {
                 InfrastructureError::configuration(format!(
-                    "cannot delete {}: provider '{}' is unavailable ({error}); keep it in infrastructure.providers until its resources are gone",
-                    row.address, row.provider
+                    "cannot delete {}: provider '{}' is unavailable ({error}); keep it in {} until its resources are gone",
+                    row.address,
+                    row.provider,
+                    self.scope().providers()
                 ))
             })?;
         let provider = self.loaded(&row.provider)?;
@@ -1268,8 +1441,11 @@ impl InfrastructureEngine {
             .get(name)
             .cloned()
             .ok_or_else(|| {
+                let scope = self.scope();
                 InfrastructureError::configuration(format!(
-                    "provider '{name}' is not declared in infrastructure.providers"
+                    "provider '{name}' is not declared in {}{}",
+                    scope.providers(),
+                    scope.inheritance_note()
                 ))
             })?;
         let source = ProviderSource::parse(&declaration.source)?;
@@ -1333,10 +1509,16 @@ impl InfrastructureEngine {
         declaration: &InfrastructureProvider,
         source: &ProviderSource,
     ) -> Result<PathBuf> {
+        let declared_at = format!("{}.{name}", self.scope().providers());
         if let Some(path) = &declaration.path {
+            if path.is_empty() {
+                return Err(InfrastructureError::configuration(format!(
+                    "{declared_at}.path: must not be empty"
+                )));
+            }
             if declaration.version.is_some() {
                 return Err(InfrastructureError::configuration(format!(
-                    "provider '{name}' sets both `path` and `version`; choose one"
+                    "{declared_at}: provider '{name}' sets both `path` and `version`; set exactly one"
                 )));
             }
             let path = Path::new(path);
@@ -1348,7 +1530,7 @@ impl InfrastructureEngine {
         }
         let version = declaration.version.as_deref().ok_or_else(|| {
             InfrastructureError::configuration(format!(
-                "provider '{name}' needs an exact `version` (or a local `path`)"
+                "{declared_at}: provider '{name}' needs an exact `version` (or a local `path`); set exactly one"
             ))
         })?;
         let cache = self
@@ -1397,12 +1579,72 @@ impl Progress {
     }
 }
 
-/// One phase of a resource change, borrowing the exact provider plan bytes.
-struct ApplyOperation<'plan> {
-    change: &'plan ResourceChange,
-    steps: &'plan [ApplyStep],
-    expected: RecordVersion,
-    completes_change: bool,
+/// What [`InfrastructureEngine::converge`] runs.
+struct Convergence<'apply> {
+    plan: &'apply Plan,
+    lock: &'apply StateLock,
+    on_event: &'apply mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+/// Runs the operations of a schedule. The engine is the only runner outside
+/// tests.
+#[async_trait]
+trait OperationRunner {
+    async fn run_operation(
+        &self,
+        operation: &ApplyOperation<'_>,
+        lock: &StateLock,
+        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+    ) -> std::result::Result<(), OperationFailure>;
+}
+
+#[async_trait]
+impl OperationRunner for InfrastructureEngine {
+    async fn run_operation(
+        &self,
+        operation: &ApplyOperation<'_>,
+        lock: &StateLock,
+        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+    ) -> std::result::Result<(), OperationFailure> {
+        self.apply_operation(operation, lock, on_event).await
+    }
+}
+
+/// An apply in progress: where it stands in its schedule, how far it got,
+/// and what it writes to.
+struct Execution<'run, 'schedule, 'plan> {
+    run: ScheduleRun<'schedule, 'plan>,
+    progress: Progress,
+    lock: &'run StateLock,
+    on_event: &'run mut (dyn FnMut(ApplyEvent) + Send),
+}
+
+/// How one operation failed.
+#[derive(Debug)]
+enum OperationFailure {
+    /// The provider reported the failure and the operation was recorded as
+    /// far as it got: the rest of the run does not depend on it.
+    Continue(InfrastructureError),
+    /// The run cannot go on: the outcome is unknown, or recording failed.
+    Abort(InfrastructureError),
+}
+
+impl OperationFailure {
+    const fn continues(&self) -> bool {
+        matches!(self, Self::Continue(_))
+    }
+
+    fn into_error(self) -> InfrastructureError {
+        match self {
+            Self::Continue(error) | Self::Abort(error) => error,
+        }
+    }
+}
+
+impl From<InfrastructureError> for OperationFailure {
+    fn from(error: InfrastructureError) -> Self {
+        Self::Abort(error)
+    }
 }
 
 /// A create over a remotely missing object updates its existing record;
@@ -1412,213 +1654,6 @@ fn write_generation(expected: RecordVersion) -> uuid::Uuid {
         RecordVersion::Generation { generation, .. } => generation,
         RecordVersion::Absent => uuid::Uuid::new_v4(),
         RecordVersion::Serial(_) => uuid::Uuid::nil(),
-    }
-}
-
-/// Destroy replacements and their removed dependents in reverse stored order,
-/// then converge desired resources forward. Other orphan deletes remain last,
-/// so an in-place update can detach a dependent before its parent is removed.
-fn apply_operations(plan: &Plan) -> Result<Vec<ApplyOperation<'_>>> {
-    for change in plan
-        .changes
-        .iter()
-        .filter(|change| change.action == Action::Replace)
-    {
-        if change.stored.is_none()
-            || change.steps.len() != 2
-            || change.steps[0].kind != StepKind::Delete
-            || change.steps[1].kind != StepKind::Create
-        {
-            return Err(InfrastructureError::configuration(format!(
-                "invalid replacement steps for {}",
-                change.address
-            )));
-        }
-    }
-    let deleted: Vec<&ManagedResource> = plan
-        .changes
-        .iter()
-        .filter(|change| matches!(change.action, Action::Delete | Action::Replace))
-        .filter_map(|change| change.stored.as_ref())
-        .collect();
-    let graph = orphan_graph(&deleted);
-    let mut early_deletions: BTreeSet<String> = plan
-        .changes
-        .iter()
-        .filter(|change| change.action == Action::Replace)
-        .map(|change| change.address.to_string())
-        .collect();
-    loop {
-        let dependents: Vec<String> = graph
-            .iter()
-            .filter(|(address, dependencies)| {
-                !early_deletions.contains(*address)
-                    && dependencies
-                        .iter()
-                        .any(|dependency| early_deletions.contains(dependency))
-            })
-            .map(|(address, _)| address.clone())
-            .collect();
-        if dependents.is_empty() {
-            break;
-        }
-        early_deletions.extend(dependents);
-    }
-    let mut order = topological_order(&graph)?;
-    order.reverse();
-    let mut operations = Vec::new();
-    let deleting_names: BTreeSet<&str> = plan
-        .changes
-        .iter()
-        .filter(|change| early_deletions.contains(&change.address.to_string()))
-        .map(|change| change.address.name.as_str())
-        .collect();
-    let mut detachment_updates: BTreeSet<ResourceAddress> = plan
-        .changes
-        .iter()
-        .filter(|change| {
-            change.action == Action::Update
-                && change.stored.as_ref().is_some_and(|stored| {
-                    stored.dependencies.iter().any(|dependency| {
-                        deleting_names.contains(dependency.as_str())
-                            && !change.dependencies.contains(dependency)
-                    })
-                })
-        })
-        .map(|change| change.address.clone())
-        .collect();
-    // Traverse every desired prerequisite, including unchanged nodes, before
-    // deciding whether the detachment phase can run without any new objects.
-    loop {
-        let prerequisites: Vec<ResourceAddress> = plan
-            .changes
-            .iter()
-            .filter(|change| {
-                !detachment_updates.contains(&change.address)
-                    && plan.changes.iter().any(|detachment| {
-                        detachment_updates.contains(&detachment.address)
-                            && detachment.dependencies.contains(&change.address.name)
-                    })
-            })
-            .map(|change| change.address.clone())
-            .collect();
-        if prerequisites.is_empty() {
-            break;
-        }
-        detachment_updates.extend(prerequisites);
-    }
-    let mut detachment_graph = BTreeMap::new();
-    for change in plan
-        .changes
-        .iter()
-        .filter(|change| detachment_updates.contains(&change.address))
-    {
-        if matches!(
-            change.action,
-            Action::Create | Action::Replace | Action::Delete
-        ) {
-            return Err(InfrastructureError::configuration(format!(
-                "cannot detach before replacement destruction: prerequisite {} must be created, replaced or deleted; apply the detachment separately",
-                change.address
-            )));
-        }
-        let dependencies = plan
-            .changes
-            .iter()
-            .filter(|dependency| change.dependencies.contains(&dependency.address.name))
-            .map(|dependency| dependency.address.to_string())
-            .collect();
-        detachment_graph.insert(change.address.to_string(), dependencies);
-    }
-    for address in topological_order(&detachment_graph)? {
-        let change = plan
-            .changes
-            .iter()
-            .find(|change| change.address.to_string() == address)
-            .ok_or_else(|| {
-                InfrastructureError::configuration("detachment prerequisite is absent")
-            })?;
-        if change.has_work() {
-            operations.push(ApplyOperation {
-                change,
-                steps: &change.steps,
-                expected: RecordVersion::of(change.stored.as_ref()),
-                completes_change: true,
-            });
-        }
-    }
-    for address in order
-        .iter()
-        .filter(|address| early_deletions.contains(*address))
-    {
-        let change = plan
-            .changes
-            .iter()
-            .find(|change| change.address.to_string() == *address)
-            .ok_or_else(|| {
-                InfrastructureError::configuration("planned deletion has no resource change")
-            })?;
-        let steps = if change.action == Action::Replace {
-            &change.steps[..1]
-        } else {
-            &change.steps
-        };
-        operations.push(ApplyOperation {
-            change,
-            steps,
-            expected: RecordVersion::of(change.stored.as_ref()),
-            completes_change: change.action != Action::Replace,
-        });
-    }
-    for change in plan.changes.iter().filter(|change| {
-        change.has_work()
-            && change.action != Action::Delete
-            && !detachment_updates.contains(&change.address)
-    }) {
-        operations.push(ApplyOperation {
-            change,
-            steps: if change.action == Action::Replace {
-                &change.steps[1..]
-            } else {
-                &change.steps
-            },
-            expected: if change.action == Action::Replace {
-                RecordVersion::Absent
-            } else {
-                RecordVersion::of(change.stored.as_ref())
-            },
-            completes_change: true,
-        });
-    }
-    for address in order
-        .iter()
-        .filter(|address| !early_deletions.contains(*address))
-    {
-        let change = plan
-            .changes
-            .iter()
-            .find(|change| change.address.to_string() == *address)
-            .ok_or_else(|| {
-                InfrastructureError::configuration("planned deletion has no resource change")
-            })?;
-        operations.push(ApplyOperation {
-            change,
-            steps: &change.steps,
-            expected: RecordVersion::of(change.stored.as_ref()),
-            completes_change: true,
-        });
-    }
-    Ok(operations)
-}
-
-fn warn_uncreated_replacements(
-    addresses: &BTreeSet<ResourceAddress>,
-    on_event: &mut (dyn FnMut(ApplyEvent) + Send),
-) {
-    for address in addresses {
-        on_event(ApplyEvent::Warning(format!(
-            "{address} was deleted but its replacement was not created because the run was interrupted; the next apply creates it",
-        )));
     }
 }
 
@@ -1752,6 +1787,15 @@ fn delete_step(prior: &Refreshed) -> ApplyStep {
         planned_private: prior.private.clone(),
         planned_value: Value::Null,
     }
+}
+
+/// The two steps of a replacement. As in Terraform, both halves carry the
+/// planned private data of the one change, which is the create plan's: the
+/// delete is not given the private data refreshed from the old object.
+fn replacement_steps(prior: &Refreshed, create: ApplyStep) -> Vec<ApplyStep> {
+    let mut delete = delete_step(prior);
+    delete.planned_private.clone_from(&create.planned_private);
+    vec![delete, create]
 }
 
 /// Inputs for [`plan_destroy`].
@@ -2069,25 +2113,6 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
     Severity::try_from(diagnostic.severity).map_or(true, |severity| severity != Severity::Warning)
 }
 
-/// Dependency graph over orphaned records, keyed by address. Dependencies
-/// on resources that remain declared don't constrain deletion order.
-fn orphan_graph(orphans: &[&ManagedResource]) -> BTreeMap<String, Vec<String>> {
-    orphans
-        .iter()
-        .map(|orphan| {
-            let dependencies = orphans
-                .iter()
-                .filter(|other| {
-                    other.address != orphan.address
-                        && orphan.dependencies.contains(&other.address.name)
-                })
-                .map(|other| other.address.to_string())
-                .collect();
-            (orphan.address.to_string(), dependencies)
-        })
-        .collect()
-}
-
 /// Render a diagnostic as a single human-readable string, without the
 /// control characters a provider could use to drive the terminal.
 fn render_diagnostic(diagnostic: &Diagnostic) -> String {
@@ -2143,64 +2168,6 @@ fn dependency_graph(
         .iter()
         .map(|(name, declaration)| (name.clone(), declaration.depends_on.clone()))
         .collect()
-}
-
-/// Validate every provider and resource declaration in the selected
-/// configuration.
-///
-/// CUE language v0.9 cannot express these cross-reference checks with the
-/// `error()` builtin, so the selected concrete configuration is checked here.
-/// Call this before resolving provider secrets or opening a state backend. The
-/// engine repeats the validation as defense in depth before planning.
-///
-/// # Errors
-///
-/// Returns an error for invalid provider sources or versions, resource
-/// references to undeclared providers, unknown dependencies, or dependency
-/// cycles.
-pub fn validate_configuration(infrastructure: &Infrastructure) -> Result<()> {
-    for (name, declaration) in &infrastructure.providers {
-        ProviderSource::parse(&declaration.source).map_err(|error| {
-            InfrastructureError::configuration(format!("provider '{name}': {error}"))
-        })?;
-
-        match (declaration.version.as_deref(), declaration.path.as_deref()) {
-            (Some(_), Some(_)) => {
-                return Err(InfrastructureError::configuration(format!(
-                    "provider '{name}' sets both `path` and `version`; choose one"
-                )));
-            }
-            (None, None) => {
-                return Err(InfrastructureError::configuration(format!(
-                    "provider '{name}' needs an exact `version` (or a local `path`)"
-                )));
-            }
-            (Some(version), None) => validate_version(version).map_err(|error| {
-                InfrastructureError::configuration(format!("provider '{name}': {error}"))
-            })?,
-            (None, Some(_)) => {}
-        }
-    }
-
-    for (name, declaration) in &infrastructure.resources {
-        let provider_name = declaration.provider_name();
-        if !infrastructure.providers.contains_key(provider_name) {
-            let detail = if declaration.provider.is_some() {
-                format!("no provider named '{provider_name}' in infrastructure.providers")
-            } else {
-                format!(
-                    "no provider named '{provider_name}' (the prefix of type '{}')",
-                    declaration.resource_type
-                )
-            };
-            return Err(InfrastructureError::configuration(format!(
-                "resource '{name}': {detail}"
-            )));
-        }
-    }
-
-    topological_order(&dependency_graph(&infrastructure.resources))?;
-    Ok(())
 }
 
 /// Order nodes so dependencies come first. Unknown dependencies are

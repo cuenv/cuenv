@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::MemoryStateStore;
+use async_trait::async_trait;
 use serde_json::json;
 
 fn graph(edges: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
@@ -53,17 +54,40 @@ fn record(resource_type: &str, name: &str, dependencies: &[&str]) -> ManagedReso
 }
 
 #[test]
-fn orphan_graph_keys_by_address_and_ignores_declared_dependencies() {
-    let pet = record("random_pet", "shared", &[]);
-    let identifier = record("random_id", "shared", &["shared", "still_declared"]);
-    let graph = orphan_graph(&[&pet, &identifier]);
-    assert_eq!(graph.len(), 2);
+fn dependencies_resolve_to_addresses_and_stay_distinct_across_types() {
+    // `x` was a `fake_obj` that depended on `y`; it became a `fake_obj2` and
+    // the old one's deletion failed, so both records exist, and `y` now
+    // depends on the new one. Bare names would make that a cycle.
+    let mut old_x = change(ResourceAddress::new("fake_obj", "x"), Action::Delete);
+    old_x.stored = Some(record("fake_obj", "x", &["fake_obj.y"]));
+    let mut new_x = change(ResourceAddress::new("fake_obj2", "x"), Action::Delete);
+    new_x.stored = Some(record("fake_obj2", "x", &[]));
+    let mut y = change(ResourceAddress::new("fake_obj", "y"), Action::Delete);
+    y.stored = Some(record("fake_obj", "y", &["fake_obj2.x"]));
+    let changes = [old_x, new_x, y];
+    let schedule = Schedule::build(&changes).unwrap();
     assert_eq!(
-        graph["random_id.shared"],
-        vec!["random_pet.shared".to_string()]
+        operation_labels(&schedule),
+        vec![
+            "delete fake_obj.x",
+            "delete fake_obj.y",
+            "delete fake_obj2.x"
+        ]
     );
-    assert!(graph["random_pet.shared"].is_empty());
-    assert!(topological_order(&graph).is_ok());
+}
+
+#[test]
+fn bare_stored_dependencies_resolve_against_the_stored_records() {
+    let mut child = change(ResourceAddress::new("random_id", "child"), Action::Delete);
+    child.stored = Some(record("random_id", "child", &["parent", "gone"]));
+    let mut parent = change(ResourceAddress::new("random_pet", "parent"), Action::Delete);
+    parent.stored = Some(record("random_pet", "parent", &[]));
+    let changes = [parent, child];
+    let schedule = Schedule::build(&changes).unwrap();
+    assert_eq!(
+        operation_labels(&schedule),
+        vec!["delete random_id.child", "delete random_pet.parent"]
+    );
 }
 
 #[test]
@@ -114,54 +138,142 @@ async fn provider_install_source_is_validated_before_provider_launch() {
     );
 }
 
+fn declaration(resource_type: &str, depends_on: &[&str]) -> ManagedResourceDeclaration {
+    ManagedResourceDeclaration {
+        resource_type: resource_type.into(),
+        provider: None,
+        depends_on: depends_on.iter().map(|name| (*name).to_owned()).collect(),
+        configuration: serde_json::Map::new(),
+    }
+}
+
+fn provider(version: Option<&str>, path: Option<&str>) -> InfrastructureProvider {
+    InfrastructureProvider {
+        source: "hashicorp/unused".into(),
+        version: version.map(str::to_owned),
+        path: path.map(str::to_owned),
+        configuration: serde_json::Map::new(),
+    }
+}
+
+fn message(error: InfrastructureError) -> String {
+    match error {
+        InfrastructureError::Configuration(message) => message,
+        other => panic!("expected a configuration error, got {other}"),
+    }
+}
+
 #[test]
 fn configuration_preflight_checks_unused_providers_and_resource_references() {
     let mut configuration = infrastructure();
-    configuration.providers.insert(
-        "unused".into(),
-        InfrastructureProvider {
-            source: "hashicorp/unused".into(),
-            version: None,
-            path: None,
-            configuration: serde_json::Map::new(),
-        },
-    );
-    let error = validate_configuration(&configuration)
-        .unwrap_err()
-        .to_string();
+    configuration
+        .providers
+        .insert("unused".into(), provider(None, None));
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
     assert!(
-        error.contains("provider 'unused' needs an exact `version`"),
+        error.contains(
+            "infrastructure.providers.unused: provider 'unused' needs an exact `version`"
+        ),
         "{error}"
     );
 
-    configuration.providers.insert(
-        "unused".into(),
-        InfrastructureProvider {
-            source: "hashicorp/unused".into(),
-            version: Some("~> 3.7".into()),
-            path: None,
-            configuration: serde_json::Map::new(),
-        },
+    configuration
+        .providers
+        .insert("unused".into(), provider(Some("~> 3.7"), None));
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert!(
+        error.contains("infrastructure.providers.unused.version: invalid provider version"),
+        "{error}"
     );
-    let error = validate_configuration(&configuration)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("invalid provider version"), "{error}");
 
     configuration.providers.remove("unused");
+    configuration
+        .resources
+        .insert("pet".into(), declaration("random_pet", &[]));
+    configuration.resources.get_mut("pet").unwrap().provider = Some("missing".into());
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert!(
+        error.contains(
+            "infrastructure.resources.pet.provider: no provider named 'missing' in infrastructure.providers"
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn configuration_preflight_reports_every_problem_with_its_full_field_path() {
+    let mut configuration = infrastructure();
+    configuration.providers.insert(
+        "both".into(),
+        provider(Some("1.0.0"), Some("/bin/provider")),
+    );
+    configuration
+        .providers
+        .insert("neither".into(), provider(None, None));
+    configuration
+        .providers
+        .insert("blank".into(), provider(None, Some("")));
     configuration.resources.insert(
         "pet".into(),
-        ManagedResourceDeclaration {
-            resource_type: "random_pet".into(),
-            provider: Some("missing".into()),
-            depends_on: Vec::new(),
-            configuration: serde_json::Map::new(),
-        },
+        declaration("undeclared_pet", &["ghost", "pet"]),
     );
-    let error = validate_configuration(&configuration)
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no provider named 'missing'"), "{error}");
+    let error = message(validate_configuration(&configuration, Some("dev")).unwrap_err());
+    for expected in [
+        "infrastructure.environments.dev.providers.both: provider 'both' sets both `path` and `version`",
+        "infrastructure.environments.dev.providers.neither: provider 'neither' needs an exact `version`",
+        "infrastructure.environments.dev.providers.blank.path: must not be empty",
+        "infrastructure.environments.dev.resources.pet.type: no provider named 'undeclared'",
+        "infrastructure.environments.dev.resources.pet.dependsOn[0]: resource 'pet' depends on unknown resource 'ghost'",
+    ] {
+        assert!(
+            error.contains(expected),
+            "missing `{expected}` in:\n{error}"
+        );
+    }
+    // The remedy and the environment rule are part of the message.
+    assert!(
+        error.contains("declare it there or set `provider`"),
+        "{error}"
+    );
+    assert!(
+        error.contains("top-level `infrastructure.providers` are not inherited by environments"),
+        "{error}"
+    );
+    // Five problems, one line each, all in one error.
+    assert!(error.starts_with("5 problems:"), "{error}");
+}
+
+#[test]
+fn an_empty_provider_path_is_rejected_even_without_the_schema() {
+    let mut configuration = infrastructure();
+    configuration
+        .providers
+        .insert("local".into(), provider(None, Some("")));
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert_eq!(
+        error,
+        "infrastructure.providers.local.path: must not be empty; set a path to the provider \
+         binary or remove it and set `version`"
+    );
+}
+
+#[test]
+fn dependency_cycles_are_reported_with_the_resources_path() {
+    let mut configuration = infrastructure();
+    configuration
+        .providers
+        .insert("random".into(), provider(Some("3.7.2"), None));
+    configuration
+        .resources
+        .insert("a".into(), declaration("random_pet", &["b"]));
+    configuration
+        .resources
+        .insert("b".into(), declaration("random_pet", &["a"]));
+    let error = message(validate_configuration(&configuration, None).unwrap_err());
+    assert!(
+        error.starts_with("infrastructure.resources: dependency cycle between resources"),
+        "{error}"
+    );
 }
 
 #[cfg(unix)]
@@ -310,56 +422,671 @@ fn replacement_step(kind: StepKind) -> ApplyStep {
     }
 }
 
-fn replacement(name: &str, dependencies: &[&str]) -> ResourceChange {
-    let mut change = change(ResourceAddress::new("random_pet", name), Action::Replace);
-    change.stored = Some(record("random_pet", name, dependencies));
-    change.steps = vec![
-        replacement_step(StepKind::Delete),
-        replacement_step(StepKind::Create),
-    ];
+/// A `random_pet` change. `stored` are the names its stored record depends
+/// on and `configured` the names its configuration depends on; both are
+/// recorded as full addresses, as the engine does.
+fn pet(name: &str, action: Action, stored: &[&str], configured: &[&str]) -> ResourceChange {
+    let addresses = |names: &[&str]| -> Vec<String> {
+        names
+            .iter()
+            .map(|name| format!("random_pet.{name}"))
+            .collect()
+    };
+    let stored_addresses = addresses(stored);
+    let stored_references: Vec<&str> = stored_addresses.iter().map(String::as_str).collect();
+    let mut change = change(ResourceAddress::new("random_pet", name), action);
+    change.dependencies = addresses(configured);
+    if !matches!(action, Action::Create) {
+        change.stored = Some(record("random_pet", name, &stored_references));
+    }
+    match action {
+        Action::Replace => {
+            change.steps = vec![
+                replacement_step(StepKind::Delete),
+                replacement_step(StepKind::Create),
+            ];
+        }
+        Action::Update => change.steps = vec![replacement_step(StepKind::Update)],
+        Action::Create => change.steps = vec![replacement_step(StepKind::Create)],
+        Action::Delete => change.steps = vec![replacement_step(StepKind::Delete)],
+        Action::Refresh => change.refreshed_record = change.stored.clone(),
+        Action::NoOp => {}
+    }
     change
 }
 
+fn operation_labels(schedule: &Schedule<'_>) -> Vec<String> {
+    schedule
+        .operations
+        .iter()
+        .map(|scheduled| {
+            format!(
+                "{} {}",
+                scheduled.operation.kind.label(),
+                scheduled.operation.change.address
+            )
+        })
+        .collect()
+}
+
+fn schedule_of(changes: &[ResourceChange]) -> Vec<String> {
+    operation_labels(&Schedule::build(changes).unwrap())
+}
+
+fn short(labels: &[String]) -> Vec<String> {
+    labels
+        .iter()
+        .map(|label| label.replace("random_pet.", ""))
+        .collect()
+}
+
 #[test]
-fn detachment_from_a_removed_replacement_dependent_runs_before_early_deletion() {
-    let parent = replacement("parent", &[]);
-    let mut orphan = change(ResourceAddress::new("random_pet", "orphan"), Action::Delete);
-    orphan.stored = Some(record("random_pet", "orphan", &["parent"]));
-    let mut retained = change(
-        ResourceAddress::new("random_pet", "retained"),
-        Action::Update,
-    );
-    retained.stored = Some(record("random_pet", "retained", &["orphan"]));
-    let plan = plan_of(vec![parent, retained, orphan]);
-    let operations = apply_operations(&plan).unwrap();
+fn orphan_deletes_run_before_creates_and_updates() {
+    // Renaming a resource key: the old object goes first, so the new one can
+    // take its real-world identity.
+    let changes = [
+        pet("new", Action::Create, &[], &[]),
+        pet("old", Action::Delete, &[], &[]),
+    ];
+    assert_eq!(short(&schedule_of(&changes)), ["delete old", "apply new"]);
+}
+
+#[test]
+fn a_removed_child_is_deleted_before_its_parent_is_updated() {
+    // Terraform's `creators` edge: the parent's update waits for the delete
+    // of what hangs off it.
+    let changes = [
+        pet("parent", Action::Update, &[], &[]),
+        pet("child", Action::Delete, &["parent"], &[]),
+    ];
     assert_eq!(
-        operations
-            .iter()
-            .map(|operation| operation.change.address.name.as_str())
-            .collect::<Vec<_>>(),
-        vec!["retained", "orphan", "parent", "parent"]
+        short(&schedule_of(&changes)),
+        ["delete child", "apply parent"]
     );
 }
 
 #[test]
-fn detachment_rejects_unavailable_transitive_prerequisites_before_any_operation() {
-    let parent = replacement("parent", &[]);
-    let mut retained = change(
-        ResourceAddress::new("random_pet", "retained"),
-        Action::Update,
+fn a_replacement_create_follows_its_delete_at_once() {
+    let changes = [
+        pet("b", Action::Update, &[], &[]),
+        pet("a", Action::Replace, &[], &[]),
+        pet("c", Action::Create, &[], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete a", "create a", "apply b", "apply c"]
     );
-    retained.stored = Some(record("random_pet", "retained", &["parent"]));
-    retained.dependencies = vec!["unchanged".into()];
-    let mut unchanged = change(
-        ResourceAddress::new("random_pet", "unchanged"),
-        Action::NoOp,
+}
+
+#[test]
+fn dependents_are_deleted_before_a_replaced_parent_and_recreated_after_it() {
+    let changes = [
+        pet("parent", Action::Replace, &[], &[]),
+        pet("child", Action::Replace, &["parent"], &["parent"]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        [
+            "delete child",
+            "delete parent",
+            "create parent",
+            "create child"
+        ]
     );
-    unchanged.dependencies = vec!["new".into()];
-    let new = change(ResourceAddress::new("random_pet", "new"), Action::Create);
-    let plan = plan_of(vec![new, unchanged, parent, retained]);
+}
+
+#[test]
+fn an_update_that_detaches_runs_before_the_delete_of_its_old_parent() {
+    let removed = [
+        pet("parent", Action::Delete, &[], &[]),
+        pet("dependent", Action::Update, &["parent"], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&removed)),
+        ["apply dependent", "delete parent"]
+    );
+    let replaced = [
+        pet("parent", Action::Replace, &[], &[]),
+        pet("dependent", Action::Update, &["parent"], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&replaced)),
+        ["apply dependent", "delete parent", "create parent"]
+    );
+}
+
+#[test]
+fn detaching_while_attaching_a_new_resource_is_ordered_not_refused() {
+    // The old schedule refused this ("apply the detachment separately")
+    // because the detaching update needs a resource that does not exist yet.
+    // Create it first, detach, then replace the old parent.
+    let changes = [
+        pet("parent", Action::Replace, &[], &[]),
+        pet("retained", Action::Update, &["parent"], &["fresh"]),
+        pet("fresh", Action::Create, &[], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        [
+            "apply fresh",
+            "apply retained",
+            "delete parent",
+            "create parent"
+        ]
+    );
+}
+
+#[test]
+fn preferred_edges_never_close_a_cycle() {
+    // Detaching `c` from the removed `d` would put `d`'s delete after
+    // `c`'s update, but `c` needs `p` updated first and `p`'s update must
+    // follow `d`'s delete. Terraform's order stands.
+    let changes = [
+        pet("d", Action::Delete, &["p"], &[]),
+        pet("c", Action::Update, &["d"], &["p"]),
+        pet("p", Action::Update, &[], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["delete d", "apply p", "apply c"]
+    );
+}
+
+#[test]
+fn a_replacement_waits_for_the_creates_it_depends_on() {
+    // If the prerequisite fails, the old object must still be there.
+    let changes = [
+        pet("r", Action::Replace, &[], &["fresh"]),
+        pet("fresh", Action::Create, &[], &[]),
+    ];
+    assert_eq!(
+        short(&schedule_of(&changes)),
+        ["apply fresh", "delete r", "create r"]
+    );
+}
+
+#[test]
+fn stored_dependency_cycles_are_refused_naming_the_operations() {
+    let changes = [
+        pet("a", Action::Delete, &["b"], &[]),
+        pet("b", Action::Delete, &["a"], &[]),
+    ];
+    let error = message(Schedule::build(&changes).unwrap_err());
+    assert!(error.contains("cycle"), "{error}");
+    assert!(error.contains("delete random_pet.a"), "{error}");
+    assert!(error.contains("delete random_pet.b"), "{error}");
+}
+
+#[test]
+fn the_schedule_does_not_depend_on_the_order_of_the_changes() {
+    let changes = vec![
+        pet("parent", Action::Replace, &[], &[]),
+        pet("child", Action::Replace, &["parent"], &["parent"]),
+        pet("old", Action::Delete, &[], &[]),
+        pet("fresh", Action::Create, &[], &[]),
+        pet("kept", Action::Update, &["old"], &["fresh"]),
+        pet("same", Action::NoOp, &[], &[]),
+        pet("rewritten", Action::Refresh, &[], &[]),
+    ];
+    let expected = schedule_of(&changes);
+    for rotation in 0..changes.len() {
+        let mut rotated = changes.clone();
+        rotated.rotate_left(rotation);
+        assert_eq!(schedule_of(&rotated), expected, "rotation {rotation}");
+    }
+    let mut reversed = changes;
+    reversed.reverse();
+    assert_eq!(schedule_of(&reversed), expected);
+}
+
+#[test]
+fn unchanged_resources_have_no_operation_and_are_listed_last() {
+    let changes = [
+        pet("quiet", Action::NoOp, &[], &[]),
+        pet("busy", Action::Create, &[], &[]),
+    ];
+    let schedule = Schedule::build(&changes).unwrap();
+    assert_eq!(operation_labels(&schedule), ["apply random_pet.busy"]);
+    let order: Vec<&str> = schedule
+        .change_order
+        .iter()
+        .map(|index| changes[*index].address.name.as_str())
+        .collect();
+    assert_eq!(order, ["busy", "quiet"]);
+}
+
+#[test]
+fn a_plan_lists_its_changes_in_the_order_apply_runs_them() {
+    let changes = vec![
+        pet("new", Action::Create, &[], &[]),
+        pet("kept", Action::Update, &["old"], &[]),
+        pet("old", Action::Delete, &[], &[]),
+        pet("replaced", Action::Replace, &[], &["new"]),
+        pet("same", Action::NoOp, &[], &[]),
+    ];
+    let ordered = in_schedule_order(changes).unwrap();
+    let schedule = Schedule::build(&ordered).unwrap();
+    let mut first_runs: Vec<String> = Vec::new();
+    for scheduled in &schedule.operations {
+        let name = scheduled.operation.change.address.name.clone();
+        if !first_runs.contains(&name) {
+            first_runs.push(name);
+        }
+    }
+    first_runs.push("same".to_string());
+    let listed: Vec<String> = ordered
+        .iter()
+        .map(|change| change.address.name.clone())
+        .collect();
+    assert_eq!(listed, first_runs);
+}
+
+#[test]
+fn a_long_chain_of_replacements_is_scheduled_in_dependency_order() {
+    let length: usize = 1500;
+    let name = |index: usize| format!("r{index:04}");
+    let changes: Vec<ResourceChange> = (0..length)
+        .map(|index| {
+            let dependency = name(index.saturating_sub(1));
+            let dependencies: Vec<&str> = if index == 0 {
+                Vec::new()
+            } else {
+                vec![dependency.as_str()]
+            };
+            pet(&name(index), Action::Replace, &dependencies, &dependencies)
+        })
+        .collect();
+    let labels = short(&schedule_of(&changes));
+    assert_eq!(labels.len(), 2 * length);
+    // Dependents go first and come back last.
+    assert_eq!(labels[0], format!("delete {}", name(length - 1)));
+    assert_eq!(labels[length - 1], "delete r0000");
+    assert_eq!(labels[length], "create r0000");
+    assert_eq!(
+        labels[2 * length - 1],
+        format!("create {}", name(length - 1))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Running a schedule
+// ---------------------------------------------------------------------------
+
+/// Runs operations without a provider: records them and fails the ones it
+/// is told to.
+struct ScriptedRunner {
+    journal: std::sync::Mutex<Vec<String>>,
+    /// Labels (`create random_pet.a`) failing as a provider failure.
+    failing: BTreeSet<String>,
+    /// Labels failing so the run cannot go on.
+    aborting: BTreeSet<String>,
+    /// A label after which a stop is requested.
+    stop_after: Option<(String, Cancellation)>,
+}
+
+impl ScriptedRunner {
+    fn new() -> Self {
+        Self {
+            journal: std::sync::Mutex::new(Vec::new()),
+            failing: BTreeSet::new(),
+            aborting: BTreeSet::new(),
+            stop_after: None,
+        }
+    }
+
+    fn failing(mut self, labels: &[&str]) -> Self {
+        self.failing = labels.iter().map(|label| (*label).to_owned()).collect();
+        self
+    }
+
+    fn ran(&self) -> Vec<String> {
+        short(&self.journal.lock().unwrap())
+    }
+}
+
+#[async_trait]
+impl OperationRunner for ScriptedRunner {
+    async fn run_operation(
+        &self,
+        operation: &ApplyOperation<'_>,
+        _lock: &StateLock,
+        _on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+    ) -> std::result::Result<(), OperationFailure> {
+        let label = format!("{} {}", operation.kind.label(), operation.change.address);
+        self.journal.lock().unwrap().push(label.clone());
+        if self.failing.contains(&label) {
+            return Err(OperationFailure::Continue(
+                InfrastructureError::Diagnostics {
+                    context: label,
+                    errors: vec!["boom".to_string()],
+                },
+            ));
+        }
+        if self.aborting.contains(&label) {
+            return Err(OperationFailure::Abort(InfrastructureError::state(
+                "the state store is gone",
+            )));
+        }
+        if let Some((after, cancellation)) = &self.stop_after
+            && *after == label
+        {
+            cancellation.stop();
+        }
+        Ok(())
+    }
+}
+
+/// What a scripted apply produced.
+struct Scripted {
+    result: Result<PlanSummary>,
+    events: Vec<ApplyEvent>,
+}
+
+impl Scripted {
+    fn incomplete(&self) -> &IncompleteApply {
+        match &self.result {
+            Err(InfrastructureError::ApplyIncomplete(incomplete)) => incomplete,
+            other => panic!("expected an incomplete apply, got {other:?}"),
+        }
+    }
+
+    fn names(addresses: &[ResourceAddress]) -> Vec<&str> {
+        addresses
+            .iter()
+            .map(|address| address.name.as_str())
+            .collect()
+    }
+
+    fn uncreated(&self) -> Vec<String> {
+        self.events
+            .iter()
+            .filter_map(|event| match event {
+                ApplyEvent::DeletedNotRecreated { address } => Some(address.name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+async fn run_scripted(changes: Vec<ResourceChange>, runner: &ScriptedRunner) -> Scripted {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(store, directory.path());
+    let lock = StateLock {
+        lock_identifier: "scripted".into(),
+    };
+    let plan = plan_of(in_schedule_order(changes).unwrap());
+    let mut events = Vec::new();
+    let result = engine
+        .converge(
+            runner,
+            Convergence {
+                plan: &plan,
+                lock: &lock,
+                on_event: &mut |event| events.push(event),
+            },
+        )
+        .await;
+    Scripted { result, events }
+}
+
+#[tokio::test]
+async fn an_unrelated_failure_still_recreates_a_replacement() {
+    let runner = ScriptedRunner::new().failing(&["apply random_pet.aaa"]);
+    let scripted = run_scripted(
+        vec![
+            pet("aaa", Action::Update, &[], &[]),
+            pet("zzz", Action::Replace, &[], &[]),
+        ],
+        &runner,
+    )
+    .await;
+    let incomplete = scripted.incomplete();
+    assert_eq!(incomplete.failures.len(), 1);
+    assert_eq!(incomplete.failures[0].address.name, "aaa");
+    assert!(incomplete.skipped.is_empty());
+    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert_eq!(incomplete.completed, 1);
+    assert!(scripted.uncreated().is_empty());
     assert!(
-        matches!(apply_operations(&plan), Err(InfrastructureError::Configuration(message))
-        if message.contains("random_pet.new") && message.contains("separately"))
+        runner.ran().contains(&"create zzz".to_string()),
+        "{:?}",
+        runner.ran()
+    );
+}
+
+#[tokio::test]
+async fn a_failed_create_is_reported_as_deleted_not_recreated_and_other_replacements_finish() {
+    let runner = ScriptedRunner::new().failing(&["create random_pet.aaa"]);
+    let scripted = run_scripted(
+        vec![
+            pet("aaa", Action::Replace, &[], &[]),
+            pet("zzz", Action::Replace, &[], &[]),
+        ],
+        &runner,
+    )
+    .await;
+    assert_eq!(
+        runner.ran(),
+        ["delete aaa", "create aaa", "delete zzz", "create zzz"]
+    );
+    let incomplete = scripted.incomplete();
+    assert_eq!(Scripted::names(&incomplete.deleted_not_recreated), ["aaa"]);
+    assert_eq!(incomplete.completed, 1);
+    assert_eq!(scripted.uncreated(), ["aaa"]);
+    assert!(
+        incomplete
+            .to_string()
+            .contains("1 replacement(s) were deleted but not recreated"),
+        "{incomplete}"
+    );
+}
+
+#[tokio::test]
+async fn a_replacement_is_not_started_when_a_prerequisite_already_failed() {
+    let runner = ScriptedRunner::new().failing(&["apply random_pet.fresh"]);
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(store, directory.path());
+    let lock = StateLock {
+        lock_identifier: "scripted".into(),
+    };
+    let plan = plan_of(
+        in_schedule_order(vec![
+            pet("r", Action::Replace, &[], &["fresh"]),
+            pet("fresh", Action::Create, &[], &[]),
+        ])
+        .unwrap(),
+    );
+    let mut events = Vec::new();
+    let result = engine
+        .converge(
+            &runner,
+            Convergence {
+                plan: &plan,
+                lock: &lock,
+                on_event: &mut |event| events.push(event),
+            },
+        )
+        .await;
+    // The old object of `r` was never touched.
+    assert_eq!(runner.ran(), ["apply fresh"]);
+    let Err(InfrastructureError::ApplyIncomplete(incomplete)) = result else {
+        panic!("expected an incomplete apply");
+    };
+    assert_eq!(Scripted::names(&incomplete.skipped), ["r"]);
+    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert!(
+        events.iter().any(
+            |event| matches!(event, ApplyEvent::Skipped { address, .. } if address.name == "r")
+        )
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, ApplyEvent::DeletedNotRecreated { .. }))
+    );
+}
+
+#[tokio::test]
+async fn a_failure_skips_what_depends_on_it_transitively_and_nothing_else() {
+    let runner = ScriptedRunner::new().failing(&["apply random_pet.a"]);
+    let scripted = run_scripted(
+        vec![
+            pet("a", Action::Create, &[], &[]),
+            pet("b", Action::Create, &[], &["a"]),
+            pet("c", Action::Create, &[], &["b"]),
+            pet("d", Action::Create, &[], &[]),
+        ],
+        &runner,
+    )
+    .await;
+    let incomplete = scripted.incomplete();
+    assert_eq!(Scripted::names(&incomplete.skipped), ["b", "c"]);
+    assert_eq!(incomplete.completed, 1);
+    let rendered = incomplete.to_string();
+    assert!(
+        rendered.contains("2 change(s) were not attempted because a change they depend on failed"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("applied and recorded 1 of 4 changes"),
+        "{rendered}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_replacement_delete_skips_its_create_without_calling_it_deleted() {
+    let runner = ScriptedRunner::new().failing(&["delete random_pet.r"]);
+    let scripted = run_scripted(vec![pet("r", Action::Replace, &[], &[])], &runner).await;
+    let incomplete = scripted.incomplete();
+    assert_eq!(incomplete.failures.len(), 1);
+    assert!(incomplete.skipped.is_empty(), "{:?}", incomplete.skipped);
+    assert!(incomplete.deleted_not_recreated.is_empty());
+    assert!(scripted.uncreated().is_empty());
+}
+
+#[tokio::test]
+async fn an_interrupt_between_the_halves_reports_the_replacement_it_left_deleted() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(store, directory.path());
+    let mut runner = ScriptedRunner::new();
+    runner.stop_after = Some((
+        "delete random_pet.r".to_string(),
+        engine.cancellation().clone(),
+    ));
+    let lock = StateLock {
+        lock_identifier: "scripted".into(),
+    };
+    let plan = plan_of(vec![pet("r", Action::Replace, &[], &[])]);
+    let mut events = Vec::new();
+    let result = engine
+        .converge(
+            &runner,
+            Convergence {
+                plan: &plan,
+                lock: &lock,
+                on_event: &mut |event| events.push(event),
+            },
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(InfrastructureError::Interrupted {
+            completed: 0,
+            total: 1
+        })
+    ));
+    assert_eq!(runner.ran(), ["delete r"]);
+    assert!(matches!(
+        events.last(),
+        Some(ApplyEvent::DeletedNotRecreated { address }) if address.name == "r"
+    ));
+}
+
+#[tokio::test]
+async fn a_fatal_failure_ends_the_run_and_keeps_earlier_failures_visible() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(store, directory.path());
+    let mut runner = ScriptedRunner::new().failing(&["apply random_pet.a"]);
+    runner.aborting = ["apply random_pet.b".to_string()].into_iter().collect();
+    let lock = StateLock {
+        lock_identifier: "scripted".into(),
+    };
+    let plan = plan_of(
+        in_schedule_order(vec![
+            pet("a", Action::Create, &[], &[]),
+            pet("b", Action::Create, &[], &[]),
+            pet("c", Action::Create, &[], &[]),
+        ])
+        .unwrap(),
+    );
+    let mut events = Vec::new();
+    let result = engine
+        .converge(
+            &runner,
+            Convergence {
+                plan: &plan,
+                lock: &lock,
+                on_event: &mut |event| events.push(event),
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(InfrastructureError::State(_))),
+        "{result:?}"
+    );
+    assert_eq!(runner.ran(), ["apply a", "apply b"]);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ApplyEvent::Warning(warning) if warning.contains("random_pet.a failed earlier")
+    )));
+}
+
+#[tokio::test]
+async fn apply_refuses_a_plan_made_with_another_provider_environment() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    let lock = store.lock(&tenant(), "environment").await.unwrap();
+    // Made with no provider variables; the engine now has one.
+    let plan = plan_of(Vec::new());
+    engine
+        .options
+        .provider_environment_variables
+        .insert("CLOUD_TOKEN".into(), "rotated".into());
+    let error = engine
+        .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::PlanEnvironmentChanged),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn missing_providers_name_the_environment_path_and_the_inheritance_rule() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(store, directory.path());
+    engine.tenant = TenantKey::with_environment("example.com/app", "web", "dev").unwrap();
+    let error = engine
+        .ensure_provider("undeclared", &mut Vec::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains(
+            "provider 'undeclared' is not declared in infrastructure.environments.dev.providers"
+        ),
+        "{error}"
+    );
+    assert!(
+        error.contains("top-level `infrastructure.providers` are not inherited by environments"),
+        "{error}"
     );
 }
 
