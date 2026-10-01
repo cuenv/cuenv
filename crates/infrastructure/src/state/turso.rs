@@ -9,12 +9,17 @@
 //! for a run without `--env`. The no-flag identity and each named environment
 //! are separate tenants; nothing falls back from one to another.
 //!
-//! The schema is versioned: `cuenv_infrastructure_schema` records the newest
-//! migration applied, and [`StateStore::migrate`] applies only newer ones, each
-//! in its own transaction. A migration after the first refuses, inside its
-//! transaction, while any lock row exists, so a run that is applying changes
-//! never has its writes land in a half-migrated shape. Every operation refuses
-//! a database whose schema is newer than this build knows. Reads
+//! The schema is versioned: `cuenv_infrastructure_migrations` records the
+//! newest migration applied, and [`StateStore::migrate`] applies only newer
+//! ones, each in its own transaction. A migration after the first refuses,
+//! inside its transaction, while any lock row exists, so a run that is
+//! applying changes never has its writes land in a half-migrated shape; it
+//! waits a bounded time for the locks to drain (announcing itself so that no
+//! new lock is taken meanwhile) and then reports every lock that blocks it.
+//! Every operation refuses a database whose schema is newer than this build
+//! knows, and a database holding the tables of an unreleased development
+//! build (which recorded versions 1 to 5 in `cuenv_infrastructure_schema`).
+//! Reads
 //! ([`StateStore::list`] and [`StateStore::current_lock`]) never migrate: on a
 //! database without cuenv's tables they return nothing, so a read-only token can
 //! plan and inspect state. Taking the lock requires the current schema.
@@ -39,7 +44,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
-    RecordVersion, ResourceAddress, StateLock, StateStore, TenantOwner,
+    RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
 };
 use crate::error::{
     InfrastructureError, Result, describe_json_error, json_error_category, strip_control_characters,
@@ -54,9 +59,11 @@ struct Migration {
 
 /// Ordered schema migrations. Never edit an existing entry; append a new one.
 ///
-/// Version 1 is the first schema anyone is meant to use. A database holding
-/// tables of an earlier, unreleased layout is not adopted: creating them
-/// fails and the migration reports the tables as already present.
+/// Version 1 is the first schema anyone is meant to use. No released cuenv
+/// ever wrote an earlier layout; a database holding the tables of an
+/// unreleased development build is refused by name (see
+/// [`UNRELEASED_LAYOUT_TABLES`]) instead of being adopted or silently
+/// ignored.
 const MIGRATIONS: &[Migration] = &[Migration {
     version: 1,
     statements: &[
@@ -97,6 +104,10 @@ const MIGRATIONS: &[Migration] = &[Migration {
             claimed_at TEXT NOT NULL,
             PRIMARY KEY (module_path, project, environment)
         ) WITHOUT ROWID",
+        "CREATE TABLE cuenv_infrastructure_pending_migration (
+            version INTEGER NOT NULL PRIMARY KEY,
+            expires_at INTEGER NOT NULL
+        )",
     ],
 }];
 
@@ -107,22 +118,61 @@ const INITIAL_SCHEMA_VERSION: i64 = 1;
 /// Newest schema version this build knows.
 const LATEST_SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
 
-const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
+/// Records the migrations applied. Unreleased development builds recorded
+/// their (different) versions 1 to 5 in `cuenv_infrastructure_schema`; this
+/// table has another name so those never collide with the versions this one
+/// records, and a database that has only the old table is recognised as theirs.
+const SCHEMA_TABLE: &str = "cuenv_infrastructure_migrations";
+
+/// The data tables version 1 creates.
+const DATA_TABLES: [&str; 4] = [
+    "cuenv_infrastructure_resources",
+    "cuenv_infrastructure_locks",
+    "cuenv_infrastructure_owners",
+    "cuenv_infrastructure_pending_migration",
+];
+
+/// Names that only unreleased development builds of cuenv created: their
+/// schema table, their per-environment tables, and the misspelled table
+/// family of the earliest layout (matched by prefix).
+const UNRELEASED_LAYOUT_TABLES: [&str; 1] = ["cuenv_infrastructure_schema"];
+
+/// Name prefixes of the tables unreleased development builds created.
+const UNRELEASED_LAYOUT_PREFIXES: [&str; 2] = [
+    "cuenv_infrastructure_environment_",
+    "cuenv_infrastructurestructure_",
+];
 
 /// The `environment` column of a run without `--env`. A named environment is
 /// never empty ([`TenantKey::with_environment`]), so the two cannot collide.
 const NO_ENVIRONMENT: &str = "";
 
 const CREATE_SCHEMA_TABLE: &str =
-    "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_schema (version INTEGER NOT NULL)";
+    "CREATE TABLE IF NOT EXISTS cuenv_infrastructure_migrations (version INTEGER NOT NULL)";
 
 const SELECT_SCHEMA_VERSION: &str =
-    "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_schema";
+    "SELECT COALESCE(MAX(version), 0) FROM cuenv_infrastructure_migrations";
 
-/// Whether the schema table exists, so a read can tell a database cuenv never
-/// touched without creating anything. One argument: the table name.
-const SELECT_SCHEMA_TABLE: &str =
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?";
+/// Every table whose name starts like one of cuenv's (`_` also matches any
+/// single character, which only widens the search).
+const SELECT_CUENV_TABLES: &str = "SELECT name FROM sqlite_master WHERE type = 'table' \
+     AND name LIKE 'cuenv_infrastructure%' ORDER BY name";
+
+/// Every lock of every tenant, oldest first.
+const SELECT_ALL_LOCKS: &str = "SELECT module_path, project, environment, lock_identifier, \
+     holder, acquired_at FROM cuenv_infrastructure_locks \
+     ORDER BY acquired_at, module_path, project, environment";
+
+/// The key columns of one tenant's records.
+const SELECT_ADDRESSES: &str = "SELECT resource_type, resource_name \
+     FROM cuenv_infrastructure_resources \
+     WHERE module_path = ? AND project = ? AND environment = ? \
+     ORDER BY resource_type, resource_name";
+
+/// The migration a waiting migrator announced, when its announcement has not
+/// expired. One argument: the current time in seconds since the epoch.
+const SELECT_PENDING_MIGRATION: &str = "SELECT version FROM cuenv_infrastructure_pending_migration \
+     WHERE expires_at > ?";
 
 const SELECT_RESOURCES: &str = "SELECT resource_type, resource_name, provider, provider_source, \
      schema_version, state_json, private, dependencies_json, tainted, identity_json, serial, \
@@ -216,6 +266,27 @@ impl RetryPolicy {
     }
 }
 
+/// How a migration that finds locks held waits for them, while keeping new
+/// locks from being taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MigrationWait {
+    /// The longest a migration waits for the locks to be released.
+    bound: Duration,
+    /// How often it looks again.
+    poll_interval: Duration,
+    /// How long its announcement (which holds off new locks) stands if the
+    /// migrating process dies; always longer than `bound`.
+    announcement_lifetime: Duration,
+}
+
+impl MigrationWait {
+    const DEFAULT: Self = Self {
+        bound: Duration::from_secs(30),
+        poll_interval: Duration::from_millis(500),
+        announcement_lifetime: Duration::from_secs(60),
+    };
+}
+
 /// [`StateStore`] backed by a remote Turso database.
 #[derive(Clone)]
 pub struct TursoStateStore {
@@ -223,6 +294,8 @@ pub struct TursoStateStore {
     pipeline_url: reqwest::Url,
     authentication_token: Option<String>,
     retry_policy: RetryPolicy,
+    /// How a migration waits for the locks that block it.
+    migration_wait: MigrationWait,
     /// Largest successful response body read, in bytes.
     maximum_response_bytes: usize,
 }
@@ -237,6 +310,7 @@ impl fmt::Debug for TursoStateStore {
                 &self.authentication_token.as_ref().map(|_| "<redacted>"),
             )
             .field("retry_policy", &self.retry_policy)
+            .field("migration_wait", &self.migration_wait)
             .field("maximum_response_bytes", &self.maximum_response_bytes)
             .finish_non_exhaustive()
     }
@@ -282,6 +356,7 @@ impl TursoStateStore {
                 .authentication_token
                 .filter(|token| !token.is_empty()),
             retry_policy: RetryPolicy::DEFAULT,
+            migration_wait: MigrationWait::DEFAULT,
             maximum_response_bytes: MAXIMUM_RESPONSE_BYTES,
         })
     }
@@ -475,8 +550,10 @@ impl TursoStateStore {
     }
 
     /// The newest applied schema version; 0 for a database never migrated.
-    /// Creates the schema table, so only the migration path calls it.
+    /// Creates the schema table, so only the migration path calls it. Refuses
+    /// first a database that holds tables of another layout.
     async fn schema_version(&self) -> Result<i64> {
+        Self::require_recorded_or_recognized(&self.cuenv_tables().await?)?;
         let results = self
             .pipeline(&[
                 Statement::new(CREATE_SCHEMA_TABLE, Vec::new()),
@@ -491,19 +568,60 @@ impl TursoStateStore {
             .ok_or_else(|| InfrastructureError::state("Turso returned no schema version"))
     }
 
+    /// The tables whose names start like cuenv's, with one request.
+    async fn cuenv_tables(&self) -> Result<Vec<String>> {
+        Ok(self
+            .execute(Statement::new(SELECT_CUENV_TABLES, Vec::new()))
+            .await?
+            .rows
+            .iter()
+            .filter_map(|row| row.first().and_then(HranaValue::as_text))
+            .map(strip_control_characters)
+            .collect())
+    }
+
+    /// [`Self::require_recognized_layout`] unless the schema table is there.
+    fn require_recorded_or_recognized(names: &[String]) -> Result<()> {
+        if names.iter().any(|name| name == SCHEMA_TABLE) {
+            Ok(())
+        } else {
+            Self::require_recognized_layout(names)
+        }
+    }
+
+    /// Refuse a database that has no schema table of this cuenv but holds
+    /// tables of another layout: those an unreleased development build wrote
+    /// ([`InfrastructureError::StateUnreleasedLayout`]), or this cuenv's own
+    /// table names without a record of the migration that created them
+    /// ([`InfrastructureError::StateSchemaConflict`]). Neither is adopted and
+    /// neither is ignored.
+    fn require_recognized_layout(names: &[String]) -> Result<()> {
+        match classify_layout(names) {
+            Layout::Recognized => Ok(()),
+            Layout::Unreleased(tables) => {
+                Err(InfrastructureError::StateUnreleasedLayout { tables })
+            }
+            Layout::Unrecorded(tables) => Err(InfrastructureError::StateSchemaConflict {
+                problem: format!(
+                    "it holds tables with cuenv's names ({}) but no record of the migration \
+                     that created them ({SCHEMA_TABLE}), so this cuenv did not create them; \
+                     use another database or remove those tables",
+                    tables.join(", ")
+                ),
+            }),
+        }
+    }
+
     /// The recorded schema version, read without creating or changing
     /// anything; 0 when cuenv never migrated the database.
     ///
     /// Fails closed on a schema newer than this build knows, so an older
-    /// cuenv never reads or writes rows whose meaning may have changed.
+    /// cuenv never reads or writes rows whose meaning may have changed, and
+    /// on a database that holds tables of another layout.
     async fn stored_version(&self) -> Result<i64> {
-        let tables = self
-            .execute(Statement::new(
-                SELECT_SCHEMA_TABLE,
-                vec![HranaValue::text(SCHEMA_TABLE)],
-            ))
-            .await?;
-        if tables.rows.is_empty() {
+        let names = self.cuenv_tables().await?;
+        if !names.iter().any(|name| name == SCHEMA_TABLE) {
+            Self::require_recognized_layout(&names)?;
             return Ok(0);
         }
         let version = self
@@ -590,7 +708,7 @@ impl TursoStateStore {
             .iter()
             .filter(|migration| migration.version > current)
         {
-            match self.apply_migration(migration).await? {
+            match self.apply_waiting(migration).await? {
                 MigrationOutcome::Applied => {
                     tracing::info!(
                         version = migration.version,
@@ -598,8 +716,12 @@ impl TursoStateStore {
                     );
                 }
                 MigrationOutcome::LockHeld => {
+                    // Name the locks, so the one a dead run left behind can
+                    // be found and released; the list is only a courtesy.
+                    let locks = self.locks().await.unwrap_or_default();
                     return Err(InfrastructureError::StateMigrationBlocked {
                         version: migration.version,
+                        locks,
                     });
                 }
                 MigrationOutcome::AlreadyApplied => {
@@ -607,12 +729,14 @@ impl TursoStateStore {
                     // transaction also recorded the version.
                     let recorded = self.schema_version().await?;
                     if recorded < migration.version {
-                        return Err(InfrastructureError::state(format!(
-                            "state schema migration {} found its schema objects already present \
-                             but the recorded schema version is {recorded}; the database holds \
-                             tables cuenv did not create at this version",
-                            migration.version
-                        )));
+                        return Err(InfrastructureError::StateSchemaConflict {
+                            problem: format!(
+                                "migration {} found its tables already present, but the \
+                                 recorded schema version is {recorded}; the database holds \
+                                 tables this cuenv did not create at this version",
+                                migration.version
+                            ),
+                        });
                     }
                     tracing::debug!(
                         version = migration.version,
@@ -622,6 +746,77 @@ impl TursoStateStore {
             }
         }
         Ok(())
+    }
+
+    /// Apply one migration, waiting a bounded time for the locks that block
+    /// it. While it waits, its announcement keeps new locks from being taken
+    /// ([`InfrastructureError::StateMigrationPending`]), so a steady stream of
+    /// short runs cannot starve it; the announcement expires by itself should
+    /// this process die.
+    async fn apply_waiting(&self, migration: &Migration) -> Result<MigrationOutcome> {
+        let first = self.apply_migration(migration).await?;
+        let wait = self.migration_wait;
+        if first != MigrationOutcome::LockHeld || wait.bound.is_zero() {
+            return Ok(first);
+        }
+        self.announce_migration(migration.version, wait).await?;
+        let deadline = tokio::time::Instant::now() + wait.bound;
+        let outcome = loop {
+            tokio::time::sleep(wait.poll_interval).await;
+            match self.apply_migration(migration).await {
+                Ok(MigrationOutcome::LockHeld) if tokio::time::Instant::now() < deadline => {}
+                other => break other,
+            }
+        };
+        if let Err(error) = self.withdraw_announcement().await {
+            tracing::warn!(%error, "could not withdraw the migration announcement; it expires by itself");
+        }
+        outcome
+    }
+
+    /// Announce that a migration to `version` waits for the locks to drain.
+    async fn announce_migration(&self, version: i64, wait: MigrationWait) -> Result<()> {
+        let expires_at = unix_seconds_from_now(wait.announcement_lifetime);
+        self.pipeline(&[
+            Statement::new(
+                "DELETE FROM cuenv_infrastructure_pending_migration",
+                Vec::new(),
+            ),
+            Statement::new(
+                "INSERT INTO cuenv_infrastructure_pending_migration (version, expires_at) \
+                 VALUES (?, ?)",
+                vec![
+                    HranaValue::integer(version),
+                    HranaValue::integer(expires_at),
+                ],
+            ),
+        ])
+        .await
+        .map(|_| ())
+    }
+
+    async fn withdraw_announcement(&self) -> Result<()> {
+        self.execute(Statement::new(
+            "DELETE FROM cuenv_infrastructure_pending_migration",
+            Vec::new(),
+        ))
+        .await
+        .map(|_| ())
+    }
+
+    /// The version of the migration waiting to run, when one announced itself
+    /// and has not expired.
+    async fn pending_migration(&self) -> Result<Option<i64>> {
+        Ok(self
+            .execute(Statement::new(
+                SELECT_PENDING_MIGRATION,
+                vec![HranaValue::integer(unix_seconds_from_now(Duration::ZERO))],
+            ))
+            .await?
+            .rows
+            .first()
+            .and_then(|row| row.first())
+            .and_then(HranaValue::as_integer))
     }
 
     /// Apply one migration and record its version, atomically.
@@ -801,18 +996,44 @@ fn is_valid_host(host: &str) -> bool {
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
     {
-        return !inner.is_empty()
-            && inner
-                .chars()
-                .all(|character| character.is_ascii_hexdigit() || ":.".contains(character));
+        return inner.parse::<std::net::Ipv6Addr>().is_ok();
     }
     let bytes = host.as_bytes();
     let alphanumeric_edge = |byte: Option<&u8>| byte.is_some_and(u8::is_ascii_alphanumeric);
-    alphanumeric_edge(bytes.first())
+    let name_characters = alphanumeric_edge(bytes.first())
         && alphanumeric_edge(bytes.last())
         && bytes
             .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-')
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'.' || *byte == b'-');
+    // A name that ends in a number is an address, and only the exact dotted
+    // decimal form of one is accepted: the URL parser would otherwise read
+    // `0177.0.0.1` as octal, `127.1` or `2130706433` as shorthand and
+    // `999.1.1.1` as an error.
+    name_characters && (!ends_in_a_number(host) || is_dotted_decimal_ipv4(host))
+}
+
+/// Whether the last dot-separated label is all digits or `0x` and hexadecimal
+/// digits: the URL standard then treats the whole host as an IPv4 address.
+fn ends_in_a_number(host: &str) -> bool {
+    let last = host.rsplit('.').next().unwrap_or(host);
+    let decimal = !last.is_empty() && last.bytes().all(|byte| byte.is_ascii_digit());
+    let hexadecimal = last
+        .strip_prefix("0x")
+        .or_else(|| last.strip_prefix("0X"))
+        .is_some_and(|digits| digits.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    decimal || hexadecimal
+}
+
+/// Four decimal octets from 0 to 255 without leading zeros.
+fn is_dotted_decimal_ipv4(text: &str) -> bool {
+    let octets: Vec<&str> = text.split('.').collect();
+    octets.len() == 4
+        && octets.iter().all(|octet| {
+            (1..=3).contains(&octet.len())
+                && octet.bytes().all(|byte| byte.is_ascii_digit())
+                && (octet.len() == 1 || !octet.starts_with('0'))
+                && octet.parse::<u16>().is_ok_and(|value| value <= 255)
+        })
 }
 
 /// A port from 1 to 65535 in plain decimal, without a leading zero.
@@ -852,15 +1073,7 @@ fn is_loopback_host(host: &str) -> bool {
 
 /// `127.a.b.c` with decimal octets from 0 to 255 and no leading zeros.
 fn is_loopback_ipv4_text(text: &str) -> bool {
-    let octets: Vec<&str> = text.split('.').collect();
-    octets.len() == 4
-        && octets[0] == "127"
-        && octets.iter().all(|octet| {
-            (1..=3).contains(&octet.len())
-                && octet.bytes().all(|byte| byte.is_ascii_digit())
-                && (octet.len() == 1 || !octet.starts_with('0'))
-                && octet.parse::<u16>().is_ok_and(|value| value <= 255)
-        })
+    text.starts_with("127.") && is_dotted_decimal_ipv4(text)
 }
 
 fn now() -> String {
@@ -1079,17 +1292,22 @@ impl StateStore for TursoStateStore {
         arguments.push(HranaValue::text(&lock_identifier));
         arguments.push(HranaValue::text(holder));
         arguments.push(HranaValue::text(&now()));
+        arguments.push(HranaValue::integer(unix_seconds_from_now(Duration::ZERO)));
         // The lock row is inserted only while the schema is still the one
         // checked above, in the same statement. A migration (which refuses
         // while any lock row exists) that commits between the check and the
         // insert therefore cannot be followed by a lock, and writes, of a
-        // client that does not know the new shape.
+        // client that does not know the new shape. A migration waiting for
+        // the locks to drain announces itself, and no new lock is taken
+        // until it is done.
         let insert = Statement::new(
             format!(
                 "INSERT INTO cuenv_infrastructure_locks \
                  ({TENANT_KEY}, lock_identifier, holder, acquired_at) \
                  SELECT ?, ?, ?, ?, ?, ? \
                  WHERE ({SELECT_SCHEMA_VERSION}) = {LATEST_SCHEMA_VERSION} \
+                 AND NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_pending_migration \
+                                 WHERE expires_at > ?) \
                  ON CONFLICT ({TENANT_KEY}) DO NOTHING"
             ),
             arguments,
@@ -1117,10 +1335,15 @@ impl StateStore for TursoStateStore {
                         return Err(locked(tenant, information));
                     }
                     // No lock row: either the schema moved under the insert's
-                    // guard (refuse), or the lock was released between the
-                    // insert and the read (try again).
+                    // guard (refuse), a migration is waiting for the locks to
+                    // drain (refuse, the caller runs again shortly), or the
+                    // lock was released between the insert and the read
+                    // (try again).
                     None => {
                         self.require_current_schema().await?;
+                        if let Some(version) = self.pending_migration().await? {
+                            return Err(InfrastructureError::StateMigrationPending { version });
+                        }
                         if !last_attempt {
                             retry += 1;
                             continue;
@@ -1181,6 +1404,50 @@ impl StateStore for TursoStateStore {
             return Ok(None);
         }
         self.read_lock(tenant).await
+    }
+
+    #[tracing::instrument(skip_all)]
+    async fn locks(&self) -> Result<Vec<TenantLock>> {
+        if self.stored_version().await? == 0 {
+            // Never migrated: nobody can have taken a lock.
+            return Ok(Vec::new());
+        }
+        let result = self
+            .execute(Statement::new(SELECT_ALL_LOCKS, Vec::new()))
+            .await?;
+        Ok(result
+            .rows
+            .iter()
+            .map(|row| row_to_tenant_lock(row))
+            .collect())
+    }
+
+    #[tracing::instrument(skip_all, fields(tenant = %tenant))]
+    async fn addresses(&self, tenant: &TenantKey) -> Result<Vec<ResourceAddress>> {
+        if self.stored_version().await? == 0 {
+            return Ok(Vec::new());
+        }
+        let result = self
+            .execute(Statement::new(SELECT_ADDRESSES, tenant_arguments(tenant)))
+            .await?;
+        result
+            .rows
+            .iter()
+            .map(|row| {
+                let text = |index: usize| row.get(index).and_then(HranaValue::as_text);
+                match (text(0), text(1)) {
+                    (Some(resource_type), Some(name)) => {
+                        Ok(ResourceAddress::new(resource_type, name))
+                    }
+                    _ => Err(InfrastructureError::UndecodableRecord {
+                        address: UNREADABLE_ADDRESS.to_string(),
+                        problem: "the resource_type or resource_name column is missing or not \
+                                  text"
+                            .to_string(),
+                    }),
+                }
+            })
+            .collect()
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant, lock_identifier = %lock_identifier))]
@@ -1331,6 +1598,76 @@ fn lock_lost(tenant: &TenantKey, lock: &StateLock) -> InfrastructureError {
     InfrastructureError::LockLost {
         tenant: tenant.to_string(),
         lock_identifier: lock.lock_identifier.clone(),
+    }
+}
+
+/// Decode one row of [`SELECT_ALL_LOCKS`]. The text is displayed, and anyone
+/// with the token can write these rows, so control characters are removed.
+fn row_to_tenant_lock(row: &[HranaValue]) -> TenantLock {
+    let field = |index: usize| {
+        strip_control_characters(
+            row.get(index)
+                .and_then(HranaValue::as_text)
+                .unwrap_or("unknown"),
+        )
+    };
+    TenantLock {
+        module_path: field(0),
+        project: field(1),
+        environment: Some(field(2)).filter(|environment| !environment.is_empty()),
+        lock: LockInformation {
+            lock_identifier: field(3),
+            holder: field(4),
+            acquired_at: field(5),
+        },
+    }
+}
+
+/// The current time plus `offset`, in whole seconds since the Unix epoch.
+fn unix_seconds_from_now(offset: Duration) -> i64 {
+    chrono::Utc::now()
+        .timestamp()
+        .saturating_add(i64::try_from(offset.as_secs()).unwrap_or(i64::MAX))
+}
+
+/// What the tables named like cuenv's say about who created them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Layout {
+    /// Nothing of an earlier or foreign layout.
+    Recognized,
+    /// Tables only an unreleased development build created.
+    Unreleased(Vec<String>),
+    /// This cuenv's own table names, without the record of its migrations.
+    Unrecorded(Vec<String>),
+}
+
+/// Classify the tables of a database that has no migration record of this
+/// cuenv (`names`: every table whose name starts with `cuenv_infrastructure`).
+/// Tables of unreleased development builds are reported first: they explain
+/// why this cuenv's own names may also be present.
+fn classify_layout(names: &[String]) -> Layout {
+    let unreleased: Vec<String> = names
+        .iter()
+        .filter(|name| {
+            UNRELEASED_LAYOUT_TABLES.contains(&name.as_str())
+                || UNRELEASED_LAYOUT_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+        })
+        .cloned()
+        .collect();
+    if !unreleased.is_empty() {
+        return Layout::Unreleased(unreleased);
+    }
+    let unrecorded: Vec<String> = names
+        .iter()
+        .filter(|name| DATA_TABLES.contains(&name.as_str()))
+        .cloned()
+        .collect();
+    if unrecorded.is_empty() {
+        Layout::Recognized
+    } else {
+        Layout::Unrecorded(unrecorded)
     }
 }
 
@@ -1668,6 +2005,9 @@ fn describe_error_body(body: &BodyPrefix, total_bytes: Option<u64>) -> String {
 // Migrations
 // ---------------------------------------------------------------------------
 
+/// What SQLite says when the fence's `abs` of the smallest integer overflows.
+const FENCE_ERROR: &str = "integer overflow";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MigrationOutcome {
     Applied,
@@ -1727,12 +2067,12 @@ impl MigrationTransaction {
         // migrator finishes an older step after a faster one.
         statements.extend([
             Statement::new(
-                "DELETE FROM cuenv_infrastructure_schema WHERE version < ?",
+                "DELETE FROM cuenv_infrastructure_migrations WHERE version < ?",
                 version_arguments(),
             ),
             Statement::new(
-                "INSERT INTO cuenv_infrastructure_schema (version) SELECT ?1 \
-                 WHERE NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_schema WHERE version >= ?1)",
+                "INSERT INTO cuenv_infrastructure_migrations (version) SELECT ?1 \
+                 WHERE NOT EXISTS (SELECT 1 FROM cuenv_infrastructure_migrations WHERE version >= ?1)",
                 version_arguments(),
             ),
             Statement::new("COMMIT", Vec::new()),
@@ -1779,7 +2119,11 @@ fn migration_outcome(
         .enumerate()
         .find_map(|(index, error)| error.as_ref().map(|error| (index, error)));
     if let Some((index, error)) = first_error {
-        if transaction.fence_index == Some(index) {
+        // The fence fails with an integer overflow when a lock row exists;
+        // any other failure of that statement (the lock table missing, the
+        // database refusing it) is a failure of the migration, not a held
+        // lock.
+        if transaction.fence_index == Some(index) && error.message.contains(FENCE_ERROR) {
             return Ok(MigrationOutcome::LockHeld);
         }
         if error.message.contains("duplicate column name")

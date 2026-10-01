@@ -228,6 +228,25 @@ pub(super) fn interrupted() -> CliError {
     )
 }
 
+/// The error for a run whose last operation was in flight when the signal
+/// arrived: it finished and was recorded, so nothing is lost, but the run was
+/// interrupted and exits like any other interrupted run. `summary` says what
+/// was applied.
+#[must_use]
+pub(super) fn interrupted_after_completion(summary: &str, invocation: &Invocation) -> CliError {
+    CliError::infrastructure(
+        format!(
+            "interrupted while the last operation was in flight; it finished and was recorded \
+             ({summary})"
+        ),
+        Some(format!(
+            "Everything applied is recorded. Run `{}` to confirm nothing is left to do.",
+            invocation.command("plan")
+        )),
+        InfrastructureFailureKind::Interrupted,
+    )
+}
+
 async fn wait_for_request(requested: &mut watch::Receiver<bool>) {
     if requested.wait_for(|requested| *requested).await.is_err() {
         // The watcher is gone, so no interrupt can arrive any more.

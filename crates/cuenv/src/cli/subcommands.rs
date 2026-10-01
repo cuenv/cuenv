@@ -235,6 +235,13 @@ pub enum InfrastructureCommands {
             help = "Apply without an interactive confirmation"
         )]
         yes: bool,
+        /// Create resources of the selected environment even though the same
+        /// addresses are recorded for the project without `--env`.
+        #[arg(
+            long,
+            help = "With --env: create resources whose addresses are also recorded without --env, as separate objects"
+        )]
+        allow_separate_state: bool,
     },
     /// Delete every managed resource the project owns.
     #[command(about = "Delete every managed resource the project owns")]
@@ -293,6 +300,20 @@ pub enum InfrastructureCommands {
         /// Identifier of the lock to release; omit it to see who holds the lock.
         #[arg(help = "Identifier of the lock to release; omit it to see who holds the lock")]
         lock_identifier: Option<String>,
+        /// Act on the lock of the project with this CUE module path instead of
+        /// the evaluated project's (see `state locks`).
+        #[arg(
+            long,
+            help = "CUE module path of the project whose lock to show or release, instead of the evaluated project's"
+        )]
+        module: Option<String>,
+        /// Act on the lock of the project with this name instead of the
+        /// evaluated project's (see `state locks`).
+        #[arg(
+            long,
+            help = "Name of the project whose lock to show or release, instead of the evaluated project's"
+        )]
+        project: Option<String>,
         /// Path to directory containing CUE files.
         #[arg(
             long,
@@ -317,6 +338,9 @@ pub enum InfrastructureStateCommands {
     /// List managed resources recorded in state (the default).
     #[command(about = "List managed resources recorded in state (the default)")]
     List,
+    /// List every lock held in the state database, for every project.
+    #[command(about = "List every lock held in the state database, for every project")]
+    Locks,
     /// Forget one managed resource without touching the real object.
     #[command(about = "Forget one managed resource without touching the real object")]
     Remove {

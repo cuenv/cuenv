@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use super::{
     ConditionalPut, LockInformation, LockRequest, ManagedResource, OwnerClaim, OwnerClaimMode,
-    RecordVersion, ResourceAddress, StateLock, StateStore, TenantOwner,
+    RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
 };
 use crate::error::{InfrastructureError, Result};
 use crate::tenant::TenantKey;
@@ -196,6 +196,24 @@ impl StateStore for MemoryStateStore {
 
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
         Ok(self.contents()?.locks.get(tenant).cloned())
+    }
+
+    async fn locks(&self) -> Result<Vec<TenantLock>> {
+        let mut locks: Vec<TenantLock> = self
+            .contents()?
+            .locks
+            .iter()
+            .map(|(tenant, lock)| TenantLock {
+                module_path: tenant.module_path().to_string(),
+                project: tenant.project().to_string(),
+                environment: tenant.environment().map(ToString::to_string),
+                lock: lock.clone(),
+            })
+            .collect();
+        locks.sort_by(|left, right| {
+            (&left.lock.acquired_at, left.label()).cmp(&(&right.lock.acquired_at, right.label()))
+        });
+        Ok(locks)
     }
 
     async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
@@ -523,5 +541,41 @@ mod tests {
             .unwrap();
         assert_eq!(transferred.instance, copy);
         assert_eq!(store.owner(&tenant).await.unwrap().unwrap().instance, copy);
+    }
+
+    #[tokio::test]
+    async fn locks_lists_every_tenant_and_addresses_reads_keys() {
+        let store = MemoryStateStore::new();
+        let api = TenantKey::new("example.com/app", "api").unwrap();
+        let dev = TenantKey::with_environment("example.com/app", "web", "Dev").unwrap();
+        let api_lock = store.lock(&api, "first").await.unwrap();
+        let dev_lock = store.lock(&dev, "second").await.unwrap();
+        let locks = store.locks().await.unwrap();
+        assert_eq!(locks.len(), 2);
+        let labels: Vec<String> = locks.iter().map(TenantLock::label).collect();
+        assert!(
+            labels.contains(&"example.com/app#api".to_string()),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"example.com/app#web@Dev".to_string()),
+            "{labels:?}"
+        );
+        let dev_row = locks.iter().find(|held| held.project == "web").unwrap();
+        assert_eq!(dev_row.environment.as_deref(), Some("Dev"));
+        // A listed lock is released by its tenant alone.
+        assert!(
+            store
+                .force_unlock(&dev_row.tenant().unwrap(), &dev_row.lock.lock_identifier)
+                .await
+                .unwrap()
+        );
+        assert_eq!(store.locks().await.unwrap().len(), 1);
+        store.put(&api, &api_lock, &resource("pet")).await.unwrap();
+        assert_eq!(
+            store.addresses(&api).await.unwrap(),
+            vec![ResourceAddress::new("random_pet", "pet")]
+        );
+        let _ = dev_lock;
     }
 }

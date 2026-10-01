@@ -10,6 +10,9 @@ use super::*;
 const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
 const LOCKS_TABLE: &str = "cuenv_infrastructure_locks";
 const OWNERS_TABLE: &str = "cuenv_infrastructure_owners";
+const PENDING_TABLE: &str = "cuenv_infrastructure_pending_migration";
+/// The schema table of unreleased development builds.
+const DEVELOPMENT_SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
 
 fn configuration(url: &str) -> TursoConfiguration {
     TursoConfiguration {
@@ -32,7 +35,10 @@ async fn drop_state_tables(store: &TursoStateStore) {
         RESOURCES_TABLE,
         LOCKS_TABLE,
         OWNERS_TABLE,
+        PENDING_TABLE,
         PROBE_TABLE,
+        DEVELOPMENT_SCHEMA_TABLE,
+        "cuenv_infrastructure_environment_resources",
     ] {
         store
             .execute(Statement::new(
@@ -99,13 +105,20 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
 
     // A run holds a lock: the migration refuses and changes nothing.
     let refused = store.migrate_to(&migrations).await.unwrap_err();
+    // The error names the lock that blocks it, wherever it is held.
+    let InfrastructureError::StateMigrationBlocked { version: 2, locks } = &refused else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(locks.len(), 1, "{locks:?}");
+    assert_eq!(locks[0].lock.lock_identifier, lock.lock_identifier);
+    assert_eq!(locks[0].project, "web");
+    assert_eq!(locks[0].environment, None);
     assert!(
-        matches!(
-            refused,
-            InfrastructureError::StateMigrationBlocked { version: 2 }
-        ),
-        "{refused:?}"
+        refused.to_string().contains(&lock.lock_identifier),
+        "{refused}"
     );
+    // The same locks are listed, and released, without any project.
+    assert_eq!(store.locks().await?, *locks);
     assert_eq!(store.schema_version().await?, INITIAL_SCHEMA_VERSION);
     assert!(
         !table_exists(store, PROBE_TABLE).await,
@@ -118,16 +131,27 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
     // Several locks fence it too, and so does the lock of a tenant alone.
     let other = TenantKey::with_environment("example.com/migration", "web", "Dev")?;
     let other_lock = store.lock(&other, "migration test").await?;
-    assert!(matches!(
-        store.migrate_to(&migrations).await,
-        Err(InfrastructureError::StateMigrationBlocked { version: 2 })
-    ));
+    let both = store.migrate_to(&migrations).await.unwrap_err();
+    assert!(
+        matches!(&both, InfrastructureError::StateMigrationBlocked { version: 2, locks }
+            if locks.len() == 2 && locks.iter().any(|held| held.environment.as_deref() == Some("Dev"))),
+        "{both:?}"
+    );
     store.unlock(&tenant, &lock).await?;
     assert!(matches!(
         store.migrate_to(&migrations).await,
-        Err(InfrastructureError::StateMigrationBlocked { version: 2 })
+        Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })
     ));
-    store.unlock(&other, &other_lock).await?;
+    // A lock of a project nothing evaluates is released by its tenant alone.
+    let stale = store.locks().await?;
+    assert_eq!(stale.len(), 1);
+    assert!(
+        store
+            .force_unlock(&stale[0].tenant()?, &stale[0].lock.lock_identifier)
+            .await?
+    );
+    assert!(store.locks().await?.is_empty());
+    let _ = other_lock;
 
     // With no lock held it applies, and a client that does not know the
     // new version refuses to read or lock.
@@ -160,11 +184,12 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
 #[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
 async fn a_migration_refuses_while_any_lock_is_held() {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").unwrap();
-    let store = TursoStateStore::new(TursoConfiguration {
+    let mut store = TursoStateStore::new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
     })
     .unwrap();
+    store.migration_wait = short_migration_wait();
     assert_eq!(
         store.stored_version().await.unwrap(),
         0,
@@ -220,6 +245,10 @@ fn urls_follow_the_schema_contract() {
         "https://db.turso.io/prefix/",
         "wss://db.turso.io",
         "https://10.0.0.1:8443",
+        "https://1.2.3.4",
+        "https://127.0.0.1:8443",
+        "https://db1.example.com",
+        "https://1password.example.com",
         "https://[2001:db8::1]:8443/path",
         "ws://localhost:8080",
         "http://LOCALHOST",
@@ -244,12 +273,26 @@ fn urls_follow_the_schema_contract() {
         "http://127.0.0.1.example.com",
         "http://127.1",
         "http://127.0.0.256",
+        "http://0177.0.0.1",
+        "http://127.000.0.1",
         "http://[::ffff:7f00:1]",
         "http://[0:0:0:0:0:0:0:1]",
         "http://127.0.0.1:0",
         "http://127.0.0.1:",
         "https://db.turso.io:65536",
         "https://-db.turso.io",
+        // A name that ends in a number is an address, and must be a dotted
+        // decimal one; encrypted transport does not make the others valid.
+        "https://0177.0.0.1",
+        "https://127.000.0.1",
+        "https://999.1.1.1",
+        "https://256.0.0.1",
+        "https://1.2.3.4.5",
+        "https://1.2.3",
+        "https://db.0x1",
+        "https://[1:2:3]",
+        "https://[:::]",
+        "https://[12345::1]",
     ];
     for url in accepted {
         assert!(pipeline_url(url).is_ok(), "{url:?} must be accepted");
@@ -639,17 +682,25 @@ fn a_failing_fence_statement_means_a_lock_is_held_and_nothing_else_does() {
         }))
         .unwrap()
     };
+    // The fence trips with an integer overflow; any other failure of that
+    // statement is an ordinary failure, not a held lock.
     assert_eq!(
         migration_outcome(
-            &errors_at(fence, "CHECK constraint failed: lock_rows = 0"),
+            &errors_at(fence, "SQLite error: integer overflow"),
             &transaction
         )
         .unwrap(),
         MigrationOutcome::LockHeld
     );
+    let failure = migration_outcome(
+        &errors_at(fence, "CHECK constraint failed: lock_rows = 0"),
+        &transaction,
+    )
+    .unwrap_err();
+    assert_eq!(failure.kind, FailureKind::Statement);
     // The same text from any other statement is an ordinary failure.
     let failure = migration_outcome(
-        &errors_at(fence + 3, "CHECK constraint failed: lock_rows = 0"),
+        &errors_at(fence + 3, "SQLite error: integer overflow"),
         &transaction,
     )
     .unwrap_err();
@@ -686,7 +737,8 @@ fn migrations_are_ordered_and_start_at_one() {
 fn schema_version_one_creates_one_table_family_keyed_by_environment() {
     let migration = &MIGRATIONS[0];
     assert_eq!(migration.version, 1);
-    assert_eq!(migration.statements.len(), 3);
+    assert_eq!(migration.statements.len(), 4);
+    assert!(migration.statements[3].starts_with(&format!("CREATE TABLE {PENDING_TABLE} (")));
     for (statement, table, key) in [
         (
             migration.statements[0],
@@ -854,7 +906,7 @@ async fn fresh_database_reads_and_newer_schema_against_a_server() {
 
     store
         .execute(Statement::new(
-            "INSERT INTO cuenv_infrastructure_schema (version) VALUES (?)",
+            "INSERT INTO cuenv_infrastructure_migrations (version) VALUES (?)",
             vec![HranaValue::integer(LATEST_SCHEMA_VERSION + 1)],
         ))
         .await
@@ -1670,4 +1722,314 @@ async fn a_lock_is_not_inserted_when_the_schema_moved_since_it_was_checked() {
         "{}",
         inserts[0]
     );
+}
+
+/// Waits short enough for tests, in the proportions of the real ones.
+fn short_migration_wait() -> MigrationWait {
+    MigrationWait {
+        bound: Duration::from_millis(600),
+        poll_interval: Duration::from_millis(50),
+        announcement_lifetime: Duration::from_secs(30),
+    }
+}
+
+fn table_names(names: &[&str]) -> Value {
+    Value::Array(
+        names
+            .iter()
+            .map(|name| json!([{"type": "text", "value": name}]))
+            .collect(),
+    )
+}
+
+#[test]
+fn tables_of_unreleased_builds_are_told_apart_from_foreign_ones() {
+    let names = |names: &[&str]| -> Vec<String> { names.iter().map(ToString::to_string).collect() };
+    assert_eq!(classify_layout(&[]), Layout::Recognized);
+    // Names that merely start alike are not cuenv's.
+    assert_eq!(
+        classify_layout(&names(&["cuenv_infrastructure_notes"])),
+        Layout::Recognized
+    );
+    for unreleased in [
+        "cuenv_infrastructure_schema",
+        "cuenv_infrastructure_environment_resources",
+        "cuenv_infrastructure_environment_locks",
+        "cuenv_infrastructurestructure_resources",
+    ] {
+        assert_eq!(
+            classify_layout(&names(&["cuenv_infrastructure_resources", unreleased])),
+            Layout::Unreleased(names(&[unreleased])),
+            "{unreleased}"
+        );
+    }
+    assert_eq!(
+        classify_layout(&names(&["cuenv_infrastructure_locks"])),
+        Layout::Unrecorded(names(&["cuenv_infrastructure_locks"]))
+    );
+}
+
+#[tokio::test]
+async fn a_development_layout_is_named_never_called_newer_and_never_ignored() {
+    for existing in [
+        // The schema table of a development build, which recorded versions
+        // 1 to 5 in it.
+        vec![DEVELOPMENT_SCHEMA_TABLE, RESOURCES_TABLE],
+        // The earliest layout, whose table names were misspelled.
+        vec!["cuenv_infrastructurestructure_resources"],
+    ] {
+        let tables = existing.clone();
+        let (server, _) = recording_database(move |sql| {
+            if sql.contains("LIKE") {
+                Some(table_names(&tables))
+            } else if sql.starts_with("SELECT name FROM sqlite_master") {
+                // No schema table of this cuenv.
+                Some(json!([]))
+            } else {
+                None
+            }
+        })
+        .await;
+        let store = fast_store(&server.url, Duration::from_secs(5));
+        let errors = [
+            store.list(&tenant()).await.unwrap_err(),
+            store.current_lock(&tenant()).await.unwrap_err(),
+            store.locks().await.unwrap_err(),
+            store.migrate().await.unwrap_err(),
+            store.lock(&tenant(), "test").await.unwrap_err(),
+        ];
+        for error in errors {
+            let message = error.to_string();
+            assert!(
+                matches!(&error, InfrastructureError::StateUnreleasedLayout { tables }
+                    if tables.iter().all(|table| existing.contains(&table.as_str()))),
+                "{message}"
+            );
+            assert!(
+                message.contains("unreleased development build of cuenv"),
+                "{message}"
+            );
+            assert!(!message.contains("newer"), "{message}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn tables_with_cuenvs_names_but_no_migration_record_are_a_schema_conflict() {
+    let (server, statements) = recording_database(|sql| {
+        if sql.contains("LIKE") {
+            Some(table_names(&[RESOURCES_TABLE, LOCKS_TABLE]))
+        } else if sql.starts_with("SELECT name FROM sqlite_master") {
+            Some(json!([]))
+        } else {
+            None
+        }
+    })
+    .await;
+    let store = fast_store(&server.url, Duration::from_secs(5));
+    for error in [
+        store.list(&tenant()).await.unwrap_err(),
+        store.migrate().await.unwrap_err(),
+    ] {
+        let message = error.to_string();
+        assert!(
+            matches!(error, InfrastructureError::StateSchemaConflict { .. }),
+            "{message}"
+        );
+        assert!(message.contains(RESOURCES_TABLE), "{message}");
+        assert!(message.contains("did not create them"), "{message}");
+    }
+    // Migrating never tried to create over them.
+    let statements = statements.lock().unwrap();
+    assert!(
+        statements.iter().all(|sql| !sql.starts_with("CREATE")),
+        "{statements:?}"
+    );
+}
+
+#[test]
+fn only_the_overflow_of_the_fence_means_a_lock_is_held() {
+    let transaction = MigrationTransaction::of(&Migration {
+        version: 2,
+        statements: &["CREATE TABLE cuenv_infrastructure_probe (value INTEGER NOT NULL)"],
+    });
+    let fence = transaction.fence_index.unwrap();
+    let failed = |message: &str| {
+        let mut errors: Vec<Option<HranaError>> =
+            (0..transaction.statements.len()).map(|_| None).collect();
+        errors[fence] = Some(HranaError {
+            message: message.to_string(),
+            code: None,
+        });
+        BatchResult {
+            step_results: Vec::new(),
+            step_errors: errors,
+        }
+    };
+    assert_eq!(
+        migration_outcome(&failed("SQLite error: integer overflow"), &transaction).unwrap(),
+        MigrationOutcome::LockHeld
+    );
+    // Any other failure of the fence statement is not a held lock.
+    for message in [
+        "SQLite error: no such table: cuenv_infrastructure_locks",
+        "database is locked",
+    ] {
+        let failure = migration_outcome(&failed(message), &transaction).unwrap_err();
+        assert!(failure.message.contains(message), "{}", failure.message);
+    }
+}
+
+#[tokio::test]
+async fn locks_are_listed_from_the_database_for_every_tenant() {
+    let (server, _) = recording_database(|sql| {
+        if sql == SELECT_ALL_LOCKS {
+            Some(json!([
+                [
+                    {"type": "text", "value": "example.com/a"},
+                    {"type": "text", "value": "api"},
+                    {"type": "text", "value": ""},
+                    {"type": "text", "value": "id-1"},
+                    {"type": "text", "value": "apply by\u{1b}[31m ci"},
+                    {"type": "text", "value": "2026-01-01T00:00:00+00:00"},
+                ],
+                [
+                    {"type": "text", "value": "example.com/a"},
+                    {"type": "text", "value": "api"},
+                    {"type": "text", "value": "Dev"},
+                    {"type": "text", "value": "id-2"},
+                    {"type": "text", "value": "destroy"},
+                    {"type": "text", "value": "2026-01-02T00:00:00+00:00"},
+                ],
+            ]))
+        } else {
+            schema_rows(sql, LATEST_SCHEMA_VERSION)
+        }
+    })
+    .await;
+    let store = fast_store(&server.url, Duration::from_secs(5));
+    let locks = store.locks().await.unwrap();
+    assert_eq!(locks.len(), 2);
+    assert_eq!(locks[0].label(), "example.com/a#api");
+    assert_eq!(locks[0].lock.holder, "apply by[31m ci");
+    assert_eq!(locks[1].label(), "example.com/a#api@Dev");
+    assert_eq!(locks[1].tenant().unwrap().environment(), Some("Dev"));
+    assert!(locks[0].lock.age_description().is_some());
+}
+
+#[tokio::test]
+async fn addresses_are_read_from_the_key_columns_alone() {
+    let (server, statements) = recording_database(|sql| {
+        if sql == SELECT_ADDRESSES {
+            Some(json!([[
+                {"type": "text", "value": "random_pet"},
+                {"type": "text", "value": "pet"},
+            ]]))
+        } else {
+            schema_rows(sql, LATEST_SCHEMA_VERSION)
+        }
+    })
+    .await;
+    let store = fast_store(&server.url, Duration::from_secs(5));
+    assert_eq!(
+        store.addresses(&tenant()).await.unwrap(),
+        vec![ResourceAddress::new("random_pet", "pet")]
+    );
+    assert!(
+        statements
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|sql| !sql.contains("state_json")),
+    );
+}
+
+/// Against a real server: tables of a development build and foreign tables
+/// are refused by name, and a waiting migration holds off new locks. Needs an
+/// empty isolated database; it drops cuenv's tables at the end.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
+async fn layouts_and_waiting_migrations_against_a_server() {
+    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").unwrap();
+    let mut store = TursoStateStore::new(TursoConfiguration {
+        url,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    })
+    .unwrap();
+    store.migration_wait = short_migration_wait();
+    let store = Arc::new(store);
+    let scenario = tokio::spawn({
+        let store = Arc::clone(&store);
+        async move { layout_scenario(&store).await }
+    });
+    let outcome = scenario.await;
+    drop_state_tables(&store).await;
+    outcome.unwrap().unwrap();
+}
+
+async fn layout_scenario(store: &Arc<TursoStateStore>) -> Result<()> {
+    let create = |sql: &str| store.execute(Statement::new(sql, Vec::new()));
+    // A development build's schema table: refused as such, by every
+    // operation, and nothing of this cuenv is created.
+    create("CREATE TABLE cuenv_infrastructure_schema (version INTEGER NOT NULL)").await?;
+    create("INSERT INTO cuenv_infrastructure_schema (version) VALUES (5)").await?;
+    for error in [
+        store.list(&tenant()).await.unwrap_err(),
+        store.migrate().await.unwrap_err(),
+        store.locks().await.unwrap_err(),
+    ] {
+        assert!(
+            matches!(error, InfrastructureError::StateUnreleasedLayout { .. }),
+            "{error:?}"
+        );
+    }
+    assert!(!table_exists(store, SCHEMA_TABLE).await);
+    create("DROP TABLE cuenv_infrastructure_schema").await?;
+
+    // Tables with cuenv's names and no migration record.
+    create("CREATE TABLE cuenv_infrastructure_resources (value INTEGER)").await?;
+    let error = store.migrate().await.unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::StateSchemaConflict { .. }),
+        "{error:?}"
+    );
+    create("DROP TABLE cuenv_infrastructure_resources").await?;
+
+    // A clean database migrates; then a migration that waits for a lock
+    // holds new locks off, and gives up with the lock listed.
+    store.migrate().await?;
+    let tenant = tenant();
+    let held = store.lock(&tenant, "stale").await?;
+    let migrating = {
+        let store = Arc::clone(store);
+        tokio::spawn(async move { store.migrate_to(&migrations_with_a_probe()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let other = TenantKey::new("example.com/fake", "api")?;
+    let refused = store.lock(&other, "newcomer").await.unwrap_err();
+    assert!(
+        matches!(
+            refused,
+            InfrastructureError::StateMigrationPending { version: 2 }
+        ),
+        "{refused:?}"
+    );
+    let blocked = migrating.await.unwrap().unwrap_err();
+    assert!(
+        matches!(&blocked, InfrastructureError::StateMigrationBlocked { locks, .. } if locks.len() == 1),
+        "{blocked:?}"
+    );
+    // The announcement is withdrawn once the migration gave up.
+    let lock = store.lock(&other, "newcomer").await?;
+    store.unlock(&other, &lock).await?;
+    // A lock released while it waits lets it through.
+    let migrating = {
+        let store = Arc::clone(store);
+        tokio::spawn(async move { store.migrate_to(&migrations_with_a_probe()).await })
+    };
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    store.unlock(&tenant, &held).await?;
+    migrating.await.unwrap()?;
+    assert_eq!(store.schema_version().await?, 2);
+    Ok(())
 }

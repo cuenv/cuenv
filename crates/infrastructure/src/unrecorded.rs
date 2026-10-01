@@ -32,8 +32,10 @@
 //! another. Planning refuses to run while a tenant has unrecorded changes.
 //!
 //! The file format is JSON in camelCase throughout, with an explicit
-//! `formatVersion` (currently 1). Nothing here ever puts a state value in an
-//! error message; problems with a file are
+//! `formatVersion` (currently 1) and a `kind` marker that tells a file of a
+//! future format apart from one an unreleased development build wrote.
+//! Nothing here ever puts a state value in an error message; problems with a
+//! file are
 //! [`InfrastructureError::UnrecordedFile`] errors naming the file.
 
 use std::fs::File;
@@ -43,7 +45,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::{InfrastructureError, Result, describe_json_error, json_error_category};
+use crate::error::{
+    InfrastructureError, Result, UnrecordedFileProblem, describe_json_error, json_error_category,
+};
 use crate::state::{
     ConditionalPut, ManagedResource, RecordVersion, ResourceAddress, StateLock, StateStore,
 };
@@ -51,6 +55,15 @@ use crate::tenant::TenantKey;
 
 /// Format version written into every file, and the only one read.
 const FILE_FORMAT_VERSION: u32 = 1;
+
+/// The marker every file carries as `kind`. Unreleased development builds
+/// wrote format versions 1 to 4 without it, so a file lacking it is told
+/// apart from a future format version, and later versions can use any
+/// number.
+const FILE_KIND: &str = "cuenv-infrastructure-unrecorded-change";
+
+/// The newest format version an unreleased development build wrote.
+const LAST_DEVELOPMENT_FORMAT_VERSION: u32 = 4;
 
 /// Largest unrecorded file read, in bytes (64 MiB, the state store's own
 /// response limit).
@@ -128,6 +141,7 @@ pub struct RecoverOptions<'options> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct UnrecordedFile {
+    kind: String,
     format_version: u32,
     tenant: TenantIdentity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -209,9 +223,18 @@ impl FileResource {
 }
 
 fn file_problem(path: &Path, problem: impl Into<String>) -> InfrastructureError {
+    kinded_file_problem(path, UnrecordedFileProblem::Other, problem)
+}
+
+fn kinded_file_problem(
+    path: &Path,
+    kind: UnrecordedFileProblem,
+    problem: impl Into<String>,
+) -> InfrastructureError {
     InfrastructureError::UnrecordedFile {
         path: path.display().to_string(),
         problem: problem.into(),
+        kind,
     }
 }
 
@@ -346,6 +369,7 @@ impl UnrecordedStore {
             };
         }
         let document = UnrecordedFile {
+            kind: FILE_KIND.to_string(),
             format_version: FILE_FORMAT_VERSION,
             tenant: TenantIdentity::of(tenant),
             backend_identity: self.backend_identity.clone(),
@@ -493,8 +517,9 @@ impl UnrecordedStore {
             for unrecorded in &unrecorded_records {
                 if let Some(reason) = self.binding_refusal(unrecorded, backend_identity.as_deref())
                 {
-                    return Err(file_problem(
+                    return Err(kinded_file_problem(
                         &unrecorded.file,
+                        UnrecordedFileProblem::Backend,
                         format!(
                             "the saved record of {} {reason}; inspect the saved record and the \
                              configured backend, then either recover it while accepting a different \
@@ -609,28 +634,44 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
     }
     // Check the version before the full shape, so an old or new format is
     // reported as such rather than as malformed.
-    let version = serde_json::from_slice::<FormatVersion>(&bytes)
-        .map_err(|error| {
-            file_problem(
-                file,
-                format!("it is not valid JSON ({})", describe_json_error(&error)),
-            )
-        })?
-        .format_version;
-    if version != Some(FILE_FORMAT_VERSION) {
-        return Err(file_problem(
+    let header = serde_json::from_slice::<FileHeader>(&bytes).map_err(|error| {
+        kinded_file_problem(
             file,
-            format!(
-                "it has format version {}, but this cuenv reads version {FILE_FORMAT_VERSION}",
-                version.map_or_else(|| "(none)".to_string(), |version| version.to_string())
-            ),
-        ));
+            UnrecordedFileProblem::Format,
+            format!("it is not valid JSON ({})", describe_json_error(&error)),
+        )
+    })?;
+    match (header.kind.as_deref(), header.format_version) {
+        (Some(FILE_KIND), Some(FILE_FORMAT_VERSION)) => {}
+        // Unreleased development builds wrote format versions 1 to 4 without
+        // the marker; no released cuenv wrote any of them.
+        (None, Some(version)) if (1..=LAST_DEVELOPMENT_FORMAT_VERSION).contains(&version) => {
+            return Err(kinded_file_problem(
+                file,
+                UnrecordedFileProblem::DevelopmentBuild,
+                format!(
+                    "it was written by an unreleased development build of cuenv (format version \
+                     {version}); this cuenv does not read it"
+                ),
+            ));
+        }
+        (_, version) => {
+            return Err(kinded_file_problem(
+                file,
+                UnrecordedFileProblem::Format,
+                format!(
+                    "it has format version {}, but this cuenv reads version {FILE_FORMAT_VERSION}",
+                    version.map_or_else(|| "(none)".to_string(), |version| version.to_string())
+                ),
+            ));
+        }
     }
     let document: UnrecordedFile = serde_json::from_slice(&bytes).map_err(|error| {
         // serde messages can quote the offending value; report the
         // position only.
-        file_problem(
+        kinded_file_problem(
             file,
+            UnrecordedFileProblem::Format,
             format!(
                 "it is not a valid unrecorded record ({})",
                 describe_json_error(&error)
@@ -656,10 +697,12 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
     Ok(document)
 }
 
-/// Just the format version of a file.
+/// Just the marker and the format version of a file.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FormatVersion {
+struct FileHeader {
+    #[serde(default)]
+    kind: Option<String>,
     #[serde(default)]
     format_version: Option<u32>,
 }
@@ -1687,6 +1730,46 @@ mod tests {
             assert!(file.exists());
         }
 
+        // Unreleased development builds wrote versions 1 to 4 without the
+        // `kind` marker; they are named as such, never as a newer format,
+        // and what names a remedy for a backend binding does not apply.
+        for version in 1..=4 {
+            let mut development = document.clone();
+            development["formatVersion"] = serde_json::json!(version);
+            development.as_object_mut().unwrap().remove("kind");
+            std::fs::write(&file, serde_json::to_vec(&development).unwrap()).unwrap();
+            let error = unrecorded.list(&tenant).unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("written by an unreleased development build of cuenv"),
+                "{message}"
+            );
+            assert!(!message.contains("newer"), "{message}");
+            assert!(
+                matches!(
+                    error,
+                    InfrastructureError::UnrecordedFile {
+                        kind: UnrecordedFileProblem::DevelopmentBuild,
+                        ..
+                    }
+                ),
+                "{message}"
+            );
+            assert!(file.exists());
+        }
+        // The marker with another version is a format problem, and a file
+        // without the marker or a version is not a cuenv file at all.
+        let mut future = document.clone();
+        future["formatVersion"] = serde_json::json!(5);
+        std::fs::write(&file, serde_json::to_vec(&future).unwrap()).unwrap();
+        assert!(matches!(
+            unrecorded.list(&tenant).unwrap_err(),
+            InfrastructureError::UnrecordedFile {
+                kind: UnrecordedFileProblem::Format,
+                ..
+            }
+        ));
+
         // A serial-only expectation, or a record without an insertion
         // generation, cannot identify what the file replaces.
         let mut serial_only = document.clone();
@@ -1806,7 +1889,7 @@ mod tests {
         };
         write_private(
             "broken.json",
-            r#"{"formatVersion": 1, "tenant": "hunter2"}"#,
+            r#"{"kind": "cuenv-infrastructure-unrecorded-change", "formatVersion": 1, "tenant": "hunter2"}"#,
         );
         let error = store.list(&web).unwrap_err();
         assert!(

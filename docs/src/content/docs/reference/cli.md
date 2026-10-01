@@ -493,10 +493,10 @@ covered by the stability promises of the other commands.
 
 ```bash
 cuenv infrastructure plan    [OPTIONS]
-cuenv infrastructure apply   [OPTIONS] [--yes]
+cuenv infrastructure apply   [OPTIONS] [--yes] [--allow-separate-state]
 cuenv infrastructure destroy [OPTIONS] [--yes]
-cuenv infrastructure state   [list | remove <ADDRESS> | recover [--force] [--accept-backend] | adopt] [OPTIONS]
-cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
+cuenv infrastructure state   [list | locks | remove <ADDRESS> | recover [--force] [--accept-backend] | adopt] [OPTIONS]
+cuenv infrastructure unlock  [OPTIONS] [--module <MODULE>] [--project <PROJECT>] [LOCK_IDENTIFIER]
 ```
 
 - `plan`: refresh recorded resources and show the changes `apply` would make,
@@ -509,7 +509,9 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
   **while holding the lock**, then applies exactly the plan it showed; there
   is no second plan. Answering anything but `yes`, or closing standard input,
   cancels (exit code `1`, nothing applied) and releases the lock; so does an
-  interrupt at the prompt (exit code `130`). With `--yes` there is no prompt:
+  interrupt at the prompt (exit code `130`). A signal that arrives while the
+  last operation is in flight lets it finish and be recorded, and the run still
+  exits `130` (`infrastructure_interrupted`) saying what was applied. With `--yes` there is no prompt:
   lock, plan, show the plan, apply. A plan with nothing to do asks nothing.
   The lock is taken whenever the plan has work, including records that only
   need refreshing. Operations run as one dependency graph (a replacement is a
@@ -522,10 +524,18 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
   project.
 - `state` or `state list`: list managed resources recorded for the project,
   marking tainted ones.
+- `state locks`: list every lock held in the state database, for every
+  project, module and environment (not only the evaluated project's), oldest
+  first: module, project, environment, lock identifier, holder, when it was
+  acquired and how long ago, and the `unlock` command that releases it. It
+  reads only, evaluates the current project just to find the database, and
+  never creates tables.
 - `state remove <ADDRESS>`: forget one managed resource (such as
   `random_pet.pet`) under the lock, without touching the real object — the
-  escape hatch when its provider is gone. An address that is not recorded is
-  refused (exit code `2`).
+  escape hatch when its provider is gone, or when its record is damaged: it
+  reads only the address columns, so a record whose content cannot be decoded
+  can still be removed. An address that is not recorded is refused (exit code
+  `2`).
 - `state recover`: record every change an earlier run could not record and
   saved in the user state directory
   (`$XDG_STATE_HOME/cuenv/infrastructure/unrecorded/`, by default
@@ -557,7 +567,12 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
   identifier that matches no lock (already released, or held in another
   environment, which the error says) exits with code `2` and releases nothing;
   naming a lock that is not the current one releases nothing and exits with
-  code `4`.
+  code `4`. With `--module` and/or `--project` it acts on the lock of that
+  project (the evaluated project's module path or name for whichever is
+  omitted) instead of the evaluated project's: the locked project need not
+  exist or evaluate, which is how a lock left by a dead run of another project
+  sharing the database, or by a deleted one, is released (`state locks` lists
+  them and prints the exact command). `--env` still selects the environment.
 
 **Options:**
 
@@ -576,6 +591,12 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 - `-y, --yes` (`apply`, `destroy`): Skip the confirmation prompt. Required
   when standard input is not a terminal, and with `--json`. `--auto-approve`
   is accepted as an alias.
+- `--allow-separate-state` (`apply`): with `--env NAME`, create resources
+  whose addresses the project also has recorded without `--env`, as separate
+  objects, instead of refusing (see "Environment selection").
+- `--module <MODULE>`, `--project <PROJECT>` (`unlock`): the CUE module path
+  and project name of the lock to show or release, when it is not the
+  evaluated project's.
 - `--force` (`state recover`): write a saved record even over a stored record
   that changed since it was saved.
 - `--accept-backend` (`state recover`): accept a saved record that was saved for
@@ -583,25 +604,34 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
 
 **Environment selection:** with `--env NAME` the selected configuration must
 be complete and concrete. State is recorded separately for each name and for a
-run without `--env`, and the command refuses (exit code `2`, before any
-provider starts) two runs that would act on the wrong identity:
+run without `--env`, so top-level `resources` and `environments` with
+non-overlapping resource addresses coexist, and the command refuses (exit code
+`2`, before any provider starts, after the state store is read) the runs that
+would act on the wrong identity. The help of each refusal names only commands
+that work from the state recorded at that moment:
 
-- `plan`, `apply` and `destroy` with `--env NAME` when `NAME` has no recorded
-  resources but the same module and project still have records without
-  `--env`. A run would plan to create everything again beside the objects the
-  no-flag state still manages. Moving records (`state move`) is not available
-  yet; the error lists the alternatives.
-- `plan`, `apply` and `destroy` without `--env` when
-  `infrastructure.environments` is declared and there are no top-level
-  `resources`. Such a run would act on the no-flag state and either do nothing
-  or plan to delete everything recorded there.
+- `apply --env NAME` when it would create a resource whose address
+  (`type.name`) is also recorded without `--env` and not yet recorded for
+  `NAME`: both identities would claim the same real objects. `--allow-separate-state`
+  creates them as separate objects anyway. `plan --env NAME` only warns, and
+  `destroy --env NAME` never refuses. Moving records (`state move`) is not
+  available yet; the error lists the alternatives.
+- `apply` without `--env` when `infrastructure.environments` is declared and
+  there are no top-level `resources`; `plan` warns. `destroy` without `--env`
+  in that layout runs when resources are still recorded without `--env` and
+  the top-level `providers` that delete them are declared, which is the way out
+  of an old layout, and refuses otherwise.
 
 The state commands need only `infrastructure.state`, so `state list`,
-`state remove`, `state recover`, `state adopt` and `unlock` work for an
-environment that is no longer declared (with a warning) and while the
-providers and resources are incomplete. They still fail when the project does
-not evaluate at all (see below). Every command named in an error or hint
-carries the run's `--env`, `-p` and `--package`.
+`state locks`, `state remove`, `state recover`, `state adopt` and `unlock` work
+for an environment that is no longer declared (with a warning) and while the
+providers and resources are incomplete. When the state database holds no
+records, lock, owner or saved unrecorded change for the `--env` name, and the
+project does not declare it, they refuse instead (exit code `2`, listing the
+declared environments): a mistyped name is not a removed environment. They
+still fail when the project does not evaluate at all (see below). Every
+command named in an error or hint carries the run's `--env`, `-p` and
+`--package`.
 
 **Provider environment and policy:** provider processes inherit the cuenv
 process environment minus the credentials of cuenv's secret resolvers
@@ -652,9 +682,14 @@ These commands keep unowned state unowned. `state list`, `unlock` and
 `state recover` with nothing to recover do not check the owner.
 
 **Tables and read-only access:** every write happens under the lock, and the
-state tables are created or upgraded right before the lock is taken. `plan`,
-`state list`, `unlock` (with or without an identifier) and a `state recover`
-with nothing to recover never create or upgrade them, so they work with a
+state tables are created or upgraded right before the lock is taken. A schema
+migration after the first refuses while any lock is held, waits up to 30
+seconds for the locks to be released (holding new locks off meanwhile), and
+then fails with exit code `4` listing every blocking lock and the command that
+releases it. A database holding tables of an unreleased development build, or
+tables with cuenv's names that it did not create, is refused by name. `plan`,
+`state list`, `state locks`, `unlock` (with or without an identifier) and a
+`state recover` with nothing to recover never create or upgrade the tables, so they work with a
 read-only token (except for releasing a lock) and against a database cuenv
 has never written.
 
@@ -686,12 +721,28 @@ Every payload below carries `tenant` (module path and project,
   prompt cannot share standard output with the result.
 - `state`, `state list`: `resources` (`address`, `provider`,
   `providerSource`, `schemaVersion`, `tainted`).
+- `state locks`: `locks` (`module`, `project`, `environment` or `null`,
+  `lockIdentifier`, `holder`, `acquiredAt`, `unlockCommand`).
 - `state remove`: `removed` (the address).
 - `state recover`: `recovered` (the addresses recorded).
 - `state adopt`: `previousOwner` (`instance`, `claimedAt`, or `null`)
   and `owner` (`instance`, `claimedAt`).
 - `unlock`: `lock` (`lockIdentifier`, `holder`, `acquiredAt`, or
   `null` when unlocked) and `released`.
+
+`state list`, `state recover` and `unlock` without `--env` also carry
+`otherEnvironments`, an array (empty when there is nothing to say) with one
+entry per declared environment worth mentioning: `environment`, `command` (the
+command that deals with it) and `resources` (a count, `state list`),
+`unrecordedChanges` (`true`, `state recover`) or `lockIdentifier` and `holder`
+(`unlock`). The same findings are printed as notes on standard error.
+
+The error envelope can also carry `result` (when an operation finished but its
+lock could not be released: the document the operation would have printed, such
+as the applied counts, or the counts of an apply interrupted after its last
+operation) and `blockingLocks` (when a schema migration is blocked by held
+locks: `module`, `project`, `environment`, `lockIdentifier`, `holder`,
+`acquiredAt`, `unlockCommand`).
 
 **Interrupts:** the command handles Ctrl-C (SIGINT), SIGTERM, SIGHUP (the
 terminal closing) and SIGQUIT itself for its whole run, as Terraform does.
@@ -726,7 +777,7 @@ control characters removed.
 | `1`   | The plan was not confirmed at the prompt (declined, or standard input ended or could not be read); nothing was applied and the lock was released                                                                                                                                                                                                                                     | `infrastructure_cancelled`   |
 | `2`   | Configuration error: a duplicate project name, a project the module-wide evaluation leaves out, an unknown `--env` name, a run refused for acting on the wrong state identity (see Environment selection), an unknown `state remove` address, `unlock <identifier>` that matches no lock, a state URL the Rust parser rejects, `--json` without `--yes`, a prompt without a terminal | `config`                     |
 | `3`   | CUE evaluation error, including an instance in the module that fails to evaluate, and a secret that cannot be resolved (the error names the variable)                                                                                                                                                                                                                                | `eval`                       |
-| `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run, or `unlock` named a lock that is not the current one                                                                                                                                                                                                                                            | `infrastructure_locked`      |
+| `4`   | Concurrent activity; retrying later can succeed: the state is locked by another run, a schema migration is blocked by held locks or waiting for them, or `unlock` named a lock that is not the current one                                                                                                                                                                                                                                            | `infrastructure_locked`      |
 | `5`   | Any other infrastructure failure: provider, state store, apply, another instance owning the state, unrecorded changes pending or unusable, a recovery that would overwrite a newer record, a change that was not recorded, a lock that could not be released                                                                                                                         | `infrastructure`             |
 | `130` | Interrupted by a signal; everything applied is recorded. The lock is released, or the error says it was not and how to release it                                                                                                                                                                                                                                                    | `infrastructure_interrupted` |
 

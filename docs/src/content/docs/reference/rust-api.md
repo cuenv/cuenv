@@ -643,8 +643,14 @@ environment)` is a separate identity for a named environment (including
   `(module_path, project, environment, …)`, with an empty environment for the
   no-flag identity, at schema version 1; `migrate()` fails with
   `InfrastructureError::StateSchemaNewer` for a newer schema and, for any later
-  migration, with `InfrastructureError::StateMigrationBlocked` while a lock row
-  exists. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
+  migration, with `InfrastructureError::StateMigrationBlocked` (listing the
+  blocking `TenantLock`s) while a lock row exists, after waiting a bounded time
+  while `StateMigrationPending` holds new locks off. A database holding tables
+  of an unreleased development build is `StateUnreleasedLayout`, and tables
+  with cuenv's names but no migration record are `StateSchemaConflict`.
+  `StateStore::locks()` lists every lock of every tenant and
+  `StateStore::addresses()` reads a tenant's record addresses without decoding
+  them. A row that cannot be decoded is `InfrastructureError::UndecodableRecord`
   naming the address.
 - **Configuration.** `cuenv_manifest::manifest::Infrastructure::select(value,
 environment)` strictly decodes the raw `infrastructure` value of a project
