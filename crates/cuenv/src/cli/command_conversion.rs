@@ -584,13 +584,20 @@ fn infrastructure_command(
     environment: Option<String>,
 ) -> Command {
     use super::InfrastructureStateCommands;
-    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
+    use crate::commands::infrastructure::{
+        ConfirmationPolicy, InfrastructureAction, SeparateState, StateAction, UnlockScope,
+    };
     use cuenv_infrastructure::{BackendMismatch, ChangedRecord, RecoverOverrides};
     let (path, package, action) = match subcommand {
         InfrastructureCommands::Plan { path, package } => {
             (path, package, InfrastructureAction::Plan)
         }
-        InfrastructureCommands::Apply { path, package, yes } => (
+        InfrastructureCommands::Apply {
+            path,
+            package,
+            yes,
+            allow_separate_state,
+        } => (
             path,
             package,
             InfrastructureAction::Apply {
@@ -598,6 +605,11 @@ fn infrastructure_command(
                     ConfirmationPolicy::AssumeYes
                 } else {
                     ConfirmationPolicy::Prompt
+                },
+                separate_state: if allow_separate_state {
+                    SeparateState::Allow
+                } else {
+                    SeparateState::Refuse
                 },
             },
         ),
@@ -621,6 +633,7 @@ fn infrastructure_command(
             package,
             InfrastructureAction::State(match subcommand {
                 None | Some(InfrastructureStateCommands::List) => StateAction::List,
+                Some(InfrastructureStateCommands::Locks) => StateAction::Locks,
                 Some(InfrastructureStateCommands::Remove { address }) => {
                     StateAction::Remove { address }
                 }
@@ -648,10 +661,18 @@ fn infrastructure_command(
             path,
             package,
             lock_identifier,
+            module,
+            project,
         } => (
             path,
             package,
-            InfrastructureAction::Unlock { lock_identifier },
+            InfrastructureAction::Unlock {
+                lock_identifier,
+                scope: UnlockScope {
+                    module_path: module,
+                    project,
+                },
+            },
         ),
     };
     Command::Infrastructure {

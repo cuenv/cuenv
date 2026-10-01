@@ -35,12 +35,12 @@ pub use engine::{
     PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan, validate_configuration,
 };
 pub use error::{
-    InfrastructureError, Result, failure_category, strip_control_characters,
+    InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,
     strip_control_characters_except_newlines,
 };
 pub use state::{
     ConditionalPut, LockInformation, LockRequest, ManagedResource, MemoryStateStore, OwnerClaim,
-    OwnerClaimMode, RecordVersion, ResourceAddress, StateLock, StateStore, TenantOwner,
+    OwnerClaimMode, RecordVersion, ResourceAddress, StateLock, StateStore, TenantLock, TenantOwner,
     TursoConfiguration, TursoStateStore,
 };
 pub use tenant::{ProjectInstance, TenantKey, read_module_path};

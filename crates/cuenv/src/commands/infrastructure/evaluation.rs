@@ -70,6 +70,31 @@ pub(super) struct TargetRequest<'request> {
     pub(super) environment: Option<&'request str>,
 }
 
+/// How much the project declares at the top level of `infrastructure`, which
+/// a selected environment replaces entirely: what a run without `--env` would
+/// act on, and whether the providers of state recorded without `--env` are
+/// still declared.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct TopLevel {
+    /// Number of top-level `providers`.
+    pub(super) provider_count: usize,
+    /// Number of top-level `resources`.
+    pub(super) resource_count: usize,
+}
+
+/// Whether the environment a run selected is one the project declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EnvironmentSelection {
+    /// The run did not select an environment.
+    NotSelected,
+    /// The selected environment is declared.
+    Declared,
+    /// The selected environment is not declared (a state-only command may
+    /// still address state recorded for an environment that was removed from
+    /// the configuration, or mistyped its name).
+    NotDeclared,
+}
+
 /// Evaluated inputs for one run.
 #[derive(Debug)]
 pub(super) struct Target {
@@ -86,6 +111,10 @@ pub(super) struct Target {
     pub(super) environment: Option<String>,
     /// Every environment the project declares in `infrastructure.environments`.
     pub(super) declared_environments: Vec<String>,
+    /// What the project declares at the top level.
+    pub(super) top_level: TopLevel,
+    /// Whether the selected environment is declared.
+    pub(super) selection: EnvironmentSelection,
     /// What provider processes inherit from the cuenv process environment,
     /// as the selected configuration says.
     pub(super) provider_environment: ProviderEnvironment,
@@ -199,22 +228,20 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         project,
         infrastructure,
         declared_environments,
+        top_level,
     } = projection;
     let infrastructure = infrastructure.ok_or_else(|| missing_infrastructure(&project.name))?;
-    let mut warnings = Vec::new();
-    if let (Some(name), Needs::StateOnly) = (request.environment, request.needs)
-        && !declared_environments
-            .iter()
-            .any(|declared| declared == name)
-    {
-        warnings.push(format!(
-            "project '{}' no longer declares infrastructure environment '{}'; using the state \
-             recorded for it ({})",
-            project.name,
-            escape_control_characters(name),
-            declared_environments_phrase(&declared_environments)
-        ));
-    }
+    let selection = match request.environment {
+        None => EnvironmentSelection::NotSelected,
+        Some(name)
+            if declared_environments
+                .iter()
+                .any(|declared| declared == name) =>
+        {
+            EnvironmentSelection::Declared
+        }
+        Some(_) => EnvironmentSelection::NotDeclared,
+    };
     let instance = ProjectInstance::new(&relative_path, request.package)
         .map_err(|error| super::failure(&error, &Invocation::default()))?;
 
@@ -244,7 +271,9 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         infrastructure,
         environment: request.environment.map(str::to_owned),
         declared_environments,
-        warnings,
+        top_level,
+        selection,
+        warnings: Vec::new(),
         project_environment: project.env,
         project_directory: target_path,
     })
@@ -257,6 +286,8 @@ struct ProjectedTarget {
     infrastructure: Option<Infrastructure>,
     /// Every environment `infrastructure.environments` declares.
     declared_environments: Vec<String>,
+    /// What the top level of `infrastructure` declares.
+    top_level: TopLevel,
 }
 
 fn project_target(
@@ -293,28 +324,62 @@ fn project_target(
     let project = selected.deserialize().map_err(CliError::from)?;
     // Ordinary Project decoding keeps infrastructure as raw JSON. Only this
     // command consumes it, decoding strictly just the selected configuration.
+    let top_level = match request.needs {
+        Needs::Configuration => top_level_declarations(&selected.value),
+        // Only a run without `--env` that has environments to mention needs it.
+        Needs::StateOnly if environment.is_none() && !declared_environments.is_empty() => {
+            top_level_resources_if_evaluable(target_path, request.package)
+        }
+        Needs::StateOnly => TopLevel::default(),
+    };
+    let selection = SelectionContext {
+        request,
+        project_name: &project_name,
+        declared_environments: &declared_environments,
+    };
     let infrastructure = selected
         .value
         .get("infrastructure")
         .cloned()
-        .map(|value| select_infrastructure(value, request, &project_name, &declared_environments))
+        .map(|value| select_infrastructure(value, &selection))
         .transpose()?;
     Ok(ProjectedTarget {
         project,
         infrastructure,
         declared_environments,
+        top_level,
     })
+}
+
+/// How many top-level providers and resources the project declares, counted
+/// before an environment replaces them.
+fn top_level_declarations(project: &serde_json::Value) -> TopLevel {
+    let count = |field: &str| {
+        project
+            .pointer(&format!("/infrastructure/{field}"))
+            .and_then(serde_json::Value::as_object)
+            .map_or(0, serde_json::Map::len)
+    };
+    TopLevel {
+        provider_count: count("providers"),
+        resource_count: count("resources"),
+    }
+}
+
+/// What choosing the configuration of one run needs besides its value.
+struct SelectionContext<'selection> {
+    request: &'selection TargetRequest<'selection>,
+    project_name: &'selection str,
+    declared_environments: &'selection [String],
 }
 
 /// Decode the selected configuration of the raw `infrastructure` value.
 fn select_infrastructure(
     mut value: serde_json::Value,
-    request: &TargetRequest<'_>,
-    project_name: &str,
-    declared_environments: &[String],
+    context: &SelectionContext<'_>,
 ) -> Result<Infrastructure, CliError> {
-    let environment = match request.needs {
-        Needs::Configuration => request.environment,
+    let environment = match context.request.needs {
+        Needs::Configuration => context.request.environment,
         // Only the state backend is wanted; whatever the configuration
         // around it holds (it may be incomplete, or name an environment that
         // was removed) is not decoded.
@@ -333,34 +398,53 @@ fn select_infrastructure(
         }
     };
     Infrastructure::select(value, environment).map_err(|error| match error {
-        InfrastructureSelectionError::UnknownEnvironment { requested, .. } => {
-            unknown_environment(project_name, &requested, declared_environments)
-        }
+        InfrastructureSelectionError::UnknownEnvironment { requested, .. } => unknown_environment(
+            context.project_name,
+            &requested,
+            context.declared_environments,
+        ),
         other @ (InfrastructureSelectionError::NotAnObject { .. }
         | InfrastructureSelectionError::Invalid(_)) => CliError::config(other.to_string()),
     })
 }
 
-/// The environments the project declares, for a state-only command that did
-/// not export them: found by a second evaluation that is allowed to fail.
-/// An environment that does not evaluate (the very reason state may be
-/// stranded) must not stop the command, so a failure only means the names
-/// are unknown, and no warning or note can name them.
-fn declared_environments_if_evaluable(target_path: &Path, package: &str) -> Vec<String> {
-    let evaluated = evaluate_path(PathEvaluation {
+/// One path of the project's configuration, for a state-only command that
+/// did not export it: found by another evaluation that is allowed to fail.
+/// A part of the configuration that does not evaluate (the very reason state
+/// may be stranded) must not stop the command, so a failure only means the
+/// value is unknown.
+fn export_if_evaluable(target_path: &Path, package: &str, path: &str) -> Option<serde_json::Value> {
+    let module = evaluate_path(PathEvaluation {
         target_path,
         package,
         concrete_paths: Vec::new(),
-        export_paths: vec!["infrastructure.environments".to_string()],
-    });
-    let Ok(module) = evaluated else {
-        return Vec::new();
-    };
+        export_paths: vec![path.to_string()],
+    })
+    .ok()?;
     let relative_path = compute_relative_path(target_path, &module.root);
     module
         .get(Path::new(&relative_path))
-        .map(|instance| declared_environment_names(&instance.value))
+        .map(|instance| instance.value.clone())
+}
+
+/// The environments the project declares, when they can be found; none are
+/// named otherwise, and no warning or note can name them.
+fn declared_environments_if_evaluable(target_path: &Path, package: &str) -> Vec<String> {
+    export_if_evaluable(target_path, package, "infrastructure.environments")
+        .map(|project| declared_environment_names(&project))
         .unwrap_or_default()
+}
+
+/// What a state-only run without `--env` can tell of the top level: whether
+/// `resources` is declared, which decides how it speaks of the environments.
+/// The provider count is not exported and is left at zero.
+fn top_level_resources_if_evaluable(target_path: &Path, package: &str) -> TopLevel {
+    let resource_count = export_if_evaluable(target_path, package, "infrastructure.resources")
+        .map_or(0, |project| top_level_declarations(&project).resource_count);
+    TopLevel {
+        provider_count: 0,
+        resource_count,
+    }
 }
 
 fn declared_environment_names(project: &serde_json::Value) -> Vec<String> {

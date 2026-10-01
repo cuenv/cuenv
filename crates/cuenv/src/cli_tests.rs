@@ -92,7 +92,9 @@ fn test_command_conversion() {
 
 #[test]
 fn test_infrastructure_command_conversion() {
-    use crate::commands::infrastructure::{ConfirmationPolicy, InfrastructureAction, StateAction};
+    use crate::commands::infrastructure::{
+        ConfirmationPolicy, InfrastructureAction, SeparateState, StateAction, UnlockScope,
+    };
 
     let cli = Cli::try_parse_from(["cuenv", "i", "destroy", "--yes", "-p", "infra"]).unwrap();
     let command = cli.command.unwrap().into_command(None);
@@ -106,6 +108,30 @@ fn test_infrastructure_command_conversion() {
             confirmation: ConfirmationPolicy::AssumeYes
         }
     );
+
+    let apply_action = |arguments: &[&str]| {
+        let cli = Cli::try_parse_from(arguments).unwrap();
+        let Command::Infrastructure { action, .. } = cli.command.unwrap().into_command(None) else {
+            panic!("Expected Command::Infrastructure");
+        };
+        action
+    };
+    assert_eq!(
+        apply_action(&["cuenv", "i", "apply", "--yes"]),
+        InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::AssumeYes,
+            separate_state: SeparateState::Refuse,
+        }
+    );
+    assert_eq!(
+        apply_action(&["cuenv", "i", "apply", "--allow-separate-state"]),
+        InfrastructureAction::Apply {
+            confirmation: ConfirmationPolicy::Prompt,
+            separate_state: SeparateState::Allow,
+        }
+    );
+    // Only `apply` creates, so only it has the flag.
+    assert!(Cli::try_parse_from(["cuenv", "i", "destroy", "--allow-separate-state"]).is_err());
 
     let state_action = |arguments: &[&str]| {
         let cli = Cli::try_parse_from(arguments).unwrap();
@@ -171,6 +197,13 @@ fn test_infrastructure_command_conversion() {
         })
     );
     assert_eq!(
+        state_action(&["cuenv", "i", "state", "locks", "-p", "infra"]),
+        (
+            "infra".to_string(),
+            InfrastructureAction::State(StateAction::Locks)
+        )
+    );
+    assert_eq!(
         state_action(&["cuenv", "i", "state", "adopt", "-p", "infra"]),
         (
             "infra".to_string(),
@@ -185,7 +218,32 @@ fn test_infrastructure_command_conversion() {
     assert_eq!(
         action,
         InfrastructureAction::Unlock {
-            lock_identifier: Some("abc".to_string())
+            lock_identifier: Some("abc".to_string()),
+            scope: UnlockScope::default(),
+        }
+    );
+    let cli = Cli::try_parse_from([
+        "cuenv",
+        "infrastructure",
+        "unlock",
+        "abc",
+        "--module",
+        "example.com/m",
+        "--project",
+        "api",
+    ])
+    .unwrap();
+    let Command::Infrastructure { action, .. } = cli.command.unwrap().into_command(None) else {
+        panic!("Expected Command::Infrastructure");
+    };
+    assert_eq!(
+        action,
+        InfrastructureAction::Unlock {
+            lock_identifier: Some("abc".to_string()),
+            scope: UnlockScope {
+                module_path: Some("example.com/m".to_string()),
+                project: Some("api".to_string()),
+            },
         }
     );
 }

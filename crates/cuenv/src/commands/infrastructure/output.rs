@@ -16,10 +16,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use cuenv_events::{emit_stderr, emit_stdout};
 use cuenv_infrastructure::{
     LockInformation, ManagedResource, Plan, PlanMode, PlanSummary, ResourceAddress, TenantKey,
-    TenantOwner, strip_control_characters,
+    TenantLock, TenantOwner, strip_control_characters,
 };
 use serde_json::{Value, json};
 
+use super::evaluation::escape_control_characters;
+use super::invocation::Invocation;
 use super::tenant_label;
 use crate::cli::OutputFormat;
 
@@ -78,6 +80,26 @@ impl ResultGate {
         let mut state = self.lock();
         if matches!(*state, GateState::Open | GateState::Pending(_)) {
             *state = GateState::Pending(payload);
+        }
+    }
+
+    /// Take the result the command produced so far, leaving the gate open:
+    /// for an error that must still say what the command did.
+    fn take(&self) -> Option<Value> {
+        let mut state = self.lock();
+        match std::mem::replace(&mut *state, GateState::Open) {
+            GateState::Pending(payload) => Some(payload),
+            other => {
+                *state = other;
+                None
+            }
+        }
+    }
+
+    /// Add a field to the result the command produced, when it is an object.
+    fn amend(&self, name: &str, value: Value) {
+        if let GateState::Pending(Value::Object(fields)) = &mut *self.lock() {
+            fields.insert(name.to_string(), value);
         }
     }
 
@@ -155,6 +177,74 @@ impl Output {
         self.gate.set(payload);
     }
 
+    /// The result envelope the command produced so far (JSON mode), taken
+    /// out of the output, for an error that must still say what the command
+    /// did: an operation that finished but could not release its lock.
+    pub(super) fn take_result(&self) -> Option<Value> {
+        self.gate.take()
+    }
+
+    /// What a run without `--env` found in the project's other environments:
+    /// notes on standard error in both formats, and in JSON mode the
+    /// `otherEnvironments` field of the result (always present, empty when
+    /// there is nothing to report).
+    pub(super) fn other_environments(&self, found: &[OtherEnvironment]) {
+        for other in found {
+            emit_stderr!(format!("note: {}", other.note()));
+        }
+        if self.is_json() {
+            self.gate.amend(
+                "otherEnvironments",
+                Value::Array(found.iter().map(OtherEnvironment::json).collect()),
+            );
+        }
+    }
+
+    /// Every lock held in the state database (`state locks`).
+    pub(super) fn locks(&self, locks: &[TenantLock], invocation: &Invocation) {
+        if self.is_json() {
+            let rows: Vec<Value> = locks
+                .iter()
+                .map(|held| {
+                    json!({
+                        "module": held.module_path,
+                        "project": held.project,
+                        "environment": held.environment,
+                        "lockIdentifier": held.lock.lock_identifier,
+                        "holder": held.lock.holder,
+                        "acquiredAt": held.lock.acquired_at,
+                        "unlockCommand": invocation.unlock_command(held),
+                    })
+                })
+                .collect();
+            self.envelope(json!({ "locks": rows }));
+            return;
+        }
+        if locks.is_empty() {
+            emit_stdout!("No locks are held in the state database.");
+            return;
+        }
+        emit_stdout!(format!(
+            "{} lock(s) held in the state database. Release one only after confirming its run \
+             is gone.",
+            locks.len()
+        ));
+        for held in locks {
+            let age = held
+                .lock
+                .age_description()
+                .map_or_else(String::new, |age| format!(" ({age} ago)"));
+            emit_stdout!(format!(
+                "{}\n  lock {}, held by '{}' since {}{age}\n  release: {}",
+                escape_control_characters(&held.label()),
+                held.lock.lock_identifier,
+                held.lock.holder,
+                held.lock.acquired_at,
+                invocation.unlock_command(held)
+            ));
+        }
+    }
+
     /// Progress while applying: the result in text mode, a diagnostic on
     /// standard error in JSON mode.
     pub(super) fn progress(&self, line: impl std::fmt::Display) {
@@ -187,31 +277,17 @@ impl Output {
     /// A finished apply or destroy.
     pub(super) fn converged(&self, result: &Converged<'_>) {
         if self.is_json() {
-            let mut payload = plan_json(result.plan);
-            if let Value::Object(fields) = &mut payload {
-                fields.insert("operation".to_string(), json!(operation_name(result.mode)));
-                fields.insert(
-                    "applied".to_string(),
-                    result
-                        .applied
-                        .map_or(Value::Null, |applied| summary_json(&applied)),
-                );
-            }
-            self.envelope(payload);
+            self.envelope(converged_json(result));
             return;
         }
-        let Some(applied) = result.applied else {
+        if result.applied.is_none() {
             return;
+        }
+        let heading = match result.mode {
+            PlanMode::Apply => "Apply",
+            PlanMode::Destroy => "Destroy",
         };
-        match result.mode {
-            PlanMode::Apply => emit_stdout!(format!(
-                "Apply complete: {} created, {} updated, {} replaced, {} deleted, {} refreshed.",
-                applied.create, applied.update, applied.replace, applied.delete, applied.refresh
-            )),
-            PlanMode::Destroy => {
-                emit_stdout!(format!("Destroy complete: {} destroyed.", applied.delete));
-            }
-        }
+        emit_stdout!(format!("{heading} complete: {}.", applied_phrase(result)));
     }
 
     /// A resource forgotten by `state remove`.
@@ -373,6 +449,113 @@ impl Output {
                 lock.lock_identifier, lock.holder
             )),
         }
+    }
+}
+
+/// What an apply or destroy did, in words: the counts of each kind of change.
+#[must_use]
+pub(super) fn applied_phrase(result: &Converged<'_>) -> String {
+    let Some(applied) = result.applied else {
+        return "nothing to apply".to_string();
+    };
+    match result.mode {
+        PlanMode::Apply => format!(
+            "{} created, {} updated, {} replaced, {} deleted, {} refreshed",
+            applied.create, applied.update, applied.replace, applied.delete, applied.refresh
+        ),
+        PlanMode::Destroy => format!("{} destroyed", applied.delete),
+    }
+}
+
+/// The JSON result of a finished apply or destroy: the plan, the operation
+/// and the counts of what was applied.
+#[must_use]
+pub(super) fn converged_json(result: &Converged<'_>) -> Value {
+    let mut payload = plan_json(result.plan);
+    if let Value::Object(fields) = &mut payload {
+        fields.insert("operation".to_string(), json!(operation_name(result.mode)));
+        fields.insert(
+            "applied".to_string(),
+            result
+                .applied
+                .map_or(Value::Null, |applied| summary_json(&applied)),
+        );
+    }
+    payload
+}
+
+/// What a run without `--env` found in another environment of the project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OtherEnvironment {
+    /// The environment's name.
+    pub(super) environment: String,
+    /// What was found there.
+    pub(super) finding: Finding,
+    /// The command that deals with it, selecting that environment.
+    pub(super) command: String,
+}
+
+/// What a run found in another environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Finding {
+    /// Recorded resources (`state list`).
+    Resources(usize),
+    /// Unrecorded changes saved locally (`state recover`).
+    UnrecordedChanges,
+    /// A held lock (`unlock`).
+    Locked {
+        lock_identifier: String,
+        holder: String,
+    },
+}
+
+impl OtherEnvironment {
+    /// The note printed on standard error.
+    pub(super) fn note(&self) -> String {
+        let environment = escape_control_characters(&self.environment);
+        match &self.finding {
+            Finding::Resources(count) => format!(
+                "environment '{environment}' has {count} recorded resource(s), recorded \
+                 separately from this selection; list them with `{}`",
+                self.command
+            ),
+            Finding::UnrecordedChanges => format!(
+                "unrecorded changes are saved for environment '{environment}'; record them with \
+                 `{}`",
+                self.command
+            ),
+            Finding::Locked {
+                lock_identifier,
+                holder,
+            } => format!(
+                "environment '{environment}' is locked by '{holder}' (lock {lock_identifier}); \
+                 release it with `{}`",
+                self.command
+            ),
+        }
+    }
+
+    /// The entry of `otherEnvironments` in the JSON result.
+    fn json(&self) -> Value {
+        let mut entry = serde_json::Map::new();
+        entry.insert("environment".to_string(), json!(self.environment));
+        match &self.finding {
+            Finding::Resources(count) => {
+                entry.insert("resources".to_string(), json!(count));
+            }
+            Finding::UnrecordedChanges => {
+                entry.insert("unrecordedChanges".to_string(), json!(true));
+            }
+            Finding::Locked {
+                lock_identifier,
+                holder,
+            } => {
+                entry.insert("lockIdentifier".to_string(), json!(lock_identifier));
+                entry.insert("holder".to_string(), json!(holder));
+            }
+        }
+        entry.insert("command".to_string(), json!(self.command));
+        Value::Object(entry)
     }
 }
 

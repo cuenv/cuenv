@@ -2,6 +2,7 @@
 
 use super::output::{ErrorEnvelope, OutputFormat};
 use miette::{Diagnostic, Report};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use thiserror::Error;
 
@@ -108,6 +109,12 @@ pub enum CliError {
         /// did not: the objects are gone until the next apply recreates
         /// them. Empty when there are none.
         deleted_not_recreated: Vec<String>,
+        /// Further JSON fields of the error envelope, by name: facts a
+        /// script needs beyond the code and message (the locks that block a
+        /// migration, the result of an operation that finished but could not
+        /// release its lock).
+        /// Boxed, so the error stays small enough to return everywhere.
+        details: Option<Box<BTreeMap<String, serde_json::Value>>>,
     },
     /// Other unexpected error (exit code 3)
     #[error("Unexpected error: {message}")]
@@ -171,6 +178,36 @@ impl CliError {
             kind,
             lock: None,
             deleted_not_recreated: Vec::new(),
+            details: None,
+        }
+    }
+
+    /// Add a field to the JSON error envelope of an infrastructure error;
+    /// any other error is returned unchanged. The value is redacted with the
+    /// rest of the envelope.
+    #[must_use]
+    pub fn with_detail(self, name: &str, value: serde_json::Value) -> Self {
+        match self {
+            Self::Infrastructure {
+                message,
+                help,
+                kind,
+                lock,
+                deleted_not_recreated,
+                details,
+            } => {
+                let mut details = details.map(|boxed| *boxed).unwrap_or_default();
+                details.insert(name.to_string(), value);
+                Self::Infrastructure {
+                    message,
+                    help,
+                    kind,
+                    lock,
+                    deleted_not_recreated,
+                    details: Some(Box::new(details)),
+                }
+            }
+            other => other,
         }
     }
 
@@ -184,6 +221,7 @@ impl CliError {
                 help,
                 kind,
                 deleted_not_recreated,
+                details,
                 ..
             } => Self::Infrastructure {
                 message,
@@ -191,6 +229,7 @@ impl CliError {
                 kind,
                 lock: Some(status),
                 deleted_not_recreated,
+                details,
             },
             other => other,
         }
@@ -207,6 +246,7 @@ impl CliError {
                 help,
                 kind,
                 lock,
+                details,
                 ..
             } if !addresses.is_empty() => {
                 let listed = addresses.join(", ");
@@ -222,6 +262,7 @@ impl CliError {
                     kind,
                     lock,
                     deleted_not_recreated: addresses,
+                    details,
                 }
             }
             other => other,
@@ -292,12 +333,14 @@ impl CliError {
                 kind,
                 lock,
                 deleted_not_recreated,
+                details,
             } => Self::Infrastructure {
                 message: redacted(message),
                 help: help.map(redacted),
                 kind,
                 lock,
                 deleted_not_recreated,
+                details,
             },
         }
     }
@@ -315,6 +358,7 @@ impl CliError {
                 kind,
                 lock,
                 deleted_not_recreated,
+                details,
                 ..
             } => Self::Infrastructure {
                 message,
@@ -322,6 +366,7 @@ impl CliError {
                 kind,
                 lock,
                 deleted_not_recreated,
+                details,
             },
         }
     }
@@ -466,7 +511,8 @@ pub const fn error_code_for(err: &CliError) -> &'static str {
 /// It holds `code`, `message`, `help` when there is help text,
 /// `lockIdentifier` and `lockReleased` when an infrastructure error concerns
 /// a state lock, and `deletedNotRecreated` (the addresses) when a failed
-/// apply left replacements deleted and not recreated.
+/// apply left replacements deleted and not recreated, plus the `details` of an
+/// infrastructure error under their own names.
 ///
 /// Every string in it is redacted as a string (never as serialized text,
 /// where a secret that JSON escapes would not be found).
@@ -495,6 +541,15 @@ pub fn error_envelope(err: &CliError) -> ErrorEnvelope<serde_json::Value> {
             "deletedNotRecreated".to_string(),
             deleted_not_recreated.clone().into(),
         );
+    }
+    if let CliError::Infrastructure {
+        details: Some(details),
+        ..
+    } = err
+    {
+        for (name, value) in details.iter() {
+            error.entry(name.clone()).or_insert_with(|| value.clone());
+        }
     }
     let mut error = serde_json::Value::Object(error);
     cuenv_events::redact_json_value(&mut error);

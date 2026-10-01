@@ -32,17 +32,19 @@ use cuenv_events::emit_stderr;
 use cuenv_infrastructure::{
     ApplyContext, ApplyEvent, BackendMismatch, EngineOptions, EngineSetup, InfrastructureEngine,
     InfrastructureError, LockRequest, OwnerClaim, OwnerClaimMode, Plan, PlanMode, ProjectInstance,
-    RecoverOptions, RecoverOverrides, StateLock, StateStore, TenantKey, TursoConfiguration,
-    TursoStateStore, UnrecordedStore, strip_control_characters,
-    strip_control_characters_except_newlines, validate_configuration,
+    RecoverOptions, RecoverOverrides, ResourceAddress, StateLock, StateStore, TenantKey,
+    TenantLock, TursoConfiguration, TursoStateStore, UnrecordedFileProblem, UnrecordedStore,
+    strip_control_characters, strip_control_characters_except_newlines, validate_configuration,
 };
 use cuenv_manifest::environment::EnvValue;
 use cuenv_manifest::manifest::{Infrastructure, InfrastructurePolicyAction};
 
-use self::evaluation::{NameCheck, Needs, Target, TargetRequest};
-use self::interrupts::{HeldLock, Interrupts};
+use self::evaluation::{EnvironmentSelection, NameCheck, Needs, Target, TargetRequest, TopLevel};
+use self::interrupts::{HeldLock, Interrupts, interrupted_after_completion};
 use self::invocation::Invocation;
-use self::output::{Adoption, Converged, Finish, LockOutcome, LockReport, Output};
+use self::output::{
+    Adoption, Converged, Finding, Finish, LockOutcome, LockReport, OtherEnvironment, Output,
+};
 use self::provider_environment::ProviderEnvironmentInputs;
 use crate::cli::{CliError, InfrastructureFailureKind, LockStatus, OutputFormat};
 
@@ -74,6 +76,39 @@ pub enum StateAction {
     },
     /// Make this project's CUE instance the owner of its state.
     Adopt,
+    /// List every lock held in the state database, for every project.
+    Locks,
+}
+
+/// Whether `apply --env NAME` may create resources whose addresses the
+/// project also has recorded without `--env`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeparateState {
+    /// Refuse: both identities would claim the same real objects
+    /// (`--allow-separate-state` chooses [`SeparateState::Allow`]).
+    Refuse,
+    /// Create them as separate objects.
+    Allow,
+}
+
+/// Which project's lock `unlock` acts on.
+///
+/// The evaluated project's, or one named by its module and project name,
+/// which need not evaluate (it may be gone, broken, or belong to another
+/// repository sharing the database). `--env` still selects the environment.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UnlockScope {
+    /// CUE module path of the project; the evaluated project's when `None`.
+    pub module_path: Option<String>,
+    /// Name of the project; the evaluated project's when `None`.
+    pub project: Option<String>,
+}
+
+impl UnlockScope {
+    /// Whether the scope names another project than the evaluated one.
+    fn is_named(&self) -> bool {
+        self.module_path.is_some() || self.project.is_some()
+    }
 }
 
 /// What `cuenv infrastructure` should do.
@@ -85,6 +120,9 @@ pub enum InfrastructureAction {
     Apply {
         /// Whether to ask before applying.
         confirmation: ConfirmationPolicy,
+        /// Whether to create resources the project also has recorded
+        /// without `--env`.
+        separate_state: SeparateState,
     },
     /// Delete every managed resource of the project.
     Destroy {
@@ -97,6 +135,8 @@ pub enum InfrastructureAction {
     Unlock {
         /// Identifier of the lock to release.
         lock_identifier: Option<String>,
+        /// Which project's lock to act on.
+        scope: UnlockScope,
     },
 }
 
@@ -108,7 +148,10 @@ impl InfrastructureAction {
             Self::Plan => InfrastructurePolicyAction::Plan,
             Self::Apply { .. } => InfrastructurePolicyAction::Apply,
             Self::Destroy { .. } => InfrastructurePolicyAction::Destroy,
-            Self::State(StateAction::List) => InfrastructurePolicyAction::StateList,
+            // Listing the locks of the whole database is listing state.
+            Self::State(StateAction::List | StateAction::Locks) => {
+                InfrastructurePolicyAction::StateList
+            }
             Self::State(StateAction::Remove { .. }) => InfrastructurePolicyAction::StateRemove,
             Self::State(StateAction::Recover { .. }) => InfrastructurePolicyAction::StateRecover,
             Self::State(StateAction::Adopt) => InfrastructurePolicyAction::StateAdopt,
@@ -135,7 +178,10 @@ impl InfrastructureAction {
             | Self::Destroy { .. }
             | Self::State(StateAction::Adopt) => NameCheck::WholeModule,
             Self::State(
-                StateAction::List | StateAction::Remove { .. } | StateAction::Recover { .. },
+                StateAction::List
+                | StateAction::Locks
+                | StateAction::Remove { .. }
+                | StateAction::Recover { .. },
             )
             | Self::Unlock { .. } => NameCheck::TargetOnly,
         }
@@ -155,7 +201,7 @@ impl InfrastructureAction {
     /// Whether the action asks for confirmation.
     const fn confirmation(&self) -> ConfirmationPolicy {
         match self {
-            Self::Apply { confirmation } | Self::Destroy { confirmation } => *confirmation,
+            Self::Apply { confirmation, .. } | Self::Destroy { confirmation } => *confirmation,
             Self::Plan | Self::State(_) | Self::Unlock { .. } => ConfirmationPolicy::AssumeYes,
         }
     }
@@ -236,16 +282,12 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
             Some("Check the Turso URL, the authentication token and network access.".to_string()),
         ),
         // A local file problem, never a state store one.
-        InfrastructureError::UnrecordedFile { path, .. } => (
+        InfrastructureError::UnrecordedFile { path, kind, .. } => (
             InfrastructureFailureKind::Failed,
-            Some(format!(
-                "{} is in cuenv's unrecorded change directory but cannot be used. Check it, then \
-                 move it out of that directory and run the command again; moving it aside \
-                 discards the change it records from cuenv's view (the resource itself is not \
-                 touched). If it was saved for another state backend and you have checked that \
-                 this backend is the right one, run `{}` instead.",
-                strip_control_characters(path),
-                invocation.command("state recover --accept-backend")
+            Some(unrecorded_file_help(
+                &strip_control_characters(path),
+                *kind,
+                invocation,
             )),
         ),
         InfrastructureError::StateChanged { address, .. } => (
@@ -268,22 +310,47 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
                     .to_string(),
             ),
         ),
-        InfrastructureError::StateMigrationBlocked { .. } => (
+        InfrastructureError::StateMigrationBlocked { locks, .. } => {
+            return migration_blocked(message, locks, invocation);
+        }
+        InfrastructureError::StateMigrationPending { .. } => {
+            return CliError::infrastructure(
+                message,
+                Some("Run the command again in a moment.".to_string()),
+                InfrastructureFailureKind::Locked,
+            );
+        }
+        InfrastructureError::StateUnreleasedLayout { .. } => (
             InfrastructureFailureKind::Failed,
-            Some(format!(
-                "Run the command again once the other `cuenv infrastructure` commands have \
-                 finished. If a run died and left its lock behind, release it with `{}` for \
-                 the project that holds it.",
-                invocation.command("unlock <lock id>")
-            )),
+            Some(
+                "The database holds tables written by an unreleased development build of \
+                 cuenv; no released cuenv reads that layout, and cuenv never adopts or \
+                 ignores it. This is not a connection problem. If the state recorded there is \
+                 disposable, drop every table whose name starts with `cuenv_infrastructure` \
+                 (the tables listed above and any others of that family) and run the command \
+                 again; if it manages real resources, use another database \
+                 (`infrastructure.state.turso.url`) instead."
+                    .to_string(),
+            ),
+        ),
+        InfrastructureError::StateSchemaConflict { .. } => (
+            InfrastructureFailureKind::Failed,
+            Some(
+                "The database answered, but its tables do not match what this cuenv expects; \
+                 this is not a connection problem, so the Turso URL and token reach it. Point \
+                 `infrastructure.state.turso.url` at a database cuenv created (or an empty \
+                 one), or remove the conflicting tables if they are not needed."
+                    .to_string(),
+            ),
         ),
         InfrastructureError::UndecodableRecord { address, .. } => (
             InfrastructureFailureKind::Failed,
             Some(format!(
-                "The state store answered, but its record of {} is damaged or was not written by \
-                 cuenv; this is not a connection problem, so the Turso URL and token are fine. \
-                 Inspect or repair that row in the state database.",
-                strip_control_characters(address)
+                "The state store answered, but its record of {} is damaged or was not \
+                 written by cuenv; this is not a connection problem, so the Turso URL and \
+                 token are fine. {}",
+                strip_control_characters(address),
+                undecodable_record_remedy(address, invocation)
             )),
         ),
         InfrastructureError::PlanOutdated { .. } => (
@@ -332,6 +399,99 @@ fn failure(error: &InfrastructureError, invocation: &Invocation) -> CliError {
     CliError::infrastructure(message, help, kind)
 }
 
+/// What to do about a damaged record: `state remove` forgets it by address
+/// (without decoding it), when it has an address.
+fn undecodable_record_remedy(address: &str, invocation: &Invocation) -> String {
+    let address = strip_control_characters(address);
+    if address.starts_with('(') {
+        return "Inspect or repair that row in the state database; it has no readable address, \
+                so `state remove` cannot name it."
+            .to_string();
+    }
+    format!(
+        "Forget it with `{}` (the real object is not touched; the next plan creates it \
+         again), or repair that row in the state database.",
+        invocation.command(&format!("state remove {address}"))
+    )
+}
+
+/// The help for an unrecorded change file that cannot be used: the remedy
+/// fits what is wrong with it. Only a file saved for another state backend
+/// can be recovered with `--accept-backend`.
+fn unrecorded_file_help(
+    path: &str,
+    kind: UnrecordedFileProblem,
+    invocation: &Invocation,
+) -> String {
+    let move_aside = "Check it, then move it out of that directory and run the command again; \
+                      moving it aside discards the change it records from cuenv's view (the \
+                      resource itself is not touched).";
+    match kind {
+        UnrecordedFileProblem::Backend => format!(
+            "{path} is in cuenv's unrecorded change directory but was saved for another state \
+             backend. {move_aside} If you have checked that this backend is the right one, run \
+             `{}` instead.",
+            invocation.command("state recover --accept-backend")
+        ),
+        UnrecordedFileProblem::DevelopmentBuild => format!(
+            "{path} was written by an unreleased development build of cuenv, and no released \
+             cuenv reads that format. The resource it records may exist: check with the \
+             provider's own tools, and with `{}` whether cuenv knows it. {move_aside}",
+            invocation.command("state list")
+        ),
+        UnrecordedFileProblem::Format => format!(
+            "{path} is in cuenv's unrecorded change directory but is not a file this cuenv can \
+             read (another format, damaged, or not written by cuenv). {move_aside}"
+        ),
+        UnrecordedFileProblem::Other => format!(
+            "{path} is in cuenv's unrecorded change directory but cannot be used. {move_aside}"
+        ),
+    }
+}
+
+/// How many blocking locks a migration error names commands for.
+const LISTED_UNLOCK_COMMANDS: usize = 5;
+
+/// A migration refused because locks are held: exit code 4, with every
+/// blocking lock in the message and in the JSON `blockingLocks`, and the
+/// commands that release them, which need no project of that name to
+/// evaluate.
+fn migration_blocked(message: String, locks: &[TenantLock], invocation: &Invocation) -> CliError {
+    let mut help = format!(
+        "Wait for the other `cuenv infrastructure` commands to finish, then run the command \
+         again. If a run died and left its lock behind, `{}` lists every lock in the database, \
+         whichever project holds it.",
+        invocation.command("state locks")
+    );
+    if !locks.is_empty() {
+        let commands: Vec<String> = locks
+            .iter()
+            .take(LISTED_UNLOCK_COMMANDS)
+            .map(|held| format!("`{}`", invocation.unlock_command(held)))
+            .collect();
+        help = format!(
+            "{help} After checking that its run is gone, release a lock with {}.",
+            commands.join(" or ")
+        );
+    }
+    let blocking: Vec<serde_json::Value> = locks
+        .iter()
+        .map(|held| {
+            serde_json::json!({
+                "module": held.module_path,
+                "project": held.project,
+                "environment": held.environment,
+                "lockIdentifier": held.lock.lock_identifier,
+                "holder": held.lock.holder,
+                "acquiredAt": held.lock.acquired_at,
+                "unlockCommand": invocation.unlock_command(held),
+            })
+        })
+        .collect();
+    CliError::infrastructure(message, Some(help), InfrastructureFailureKind::Locked)
+        .with_detail("blockingLocks", serde_json::Value::Array(blocking))
+}
+
 /// Execute `cuenv infrastructure`.
 ///
 /// The command claims interrupt signals before doing anything else and
@@ -375,6 +535,7 @@ async fn run(
     let target = evaluate_target(options, interrupts).await?;
     preflight(&options.action, &target, &invocation)?;
     let resolved = resolve(&options.action, &target).await?;
+    let facts = SelectionFacts::of(&target);
     let Target {
         tenant,
         unselected_tenant,
@@ -382,14 +543,29 @@ async fn run(
         infrastructure,
         environment,
         declared_environments,
+        top_level,
         project_directory,
         ..
     } = target;
-    let siblings = Siblings {
+    let mut siblings = Siblings {
         unselected_tenant,
         declared_environments,
         selected: environment,
+        top_level,
     };
+    let tenant = match &options.action {
+        InfrastructureAction::Unlock { scope, .. } if scope.is_named() => {
+            scoped_tenant(&tenant, scope, &invocation)?
+        }
+        _ => tenant,
+    };
+    if let InfrastructureAction::Unlock { scope, .. } = &options.action
+        && scope.is_named()
+    {
+        // The evaluated project's other environments are not this lock's.
+        siblings.declared_environments.clear();
+        siblings.unselected_tenant = tenant.clone();
+    }
     let context = CommandContext {
         store: &resolved.store,
         tenant: &tenant,
@@ -400,29 +576,47 @@ async fn run(
         interrupts,
         answers: &answers,
     };
-    if options.action.uses_provider_environment() {
-        refuse_unmoved_state(&context).await?;
+    let inputs = EngineInputs {
+        infrastructure,
+        project_directory,
+        provider_environment_variables: resolved.provider_environment_variables,
+        withheld_environment_variables: resolved.withheld_environment_variables,
+        // The user state directory (see `UnrecordedStore`).
+        unrecorded_directory: None,
+    };
+    guard_selection(&context, &options.action, &facts, &inputs).await?;
+    dispatch(&options.action, &context, inputs).await
+}
+
+/// The tenant `unlock` acts on when it names a project: the evaluated
+/// project's module and name, each replaced by what was given, in the
+/// selected environment.
+fn scoped_tenant(
+    evaluated: &TenantKey,
+    scope: &UnlockScope,
+    invocation: &Invocation,
+) -> Result<TenantKey, CliError> {
+    let module_path = scope
+        .module_path
+        .as_deref()
+        .unwrap_or_else(|| evaluated.module_path());
+    let project = scope
+        .project
+        .clone()
+        .unwrap_or_else(|| evaluated.project().to_string());
+    match evaluated.environment() {
+        Some(environment) => TenantKey::with_environment(module_path, project, environment),
+        None => TenantKey::new(module_path, project),
     }
-    dispatch(
-        &options.action,
-        &context,
-        EngineInputs {
-            infrastructure,
-            project_directory,
-            provider_environment_variables: resolved.provider_environment_variables,
-            withheld_environment_variables: resolved.withheld_environment_variables,
-            // The user state directory (see `UnrecordedStore`).
-            unrecorded_directory: None,
-        },
-    )
-    .await
+    .map_err(|error| failure(&error, invocation))
 }
 
 /// The checks that need neither a secret nor the state store, run before
-/// either is touched: the operator's warnings, the state URL, the choice of
-/// identity, and (for commands that start providers) the providers and
-/// resources. The engine repeats the last one before planning as defense in
-/// depth.
+/// either is touched: the operator's warnings, the state URL, and (for
+/// commands that start providers) the providers and resources. The engine
+/// repeats the last one before planning as defense in depth. The checks of
+/// the state identity a run acts on need the state store and run after it is
+/// connected ([`guard_selection`]).
 fn preflight(
     action: &InfrastructureAction,
     target: &Target,
@@ -433,7 +627,6 @@ fn preflight(
     }
     validate_state_url(&target.infrastructure)?;
     if action.uses_provider_environment() {
-        refuse_unselected_environment(target, invocation)?;
         validate_configuration(&target.infrastructure, target.environment.as_deref())
             .map_err(|error| failure(&error, invocation))?;
     }
@@ -450,37 +643,6 @@ fn validate_state_url(infrastructure: &Infrastructure) -> Result<(), CliError> {
     })
     .map(drop)
     .map_err(|error| failure(&error, &Invocation::default()))
-}
-
-/// Refuse a run without `--env` when the project declares environments but
-/// no top-level resources. State is recorded separately with and without
-/// `--env`, so such a run would act on the no-flag identity: it would plan
-/// to delete whatever is recorded there, or report "no changes" and leave
-/// the operator thinking an environment was converged.
-fn refuse_unselected_environment(target: &Target, invocation: &Invocation) -> Result<(), CliError> {
-    if target.environment.is_some()
-        || target.declared_environments.is_empty()
-        || !target.infrastructure.resources.is_empty()
-    {
-        return Ok(());
-    }
-    let declared = evaluation::declared_environments_phrase(&target.declared_environments);
-    let example = invocation
-        .with_environment(target.declared_environments.first().map(String::as_str))
-        .command("plan");
-    Err(CliError::config_with_help(
-        format!(
-            "this project declares infrastructure environments but no top-level `resources`, \
-             so a run without --env has nothing to manage ({declared})"
-        ),
-        format!(
-            "Select an environment with --env, for example `{example}`. Without --env the run \
-             acts on the state recorded without an environment, and would plan to delete \
-             everything recorded there; declare top-level `resources` if that configuration \
-             should still be managed. `state list`, `state remove` and `unlock` work without \
-             --env."
-        ),
-    ))
 }
 
 /// What running the command needs from the environment and the state store.
@@ -641,6 +803,9 @@ struct Siblings {
     declared_environments: Vec<String>,
     /// The environment this run selected.
     selected: Option<String>,
+    /// What the project declares at the top level, which an environment
+    /// replaces entirely.
+    top_level: TopLevel,
 }
 
 impl Siblings {
@@ -665,53 +830,324 @@ impl Siblings {
     }
 }
 
-/// Refuse to plan, apply or destroy a named environment that has no state
-/// while the same project has state recorded without `--env`.
+/// What the evaluated configuration says that the guards on the state
+/// identity of a run need, besides the [`Siblings`].
+#[derive(Debug)]
+struct SelectionFacts {
+    /// Whether the selected environment is declared.
+    selection: EnvironmentSelection,
+    /// The addresses the selected configuration manages.
+    configured: Vec<ResourceAddress>,
+}
+
+impl SelectionFacts {
+    fn of(target: &Target) -> Self {
+        Self {
+            selection: target.selection,
+            configured: target
+                .infrastructure
+                .resources
+                .iter()
+                .map(|(name, declaration)| {
+                    ResourceAddress::new(declaration.resource_type.clone(), name.clone())
+                })
+                .collect(),
+        }
+    }
+}
+
+/// The checks on the state identity a run acts on, which need the state
+/// store. They run once it is connected and before the command does
+/// anything.
 ///
-/// The two identities are separate: a run with `--env` would plan to create
-/// every resource again beside the objects the no-flag state still manages,
-/// and both identities would claim the same real objects. Moving records
-/// from one identity to the other (`state move`) is not available yet, so
-/// the operator is told what to do instead.
-async fn refuse_unmoved_state(context: &CommandContext<'_>) -> Result<(), CliError> {
-    let Some(environment) = context.tenant.environment() else {
-        return Ok(());
-    };
-    let environment_records = context
+/// `plan` only reads, so it warns where `apply` and `destroy` refuse.
+async fn guard_selection(
+    context: &CommandContext<'_>,
+    action: &InfrastructureAction,
+    facts: &SelectionFacts,
+    inputs: &EngineInputs,
+) -> Result<(), CliError> {
+    match action {
+        InfrastructureAction::Plan
+        | InfrastructureAction::Apply { .. }
+        | InfrastructureAction::Destroy { .. } => guard_identity(context, action, facts).await,
+        // Whole database, or another project's tenant: nothing of the
+        // evaluated project's environments applies.
+        InfrastructureAction::State(StateAction::Locks) => Ok(()),
+        InfrastructureAction::Unlock { scope, .. } if scope.is_named() => Ok(()),
+        InfrastructureAction::State(_) | InfrastructureAction::Unlock { .. } => {
+            guard_environment_known(context, facts, inputs).await
+        }
+    }
+}
+
+/// The addresses recorded for a tenant, read without decoding the records, so
+/// a damaged record never hides the others (or the guard itself).
+async fn recorded_addresses(
+    context: &CommandContext<'_>,
+    tenant: &TenantKey,
+) -> Result<Vec<ResourceAddress>, CliError> {
+    context
         .interrupts
-        .until_interrupted(context.store.list(context.tenant))
+        .until_interrupted(context.store.addresses(tenant))
         .await?
-        .map_err(|error| failure(&error, context.invocation))?;
-    if !environment_records.is_empty() {
+        .map_err(|error| failure(&error, context.invocation))
+}
+
+/// State is recorded separately for runs with and without `--env`; this
+/// keeps a run from acting on the wrong identity.
+///
+/// - Without `--env`, when the project declares environments but no
+///   top-level `resources`, there is nothing to manage: `plan` warns, `apply`
+///   refuses, and `destroy` refuses unless state is recorded without `--env`
+///   and the top-level `providers` that delete it are still declared (the
+///   way out of an old layout).
+/// - With `--env`, `apply` would create resources whose addresses the
+///   no-flag identity already records: both identities would claim the same
+///   real objects, so `apply` refuses (unless `--allow-separate-state`) and
+///   `plan` warns. Resources at other addresses are not a conflict, which is
+///   what lets top-level resources and environments coexist.
+async fn guard_identity(
+    context: &CommandContext<'_>,
+    action: &InfrastructureAction,
+    facts: &SelectionFacts,
+) -> Result<(), CliError> {
+    match context.tenant.environment() {
+        None => guard_unselected_identity(context, action).await,
+        Some(environment) => guard_named_identity(context, action, facts, environment).await,
+    }
+}
+
+/// A finding that stops `apply` and `destroy` and only warns for `plan`.
+fn refuse_or_warn(action: &InfrastructureAction, refusal: CliError) -> Result<(), CliError> {
+    if matches!(action, InfrastructureAction::Plan) {
+        emit_stderr!(format!(
+            "warning: {}. {}",
+            refusal.message(),
+            refusal.help().unwrap_or_default()
+        ));
+        Ok(())
+    } else {
+        Err(refusal)
+    }
+}
+
+async fn guard_unselected_identity(
+    context: &CommandContext<'_>,
+    action: &InfrastructureAction,
+) -> Result<(), CliError> {
+    let siblings = context.siblings;
+    if siblings.declared_environments.is_empty() || siblings.top_level.resource_count > 0 {
         return Ok(());
     }
-    let unselected_records = context
-        .interrupts
-        .until_interrupted(context.store.list(&context.siblings.unselected_tenant))
-        .await?
-        .map_err(|error| failure(&error, context.invocation))?;
-    if unselected_records.is_empty() {
+    let recorded = recorded_addresses(context, context.tenant).await?;
+    let deletable = !recorded.is_empty() && siblings.top_level.provider_count > 0;
+    if matches!(action, InfrastructureAction::Destroy { .. }) && deletable {
         return Ok(());
     }
-    let unselected = context.invocation.with_environment(None);
-    let environment = evaluation::escape_control_characters(environment);
-    Err(CliError::config_with_help(
+    refuse_or_warn(action, unselected_refusal(context, &recorded))
+}
+
+/// The refusal of a run without `--env` in a project that declares
+/// environments and no top-level `resources`. The help names only commands
+/// that work from the state recorded now.
+fn unselected_refusal(context: &CommandContext<'_>, recorded: &[ResourceAddress]) -> CliError {
+    let siblings = context.siblings;
+    let invocation = context.invocation;
+    let declared = evaluation::declared_environments_phrase(&siblings.declared_environments);
+    let example = invocation
+        .with_environment(siblings.declared_environments.first().map(String::as_str))
+        .command("plan");
+    let select = format!("Select an environment with --env, for example `{example}`.");
+    let still_recorded = recorded.first().map(|first| {
+        let list = invocation.command("state list");
+        let remove = invocation.command(&format!(
+            "state remove {}",
+            invocation::quote_argument(&first.to_string())
+        ));
+        let count = recorded.len();
+        let destroy = invocation.command("destroy");
+        if siblings.top_level.provider_count > 0 {
+            format!(
+                "{count} resource(s) are still recorded without --env (`{list}` lists them): \
+                 delete them with `{destroy}`, or forget them without touching the real objects \
+                 with `{remove}`."
+            )
+        } else {
+            format!(
+                "{count} resource(s) are still recorded without --env (`{list}` lists them) \
+                 and no top-level `providers` are declared to delete them: declare those \
+                 providers again and run `{destroy}`, or forget the records without touching the \
+                 real objects with `{remove}`."
+            )
+        }
+    });
+    let keep = "Declare top-level `resources` if that configuration should still be managed.";
+    let help = [Some(select), still_recorded, Some(keep.to_string())]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    CliError::config_with_help(
         format!(
-            "environment '{environment}' of {} has no recorded state, but {} resource(s) are \
-             recorded for the same project without --env",
+            "this project declares infrastructure environments but no top-level `resources`, \
+             so a run without --env has nothing to manage ({declared})"
+        ),
+        help,
+    )
+}
+
+async fn guard_named_identity(
+    context: &CommandContext<'_>,
+    action: &InfrastructureAction,
+    facts: &SelectionFacts,
+    environment: &str,
+) -> Result<(), CliError> {
+    // Only creating can claim an object twice; destroying a named
+    // environment that has nothing recorded changes nothing.
+    if matches!(action, InfrastructureAction::Destroy { .. }) || facts.configured.is_empty() {
+        return Ok(());
+    }
+    let unselected = recorded_addresses(context, &context.siblings.unselected_tenant).await?;
+    if unselected.is_empty() {
+        return Ok(());
+    }
+    let own = recorded_addresses(context, context.tenant).await?;
+    let conflicts: Vec<&ResourceAddress> = facts
+        .configured
+        .iter()
+        .filter(|address| !own.contains(address) && unselected.contains(address))
+        .collect();
+    if conflicts.is_empty() {
+        return Ok(());
+    }
+    let refusal = separate_state_refusal(context, environment, &conflicts);
+    match action {
+        InfrastructureAction::Apply {
+            separate_state: SeparateState::Allow,
+            ..
+        } => {
+            emit_stderr!(format!(
+                "warning: {}; continuing because --allow-separate-state was given",
+                refusal.message()
+            ));
+            Ok(())
+        }
+        _ => refuse_or_warn(action, refusal),
+    }
+}
+
+/// How many conflicting addresses a message names.
+const LISTED_ADDRESSES: usize = 3;
+
+/// The refusal of `apply --env NAME` that would create what the identity
+/// without `--env` already records.
+fn separate_state_refusal(
+    context: &CommandContext<'_>,
+    environment: &str,
+    conflicts: &[&ResourceAddress],
+) -> CliError {
+    let invocation = context.invocation;
+    let unselected = invocation.with_environment(None);
+    let environment = evaluation::escape_control_characters(environment);
+    let mut listed: Vec<String> = conflicts
+        .iter()
+        .take(LISTED_ADDRESSES)
+        .map(|address| strip_control_characters(&address.to_string()))
+        .collect();
+    if conflicts.len() > LISTED_ADDRESSES {
+        listed.push(format!("{} more", conflicts.len() - LISTED_ADDRESSES));
+    }
+    let (are, them) = if conflicts.len() == 1 {
+        ("is", "it")
+    } else {
+        ("are", "them")
+    };
+    let remove = unselected.command(&format!(
+        "state remove {}",
+        invocation::quote_argument(&conflicts[0].to_string())
+    ));
+    let deletion = if context.siblings.top_level.provider_count > 0 {
+        format!(
+            "deleting the objects with `{}` (they are deleted) or by ",
+            unselected.command("destroy")
+        )
+    } else {
+        String::new()
+    };
+    CliError::config_with_help(
+        format!(
+            "environment '{environment}' of {} would create {}, which {are} already recorded \
+             for the same project without --env",
             tenant_label(&context.siblings.unselected_tenant),
-            unselected_records.len()
+            listed.join(", ")
         ),
         format!(
-            "State is recorded separately for runs with and without --env, so this run would \
-             plan to create every resource again next to the objects the state without --env \
-             still manages (both would claim the same real objects). Moving the records into \
-             '{environment}' (`state move`) is not available yet. Keep running without --env, or \
-             first remove the existing resources with `{}` (they are deleted), or forget them \
-             without touching the real objects with `{}` for each address, and then use \
-             --env {environment}.",
-            unselected.command("destroy"),
-            unselected.command("state remove <address>")
+            "State is recorded separately for runs with and without --env, so creating {them} \
+             under '{environment}' would manage the same real objects twice: both identities \
+             would claim them, and the second create can fail or duplicate them. Moving \
+             records between the two (`state move`) is not available yet. Keep these resources \
+             in the configuration without --env, or free their addresses first, by {deletion}\
+             forgetting the records with `{remove}` (the real objects are not touched, so \
+             delete or hand them over yourself before creating them under '{environment}'). \
+             If '{environment}' should manage separate objects with the same addresses, run \
+             `{}`.",
+            invocation.command("apply --allow-separate-state")
+        ),
+    )
+}
+
+/// A state-only command that selected an environment the project does not
+/// declare: it may be one removed from the configuration, whose state still
+/// exists and can be listed, unlocked and cleaned up, or a mistyped name. It
+/// is told apart by the state: warn when the store has rows, a lock, an owner
+/// or a saved change for it, refuse (naming the declared environments)
+/// otherwise.
+async fn guard_environment_known(
+    context: &CommandContext<'_>,
+    facts: &SelectionFacts,
+    inputs: &EngineInputs,
+) -> Result<(), CliError> {
+    if facts.selection != EnvironmentSelection::NotDeclared {
+        return Ok(());
+    }
+    let tenant = context.tenant;
+    let recorded = recorded_addresses(context, tenant).await?;
+    let lock = context
+        .interrupts
+        .until_interrupted(context.store.current_lock(tenant))
+        .await?
+        .map_err(|error| failure(&error, context.invocation))?;
+    let owner = context
+        .interrupts
+        .until_interrupted(context.store.owner(tenant))
+        .await?
+        .map_err(|error| failure(&error, context.invocation))?;
+    let saved_changes = unrecorded_store(inputs, context)
+        .ok()
+        .and_then(|unrecorded| unrecorded.has_pending(tenant).ok())
+        .unwrap_or(false);
+    let environment = evaluation::escape_control_characters(tenant.environment().unwrap_or(""));
+    let declared =
+        evaluation::declared_environments_phrase(&context.siblings.declared_environments);
+    if !recorded.is_empty() || lock.is_some() || owner.is_some() || saved_changes {
+        emit_stderr!(format!(
+            "warning: project '{}' no longer declares infrastructure environment '{environment}'; \
+             using the state recorded for it ({declared})",
+            tenant.project()
+        ));
+        return Ok(());
+    }
+    Err(CliError::config_with_help(
+        format!(
+            "project '{}' has no infrastructure environment named '{environment}', and no \
+             state, lock, owner or unrecorded change is recorded for that name",
+            tenant.project()
+        ),
+        format!(
+            "Environment names are case-sensitive ({declared}). State recorded for an \
+             environment that was removed from the configuration can still be listed, unlocked \
+             and removed by selecting it with --env."
         ),
     ))
 }
@@ -844,6 +1280,18 @@ async fn dispatch(
                 .await?
                 .map_err(|error| failure(&error, context.invocation))?;
             context.output.state(context.tenant, &resources);
+            context
+                .output
+                .other_environments(&resources_in_other_environments(context).await);
+            Ok(())
+        }
+        InfrastructureAction::State(StateAction::Locks) => {
+            let locks = context
+                .interrupts
+                .until_interrupted(context.store.locks())
+                .await?
+                .map_err(|error| failure(&error, context.invocation))?;
+            context.output.locks(&locks, context.invocation);
             Ok(())
         }
         InfrastructureAction::State(StateAction::Remove { address }) => {
@@ -853,14 +1301,16 @@ async fn dispatch(
             recover(context, &unrecorded_store(&inputs, context)?, *overrides).await
         }
         InfrastructureAction::State(StateAction::Adopt) => adopt(context).await,
-        InfrastructureAction::Unlock { lock_identifier } => {
+        InfrastructureAction::Unlock {
+            lock_identifier, ..
+        } => {
             context
                 .interrupts
                 .until_interrupted(unlock(context, lock_identifier.as_deref()))
                 .await?
         }
         InfrastructureAction::Plan => plan(context, inputs).await,
-        InfrastructureAction::Apply { confirmation } => {
+        InfrastructureAction::Apply { confirmation, .. } => {
             converge(
                 &Convergence {
                     mode: PlanMode::Apply,
@@ -1053,6 +1503,13 @@ where
     };
     let released = release(context.store.as_ref(), context.tenant, &lock).await;
     context.interrupts.released();
+    // An operation that finished but could not release its lock still tells
+    // what it did, in the error.
+    let completed = if result.is_ok() && released.is_err() {
+        context.output.take_result()
+    } else {
+        None
+    };
     if released.is_ok() {
         emit_stderr!(format!(
             "Released lock {} for {}",
@@ -1066,6 +1523,7 @@ where
         invocation: context.invocation,
         result,
         released,
+        completed,
     })
 }
 
@@ -1094,6 +1552,9 @@ struct Settlement<'settlement, Outcome> {
     invocation: &'settlement Invocation,
     result: Result<Outcome, CliError>,
     released: cuenv_infrastructure::Result<()>,
+    /// The JSON result the operation produced, when it finished and its lock
+    /// could not be released.
+    completed: Option<serde_json::Value>,
 }
 
 /// Combine the work's outcome with the release's. Infrastructure errors
@@ -1106,6 +1567,7 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
         invocation,
         result,
         released,
+        completed,
     } = settlement;
     let identifier = &lock.lock_identifier;
     let status = |released| LockStatus {
@@ -1119,15 +1581,21 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
     match (result, released) {
         (Ok(outcome), Ok(())) => Ok(outcome),
         (Err(error), Ok(())) => Err(error.with_lock(status(true))),
-        (Ok(_), Err(release_error)) => Err(CliError::infrastructure(
-            format!(
-                "{operation} succeeded but lock {identifier} was NOT released: {}",
-                printable_text(&release_error.to_string())
-            ),
-            Some(unlock_help),
-            InfrastructureFailureKind::Failed,
-        )
-        .with_lock(status(false))),
+        (Ok(_), Err(release_error)) => {
+            let error = CliError::infrastructure(
+                format!(
+                    "{operation} succeeded but lock {identifier} was NOT released: {}",
+                    printable_text(&release_error.to_string())
+                ),
+                Some(unlock_help),
+                InfrastructureFailureKind::Failed,
+            )
+            .with_lock(status(false));
+            Err(match completed {
+                Some(result) => error.with_detail("result", result),
+                None => error,
+            })
+        }
         (Err(error), Err(release_error)) => {
             let not_released = format!(
                 "Lock {identifier} was NOT released ({}). {unlock_help}",
@@ -1159,18 +1627,20 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
 async fn remove_resource(context: &CommandContext<'_>, address: &str) -> Result<(), CliError> {
     under_lock(context, "state remove", |lock| async move {
         require_owner(context).await?;
-        let resources = context
+        // The addresses alone are read, so a record whose content cannot be
+        // decoded can still be named and forgotten.
+        let recorded = context
             .store
-            .list(context.tenant)
+            .addresses(context.tenant)
             .await
             .map_err(|error| failure(&error, context.invocation))?;
-        let Some(resource) = resources
+        let Some(recorded_address) = recorded
             .iter()
-            .find(|resource| resource.address.to_string() == address)
+            .find(|candidate| candidate.to_string() == address)
         else {
-            let known: Vec<String> = resources
+            let known: Vec<String> = recorded
                 .iter()
-                .map(|resource| strip_control_characters(&resource.address.to_string()))
+                .map(|candidate| strip_control_characters(&candidate.to_string()))
                 .collect();
             return Err(CliError::config_with_help(
                 format!(
@@ -1187,10 +1657,10 @@ async fn remove_resource(context: &CommandContext<'_>, address: &str) -> Result<
         };
         context
             .store
-            .delete(context.tenant, &lock, &resource.address)
+            .delete(context.tenant, &lock, recorded_address)
             .await
             .map_err(|error| failure(&error, context.invocation))?;
-        context.output.removed(context.tenant, &resource.address);
+        context.output.removed(context.tenant, recorded_address);
         Ok(())
     })
     .await
@@ -1209,7 +1679,9 @@ async fn recover(
         .map_err(|error| failure(&error, context.invocation))?
     {
         context.output.recovered(context.tenant, &[]);
-        emit_notes(&pending_in_other_environments(context, unrecorded));
+        context
+            .output
+            .other_environments(&pending_in_other_environments(context, unrecorded));
         return Ok(());
     }
     let result = under_lock(context, "state recover", |lock| async move {
@@ -1245,16 +1717,10 @@ async fn recover(
         Ok(())
     })
     .await;
-    emit_notes(&pending_in_other_environments(context, unrecorded));
+    context
+        .output
+        .other_environments(&pending_in_other_environments(context, unrecorded));
     result
-}
-
-/// Print notes on standard error, where diagnostics go in both text and
-/// JSON mode.
-fn emit_notes(notes: &[String]) {
-    for note in notes {
-        emit_stderr!(format!("note: {note}"));
-    }
 }
 
 /// What a run without `--env` says about other environments of the project
@@ -1263,23 +1729,49 @@ fn emit_notes(notes: &[String]) {
 fn pending_in_other_environments(
     context: &CommandContext<'_>,
     unrecorded: &UnrecordedStore,
-) -> Vec<String> {
+) -> Vec<OtherEnvironment> {
     context
         .siblings
         .declared()
         .into_iter()
         .filter(|(_, tenant)| unrecorded.has_pending(tenant).unwrap_or(false))
-        .map(|(name, _)| {
-            format!(
-                "unrecorded changes are saved for environment '{}'; record them with `{}`",
-                evaluation::escape_control_characters(&name),
-                context
-                    .invocation
-                    .with_environment(Some(&name))
-                    .command("state recover")
-            )
+        .map(|(name, _)| OtherEnvironment {
+            command: context
+                .invocation
+                .with_environment(Some(&name))
+                .command("state recover"),
+            environment: name,
+            finding: Finding::UnrecordedChanges,
         })
         .collect()
+}
+
+/// What `state list` without `--env` says about the project's environments:
+/// state is recorded per environment, so a list of the identity without
+/// `--env` is silent about them. Every environment with records is named;
+/// a project that declares environments and no top-level `resources`
+/// manages nothing without `--env`, so there every environment is named.
+async fn resources_in_other_environments(context: &CommandContext<'_>) -> Vec<OtherEnvironment> {
+    let environments_only = context.siblings.top_level.resource_count == 0;
+    let mut found = Vec::new();
+    for (name, tenant) in context.siblings.declared() {
+        let count = context
+            .store
+            .addresses(&tenant)
+            .await
+            .map_or(0, |addresses| addresses.len());
+        if count > 0 || environments_only {
+            found.push(OtherEnvironment {
+                command: context
+                    .invocation
+                    .with_environment(Some(&name))
+                    .command("state list"),
+                environment: name,
+                finding: Finding::Resources(count),
+            });
+        }
+    }
+    found
 }
 
 /// `state adopt`: make this instance the owner of the tenant's state.
@@ -1342,7 +1834,9 @@ async fn unlock(
                 ))
             }),
         });
-        emit_notes(&locks_in_other_environments(context).await);
+        context
+            .output
+            .other_environments(&locks_in_other_environments(context).await);
         return Ok(());
     };
     let released = context
@@ -1399,8 +1893,11 @@ async fn unmatched_lock(context: &CommandContext<'_>, lock_identifier: &str) -> 
     }
     let help = if elsewhere.is_empty() {
         format!(
-            "The lock may have been released already, or belong to another environment of the              project (locks are per environment); run `{}` to see the lock this selection              holds.",
-            context.invocation.command("unlock")
+            "The lock may have been released already, or belong to another environment or \
+             project (locks are per environment); run `{}` to see the lock this selection \
+             holds, or `{}` to list every lock in the database.",
+            context.invocation.command("unlock"),
+            context.invocation.command("state locks")
         )
     } else {
         format!(
@@ -1419,23 +1916,25 @@ async fn unmatched_lock(context: &CommandContext<'_>, lock_identifier: &str) -> 
 
 /// What a run without `--env` says about other environments of the project
 /// that hold a lock: `unlock` only looks at the identity it was given.
-async fn locks_in_other_environments(context: &CommandContext<'_>) -> Vec<String> {
-    let mut notes = Vec::new();
+async fn locks_in_other_environments(context: &CommandContext<'_>) -> Vec<OtherEnvironment> {
+    let mut found = Vec::new();
     for (name, tenant) in context.siblings.declared() {
         if let Ok(Some(lock)) = context.store.current_lock(&tenant).await {
             let identifier = strip_control_characters(&lock.lock_identifier);
-            notes.push(format!(
-                "environment '{}' is locked by '{}' (lock {identifier}); release it with `{}`",
-                evaluation::escape_control_characters(&name),
-                strip_control_characters(&lock.holder),
-                context
+            found.push(OtherEnvironment {
+                command: context
                     .invocation
                     .with_environment(Some(&name))
-                    .command(&format!("unlock {identifier}"))
-            ));
+                    .command(&format!("unlock {identifier}")),
+                environment: name,
+                finding: Finding::Locked {
+                    lock_identifier: identifier,
+                    holder: strip_control_characters(&lock.holder),
+                },
+            });
         }
     }
-    notes
+    found
 }
 
 /// `plan`: refresh and plan without the lock.
@@ -1481,6 +1980,7 @@ async fn converge(convergence: &Convergence<'_>, inputs: EngineInputs) -> Result
             mode,
             output: context.output,
             invocation: context.invocation,
+            interrupts: context.interrupts,
         })
         .await
     })
@@ -1497,6 +1997,7 @@ struct Application<'application> {
     mode: PlanMode,
     output: &'application Output,
     invocation: &'application Invocation,
+    interrupts: &'application Interrupts,
 }
 
 /// Apply a plan made under the lock, when it has any work.
@@ -1508,6 +2009,7 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
         mode,
         output,
         invocation,
+        interrupts,
     } = application;
     if !plan.has_work() {
         output.converged(&Converged {
@@ -1558,11 +2060,22 @@ async fn apply_plan(application: Application<'_>) -> Result<(), CliError> {
                 &reported_deleted_not_recreated,
             ))
         })?;
-    output.converged(&Converged {
+    let converged = Converged {
         mode,
         plan,
         applied: Some(applied),
-    });
+    };
+    // The last operation may have been in flight when the signal arrived: it
+    // finished and was recorded, but the run was interrupted and says so (the
+    // exit code is 130, like any interrupted run), still reporting what was
+    // applied.
+    if interrupts.is_requested() {
+        return Err(
+            interrupted_after_completion(&output::applied_phrase(&converged), invocation)
+                .with_detail("result", output::converged_json(&converged)),
+        );
+    }
+    output.converged(&converged);
     Ok(())
 }
 

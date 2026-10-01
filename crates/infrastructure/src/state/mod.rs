@@ -232,6 +232,75 @@ pub struct LockInformation {
     pub acquired_at: String,
 }
 
+impl LockInformation {
+    /// How long ago the lock was acquired, as short text (`45s`, `12m`,
+    /// `3h 05m`, `2d 4h`), when its timestamp can be read. A lock whose
+    /// timestamp lies in the future counts as just acquired.
+    #[must_use]
+    pub fn age_description(&self) -> Option<String> {
+        let acquired = chrono::DateTime::parse_from_rfc3339(&self.acquired_at).ok()?;
+        let seconds = chrono::Utc::now()
+            .signed_duration_since(acquired)
+            .num_seconds()
+            .max(0);
+        Some(match seconds {
+            0..=59 => format!("{seconds}s"),
+            60..=3599 => format!("{}m", seconds / 60),
+            3600..=86_399 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
+            _ => format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3600),
+        })
+    }
+}
+
+/// A lock row of any tenant, as [`StateStore::locks`] reports it: who holds
+/// which project's lock, read from the database itself, without evaluating
+/// the project that took it.
+///
+/// The names are text read back from the store, so they carry no control
+/// characters; they are not validated as a [`TenantKey`] (anyone with the
+/// token can write rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TenantLock {
+    /// CUE module path of the locked tenant.
+    pub module_path: String,
+    /// Project name of the locked tenant.
+    pub project: String,
+    /// Named environment of the locked tenant; `None` for the identity of a
+    /// run without `--env`.
+    pub environment: Option<String>,
+    /// The lock itself.
+    pub lock: LockInformation,
+}
+
+impl TenantLock {
+    /// The tenant as [`TenantKey`] shows it: `module#project` and, for a
+    /// named environment, `@environment`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let mut label = format!("{}#{}", self.module_path, self.project);
+        if let Some(environment) = &self.environment {
+            label.push('@');
+            label.push_str(environment);
+        }
+        label
+    }
+
+    /// The tenant key this lock belongs to, for releasing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] when the stored names
+    /// are not a valid tenant (an empty project, for example).
+    pub fn tenant(&self) -> Result<TenantKey> {
+        match &self.environment {
+            Some(environment) => {
+                TenantKey::with_environment(&self.module_path, &self.project, environment)
+            }
+            None => TenantKey::new(&self.module_path, &self.project),
+        }
+    }
+}
+
 /// The CUE instance that owns a tenant's state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TenantOwner {
@@ -297,11 +366,15 @@ pub trait StateStore: Send + Sync {
     /// up to date.
     ///
     /// Fails with [`crate::InfrastructureError::StateSchemaNewer`] when the
-    /// stored schema is newer than this build knows, and with
-    /// [`crate::InfrastructureError::StateMigrationBlocked`] when a migration
-    /// would run while any state lock is held: a run that holds a lock must
-    /// never have its writes land in a half-migrated shape. (The first schema
-    /// creates the lock table, so only later migrations are fenced.)
+    /// stored schema is newer than this build knows, with
+    /// [`crate::InfrastructureError::StateMigrationBlocked`] (listing the
+    /// locks that block it) when a migration would run while any state lock
+    /// is held: a run that holds a lock must never have its writes land in a
+    /// half-migrated shape. (The first schema creates the lock table, so only
+    /// later migrations are fenced.) A database holding tables an unreleased
+    /// development build wrote, or tables cuenv did not create, fails with
+    /// [`crate::InfrastructureError::StateUnreleasedLayout`] or
+    /// [`crate::InfrastructureError::StateSchemaConflict`].
     async fn migrate(&self) -> Result<()>;
 
     /// List all managed resources of a tenant, with generation and serial.
@@ -378,6 +451,30 @@ pub trait StateStore: Send + Sync {
 
     /// Describe the tenant's current lock, if any. Never migrates.
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>>;
+
+    /// Every lock held in the store, for every tenant, oldest first. Never
+    /// migrates: a store that was never migrated holds none.
+    ///
+    /// This is how a lock left behind by a project that no longer evaluates
+    /// (or by another repository sharing the database) is found and released
+    /// with [`StateStore::force_unlock`]. A store that cannot enumerate its
+    /// locks reports none.
+    async fn locks(&self) -> Result<Vec<TenantLock>> {
+        Ok(Vec::new())
+    }
+
+    /// The addresses of the tenant's records, read from their key columns
+    /// alone. Unlike [`StateStore::list`] it succeeds when a record's content
+    /// cannot be decoded, so such a record can still be named and removed.
+    /// Never migrates.
+    async fn addresses(&self, tenant: &TenantKey) -> Result<Vec<ResourceAddress>> {
+        Ok(self
+            .list(tenant)
+            .await?
+            .into_iter()
+            .map(|resource| resource.address)
+            .collect())
+    }
 
     /// Release the tenant's lock only if its identifier is `lock_identifier`.
     ///
