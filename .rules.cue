@@ -10,6 +10,7 @@ rules.#DirectoryRules & {
         git: [
             "_tests",
             ".cache",
+            ".claude/worktrees",
             ".cargo",
             ".cuenv",
             ".test",

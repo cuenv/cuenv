@@ -3,6 +3,7 @@
 
 _tests
 .cache
+.claude/worktrees
 .cargo
 .cuenv
 .test
@@ -14,6 +15,3 @@ dist
 node_modules
 result
 target
-
-# Claude Code agent worktrees
-.claude/worktrees/
