@@ -1,14 +1,12 @@
 //! Semantic checks of an `infrastructure` configuration, with the path of
 //! every problem found.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use cuenv_manifest::manifest::Infrastructure;
+use cuenv_manifest::manifest::{Infrastructure, ManagedResourceDeclaration};
 
 use crate::error::{InfrastructureError, Result};
 use crate::registry::{ProviderSource, validate_version};
-
-use super::{dependency_graph, topological_order};
 
 /// Where in the `infrastructure` block a configuration lives: the top level,
 /// or one named environment, which does not inherit anything from the top
@@ -72,7 +70,9 @@ impl<'name> ConfigurationScope<'name> {
 ///
 /// Returns an error for invalid provider sources, versions or paths, resource
 /// references to undeclared providers, unknown dependencies, or dependency
-/// cycles.
+/// cycles (each cycle is reported on its own, with the `dependsOn` entries
+/// that form it, whether or not other dependencies are unknown).
+#[tracing::instrument(skip_all, fields(environment = environment.unwrap_or("")))]
 pub fn validate_configuration(
     infrastructure: &Infrastructure,
     environment: Option<&str>,
@@ -136,7 +136,6 @@ fn check_resources(
     let resources = scope.resources();
     let providers = scope.providers();
     let declared: BTreeSet<&String> = infrastructure.resources.keys().collect();
-    let mut unknown_dependency = false;
     for (name, declaration) in &infrastructure.resources {
         let path = format!("{resources}.{name}");
         let provider_name = declaration.provider_name();
@@ -157,7 +156,6 @@ fn check_resources(
         }
         for (index, dependency) in declaration.depends_on.iter().enumerate() {
             if !declared.contains(dependency) {
-                unknown_dependency = true;
                 problems.push(format!(
                     "{path}.dependsOn[{index}]: resource '{name}' depends on unknown resource \
                      '{dependency}'; declare it in {resources}"
@@ -165,11 +163,128 @@ fn check_resources(
             }
         }
     }
-    if !unknown_dependency
-        && let Err(error) = topological_order(&dependency_graph(&infrastructure.resources))
-    {
-        problems.push(format!("{resources}: {}", detail(error)));
+    check_cycles(&infrastructure.resources, &resources, problems);
+}
+
+/// Report every dependency cycle among the declared resources: a resource
+/// that depends on itself, and each group of resources that depend on each
+/// other, with only its own members and the `dependsOn` entries that form it.
+/// Dependencies on resources that are not declared are reported elsewhere
+/// and ignored here.
+fn check_cycles(
+    resources: &BTreeMap<String, ManagedResourceDeclaration>,
+    path: &str,
+    problems: &mut Vec<String>,
+) {
+    let names: Vec<&str> = resources.keys().map(String::as_str).collect();
+    let position: BTreeMap<&str, usize> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (*name, index))
+        .collect();
+    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); names.len()];
+    for (name, declaration) in resources {
+        let from = position[name.as_str()];
+        for (index, dependency) in declaration.depends_on.iter().enumerate() {
+            let Some(&to) = position.get(dependency.as_str()) else {
+                continue;
+            };
+            if to == from {
+                problems.push(format!(
+                    "{path}.{name}.dependsOn[{index}]: resource '{name}' depends on itself"
+                ));
+            } else if !graph[from].contains(&to) {
+                graph[from].push(to);
+            }
+        }
     }
+    for mut component in strongly_connected_components(&graph) {
+        if component.len() < 2 {
+            continue;
+        }
+        component.sort_unstable();
+        let members: Vec<&str> = component.iter().map(|node| names[*node]).collect();
+        let entries: Vec<String> = members
+            .iter()
+            .flat_map(|name| {
+                resources[*name]
+                    .depends_on
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, dependency)| {
+                        dependency.as_str() != *name && members.contains(&dependency.as_str())
+                    })
+                    .map(move |(index, dependency)| {
+                        format!("{path}.{name}.dependsOn[{index}] -> {dependency}")
+                    })
+            })
+            .collect();
+        problems.push(format!(
+            "{path}: dependency cycle between resources {}: {}; remove one of these dependsOn \
+             entries",
+            members.join(", "),
+            entries.join(", ")
+        ));
+    }
+}
+
+/// Tarjan's algorithm, without recursion: the strongly connected components
+/// of a graph given as adjacency lists.
+fn strongly_connected_components(graph: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut index: Vec<Option<usize>> = vec![None; graph.len()];
+    let mut low = vec![0; graph.len()];
+    let mut on_stack = vec![false; graph.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut counter = 0;
+    let mut components = Vec::new();
+    for root in 0..graph.len() {
+        if index[root].is_some() {
+            continue;
+        }
+        index[root] = Some(counter);
+        low[root] = counter;
+        counter += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        // Each entry is a node and how many of its dependencies are done.
+        let mut work = vec![(root, 0_usize)];
+        while let Some(&(node, done)) = work.last() {
+            if let Some(&next) = graph[node].get(done) {
+                if let Some(last) = work.last_mut() {
+                    last.1 += 1;
+                }
+                match index[next] {
+                    None => {
+                        index[next] = Some(counter);
+                        low[next] = counter;
+                        counter += 1;
+                        stack.push(next);
+                        on_stack[next] = true;
+                        work.push((next, 0));
+                    }
+                    Some(order) if on_stack[next] => low[node] = low[node].min(order),
+                    Some(_) => {}
+                }
+                continue;
+            }
+            work.pop();
+            if index[node] == Some(low[node]) {
+                let mut component = Vec::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    component.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                components.push(component);
+            }
+            if let Some(&(parent, _)) = work.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+        }
+    }
+    components
 }
 
 /// Say which field of the configuration a configuration error is about.
