@@ -278,6 +278,15 @@ pub struct ModuleEvalOptions {
     /// load.
     #[serde(default)]
     pub skipped_directories: SkippedDirectories,
+    /// The top-level field that holds the task graph. Sequence items inside
+    /// it get their hidden `_name` field injected before export so that
+    /// output references resolve, and a projection (`export_paths`) that
+    /// exports nothing below this field skips the injection.
+    ///
+    /// `None` keeps the behaviour of callers that predate this option: the
+    /// field is `tasks`. `Some("")` turns the injection off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_field: Option<String>,
 }
 
 /// Whether a recursive evaluation reports the directories it leaves out.
@@ -959,6 +968,7 @@ pub fn evaluate_cue_package(dir_path: &Path, package_name: &str) -> Result<Strin
         export_paths: Vec::new(),
         presence_paths: Vec::new(),
         skipped_directories: SkippedDirectories::Ignore,
+        task_field: None,
     };
 
     let result = evaluate_module(dir_path, package_name, Some(&options))?;

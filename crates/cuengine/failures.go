@@ -39,14 +39,18 @@ func allErrors(v cue.Value) error {
 	return v.Err()
 }
 
-// exportsTasks reports whether an export includes the "tasks" field: no
-// projection (the whole instance), or a projected path starting at "tasks".
-func exportsTasks(exportPaths []projectionPath) bool {
+// exportsField reports whether an export includes the top-level field: no
+// projection (the whole instance), or a projected path starting at the field.
+// An empty field is never exported.
+func exportsField(exportPaths []projectionPath, field string) bool {
+	if field == "" {
+		return false
+	}
 	if len(exportPaths) == 0 {
 		return true
 	}
 	for _, projection := range exportPaths {
-		if projection.labels[0] == "tasks" {
+		if projection.labels[0] == field {
 			return true
 		}
 	}
