@@ -1158,7 +1158,7 @@ mod tests {
         ]);
         let withheld = vec!["TURSO_AUTH_TOKEN".into()];
         let options = LaunchOptions {
-            binary: Path::new("/usr/bin/env"),
+            binary: &env_program(),
             withheld_environment_variables: &withheld,
             provider_environment_variables: &variables,
             cancellation: &cancellation,
@@ -1202,10 +1202,28 @@ mod tests {
         );
     }
 
+    /// The `env` program, found on the host's `PATH`: not every system has
+    /// `/usr/bin/env` (a Nix build sandbox does not).
+    #[cfg(unix)]
+    fn env_program() -> PathBuf {
+        std::env::var_os("PATH")
+            .and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|directory| directory.join("env"))
+                    .find(|candidate| {
+                        use std::os::unix::fs::PermissionsExt;
+                        candidate.metadata().is_ok_and(|metadata| {
+                            metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                        })
+                    })
+            })
+            .expect("an `env` program on PATH")
+    }
+
     /// The environment a provider launched with these options would see.
     #[cfg(unix)]
     async fn provider_visible_environment(options: &LaunchOptions<'_>) -> BTreeMap<String, String> {
-        let mut command = Command::new("/usr/bin/env");
+        let mut command = Command::new(env_program());
         configure_provider_environment(&mut command, options, Path::new("/tmp/provider-test"));
         let output = command.output().await.unwrap();
         assert!(output.status.success());
@@ -1232,7 +1250,7 @@ mod tests {
         .to_vec();
         let variables = BTreeMap::from([(MAGIC_COOKIE_KEY.to_string(), "project".to_string())]);
         let environment = provider_visible_environment(&LaunchOptions {
-            binary: Path::new("/usr/bin/env"),
+            binary: &env_program(),
             withheld_environment_variables: &withheld,
             provider_environment_variables: &variables,
             cancellation: &cancellation,
@@ -1286,7 +1304,7 @@ mod tests {
         let withheld =
             isolated_withheld_names(std::env::vars_os().map(|(name, _)| name), &provided);
         let environment = provider_visible_environment(&LaunchOptions {
-            binary: Path::new("/usr/bin/env"),
+            binary: &env_program(),
             withheld_environment_variables: &withheld,
             provider_environment_variables: &variables,
             cancellation: &cancellation,

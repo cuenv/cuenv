@@ -33,7 +33,7 @@ static SECRET_REGISTRY: LazyLock<RwLock<HashSet<String>>> =
 pub fn register_secret(secret: impl Into<String>) {
     let secret = secret.into();
     if let Ok(mut registry) = SECRET_REGISTRY.write() {
-        insert_secret(&mut registry, secret);
+        insert_secret(&mut registry, &secret);
     }
 }
 
@@ -46,11 +46,11 @@ pub fn register_secret(secret: impl Into<String>) {
 /// or other control character) is also registered as it appears in quoted
 /// text, in Rust's debug form and in JSON's, because plans and diagnostics
 /// print values quoted.
-fn insert_secret(registry: &mut HashSet<String>, secret: String) {
+fn insert_secret(registry: &mut HashSet<String>, secret: &str) {
     if secret.len() < MIN_SECRET_LENGTH {
         return;
     }
-    let mut forms = vec![secret.clone()];
+    let mut forms = vec![secret.to_string()];
     if secret.contains(['\n', '\r']) {
         forms.extend(
             secret
@@ -102,7 +102,7 @@ fn strip_quotes(quoted: &str) -> String {
 pub fn register_secrets(secrets: impl IntoIterator<Item = impl Into<String>>) {
     if let Ok(mut registry) = SECRET_REGISTRY.write() {
         for secret in secrets {
-            insert_secret(&mut registry, secret.into());
+            insert_secret(&mut registry, &secret.into());
         }
     }
 }
