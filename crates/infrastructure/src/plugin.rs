@@ -84,6 +84,11 @@ const RETAINED_LOG_LINES: usize = 40;
 /// Longest provider log line kept; the rest of a longer line is dropped.
 const MAXIMUM_LOG_LINE_BYTES: usize = 2048;
 
+/// Recorded in place of a provider log line longer than
+/// [`MAXIMUM_LOG_LINE_BYTES`]: the cut could split a secret so that redaction
+/// no longer recognises it.
+const TRUNCATED_LOG_LINE_NOTICE: &str = "[a provider log line longer than 2048 bytes was omitted]";
+
 /// How often a stopping provider is checked for exit.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -1062,6 +1067,13 @@ fn spawn_log_drain(
                 if !serious {
                     continue;
                 }
+                // A line cut at the length bound may end in part of a
+                // secret, which redaction cannot recognise; keep no text
+                // from it.
+                if line.truncated {
+                    log.record(TRUNCATED_LOG_LINE_NOTICE.to_string());
+                    continue;
+                }
                 // Keep only printable text: a provider must not drive the
                 // terminal cuenv writes to. Redact the raw text first:
                 // stripping control characters can change a secret that
@@ -1069,12 +1081,7 @@ fn spawn_log_drain(
                 let printable = strip_control_characters(
                     redact_provider_log_line(line.text.trim_end()).as_str(),
                 );
-                let text = if line.truncated {
-                    format!("{printable} [line truncated]")
-                } else {
-                    printable
-                };
-                log.record(text);
+                log.record(printable);
             }
         }
         .with_current_subscriber(),
@@ -1466,6 +1473,19 @@ mod tests {
             .filter(|text| text.contains(marker))
             .count();
         assert_eq!(seen, 0, "trace, debug and info lines are not redacted");
+    }
+
+    #[tokio::test]
+    async fn a_log_line_cut_at_the_length_bound_keeps_none_of_its_text() {
+        // A raw (non-JSON) line is serious; the cut lands inside the marker,
+        // so a prefix of it would survive if any text were kept.
+        let marker = "PARTIAL-SECRET-PREFIX-7d1e";
+        let filler = "x".repeat(MAXIMUM_LOG_LINE_BYTES - 10);
+        let line = format!("panic: {filler}{marker}\n");
+        let rendered = drained(&line).await;
+        assert!(rendered.contains(TRUNCATED_LOG_LINE_NOTICE), "{rendered}");
+        assert!(!rendered.contains("PARTIAL"), "{rendered}");
+        assert!(!rendered.contains("xxxx"), "{rendered}");
     }
 
     #[tokio::test]
