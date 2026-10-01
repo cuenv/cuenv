@@ -447,7 +447,12 @@ pub trait StateStore: Send + Sync {
     }
 
     /// Release a lock acquired with [`StateStore::lock`].
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()>;
+    ///
+    /// Returns whether the lock was still held and is now released: `false`
+    /// means nothing was released because the lock was already gone (another
+    /// actor released it, or took it over), which the caller reports instead
+    /// of claiming a release.
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool>;
 
     /// Describe the tenant's current lock, if any. Never migrates.
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>>;

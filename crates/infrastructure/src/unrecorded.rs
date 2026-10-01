@@ -972,7 +972,7 @@ mod tests {
             self.inner.acquire_lock(tenant, request).await
         }
 
-        async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+        async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
             self.inner.unlock(tenant, lock).await
         }
 

@@ -715,7 +715,8 @@ JSON lines. On failure the document is the error envelope
 `help` is present when there is help text; `lockIdentifier` and
 `lockReleased` are present when the failure concerns a state lock (this run's
 lock, or the one that blocked it), and `lockReleased` is `false` whenever the
-release failed or is not known; `deletedNotRecreated` (an array of addresses)
+release failed or is not known, and when the lock was no longer held at the end
+of the run (nothing was released); `deletedNotRecreated` (an array of addresses)
 is present when a failed or interrupted apply left replacements deleted and
 not recreated. A run that succeeded but could not release its lock reports
 that as an error, not as success. Every string in the envelope is redacted

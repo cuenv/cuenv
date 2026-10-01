@@ -1697,12 +1697,8 @@ where
     } else {
         None
     };
-    if released.is_ok() {
-        emit_stderr!(format!(
-            "Released lock {} for {}",
-            lock.lock_identifier,
-            tenant_label(context.tenant)
-        ));
+    if let Ok(outcome) = &released {
+        emit_stderr!(release_notice(&lock, context.tenant, *outcome));
     }
     settle(Settlement {
         operation,
@@ -1738,7 +1734,7 @@ struct Settlement<'settlement, Outcome> {
     lock: &'settlement StateLock,
     invocation: &'settlement Invocation,
     result: Result<Outcome, CliError>,
-    released: cuenv_infrastructure::Result<()>,
+    released: cuenv_infrastructure::Result<Release>,
     /// The JSON result the operation produced, when it finished and its lock
     /// could not be released.
     completed: Option<serde_json::Value>,
@@ -1766,8 +1762,8 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
         invocation.command(&format!("unlock {identifier}"))
     );
     match (result, released) {
-        (Ok(outcome), Ok(())) => Ok(outcome),
-        (Err(error), Ok(())) => Err(error.with_lock(status(true))),
+        (Ok(outcome), Ok(_)) => Ok(outcome),
+        (Err(error), Ok(release)) => Err(error.with_lock(status(release == Release::Released))),
         (Ok(_), Err(release_error)) => {
             let error = CliError::infrastructure(
                 format!(
@@ -2290,17 +2286,46 @@ fn deleted_not_recreated(error: &InfrastructureError, reported: &[String]) -> Ve
 /// Attempts to release the lock after a run.
 const RELEASE_ATTEMPTS: u32 = 3;
 
+/// What releasing a run's lock did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// The lock was held and is released.
+    Released,
+    /// The lock was already gone when the run ended (another actor released
+    /// it, or took it over): nothing was released.
+    NoLongerHeld,
+}
+
+/// The line that tells what releasing the lock did, saying nothing was
+/// released when the lock was no longer held.
+fn release_notice(lock: &StateLock, tenant: &TenantKey, release: Release) -> String {
+    match release {
+        Release::Released => format!(
+            "Released lock {} for {}",
+            lock.lock_identifier,
+            tenant_label(tenant)
+        ),
+        Release::NoLongerHeld => format!(
+            "warning: lock {} for {} was no longer held when the run ended (another run \
+             released or took it); nothing was released",
+            lock.lock_identifier,
+            tenant_label(tenant)
+        ),
+    }
+}
+
 /// Release the lock, retrying a failure twice (after 250 ms, then 500 ms)
 /// and never waiting after the last attempt.
 async fn release(
     store: &dyn StateStore,
     tenant: &TenantKey,
     lock: &StateLock,
-) -> cuenv_infrastructure::Result<()> {
+) -> cuenv_infrastructure::Result<Release> {
     let mut attempt = 1;
     loop {
         match store.unlock(tenant, lock).await {
-            Ok(()) => return Ok(()),
+            Ok(true) => return Ok(Release::Released),
+            Ok(false) => return Ok(Release::NoLongerHeld),
             Err(error) if attempt >= RELEASE_ATTEMPTS => return Err(error),
             Err(_) => {
                 tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;

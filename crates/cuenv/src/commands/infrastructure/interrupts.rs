@@ -411,7 +411,10 @@ async fn exit_now(context: &ForcedExitContext) {
             match (phase, released) {
                 // The request may commit after the release was attempted.
                 (LockPhase::Acquiring, _) => ExitLock::MaybeAcquired(identifier),
-                (LockPhase::Held, Ok(Ok(()))) => ExitLock::Released(identifier),
+                (LockPhase::Held, Ok(Ok(true))) => ExitLock::Released(identifier),
+                // The lock was already gone: nothing is held, and nothing was
+                // released.
+                (LockPhase::Held, Ok(Ok(false))) => ExitLock::None,
                 (LockPhase::Held, Ok(Err(_)) | Err(_)) => ExitLock::NotReleased(identifier),
             }
         }

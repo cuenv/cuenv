@@ -137,7 +137,9 @@ async fn fence_scenario(store: &TursoStateStore) -> Result<()> {
             if locks.len() == 2 && locks.iter().any(|held| held.environment.as_deref() == Some("Dev"))),
         "{both:?}"
     );
-    store.unlock(&tenant, &lock).await?;
+    // Releasing reports whether the lock was still held.
+    assert!(store.unlock(&tenant, &lock).await?);
+    assert!(!store.unlock(&tenant, &lock).await?);
     assert!(matches!(
         store.migrate_to(&migrations).await,
         Err(InfrastructureError::StateMigrationBlocked { version: 2, .. })

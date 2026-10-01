@@ -635,6 +635,10 @@ let plan = outcome?;
 released?;
 ```
 
+`StateStore::unlock()` returns `Ok(true)` when the lock was still held and is
+now released, and `Ok(false)` when it was already gone (another actor released
+it or took it over); report the second case rather than claiming a release.
+
 - **Identities.** `TenantKey::new(module_path, project)` is the identity of a
   run without `--env`; `TenantKey::with_environment(module_path, project,
 environment)` is a separate identity for a named environment (including

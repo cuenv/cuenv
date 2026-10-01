@@ -605,7 +605,7 @@ impl StateStore for CountingStore {
         &self,
         tenant: &TenantKey,
         lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<()> {
+    ) -> cuenv_infrastructure::Result<bool> {
         self.inner.unlock(tenant, lock).await
     }
 
@@ -1450,7 +1450,7 @@ impl StateStore for UnreleasableStore {
         &self,
         _tenant: &TenantKey,
         _lock: &StateLock,
-    ) -> cuenv_infrastructure::Result<()> {
+    ) -> cuenv_infrastructure::Result<bool> {
         self.unlock_attempts.fetch_add(1, Ordering::SeqCst);
         Err(InfrastructureError::state("unavailable"))
     }
@@ -1526,6 +1526,65 @@ async fn an_unreleased_lock_is_never_reported_as_released() {
     .unwrap_err();
     assert!(error.to_string().contains("no such resource"), "{error}");
     assert!(!lock_of(&error).unwrap().released);
+}
+
+#[tokio::test]
+async fn a_lock_that_was_taken_away_during_the_run_is_not_reported_as_released() {
+    let harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+    let context = harness.context();
+    let store = Arc::clone(&harness.store);
+    let tenant = harness.tenant.clone();
+
+    // The run loses its lock (the row is removed by another actor) and fails
+    // on its next fenced write, as the engine does.
+    let error = under_lock(&context, "apply", |lock| async move {
+        assert!(
+            store
+                .force_unlock(&tenant, &lock.lock_identifier)
+                .await
+                .unwrap()
+        );
+        Err::<(), _>(CliError::infrastructure(
+            "the lock was lost",
+            None,
+            crate::cli::InfrastructureFailureKind::Failed,
+        ))
+    })
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("the lock was lost"), "{error}");
+    let lock = lock_of(&error).expect("the error carries the lock");
+    assert!(!lock.released, "nothing was released: the row was gone");
+    let envelope = serde_json::to_value(crate::cli::error_envelope(&error)).unwrap();
+    assert_eq!(envelope["error"]["lockReleased"], false);
+    assert!(harness.current_lock().await.is_none());
+
+    // A run that finished but no longer held its lock still succeeded.
+    let store = Arc::clone(&harness.store);
+    let tenant = harness.tenant.clone();
+    under_lock(&context, "state remove", |lock| async move {
+        store
+            .force_unlock(&tenant, &lock.lock_identifier)
+            .await
+            .unwrap();
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn the_release_notice_says_what_the_release_did() {
+    let lock = StateLock::generate();
+    let tenant = TenantKey::new("example.com/infrastructure", "app").unwrap();
+    let released = super::release_notice(&lock, &tenant, super::Release::Released);
+    assert!(released.starts_with("Released lock "), "{released}");
+    assert!(released.contains(&lock.lock_identifier), "{released}");
+    let gone = super::release_notice(&lock, &tenant, super::Release::NoLongerHeld);
+    assert!(!gone.contains("Released"), "{gone}");
+    assert!(gone.contains("no longer held"), "{gone}");
+    assert!(gone.contains("nothing was released"), "{gone}");
+    assert!(gone.contains(&lock.lock_identifier), "{gone}");
 }
 
 // ---------------------------------------------------------------------------

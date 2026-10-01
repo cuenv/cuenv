@@ -188,10 +188,8 @@ impl StateStore for MemoryStateStore {
         Ok(request.lock.clone())
     }
 
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
-        self.force_unlock(tenant, &lock.lock_identifier)
-            .await
-            .map(|_| ())
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
+        self.force_unlock(tenant, &lock.lock_identifier).await
     }
 
     async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
@@ -400,7 +398,9 @@ mod tests {
         assert!(!store.force_unlock(&tenant, "wrong").await.unwrap());
         let information = store.current_lock(&tenant).await.unwrap().unwrap();
         assert_eq!(information.holder, "first");
-        store.unlock(&tenant, &lock).await.unwrap();
+        // Releasing reports whether the lock was still held.
+        assert!(store.unlock(&tenant, &lock).await.unwrap());
+        assert!(!store.unlock(&tenant, &lock).await.unwrap());
         assert!(store.current_lock(&tenant).await.unwrap().is_none());
         store.lock(&tenant, "third").await.unwrap();
     }

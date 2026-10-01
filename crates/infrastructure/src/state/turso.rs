@@ -1387,14 +1387,14 @@ impl StateStore for TursoStateStore {
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
-    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+    async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<bool> {
         self.execute(Statement::new(
             "DELETE FROM cuenv_infrastructure_locks \
              WHERE module_path = ? AND project = ? AND environment = ? AND lock_identifier = ?",
             lock_arguments(tenant, lock),
         ))
         .await
-        .map(|_| ())
+        .map(|deleted| deleted.affected_row_count > 0)
     }
 
     #[tracing::instrument(skip_all, fields(tenant = %tenant))]
