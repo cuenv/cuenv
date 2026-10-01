@@ -517,14 +517,20 @@ cuenv infrastructure unlock  [OPTIONS] [LOCK_IDENTIFIER]
   (`$XDG_STATE_HOME/cuenv/infrastructure/unrecorded/`, by default
   `~/.local/state/…` on Linux), under the lock, deleting each file once it is
   recorded. With nothing to recover it takes no lock. A saved change is
-  written only while the stored record is still the one it replaced; if
+  written only while the stored generation and serial still match the record
+  it replaced; deleting and recreating an address changes its generation. If
   another run changed the stored record since, recovery stops (exit code `5`)
   and says so. Then either run `state recover --force`, which writes the
   saved record over the newer one, or move the saved file out of that
   directory to keep the stored record. `plan`, `apply` and `destroy` refuse to
   run (exit code `5`) while such files exist for the project. A file that
-  cannot be used (unreadable, malformed, another tenant's, not private to you)
+  was saved in the older format v2 remains readable but requires inspection
+  followed by explicit `--force`, with a warning, because it lacks a generation.
+  A file that cannot be used (unreadable, malformed, another tenant's, not private to you)
   is named in the error, which says to move it aside.
+  Format-v4 files also bind to the normalized backend URL hash. Recovery checks
+  that binding against the configured wrapper and actual state store before any
+  writes; older unbound v3 files or backend changes require inspected force.
 - `state adopt`: make this project's CUE instance (`<directory>:<package>`)
   the owner of its state, under the lock, and print the previous and the new
   owner. Use it after moving a project to another directory or package.
@@ -562,15 +568,20 @@ package, so it counts as a duplicate: put its files in a different CUE
 package or move them out from under the project. `state list`,
 `state remove`, `state recover` and `unlock` evaluate only the project, so
 they keep working while a sibling is broken. Only this command requires the
-`infrastructure` block to be concrete; other commands evaluate the same
-project without that requirement.
+selected `infrastructure` configuration to be concrete. Other commands keep
+infrastructure as raw configuration, so unused incomplete named environments
+do not prevent ordinary task discovery, sync or CI decoding.
 
 **Ownership:** the first `apply` or `destroy` records the project's CUE
-instance as the owner of its state, under the lock. `plan`, `apply` and
-`destroy` from any other instance with the same module path and project name
+instance as the owner of its state, under the lock. `plan`, `apply`,
+`destroy`, `state remove` and `state recover` with pending changes from any
+other instance with the same module path, project name and selected environment
 (for example a nested module declaring the same module path) are refused
-(exit code `5`); the error points at `state adopt`. `state list`,
-`state remove`, `state recover` and `unlock` do not check the owner.
+(exit code `5`); the error points at `state adopt`. `state remove` and
+`state recover` check the recorded owner after taking the lock, before changing
+state or deleting saved recovery files; `--force` does not bypass ownership.
+These commands keep unowned legacy state unowned. `state list`, `unlock` and
+`state recover` with nothing to recover do not check the owner.
 
 **Tables and read-only access:** every write happens under the lock, and the
 state tables are created or upgraded right before the lock is taken. `plan`,

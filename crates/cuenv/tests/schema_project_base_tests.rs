@@ -62,6 +62,55 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> TestResult {
 }
 
 #[test]
+fn ordinary_task_discovery_ignores_incomplete_infrastructure_environments() -> TestResult {
+    let directory = create_test_dir()?;
+    write_local_cuenv_module(directory.path())?;
+    fs::write(
+        directory.path().join("env.cue"),
+        r#"package cuenv
+import "github.com/cuenv/cuenv/schema"
+schema.#Project
+name: "ordinary-task"
+tasks: check: {
+    command: "sh"
+    args: ["-c", "printf 'task ran' > result.txt"]
+    hermetic: false
+}
+infrastructure: {
+    state: turso: url: "http://127.0.0.1:1"
+    environments: {
+        Dev: {
+            providers: random: {source: "hashicorp/random", version: "3.9.1"}
+            resources: pet: {type: "random_pet", configuration: length: 2}
+        }
+        Staging: {
+            providers: random: {source: string, version: string}
+        }
+    }
+}
+"#,
+    )?;
+    let project = evaluate_cue_package_typed::<Project>(directory.path(), "cuenv")?;
+    assert!(project.tasks.contains_key("check"));
+    let infrastructure = project.infrastructure.ok_or("missing raw infrastructure")?;
+    assert!(infrastructure["environments"]["Staging"]["providers"]["random"]["source"].is_null());
+    let output = clean_environment_command(env!("CARGO_BIN_EXE_cuenv"))
+        .current_dir(directory.path())
+        .args(["task", "--package", "cuenv", "check"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "task discovery failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("result.txt"))?,
+        "task ran"
+    );
+    Ok(())
+}
+
+#[test]
 fn project_name_is_required_by_schema() -> TestResult {
     let tmp = create_test_dir()?;
     let root = tmp.path();
@@ -139,7 +188,11 @@ schema.#Project & {
     )?;
 
     let project = evaluate_cue_package_typed::<Project>(root, "cuenv")?;
-    let infrastructure = project.infrastructure.expect("infrastructure config");
+    let infrastructure: cuenv_core::manifest::Infrastructure = serde_json::from_value(
+        project
+            .infrastructure
+            .ok_or("infrastructure config missing")?,
+    )?;
     assert!(infrastructure.environments.contains_key("dev"));
     assert!(infrastructure.environments.contains_key("staging"));
     Ok(())

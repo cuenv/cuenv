@@ -147,6 +147,28 @@ fallback between table families. This avoids changing the key beneath old
 clients that may still be running; reads do not migrate, and the first write
 creates or upgrades the tables under the existing migration gate.
 
+Schema v5 adds a generation UUID to both resource table families and backfills
+existing rows. Updates retain the generation; deletion and recreation allocate
+a fresh one. Plans compare it as part of their stored basis. Conditional create
+writes retain the UUID from their write payload, and recovery file format v4
+saves it along with the expected generation and serial, so a lost-response retry
+cannot acknowledge an independent insertion with identical content. Format-v2/v3
+files remain readable and require explicit force after inspection, with a CLI
+warning: v2 lacks a generation, while v2/v3 lack the v4 backend binding. The
+backend binding hashes the validated normalized URL and is checked against
+both the recovery wrapper and actual state store before any file is written.
+
+Ordinary Project decoding keeps infrastructure as raw JSON. Only infrastructure
+commands deserialize the strict selected configuration; unused incomplete named
+environments do not break task discovery, sync or CI.
+
+Apply separates replacement phases: old replacements and their removed
+dependents are deleted in reverse stored dependency order, then desired objects
+converge in forward configuration order. Other orphan deletes remain last so
+an in-place dependent update can detach before its old parent is removed.
+Each provider result is recorded before proceeding. A failed dependent delete
+leaves its parent intact, and a stopped run can resume from an absent replacement.
+
 Plan, apply and destroy resolve the selected project environment through
 Cuenv's existing secret resolvers. State-only commands resolve only the
 configured backend token, so unavailable provider credentials do not prevent
@@ -342,7 +364,9 @@ every command.
   protocol findings: nested computed children, JSON-encoded planned state,
   taint on failed replacements, a delete that returns an object, semantic
   equality, nested `dynamic` wrappers, and slow creates for stop, kill and
-  process-group checks. Each test was confirmed to fail against the old
+  process-group checks. It also enforces dependent-before-parent deletion and
+  parent-before-dependent creation, including failed and interrupted deletes.
+  Protocol regression tests were confirmed to fail against the old
   behaviour.
 
 ## Next steps

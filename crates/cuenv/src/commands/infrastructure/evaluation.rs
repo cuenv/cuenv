@@ -157,11 +157,8 @@ pub(super) fn evaluate(request: TargetRequest<'_>) -> Result<Target, CliError> {
         }
     }
     let relative_path = compute_relative_path(&target_path, &module.root);
-    let project = target_project(&module, &target_path, request.environment)?;
-    let infrastructure = project
-        .infrastructure
-        .clone()
-        .ok_or_else(|| missing_infrastructure(&project.name))?;
+    let (project, infrastructure) = target_project(&module, &target_path, request.environment)?;
+    let infrastructure = infrastructure.ok_or_else(|| missing_infrastructure(&project.name))?;
     let infrastructure = if let Some(name) = request.environment {
         infrastructure.for_environment(name).ok_or_else(|| {
             CliError::config(format!(
@@ -205,7 +202,7 @@ fn target_project(
     module: &ModuleEvaluation,
     target_path: &Path,
     environment: Option<&str>,
-) -> Result<Project, CliError> {
+) -> Result<(Project, Option<Infrastructure>), CliError> {
     let relative_path = compute_relative_path(target_path, &module.root);
     let instance = module.get(Path::new(&relative_path)).ok_or_else(|| {
         CliError::config(format!(
@@ -233,7 +230,21 @@ fn target_project(
         infrastructure.remove("providers");
         infrastructure.remove("resources");
     }
-    selected.deserialize().map_err(CliError::from)
+    let project = selected.deserialize().map_err(CliError::from)?;
+    // Ordinary Project decoding keeps infrastructure as raw JSON. Only this
+    // command consumes it, after selecting the concrete configuration above.
+    let infrastructure = selected
+        .value
+        .get("infrastructure")
+        .cloned()
+        .map(|value| {
+            selected.value = value;
+            selected
+                .deserialize::<Infrastructure>()
+                .map_err(CliError::from)
+        })
+        .transpose()?;
+    Ok((project, infrastructure))
 }
 
 fn missing_infrastructure(project_name: &str) -> CliError {

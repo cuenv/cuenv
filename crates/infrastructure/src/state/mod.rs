@@ -80,14 +80,19 @@ pub struct ManagedResource {
     /// when the record is read; ignored when writing.
     #[serde(default)]
     pub serial: i64,
+    /// Identity of this insertion, retained on updates and renewed after deletion.
+    /// Nil identifies records read from a schema predating generations.
+    #[serde(default)]
+    pub generation: uuid::Uuid,
 }
 
 impl ManagedResource {
-    /// Whether two records hold the same content, ignoring their serials.
+    /// Whether two records hold the same content, ignoring store metadata.
     #[must_use]
     pub fn same_content(&self, other: &Self) -> bool {
         Self {
             serial: other.serial,
+            generation: other.generation,
             ..self.clone()
         } == *other
     }
@@ -101,13 +106,24 @@ pub enum RecordVersion {
     Absent,
     /// The record with this serial is stored.
     Serial(i64),
+    /// A particular insertion and its update serial. Unlike a serial alone,
+    /// this version cannot match a record deleted and recreated at the same address.
+    Generation {
+        /// Identity assigned when the row was inserted.
+        generation: uuid::Uuid,
+        /// Number of writes to that insertion.
+        serial: i64,
+    },
 }
 
 impl RecordVersion {
     /// The version of `record` (absent when there is none).
     #[must_use]
     pub fn of(record: Option<&ManagedResource>) -> Self {
-        record.map_or(Self::Absent, |record| Self::Serial(record.serial))
+        record.map_or(Self::Absent, |record| Self::Generation {
+            generation: record.generation,
+            serial: record.serial,
+        })
     }
 
     /// The version a successful write of the record leaves behind.
@@ -116,6 +132,10 @@ impl RecordVersion {
         match self {
             Self::Absent => Self::Serial(1),
             Self::Serial(serial) => Self::Serial(serial.saturating_add(1)),
+            Self::Generation { generation, serial } => Self::Generation {
+                generation,
+                serial: serial.saturating_add(1),
+            },
         }
     }
 }
@@ -125,6 +145,9 @@ impl fmt::Display for RecordVersion {
         match self {
             Self::Absent => formatter.write_str("no record"),
             Self::Serial(serial) => write!(formatter, "serial {serial}"),
+            Self::Generation { generation, serial } => {
+                write!(formatter, "generation {generation}, serial {serial}")
+            }
         }
     }
 }
@@ -137,6 +160,25 @@ pub struct ConditionalPut<'put> {
     pub resource: &'put ManagedResource,
     /// The stored version it must replace.
     pub expected: RecordVersion,
+}
+
+impl ConditionalPut<'_> {
+    /// Whether this exact write was already recorded after a lost response.
+    /// A create's generation belongs to its write payload, so an independent
+    /// insertion with identical content cannot acknowledge the pending write.
+    #[must_use]
+    pub fn is_recorded(&self, stored: &ManagedResource) -> bool {
+        !self.resource.generation.is_nil()
+            && stored.generation == self.resource.generation
+            && stored.same_content(self.resource)
+            && match self.expected {
+                RecordVersion::Absent => stored.serial == 1,
+                RecordVersion::Generation { .. } => {
+                    RecordVersion::of(Some(stored)) == self.expected.after_write()
+                }
+                RecordVersion::Serial(_) => false,
+            }
+    }
 }
 
 /// An acquired state lock. Every write must present it.
@@ -258,18 +300,25 @@ pub struct OwnerClaim<'claim> {
 /// read or write rows belonging to another tenant.
 #[async_trait]
 pub trait StateStore: Send + Sync {
+    /// Non-secret, stable backend identity for binding local recovery files.
+    /// In-memory or custom stores can remain unbound.
+    fn recovery_identity(&self) -> Option<String> {
+        None
+    }
+
     /// Create tables and indexes if they do not exist, and bring the schema
     /// up to date.
     ///
     /// Fails when the stored schema is newer than this build knows.
     async fn migrate(&self) -> Result<()>;
 
-    /// List all managed resources of a tenant, each with its current serial.
+    /// List all managed resources of a tenant, with generation and serial.
     ///
     /// Never migrates: a store that was never migrated has no resources.
     async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>>;
 
     /// Insert or replace a managed resource.
+    /// New insertions receive a fresh generation; updates retain it.
     ///
     /// Fails with [`crate::InfrastructureError::LockLost`] unless `lock` is
     /// still the tenant's current lock; the check and the write are atomic.
@@ -284,6 +333,8 @@ pub trait StateStore: Send + Sync {
     /// still at `put.expected` (compare and swap). Fenced by `lock` like
     /// [`StateStore::put`]; the lock check, the version check and the write
     /// are atomic.
+    /// A create payload with a non-nil generation preserves that generation
+    /// on insertion, so an exact retry can acknowledge its own earlier write.
     ///
     /// Fails with [`crate::InfrastructureError::StateChanged`] naming the
     /// address when the stored version differs.

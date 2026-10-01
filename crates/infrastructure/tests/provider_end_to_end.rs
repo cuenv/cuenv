@@ -313,6 +313,125 @@ async fn installs_provider_from_registry() -> TestResult {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
+async fn turso_recovery_refuses_recreated_records_at_the_same_serial() -> TestResult {
+    let state = TursoStateStore::new(TursoConfiguration {
+        url: std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?,
+        authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),
+    })?;
+    state.migrate().await?;
+    let backend_identity = state
+        .recovery_identity()
+        .ok_or("missing backend identity")?;
+    for environment in [None, Some("Dev")] {
+        let module = format!("example.com/recovery-generation-{}", uuid::Uuid::new_v4());
+        let tenant = if let Some(environment) = environment {
+            TenantKey::with_environment(module, "web", environment)?
+        } else {
+            TenantKey::new(module, "web")?
+        };
+        let directory = tempfile::tempdir()?;
+        let unrecorded = cuenv_infrastructure::UnrecordedStore::at(directory.path())
+            .with_backend_identity(&backend_identity)?;
+        let lock = state.lock(&tenant, "generation recovery").await?;
+        let original = cuenv_infrastructure::ManagedResource {
+            address: cuenv_infrastructure::ResourceAddress::new("random_pet", "pet"),
+            provider: "random".into(),
+            provider_source: "registry.terraform.io/hashicorp/random".into(),
+            schema_version: 0,
+            state: json!({"id": "original"}),
+            private: Vec::new(),
+            dependencies: Vec::new(),
+            tainted: false,
+            identity: None,
+            serial: 0,
+            generation: uuid::Uuid::nil(),
+        };
+        state.put(&tenant, &lock, &original).await?;
+        let previous = state.list(&tenant).await?[0].clone();
+        let pending = cuenv_infrastructure::ManagedResource {
+            state: json!({"id": "pending"}),
+            ..original.clone()
+        };
+        unrecorded.save(
+            &tenant,
+            &ConditionalPut {
+                resource: &pending,
+                expected: RecordVersion::of(Some(&previous)),
+            },
+        )?;
+        state.delete(&tenant, &lock, &original.address).await?;
+        state
+            .put(
+                &tenant,
+                &lock,
+                &cuenv_infrastructure::ManagedResource {
+                    state: json!({"id": "new"}),
+                    ..original.clone()
+                },
+            )
+            .await?;
+        let recreated = state.list(&tenant).await?[0].clone();
+        assert_eq!(previous.serial, recreated.serial);
+        assert_ne!(previous.generation, recreated.generation);
+        let recovered = unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &cuenv_infrastructure::RecoverOptions {
+                    lock: &lock,
+                    overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await;
+        assert!(matches!(
+            recovered,
+            Err(InfrastructureError::StateChanged { .. })
+        ));
+        assert_eq!(state.list(&tenant).await?, vec![recreated]);
+        assert_eq!(unrecorded.list(&tenant)?.len(), 1);
+        state.delete(&tenant, &lock, &original.address).await?;
+        // Identical content from an independent insertion cannot acknowledge
+        // an absent-record recovery whose response may have been lost.
+        let independent_directory = tempfile::tempdir()?;
+        let independent_saved =
+            cuenv_infrastructure::UnrecordedStore::at(independent_directory.path())
+                .with_backend_identity(&backend_identity)?;
+        independent_saved.save(
+            &tenant,
+            &ConditionalPut {
+                resource: &original,
+                expected: RecordVersion::Absent,
+            },
+        )?;
+        let pending = independent_saved.list(&tenant)?[0].record.clone();
+        state.put(&tenant, &lock, &pending).await?;
+        let independent = state.list(&tenant).await?[0].clone();
+        assert!(independent.same_content(&pending));
+        assert_ne!(independent.generation, pending.generation);
+        let recovered = independent_saved
+            .recover(
+                &state,
+                &tenant,
+                &cuenv_infrastructure::RecoverOptions {
+                    lock: &lock,
+                    overwrite: cuenv_infrastructure::RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await;
+        assert!(matches!(
+            recovered,
+            Err(InfrastructureError::StateChanged { .. })
+        ));
+        assert_eq!(state.list(&tenant).await?, vec![independent]);
+        assert_eq!(independent_saved.list(&tenant)?.len(), 1);
+        state.delete(&tenant, &lock, &original.address).await?;
+        state.unlock(&tenant, &lock).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires a libSQL server (CUENV_INFRASTRUCTURE_TEST_TURSO_URL)"]
 async fn turso_store_round_trips_records() -> TestResult {
     let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_URL")?;
     let store = TursoStateStore::new(TursoConfiguration {
@@ -334,6 +453,7 @@ async fn turso_store_round_trips_records() -> TestResult {
         tainted: true,
         identity: Some(json!({"name": "a-b"})),
         serial: 0,
+        generation: uuid::Uuid::nil(),
     };
     // The caller chooses the lock identifier before acquiring it.
     let chosen = StateLock::generate();
@@ -373,7 +493,10 @@ async fn turso_store_round_trips_records() -> TestResult {
             &lock,
             &ConditionalPut {
                 resource: &newer,
-                expected: RecordVersion::Serial(1),
+                expected: RecordVersion::Generation {
+                    generation: stored[0].generation,
+                    serial: 1,
+                },
             },
         )
         .await;
@@ -387,13 +510,14 @@ async fn turso_store_round_trips_records() -> TestResult {
             &lock,
             &ConditionalPut {
                 resource: &newer,
-                expected: RecordVersion::Serial(2),
+                expected: RecordVersion::of(Some(&stored[0])),
             },
         )
         .await?;
     assert_eq!(store.list(&tenant).await?[0].serial, 3);
     let absent = cuenv_infrastructure::ManagedResource {
         address: cuenv_infrastructure::ResourceAddress::new("random_pet", "other"),
+        generation: uuid::Uuid::new_v4(),
         ..newer.clone()
     };
     let conditional_absent = ConditionalPut {
@@ -469,6 +593,269 @@ async fn turso_store_round_trips_records() -> TestResult {
 // ---------------------------------------------------------------------------
 // Fake provider
 // ---------------------------------------------------------------------------
+
+fn ordered_resources(suffix: &str) -> serde_json::Value {
+    json!({
+        "parent": {"type": "fake_ordered", "configuration": {"name": format!("parent-{suffix}")}},
+        "dependent": {"type": "fake_ordered", "dependsOn": ["parent"], "configuration": {
+            "name": format!("dependent-{suffix}"), "parent_name": format!("parent-{suffix}")
+        }},
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_dependent_update_detaches_before_ordinary_orphan_deletion() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let detached = json!({
+        "dependent": {"type": "fake_ordered", "configuration": {"name": "dependent-old"}},
+    });
+    let result = fake.converge(&detached, PlanMode::Apply).await?.applied?;
+    assert_eq!(result.update, 1);
+    assert_eq!(result.delete, 1);
+    assert_eq!(
+        fake.journal().lines().collect::<Vec<_>>(),
+        vec![
+            "ordered: Update name=dependent-old",
+            "ordered: Delete name=parent-old",
+        ]
+    );
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].dependencies.is_empty());
+    assert!(rows[0].state["parent_name"].is_null());
+    assert!(!fake.directory.path().join("ordered-parent").exists());
+    fake.converge(&detached, PlanMode::Destroy).await?.applied?;
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    assert!(!fake.directory.path().join("ordered-dependent").exists());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_dependent_update_detaches_before_parent_replacement() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let detached = json!({
+        "parent": {"type": "fake_ordered", "configuration": {"name": "parent-new"}},
+        "dependent": {"type": "fake_ordered", "configuration": {"name": "dependent-old"}},
+    });
+    let result = fake.converge(&detached, PlanMode::Apply).await?.applied?;
+    assert_eq!(result.update, 1);
+    assert_eq!(result.replace, 1);
+    assert_eq!(
+        fake.journal().lines().collect::<Vec<_>>(),
+        vec![
+            "ordered: Update name=dependent-old",
+            "ordered: Delete name=parent-old",
+            "ordered: Create name=parent-new",
+        ]
+    );
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 2);
+    let dependent = rows
+        .iter()
+        .find(|row| row.address.name == "dependent")
+        .ok_or("missing dependent")?;
+    assert!(dependent.dependencies.is_empty());
+    assert!(dependent.state["parent_name"].is_null());
+    fake.converge(&detached, PlanMode::Destroy).await?.applied?;
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_detachment_with_an_unavailable_new_prerequisite_fails_before_mutations() -> TestResult
+{
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    let before = fake.store.list(&fake.tenant).await?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let desired = json!({
+        "parent": {"type": "fake_ordered", "configuration": {"name": "parent-replaced"}},
+        "new": {"type": "fake_ordered", "configuration": {"name": "parent-new"}},
+        "dependent": {"type": "fake_ordered", "dependsOn": ["new"],
+            "configuration": {"name": "dependent-old", "parent_name": "parent-new"}},
+    });
+    let error = fake
+        .converge(&desired, PlanMode::Apply)
+        .await?
+        .applied
+        .unwrap_err();
+    assert!(
+        matches!(error, InfrastructureError::Configuration(message) if message.contains("prerequisite"))
+    );
+    assert!(fake.journal().is_empty());
+    assert_eq!(fake.store.list(&fake.tenant).await?, before);
+    fake.converge(&ordered_resources("old"), PlanMode::Destroy)
+        .await?
+        .applied?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_failed_detachment_retains_old_edges_for_safe_destroy() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.set_flag("fail-ordered-update")?;
+    let desired = json!({
+        "parent": {"type": "fake_ordered", "configuration": {"name": "parent-old"}},
+        "dependent": {"type": "fake_ordered", "configuration": {"name": "dependent-old"}},
+    });
+    assert!(
+        fake.converge(&desired, PlanMode::Apply)
+            .await?
+            .applied
+            .is_err()
+    );
+    let rows = fake.store.list(&fake.tenant).await?;
+    let dependent = rows
+        .iter()
+        .find(|row| row.address.name == "dependent")
+        .ok_or("missing dependent")?;
+    assert_eq!(dependent.dependencies, vec!["parent"]);
+    assert_eq!(dependent.state["parent_name"], "parent-old");
+    fake.clear_flag("fail-ordered-update")?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    fake.converge(&desired, PlanMode::Destroy).await?.applied?;
+    assert_eq!(
+        fake.journal().lines().collect::<Vec<_>>(),
+        vec![
+            "ordered: Delete name=dependent-old",
+            "ordered: Delete name=parent-old",
+        ]
+    );
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_dependent_replacements_destroy_in_reverse_and_create_forward() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    let journal_file = fake.directory.path().join("journal.log");
+    std::fs::write(&journal_file, "")?;
+    let replaced = fake
+        .converge(&ordered_resources("new"), PlanMode::Apply)
+        .await?;
+    assert_eq!(replaced.applied?.replace, 2);
+    assert_eq!(
+        fake.journal().lines().collect::<Vec<_>>(),
+        vec![
+            "ordered: Delete name=dependent-old",
+            "ordered: Delete name=parent-old",
+            "ordered: Create name=parent-new",
+            "ordered: Create name=dependent-new",
+        ]
+    );
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        row.state["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("-new"))
+    }));
+    fake.converge(&ordered_resources("new"), PlanMode::Destroy)
+        .await?
+        .applied?;
+    assert!(fake.store.list(&fake.tenant).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_failed_dependent_delete_keeps_the_parent_and_both_records() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.set_flag("fail-ordered-delete")?;
+    std::fs::write(fake.directory.path().join("journal.log"), "")?;
+    let replaced = fake
+        .converge(&ordered_resources("new"), PlanMode::Apply)
+        .await?;
+    assert!(replaced.applied.is_err());
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        row.state["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("-old"))
+    }));
+    assert!(!fake.journal().contains("Delete name=parent-old"));
+    assert!(!fake.journal().contains("Create name=parent-new"));
+    assert_eq!(
+        std::fs::read_to_string(fake.directory.path().join("ordered-parent"))?,
+        "parent-old"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the fake provider binary"]
+async fn fake_stop_during_dependent_delete_records_it_and_can_resume() -> TestResult {
+    let fake = Fake::new().await?;
+    fake.converge(&ordered_resources("old"), PlanMode::Apply)
+        .await?
+        .applied?;
+    fake.set_flag("slow-ordered-delete")?;
+    let cancellation = Cancellation::default();
+    let mut engine = fake.engine(&ordered_resources("new"), &cancellation)?;
+    let lock = fake
+        .store
+        .lock(&fake.tenant, "replacement interrupt")
+        .await?;
+    let plan = engine.plan(PlanMode::Apply).await?;
+    let mut on_event = |_| {};
+    let (applied, ()) = tokio::join!(
+        engine.apply(&plan, ApplyContext { lock: &lock }, &mut on_event),
+        async {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            cancellation.stop();
+        }
+    );
+    assert!(matches!(
+        applied,
+        Err(InfrastructureError::Interrupted {
+            completed: 0,
+            total: 2
+        })
+    ));
+    let rows = fake.store.list(&fake.tenant).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].address.name, "parent");
+    assert_eq!(rows[0].state["name"], "parent-old");
+    assert!(!fake.directory.path().join("ordered-dependent").exists());
+    fake.store.unlock(&fake.tenant, &lock).await?;
+    engine.shutdown().await;
+    fake.converge(&ordered_resources("new"), PlanMode::Apply)
+        .await?
+        .applied?;
+    let resumed = fake.store.list(&fake.tenant).await?;
+    assert_eq!(resumed.len(), 2);
+    assert!(resumed.iter().all(|row| {
+        row.state["name"]
+            .as_str()
+            .is_some_and(|name| name.ends_with("-new"))
+    }));
+    Ok(())
+}
 
 /// One tenant driven through the fake provider, with its own journal and
 /// flag directory.
@@ -788,7 +1175,11 @@ async fn fake_terminate_kills_providers_at_once() -> TestResult {
         }
     );
     assert!(started.elapsed() < Duration::from_secs(30));
-    assert!(applied.is_err());
+    assert!(
+        matches!(applied, Err(InfrastructureError::InterruptedUnknownOutcome { ref address, .. })
+        if address == "fake_slow.thing"),
+        "{applied:?}"
+    );
     fake.store.unlock(&fake.tenant, &lock).await?;
     engine.shutdown().await;
     assert_eq!(cancellation.live_provider_count(), 0);

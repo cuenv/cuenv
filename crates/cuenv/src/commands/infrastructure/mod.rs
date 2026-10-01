@@ -196,7 +196,9 @@ fn failure(error: &InfrastructureError) -> CliError {
             InfrastructureFailureKind::Failed,
             Some(IMPORT_HELP.to_string()),
         ),
-        InfrastructureError::Interrupted { .. } | InfrastructureError::InterruptedWhilePlanning => {
+        InfrastructureError::Interrupted { .. }
+        | InfrastructureError::InterruptedWhilePlanning
+        | InfrastructureError::InterruptedUnknownOutcome { .. } => {
             (InfrastructureFailureKind::Interrupted, None)
         }
         InfrastructureError::State(_) => (
@@ -511,7 +513,12 @@ async fn dispatch(
             remove_resource(context, address).await
         }
         InfrastructureAction::State(StateAction::Recover { overwrite }) => {
-            recover(context, &unrecorded_store(&inputs)?, *overwrite).await
+            recover(
+                context,
+                &unrecorded_store(&inputs, context.store.as_ref())?,
+                *overwrite,
+            )
+            .await
         }
         InfrastructureAction::State(StateAction::Adopt) => adopt(context).await,
         InfrastructureAction::Unlock { lock_identifier } => {
@@ -575,14 +582,23 @@ fn engine_setup(context: &CommandContext<'_>, inputs: EngineInputs) -> EngineSet
     }
 }
 
-fn unrecorded_store(inputs: &EngineInputs) -> Result<UnrecordedStore, CliError> {
-    inputs
+fn unrecorded_store(
+    inputs: &EngineInputs,
+    store: &dyn StateStore,
+) -> Result<UnrecordedStore, CliError> {
+    let unrecorded = inputs
         .unrecorded_directory
         .as_ref()
         .map_or_else(UnrecordedStore::default_location, |directory| {
             Ok(UnrecordedStore::at(directory))
         })
-        .map_err(|error| failure(&error))
+        .map_err(|error| failure(&error))?;
+    match store.recovery_identity() {
+        Some(identity) => unrecorded
+            .with_backend_identity(&identity)
+            .map_err(|error| failure(&error)),
+        None => Ok(unrecorded),
+    }
 }
 
 /// Connect to the state store. Nothing is sent yet: reads never create
@@ -801,6 +817,7 @@ fn settle<Outcome>(settlement: Settlement<'_, Outcome>) -> Result<Outcome, CliEr
 /// `state remove`: forget one resource under the lock (a fenced delete).
 async fn remove_resource(context: &CommandContext<'_>, address: &str) -> Result<(), CliError> {
     under_lock(context, "state remove", |lock| async move {
+        require_owner(context).await?;
         let resources = context
             .store
             .list(context.tenant)
@@ -853,6 +870,13 @@ async fn recover(
         return Ok(());
     }
     under_lock(context, "state recover", |lock| async move {
+        require_owner(context).await?;
+        if overwrite == RecoverOverwrite::Always
+            && unrecorded.list(context.tenant).map_err(|error| failure(&error))?
+                .iter().any(|record| record.requires_force() || unrecorded.requires_backend_force(record))
+        {
+            emit_stderr!("warning: forcing recovery of saved state whose generation or backend binding cannot be verified; inspect the saved object, stored object and configured backend before overwriting current state");
+        }
         let recovered = unrecorded
             .recover(
                 context.store.as_ref(),

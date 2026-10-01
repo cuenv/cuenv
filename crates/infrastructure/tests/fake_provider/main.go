@@ -32,6 +32,7 @@
 //	fake_repl      a name that forces replacement; deletes that can be slow
 //	fake_dyn       a computed dynamic attribute holding list(string)
 //	fake_tags      an optional set of strings
+//	fake_ordered   parent/dependent objects enforcing replacement ordering
 package main
 
 import (
@@ -140,6 +141,7 @@ func (p *fakeProvider) Resources(context.Context) []func() resource.Resource {
 		func() resource.Resource { return &basic{kind: "repl"} },
 		func() resource.Resource { return &dynamic{} },
 		func() resource.Resource { return &tags{} },
+		func() resource.Resource { return &ordered{} },
 	}
 }
 

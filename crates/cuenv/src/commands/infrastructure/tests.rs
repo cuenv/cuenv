@@ -533,6 +533,7 @@ struct CountingStore {
     inner: MemoryStateStore,
     migrations: AtomicUsize,
     acquisitions: AtomicUsize,
+    owner_locks: Mutex<Vec<Option<LockInformation>>>,
 }
 
 #[async_trait]
@@ -606,6 +607,8 @@ impl StateStore for CountingStore {
     }
 
     async fn owner(&self, tenant: &TenantKey) -> cuenv_infrastructure::Result<Option<TenantOwner>> {
+        let lock = self.inner.current_lock(tenant).await?;
+        self.owner_locks.lock().unwrap().push(lock);
         self.inner.owner(tenant).await
     }
 
@@ -800,6 +803,7 @@ fn managed(address: &str) -> ManagedResource {
         tainted: false,
         identity: None,
         serial: 0,
+        generation: uuid::Uuid::nil(),
     }
 }
 
@@ -942,6 +946,160 @@ async fn another_owner_is_refused_until_adopted() {
     assert_eq!(adopted["previousOwner"]["instance"], "_staging/app:cuenv");
     assert_eq!(adopted["owner"]["instance"], "app:cuenv");
     harness.run(InfrastructureAction::Plan).await.unwrap();
+}
+
+#[tokio::test]
+async fn state_remove_checks_the_owner_under_lock_until_adopted() {
+    for environment in [None, Some("Dev")] {
+        let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+        if let Some(environment) = environment {
+            harness.tenant =
+                TenantKey::with_environment("example.com/infrastructure", "app", environment)
+                    .unwrap();
+        }
+        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        harness.seed(&["random_pet.pet"], Some(&other)).await;
+        let before = harness.store.list(&harness.tenant).await.unwrap();
+        let action = InfrastructureAction::State(StateAction::Remove {
+            address: "random_pet.pet".to_string(),
+        });
+
+        let error = harness.run(action.clone()).await.unwrap_err();
+        assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+        assert!(error.to_string().contains("_staging/app:cuenv"), "{error}");
+        assert!(error.help().unwrap().contains("state adopt"), "{error:?}");
+        let owner_lock = harness.counting.owner_locks.lock().unwrap()[0]
+            .clone()
+            .unwrap();
+        assert_eq!(
+            lock_of(&error),
+            Some(&LockStatus {
+                identifier: owner_lock.lock_identifier,
+                released: true,
+            })
+        );
+        assert!(harness.current_lock().await.is_none());
+        assert_eq!(harness.store.list(&harness.tenant).await.unwrap(), before);
+        assert_eq!(
+            harness
+                .store
+                .owner(&harness.tenant)
+                .await
+                .unwrap()
+                .unwrap()
+                .instance,
+            other
+        );
+
+        // Reading and inspecting the lock remain available from a moved instance.
+        harness
+            .run(InfrastructureAction::State(StateAction::List))
+            .await
+            .unwrap();
+        harness
+            .run(InfrastructureAction::Unlock {
+                lock_identifier: None,
+            })
+            .await
+            .unwrap();
+        harness
+            .run(InfrastructureAction::State(StateAction::Adopt))
+            .await
+            .unwrap();
+        harness.run(action).await.unwrap();
+        assert!(
+            harness
+                .store
+                .list(&harness.tenant)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        assert!(harness.current_lock().await.is_none());
+    }
+}
+
+#[tokio::test]
+async fn state_recover_checks_the_owner_under_lock_even_when_forced() {
+    for environment in [None, Some("Dev")] {
+        let mut harness = Harness::new(OutputFormat::Json, Script::Line("yes"));
+        if let Some(environment) = environment {
+            harness.tenant =
+                TenantKey::with_environment("example.com/infrastructure", "app", environment)
+                    .unwrap();
+        }
+        let other = ProjectInstance::new("_staging/app", "cuenv").unwrap();
+        harness.seed(&["random_pet.pet"], Some(&other)).await;
+        let before = harness.store.list(&harness.tenant).await.unwrap();
+        let mut saved = before[0].clone();
+        saved.state = serde_json::json!({"id": "recovered"});
+        let unrecorded = UnrecordedStore::at(harness.directory.path().join("unrecorded"));
+        unrecorded
+            .save(
+                &harness.tenant,
+                &ConditionalPut {
+                    resource: &saved,
+                    expected: RecordVersion::of(Some(&before[0])),
+                },
+            )
+            .unwrap();
+        let pending = unrecorded.list(&harness.tenant).unwrap();
+
+        for overwrite in [RecoverOverwrite::IfUnchanged, RecoverOverwrite::Always] {
+            let error = harness
+                .run(InfrastructureAction::State(StateAction::Recover {
+                    overwrite,
+                }))
+                .await
+                .unwrap_err();
+            assert_eq!(exit_code_for(&error), EXIT_INFRASTRUCTURE);
+            assert!(error.help().unwrap().contains("state adopt"), "{error:?}");
+            let owner_lock = harness
+                .counting
+                .owner_locks
+                .lock()
+                .unwrap()
+                .last()
+                .cloned()
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                lock_of(&error),
+                Some(&LockStatus {
+                    identifier: owner_lock.lock_identifier,
+                    released: true,
+                })
+            );
+            assert!(harness.current_lock().await.is_none());
+            assert_eq!(harness.store.list(&harness.tenant).await.unwrap(), before);
+            assert_eq!(unrecorded.list(&harness.tenant).unwrap(), pending);
+        }
+        assert_eq!(
+            harness
+                .store
+                .owner(&harness.tenant)
+                .await
+                .unwrap()
+                .unwrap()
+                .instance,
+            other
+        );
+
+        harness
+            .run(InfrastructureAction::State(StateAction::Adopt))
+            .await
+            .unwrap();
+        harness
+            .run(InfrastructureAction::State(StateAction::Recover {
+                overwrite: RecoverOverwrite::IfUnchanged,
+            }))
+            .await
+            .unwrap();
+        let recorded = harness.store.list(&harness.tenant).await.unwrap();
+        assert!(recorded[0].same_content(&saved));
+        assert!(unrecorded.list(&harness.tenant).unwrap().is_empty());
+        assert!(harness.current_lock().await.is_none());
+    }
 }
 
 #[tokio::test]

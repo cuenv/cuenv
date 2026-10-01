@@ -2,9 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
-use super::{
-    CodegenConfig, ContainerImage, Formatters, Infrastructure, Runtime, Service, VcsDependency,
-};
+use super::{CodegenConfig, ContainerImage, Formatters, Runtime, Service, VcsDependency};
 use crate::ci::CI;
 use crate::config::Config;
 use crate::environment::Env;
@@ -77,9 +75,11 @@ pub struct Project {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatters: Option<Formatters>,
 
-    /// Infrastructure managed through Terraform provider plugins
+    /// Raw infrastructure configuration. Ordinary commands do not consume it
+    /// and must tolerate unselected environments with incomplete CUE values.
+    /// Infrastructure commands decode the selected configuration strictly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub infrastructure: Option<Infrastructure>,
+    pub infrastructure: Option<serde_json::Value>,
 }
 
 impl Project {

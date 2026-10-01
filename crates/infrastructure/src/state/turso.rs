@@ -138,6 +138,17 @@ const MIGRATIONS: &[Migration] = &[
             ) WITHOUT ROWID",
         ],
     },
+    // Version 5 identifies each insertion so deleting and recreating an address
+    // cannot reuse a recovery or plan version, even when its serial restarts.
+    Migration {
+        version: 5,
+        statements: &[
+            "ALTER TABLE cuenv_infrastructure_resources ADD COLUMN generation TEXT NOT NULL DEFAULT ''",
+            "UPDATE cuenv_infrastructure_resources SET generation = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))) WHERE generation = ''",
+            "ALTER TABLE cuenv_infrastructure_environment_resources ADD COLUMN generation TEXT NOT NULL DEFAULT ''",
+            "UPDATE cuenv_infrastructure_environment_resources SET generation = lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(2)) || '-' || hex(randomblob(6))) WHERE generation = ''",
+        ],
+    },
 ];
 
 /// Newest schema version this build knows.
@@ -145,6 +156,7 @@ const LATEST_SCHEMA_VERSION: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
 
 /// First schema version with the `tainted` and `identity_json` columns.
 const TAINT_AND_IDENTITY_SCHEMA_VERSION: i64 = 2;
+const GENERATION_SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_TABLE: &str = "cuenv_infrastructure_schema";
 const RESOURCES_TABLE: &str = "cuenv_infrastructure_resources";
@@ -249,7 +261,7 @@ impl StateTables {
         format!(
             "INSERT INTO {} ({}, resource_type, resource_name, provider, provider_source, \
              schema_version, state_json, private, dependencies_json, tainted, identity_json, \
-             serial, created_at, updated_at) SELECT {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?",
+             serial, created_at, updated_at, generation) SELECT {}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?",
             self.resources,
             self.tenant_columns(),
             self.tenant_values()
@@ -664,6 +676,7 @@ impl TursoStateStore {
         } else {
             SELECT_RESOURCE.to_string()
         };
+        let query = query.replacen("serial FROM", "serial, generation FROM", 1);
         self.execute(Statement::new(query, arguments))
             .await?
             .rows
@@ -990,6 +1003,13 @@ fn tenant_arguments(tenant: &TenantKey) -> Vec<HranaValue> {
 
 #[async_trait]
 impl StateStore for TursoStateStore {
+    fn recovery_identity(&self) -> Option<String> {
+        use sha2::Digest;
+        let mut digest = sha2::Sha256::new();
+        digest.update(b"cuenv-infrastructure-turso-recovery-v1\0");
+        digest.update(self.pipeline_url.as_str().as_bytes());
+        Some(format!("{:x}", digest.finalize()))
+    }
     #[tracing::instrument(skip_all)]
     async fn migrate(&self) -> Result<()> {
         let current = self.schema_version().await?;
@@ -1051,6 +1071,12 @@ impl StateStore for TursoStateStore {
         } else {
             SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY.to_string()
         };
+        let generation = if schema.version >= GENERATION_SCHEMA_VERSION {
+            "serial, generation FROM"
+        } else {
+            "serial, NULL AS generation FROM"
+        };
+        let query = query.replacen("serial FROM", generation, 1);
         let result = self
             .execute(Statement::new(query, tenant_arguments(tenant)))
             .await?;
@@ -1107,7 +1133,10 @@ impl StateStore for TursoStateStore {
     ) -> Result<()> {
         let tables = StateTables::for_tenant(tenant);
         let resource = put.resource;
-        let columns = RecordColumns::of(resource)?;
+        let mut columns = RecordColumns::of(resource)?;
+        if !resource.generation.is_nil() {
+            columns.insertion_generation = resource.generation;
+        }
         let statement = match put.expected {
             RecordVersion::Absent => {
                 let mut arguments = columns.insert_arguments(tenant, resource);
@@ -1122,12 +1151,18 @@ impl StateStore for TursoStateStore {
                     arguments,
                 )
             }
-            RecordVersion::Serial(serial) => {
+            RecordVersion::Serial(_) => {
+                return Err(InfrastructureError::configuration(
+                    "a serial-only recovery version is unsafe; inspect the saved record and use state recover --force",
+                ));
+            }
+            RecordVersion::Generation { generation, serial } => {
                 let mut arguments = columns.update_arguments(resource);
                 arguments.extend(tenant_arguments(tenant));
                 arguments.push(HranaValue::text(&resource.address.resource_type));
                 arguments.push(HranaValue::text(&resource.address.name));
                 arguments.push(HranaValue::integer(serial));
+                arguments.push(HranaValue::text(&generation.to_string()));
                 arguments.extend(lock_arguments(tenant, lock));
                 Statement::carrying_state(
                     format!(
@@ -1136,7 +1171,7 @@ impl StateStore for TursoStateStore {
                          dependencies_json = ?, tainted = ?, identity_json = ?, \
                          serial = serial + 1, updated_at = ? \
                          WHERE {} AND resource_type = ? \
-                         AND resource_name = ? AND serial = ? AND {}",
+                         AND resource_name = ? AND serial = ? AND generation = ? AND {}",
                         tables.resources,
                         tables.tenant_predicate(),
                         tables.lock_held()
@@ -1155,9 +1190,7 @@ impl StateStore for TursoStateStore {
         let found = RecordVersion::of(current.as_ref());
         // A retried attempt finds the write of an earlier attempt whose
         // response was lost: that is this write, already done.
-        if found == put.expected.after_write()
-            && current.is_some_and(|current| current.same_content(resource))
-        {
+        if current.is_some_and(|current| put.is_recorded(&current)) {
             return Ok(());
         }
         Err(InfrastructureError::StateChanged {
@@ -1411,6 +1444,7 @@ struct RecordColumns {
     dependencies_json: String,
     identity_json: Option<String>,
     timestamp: String,
+    insertion_generation: uuid::Uuid,
 }
 
 impl RecordColumns {
@@ -1436,6 +1470,7 @@ impl RecordColumns {
                 .transpose()
                 .map_err(|error| failed("identity", &error))?,
             timestamp: now(),
+            insertion_generation: uuid::Uuid::new_v4(),
         })
     }
 
@@ -1446,6 +1481,7 @@ impl RecordColumns {
         arguments.push(HranaValue::text(&resource.address.name));
         arguments.extend(self.update_arguments(resource));
         arguments.push(HranaValue::text(&self.timestamp));
+        arguments.push(HranaValue::text(&self.insertion_generation.to_string()));
         arguments
     }
 
@@ -1573,6 +1609,14 @@ fn row_to_resource(row: &[HranaValue]) -> Result<ManagedResource> {
         tainted: integer(8, "tainted")? != 0,
         identity,
         serial: integer(10, "serial")?,
+        generation: match row.get(11) {
+            Some(HranaValue::Null) => uuid::Uuid::nil(),
+            Some(value) => value
+                .as_text()
+                .and_then(|generation| uuid::Uuid::parse_str(generation).ok())
+                .ok_or_else(|| InfrastructureError::state("state row has an invalid generation"))?,
+            None => return Err(InfrastructureError::state("state row missing generation")),
+        },
         address,
     })
 }
@@ -2094,6 +2138,104 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
+    async fn v4_migration_backfills_generations_that_support_conditional_updates() -> Result<()> {
+        let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").map_err(|_| {
+            InfrastructureError::configuration(
+                "set CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL to an empty isolated database",
+            )
+        })?;
+        let store = TursoStateStore::new(TursoConfiguration {
+            url,
+            authentication_token: None,
+        })?;
+        let schema = store.stored_schema().await?;
+        if schema.version != 0 || schema.legacy.resources || schema.named.resources {
+            return Err(InfrastructureError::configuration(
+                "the migration test requires an empty isolated database",
+            ));
+        }
+        store.schema_version().await?;
+        for migration in &MIGRATIONS[..4] {
+            store.apply_migration(migration).await?;
+        }
+        let tenants = [
+            TenantKey::new("example.com/migration", "web")?,
+            TenantKey::with_environment("example.com/migration", "web", "Dev")?,
+        ];
+        for tenant in &tenants {
+            let tables = StateTables::for_tenant(tenant);
+            for name in ["first", "second"] {
+                let resource = ManagedResource {
+                    address: ResourceAddress::new("random_pet", name),
+                    provider: "random".into(),
+                    provider_source: "registry.terraform.io/hashicorp/random".into(),
+                    schema_version: 0,
+                    state: json!({"id": name}),
+                    private: Vec::new(),
+                    dependencies: Vec::new(),
+                    tainted: false,
+                    identity: None,
+                    serial: 0,
+                    generation: uuid::Uuid::nil(),
+                };
+                let columns = RecordColumns::of(&resource)?;
+                let mut arguments = columns.insert_arguments(tenant, &resource);
+                arguments.pop();
+                let sql = tables.insert_resource().replace(", generation)", ")");
+                let sql = sql.strip_suffix(", ?").ok_or_else(|| {
+                    InfrastructureError::configuration("unexpected insert statement")
+                })?;
+                store
+                    .execute(Statement::carrying_state(sql, arguments))
+                    .await?;
+            }
+            assert!(
+                store
+                    .list(tenant)
+                    .await?
+                    .iter()
+                    .all(|record| record.generation.is_nil())
+            );
+        }
+        store.migrate().await?;
+        let mut generations = std::collections::BTreeSet::new();
+        for tenant in &tenants {
+            let lock = store.lock(tenant, "migration test").await?;
+            let records = store.list(tenant).await?;
+            assert_eq!(records.len(), 2);
+            for record in records {
+                assert!(!record.generation.is_nil());
+                assert!(generations.insert(record.generation));
+                let updated = ManagedResource {
+                    state: json!({"id": "updated"}),
+                    ..record.clone()
+                };
+                store
+                    .put_if_unchanged(
+                        tenant,
+                        &lock,
+                        &ConditionalPut {
+                            resource: &updated,
+                            expected: RecordVersion::of(Some(&record)),
+                        },
+                    )
+                    .await?;
+                let current = store
+                    .read_resource(tenant, &record.address)
+                    .await?
+                    .ok_or_else(|| InfrastructureError::state("missing updated record"))?;
+                assert_eq!(current.generation, record.generation);
+                assert_eq!(current.serial, record.serial + 1);
+                assert!(current.same_content(&updated));
+                store.delete(tenant, &lock, &record.address).await?;
+            }
+            store.unlock(tenant, &lock).await?;
+        }
+        Ok(())
+    }
+
     #[test]
     fn pipeline_url_normalizes_schemes() {
         let cases = [
@@ -2521,7 +2663,7 @@ mod tests {
 
     #[test]
     fn version_four_creates_separate_named_environment_tables() {
-        let migration = MIGRATIONS.last().unwrap();
+        let migration = &MIGRATIONS[3];
         assert_eq!(migration.version, 4);
         assert_eq!(migration.statements.len(), 3);
         for (statement, table, key) in [
@@ -2631,6 +2773,7 @@ mod tests {
                 },
                 identity,
                 HranaValue::integer(7),
+                HranaValue::text(&uuid::Uuid::from_u128(7).to_string()),
             ]
         };
         let resource = row_to_resource(&row("1", HranaValue::text("{\"name\":\"a\"}"))).unwrap();
@@ -2978,6 +3121,7 @@ mod tests {
             tainted: false,
             identity: None,
             serial: 0,
+            generation: uuid::Uuid::nil(),
         };
         let lock = StateLock::generate();
         let message = store
@@ -3206,10 +3350,16 @@ mod tests {
             {"type": "integer", "value": "0"},
             {"type": "null"},
             {"type": "integer", "value": "4"},
+            {"type": "null"},
         ]]);
         let (server, statements) = recording_database(move |sql| {
             schema_rows(sql, 1).or_else(|| {
-                (sql == SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY).then(|| row.clone())
+                (sql == SELECT_RESOURCES_WITHOUT_TAINT_AND_IDENTITY.replacen(
+                    "serial FROM",
+                    "serial, NULL AS generation FROM",
+                    1,
+                ))
+                .then(|| row.clone())
             })
         })
         .await;
@@ -3252,7 +3402,7 @@ mod tests {
     #[tokio::test]
     async fn named_environment_writes_use_only_environment_tables() {
         let (server, statements) = recording_database(|sql| {
-            schema_rows(sql, 4).or_else(|| {
+            schema_rows(sql, LATEST_SCHEMA_VERSION).or_else(|| {
                 if sql.starts_with(
                     "SELECT instance, claimed_at FROM cuenv_infrastructure_environment_owners",
                 ) {
@@ -3287,6 +3437,7 @@ mod tests {
             tainted: false,
             identity: None,
             serial: 0,
+            generation: uuid::Uuid::nil(),
         };
         store.put(&named, &lock, &record).await.unwrap();
         store
@@ -3295,7 +3446,10 @@ mod tests {
                 &lock,
                 &ConditionalPut {
                     resource: &record,
-                    expected: RecordVersion::Serial(1),
+                    expected: RecordVersion::Generation {
+                        generation: uuid::Uuid::nil(),
+                        serial: 1,
+                    },
                 },
             )
             .await

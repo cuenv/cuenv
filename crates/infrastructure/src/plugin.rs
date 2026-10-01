@@ -34,8 +34,8 @@
 //! whose threads come and go. macOS has no equivalent; there a provider
 //! outlives a cuenv killed with `SIGKILL`.
 //!
-//! Provider log lines go to tracing at debug level only, with control
-//! characters removed; the serious ones are also kept for error reports.
+//! Tracing records provider log metadata only. Serious lines have control
+//! characters removed and reach error reports through the redacted event path.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
@@ -325,8 +325,8 @@ impl ProviderProcess {
             Ok(Ok(response)) if response.error.is_empty() => {
                 tracing::debug!(provider = %self.name, "provider stopped its operations");
             }
-            Ok(Ok(response)) => {
-                tracing::debug!(provider = %self.name, error = %response.error, "provider stop reported an error");
+            Ok(Ok(_)) => {
+                tracing::debug!(provider = %self.name, "provider stop reported an error");
             }
             _ => tracing::debug!(provider = %self.name, "provider stop procedure did not complete"),
         }
@@ -571,7 +571,7 @@ impl ProviderClient {
             )));
         };
         let handshake = Handshake::parse(&line)?;
-        tracing::debug!(provider = %name, ?handshake, "provider handshake");
+        tracing::debug!(provider = %name, "provider handshake completed");
 
         // Keep draining standard output so the plugin never blocks on a full
         // pipe; nothing after the handshake is meaningful, so discard it.
@@ -924,26 +924,31 @@ fn spawn_log_drain(
     standard_error: impl AsyncRead + Unpin + Send + 'static,
     log: ProviderLog,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut reader = BufReader::new(standard_error);
-        while let Ok(Some(line)) = read_bounded_line(&mut reader, MAXIMUM_LOG_LINE_BYTES).await {
-            // Classify the raw line, then keep only printable text: a
-            // provider must not drive the terminal cuenv writes to.
-            let serious = provider_log_is_serious(&line.text);
-            let printable = strip_control_characters(line.text.trim_end());
-            let text = if line.truncated {
-                format!("{printable} [line truncated]")
-            } else {
-                printable
-            };
-            // Provider logs can hold values; they reach tracing only at
-            // debug level, which no default configuration shows.
-            tracing::debug!(provider = %name, serious, "{text}");
-            if serious {
-                log.record(text);
+    use tracing::instrument::WithSubscriber as _;
+    tokio::spawn(
+        async move {
+            let mut reader = BufReader::new(standard_error);
+            while let Ok(Some(line)) = read_bounded_line(&mut reader, MAXIMUM_LOG_LINE_BYTES).await
+            {
+                // Classify the raw line, then keep only printable text: a
+                // provider must not drive the terminal cuenv writes to.
+                let serious = provider_log_is_serious(&line.text);
+                let printable = strip_control_characters(line.text.trim_end());
+                let text = if line.truncated {
+                    format!("{printable} [line truncated]")
+                } else {
+                    printable
+                };
+                // Provider text may contain resolved secrets. Only the redacted
+                // ProviderLog/event path may emit it; tracing records metadata.
+                tracing::debug!(provider = %name, serious, "provider emitted a log line");
+                if serious {
+                    log.record(text);
+                }
             }
         }
-    })
+        .with_current_subscriber(),
+    )
 }
 
 /// go-plugin forwards provider logs as hclog JSON lines with an `@level`;
@@ -1257,6 +1262,49 @@ mod tests {
         assert!(!rendered.contains('\u{1b}'), "{rendered}");
         assert!(rendered.contains("panic: ]0;ownedboom"), "{rendered}");
         assert!(!rendered.contains("quiet"), "{rendered}");
+    }
+
+    #[tokio::test]
+    async fn provider_log_text_never_reaches_tracing() {
+        #[derive(Clone)]
+        struct CapturedTracing(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                use std::fmt::Write as _;
+                write!(self.0, "{field}={value:?};").unwrap();
+            }
+        }
+        impl tracing::Subscriber for CapturedTracing {
+            fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+                true
+            }
+            fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+                tracing::span::Id::from_u64(1)
+            }
+            fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+            fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+            fn enter(&self, _: &tracing::span::Id) {}
+            fn exit(&self, _: &tracing::span::Id) {}
+            fn event(&self, event: &tracing::Event<'_>) {
+                let mut fields = Fields(String::new());
+                event.record(&mut fields);
+                self.0.lock().unwrap().push(fields.0);
+            }
+        }
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _guard = tracing::subscriber::set_default(CapturedTracing(captured.clone()));
+        let output: &'static [u8] = b"panic: project-secret-123\n[DEBUG] project-secret-123\n";
+        spawn_log_drain("stand-in".into(), output, ProviderLog::default())
+            .await
+            .unwrap();
+        let events = captured.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(
+            events
+                .iter()
+                .all(|event| !event.contains("project-secret-123"))
+        );
     }
 
     #[test]

@@ -16,9 +16,11 @@
 //!   Files are opened with `O_NOFOLLOW`.
 //! - Files are written atomically: to a hidden temporary file, flushed to
 //!   disk, then renamed into place, so a crash never leaves half a record.
-//! - Each file names its tenant and the version of the stored record it
-//!   replaces ([`RecordVersion`]), so [`UnrecordedStore::recover`] writes it
-//!   only while the stored record is still the one it replaces.
+//! - Each file names its tenant, the hash of its normalized state backend,
+//!   and the version of the stored record it replaces ([`RecordVersion`]),
+//!   so [`UnrecordedStore::recover`] writes it only to that backend while
+//!   the stored record is still the one it replaces. Files without a
+//!   matching backend identity require inspection and explicit force.
 //!
 //! Files are grouped per tenant so one tenant's leftovers never block
 //! another. Planning refuses to run while a tenant has unrecorded changes.
@@ -42,7 +44,10 @@ use crate::state::{
 use crate::tenant::TenantKey;
 
 /// Format version written into every file.
-const FILE_FORMAT_VERSION: u32 = 2;
+const FILE_FORMAT_VERSION: u32 = 4;
+
+/// First file format that preserves the insertion generation.
+const GENERATION_FILE_FORMAT_VERSION: u32 = 3;
 
 /// Largest unrecorded file read, in bytes (64 MiB, the state store's own
 /// response limit).
@@ -52,6 +57,7 @@ const MAXIMUM_FILE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecordedStore {
     root: PathBuf,
+    backend_identity: Option<String>,
 }
 
 /// One saved record waiting to be written to the state store.
@@ -65,6 +71,21 @@ pub struct UnrecordedRecord {
     pub expected: RecordVersion,
     /// The record the provider's change produced.
     pub record: ManagedResource,
+    /// Format that wrote the file; version 2 has no insertion generation.
+    pub format_version: u32,
+    /// Hash of the normalized backend that could not record this change.
+    /// Kept private so callers cannot bypass the store's binding check.
+    backend_identity: Option<String>,
+}
+
+impl UnrecordedRecord {
+    /// Whether ordinary compare-and-swap recovery cannot safely identify the
+    /// stored insertion this file replaced. Such files need inspection and force.
+    #[must_use]
+    pub const fn requires_force(&self) -> bool {
+        self.format_version < GENERATION_FILE_FORMAT_VERSION
+            || matches!(self.expected, RecordVersion::Serial(_))
+    }
 }
 
 /// Whether [`UnrecordedStore::recover`] may overwrite a stored record that
@@ -94,6 +115,8 @@ pub struct RecoverOptions<'options> {
 struct UnrecordedFile {
     format_version: u32,
     tenant: TenantIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backend_identity: Option<String>,
     saved_at: String,
     expected: RecordVersion,
     resource: FileResource,
@@ -133,6 +156,8 @@ struct FileResource {
     dependencies: Vec<String>,
     tainted: bool,
     identity: Option<serde_json::Value>,
+    #[serde(default)]
+    generation: uuid::Uuid,
 }
 
 impl FileResource {
@@ -148,6 +173,7 @@ impl FileResource {
             dependencies: record.dependencies.clone(),
             tainted: record.tainted,
             identity: record.identity.clone(),
+            generation: record.generation,
         }
     }
 
@@ -163,6 +189,7 @@ impl FileResource {
             tainted: self.tainted,
             identity: self.identity,
             serial: 0,
+            generation: self.generation,
         }
     }
 }
@@ -204,10 +231,45 @@ impl UnrecordedStore {
             })
     }
 
-    /// Use `root` as the directory.
+    /// Use `root` as the directory without binding a backend. This supports
+    /// in-memory stores; durable stores must call [`Self::with_backend_identity`].
     #[must_use]
     pub fn at(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            backend_identity: None,
+        }
+    }
+
+    /// Bind saved files and ordinary recovery to a normalized state backend.
+    ///
+    /// `identity` must be the lowercase hexadecimal SHA-256 digest returned
+    /// by the state backend, computed from its validated, normalized endpoint.
+    /// URLs and credentials are never accepted or written into recovery files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InfrastructureError::Configuration`] when the identity is not
+    /// a lowercase SHA-256 digest. The error never quotes the supplied value.
+    #[must_use = "the bound store must be used to save or recover changes"]
+    pub fn with_backend_identity(mut self, identity: &str) -> Result<Self> {
+        if !is_backend_identity(identity) {
+            return Err(InfrastructureError::configuration(
+                "invalid infrastructure state backend identity: expected a lowercase hexadecimal SHA-256 digest",
+            ));
+        }
+        self.backend_identity = Some(identity.to_string());
+        Ok(self)
+    }
+
+    /// Whether a saved file requires inspection and explicit force because
+    /// its backend identity is missing or differs from this store's binding.
+    ///
+    /// Two unbound identities are accepted for in-memory stores. A bound file
+    /// cannot be recovered ordinarily through an unbound store.
+    #[must_use]
+    pub fn requires_backend_force(&self, unrecorded: &UnrecordedRecord) -> bool {
+        self.backend_identity != unrecorded.backend_identity
     }
 
     /// The directory holding every tenant's unrecorded changes.
@@ -261,12 +323,20 @@ impl UnrecordedStore {
             saved_at.format("%Y%m%dT%H%M%S%.9fZ"),
             uuid::Uuid::new_v4().simple()
         );
+        let mut resource = FileResource::of(record);
+        if resource.generation.is_nil() {
+            resource.generation = match put.expected {
+                RecordVersion::Generation { generation, .. } => generation,
+                RecordVersion::Absent | RecordVersion::Serial(_) => uuid::Uuid::new_v4(),
+            };
+        }
         let document = UnrecordedFile {
             format_version: FILE_FORMAT_VERSION,
             tenant: TenantIdentity::of(tenant),
+            backend_identity: self.backend_identity.clone(),
             saved_at: saved_at.to_rfc3339(),
             expected: put.expected,
-            resource: FileResource::of(record),
+            resource,
         };
         let bytes = serde_json::to_vec_pretty(&document).map_err(|error| {
             InfrastructureError::codec(format!(
@@ -349,6 +419,8 @@ impl UnrecordedStore {
                     saved_at: document.saved_at,
                     expected: document.expected,
                     record: document.resource.into_record(),
+                    format_version: document.format_version,
+                    backend_identity: document.backend_identity,
                 })
             })
             .collect()
@@ -369,9 +441,12 @@ impl UnrecordedStore {
     /// deleting each file once its record is written. Writes are fenced by
     /// `options.lock`, which the caller must hold.
     ///
-    /// With [`RecoverOverwrite::IfUnchanged`] a record is written only
-    /// while the stored record is still the one it replaces; a stored
-    /// record that already holds exactly its content counts as recorded.
+    /// With [`RecoverOverwrite::IfUnchanged`] every file must have a backend
+    /// identity matching this wrapper and the actual state store before any
+    /// record is written. Each record is written only while the stored record
+    /// is still the one it replaces; a stored
+    /// record that holds the same generation, resulting serial and content
+    /// counts as recorded after a lost response.
     ///
     /// Returns the addresses recorded, in order.
     ///
@@ -388,8 +463,28 @@ impl UnrecordedStore {
         tenant: &TenantKey,
         options: &RecoverOptions<'_>,
     ) -> Result<Vec<ResourceAddress>> {
+        let unrecorded_records = self.list(tenant)?;
+        if options.overwrite == RecoverOverwrite::IfUnchanged {
+            let backend_identity = store.recovery_identity();
+            for unrecorded in &unrecorded_records {
+                if self.requires_backend_force(unrecorded)
+                    || unrecorded.backend_identity != backend_identity
+                {
+                    return Err(file_problem(
+                        &unrecorded.file,
+                        "it has no matching state backend identity; inspect the saved object and the configured backend, then use `cuenv infrastructure state recover --force`, or move this file aside to keep current state",
+                    ));
+                }
+                if unrecorded.requires_force() {
+                    return Err(file_problem(
+                        &unrecorded.file,
+                        "it predates safe generation comparisons; inspect the saved and stored objects, then use `cuenv infrastructure state recover --force`, or move this file aside to keep current state",
+                    ));
+                }
+            }
+        }
         let mut recorded = Vec::new();
-        for unrecorded in self.list(tenant)? {
+        for unrecorded in unrecorded_records {
             let record = &unrecorded.record;
             match options.overwrite {
                 RecoverOverwrite::Always => store.put(tenant, options.lock, record).await?,
@@ -405,7 +500,7 @@ impl UnrecordedStore {
                                 .list(tenant)
                                 .await?
                                 .iter()
-                                .any(|stored| stored.same_content(record));
+                                .any(|stored| put.is_recorded(stored));
                             if !already_recorded {
                                 return Err(changed);
                             }
@@ -424,6 +519,13 @@ impl UnrecordedStore {
         }
         Ok(recorded)
     }
+}
+
+fn is_backend_identity(identity: &str) -> bool {
+    identity.len() == 64
+        && identity
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
@@ -449,7 +551,10 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
             )
         })?
         .format_version;
-    if version != Some(FILE_FORMAT_VERSION) {
+    if !matches!(
+        version,
+        Some(2 | GENERATION_FILE_FORMAT_VERSION | FILE_FORMAT_VERSION)
+    ) {
         return Err(file_problem(
             file,
             format!(
@@ -458,7 +563,7 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
             ),
         ));
     }
-    serde_json::from_slice(&bytes).map_err(|error| {
+    let document: UnrecordedFile = serde_json::from_slice(&bytes).map_err(|error| {
         // serde messages can quote the offending value; report the
         // position only.
         file_problem(
@@ -468,7 +573,18 @@ fn read_unrecorded_file(file: &Path) -> Result<UnrecordedFile> {
                 describe_json_error(&error)
             ),
         )
-    })
+    })?;
+    if document
+        .backend_identity
+        .as_deref()
+        .is_some_and(|identity| !is_backend_identity(identity))
+    {
+        return Err(file_problem(
+            file,
+            "it has an invalid state backend identity",
+        ));
+    }
+    Ok(document)
 }
 
 /// Just the format version of a file.
@@ -650,7 +766,99 @@ fn sync_directory(_directory: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::MemoryStateStore;
+    use crate::state::{
+        LockInformation, LockRequest, MemoryStateStore, OwnerClaim, TenantOwner,
+        TursoConfiguration, TursoStateStore,
+    };
+
+    struct BoundMemoryStateStore {
+        inner: MemoryStateStore,
+        identity: String,
+    }
+
+    impl BoundMemoryStateStore {
+        fn for_backend(url: &str) -> Self {
+            Self {
+                inner: MemoryStateStore::new(),
+                identity: backend_identity(url),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl StateStore for BoundMemoryStateStore {
+        fn recovery_identity(&self) -> Option<String> {
+            Some(self.identity.clone())
+        }
+
+        async fn migrate(&self) -> Result<()> {
+            self.inner.migrate().await
+        }
+
+        async fn list(&self, tenant: &TenantKey) -> Result<Vec<ManagedResource>> {
+            self.inner.list(tenant).await
+        }
+
+        async fn put(
+            &self,
+            tenant: &TenantKey,
+            lock: &StateLock,
+            resource: &ManagedResource,
+        ) -> Result<()> {
+            self.inner.put(tenant, lock, resource).await
+        }
+
+        async fn put_if_unchanged(
+            &self,
+            tenant: &TenantKey,
+            lock: &StateLock,
+            put: &ConditionalPut<'_>,
+        ) -> Result<()> {
+            self.inner.put_if_unchanged(tenant, lock, put).await
+        }
+
+        async fn delete(
+            &self,
+            tenant: &TenantKey,
+            lock: &StateLock,
+            address: &ResourceAddress,
+        ) -> Result<()> {
+            self.inner.delete(tenant, lock, address).await
+        }
+
+        async fn acquire_lock(
+            &self,
+            tenant: &TenantKey,
+            request: &LockRequest<'_>,
+        ) -> Result<StateLock> {
+            self.inner.acquire_lock(tenant, request).await
+        }
+
+        async fn unlock(&self, tenant: &TenantKey, lock: &StateLock) -> Result<()> {
+            self.inner.unlock(tenant, lock).await
+        }
+
+        async fn current_lock(&self, tenant: &TenantKey) -> Result<Option<LockInformation>> {
+            self.inner.current_lock(tenant).await
+        }
+
+        async fn force_unlock(&self, tenant: &TenantKey, lock_identifier: &str) -> Result<bool> {
+            self.inner.force_unlock(tenant, lock_identifier).await
+        }
+
+        async fn owner(&self, tenant: &TenantKey) -> Result<Option<TenantOwner>> {
+            self.inner.owner(tenant).await
+        }
+
+        async fn claim_owner(
+            &self,
+            tenant: &TenantKey,
+            lock: &StateLock,
+            claim: &OwnerClaim<'_>,
+        ) -> Result<TenantOwner> {
+            self.inner.claim_owner(tenant, lock, claim).await
+        }
+    }
 
     fn record(name: &str, identifier: &str) -> ManagedResource {
         ManagedResource {
@@ -664,6 +872,7 @@ mod tests {
             tainted: false,
             identity: None,
             serial: 0,
+            generation: uuid::Uuid::nil(),
         }
     }
 
@@ -680,6 +889,22 @@ mod tests {
 
     fn save(store: &UnrecordedStore, tenant: &TenantKey, record: &ManagedResource) -> PathBuf {
         store.save(tenant, &absent(record)).unwrap()
+    }
+
+    fn backend_identity(url: &str) -> String {
+        TursoStateStore::new(TursoConfiguration {
+            url: url.to_string(),
+            authentication_token: None,
+        })
+        .unwrap()
+        .recovery_identity()
+        .unwrap()
+    }
+
+    fn bound_store(root: &Path, url: &str) -> UnrecordedStore {
+        UnrecordedStore::at(root)
+            .with_backend_identity(&backend_identity(url))
+            .unwrap()
     }
 
     #[test]
@@ -704,7 +929,8 @@ mod tests {
             listed.iter().map(|entry| &entry.file).collect::<Vec<_>>(),
             vec![&first, &second]
         );
-        assert_eq!(listed[0].record, record("first", "a"));
+        assert!(listed[0].record.same_content(&record("first", "a")));
+        assert!(!listed[0].record.generation.is_nil());
         assert_eq!(listed[0].expected, RecordVersion::Absent);
         assert_eq!(listed[1].expected, RecordVersion::Serial(4));
         assert!(store.list(&tenant("elsewhere")).unwrap().is_empty());
@@ -733,11 +959,15 @@ mod tests {
     #[test]
     fn the_file_format_is_camel_case_throughout_and_versioned() {
         let root = tempfile::tempdir().unwrap();
-        let store = UnrecordedStore::at(root.path());
+        let store = bound_store(root.path(), "libsql://state-a.turso.io");
         let file = save(&store, &tenant("web"), &record("pet", "a"));
         let document: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
-        assert_eq!(document["formatVersion"], 2);
+        assert_eq!(document["formatVersion"], FILE_FORMAT_VERSION);
+        assert!(is_backend_identity(
+            document["backendIdentity"].as_str().unwrap()
+        ));
+        assert!(!document.to_string().contains("state-a.turso.io"));
         assert_eq!(document["expected"], "absent");
         assert_eq!(document["tenant"]["modulePath"], "example.com/app");
         assert!(document["tenant"].get("environment").is_none());
@@ -753,6 +983,299 @@ mod tests {
             assert!(resource.get(key).is_some(), "{key} missing: {resource}");
         }
         assert!(resource.get("provider_source").is_none());
+    }
+
+    #[test]
+    fn backend_identity_normalizes_transport_aliases_and_url_representation() {
+        let root = tempfile::tempdir().unwrap();
+        let encrypted = bound_store(root.path(), "https://state-a.turso.io/prefix");
+        for url in [
+            "libsql://STATE-A.TURSO.IO/prefix/",
+            "WSS://state-a.turso.io:443/prefix///",
+            "https://state-a.turso.io/other/../prefix/",
+        ] {
+            assert_eq!(encrypted, bound_store(root.path(), url), "{url}");
+        }
+        assert_eq!(
+            bound_store(root.path(), "ws://LOCALHOST:80/prefix/"),
+            bound_store(root.path(), "http://localhost/prefix")
+        );
+        assert_eq!(
+            bound_store(root.path(), "libsql://[2001:0DB8:0:0:0:0:0:1]:443"),
+            bound_store(root.path(), "https://[2001:db8::1]/")
+        );
+        assert_ne!(
+            encrypted,
+            bound_store(root.path(), "https://state-a.turso.io/another-prefix")
+        );
+    }
+
+    #[test]
+    fn backend_binding_rejects_raw_urls_and_malformed_hashes_without_quoting_them() {
+        let root = tempfile::tempdir().unwrap();
+        for identity in [
+            "https://user:recovery-secret@state-a.turso.io",
+            "https://state-a.turso.io?token=recovery-secret",
+            "recovery-secret",
+            "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789",
+        ] {
+            let error = UnrecordedStore::at(root.path())
+                .with_backend_identity(identity)
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("SHA-256"), "{message}");
+            assert!(!message.contains(identity), "{message}");
+            assert!(!message.contains("recovery-secret"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_saved_backend_identity_is_reported_without_its_content() {
+        let root = tempfile::tempdir().unwrap();
+        let store = bound_store(root.path(), "libsql://state-a.turso.io");
+        let tenant = tenant("web");
+        let file = save(&store, &tenant, &record("pet", "pending"));
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        document["backendIdentity"] =
+            serde_json::json!("https://user:recovery-secret@state-a.turso.io");
+        std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+        let message = store.list(&tenant).unwrap_err().to_string();
+        assert!(
+            message.contains("invalid state backend identity"),
+            "{message}"
+        );
+        assert!(!message.contains("recovery-secret"), "{message}");
+        assert!(!message.contains("state-a.turso.io"), "{message}");
+        assert!(file.exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_an_absent_record_saved_for_another_empty_backend_until_forced() {
+        for environment in [None, Some("Dev")] {
+            let root = tempfile::tempdir().unwrap();
+            let backend_a = bound_store(root.path(), "libsql://state-a.turso.io");
+            let backend_b = bound_store(root.path(), "https://state-b.turso.io");
+            let state_a = BoundMemoryStateStore::for_backend("libsql://state-a.turso.io");
+            let state_b = BoundMemoryStateStore::for_backend("libsql://state-b.turso.io");
+            let tenant = environment.map_or_else(
+                || tenant("web"),
+                |name| TenantKey::with_environment("example.com/app", "web", name).unwrap(),
+            );
+            let saved = record("pet", "created-in-backend-a");
+            let file = save(&backend_a, &tenant, &saved);
+            let listed = backend_b.list(&tenant).unwrap();
+            assert_eq!(listed[0].expected, RecordVersion::Absent);
+            assert!(backend_b.requires_backend_force(&listed[0]));
+            assert!(!backend_a.requires_backend_force(&listed[0]));
+            assert!(!listed[0].requires_force());
+            let lock = state_b.lock(&tenant, "recover").await.unwrap();
+            let error = backend_b
+                .recover(
+                    &state_b,
+                    &tenant,
+                    &RecoverOptions {
+                        lock: &lock,
+                        overwrite: RecoverOverwrite::IfUnchanged,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(error, InfrastructureError::UnrecordedFile { .. }));
+            assert!(error.to_string().contains("backend identity"));
+            assert!(error.to_string().contains("recover --force"));
+            assert!(!error.to_string().contains("hunter2"));
+            assert!(file.exists());
+            assert!(state_b.list(&tenant).await.unwrap().is_empty());
+            assert!(state_a.list(&tenant).await.unwrap().is_empty());
+
+            let recovered = backend_b
+                .recover(
+                    &state_b,
+                    &tenant,
+                    &RecoverOptions {
+                        lock: &lock,
+                        overwrite: RecoverOverwrite::Always,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(recovered, vec![saved.address.clone()]);
+            assert!(state_b.list(&tenant).await.unwrap()[0].same_content(&saved));
+            assert!(state_a.list(&tenant).await.unwrap().is_empty());
+            assert!(!file.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn ordinary_recovery_accepts_an_equivalent_normalized_backend() {
+        let root = tempfile::tempdir().unwrap();
+        let backend = bound_store(root.path(), "libsql://STATE-A.TURSO.IO/prefix/");
+        let equivalent = bound_store(root.path(), "https://state-a.turso.io:443/prefix");
+        let state = BoundMemoryStateStore::for_backend("https://state-a.turso.io/prefix");
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&backend, &tenant, &saved);
+        let listed = equivalent.list(&tenant).unwrap();
+        assert!(!equivalent.requires_backend_force(&listed[0]));
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        equivalent
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(state.list(&tenant).await.unwrap()[0].same_content(&saved));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn bound_recovery_requires_explicit_force_for_files_without_a_backend_identity() {
+        for version in [2, GENERATION_FILE_FORMAT_VERSION, FILE_FORMAT_VERSION] {
+            let root = tempfile::tempdir().unwrap();
+            let unbound = UnrecordedStore::at(root.path());
+            let bound = bound_store(root.path(), "libsql://state-a.turso.io");
+            let state = BoundMemoryStateStore::for_backend("libsql://state-a.turso.io");
+            let tenant = tenant("web");
+            let saved = record("pet", "pending");
+            let file = save(&unbound, &tenant, &saved);
+            let mut document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            document["formatVersion"] = serde_json::json!(version);
+            if version < GENERATION_FILE_FORMAT_VERSION {
+                document["resource"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("generation");
+            }
+            std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+            let listed = bound.list(&tenant).unwrap();
+            assert_eq!(listed[0].format_version, version);
+            assert!(bound.requires_backend_force(&listed[0]));
+            let lock = state.lock(&tenant, "recover").await.unwrap();
+            let error = bound
+                .recover(
+                    &state,
+                    &tenant,
+                    &RecoverOptions {
+                        lock: &lock,
+                        overwrite: RecoverOverwrite::IfUnchanged,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("backend identity"));
+            assert!(state.list(&tenant).await.unwrap().is_empty());
+            assert!(file.exists());
+            bound
+                .recover(
+                    &state,
+                    &tenant,
+                    &RecoverOptions {
+                        lock: &lock,
+                        overwrite: RecoverOverwrite::Always,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(state.list(&tenant).await.unwrap()[0].same_content(&saved));
+            assert!(!file.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn backend_binding_is_checked_for_all_files_before_any_recovery_write() {
+        let root = tempfile::tempdir().unwrap();
+        let backend_a = bound_store(root.path(), "libsql://state-a.turso.io");
+        let backend_b = bound_store(root.path(), "libsql://state-b.turso.io");
+        let state = BoundMemoryStateStore::for_backend("libsql://state-a.turso.io");
+        let tenant = tenant("web");
+        let first = save(&backend_a, &tenant, &record("first", "same-backend"));
+        let second = save(&backend_b, &tenant, &record("second", "other-backend"));
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        backend_a
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(state.list(&tenant).await.unwrap().is_empty());
+        assert!(first.exists());
+        assert!(second.exists());
+    }
+
+    #[tokio::test]
+    async fn ordinary_recovery_checks_the_actual_backend_even_when_the_wrapper_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let backend_a = bound_store(root.path(), "libsql://state-a.turso.io");
+        let state_b = BoundMemoryStateStore::for_backend("libsql://state-b.turso.io");
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&backend_a, &tenant, &saved);
+        let listed = backend_a.list(&tenant).unwrap();
+        assert!(!backend_a.requires_backend_force(&listed[0]));
+        let lock = state_b.lock(&tenant, "recover").await.unwrap();
+        let error = backend_a
+            .recover(
+                &state_b,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("backend identity"));
+        assert!(state_b.list(&tenant).await.unwrap().is_empty());
+        assert!(file.exists());
+        backend_a
+            .recover(
+                &state_b,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::Always,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(state_b.list(&tenant).await.unwrap()[0].same_content(&saved));
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn a_bound_file_cannot_be_recovered_ordinarily_into_an_unbound_actual_store() {
+        let root = tempfile::tempdir().unwrap();
+        let bound = bound_store(root.path(), "libsql://state-a.turso.io");
+        let state = MemoryStateStore::new();
+        let tenant = tenant("web");
+        let file = save(&bound, &tenant, &record("pet", "pending"));
+        let lock = state.lock(&tenant, "recover").await.unwrap();
+        let error = bound
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("backend identity"));
+        assert!(state.list(&tenant).await.unwrap().is_empty());
+        assert!(file.exists());
     }
 
     #[test]
@@ -777,6 +1300,174 @@ mod tests {
         let dev_document: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&dev_file).unwrap()).unwrap();
         assert_eq!(dev_document["tenant"]["environment"], "Dev");
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_a_deleted_and_recreated_record_at_the_same_serial() {
+        for environment in [None, Some("Dev")] {
+            let root = tempfile::tempdir().unwrap();
+            let unrecorded = UnrecordedStore::at(root.path());
+            let state = MemoryStateStore::new();
+            let tenant = environment.map_or_else(
+                || tenant("web"),
+                |name| TenantKey::with_environment("example.com/app", "web", name).unwrap(),
+            );
+            let lock = state.lock(&tenant, "test").await.unwrap();
+            let original = record("pet", "original");
+            state.put(&tenant, &lock, &original).await.unwrap();
+            let previous = state.list(&tenant).await.unwrap()[0].clone();
+            let saved = record("pet", "pending");
+            unrecorded
+                .save(
+                    &tenant,
+                    &ConditionalPut {
+                        resource: &saved,
+                        expected: RecordVersion::of(Some(&previous)),
+                    },
+                )
+                .unwrap();
+            state
+                .delete(&tenant, &lock, &original.address)
+                .await
+                .unwrap();
+            state
+                .put(&tenant, &lock, &record("pet", "recreated"))
+                .await
+                .unwrap();
+            let recreated = state.list(&tenant).await.unwrap()[0].clone();
+            assert_eq!(previous.serial, recreated.serial);
+            assert_ne!(previous.generation, recreated.generation);
+            let error = unrecorded
+                .recover(
+                    &state,
+                    &tenant,
+                    &RecoverOptions {
+                        lock: &lock,
+                        overwrite: RecoverOverwrite::IfUnchanged,
+                    },
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(error, InfrastructureError::StateChanged { .. }));
+            assert_eq!(state.list(&tenant).await.unwrap(), vec![recreated]);
+            assert_eq!(unrecorded.list(&tenant).unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_refuses_an_independent_identical_insertion() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("web");
+        let saved = record("pet", "same");
+        let file = save(&unrecorded, &tenant, &saved);
+        let pending = unrecorded.list(&tenant).unwrap()[0].record.clone();
+        let lock = state.lock(&tenant, "test").await.unwrap();
+        state.put(&tenant, &lock, &pending).await.unwrap();
+        let independent = state.list(&tenant).await.unwrap()[0].clone();
+        assert_ne!(pending.generation, independent.generation);
+        assert!(pending.same_content(&independent));
+        let error = unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, InfrastructureError::StateChanged { .. }));
+        assert_eq!(state.list(&tenant).await.unwrap(), vec![independent]);
+        assert!(file.exists());
+    }
+
+    #[tokio::test]
+    async fn recovery_acknowledges_only_the_same_insertion_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("web");
+        let file = save(&unrecorded, &tenant, &record("pet", "same"));
+        let pending = unrecorded.list(&tenant).unwrap()[0].record.clone();
+        let lock = state.lock(&tenant, "test").await.unwrap();
+        let put = ConditionalPut {
+            resource: &pending,
+            expected: RecordVersion::Absent,
+        };
+        state.put_if_unchanged(&tenant, &lock, &put).await.unwrap();
+        state.put_if_unchanged(&tenant, &lock, &put).await.unwrap();
+        assert_eq!(
+            state.list(&tenant).await.unwrap()[0].generation,
+            pending.generation
+        );
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!file.exists());
+        assert_eq!(state.list(&tenant).await.unwrap()[0].serial, 1);
+    }
+
+    #[tokio::test]
+    async fn legacy_recovery_files_remain_readable_but_require_explicit_force() {
+        let root = tempfile::tempdir().unwrap();
+        let unrecorded = UnrecordedStore::at(root.path());
+        let state = MemoryStateStore::new();
+        let tenant = tenant("web");
+        let saved = record("pet", "pending");
+        let file = save(&unrecorded, &tenant, &saved);
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        document["formatVersion"] = serde_json::json!(2);
+        document["expected"] = serde_json::json!({"serial": 1});
+        document["resource"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        std::fs::write(&file, serde_json::to_vec(&document).unwrap()).unwrap();
+        let lock = state.lock(&tenant, "test").await.unwrap();
+        state
+            .put(&tenant, &lock, &record("pet", "current"))
+            .await
+            .unwrap();
+        assert!(unrecorded.list(&tenant).unwrap()[0].requires_force());
+        let error = unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::IfUnchanged,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("recover --force"));
+        assert_eq!(state.list(&tenant).await.unwrap()[0].state["id"], "current");
+        assert!(file.exists());
+        unrecorded
+            .recover(
+                &state,
+                &tenant,
+                &RecoverOptions {
+                    lock: &lock,
+                    overwrite: RecoverOverwrite::Always,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.list(&tenant).await.unwrap()[0].state["id"], "pending");
+        assert!(!file.exists());
     }
 
     #[tokio::test]
@@ -986,8 +1677,16 @@ mod tests {
         let lock = state.lock(&web, "test").await.unwrap();
         // The write whose failure was reported had in fact committed.
         save(&unrecorded, &web, &record("pet", "same"));
+        let pending = unrecorded.list(&web).unwrap()[0].record.clone();
         state
-            .put(&web, &lock, &record("pet", "same"))
+            .put_if_unchanged(
+                &web,
+                &lock,
+                &ConditionalPut {
+                    resource: &pending,
+                    expected: RecordVersion::Absent,
+                },
+            )
             .await
             .unwrap();
         let recovered = unrecorded

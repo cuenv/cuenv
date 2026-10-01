@@ -154,7 +154,8 @@ fn valid_infrastructure_evaluates_and_deserializes() -> TestResult {
     let result = fixture.evaluate()?;
     let instance = result.instances.get("app").ok_or("app instance missing")?;
     let project: Project = serde_json::from_value(instance.clone())?;
-    let declared = project.infrastructure.ok_or("infrastructure missing")?;
+    let declared: cuenv_core::manifest::Infrastructure =
+        serde_json::from_value(project.infrastructure.ok_or("infrastructure missing")?)?;
     assert_eq!(declared.resources["id"].depends_on, vec!["pet".to_string()]);
     assert_eq!(
         declared

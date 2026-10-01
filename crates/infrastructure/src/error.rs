@@ -199,6 +199,20 @@ pub enum InfrastructureError {
         total: usize,
     },
 
+    /// The provider's apply response was lost during interruption. The
+    /// operation may have changed infrastructure without a recorded result.
+    #[error(
+        "interrupted after recording {completed} of {total} changes; the outcome for {address} is unknown because the provider response was lost; inspect the provider before retrying"
+    )]
+    InterruptedUnknownOutcome {
+        /// Resource whose remote outcome could not be observed.
+        address: String,
+        /// Changes known to have completed and been recorded.
+        completed: usize,
+        /// Changes the plan contained.
+        total: usize,
+    },
+
     /// Planning was interrupted; nothing was changed or recorded.
     #[error("interrupted while planning; nothing was changed")]
     InterruptedWhilePlanning,

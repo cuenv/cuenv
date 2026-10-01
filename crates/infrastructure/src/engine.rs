@@ -200,7 +200,9 @@ impl ResourceChange {
 pub struct Plan {
     /// Tenant the plan belongs to.
     pub tenant: TenantKey,
-    /// Changes in apply order.
+    /// Changes in desired dependency order followed by reverse-order orphan
+    /// deletes. Apply schedules replacement deletes and their removed
+    /// dependents before converging desired resources.
     pub changes: Vec<ResourceChange>,
     /// Provider warnings collected while planning.
     pub warnings: Vec<String>,
@@ -573,12 +575,17 @@ impl InfrastructureEngine {
     /// Returns an error when no location is configured and the default
     /// cannot be determined.
     pub fn unrecorded_store(&self) -> Result<UnrecordedStore> {
-        self.options
+        let unrecorded = self
+            .options
             .unrecorded_directory
             .as_ref()
             .map_or_else(UnrecordedStore::default_location, |directory| {
                 Ok(UnrecordedStore::at(directory))
-            })
+            })?;
+        match self.store.recovery_identity() {
+            Some(identity) => unrecorded.with_backend_identity(&identity),
+            None => Ok(unrecorded),
+        }
     }
 
     /// Compute a plan.
@@ -611,8 +618,8 @@ impl InfrastructureEngine {
         }
         let result = self.plan_resources(mode).await;
         match result {
-            Err(error) if self.cancellation().is_stop_requested() => {
-                tracing::debug!(%error, "planning ended by an interrupt");
+            Err(_) if self.cancellation().is_stop_requested() => {
+                tracing::debug!("planning ended by an interrupt");
                 Err(InfrastructureError::InterruptedWhilePlanning)
             }
             other => other,
@@ -735,15 +742,16 @@ impl InfrastructureEngine {
                 .filter(|change| change.action.changes_infrastructure())
                 .count(),
         };
-        for change in plan.changes.iter().filter(|change| change.has_work()) {
+        let mut pending_replacements = BTreeSet::new();
+        for operation in apply_operations(plan)? {
+            let change = operation.change;
             if self.cancellation().is_stop_requested() {
+                warn_uncreated_replacements(&pending_replacements, on_event);
                 return Err(progress.interrupted());
             }
             if let Some(record) = &change.refreshed_record
                 && change.action == Action::Refresh
             {
-                // Nothing changed in the real world, so a failed write is a
-                // plain state error, not an unrecorded change.
                 self.store
                     .put(&self.tenant, context.lock, record)
                     .await
@@ -753,22 +761,32 @@ impl InfrastructureEngine {
                 });
                 continue;
             }
-            on_event(ApplyEvent::Started {
-                address: change.address.clone(),
-                action: change.action,
-            });
-            match self.apply_change(change, context.lock, on_event).await {
-                Ok(ChangeOutcome::Completed) => {}
-                Ok(ChangeOutcome::StoppedAfterDelete) => {
-                    on_event(ApplyEvent::Warning(format!(
-                        "{} was deleted but its replacement was not created because the run \
-                         was interrupted; the next apply creates it",
-                        change.address
-                    )));
-                    return Err(progress.interrupted());
-                }
-                Err(error) => return Err(self.interrupted_or(error, progress, on_event)),
+            // A replacement begins during destruction and finishes only after
+            // its creation. The phases may have other resources between them.
+            if !pending_replacements.contains(&change.address) {
+                on_event(ApplyEvent::Started {
+                    address: change.address.clone(),
+                    action: change.action,
+                });
             }
+            if let Err(error) = self
+                .apply_operation(&operation, context.lock, on_event)
+                .await
+            {
+                return Err(self.interrupted_or(
+                    error,
+                    InterruptedOperation {
+                        address: &change.address,
+                        progress,
+                        on_event,
+                    },
+                ));
+            }
+            if !operation.completes_change {
+                pending_replacements.insert(change.address.clone());
+                continue;
+            }
+            pending_replacements.remove(&change.address);
             progress.completed += 1;
             on_event(ApplyEvent::Finished {
                 address: change.address.clone(),
@@ -809,14 +827,25 @@ impl InfrastructureEngine {
     fn interrupted_or(
         &self,
         error: InfrastructureError,
-        progress: Progress,
-        on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+        operation: InterruptedOperation<'_>,
     ) -> InfrastructureError {
+        let InterruptedOperation {
+            address,
+            progress,
+            on_event,
+        } = operation;
+        if matches!(error, InfrastructureError::RemoteProcedure { .. })
+            && self.cancellation().is_stop_requested()
+        {
+            return InfrastructureError::InterruptedUnknownOutcome {
+                address: address.to_string(),
+                completed: progress.completed,
+                total: progress.total,
+            };
+        }
         let provider_failure = matches!(
             error,
-            InfrastructureError::Diagnostics { .. }
-                | InfrastructureError::RemoteProcedure { .. }
-                | InfrastructureError::Plugin(_)
+            InfrastructureError::Diagnostics { .. } | InfrastructureError::Plugin(_)
         );
         if provider_failure && self.cancellation().is_stop_requested() {
             on_event(ApplyEvent::Warning(format!(
@@ -835,25 +864,21 @@ impl InfrastructureEngine {
         }
     }
 
-    async fn apply_change(
+    async fn apply_operation(
         &self,
-        change: &ResourceChange,
+        operation: &ApplyOperation<'_>,
         lock: &StateLock,
         on_event: &mut (dyn FnMut(ApplyEvent) + Send),
-    ) -> Result<ChangeOutcome> {
+    ) -> Result<()> {
+        let change = operation.change;
         let provider = self.loaded(&change.provider)?;
         let schema = resource_schema(provider, &change.provider, &change.address.resource_type)?;
         let value_type = schema.block.implied_type();
         // The stored version every write replaces, for saving a record the
         // store cannot take.
-        let mut version = RecordVersion::of(change.stored.as_ref());
+        let version = operation.expected;
 
-        for (index, step) in change.steps.iter().enumerate() {
-            // The delete half of a replacement is recorded; stop before the
-            // create half like before any other new work.
-            if index > 0 && self.cancellation().is_stop_requested() {
-                return Ok(ChangeOutcome::StoppedAfterDelete);
-            }
+        for step in operation.steps {
             let response = provider
                 .client
                 .apply_resource_change(ApplyRequest {
@@ -898,7 +923,6 @@ impl InfrastructureEngine {
                 // happen; keep whatever was recorded.
                 if !has_errors {
                     self.forget(lock, &change.address).await?;
-                    version = RecordVersion::Absent;
                 }
             } else {
                 let stored = change.stored.as_ref();
@@ -915,6 +939,14 @@ impl InfrastructureEngine {
                         (StepKind::Delete, Some(stored)) if has_errors => {
                             stored.dependencies.clone()
                         }
+                        (StepKind::Update, Some(stored)) if has_errors => stored
+                            .dependencies
+                            .iter()
+                            .chain(&change.dependencies)
+                            .cloned()
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect(),
                         _ => change.dependencies.clone(),
                     },
                     // A create that failed part way (or returned a result
@@ -930,6 +962,7 @@ impl InfrastructureEngine {
                     },
                     identity: None,
                     serial: 0,
+                    generation: write_generation(version),
                 };
                 self.record_change(
                     lock,
@@ -939,7 +972,6 @@ impl InfrastructureEngine {
                     },
                 )
                 .await?;
-                version = version.after_write();
             }
 
             let mut warnings = Vec::new();
@@ -957,14 +989,14 @@ impl InfrastructureEngine {
             let _recording = self.cancellation().begin_recording();
             self.forget(lock, &change.address).await?;
         }
-        Ok(ChangeOutcome::Completed)
+        Ok(())
     }
 
     /// Write a record the provider's change produced. If the write fails,
     /// save it locally, with the stored version it replaces, so a resource
     /// the provider already changed is never silently lost.
     async fn record_change(&self, lock: &StateLock, put: &ConditionalPut<'_>) -> Result<()> {
-        match self.store.put(&self.tenant, lock, put.resource).await {
+        match self.store.put_if_unchanged(&self.tenant, lock, put).await {
             Ok(()) => Ok(()),
             Err(error) => Err(self.save_unrecorded(put, &error)),
         }
@@ -1128,6 +1160,7 @@ impl InfrastructureEngine {
                     tainted: false,
                     identity: row.identity.clone(),
                     serial: row.serial,
+                    generation: row.generation,
                 };
                 if record != *row {
                     change.action = Action::Refresh;
@@ -1349,6 +1382,12 @@ struct Progress {
     total: usize,
 }
 
+struct InterruptedOperation<'operation> {
+    address: &'operation ResourceAddress,
+    progress: Progress,
+    on_event: &'operation mut (dyn FnMut(ApplyEvent) + Send),
+}
+
 impl Progress {
     const fn interrupted(self) -> InfrastructureError {
         InfrastructureError::Interrupted {
@@ -1358,14 +1397,229 @@ impl Progress {
     }
 }
 
-/// How applying one change ended, when no error did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChangeOutcome {
-    /// Every step was applied and recorded.
-    Completed,
-    /// A stop request arrived between the recorded delete of a replacement
-    /// and its create, which was not started.
-    StoppedAfterDelete,
+/// One phase of a resource change, borrowing the exact provider plan bytes.
+struct ApplyOperation<'plan> {
+    change: &'plan ResourceChange,
+    steps: &'plan [ApplyStep],
+    expected: RecordVersion,
+    completes_change: bool,
+}
+
+/// A create over a remotely missing object updates its existing record;
+/// only an absent-record insertion allocates a fresh generation.
+fn write_generation(expected: RecordVersion) -> uuid::Uuid {
+    match expected {
+        RecordVersion::Generation { generation, .. } => generation,
+        RecordVersion::Absent => uuid::Uuid::new_v4(),
+        RecordVersion::Serial(_) => uuid::Uuid::nil(),
+    }
+}
+
+/// Destroy replacements and their removed dependents in reverse stored order,
+/// then converge desired resources forward. Other orphan deletes remain last,
+/// so an in-place update can detach a dependent before its parent is removed.
+fn apply_operations(plan: &Plan) -> Result<Vec<ApplyOperation<'_>>> {
+    for change in plan
+        .changes
+        .iter()
+        .filter(|change| change.action == Action::Replace)
+    {
+        if change.stored.is_none()
+            || change.steps.len() != 2
+            || change.steps[0].kind != StepKind::Delete
+            || change.steps[1].kind != StepKind::Create
+        {
+            return Err(InfrastructureError::configuration(format!(
+                "invalid replacement steps for {}",
+                change.address
+            )));
+        }
+    }
+    let deleted: Vec<&ManagedResource> = plan
+        .changes
+        .iter()
+        .filter(|change| matches!(change.action, Action::Delete | Action::Replace))
+        .filter_map(|change| change.stored.as_ref())
+        .collect();
+    let graph = orphan_graph(&deleted);
+    let mut early_deletions: BTreeSet<String> = plan
+        .changes
+        .iter()
+        .filter(|change| change.action == Action::Replace)
+        .map(|change| change.address.to_string())
+        .collect();
+    loop {
+        let dependents: Vec<String> = graph
+            .iter()
+            .filter(|(address, dependencies)| {
+                !early_deletions.contains(*address)
+                    && dependencies
+                        .iter()
+                        .any(|dependency| early_deletions.contains(dependency))
+            })
+            .map(|(address, _)| address.clone())
+            .collect();
+        if dependents.is_empty() {
+            break;
+        }
+        early_deletions.extend(dependents);
+    }
+    let mut order = topological_order(&graph)?;
+    order.reverse();
+    let mut operations = Vec::new();
+    let deleting_names: BTreeSet<&str> = plan
+        .changes
+        .iter()
+        .filter(|change| early_deletions.contains(&change.address.to_string()))
+        .map(|change| change.address.name.as_str())
+        .collect();
+    let mut detachment_updates: BTreeSet<ResourceAddress> = plan
+        .changes
+        .iter()
+        .filter(|change| {
+            change.action == Action::Update
+                && change.stored.as_ref().is_some_and(|stored| {
+                    stored.dependencies.iter().any(|dependency| {
+                        deleting_names.contains(dependency.as_str())
+                            && !change.dependencies.contains(dependency)
+                    })
+                })
+        })
+        .map(|change| change.address.clone())
+        .collect();
+    // Traverse every desired prerequisite, including unchanged nodes, before
+    // deciding whether the detachment phase can run without any new objects.
+    loop {
+        let prerequisites: Vec<ResourceAddress> = plan
+            .changes
+            .iter()
+            .filter(|change| {
+                !detachment_updates.contains(&change.address)
+                    && plan.changes.iter().any(|detachment| {
+                        detachment_updates.contains(&detachment.address)
+                            && detachment.dependencies.contains(&change.address.name)
+                    })
+            })
+            .map(|change| change.address.clone())
+            .collect();
+        if prerequisites.is_empty() {
+            break;
+        }
+        detachment_updates.extend(prerequisites);
+    }
+    let mut detachment_graph = BTreeMap::new();
+    for change in plan
+        .changes
+        .iter()
+        .filter(|change| detachment_updates.contains(&change.address))
+    {
+        if matches!(
+            change.action,
+            Action::Create | Action::Replace | Action::Delete
+        ) {
+            return Err(InfrastructureError::configuration(format!(
+                "cannot detach before replacement destruction: prerequisite {} must be created, replaced or deleted; apply the detachment separately",
+                change.address
+            )));
+        }
+        let dependencies = plan
+            .changes
+            .iter()
+            .filter(|dependency| change.dependencies.contains(&dependency.address.name))
+            .map(|dependency| dependency.address.to_string())
+            .collect();
+        detachment_graph.insert(change.address.to_string(), dependencies);
+    }
+    for address in topological_order(&detachment_graph)? {
+        let change = plan
+            .changes
+            .iter()
+            .find(|change| change.address.to_string() == address)
+            .ok_or_else(|| {
+                InfrastructureError::configuration("detachment prerequisite is absent")
+            })?;
+        if change.has_work() {
+            operations.push(ApplyOperation {
+                change,
+                steps: &change.steps,
+                expected: RecordVersion::of(change.stored.as_ref()),
+                completes_change: true,
+            });
+        }
+    }
+    for address in order
+        .iter()
+        .filter(|address| early_deletions.contains(*address))
+    {
+        let change = plan
+            .changes
+            .iter()
+            .find(|change| change.address.to_string() == *address)
+            .ok_or_else(|| {
+                InfrastructureError::configuration("planned deletion has no resource change")
+            })?;
+        let steps = if change.action == Action::Replace {
+            &change.steps[..1]
+        } else {
+            &change.steps
+        };
+        operations.push(ApplyOperation {
+            change,
+            steps,
+            expected: RecordVersion::of(change.stored.as_ref()),
+            completes_change: change.action != Action::Replace,
+        });
+    }
+    for change in plan.changes.iter().filter(|change| {
+        change.has_work()
+            && change.action != Action::Delete
+            && !detachment_updates.contains(&change.address)
+    }) {
+        operations.push(ApplyOperation {
+            change,
+            steps: if change.action == Action::Replace {
+                &change.steps[1..]
+            } else {
+                &change.steps
+            },
+            expected: if change.action == Action::Replace {
+                RecordVersion::Absent
+            } else {
+                RecordVersion::of(change.stored.as_ref())
+            },
+            completes_change: true,
+        });
+    }
+    for address in order
+        .iter()
+        .filter(|address| !early_deletions.contains(*address))
+    {
+        let change = plan
+            .changes
+            .iter()
+            .find(|change| change.address.to_string() == *address)
+            .ok_or_else(|| {
+                InfrastructureError::configuration("planned deletion has no resource change")
+            })?;
+        operations.push(ApplyOperation {
+            change,
+            steps: &change.steps,
+            expected: RecordVersion::of(change.stored.as_ref()),
+            completes_change: true,
+        });
+    }
+    Ok(operations)
+}
+
+fn warn_uncreated_replacements(
+    addresses: &BTreeSet<ResourceAddress>,
+    on_event: &mut (dyn FnMut(ApplyEvent) + Send),
+) {
+    for address in addresses {
+        on_event(ApplyEvent::Warning(format!(
+            "{address} was deleted but its replacement was not created because the run was interrupted; the next apply creates it",
+        )));
+    }
 }
 
 /// Decode the state `ApplyResourceChange` returned. When it cannot be

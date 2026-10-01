@@ -31,15 +31,18 @@ impl Contents {
     }
 
     /// Write `resource`, advancing its serial as the Turso store does.
-    fn write(&mut self, tenant: &TenantKey, resource: &ManagedResource) {
-        let serial = match self.version(tenant, &resource.address).after_write() {
-            RecordVersion::Serial(serial) => serial,
-            RecordVersion::Absent => 1,
-        };
+    fn write(&mut self, tenant: &TenantKey, resource: &ManagedResource, insertion: uuid::Uuid) {
+        let previous = self
+            .rows
+            .get(tenant)
+            .and_then(|rows| rows.get(&resource.address));
+        let serial = previous.map_or(1, |record| record.serial.saturating_add(1));
+        let generation = previous.map_or(insertion, |record| record.generation);
         self.rows.entry(tenant.clone()).or_default().insert(
             resource.address.clone(),
             ManagedResource {
                 serial,
+                generation,
                 ..resource.clone()
             },
         );
@@ -104,7 +107,7 @@ impl StateStore for MemoryStateStore {
     ) -> Result<()> {
         let mut contents = self.contents()?;
         require_lock(&contents, tenant, lock)?;
-        contents.write(tenant, resource);
+        contents.write(tenant, resource, uuid::Uuid::new_v4());
         Ok(())
     }
 
@@ -118,13 +121,26 @@ impl StateStore for MemoryStateStore {
         require_lock(&contents, tenant, lock)?;
         let found = contents.version(tenant, &put.resource.address);
         if found != put.expected {
+            if contents
+                .rows
+                .get(tenant)
+                .and_then(|rows| rows.get(&put.resource.address))
+                .is_some_and(|stored| put.is_recorded(stored))
+            {
+                return Ok(());
+            }
             return Err(InfrastructureError::StateChanged {
                 address: put.resource.address.to_string(),
                 expected: put.expected.to_string(),
                 found: found.to_string(),
             });
         }
-        contents.write(tenant, put.resource);
+        let insertion = if put.resource.generation.is_nil() {
+            uuid::Uuid::new_v4()
+        } else {
+            put.resource.generation
+        };
+        contents.write(tenant, put.resource, insertion);
         Ok(())
     }
 
@@ -236,6 +252,7 @@ mod tests {
             tainted: false,
             identity: None,
             serial: 0,
+            generation: uuid::Uuid::nil(),
         }
     }
 
@@ -428,7 +445,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(store.list(&tenant).await.unwrap()[0].serial, 1);
+        let initial = store.list(&tenant).await.unwrap()[0].clone();
+        assert_eq!(initial.serial, 1);
         store.put(&tenant, &lock, &record).await.unwrap();
         assert_eq!(store.list(&tenant).await.unwrap()[0].serial, 2);
 
@@ -438,7 +456,7 @@ mod tests {
                 &lock,
                 &ConditionalPut {
                     resource: &record,
-                    expected: RecordVersion::Serial(1),
+                    expected: RecordVersion::of(Some(&initial)),
                 },
             )
             .await
@@ -454,7 +472,10 @@ mod tests {
                 &lock,
                 &ConditionalPut {
                     resource: &record,
-                    expected: RecordVersion::Serial(2),
+                    expected: RecordVersion::Generation {
+                        generation: initial.generation,
+                        serial: 2,
+                    },
                 },
             )
             .await

@@ -48,6 +48,7 @@ fn record(resource_type: &str, name: &str, dependencies: &[&str]) -> ManagedReso
         identity: None,
         // As stored by the first write.
         serial: 1,
+        generation: uuid::Uuid::nil(),
     }
 }
 
@@ -296,6 +297,165 @@ fn plan_of(changes: Vec<ResourceChange>) -> Plan {
         warnings: Vec::new(),
         environment_identity: environment_identity(&BTreeMap::new()),
     }
+}
+
+fn replacement_step(kind: StepKind) -> ApplyStep {
+    ApplyStep {
+        kind,
+        prior: Vec::new(),
+        planned: Vec::new(),
+        configuration: Vec::new(),
+        planned_private: Vec::new(),
+        planned_value: Value::Null,
+    }
+}
+
+fn replacement(name: &str, dependencies: &[&str]) -> ResourceChange {
+    let mut change = change(ResourceAddress::new("random_pet", name), Action::Replace);
+    change.stored = Some(record("random_pet", name, dependencies));
+    change.steps = vec![
+        replacement_step(StepKind::Delete),
+        replacement_step(StepKind::Create),
+    ];
+    change
+}
+
+#[test]
+fn detachment_from_a_removed_replacement_dependent_runs_before_early_deletion() {
+    let parent = replacement("parent", &[]);
+    let mut orphan = change(ResourceAddress::new("random_pet", "orphan"), Action::Delete);
+    orphan.stored = Some(record("random_pet", "orphan", &["parent"]));
+    let mut retained = change(
+        ResourceAddress::new("random_pet", "retained"),
+        Action::Update,
+    );
+    retained.stored = Some(record("random_pet", "retained", &["orphan"]));
+    let plan = plan_of(vec![parent, retained, orphan]);
+    let operations = apply_operations(&plan).unwrap();
+    assert_eq!(
+        operations
+            .iter()
+            .map(|operation| operation.change.address.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["retained", "orphan", "parent", "parent"]
+    );
+}
+
+#[test]
+fn detachment_rejects_unavailable_transitive_prerequisites_before_any_operation() {
+    let parent = replacement("parent", &[]);
+    let mut retained = change(
+        ResourceAddress::new("random_pet", "retained"),
+        Action::Update,
+    );
+    retained.stored = Some(record("random_pet", "retained", &["parent"]));
+    retained.dependencies = vec!["unchanged".into()];
+    let mut unchanged = change(
+        ResourceAddress::new("random_pet", "unchanged"),
+        Action::NoOp,
+    );
+    unchanged.dependencies = vec!["new".into()];
+    let new = change(ResourceAddress::new("random_pet", "new"), Action::Create);
+    let plan = plan_of(vec![new, unchanged, parent, retained]);
+    assert!(
+        matches!(apply_operations(&plan), Err(InfrastructureError::Configuration(message))
+        if message.contains("random_pet.new") && message.contains("separately"))
+    );
+}
+
+#[tokio::test]
+async fn recreate_over_an_existing_row_recovers_after_a_lost_write_response() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(Arc::clone(&store), directory.path());
+    let lock = store.lock(&tenant(), "lost response").await.unwrap();
+    store
+        .put(&tenant(), &lock, &record("random_pet", "pet", &[]))
+        .await
+        .unwrap();
+    let prior = store.list(&tenant()).await.unwrap()[0].clone();
+    let expected = RecordVersion::of(Some(&prior));
+    // Refresh found the remote object missing. The create result overwrites
+    // its retained row, so its payload must identify that same insertion.
+    let recreated = ManagedResource {
+        state: json!({"id": "recreated"}),
+        generation: write_generation(expected),
+        ..prior.clone()
+    };
+    let put = ConditionalPut {
+        resource: &recreated,
+        expected,
+    };
+    store
+        .put_if_unchanged(&tenant(), &lock, &put)
+        .await
+        .unwrap();
+    let saved = engine.save_unrecorded(&put, &InfrastructureError::state("write response lost"));
+    assert!(matches!(
+        saved,
+        InfrastructureError::UnrecordedChange { .. }
+    ));
+    engine
+        .unrecorded_store()
+        .unwrap()
+        .recover(
+            store.as_ref(),
+            &tenant(),
+            &crate::unrecorded::RecoverOptions {
+                lock: &lock,
+                overwrite: crate::unrecorded::RecoverOverwrite::IfUnchanged,
+            },
+        )
+        .await
+        .unwrap();
+    let current = store.list(&tenant()).await.unwrap()[0].clone();
+    assert_eq!(current.generation, prior.generation);
+    assert_eq!(current.serial, prior.serial + 1);
+    assert!(current.same_content(&recreated));
+    assert!(
+        !engine
+            .unrecorded_store()
+            .unwrap()
+            .has_pending(&tenant())
+            .unwrap()
+    );
+}
+
+#[test]
+fn interrupted_apply_without_a_provider_response_reports_the_unknown_resource() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let engine = engine(store, directory.path());
+    engine.cancellation().stop();
+    let address = ResourceAddress::new("random_pet", "pet");
+    let error = engine.interrupted_or(
+        InfrastructureError::RemoteProcedure {
+            method: "ApplyResourceChange".into(),
+            status: Box::new(tonic::Status::unavailable("response lost")),
+        },
+        InterruptedOperation {
+            address: &address,
+            progress: Progress {
+                completed: 0,
+                total: 1,
+            },
+            on_event: &mut |_| {},
+        },
+    );
+    assert!(
+        matches!(error, InfrastructureError::InterruptedUnknownOutcome { ref address, completed: 0, total: 1 }
+        if address == "random_pet.pet")
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("outcome for random_pet.pet is unknown")
+    );
+    assert!(
+        !error
+            .to_string()
+            .contains("every applied change is recorded")
+    );
 }
 
 #[test]
@@ -612,13 +772,21 @@ fn engine(store: Arc<dyn StateStore>, unrecorded_directory: &Path) -> Infrastruc
 }
 
 /// Store the record `refresh_only(name)` was planned from.
-async fn store_planned_record(store: &dyn StateStore, name: &str) {
+async fn store_planned_record(store: &dyn StateStore, name: &str) -> ResourceChange {
     let lock = store.lock(&tenant(), "setup").await.unwrap();
     store
         .put(&tenant(), &lock, &record("random_pet", name, &[]))
         .await
         .unwrap();
     store.unlock(&tenant(), &lock).await.unwrap();
+    let mut change = refresh_only(name);
+    change.stored = store
+        .list(&tenant())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.address.name == name);
+    change
 }
 
 #[tokio::test]
@@ -626,9 +794,9 @@ async fn apply_writes_refresh_only_records_under_the_lock() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
-    store_planned_record(store.as_ref(), "pet").await;
+    let change = store_planned_record(store.as_ref(), "pet").await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
-    let plan = plan_of(vec![refresh_only("pet")]);
+    let plan = plan_of(vec![change]);
     let mut events = Vec::new();
     engine
         .apply(&plan, ApplyContext { lock: &lock }, &mut |event| {
@@ -649,13 +817,13 @@ async fn failed_refresh_only_writes_are_plain_state_errors() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
-    store_planned_record(store.as_ref(), "pet").await;
+    let change = store_planned_record(store.as_ref(), "pet").await;
     let stale = StateLock {
         lock_identifier: "not-held".into(),
     };
     let error = engine
         .apply(
-            &plan_of(vec![refresh_only("pet")]),
+            &plan_of(vec![change]),
             ApplyContext { lock: &stale },
             &mut |_| {},
         )
@@ -680,12 +848,12 @@ async fn apply_stops_between_resources_once_stop_is_requested() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
-    store_planned_record(store.as_ref(), "pet").await;
+    let change = store_planned_record(store.as_ref(), "pet").await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     engine.cancellation().stop();
     let error = engine
         .apply(
-            &plan_of(vec![refresh_only("pet")]),
+            &plan_of(vec![change]),
             ApplyContext { lock: &lock },
             &mut |_| {},
         )
@@ -708,11 +876,37 @@ async fn apply_stops_between_resources_once_stop_is_requested() {
 }
 
 #[tokio::test]
+async fn identical_contents_recreated_at_the_same_serial_make_a_plan_stale() {
+    let directory = tempfile::tempdir().unwrap();
+    let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
+    let mut engine = engine(Arc::clone(&store), directory.path());
+    let change = store_planned_record(store.as_ref(), "pet").await;
+    let planned = change.stored.clone().unwrap();
+    let lock = store.lock(&tenant(), "test").await.unwrap();
+    store
+        .delete(&tenant(), &lock, &planned.address)
+        .await
+        .unwrap();
+    store.put(&tenant(), &lock, &planned).await.unwrap();
+    let recreated = store.list(&tenant()).await.unwrap()[0].clone();
+    assert_eq!(recreated.serial, planned.serial);
+    assert!(recreated.same_content(&planned));
+    assert_ne!(recreated.generation, planned.generation);
+    let plan = plan_of(vec![change]);
+    let error = engine
+        .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
+        .await
+        .unwrap_err();
+    assert!(matches!(error, InfrastructureError::PlanOutdated { .. }));
+    assert_eq!(store.list(&tenant()).await.unwrap(), vec![recreated]);
+}
+
+#[tokio::test]
 async fn stale_plans_are_refused_before_anything_is_written() {
     let directory = tempfile::tempdir().unwrap();
     let store: Arc<dyn StateStore> = Arc::new(MemoryStateStore::new());
     let mut engine = engine(Arc::clone(&store), directory.path());
-    store_planned_record(store.as_ref(), "pet").await;
+    let change = store_planned_record(store.as_ref(), "pet").await;
     let lock = store.lock(&tenant(), "test").await.unwrap();
     // Another run rewrote the record after the plan was made: same content,
     // newer serial.
@@ -720,7 +914,7 @@ async fn stale_plans_are_refused_before_anything_is_written() {
         .put(&tenant(), &lock, &record("random_pet", "pet", &[]))
         .await
         .unwrap();
-    let plan = plan_of(vec![refresh_only("pet")]);
+    let plan = plan_of(vec![change]);
     let error = engine
         .apply(&plan, ApplyContext { lock: &lock }, &mut |_| {})
         .await
@@ -830,13 +1024,13 @@ impl StateStore for FailingWrites {
 async fn failed_refresh_writes_name_their_address() {
     let directory = tempfile::tempdir().unwrap();
     let failing = FailingWrites::default();
-    store_planned_record(&failing.inner, "pet").await;
+    let change = store_planned_record(&failing.inner, "pet").await;
     let store: Arc<dyn StateStore> = Arc::new(failing);
     let mut engine = engine(Arc::clone(&store), directory.path());
     let lock = store.lock(&tenant(), "test").await.unwrap();
     let error = engine
         .apply(
-            &plan_of(vec![refresh_only("pet")]),
+            &plan_of(vec![change]),
             ApplyContext { lock: &lock },
             &mut |_| {},
         )
