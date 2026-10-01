@@ -1948,9 +1948,9 @@ async fn addresses_are_read_from_the_key_columns_alone() {
 /// are refused by name, and a waiting migration holds off new locks. Needs an
 /// empty isolated database; it drops cuenv's tables at the end.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL)"]
+#[ignore = "requires an empty isolated libSQL database (CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL)"]
 async fn layouts_and_waiting_migrations_against_a_server() {
-    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL").unwrap();
+    let url = std::env::var("CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL").unwrap();
     let mut store = TursoStateStore::new(TursoConfiguration {
         url,
         authentication_token: std::env::var("TURSO_AUTH_TOKEN").ok(),

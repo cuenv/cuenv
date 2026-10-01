@@ -289,12 +289,14 @@ CUENV_INFRASTRUCTURE_TEST_TURSO_URL=http://127.0.0.1:8080 \
 cuenv exec -- cargo test -p cuenv --test infrastructure_lifecycle -- --ignored
 ```
 
-The migration fence test requires a separate empty disposable server; it refuses a database that already has infrastructure tables:
+The migration fence test and the layout test each require their own empty disposable server, because both create and drop cuenv's tables and the test runner runs them in parallel; each refuses a database that already has infrastructure tables:
 
 ```bash
 CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL=http://127.0.0.1:8081 \
-cuenv exec -- cargo test -p cuenv-infrastructure --lib \
-  a_migration_refuses_while_any_lock_is_held -- --ignored
+CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL=http://127.0.0.1:8082 \
+cuenv exec -- cargo test -p cuenv-infrastructure --lib -- --ignored \
+  a_migration_refuses_while_any_lock_is_held \
+  layouts_and_waiting_migrations_against_a_server
 ```
 
 Supply `TURSO_AUTH_TOKEN` if the test server requires authentication. The lifecycle tests copy `examples/infrastructure-random/env.cue` to a temporary CUE module, use a unique project name and the supplied provider path, and keep caches and recovery files in temporary user directories. The first test verifies that planning writes no state, applying creates the pet, password and port, and a second apply has no work. It then edits the pet length from two to three in the CUE file, plans and applies its replacement, checks the new identifier and length in durable state, destroys all three resources and verifies that state and locks are empty. A second destroy must also have no work. The second test runs a named `--env dev` stack whose provider receives an `#ExecSecret` through `allowInfrastructure`, and checks that the secret reaches the provider, is not stored in state and never appears in the command's output. Default test runs skip these tests and need neither network access nor provider downloads.

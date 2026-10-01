@@ -507,6 +507,8 @@
             export CUENV_INFRASTRUCTURE_TEST_FRESH_TURSO_URL="$started_sqld_url"
             start_sqld migration
             export CUENV_INFRASTRUCTURE_TEST_TURSO_MIGRATION_URL="$started_sqld_url"
+            start_sqld layout
+            export CUENV_INFRASTRUCTURE_TEST_TURSO_LAYOUT_URL="$started_sqld_url"
           '';
           postCheck = ''
             stop_sqld
