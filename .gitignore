@@ -14,3 +14,6 @@ dist
 node_modules
 result
 target
+
+# Claude Code agent worktrees
+.claude/worktrees/
