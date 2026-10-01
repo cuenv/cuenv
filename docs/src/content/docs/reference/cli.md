@@ -638,7 +638,7 @@ do not prevent ordinary task discovery, sync or CI decoding. The schema's own
 checks are different: a semantic error (a provider without `version` or `path`,
 an undeclared `dependsOn` or provider, an invalid state URL) in any
 environment, selected or not, is a CUE evaluation error and fails every
-command that evaluates the project, deliberately fail-closed (exit code `3`).
+command that evaluates the project (`cuenv fmt` and the shell hook, `cuenv export --shell`, included), deliberately fail-closed (exit code `3`).
 
 **Ownership:** the first `apply` or `destroy` records the project's CUE
 instance as the owner of its state, under the lock. `plan`, `apply`,

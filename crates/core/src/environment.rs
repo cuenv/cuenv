@@ -648,9 +648,9 @@ impl Environment {
     /// for redaction by the command that owns the output surface.
     pub async fn resolve_for_infrastructure_with_secrets(
         action: InfrastructurePolicyAction,
-        env_vars: &HashMap<String, EnvValue>,
+        environment_variables: &HashMap<String, EnvValue>,
     ) -> crate::Result<(HashMap<String, String>, Vec<String>)> {
-        let accessible: Vec<_> = env_vars
+        let accessible: Vec<_> = environment_variables
             .iter()
             .filter(|(_, value)| value.is_accessible_by_infrastructure(action))
             .collect();

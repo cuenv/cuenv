@@ -10,6 +10,15 @@ use std::collections::HashMap;
 /// Placeholder for redacted secrets; mirrors `cuenv_events::REDACTED_PLACEHOLDER`.
 const REDACTED_PLACEHOLDER: &str = "*_*";
 
+/// Why a null environment variable value is rejected.
+const NULL_VALUE: &str = "environment variable value is null; an incomplete CUE value (for example \
+                          `string` with no value) is exported as null";
+
+/// Why `#EnvPassthrough` is rejected in the project `env`.
+const PASSTHROUGH_UNSUPPORTED: &str = "environment variable `#EnvPassthrough` is supported only in a task's `env`, \
+     where it forwards a variable of the process running cuenv; the project `env` \
+     takes a value, a secret, an interpolated array or `{ value, policies }`";
+
 /// A part of an interpolated environment variable value.
 /// Can be a literal string or a secret that needs runtime resolution.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,8 +124,16 @@ impl EnvValue {
             }),
             Value::Array(_) => serde_json::from_value(value)
                 .map(Self::Interpolated)
-                .map_err(|error| format!("invalid interpolated environment value: {error}")),
+                .map_err(|error| {
+                    format!("invalid interpolated environment variable value: {error}")
+                }),
             Value::Object(fields) => {
+                if fields.contains_key("cuenvPassthrough") {
+                    return Err(PASSTHROUGH_UNSUPPORTED.to_string());
+                }
+                if fields.get("value").is_some_and(Value::is_null) {
+                    return Err(NULL_VALUE.to_string());
+                }
                 let policies_form = fields.contains_key("value") || fields.contains_key("policies");
                 let value = Value::Object(fields);
                 if policies_form {
@@ -131,11 +148,7 @@ impl EnvValue {
                         .map_err(|error| format!("invalid environment variable secret: {error}"))
                 }
             }
-            Value::Null => Err(
-                "environment variable value is null; an incomplete CUE value (for example \
-                 `string` with no value) is exported as null"
-                    .to_string(),
-            ),
+            Value::Null => Err(NULL_VALUE.to_string()),
         }
     }
 }
@@ -251,6 +264,20 @@ impl EnvValue {
                         .is_some_and(|actions| actions.contains(&action))
                 }),
             },
+            _ => true,
+        }
+    }
+
+    /// Check if the interactive shell integration (`cuenv export`) may receive
+    /// this environment variable.
+    ///
+    /// Policies name tasks, exec commands and infrastructure actions; none of
+    /// them names the shell. A value with a non-empty policy list is therefore
+    /// restricted to its listed consumers and never exported to the shell.
+    #[must_use]
+    pub fn is_accessible_by_shell(&self) -> bool {
+        match self {
+            Self::WithPolicies(var) => var.policies.as_ref().is_none_or(Vec::is_empty),
             _ => true,
         }
     }

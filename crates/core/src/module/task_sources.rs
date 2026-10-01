@@ -196,10 +196,69 @@ impl TaskSourceContext<'_> {
     }
 }
 
+/// An object that carries a task body. An exec secret (`{resolver: "exec",
+/// command: ..., args: ...}`) is command-shaped too but is not a task: its
+/// extra fields are part of the secret's identity, so it must not gain
+/// source locations.
 fn is_executable_task_object(obj: &Map<String, Value>) -> bool {
-    obj.contains_key("command") || obj.contains_key("script")
+    !obj.contains_key("resolver") && (obj.contains_key("command") || obj.contains_key("script"))
 }
 
 fn source_value(source: &SourceLocation) -> Value {
     serde_json::to_value(source).expect("source locations should serialize")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn location(line: u32) -> SourceLocation {
+        SourceLocation {
+            file: "env.cue".to_string(),
+            line,
+            column: 1,
+        }
+    }
+
+    fn enriched(mut value: Value) -> Value {
+        let definitions = SourceMap::from([
+            ("./tasks.show".to_string(), location(3)),
+            ("./env.B".to_string(), location(1)),
+            ("./env".to_string(), location(1)),
+        ]);
+        let callers = definitions.clone();
+        enrich_task_sources(
+            &mut value,
+            ".",
+            TaskSourceMaps {
+                definitions: &definitions,
+                callers: Some(&callers),
+            },
+        );
+        value
+    }
+
+    #[test]
+    fn tasks_gain_source_locations() {
+        let value = enriched(json!({"tasks": {"show": {"command": "sh"}}}));
+        assert!(value["tasks"]["show"].get("_source").is_some());
+        assert!(value["tasks"]["show"].get("_callerSource").is_some());
+    }
+
+    #[test]
+    fn exec_secrets_are_not_tasks() {
+        let secret = json!({"resolver": "exec", "command": "echo", "args": ["x"]});
+        let value = enriched(json!({
+            "env": {
+                "A": secret,
+                "B": {"value": secret, "policies": [{"allowTasks": ["show"]}]},
+                "C": ["prefix-", secret],
+            }
+        }));
+        for pointer in ["/env/A", "/env/B/value", "/env/C/1"] {
+            let found = value.pointer(pointer).expect("secret present");
+            assert_eq!(found, &secret, "{pointer} gained fields: {found}");
+        }
+    }
 }

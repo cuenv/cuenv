@@ -284,7 +284,9 @@ pub struct ModuleEvalOptions {
     /// exports nothing below this field skips the injection.
     ///
     /// `None` keeps the behaviour of callers that predate this option: the
-    /// field is `tasks`. `Some("")` turns the injection off.
+    /// field is `tasks`. That default is a compatibility shim, not a
+    /// recommendation: callers should name the field themselves (the cuenv
+    /// command line does). `Some("")` turns the injection off.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_field: Option<String>,
 }
