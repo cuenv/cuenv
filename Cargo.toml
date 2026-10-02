@@ -13,6 +13,7 @@ members = [
     "crates/task-discovery",
     "crates/task-exec",
     "crates/services",
+    "crates/infrastructure",
     "crates/dagger",
     "crates/cuengine",
     "crates/cuenv",
@@ -70,6 +71,7 @@ cuenv-task-graph = { path = "crates/task-graph", version = "0.56.7" }
 cuenv-task-discovery = { path = "crates/task-discovery", version = "0.56.7" }
 cuenv-task-exec = { path = "crates/task-exec", version = "0.56.7" }
 cuenv-services = { path = "crates/services", version = "0.56.7" }
+cuenv-infrastructure = { path = "crates/infrastructure", version = "0.56.7" }
 cuenv-dagger = { path = "crates/dagger", version = "0.56.7" }
 cuenv-workspaces = { path = "crates/workspaces", version = "0.56.7" }
 cuenv-ci = { path = "crates/ci", version = "0.56.7" }
@@ -128,6 +130,10 @@ hmac = "0.12"
 bazel-remote-apis = "0.29"
 prost = "0.14"
 tonic = { version = "0.14", features = ["tls-ring", "tls-native-roots"] }
+tonic-prost = "0.14"
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = { version = "0.5", features = ["util"] }
+rmpv = "1.3"
 secrecy = { version = "0.10", features = ["serde"] }
 futures = "0.3"
 tokio-stream = "0.1"
