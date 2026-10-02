@@ -1397,6 +1397,16 @@ mod tests {
         );
     }
 
+    /// Variables the launched process sets in its own environment as it
+    /// starts, so no launch policy can withhold them. On macOS, CoreFoundation
+    /// sets `__CF_USER_TEXT_ENCODING` in every process that loads it when the
+    /// variable is absent; cuenv has already removed it by then.
+    const SET_BY_THE_CHILD_ITSELF: &[&str] = if cfg!(target_os = "macos") {
+        &["__CF_USER_TEXT_ENCODING"]
+    } else {
+        &[]
+    };
+
     #[cfg(unix)]
     #[tokio::test]
     async fn an_isolated_provider_sees_only_the_allowlist_cuenvs_own_and_project_values() {
@@ -1414,6 +1424,7 @@ mod tests {
         .await;
         let allowed = |name: &str| {
             ISOLATED_INHERITED_ENVIRONMENT_VARIABLES.contains(&name)
+                || SET_BY_THE_CHILD_ITSELF.contains(&name)
                 || [
                     "PROJECT_VALUE",
                     "TMPDIR",
