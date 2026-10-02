@@ -60,6 +60,39 @@ permissions:
   pull-requests: write
   id-token: write
 jobs:
+  build-cuenv:
+    name: build.cuenv
+    runs-on: namespace-profile-cuenv-macos-arm64
+    timeout-minutes: 30
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 2
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup Hestia Nix Cache
+      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      with:
+        drain-timeout: '900'
+        upstream-cache-filter: 'true'
+        version: v2.0.0
+    - name: Build cuenv (nix)
+      run: |-
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+        nix build .#cuenv -L --accept-flake-config
+        echo "$(pwd)/result/bin" >> "$GITHUB_PATH" 2>/dev/null || echo "$(pwd)/result/bin" >> "$BUILDKITE_ENV_FILE" 2>/dev/null || true
+        ./result/bin/cuenv sync ci
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload cuenv
+      uses: actions/upload-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
+        path: result/bin/cuenv
+        if-no-files-found: error
   checks-audit:
     name: checks.audit
     runs-on: namespace-profile-cuenv-linux-x86
@@ -242,3 +275,95 @@ jobs:
         GITHUB_ACTOR: ${{ github.actor }}
         GITHUB_REF_TYPE: ${{ github.ref_type }}
         GITHUB_REF_NAME: ${{ github.ref_name }}
+  darwin-clippy-darwin-arm64:
+    name: darwin.clippy (darwin-arm64)
+    runs-on: namespace-profile-cuenv-macos-arm64
+    needs:
+    - build-cuenv
+    timeout-minutes: 60
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup Hestia Nix Cache
+      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      with:
+        drain-timeout: '900'
+        upstream-cache-filter: 'true'
+        version: v2.0.0
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
+        path: ${{ runner.temp }}/cuenv-bootstrap
+    - name: Add cuenv to PATH
+      run: |-
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+    - name: darwin.clippy (darwin-arm64)
+      run: cuenv task darwin.clippy --skip-dependencies
+      working-directory: .
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        CUENV_ARCH: darwin-arm64
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: darwin-clippy-darwin-arm64
+        path: result/bin/*
+        if-no-files-found: ignore
+        include-hidden-files: true
+  darwin-nextest-darwin-arm64:
+    name: darwin.nextest (darwin-arm64)
+    runs-on: namespace-profile-cuenv-macos-arm64
+    needs:
+    - build-cuenv
+    timeout-minutes: 60
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Install Determinate Nix
+      uses: DeterminateSystems/determinate-nix-action@v3
+      with:
+        extra-conf: accept-flake-config = true
+    - name: Setup Hestia Nix Cache
+      uses: Mic92/hestia@fb239a2f72d4b6e26eec5425f289dea23b27a527
+      with:
+        drain-timeout: '900'
+        upstream-cache-filter: 'true'
+        version: v2.0.0
+    - name: Download cuenv
+      uses: actions/download-artifact@v4
+      with:
+        name: cuenv-bootstrap-namespace-profile-cuenv-macos-arm64
+        path: ${{ runner.temp }}/cuenv-bootstrap
+    - name: Add cuenv to PATH
+      run: |-
+        chmod +x "$RUNNER_TEMP/cuenv-bootstrap/cuenv"
+        echo "$RUNNER_TEMP/cuenv-bootstrap" >> "$GITHUB_PATH"
+    - name: darwin.nextest (darwin-arm64)
+      run: cuenv task darwin.nextest --skip-dependencies
+      working-directory: .
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GITHUB_ACTOR: ${{ github.actor }}
+        GITHUB_REF_TYPE: ${{ github.ref_type }}
+        GITHUB_REF_NAME: ${{ github.ref_name }}
+        CUENV_ARCH: darwin-arm64
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: darwin-nextest-darwin-arm64
+        path: result/bin/*
+        if-no-files-found: ignore
+        include-hidden-files: true
