@@ -19,10 +19,15 @@ let _baseInputs = [
 	"crates/**",
 ]
 
+// Everything the flake's source filter passes to a check. A check run through
+// `cuenv task` sees only its inputs, so a tool configuration missing here
+// (clippy.toml, nextest's profiles, cargo's config) silently changes the
+// check rather than failing it.
 let _checkInputs = list.Concat([
 	["flake.nix", "flake.lock"],
 	_baseInputs,
 	["_tests/**", "contrib/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**", "deny.toml", "env.cue"],
+	["clippy.toml", ".cargo/**", ".config/**", "llms.txt"],
 ])
 
 let _schemaDocsInputs = [

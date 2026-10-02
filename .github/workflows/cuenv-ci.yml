@@ -8,12 +8,16 @@ on:
     - main
     paths:
     - .agents/skills/**
+    - .cargo/**
+    - .config/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
     - _tests/**
+    - clippy.toml
+    - clippy.toml/**
     - contrib/**
     - crates/**
     - cue.mod/**
@@ -26,18 +30,24 @@ on:
     - flake.lock/**
     - flake.nix
     - flake.nix/**
+    - llms.txt
+    - llms.txt/**
     - schema/**
   pull_request:
     branches:
     - main
     paths:
     - .agents/skills/**
+    - .cargo/**
+    - .config/**
     - .github/workflows/cuenv-ci.yml
     - Cargo.lock
     - Cargo.lock/**
     - Cargo.toml
     - Cargo.toml/**
     - _tests/**
+    - clippy.toml
+    - clippy.toml/**
     - contrib/**
     - crates/**
     - cue.mod/**
@@ -50,6 +60,8 @@ on:
     - flake.lock/**
     - flake.nix
     - flake.nix/**
+    - llms.txt
+    - llms.txt/**
     - schema/**
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
