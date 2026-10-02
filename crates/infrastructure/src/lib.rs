@@ -17,6 +17,7 @@
 //! ```
 
 pub mod cancellation;
+pub mod engine;
 pub mod error;
 pub mod object_change;
 pub mod plugin;
@@ -29,8 +30,12 @@ pub mod type_system;
 pub mod unrecorded;
 
 pub use cancellation::{Cancellation, RecordingGuard};
+pub use engine::{
+    Action, ApplyContext, ApplyEvent, EngineOptions, EngineSetup, InfrastructureEngine, Plan,
+    PlanDigest, PlanMode, PlanSummary, ResourceChange, render_plan, validate_configuration,
+};
 pub use error::{
-    InfrastructureError, Result, UnrecordedFileProblem, strip_control_characters,
+    InfrastructureError, Result, UnrecordedFileProblem, failure_category, strip_control_characters,
     strip_control_characters_except_newlines,
 };
 pub use state::{
