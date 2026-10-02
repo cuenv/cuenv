@@ -196,7 +196,7 @@ impl Codegen {
         };
         let raw_result =
             cuengine::evaluate_module(&target.module_root, &target.package_name, Some(&options))
-                .map_err(|e| CodegenError::Codegen(format!("CUE evaluation failed: {e}")))?;
+                .map_err(|e| CodegenError::Codegen(e.to_string()))?;
 
         Ok(ModuleEvaluation::from_raw(
             target.module_root.clone(),

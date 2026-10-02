@@ -17,6 +17,13 @@ mod task_sources;
 
 use deserialize::detailed_deserialize_error;
 
+/// The top-level field of a cuenv project that holds its task graph.
+///
+/// Callers of the CUE engine name it in the evaluation options so the engine
+/// can name sequence items before export; the engine itself has no opinion
+/// about which field that is.
+pub const TASK_FIELD: &str = "tasks";
+
 /// Reference metadata extracted from CUE evaluation.
 /// Maps field paths (e.g., "./tasks.docs.deploy.dependsOn[0]") to their reference paths (e.g., "tasks.build").
 pub type ReferenceMap = HashMap<String, String>;
