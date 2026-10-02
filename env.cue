@@ -19,10 +19,15 @@ let _baseInputs = [
 	"crates/**",
 ]
 
+// Everything the flake's source filter passes to a check. A check run through
+// `cuenv task` sees only its inputs, so a tool configuration missing here
+// (clippy.toml, nextest's profiles, cargo's config) silently changes the
+// check rather than failing it.
 let _checkInputs = list.Concat([
 	["flake.nix", "flake.lock"],
 	_baseInputs,
 	["_tests/**", "contrib/**", "examples/**", "schema/**", "cue.mod/**", ".agents/skills/**", "deny.toml", "env.cue"],
+	["clippy.toml", ".cargo/**", ".config/**", "llms.txt"],
 ])
 
 let _schemaDocsInputs = [
@@ -143,7 +148,17 @@ schema.#Project & {
 					pullRequest: true
 				}
 				provider: github: permissions: "id-token": "write"
-				tasks: [_t.checks]
+				tasks: [
+					_t.checks,
+					{
+						task: _t.darwin.clippy
+						matrix: arch: ["darwin-arm64"]
+					},
+					{
+						task: _t.darwin.nextest
+						matrix: arch: ["darwin-arm64"]
+					},
+				]
 			}
 
 			release: {
@@ -256,6 +271,26 @@ schema.#Project & {
 			nextest: schema.#Task & {
 				command: "nix"
 				args: ["build", ".#checks.x86_64-linux.cuenv-nextest", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+		}
+
+		// The same flake checks built for aarch64-darwin. They run on the macOS
+		// runner only (see the `ci` pipeline), so platform-specific code paths
+		// (process handling, file systems, the Go bridge) are compiled and tested
+		// on macOS for every pull request, not only at release time.
+		darwin: {
+			type: "group"
+
+			clippy: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.aarch64-darwin.cuenv-clippy", "-L", "--accept-flake-config"]
+				inputs: _checkInputs
+			}
+
+			nextest: schema.#Task & {
+				command: "nix"
+				args: ["build", ".#checks.aarch64-darwin.cuenv-nextest", "-L", "--accept-flake-config"]
 				inputs: _checkInputs
 			}
 		}
