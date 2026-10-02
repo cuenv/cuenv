@@ -110,6 +110,7 @@ If a change does not match one of the required full-flake triggers, keep the che
 | **cuenv-release**                 | Version management and publishing                            |
 | **cuenv-dagger**                  | Optional containerized task execution backend                |
 | **cuenv-codegen**                 | CUE-based code generation                                    |
+| **cuenv-infrastructure**          | Terraform provider plugins over gRPC, Turso resource state   |
 | **cuenv-ignore**                  | .gitignore/.dockerignore generation                          |
 | **cuenv-codeowners**              | CODEOWNERS file generation                                   |
 | **cuenv-github/gitlab/bitbucket** | VCS provider integrations                                    |

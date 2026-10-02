@@ -575,6 +575,31 @@ if let Some(entry) = lookup(&key, None) {
 
 Additional helpers such as `save_result`, `record_latest`, and `lookup_latest` are available when integrating custom executors with cuenv's cache layout.
 
+## cuenv-infrastructure
+
+- **Provider environment.** `cuenv_secrets::RESOLVER_ENVIRONMENT_VARIABLES`
+  is the table of variables only cuenv's secret machinery uses, each an exact
+  name or a prefix (`NamePattern`) and a `ValueKind` (a `Credential` is
+  withheld and redacted, an `Endpoint` such as `OP_CONNECT_HOST` is only
+  withheld). `is_resolver_credential`, `is_resolver_environment_variable`,
+  `resolver_environment_variable_names` and `resolver_credential_values` query
+  it. The command withholds the matching variables from providers in `inherit`
+  mode unless the project passes the same name, and `main` registers the
+  credential values for redaction from the same table.
+  `cuenv_infrastructure::plugin::ISOLATED_INHERITED_ENVIRONMENT_VARIABLES`
+  is the allowlist of the `isolated` mode and `isolated_withheld_names` computes
+  the names to pass in `withheld_environment_variables` for it. cuenv's own
+  handshake variables are set after the withheld names are removed, so a policy
+  can never strip them. Variables whose names are not valid unicode are never
+  passed to a provider. This is hygiene, not a sandbox (see the how-to guide).
+- `Cancellation::stop()` is the first interrupt: no new resource is started and
+  every provider the engine launched is asked to stop.
+  `terminate_providers()` is the second: it kills them (with their process
+  groups) and removes their socket directories; then
+  `wait_for_recordings(bound)` lets a record being written finish before the
+  lock is released. The command calls them from its SIGINT, SIGTERM, SIGHUP
+  and SIGQUIT handling, which it installs before evaluating anything.
+
 ### Redaction (`cuenv-events`)
 
 `register_secret` and `register_secrets` take the values to hide. A multi-line

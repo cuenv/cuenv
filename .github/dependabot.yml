@@ -24,7 +24,9 @@ updates:
 
   # Go dependencies for cuengine bridge
   - package-ecosystem: "gomod"
-    directory: "/crates/cuengine"
+    directories:
+      - "/crates/cuengine"
+      - "/crates/infrastructure/tests/fake_provider"
     schedule:
       interval: "weekly"
       day: "monday"
